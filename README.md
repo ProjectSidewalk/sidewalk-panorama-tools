@@ -8,6 +8,8 @@ The scripts were written on a Linux system, and specifically tested only on Ubun
 work as long as the required python packages listed in `requirements.txt` can be installed. Usage on any other OS will likely require
 recompiling the `decode_depthmap` binary for your system using [this source](https://github.com/jianxiongxiao/ProfXkit/blob/master/GoogleMapsScraper/decode_depthmap.cpp).
 
+If running on cloud hosts, note that at least 2GB RAM is recommended as these scripts may crash on very low memory systems.
+
 ### Setup (Ubuntu 16.04)
 1. Install required prerequisites:
 ```bash
