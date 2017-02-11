@@ -1,5 +1,10 @@
 # !/usr/bin/python
 
+# ****************************************
+# Specify the file storage location below
+# ****************************************
+storage_location = "/home/anthony/Downloads/test/"
+
 from SidewalkDB import *
 
 import os
@@ -14,11 +19,6 @@ import urllib2
 from PIL import Image
 from random import shuffle
 import fnmatch
-
-# ****************************************
-# Specify the file storage location below
-# ****************************************
-storage_location = "/home/anthony/Downloads/test/"
 
 
 def check_download_failed_previously(panoId):
