@@ -1,0 +1,11 @@
+tohme_crops
+*.pyc
+old
+*.swp
+venv
+crops/*
+*.log
+crop.log.bak.txt
+.idea
+*.csv
+cropsbak
