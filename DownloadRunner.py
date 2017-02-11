@@ -188,7 +188,6 @@ def generate_depthmapfiles(path_to_scrapes):
 
 
 pano_list = fetch_pano_ids_from_webserver()
-pano_list = pano_list[:2]
 
 download_panorama_images(storage_location, pano_list=pano_list)  # Trailing slash required
 download_panorama_depthdata(storage_location, pano_list=pano_list)
