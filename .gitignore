@@ -7,5 +7,4 @@ crops/*
 *.log
 crop.log.bak.txt
 .idea
-*.csv
 cropsbak
