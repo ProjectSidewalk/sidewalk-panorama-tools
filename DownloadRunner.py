@@ -30,7 +30,7 @@ def check_download_failed_previously(panoId):
 
 def fetch_pano_ids_from_webserver():
     unique_ids = []
-    conn = httplib.HTTPConnection("sidewalk.umiacs.umd.edu")
+    conn = httplib.HTTPSConnection("sidewalk.umiacs.umd.edu")
     conn.request("GET", "/adminapi/labels/panoid")
     r1 = conn.getresponse()
     data = r1.read()
