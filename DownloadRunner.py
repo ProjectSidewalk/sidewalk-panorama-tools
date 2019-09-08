@@ -8,6 +8,7 @@ import httplib
 import json
 import logging
 import cStringIO
+import enum
 
 import urllib
 import urllib2
@@ -22,6 +23,15 @@ try:
     from xml.etree import cElementTree as ET
 except ImportError, e:
     from xml.etree import ElementTree as ET
+
+class Enum(object): 
+    def __init__(self, tupleList):
+            self.tupleList = tupleList
+
+    def __getattr__(self, name):
+            return self.tupleList.index(name)
+
+DownloadResult = Enum(('skipped', 'success', 'fallback_success', 'failure'))
 
 delay = 30
 
@@ -77,110 +87,117 @@ def fetch_pano_ids_from_webserver():
     return unique_ids
 
 
-def download_panorama_images(storage_path, pano_list=None):
+def download_panorama_images(storage_path, pano_list):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
 
-    if pano_list is None:
-        unique_ids = fetch_pano_ids_from_webserver()
-    else:
-        unique_ids = pano_list
+    success_count = 0
+    skipped_count = 0
+    fallback_success_count = 0
+    fail_count = 0
+    total_panos = len(pano_list)
 
-    counter = 0
-    failed = 0
+    shuffle(pano_list)
+    for pano_id in pano_list:
+        print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
+        try:
+            result_code = download_single_pano(storage_path, pano_id)
+            if result_code == DownloadResult.success:
+                success_count += 1
+            elif result_code == DownloadResult.fallback_success:
+                fallback_success_count += 1
+            elif result_code == DownloadResult.skipped:
+                skipped_count += 1
+            elif result_code == DownloadResult.failure:
+                fail_count += 1
+        except Exception as e:
+            fail_count += 1
+            logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
+        total_completed = success_count + fallback_success_count + fail_count + skipped_count
+        print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)" 
+        % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
 
+    logging.debug("IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
+                    total_completed, 
+                    total_panos, 
+                    success_count, 
+                    fallback_success_count, 
+                    fail_count, 
+                    skipped_count)
+    return
+
+def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
-    shuffle(unique_ids)
-    for pano_id in unique_ids:
+    pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
 
-        pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
-        if not os.path.isfile(pano_xml_path):
-            continue
-        (image_width,image_height) = extract_panowidthheight(pano_xml_path)
-        im_dimension = (image_width, image_height)
-        blank_image = Image.new('RGBA', im_dimension, (0, 0, 0, 0))
+    (image_width,image_height) = extract_panowidthheight(pano_xml_path)
+    im_dimension = (image_width, image_height)
+    blank_image = Image.new('RGBA', im_dimension, (0, 0, 0, 0))
 
-        print '-- Extracting images for', pano_id,
+    destination_dir = os.path.join(storage_path, pano_id[:2])
+    if not os.path.isdir(destination_dir):
+        os.makedirs(destination_dir)
 
-        destination_dir = os.path.join(storage_path, pano_id[:2])
-        if not os.path.isdir(destination_dir):
-            os.makedirs(destination_dir)
+    filename = pano_id + ".jpg"
+    out_image_name = os.path.join(destination_dir, filename)
 
-        filename = pano_id + ".jpg"
-        out_image_name = os.path.join(destination_dir, filename)
-        if os.path.isfile(out_image_name):
-            print 'File already exists.'
+    # Skip download if image already exists
+    if os.path.isfile(out_image_name):
+        return DownloadResult.skipped
 
-            counter = counter + 1
-            print 'Completed ' + str(counter) + ' of ' + str(len(unique_ids))
-            continue
+    for y in range(image_height / 512):
+        for x in range(image_width / 512):
+            url_param = 'output=tile&zoom=5&x=' + str(x) + '&y=' + str(
+                y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
+            url = base_url + url_param
 
-        for y in range(image_height / 512):
-            for x in range(image_width / 512):
-                url_param = 'output=tile&zoom=5&x=' + str(x) + '&y=' + str(
+            # Open an image, resize it to 512x512, and paste it into a canvas
+            req = urllib.urlopen(url)
+            file = cStringIO.StringIO(req.read())
+
+            im = Image.open(file)
+            im = im.resize((512, 512))
+
+            blank_image.paste(im, (512 * x, 512 * y))
+
+            # Wait a little bit so you don't get blocked by Google
+            sleep_in_milliseconds = float(delay) / 1000
+            sleep(sleep_in_milliseconds)
+
+    # In some cases (e.g., old GSV images), we don't have zoom level 5,
+    # so Google returns a tranparent image. This means we need to set the
+    # zoom level to 3.
+
+    # Check if the image is transparent
+    # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
+    extrema = blank_image.convert("L").getextrema()
+    if extrema == (0, 0):
+        temp_im_dimension = (int(512 * 6.5), int(512 * 3.25))
+        temp_blank_image = Image.new('RGBA', temp_im_dimension, (0, 0, 0, 0))
+        for y in range(3):
+            for x in range(7):
+                url_param = 'output=tile&zoom=3&x=' + str(x) + '&y=' + str(
                     y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
                 url = base_url + url_param
-
                 # Open an image, resize it to 512x512, and paste it into a canvas
                 req = urllib.urlopen(url)
                 file = cStringIO.StringIO(req.read())
-                try:
-                    im = Image.open(file)
-                    im = im.resize((512, 512))
-                except Exception:
-                    print 'Error. Image.open didnt work here for some reason'
-                    print url
-                    print y,x
-                    print req
-                    print pano_id
+                im = Image.open(file)
+                im = im.resize((512, 512))
 
-                blank_image.paste(im, (512 * x, 512 * y))
+                temp_blank_image.paste(im, (512 * x, 512 * y))
 
                 # Wait a little bit so you don't get blocked by Google
                 sleep_in_milliseconds = float(delay) / 1000
                 sleep(sleep_in_milliseconds)
-            print '.',
-        print
 
-        # In some cases (e.g., old GSV images), we don't have zoom level 5,
-        # so Google returns a tranparent image. This means we need to set the
-        # zoom level to 3.
+        temp_blank_image = temp_blank_image.resize(im_dimension, Image.ANTIALIAS)  # resize
+        temp_blank_image.save(out_image_name, 'jpeg')
+        return DownloadResult.fallback_success
+    else:
+        blank_image.save(out_image_name, 'jpeg')
+        return DownloadResult.success
 
-        # Check if the image is transparent
-        # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-        extrema = blank_image.convert("L").getextrema()
-        if extrema == (0, 0):
-            print("Panorama %s is an old image and does not have the tiles for zoom level")
-            temp_im_dimension = (int(512 * 6.5), int(512 * 3.25))
-            temp_blank_image = Image.new('RGBA', temp_im_dimension, (0, 0, 0, 0))
-            for y in range(3):
-                for x in range(7):
-                    url_param = 'output=tile&zoom=3&x=' + str(x) + '&y=' + str(
-                        y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
-                    url = base_url + url_param
-                    # Open an image, resize it to 512x512, and paste it into a canvas
-                    req = urllib.urlopen(url)
-                    file = cStringIO.StringIO(req.read())
-                    im = Image.open(file)
-                    im = im.resize((512, 512))
-
-                    temp_blank_image.paste(im, (512 * x, 512 * y))
-
-                    # Wait a little bit so you don't get blocked by Google
-                    sleep_in_milliseconds = float(delay) / 1000
-                    sleep(sleep_in_milliseconds)
-                print '.',
-            print
-            temp_blank_image = temp_blank_image.resize(im_dimension, Image.ANTIALIAS)  # resize
-            temp_blank_image.save(out_image_name, 'jpeg')
-        else:
-            blank_image.save(out_image_name, 'jpeg')
-        print 'Done.'
-        counter += 1
-        print 'Completed ' + str(counter) + ' of ' + str(len(unique_ids))
-    return
-
-
-def download_panorama_depthdata(storage_path, decode=True, pano_list=None):
+def download_panorama_metadata_xmls(storage_path, pano_list):
     '''
      This method downloads a xml file that contains depth information from GSV. It first
      checks if we have a folder for each pano_id, and checks if we already have the corresponding
@@ -189,46 +206,59 @@ def download_panorama_depthdata(storage_path, decode=True, pano_list=None):
 
     base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
 
-    if pano_list is None:
-        pano_ids = fetch_pano_ids_from_webserver()
-    else:
-        pano_ids = pano_list
+    total_panos = len(pano_list)
+    success_count = 0
+    fail_count = 0
+    skipped_count = 0
 
-    for pano_id in pano_ids:
-        print '-- Extracting depth data for', pano_id, '...',
-        # Check if the directory exists. Then check if the file already exists and skip if it does.
-        destination_folder = os.path.join(storage_path, pano_id[:2])
-        if not os.path.isdir(destination_folder):
-            os.makedirs(destination_folder)
-
-        filename = pano_id + ".xml"
-        destination_file = os.path.join(destination_folder, filename)
-        if os.path.isfile(destination_file):
-            print 'File already exists.'
-            continue
-
-        url = base_url + pano_id
+    for pano_id in pano_list:
+        print("METADOWNLOAD: Processing pano %s " % (pano_id))
         try:
-            with open(destination_file, 'wb') as f:
-                req = urllib2.urlopen(url)
-                for line in req:
-                    f.write(line)
-        except:
-            print 'Unable to download depth data for pano.'
-            continue
+            result_code = download_single_metadata_xml(storage_path, pano_id)
+            if result_code == DownloadResult.failure:
+                fail_count += 1
+            elif result_code == DownloadResult.success:
+                success_count += 1
+            elif result_code == DownloadResult.skipped:
+                skipped_count += 1
+        except Exception as e:
+            fail_count += 1
+            logging.error("METADOWNLOAD: Failed to download metadata for pano %s due to error %s", pano_id, str(e))
+        total_completed = fail_count + success_count + skipped_count
+        print("METADOWNLOAD: Completed %d of %d (%d success, %d failed, %d skipped)" % 
+            (total_completed, total_panos, success_count, fail_count, skipped_count))
 
-        print 'Done.'
-
+    logging.debug("METADOWNLOAD: Final result: Completed %d of %d (%d success, %d failed, %d skipped)", 
+            total_completed, total_panos, success_count, fail_count, skipped_count)
     return
 
+def download_single_metadata_xml(storage_path, pano_id):
+    base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
+
+    # Check if the directory exists. Then check if the file already exists and skip if it does.
+    destination_folder = os.path.join(storage_path, pano_id[:2])
+    if not os.path.isdir(destination_folder):
+        os.makedirs(destination_folder)
+
+    filename = pano_id + ".xml"
+    destination_file = os.path.join(destination_folder, filename)
+    if os.path.isfile(destination_file):
+        return DownloadResult.skipped
+
+    url = base_url + pano_id
+
+    with open(destination_file, 'wb') as f:
+        req = urllib2.urlopen(url)
+        for line in req:
+            f.write(line)
+
+    return DownloadResult.success
 
 def generate_depthmapfiles(path_to_scrapes):
     # Iterate through all .xml files in specified path, recursively
     for root, dirnames, filenames in os.walk(path_to_scrapes):
         for filename in fnmatch.filter(filenames, '*.xml'):
             xml_location = os.path.join(root, filename)
-            print(xml_location)
-            print(filename)
 
             # Pano id is XML filename minus the extension
             pano_id = filename[:-4]
@@ -236,19 +266,22 @@ def generate_depthmapfiles(path_to_scrapes):
             # Generate a .depth.txt file for the .xml file
             output_file = os.path.join(root, pano_id + ".depth.txt")
             if os.path.isfile(output_file):
-                print 'Depth file already exists'
                 continue
 
             output_code = call(["./decode_depthmap", xml_location, output_file])
             if output_code == 0:
-                print 'Succesfully converted ',pano_id,' to depth.txt' 
+                print("GENERATEDEPTH: Successfully generated depth.txt for pano %s" % (pano_id))
             else:
-                print 'Unsuccessful. Could not convert ',pano_id,' to depth.txt . Returned with error ',output_code
+                print("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s" % (pano_id, str(output_code)))
 
 print "Fetching pano-ids"
 pano_list = fetch_pano_ids_from_webserver()
-# pano_list = [pano_list[111], pano_list[112]]
+
+##### Debug Line - remove for prod ##########
+pano_list = [pano_list[111], pano_list[112]]
+#############################################
+
 print "Fetching Panoramas"
-download_panorama_depthdata(storage_location, pano_list=pano_list)
-download_panorama_images(storage_location, pano_list=pano_list)  # Trailing slash required
+download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
+download_panorama_images(storage_location, pano_list)  # Trailing slash required
 generate_depthmapfiles(storage_location)
