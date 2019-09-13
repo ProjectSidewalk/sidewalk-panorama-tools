@@ -128,8 +128,13 @@ def download_panorama_images(storage_path, pano_list):
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
     pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
-    image_width = 16384
-    image_height = 8192
+    
+    image_height = 6656
+    image_width = 13312
+    if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
+        image_width = 16384
+        image_height = 8192
+
     try:
         (image_width,image_height) = extract_panowidthheight(pano_xml_path)
     except Exception as e:
