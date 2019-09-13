@@ -3,6 +3,7 @@ tohme_crops
 *.pyc
 old
 *.swp
+id_rsa
 venv
 crops/*
 *.log

@@ -33,7 +33,7 @@ class Enum(object):
 
 DownloadResult = Enum(('skipped', 'success', 'fallback_success', 'failure'))
 
-delay = 30
+delay = 0
 
 if len(argv) != 3:
     print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
@@ -128,8 +128,12 @@ def download_panorama_images(storage_path, pano_list):
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
     pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
-
-    (image_width,image_height) = extract_panowidthheight(pano_xml_path)
+    image_width = 16384
+    image_height = 8192
+    try:
+        (image_width,image_height) = extract_panowidthheight(pano_xml_path)
+    except Exception as e:
+        print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
     im_dimension = (image_width, image_height)
     blank_image = Image.new('RGBA', im_dimension, (0, 0, 0, 0))
 
@@ -278,7 +282,7 @@ print "Fetching pano-ids"
 pano_list = fetch_pano_ids_from_webserver()
 
 ##### Debug Line - remove for prod ##########
-pano_list = [pano_list[111], pano_list[112]]
+# pano_list = [pano_list[111], pano_list[112]]
 #############################################
 
 print "Fetching Panoramas"
