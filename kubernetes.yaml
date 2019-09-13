@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: prodall3
+  name: seattle
 spec:
   completions: 9
   parallelism: 9
@@ -18,8 +18,8 @@ spec:
             cpu: "0.5"
           limits:
             cpu: "0.8"
-        image: gcr.io/t-pulsar-252617/panoscraper:v1
-        command: ["/app/DownloadRunnerDockerEntrypoint.sh", "sidewalk-sea.cs.washington.edu",  "antli@128.8.132.187:/fs/jonf-sidewalk/Panoramas/scrapes_dump_seattle", "22"]
+        image: gcr.io/t-pulsar-252617/panoscraper:v2
+        command: ["/app/DownloadRunnerDockerEntrypoint.sh", "sidewalk-sea.cs.washington.edu",  "ml-sftp@sftp.cs.washington.edu:/sidewalk_panos/Panoramas/scrapes_dump_seattle", "9000"]
         volumeMounts:
           - mountPath: /dev/fuse
             name: dev-fuse
