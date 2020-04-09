@@ -129,6 +129,18 @@ def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
     pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
     
+    destination_dir = os.path.join(storage_path, pano_id[:2])
+    if not os.path.isdir(destination_dir):
+        os.makedirs(destination_dir)
+        os.chmod(destination_dir, 2775)
+
+    filename = pano_id + ".jpg"
+    out_image_name = os.path.join(destination_dir, filename)
+
+    # Skip download if image already exists
+    if os.path.isfile(out_image_name):
+        return DownloadResult.skipped
+
     image_height = 6656
     image_width = 13312
     if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
@@ -141,18 +153,6 @@ def download_single_pano(storage_path, pano_id):
         print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
     im_dimension = (image_width, image_height)
     blank_image = Image.new('RGBA', im_dimension, (0, 0, 0, 0))
-
-    destination_dir = os.path.join(storage_path, pano_id[:2])
-    if not os.path.isdir(destination_dir):
-        os.makedirs(destination_dir)
-        os.chmod(destination_dir, 2775)
-
-    filename = pano_id + ".jpg"
-    out_image_name = os.path.join(destination_dir, filename)
-
-    # Skip download if image already exists
-    if os.path.isfile(out_image_name):
-        return DownloadResult.skipped
 
     for y in range(image_height / 512):
         for x in range(image_width / 512):
