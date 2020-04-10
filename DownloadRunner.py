@@ -152,7 +152,7 @@ def download_single_pano(storage_path, pano_id):
     except Exception as e:
         print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
     im_dimension = (image_width, image_height)
-    blank_image = Image.new('RGBA', im_dimension, (0, 0, 0, 0))
+    blank_image = Image.new('RGB', im_dimension, (0, 0, 0, 0))
 
     for y in range(image_height / 512):
         for x in range(image_width / 512):
@@ -182,7 +182,7 @@ def download_single_pano(storage_path, pano_id):
     extrema = blank_image.convert("L").getextrema()
     if extrema == (0, 0):
         temp_im_dimension = (int(512 * 6.5), int(512 * 3.25))
-        temp_blank_image = Image.new('RGBA', temp_im_dimension, (0, 0, 0, 0))
+        temp_blank_image = Image.new('RGB', temp_im_dimension, (0, 0, 0, 0))
         for y in range(3):
             for x in range(7):
                 url_param = 'output=tile&zoom=3&x=' + str(x) + '&y=' + str(
