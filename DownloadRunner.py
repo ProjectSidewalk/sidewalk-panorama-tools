@@ -4,6 +4,7 @@ from SidewalkDB import *
 from sys import argv
 
 import os
+import stat
 import httplib
 import json
 import logging
@@ -132,7 +133,7 @@ def download_single_pano(storage_path, pano_id):
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
         os.makedirs(destination_dir)
-        os.chmod(destination_dir, 2775)
+        os.chmod(destination_dir, 0775 | stat.S_ISGID)
 
     filename = pano_id + ".jpg"
     out_image_name = os.path.join(destination_dir, filename)
@@ -202,11 +203,11 @@ def download_single_pano(storage_path, pano_id):
 
         temp_blank_image = temp_blank_image.resize(im_dimension, Image.ANTIALIAS)  # resize
         temp_blank_image.save(out_image_name, 'jpeg')
-        os.chmod(out_image_name, 664)
+        os.chmod(out_image_name, 0664)
         return DownloadResult.fallback_success
     else:
         blank_image.save(out_image_name, 'jpeg')
-        os.chmod(out_image_name, 664)
+        os.chmod(out_image_name, 0664)
         return DownloadResult.success
 
 def download_panorama_metadata_xmls(storage_path, pano_list):
@@ -251,7 +252,7 @@ def download_single_metadata_xml(storage_path, pano_id):
     destination_folder = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_folder):
         os.makedirs(destination_folder)
-        os.chmod(destination_folder, 2775)
+        os.chmod(destination_folder, 0775 | stat.S_ISGID)
 
     filename = pano_id + ".xml"
     destination_file = os.path.join(destination_folder, filename)
@@ -264,7 +265,7 @@ def download_single_metadata_xml(storage_path, pano_id):
         req = urllib2.urlopen(url)
         for line in req:
             f.write(line)
-    os.chmod(destination_file, 664)
+    os.chmod(destination_file, 0664)
 
     return DownloadResult.success
 
@@ -284,7 +285,7 @@ def generate_depthmapfiles(path_to_scrapes):
 
             output_code = call(["./decode_depthmap", xml_location, output_file])
             if output_code == 0:
-                os.chmod(output_file, 664)
+                os.chmod(output_file, 0664)
                 print("GENERATEDEPTH: Successfully generated depth.txt for pano %s" % (pano_id))
             else:
                 print("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s" % (pano_id, str(output_code)))
