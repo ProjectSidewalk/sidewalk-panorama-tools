@@ -97,7 +97,6 @@ def download_panorama_images(storage_path, pano_list):
     fail_count = 0
     total_panos = len(pano_list)
 
-    shuffle(pano_list)
     for pano_id in pano_list:
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -292,6 +291,7 @@ def generate_depthmapfiles(path_to_scrapes):
 
 print "Fetching pano-ids"
 pano_list = fetch_pano_ids_from_webserver()
+shuffle(pano_list)
 
 ##### Debug Line - remove for prod ##########
 # pano_list = [pano_list[111], pano_list[112]]
