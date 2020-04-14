@@ -291,6 +291,7 @@ def generate_depthmapfiles(path_to_scrapes):
 
 print "Fetching pano-ids"
 pano_list = fetch_pano_ids_from_webserver()
+pano_list.remove('tutorial')
 shuffle(pano_list)
 
 ##### Debug Line - remove for prod ##########
