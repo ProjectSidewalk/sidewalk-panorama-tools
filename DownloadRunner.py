@@ -257,13 +257,19 @@ def download_single_metadata_xml(storage_path, pano_id):
 
     url = base_url + pano_id
 
-    with open(destination_file, 'wb') as f:
-        req = urllib2.urlopen(url)
-        for line in req:
-            f.write(line)
-    os.chmod(destination_file, 0664)
+    # Check if the XML file is empty. If not, write it out to a file and set the permissions.
+    req = urllib2.urlopen(url)
+    firstline = req.readline()
+    if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
+        return DownloadResult.failure
+    else:
+        with open(destination_file, 'wb') as f:
+            f.write(firstline)
+            for line in req:
+                f.write(line)
+        os.chmod(destination_file, 0664)
 
-    return DownloadResult.success
+        return DownloadResult.success
 
 def generate_depthmapfiles(path_to_scrapes):
     # Iterate through all .xml files in specified path, recursively
