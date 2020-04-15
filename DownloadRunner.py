@@ -141,22 +141,45 @@ def download_single_pano(storage_path, pano_id):
     if os.path.isfile(out_image_name):
         return DownloadResult.skipped
 
-    image_height = 6656
-    image_width = 13312
+    final_image_height = 6656
+    final_image_width = 13312
     if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
-        image_width = 16384
-        image_height = 8192
-
+        final_image_width = 16384
+        final_image_height = 8192
     try:
-        (image_width,image_height) = extract_panowidthheight(pano_xml_path)
+        (final_image_width, final_image_height) = extract_panowidthheight(pano_xml_path)
     except Exception as e:
         print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
+    final_im_dimension = (final_image_width, final_image_height)
+
+    # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a
+    # transparent image. This means we need to set the zoom level to 3. Google also returns a
+    # transparent image if there is no imagery. So check at both zoom levels. How to check:
+    # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
+    req_zoom_5 = urllib.urlopen('http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
+    im_zoom_5 = Image.open(cStringIO.StringIO(req_zoom_5.read()))
+    req_zoom_3 = urllib.urlopen('http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
+    im_zoom_3 = Image.open(cStringIO.StringIO(req_zoom_3.read()))
+
+    if im_zoom_5.convert("L").getextrema() != (0, 0):
+        fallback = False
+        zoom = 5
+        image_width = final_image_width
+        image_height = final_image_height
+    elif im_zoom_3.convert("L").getextrema() != (0, 0):
+        fallback = True
+        zoom = 3
+        image_width = 3328
+        image_height = 1664
+    else:
+        return DownloadResult.failure
+
     im_dimension = (image_width, image_height)
     blank_image = Image.new('RGB', im_dimension, (0, 0, 0, 0))
 
-    for y in range(image_height / 512):
-        for x in range(image_width / 512):
-            url_param = 'output=tile&zoom=5&x=' + str(x) + '&y=' + str(
+    for y in range(int(round(image_height / 512.0))):
+        for x in range(int(round(image_width / 512.0))):
+            url_param = 'output=tile&zoom=' + str(zoom) + '&x=' + str(x) + '&y=' + str(
                 y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
             url = base_url + url_param
 
@@ -173,35 +196,9 @@ def download_single_pano(storage_path, pano_id):
             sleep_in_milliseconds = float(delay) / 1000
             sleep(sleep_in_milliseconds)
 
-    # In some cases (e.g., old GSV images), we don't have zoom level 5,
-    # so Google returns a tranparent image. This means we need to set the
-    # zoom level to 3.
-
-    # Check if the image is transparent
-    # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-    extrema = blank_image.convert("L").getextrema()
-    if extrema == (0, 0):
-        temp_im_dimension = (int(512 * 6.5), int(512 * 3.25))
-        temp_blank_image = Image.new('RGB', temp_im_dimension, (0, 0, 0, 0))
-        for y in range(3):
-            for x in range(7):
-                url_param = 'output=tile&zoom=3&x=' + str(x) + '&y=' + str(
-                    y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
-                url = base_url + url_param
-                # Open an image, resize it to 512x512, and paste it into a canvas
-                req = urllib.urlopen(url)
-                file = cStringIO.StringIO(req.read())
-                im = Image.open(file)
-                im = im.resize((512, 512))
-
-                temp_blank_image.paste(im, (512 * x, 512 * y))
-
-                # Wait a little bit so you don't get blocked by Google
-                sleep_in_milliseconds = float(delay) / 1000
-                sleep(sleep_in_milliseconds)
-
-        temp_blank_image = temp_blank_image.resize(im_dimension, Image.ANTIALIAS)  # resize
-        temp_blank_image.save(out_image_name, 'jpeg')
+    if fallback:
+        blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
+        blank_image.save(out_image_name, 'jpeg')
         os.chmod(out_image_name, 0664)
         return DownloadResult.fallback_success
     else:
