@@ -10,6 +10,7 @@ import json
 import logging
 import cStringIO
 import enum
+from datetime import datetime
 
 import urllib
 import urllib2
@@ -17,8 +18,6 @@ import urllib2
 from PIL import Image
 from random import shuffle
 import fnmatch
-
-from subprocess import PIPE,STDOUT
 
 try:
     from xml.etree import cElementTree as ET
@@ -124,7 +123,7 @@ def download_panorama_images(storage_path, pano_list):
                     fallback_success_count, 
                     fail_count, 
                     skipped_count)
-    return
+    return (success_count, fallback_success_count, fail_count, skipped_count, total_completed)
 
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
@@ -241,7 +240,7 @@ def download_panorama_metadata_xmls(storage_path, pano_list):
 
     logging.debug("METADOWNLOAD: Final result: Completed %d of %d (%d success, %d failed, %d skipped)", 
             total_completed, total_panos, success_count, fail_count, skipped_count)
-    return
+    return (success_count, fail_count, skipped_count, total_completed)
 
 def download_single_metadata_xml(storage_path, pano_id):
     base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
@@ -291,21 +290,49 @@ def generate_depthmapfiles(path_to_scrapes):
             output_file = os.path.join(root, pano_id + ".depth.txt")
             if os.path.isfile(output_file):
                 skip_count += 1
-                continue
-
-            output_code = call(["./decode_depthmap", xml_location, output_file])
-            if output_code == 0:
-                os.chmod(output_file, 0664)
-                success_count += 1
             else:
-                fail_count += 1
-                logging.error("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s", pano_id, str(output_code))
+                output_code = call(["./decode_depthmap", xml_location, output_file])
+                if output_code == 0:
+                    os.chmod(output_file, 0664)
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    logging.error("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s", pano_id, str(output_code))
             total_completed = fail_count + success_count + skip_count
-            print("GENERATEDEPTH: Completed %d of %d (%d success, %d failed, %d skipped)" %
-                (total_completed, total_panos, success_count, fail_count, skip_count))
+            print("GENERATEDEPTH: Completed %d (%d success, %d failed, %d skipped)" %
+                (total_completed, success_count, fail_count, skip_count))
 
-    logging.debug("GENERATEDEPTH: Final result: Completed %d of %d (%d success, %d failed, %d skipped)",
-        total_completed, total_panos, success_count, fail_count, skip_count)
+    logging.debug("GENERATEDEPTH: Final result: Completed %d (%d success, %d failed, %d skipped)",
+        total_completed, success_count, fail_count, skip_count)
+    return (success_count, fail_count, skip_count, total_completed)
+
+def run_scraper_and_log_results():
+    start_time = datetime.now()
+    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log.write("\n%s" % (str(start_time)))
+
+    xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
+    xml_end_time = datetime.now()
+    xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
+    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
+
+    im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
+    im_end_time = datetime.now()
+    im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
+    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log.write(",%d,%d,%d,%d,%d,%d" % (im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration))
+
+    depth_res = generate_depthmapfiles(storage_location)
+    depth_end_time = datetime.now()
+    depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
+    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log.write(",%d,%d,%d,%d,%d" % (depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration))
+
+    total_duration = int(round((depth_end_time - start_time).total_seconds() / 60.0))
+    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log.write(",%d" % (total_duration))
+
 
 print "Fetching pano-ids"
 pano_list = fetch_pano_ids_from_webserver()
@@ -317,6 +344,5 @@ shuffle(pano_list)
 #############################################
 
 print "Fetching Panoramas"
-download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
-download_panorama_images(storage_location, pano_list)  # Trailing slash required
-generate_depthmapfiles(storage_location)
+run_scraper_and_log_results()
+
