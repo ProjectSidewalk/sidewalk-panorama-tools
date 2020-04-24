@@ -95,6 +95,7 @@ def download_panorama_images(storage_path, pano_list):
     skipped_count = 0
     fallback_success_count = 0
     fail_count = 0
+    total_completed = 0
     total_panos = len(pano_list)
 
     for pano_id in pano_list:
@@ -219,6 +220,7 @@ def download_panorama_metadata_xmls(storage_path, pano_list):
     success_count = 0
     fail_count = 0
     skipped_count = 0
+    total_completed = 0
 
     for pano_id in pano_list:
         print("METADOWNLOAD: Processing pano %s " % (pano_id))
@@ -272,6 +274,10 @@ def download_single_metadata_xml(storage_path, pano_id):
         return DownloadResult.success
 
 def generate_depthmapfiles(path_to_scrapes):
+    success_count = 0
+    fail_count = 0
+    skip_count = 0
+    total_completed = 0
     # Iterate through all .xml files in specified path, recursively
     for root, dirnames, filenames in os.walk(path_to_scrapes):
         for filename in fnmatch.filter(filenames, '*.xml'):
@@ -279,18 +285,27 @@ def generate_depthmapfiles(path_to_scrapes):
 
             # Pano id is XML filename minus the extension
             pano_id = filename[:-4]
+            print("GENERATEDEPTH: Processing pano %s " % (pano_id))
 
             # Generate a .depth.txt file for the .xml file
             output_file = os.path.join(root, pano_id + ".depth.txt")
             if os.path.isfile(output_file):
+                skip_count += 1
                 continue
 
             output_code = call(["./decode_depthmap", xml_location, output_file])
             if output_code == 0:
                 os.chmod(output_file, 0664)
-                print("GENERATEDEPTH: Successfully generated depth.txt for pano %s" % (pano_id))
+                success_count += 1
             else:
-                print("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s" % (pano_id, str(output_code)))
+                fail_count += 1
+                logging.error("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s", pano_id, str(output_code))
+            total_completed = fail_count + success_count + skip_count
+            print("GENERATEDEPTH: Completed %d of %d (%d success, %d failed, %d skipped)" %
+                (total_completed, total_panos, success_count, fail_count, skip_count))
+
+    logging.debug("GENERATEDEPTH: Final result: Completed %d of %d (%d success, %d failed, %d skipped)",
+        total_completed, total_panos, success_count, fail_count, skip_count)
 
 print "Fetching pano-ids"
 pano_list = fetch_pano_ids_from_webserver()
