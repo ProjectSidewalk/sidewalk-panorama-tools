@@ -16,7 +16,6 @@ import urllib
 import urllib2
 
 from PIL import Image
-from random import shuffle
 import fnmatch
 
 try:
@@ -337,7 +336,6 @@ def run_scraper_and_log_results():
 print "Fetching pano-ids"
 pano_list = fetch_pano_ids_from_webserver()
 pano_list.remove('tutorial')
-shuffle(pano_list)
 
 ##### Debug Line - remove for prod ##########
 # pano_list = [pano_list[111], pano_list[112]]
