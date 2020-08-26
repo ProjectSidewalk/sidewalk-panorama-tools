@@ -36,3 +36,14 @@ Simply update the destination path variable at the top of the file to specify th
 
 Update the variables at the top of the file with the path to the CSV file, the path to the folder of panoramas retrieved by DownloadRunner,
 and the path to the save destination. Then run `python CropRunner.py`.
+
+Note that the numbers in the `label_type_id` column correspond to these label types:
+| label_type_id  | label type |
+| ------------- | ------------- |
+| 1 | Curb Ramp |
+| 2 | Missing Curb Ramp |
+| 3 | Obstacle in a Path |
+| 4 | Surface Problem |
+| 5 | Other |
+| 6 | Can't see the sidewalk |
+| 7 | No Sidewalk |
