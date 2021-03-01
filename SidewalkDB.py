@@ -1,6 +1,6 @@
 try:
     from xml.etree import cElementTree as ET
-except ImportError, e:
+except ImportError as e:
     from xml.etree import ElementTree as ET
 
 import redis
