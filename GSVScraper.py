@@ -24,7 +24,7 @@ from pymysql import OperationalError
 
 try:
     from xml.etree import cElementTree as ET
-except ImportError, e:
+except ImportError as e:
     from xml.etree import ElementTree as ET
 
 class GSVScraper(object):
@@ -40,7 +40,7 @@ class GSVScraper(object):
         self.data_dir = data_dir
         try:
             self.db = SidewalkDB(database=database)
-        except OperationalError, e:
+        except OperationalError as e:
             self.db = None
         return
 
@@ -50,7 +50,7 @@ class GSVScraper(object):
         """
         for pano_id in self.pano_ids:
             if os.path.isfile(self.data_dir + pano_id + '/depth.txt'):
-                print 'File already exists.'
+                print('File already exists.')
             else:
                 decode_depthmap('../data/GSV/' + pano_id + '/depth.xml', '../data/GSV/' + pano_id + '/depth.txt', verbose=True)
         return
@@ -69,8 +69,8 @@ class GSVScraper(object):
         
         for pano in seed_panoramas:
             if verbose:
-                print 'Seed pano: ', pano
-                print 'Extracting connected panoramas',
+                print('Seed pano: ', pano)
+                print('Extracting connected panoramas',)
             visited_panoramas = []
             passed_panorama = []
             panorama_stack = [pano]
@@ -121,8 +121,8 @@ class GSVScraper(object):
                         panorama_stack.pop()
             all_panoramas += visited_panoramas
             if verbose:
-                print
-                print
+                print()
+                print()
                 
         all_panoramas = list(set(all_panoramas))
         return all_panoramas
@@ -175,11 +175,11 @@ class GSVScraper(object):
 
         base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
         for pano_id in self.pano_ids:
-            print '-- Extracting depth data for', pano_id, '...',
+            print('-- Extracting depth data for', pano_id, '...',)
             # Check if the directory exists. Then check if the file already exists and skip if it does.
             ensure_dir(self.data_dir + pano_id)
             if os.path.isfile(self.data_dir + pano_id + '/depth.xml'):
-                print 'File already exists.'
+                print('File already exists.')
                 continue
             
             url = base_url + pano_id
@@ -192,7 +192,7 @@ class GSVScraper(object):
             sleep_in_seconds = float(delay) / 1000
             sleep(sleep_in_seconds)
             
-            print 'Done.'
+            print('Done.')
         
         if decode:
             self.decode_depthmap()
@@ -233,12 +233,12 @@ class GSVScraper(object):
         base_url = 'http://maps.google.com/cbk?'
 
         for pano_id in self.pano_ids:
-            print '-- Extracting images for', pano_id,
+            print('-- Extracting images for', pano_id,)
             ensure_dir(self.data_dir + pano_id)
             ensure_dir(self.data_dir + pano_id + '/images/')
             out_image_name = self.data_dir + pano_id + '/images/pano.jpg'
             if os.path.isfile(out_image_name):
-                print 'File already exists.'
+                print('File already exists.')
                 continue
 
             for y in range(13): 
@@ -257,13 +257,13 @@ class GSVScraper(object):
                     # Wait a little bit so you don't get blocked by Google
                     sleep_in_milliseconds = float(delay) / 1000
                     sleep(sleep_in_milliseconds)
-                print '.',
-            print
+                print('.',)
+            print()
 
             # In some cases (e.g., old GSV images), we don't have zoom level 5, so
             # we need to set the zoom level to 3.
             if array(blank_image)[:, :, :3].sum() == 0:
-                print "Panorama %s is an old image and does not have the tiles for zoom level"
+                print("Panorama %s is an old image and does not have the tiles for zoom level")
                 temp_im_dimension = (int(512 * 6.5), int(512 * 3.25))
                 temp_blank_image = Image.new('RGBA', temp_im_dimension, (0, 0, 0, 0))
                 for y in range(3):
@@ -281,13 +281,13 @@ class GSVScraper(object):
                         # Wait a little bit so you don't get blocked by Google
                         sleep_in_milliseconds = float(delay) / 1000
                         sleep(sleep_in_milliseconds)
-                    print '.',
-                print
+                    print('.',)
+                print()
                 temp_blank_image = temp_blank_image.resize(im_dimension, Image.ANTIALIAS)  # resize
                 temp_blank_image.save(out_image_name, 'jpeg')
             else:
                 blank_image.save(out_image_name, 'jpeg')
-            print 'Done.'
+            print('Done.')
         return
 
     def get_pano_links(self, pano):
@@ -331,7 +331,7 @@ class GSVScraper(object):
         api_header = 'http://cbk0.google.com/cbk?output=xml'
         for pano_id in pano_ids:
             if verbose:
-                print '-- Extracting metadata for', pano_id, '...',
+                print('-- Extracting metadata for', pano_id, '...',)
             # Check if the directory exists. Then check if the file already exists and skip if it does.
             # Check file: http://stackoverflow.com/questions/82831/how-do-i-check-if-a-file-exists-using-python
             if target_dir is None:
@@ -340,7 +340,7 @@ class GSVScraper(object):
             # ensure_dir(self.data_dir + pano_id + '/')
             if os.path.isfile(target_dir + pano_id + '/meta.xml'):
                 if verbose:
-                    print 'File already exists.'
+                    print('File already exists.')
                 continue
             
             url = api_header + '&panoid=' + pano_id
@@ -358,7 +358,7 @@ class GSVScraper(object):
             sleep_in_milliseconds = float(delay) / 1000
             sleep(sleep_in_milliseconds)
             if verbose:
-                print 'Done.'
+                print('Done.')
         
         return
     
@@ -372,7 +372,7 @@ class GSVScraper(object):
             # print link_pano
             tree = ET.parse(xml)
         except ET.ParseError:
-            print link_pano
+            print(link_pano)
             raise
         
         if tree.find('levels') != None:
@@ -486,14 +486,14 @@ def read_depth_file(path, show_image=True):
             # color = im.cmap(im.norm(value))
             
             val_x, val_y, val_z = interpolated_3d_point(xi, yi, depth_x, depth_y, depth_z)            
-            print 'depth_x, depth_y, depth_z', val_x, val_y, val_z
+            print('depth_x, depth_y, depth_z', val_x, val_y, val_z)
             
             user_points = [(val_x, val_y)]
             latlngs = points_to_latlng(path, user_points)
             lat = latlngs[0][0]
             lng = latlngs[0][1]
-            print 'lat, lng:', lat, lng
-            print 'Distance from previous point:', math.sqrt(math.pow((val_x - self.prev_x),2) + math.pow((val_y - self.prev_y), 2) + math.pow((val_z - self.prev_z), 2))
+            print('lat, lng:', lat, lng)
+            print('Distance from previous point:', math.sqrt(math.pow((val_x - self.prev_x),2) + math.pow((val_y - self.prev_y), 2) + math.pow((val_z - self.prev_z), 2)))
             self.prev_x = val_x
             self.prev_y = val_y
             self.prev_z = val_z
@@ -511,9 +511,9 @@ def decode_depthmap(file_in, file_out, verbose=True):
      call function
      http://stackoverflow.com/questions/89228/calling-an-external-command-in-python
     """    
-    if verbose: print '-- Decoding depth data...', 
+    if verbose: print('-- Decoding depth data...',)
     if os.path.isfile(file_out):
-        print 'File already exists.'
+        print('File already exists.')
         return
     
     import platform
@@ -542,7 +542,7 @@ def decode_depthmap(file_in, file_out, verbose=True):
     else:
         # Mac
         call(["../bin/decode_depthmap", file_in, file_out])
-    print 'Done.'
+    print('Done.')
     return
 
 
@@ -670,7 +670,7 @@ def format_pano_metadata(pano_id, delay=1000.0, verbose=False):
                         pano['links'].append(link_attrib)
         pano['intersection'] = {'lat' : pano['data_properties']['lat'], 'lng' : pano['data_properties']['lng']}
         if verbose:
-            print pano
+            print(pano)
     except:
         raise XMLAcquisitionError('Exception: Failed reading xml.')
 
@@ -769,7 +769,7 @@ def get_pano_metadata(pano_id, verbose=False):
                         pano['links'].append(link_attrib)
         pano['bus_stop'] = {'lat' : pano['data_properties']['lat'], 'lng' : pano['data_properties']['lng']}
         if verbose:
-            print pano
+            print(pano)
     except:
         raise
 
@@ -794,7 +794,7 @@ def get_nearest_pano_metadata(latlng, delay=1000.0, verbose='True'):
     api_path = api_header + api_parameter
 
     if verbose:
-        print api_path
+        print(api_path)
 
     try:
         pano = {'bus_stop': latlng}
@@ -842,7 +842,7 @@ def get_nearest_pano_metadata(latlng, delay=1000.0, verbose='True'):
                         pano['links'].append(link_attrib)
 
         if verbose:
-            print pano
+            print(pano)
     except:
         raise XMLAcquisitionError('Exception: Failed reading xml.')
 
@@ -873,7 +873,7 @@ def collect_all_busstop_depth_data():
         scraper.get_pano_depthdata()
 
 if __name__ == '__main__':
-    print "GSVScraper"
+    print("GSVScraper")
     collect_all_busstop_depth_data()
 
 
