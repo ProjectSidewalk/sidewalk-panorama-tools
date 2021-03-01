@@ -237,7 +237,7 @@ class GSVImage(object):
                     if overlay:
                         overlay_value = gsv_3d_point_image.get_overlay_value(x, y, overlay='normal_z_component')
                         overlay_threshold = 10
-                        if isnan(overlay_value) or overlay_value < overlay_threshold:
+                        if np.isnan(overlay_value) or overlay_value < overlay_threshold:
                             # print 'Weak overlay value: ', overlay_value
                             do_continue = True
                     if do_continue:
@@ -321,7 +321,7 @@ class GSVImage(object):
                     if overlay:
                         overlay_value = gsv_3d_point_image.get_overlay_value(x, y, overlay='normal_z_component')
                         overlay_threshold = 10
-                        if isnan(overlay_value) or overlay_value < overlay_threshold:
+                        if np.isnan(overlay_value) or overlay_value < overlay_threshold:
                             # print 'Weak overlay value: ', overlay_value
                             do_continue = True
                         
@@ -494,7 +494,7 @@ class GSVImage(object):
                     if overlay:
                         overlay_value = gsv_3d_point_image.get_overlay_value(x, y, overlay='normal_z_component')
                         overlay_threshold = 10
-                        if isnan(overlay_value) or overlay_value < overlay_threshold:
+                        if np.isnan(overlay_value) or overlay_value < overlay_threshold:
                             # print 'Weak overlay value: ', overlay_value
                             continue
                     
