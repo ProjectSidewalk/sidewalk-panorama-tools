@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import scipy.stats as spstats
-
+import math
 from math import radians, cos, sin, asin, sqrt
 from pylab import *
 
@@ -92,7 +92,7 @@ def chunks(l, n, lazy=True):
     """ Yield successive n-sized chunks from l.
     http://stackoverflow.com/questions/312443/how-do-you-split-a-list-into-evenly-sized-chunks-in-python
     """
-    for i in xrange(0, len(l), n):
+    for i in range(0, len(l), n):
         yield l[i:i+n]
         
         
