@@ -12,9 +12,6 @@ from io import StringIO
 from datetime import datetime
 
 from urllib import request
-
-
-
 from PIL import Image
 import fnmatch
 
@@ -23,12 +20,14 @@ try:
 except ImportError as e:
     from xml.etree import ElementTree as ET
 
-class Enum(object): 
+
+class Enum(object):
     def __init__(self, tupleList):
-            self.tupleList = tupleList
+        self.tupleList = tupleList
 
     def __getattr__(self, name):
-            return self.tupleList.index(name)
+        return self.tupleList.index(name)
+
 
 DownloadResult = Enum(('skipped', 'success', 'fallback_success', 'failure'))
 
@@ -49,11 +48,13 @@ if not os.path.exists(storage_location):
 
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
+
 def check_download_failed_previously(panoId):
     if panoId in open('scrape.log').read():
         return True
     else:
         return False
+
 
 def extract_panowidthheight(path_to_metadata_xml):
     pano = {}
@@ -63,8 +64,8 @@ def extract_panowidthheight(path_to_metadata_xml):
     for child in root:
         if child.tag == 'data_properties':
             pano[child.tag] = child.attrib
-    
-    return (int(pano['data_properties']['image_width']),int(pano['data_properties']['image_height']))
+
+    return int(pano['data_properties']['image_width']), int(pano['data_properties']['image_height'])
 
 
 def fetch_pano_ids_from_webserver():
@@ -78,7 +79,7 @@ def fetch_pano_ids_from_webserver():
 
     for value in jsondata["features"]:
         if value["properties"]["gsv_panorama_id"] not in unique_ids:
-            #Check if the pano_id is an empty string
+            # Check if the pano_id is an empty string
             if value["properties"]["gsv_panorama_id"]:
                 unique_ids.append(value["properties"]["gsv_panorama_id"])
             else:
@@ -112,22 +113,24 @@ def download_panorama_images(storage_path, pano_list):
             fail_count += 1
             logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
         total_completed = success_count + fallback_success_count + fail_count + skipped_count
-        print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)" 
-        % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
+        print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
+              % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
 
-    logging.debug("IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
-                    total_completed, 
-                    total_panos, 
-                    success_count, 
-                    fallback_success_count, 
-                    fail_count, 
-                    skipped_count)
-    return (success_count, fallback_success_count, fail_count, skipped_count, total_completed)
+    logging.debug(
+        "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
+        total_completed,
+        total_panos,
+        success_count,
+        fallback_success_count,
+        fail_count,
+        skipped_count)
+    return success_count, fallback_success_count, fail_count, skipped_count, total_completed
+
 
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
     pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
-    
+
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
         os.makedirs(destination_dir)
@@ -155,9 +158,11 @@ def download_single_pano(storage_path, pano_id):
     # transparent image. This means we need to set the zoom level to 3. Google also returns a
     # transparent image if there is no imagery. So check at both zoom levels. How to check:
     # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-    req_zoom_5 = request.urlopen('http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
+    req_zoom_5 = request.urlopen(
+        'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
     im_zoom_5 = Image.open(StringIO(req_zoom_5.read()))
-    req_zoom_3 = request.urlopen('http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
+    req_zoom_3 = request.urlopen(
+        'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
     im_zoom_3 = Image.open(StringIO(req_zoom_3.read()))
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
@@ -205,6 +210,7 @@ def download_single_pano(storage_path, pano_id):
         os.chmod(out_image_name, 0o664)
         return DownloadResult.success
 
+
 def download_panorama_metadata_xmls(storage_path, pano_list):
     '''
      This method downloads a xml file that contains depth information from GSV. It first
@@ -234,12 +240,13 @@ def download_panorama_metadata_xmls(storage_path, pano_list):
             fail_count += 1
             logging.error("METADOWNLOAD: Failed to download metadata for pano %s due to error %s", pano_id, str(e))
         total_completed = fail_count + success_count + skipped_count
-        print("METADOWNLOAD: Completed %d of %d (%d success, %d failed, %d skipped)" % 
-            (total_completed, total_panos, success_count, fail_count, skipped_count))
+        print("METADOWNLOAD: Completed %d of %d (%d success, %d failed, %d skipped)" %
+              (total_completed, total_panos, success_count, fail_count, skipped_count))
 
-    logging.debug("METADOWNLOAD: Final result: Completed %d of %d (%d success, %d failed, %d skipped)", 
-            total_completed, total_panos, success_count, fail_count, skipped_count)
+    logging.debug("METADOWNLOAD: Final result: Completed %d of %d (%d success, %d failed, %d skipped)",
+                  total_completed, total_panos, success_count, fail_count, skipped_count)
     return (success_count, fail_count, skipped_count, total_completed)
+
 
 def download_single_metadata_xml(storage_path, pano_id):
     base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
@@ -271,6 +278,7 @@ def download_single_metadata_xml(storage_path, pano_id):
 
         return DownloadResult.success
 
+
 def generate_depthmapfiles(path_to_scrapes):
     success_count = 0
     fail_count = 0
@@ -296,14 +304,16 @@ def generate_depthmapfiles(path_to_scrapes):
                     success_count += 1
                 else:
                     fail_count += 1
-                    logging.error("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s", pano_id, str(output_code))
+                    logging.error("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s", pano_id,
+                                  str(output_code))
             total_completed = fail_count + success_count + skip_count
             print("GENERATEDEPTH: Completed %d (%d success, %d failed, %d skipped)" %
-                (total_completed, success_count, fail_count, skip_count))
+                  (total_completed, success_count, fail_count, skip_count))
 
     logging.debug("GENERATEDEPTH: Final result: Completed %d (%d success, %d failed, %d skipped)",
-        total_completed, success_count, fail_count, skip_count)
-    return (success_count, fail_count, skip_count, total_completed)
+                  total_completed, success_count, fail_count, skip_count)
+    return success_count, fail_count, skip_count, total_completed
+
 
 def run_scraper_and_log_results():
     start_time = datetime.now()
@@ -343,4 +353,3 @@ pano_list.remove('tutorial')
 
 print("Fetching Panoramas")
 run_scraper_and_log_results()
-
