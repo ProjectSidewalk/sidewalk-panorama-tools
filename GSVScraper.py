@@ -262,7 +262,7 @@ class GSVScraper(object):
 
             # In some cases (e.g., old GSV images), we don't have zoom level 5, so
             # we need to set the zoom level to 3.
-            if array(blank_image)[:, :, :3].sum() == 0:
+            if np.array(blank_image)[:, :, :3].sum() == 0:
                 print("Panorama %s is an old image and does not have the tiles for zoom level")
                 temp_im_dimension = (int(512 * 6.5), int(512 * 3.25))
                 temp_blank_image = Image.new('RGBA', temp_im_dimension, (0, 0, 0, 0))
@@ -452,10 +452,10 @@ def read_depth_file(path, show_image=True):
     """
     filename = path + 'depth.txt'
     image_name = path + 'images/pano.png'
-    pano_im = array(Image.open(image_name))
+    pano_im = np.array(Image.open(image_name))
 
     with open(filename, 'rb') as f:
-        depth = loadtxt(f)
+        depth = np.loadtxt(f)
 
     depth_x = depth[:, 0::3]
     depth_y = depth[:, 1::3]
