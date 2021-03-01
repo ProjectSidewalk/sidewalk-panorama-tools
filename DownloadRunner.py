@@ -5,11 +5,10 @@ from sys import argv
 
 import os
 import stat
-import httplib
+import http.client
 import json
 import logging
 import cStringIO
-import enum
 from datetime import datetime
 
 import urllib
@@ -69,7 +68,7 @@ def extract_panowidthheight(path_to_metadata_xml):
 
 def fetch_pano_ids_from_webserver():
     unique_ids = []
-    conn = httplib.HTTPSConnection(sidewalk_server_fqdn)
+    conn = http.client.HTTPSConnection(sidewalk_server_fqdn)
     conn.request("GET", "/adminapi/labels/panoid")
     r1 = conn.getresponse()
     data = r1.read()
