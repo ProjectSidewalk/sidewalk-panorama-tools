@@ -7,7 +7,7 @@ import redis
 import pandas.io.sql as pdsql
 import pprint
 import pymysql
-import cPickle as pickle
+import pickle
 
 from GSVScraper import *
 from time import sleep
@@ -850,7 +850,7 @@ TaskImages.TaskDescription = %s"""
             data['data_properties']['elevation_wgs84_m'] = 'undefined'
         if 'image_date' not in data['data_properties']:
             data['data_properties']['image_date'] = 'undefined'
-            print 'image_date undefined'
+            print('image_date undefined')
         
         self._cur.execute(sql, (str(data['data_properties']['pano_id']),
                                 str(data['data_properties']['image_width']),
@@ -988,7 +988,7 @@ TaskImages.TaskDescription = %s"""
                 break
 
 if __name__ == '__main__':
-    print "SidewalkDB.py"
+    print("SidewalkDB.py")
 
     from SidewalkUtilities import modify_city_name
     with SidewalkDB() as db:
@@ -996,4 +996,4 @@ if __name__ == '__main__':
                                     return_dataframe=True)
         previous_task_ids = df.PreviousLabelingTaskId[~df.PreviousLabelingTaskId.isnull()].unique()
         df = db.fetch_labeling_tasks_with_task_ids(map(int, list(previous_task_ids)))
-        print df
+        print(df)
