@@ -12,6 +12,7 @@ from io import BytesIO
 from datetime import datetime
 
 from urllib import request
+
 from PIL import Image
 import fnmatch
 
@@ -55,7 +56,7 @@ def check_download_failed_previously(panoId):
     else:
         return False
 
-
+# Broken, needs to reference csv for width and height
 def extract_panowidthheight(path_to_metadata_xml):
     pano = {}
     pano_xml = open(path_to_metadata_xml, 'rb')
@@ -67,7 +68,7 @@ def extract_panowidthheight(path_to_metadata_xml):
 
     return int(pano['data_properties']['image_width']), int(pano['data_properties']['image_height'])
 
-
+# No longer using webserver, keep but make new function referencing csv
 def fetch_pano_ids_from_webserver():
     unique_ids = []
     conn = http.client.HTTPSConnection(sidewalk_server_fqdn)
@@ -125,7 +126,6 @@ def download_panorama_images(storage_path, pano_list):
         fail_count,
         skipped_count)
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
-
 
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
@@ -188,6 +188,7 @@ def download_single_pano(storage_path, pano_id):
             url = base_url + url_param
 
             # Open an image, resize it to 512x512, and paste it into a canvas
+
             req = request.urlopen(url)
             file = BytesIO(req.read())
 
@@ -210,7 +211,7 @@ def download_single_pano(storage_path, pano_id):
         os.chmod(out_image_name, 0o664)
         return DownloadResult.success
 
-
+# Broken, no longer needed
 def download_panorama_metadata_xmls(storage_path, pano_list):
     '''
      This method downloads a xml file that contains depth information from GSV. It first
@@ -247,7 +248,7 @@ def download_panorama_metadata_xmls(storage_path, pano_list):
                   total_completed, total_panos, success_count, fail_count, skipped_count)
     return (success_count, fail_count, skipped_count, total_completed)
 
-
+# No longer downloading, reference csv (for now)
 def download_single_metadata_xml(storage_path, pano_id):
     base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
 
@@ -278,7 +279,7 @@ def download_single_metadata_xml(storage_path, pano_id):
 
         return DownloadResult.success
 
-
+# No longer available, remove....
 def generate_depthmapfiles(path_to_scrapes):
     success_count = 0
     fail_count = 0
@@ -320,11 +321,11 @@ def run_scraper_and_log_results():
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
-    # xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
+    xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
-    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-    #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
+    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
     im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
     im_end_time = datetime.now()
