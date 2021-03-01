@@ -1,4 +1,4 @@
-# !/usr/bin/python2
+# !/usr/bin/python3
 
 from SidewalkDB import *
 from sys import argv
@@ -8,7 +8,7 @@ import stat
 import http.client
 import json
 import logging
-import cStringIO
+from io import StringIO
 from datetime import datetime
 
 import urllib
@@ -155,9 +155,9 @@ def download_single_pano(storage_path, pano_id):
     # transparent image if there is no imagery. So check at both zoom levels. How to check:
     # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
     req_zoom_5 = urllib.urlopen('http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
-    im_zoom_5 = Image.open(cStringIO.StringIO(req_zoom_5.read()))
+    im_zoom_5 = Image.open(StringIO(req_zoom_5.read()))
     req_zoom_3 = urllib.urlopen('http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
-    im_zoom_3 = Image.open(cStringIO.StringIO(req_zoom_3.read()))
+    im_zoom_3 = Image.open(StringIO(req_zoom_3.read()))
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
         fallback = False
@@ -183,7 +183,7 @@ def download_single_pano(storage_path, pano_id):
 
             # Open an image, resize it to 512x512, and paste it into a canvas
             req = urllib.urlopen(url)
-            file = cStringIO.StringIO(req.read())
+            file = StringIO(req.read())
 
             im = Image.open(file)
             im = im.resize((512, 512))
