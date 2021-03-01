@@ -3,7 +3,7 @@ Created on May 10, 2013
 
 @author: kotarohara
 '''
-import cStringIO
+from io import StringIO
 import math
 import os
 import subprocess
@@ -76,9 +76,10 @@ class GSVScraper(object):
             panorama_stack = [pano]
             
             while len(panorama_stack) > 0:
-                if verbose: print '.',
                 if verbose:
-                    print panorama_stack
+                    print('.',)
+                if verbose:
+                    print(panorama_stack)
                 curr_pano = panorama_stack[-1]
                 if curr_pano not in visited_panoramas:
                     visited_panoramas.append(curr_pano)
@@ -248,7 +249,7 @@ class GSVScraper(object):
                     
                     # Open an image, resize it to 512x512, and paste it into a canvas
                     req = urllib.urlopen(url)
-                    file = cStringIO.StringIO(req.read())
+                    file = StringIO(req.read())
                     im = Image.open(file)
                     im = im.resize((512, 512))
 
@@ -272,7 +273,7 @@ class GSVScraper(object):
                         url = base_url + url_param
                         # Open an image, resize it to 512x512, and paste it into a canvas
                         req = urllib.urlopen(url)
-                        file = cStringIO.StringIO(req.read())
+                        file = StringIO(req.read())
                         im = Image.open(file)
                         im = im.resize((512, 512))
 
