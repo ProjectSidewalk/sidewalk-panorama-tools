@@ -97,9 +97,9 @@ class GSVImage(object):
             filename = output_filename + '_' + str(idx) + '.jpg'
             filenames.append(filename)
             if verbose:
-                print filename
+                print(filename)
             if os.path.isfile(filename) and not overwrite:
-                print filename, 'File alread exists'
+                print(filename, 'File already exists')
                 return 
 
             if aspect_ratio is not None:
@@ -198,7 +198,7 @@ class GSVImage(object):
             bb_h = current_bb['y_max'] - current_bb['y_min'] # Bounding box height
             num_around_ramp = num_patches - num_ground
             for idx in range(num_ground):
-                print 'neg', len(negative_bounding_boxes) # debug
+                print('neg', len(negative_bounding_boxes)) # debug
                 cropped = False
                 while not cropped:
                     y = randint(padding_top, self.im_height - padding_bottom)
@@ -273,12 +273,12 @@ class GSVImage(object):
                             x = randint(current_bb['x_min'] - 1.5 * crop_width, current_bb['x_min'] - 0.5 * crop_width)
                     
                     if num_loop > 200:
-                        print "random"
+                        print("random")
                         y = randint(padding_top, self.im_height - padding_bottom)
                         x = randint(padding_left, self.im_width - padding_right)
                     
                     if x < padding_left or x > self.im_width - padding_right or y < padding_top or y > self.im_height - padding_bottom:
-                        print 'bounding box out of range'
+                        print('bounding box out of range')
                         continue
                     crop_bb = {
                             'boundary': False,
@@ -365,7 +365,7 @@ class GSVImage(object):
         
         boundingboxes = []        
         for outline in outlines:
-            print '---'
+            print('---')
             xys = outline.strip().split(' ')
             xs = []
             ys = []
@@ -429,16 +429,16 @@ class GSVImage(object):
             else:
                 bb_width = boundingbox['x_max'] - boundingbox['x_min']
             
-            print 'bb list: ', boundingbox
-            print 'bb width: ', bb_width
+            print('bb list: ', boundingbox)
+            print('bb width: ', bb_width)
             
             bb_area = bb_width * (boundingbox['y_max'] - boundingbox['y_min'])
             if area > bb_area: 
                 area = bb_area
                 bb = boundingbox
         
-        print 'smallest bb: ', bb
-        print 'smallest bb width: ', bb_width
+        print('smallest bb: ', bb)
+        print('smallest bb width: ', bb_width)
         if bb['boundary']:
             crop_width = bb['x_max'] - (bb['x_min'] - self.im_width)
         else:
@@ -454,7 +454,7 @@ class GSVImage(object):
         padding_bottom = padding_top
         padding_left = int((crop_width + 1) / 2)
         padding_right = padding_left
-        print 'crop width, crop height', crop_width, crop_height 
+        print('crop width, crop height', crop_width, crop_height)
         negative_bounding_boxes = []
         for outline_idx, outline in enumerate(outlines):
             #
@@ -466,9 +466,9 @@ class GSVImage(object):
                 while not cropped:
                     y = randint(padding_top, self.im_height - padding_bottom)
                     x = randint(padding_left, self.im_width - padding_right)
-                    print "image size: width, height", self.im_width, self.im_height
-                    print "crop size: width, height = ", crop_width, crop_height 
-                    print "paddings: ", padding_left, padding_top, padding_right, padding_bottom
+                    print("image size: width, height", self.im_width, self.im_height)
+                    print("crop size: width, height = ", crop_width, crop_height)
+                    print("paddings: ", padding_left, padding_top, padding_right, padding_bottom)
                     #print '-- Random: x, y = ', x, y
                     crop_bb = {
                             'boundary': False,
@@ -477,7 +477,7 @@ class GSVImage(object):
                             'y_min': y - half_crop_height,
                             'y_max': y + half_crop_height
                                }
-                    print crop_bb
+                    print(crop_bb)
                     
                     crop_bb_does_not_overlap_with_other_bb = True
                     for boundingbox in boundingboxes:
@@ -1102,5 +1102,5 @@ def bounding_box_area_overlap(bb1, bb2):
     return float(overlap) / area
 
 if __name__ == '__main__':
-    print "GSVImage.py"
+    print("GSVImage.py")
 
