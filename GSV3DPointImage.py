@@ -150,8 +150,8 @@ class GSV3DPointImage(object):
         """
         
         if verbose:
-            print 
-            print 'x, y: ', x, y
+            print()
+            print('x, y: ', x, y)
             
         gsv_im_width = self.gsv_image_width
         gsv_im_height = self.gsv_image_height
