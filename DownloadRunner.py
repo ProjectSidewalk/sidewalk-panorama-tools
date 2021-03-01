@@ -8,7 +8,7 @@ import stat
 import http.client
 import json
 import logging
-from io import StringIO
+from io import BytesIO
 from datetime import datetime
 
 from urllib import request
@@ -33,16 +33,16 @@ DownloadResult = Enum(('skipped', 'success', 'fallback_success', 'failure'))
 
 delay = 0
 
-if len(argv) != 3:
-    print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
-    print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
-    print("    storage_path - location to store scraped panos")
-    print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
-    exit(0)
+# if len(argv) != 3:
+#     print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
+#     print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
+#     print("    storage_path - location to store scraped panos")
+#     print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
+#     exit(0)
 
-sidewalk_server_fqdn = argv[1]
-storage_location = argv[2]
-
+# sidewalk_server_fqdn = argv[1]
+sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu"
+storage_location = "testing/"
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
 
@@ -160,10 +160,10 @@ def download_single_pano(storage_path, pano_id):
     # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
     req_zoom_5 = request.urlopen(
         'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
-    im_zoom_5 = Image.open(StringIO(req_zoom_5.read()))
+    im_zoom_5 = Image.open(BytesIO(req_zoom_5.read()))
     req_zoom_3 = request.urlopen(
         'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
-    im_zoom_3 = Image.open(StringIO(req_zoom_3.read()))
+    im_zoom_3 = Image.open(BytesIO(req_zoom_3.read()))
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
         fallback = False
@@ -189,7 +189,7 @@ def download_single_pano(storage_path, pano_id):
 
             # Open an image, resize it to 512x512, and paste it into a canvas
             req = request.urlopen(url)
-            file = StringIO(req.read())
+            file = BytesIO(req.read())
 
             im = Image.open(file)
             im = im.resize((512, 512))
@@ -320,11 +320,11 @@ def run_scraper_and_log_results():
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
-    xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
+    # xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
-    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-        log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
+    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+    #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
     im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
     im_end_time = datetime.now()
