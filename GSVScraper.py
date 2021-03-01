@@ -3,7 +3,7 @@ Created on May 10, 2013
 
 @author: kotarohara
 '''
-from io import StringIO
+from io import BytesIO
 import math
 import os
 import subprocess
@@ -248,7 +248,7 @@ class GSVScraper(object):
                     
                     # Open an image, resize it to 512x512, and paste it into a canvas
                     req = request.urlopen(url)
-                    file = StringIO(req.read())
+                    file = BytesIO(req.read())
                     im = Image.open(file)
                     im = im.resize((512, 512))
 
@@ -272,7 +272,7 @@ class GSVScraper(object):
                         url = base_url + url_param
                         # Open an image, resize it to 512x512, and paste it into a canvas
                         req = request.urlopen(url)
-                        file = StringIO(req.read())
+                        file = BytesIO(req.read())
                         im = Image.open(file)
                         im = im.resize((512, 512))
 
