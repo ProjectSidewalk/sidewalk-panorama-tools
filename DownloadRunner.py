@@ -131,7 +131,7 @@ def download_single_pano(storage_path, pano_id):
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
         os.makedirs(destination_dir)
-        os.chmod(destination_dir, 0775 | stat.S_ISGID)
+        os.chmod(destination_dir, 0o775 | stat.S_ISGID)
 
     filename = pano_id + ".jpg"
     out_image_name = os.path.join(destination_dir, filename)
@@ -198,11 +198,11 @@ def download_single_pano(storage_path, pano_id):
     if fallback:
         blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
         blank_image.save(out_image_name, 'jpeg')
-        os.chmod(out_image_name, 0664)
+        os.chmod(out_image_name, 0o664)
         return DownloadResult.fallback_success
     else:
         blank_image.save(out_image_name, 'jpeg')
-        os.chmod(out_image_name, 0664)
+        os.chmod(out_image_name, 0o664)
         return DownloadResult.success
 
 def download_panorama_metadata_xmls(storage_path, pano_list):
@@ -248,7 +248,7 @@ def download_single_metadata_xml(storage_path, pano_id):
     destination_folder = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_folder):
         os.makedirs(destination_folder)
-        os.chmod(destination_folder, 0775 | stat.S_ISGID)
+        os.chmod(destination_folder, 0o775 | stat.S_ISGID)
 
     filename = pano_id + ".xml"
     destination_file = os.path.join(destination_folder, filename)
@@ -267,7 +267,7 @@ def download_single_metadata_xml(storage_path, pano_id):
             f.write(firstline)
             for line in req:
                 f.write(line)
-        os.chmod(destination_file, 0664)
+        os.chmod(destination_file, 0o664)
 
         return DownloadResult.success
 
@@ -292,7 +292,7 @@ def generate_depthmapfiles(path_to_scrapes):
             else:
                 output_code = call(["./decode_depthmap", xml_location, output_file])
                 if output_code == 0:
-                    os.chmod(output_file, 0664)
+                    os.chmod(output_file, 0o664)
                     success_count += 1
                 else:
                     fail_count += 1
