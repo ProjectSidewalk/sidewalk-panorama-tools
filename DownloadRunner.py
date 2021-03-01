@@ -11,8 +11,9 @@ import logging
 from io import StringIO
 from datetime import datetime
 
-import urllib
-import urllib2
+from urllib import request
+
+
 
 from PIL import Image
 import fnmatch
@@ -154,9 +155,9 @@ def download_single_pano(storage_path, pano_id):
     # transparent image. This means we need to set the zoom level to 3. Google also returns a
     # transparent image if there is no imagery. So check at both zoom levels. How to check:
     # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-    req_zoom_5 = urllib.urlopen('http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
+    req_zoom_5 = request.urlopen('http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
     im_zoom_5 = Image.open(StringIO(req_zoom_5.read()))
-    req_zoom_3 = urllib.urlopen('http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
+    req_zoom_3 = request.urlopen('http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
     im_zoom_3 = Image.open(StringIO(req_zoom_3.read()))
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
@@ -182,7 +183,7 @@ def download_single_pano(storage_path, pano_id):
             url = base_url + url_param
 
             # Open an image, resize it to 512x512, and paste it into a canvas
-            req = urllib.urlopen(url)
+            req = request.urlopen(url)
             file = StringIO(req.read())
 
             im = Image.open(file)
@@ -257,7 +258,7 @@ def download_single_metadata_xml(storage_path, pano_id):
     url = base_url + pano_id
 
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
-    req = urllib2.urlopen(url)
+    req = request.urlopen(url)
     firstline = req.readline()
     if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
         return DownloadResult.failure
