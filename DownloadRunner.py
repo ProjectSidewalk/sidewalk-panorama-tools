@@ -81,7 +81,7 @@ def fetch_pano_ids_from_webserver():
             if value["properties"]["gsv_panorama_id"]:
                 unique_ids.append(value["properties"]["gsv_panorama_id"])
             else:
-                print "Pano ID is an empty string"
+                print("Pano ID is an empty string")
     return unique_ids
 
 
@@ -332,7 +332,7 @@ def run_scraper_and_log_results():
         log.write(",%d" % (total_duration))
 
 
-print "Fetching pano-ids"
+print("Fetching pano-ids")
 pano_list = fetch_pano_ids_from_webserver()
 pano_list.remove('tutorial')
 
@@ -340,6 +340,6 @@ pano_list.remove('tutorial')
 # pano_list = [pano_list[111], pano_list[112]]
 #############################################
 
-print "Fetching Panoramas"
+print("Fetching Panoramas")
 run_scraper_and_log_results()
 
