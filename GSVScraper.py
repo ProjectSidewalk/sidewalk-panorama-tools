@@ -7,8 +7,7 @@ from io import StringIO
 import math
 import os
 import subprocess
-import urllib
-import urllib2
+from urllib import request
 import GSVImage
 
 from copy import deepcopy
@@ -185,7 +184,7 @@ class GSVScraper(object):
             
             url = base_url + pano_id
             with open(self.data_dir + pano_id + '/depth.xml', 'wb') as f:
-                req = urllib2.urlopen(url)
+                req = request.urlopen(url)
                 for line in req:
                     f.write(line)
                     
@@ -209,7 +208,7 @@ class GSVScraper(object):
         pano_id = None
          
         try:
-            pano_xml = urllib.urlopen(url)
+            pano_xml = request.urlopen(url)
             tree = ET.parse(pano_xml)
             root = tree.getroot()
         
@@ -248,7 +247,7 @@ class GSVScraper(object):
                     url = base_url + url_param
                     
                     # Open an image, resize it to 512x512, and paste it into a canvas
-                    req = urllib.urlopen(url)
+                    req = request.urlopen(url)
                     file = StringIO(req.read())
                     im = Image.open(file)
                     im = im.resize((512, 512))
@@ -272,7 +271,7 @@ class GSVScraper(object):
                         url_param = 'output=tile&zoom=3&x=' + str(x) + '&y=' + str(y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
                         url = base_url + url_param
                         # Open an image, resize it to 512x512, and paste it into a canvas
-                        req = urllib.urlopen(url)
+                        req = request.urlopen(url)
                         file = StringIO(req.read())
                         im = Image.open(file)
                         im = im.resize((512, 512))
@@ -345,7 +344,7 @@ class GSVScraper(object):
                 continue
             
             url = api_header + '&panoid=' + pano_id
-            req = urllib2.urlopen(url)
+            req = request.urlopen(url)
 
             if save_as_file:
 
@@ -626,7 +625,7 @@ def format_pano_metadata(pano_id, delay=1000.0, verbose=False):
             pano_xml = '../data/GSV/' + pano_id + '/meta.xml'
         else:
             do_sleep = True
-            pano_xml = urllib.urlopen(api_path)
+            pano_xml = request.urlopen(api_path)
         tree = ET.parse(pano_xml)
         root = tree.getroot()
 
@@ -799,7 +798,7 @@ def get_nearest_pano_metadata(latlng, delay=1000.0, verbose='True'):
 
     try:
         pano = {'bus_stop': latlng}
-        pano_xml = urllib.urlopen(api_path)
+        pano_xml = request.urlopen(api_path)
         tree = ET.parse(pano_xml)
         root = tree.getroot()
 
