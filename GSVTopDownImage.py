@@ -4,9 +4,11 @@ import os
 
 from PIL import Image
 
+
 class GSVTopDownImage(object):
     width = 1000
     height = 1000
+
     def __init__(self, path):
         """
         The constructor. This method takes a path to top
@@ -15,7 +17,6 @@ class GSVTopDownImage(object):
             raise ValueError('path should be a string')
         if path[-1] != '/':
             path += '/'
-
 
         self.path = path
         self.pano_id = self.path.split('/')[-1]
@@ -46,8 +47,9 @@ class GSVTopDownImage(object):
             raise Exception(self.path + 'images/pano.jpg does not exist')
         return
 
+
 if __name__ == '__main__':
-    print "GSVTopDownImage.py"
+    print("GSVTopDownImage.py")
 
     pano_id = '-015tl-_IqAuhn4X2_km6Q'
     gsv_topdown = GSVTopDownImage('../data/GSV/' + pano_id + '/')
