@@ -1,7 +1,7 @@
 try:
     import cv2
     import cv2.cv as cv
-except ImportError, e:
+except ImportError as e:
     cv2 = None
     cv = None
 # http://stackoverflow.com/questions/9226258/why-does-python-cv2-modules-depend-on-old-cv
@@ -19,7 +19,7 @@ from utilities import *
 
 try:
     from xml.etree import cElementTree as ET
-except ImportError, e:
+except ImportError as e:
     from xml.etree import ElementTree as ET
 
 gsv_image_width = 13312
