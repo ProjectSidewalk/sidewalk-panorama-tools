@@ -7,7 +7,7 @@ from pylab import *
 
 try:
     from xml.etree import cElementTree as ET
-except ImportError, e:
+except ImportError as e:
     from xml.etree import ElementTree as ET
 
 EARTH_RADIUS_M = 6371000
@@ -17,7 +17,7 @@ EARTH_RADIUS_KM = 6371
 def basic_stats(value_array, verbose=False):
     """ This method takes an array like object and returns median, mean, stdev, min and max values """
     if len(value_array) == 0:
-        return (0, 0, 0, 0, 0)
+        return 0, 0, 0, 0, 0
     median = np.median(value_array)
     mean = np.mean(value_array)
     stdev = np.std(value_array)
@@ -26,14 +26,14 @@ def basic_stats(value_array, verbose=False):
     total = len(value_array)
     
     if verbose:
-        print "Median:", "%.2f" % median
-        print "Mean:", "%.2f" % mean
-        print "Std:", "%.2f" % stdev
-        print "Min:", "%.2f" % min
-        print "Max:", "%.2f" % max
-        print "Total:", total
+        print("Median:", "%.2f" % median)
+        print("Mean:", "%.2f" % mean)
+        print("Std:", "%.2f" % stdev)
+        print("Min:", "%.2f" % min)
+        print("Max:", "%.2f" % max)
+        print("Total:", total)
     
-    return (median, mean, stdev, min, max, total)
+    return median, mean, stdev, min, max, total
 
 
 def bilinear_interpolation(x, y, points):
@@ -78,7 +78,7 @@ def bilinear_interpolation(x, y, points):
     if x1 != _x1 or x2 != _x2 or y1 != _y1 or y2 != _y2:
         raise ValueError('points do not form a rectangle')
     if not x1 <= x <= x2 or not y1 <= y <= y2:
-        print "x, y, x1, x2, y1, y2", x, y, x1, x2, y1, y2 
+        print("x, y, x1, x2, y1, y2", x, y, x1, x2, y1, y2)
         raise ValueError('(x, y) not within the rectangle')
 
     return (q11 * (x2 - x) * (y2 - y) +
@@ -142,10 +142,10 @@ def ensure_dir(path, verbose=False):
     if not os.path.exists(d):
         os.makedirs(d)
         if verbose:
-            print 'The directory "' + path + '" does not exist. Created a new directory.'
+            print('The directory "' + path + '" does not exist. Created a new directory.')
     else:
         if verbose:
-            print 'Directory exists.'
+            print('Directory exists.')
     return
 
 
@@ -277,7 +277,7 @@ def interpolated_3d_point(xi, yi, x_3d, y_3d, z_3d, scale=26):
         val_y = bilinear_interpolation(xi, yi, points_y)
         val_z = bilinear_interpolation(xi, yi, points_z)
     
-    return (val_x, val_y, val_z)
+    return val_x, val_y, val_z
 
            
 def point_inside_polygon(x, y, poly):
@@ -422,7 +422,7 @@ def rstyle(ax):
     ax.yaxis.set_ticks_position('left')
     
     
-    if ax.legend_ <> None:
+    if ax.legend_ != None:
         lg = ax.legend_
         lg.get_frame().set_linewidth(0)
         lg.get_frame().set_alpha(0.5)
