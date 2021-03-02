@@ -2,7 +2,6 @@
 
 from SidewalkDB import *
 from sys import argv
-
 import os
 import stat
 import http.client
@@ -10,9 +9,7 @@ import json
 import logging
 from io import BytesIO
 from datetime import datetime
-
 from urllib import request
-
 from PIL import Image
 import fnmatch
 
