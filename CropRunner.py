@@ -14,6 +14,13 @@ path to the folder containing these files.
 
 """
 
+import csv
+import GSVImage
+import fnmatch
+import logging
+from utilities import *
+from PIL import Image, ImageDraw
+
 # *****************************************
 # Update paths below                      *
 # *****************************************
@@ -28,16 +35,7 @@ destination_path = "/home/anthony/Downloads/crops"
 # Mark the center of the crop?
 mark_center = True
 
-import csv
-import GSVImage
-import fnmatch
-
-import logging
-
 logging.basicConfig(filename='crop.log', level=logging.DEBUG)
-from utilities import *
-
-from PIL import Image, ImageDraw
 
 try:
     from xml.etree import cElementTree as ET
