@@ -41,7 +41,7 @@ from PIL import Image, ImageDraw
 
 try:
     from xml.etree import cElementTree as ET
-except ImportError, e:
+except ImportError as e:
     from xml.etree import ElementTree as ET
 
 
@@ -182,7 +182,7 @@ def get_depth_at_location(path_to_depth_txt, xi, yi):
     depth_z = depth[:, 2::3]
 
     val_x, val_y, val_z = interpolated_3d_point(xi, yi, depth_x, depth_y, depth_z)
-    print 'depth_x, depth_y, depth_z', val_x, val_y, val_z
+    print('depth_x, depth_y, depth_z', val_x, val_y, val_z)
     return val_x, val_y, val_z
 
 
