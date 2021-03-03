@@ -10,6 +10,7 @@ import logging
 from io import BytesIO
 from datetime import datetime
 from urllib import request
+import requests
 from PIL import Image
 import fnmatch
 
@@ -155,12 +156,16 @@ def download_single_pano(storage_path, pano_id):
     # transparent image. This means we need to set the zoom level to 3. Google also returns a
     # transparent image if there is no imagery. So check at both zoom levels. How to check:
     # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-    req_zoom_5 = request.urlopen(
-        'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
-    im_zoom_5 = Image.open(BytesIO(req_zoom_5.read()))
-    req_zoom_3 = request.urlopen(
-        'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id)
-    im_zoom_3 = Image.open(BytesIO(req_zoom_3.read()))
+
+    url_zoom_3 = 'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
+                 'spherical&v=4&panoid='
+    url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
+                 'spherical&v=4&panoid='
+
+    req_zoom_5 = requests.get(url_zoom_5 + pano_id, stream=True).raw
+    im_zoom_5 = Image.open(req_zoom_5)
+    req_zoom_3 = requests.get(url_zoom_3 + pano_id, stream=True).raw
+    im_zoom_3 = Image.open(req_zoom_3)
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
         fallback = False
@@ -318,11 +323,11 @@ def run_scraper_and_log_results():
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
-    xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
+    # xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
-    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-        log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
+    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+    #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
     im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
     im_end_time = datetime.now()
