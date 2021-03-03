@@ -8,6 +8,7 @@ import math
 import os
 import subprocess
 from urllib import request
+import requests
 import GSVImage
 
 from copy import deepcopy
@@ -26,10 +27,12 @@ try:
 except ImportError as e:
     from xml.etree import ElementTree as ET
 
+
 class GSVScraper(object):
     '''
     classdocs
     '''
+
     def __init__(self, data_dir='../data/GSV/', database="sidewalk"):
         '''
         Constructor
@@ -51,7 +54,8 @@ class GSVScraper(object):
             if os.path.isfile(self.data_dir + pano_id + '/depth.txt'):
                 print('File already exists.')
             else:
-                decode_depthmap('../data/GSV/' + pano_id + '/depth.xml', '../data/GSV/' + pano_id + '/depth.txt', verbose=True)
+                decode_depthmap('../data/GSV/' + pano_id + '/depth.xml', '../data/GSV/' + pano_id + '/depth.txt',
+                                verbose=True)
         return
 
     def depth_first_search(self, depth=5, bounding_box=None, poly=None, verbose=False):
@@ -65,24 +69,24 @@ class GSVScraper(object):
         all_panoramas = []
 
         seed_panoramas = deepcopy(self.pano_ids)
-        
+
         for pano in seed_panoramas:
             if verbose:
                 print('Seed pano: ', pano)
-                print('Extracting connected panoramas',)
+                print('Extracting connected panoramas', )
             visited_panoramas = []
             passed_panorama = []
             panorama_stack = [pano]
-            
+
             while len(panorama_stack) > 0:
                 if verbose:
-                    print('.',)
+                    print('.', )
                 if verbose:
                     print(panorama_stack)
                 curr_pano = panorama_stack[-1]
                 if curr_pano not in visited_panoramas:
                     visited_panoramas.append(curr_pano)
-                    
+
                 # If the length of the stack is higher than the depth, 
                 # pop the stack and continue
                 # Otherwise, see the top panorama in the stack
@@ -96,11 +100,11 @@ class GSVScraper(object):
                     for link_pano in links:
                         if link_pano not in visited_panoramas and link_pano not in passed_panorama:
                             # visited_panoramas.append(link_pano)
-                            
+
                             #
                             # Check if link_pano is a Google provided panoramas as opposed to user provied panoramas
                             if not self.pano_is_provided_by_users(link_pano):
-                            # Check if link_pano is in the bounding box
+                                # Check if link_pano is in the bounding box
                                 if poly:
                                     if self.pano_is_in_polygon(link_pano, poly):
                                         panorama_stack.append(link_pano)
@@ -123,15 +127,15 @@ class GSVScraper(object):
             if verbose:
                 print()
                 print()
-                
+
         all_panoramas = list(set(all_panoramas))
         return all_panoramas
-    
+
     def get_intersections(self, panoramas, thresh=2):
         """
         This method takes a list of panorama ids and returns the ones that has more than 2(thresh) links (intersectiosn)
         """
-        
+
         intersections = []
         for pano in panoramas:
             links = self.get_pano_links(pano)
@@ -175,30 +179,31 @@ class GSVScraper(object):
 
         base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
         for pano_id in self.pano_ids:
-            print('-- Extracting depth data for', pano_id, '...',)
+            print('-- Extracting depth data for', pano_id, '...', )
             # Check if the directory exists. Then check if the file already exists and skip if it does.
             ensure_dir(self.data_dir + pano_id)
             if os.path.isfile(self.data_dir + pano_id + '/depth.xml'):
                 print('File already exists.')
                 continue
-            
+
             url = base_url + pano_id
             with open(self.data_dir + pano_id + '/depth.xml', 'wb') as f:
-                req = request.urlopen(url)
-                for line in req:
+                req = requests.get(url)
+                for line in req.content.splitlines():
                     f.write(line)
-                    
+
             # Wait a little bit so you don't get blocked by Google
             sleep_in_seconds = float(delay) / 1000
             sleep(sleep_in_seconds)
-            
+
             print('Done.')
-        
+
         if decode:
             self.decode_depthmap()
 
         return
-    
+
+    # May no longer need
     def get_pano_id(self, lat, lng, verbose=False):
         """
         This method gets the closest panorama id from the given latlng coordinate
@@ -206,12 +211,11 @@ class GSVScraper(object):
         url_header = 'http://cbk0.google.com/cbk?output=xml&ll='
         url = url_header + str(lat) + ',' + str(lng)
         pano_id = None
-         
+
         try:
             pano_xml = request.urlopen(url)
             tree = ET.parse(pano_xml)
             root = tree.getroot()
-        
             pano_id = root.find('data_properties').get('pano_id')
         except AttributeError:
             pass
@@ -220,20 +224,20 @@ class GSVScraper(object):
         sleep(sleep_in_milliseconds)
 
         return pano_id
-    
+
     def get_pano_image(self, delay=100.):
         '''
          This function collects panorama images and stitch them together
          With zoom=5, there are 26x13 images. 
          http://stackoverflow.com/questions/7391945/how-do-i-read-image-data-from-a-url-in-python
-        '''        
-        'http://maps.google.com/cbk?output=tile&zoom=5&x=1&y=12&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=rP_WcfFFp3V23ESWa59p4Q'        
+        '''
+        'http://maps.google.com/cbk?output=tile&zoom=5&x=1&y=12&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=rP_WcfFFp3V23ESWa59p4Q'
         im_dimension = (512 * 26, 512 * 13)
         blank_image = Image.new('RGBA', im_dimension, (0, 0, 0, 0))
         base_url = 'http://maps.google.com/cbk?'
 
         for pano_id in self.pano_ids:
-            print('-- Extracting images for', pano_id,)
+            print('-- Extracting images for', pano_id, )
             ensure_dir(self.data_dir + pano_id)
             ensure_dir(self.data_dir + pano_id + '/images/')
             out_image_name = self.data_dir + pano_id + '/images/pano.jpg'
@@ -241,23 +245,25 @@ class GSVScraper(object):
                 print('File already exists.')
                 continue
 
-            for y in range(13): 
+            for y in range(13):
                 for x in range(26):
-                    url_param = 'output=tile&zoom=5&x=' + str(x) + '&y=' + str(y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
+                    url_param = 'output=tile&zoom=5&x=' + str(x) + '&y=' + str(
+                        y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
                     url = base_url + url_param
-                    
+
                     # Open an image, resize it to 512x512, and paste it into a canvas
-                    req = request.urlopen(url)
-                    file = BytesIO(req.read())
+                    # req = request.urlopen(url)
+                    # file = BytesIO(req.read())
+                    file = requests.get(url, stream=True).raw
                     im = Image.open(file)
                     im = im.resize((512, 512))
 
                     blank_image.paste(im, (512 * x, 512 * y))
-            
+
                     # Wait a little bit so you don't get blocked by Google
                     sleep_in_milliseconds = float(delay) / 1000
                     sleep(sleep_in_milliseconds)
-                print('.',)
+                print('.', )
             print()
 
             # In some cases (e.g., old GSV images), we don't have zoom level 5, so
@@ -268,11 +274,13 @@ class GSVScraper(object):
                 temp_blank_image = Image.new('RGBA', temp_im_dimension, (0, 0, 0, 0))
                 for y in range(3):
                     for x in range(7):
-                        url_param = 'output=tile&zoom=3&x=' + str(x) + '&y=' + str(y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
+                        url_param = 'output=tile&zoom=3&x=' + str(x) + '&y=' + str(
+                            y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
                         url = base_url + url_param
                         # Open an image, resize it to 512x512, and paste it into a canvas
-                        req = request.urlopen(url)
-                        file = BytesIO(req.read())
+                        # req = request.urlopen(url)
+                        # file = BytesIO(req.read())
+                        file = requests.get(url, stream=True).raw
                         im = Image.open(file)
                         im = im.resize((512, 512))
 
@@ -281,7 +289,7 @@ class GSVScraper(object):
                         # Wait a little bit so you don't get blocked by Google
                         sleep_in_milliseconds = float(delay) / 1000
                         sleep(sleep_in_milliseconds)
-                    print('.',)
+                    print('.', )
                 print()
                 temp_blank_image = temp_blank_image.resize(im_dimension, Image.ANTIALIAS)  # resize
                 temp_blank_image.save(out_image_name, 'jpeg')
@@ -300,11 +308,11 @@ class GSVScraper(object):
         xml = open(self.data_dir + pano + '/meta.xml', 'rb')
         tree = ET.parse(xml)
         links = tree.findall('annotation_properties/link')
-        
+
         linked_panos = []
         for link in links:
             linked_panos.append(link.attrib['pano_id'])
-            #linked_panos.append(link.attrib)
+            # linked_panos.append(link.attrib)
         """
         yaw_deg = float(root.find('projection_properties').get('pano_yaw_deg'))
         lat = float(root.find('data_properties').get('lat'))
@@ -313,7 +321,7 @@ class GSVScraper(object):
         rotation_matrix = array([[cos(yaw_radian), -sin(yaw_radian)], [sin(yaw_radian), cos(yaw_radian)]])
         """
         return linked_panos
-    
+
     def get_pano_metadata(self, pano_ids=None, delay=1000., save_as_file=True, target_dir=None, verbose=False):
         """
         This function collects Google Street View panorama metadata that corresponds to the nearest GSV panoramas.
@@ -321,17 +329,16 @@ class GSVScraper(object):
         http://jamiethompson.co.uk/web/2010/05/15/google-streetview-static-api/
         http://cbk0.google.com/cbk?output=xml&ll=51.494966,-0.146674
         """
-        
+
         if not pano_ids:
             pano_ids = self.pano_ids
         elif type(pano_ids) != list:
-            raise ValueError('pano_ids must be a list of GSV panorama ids') 
-        
-        
+            raise ValueError('pano_ids must be a list of GSV panorama ids')
+
         api_header = 'http://cbk0.google.com/cbk?output=xml'
         for pano_id in pano_ids:
             if verbose:
-                print('-- Extracting metadata for', pano_id, '...',)
+                print('-- Extracting metadata for', pano_id, '...', )
             # Check if the directory exists. Then check if the file already exists and skip if it does.
             # Check file: http://stackoverflow.com/questions/82831/how-do-i-check-if-a-file-exists-using-python
             if target_dir is None:
@@ -342,26 +349,24 @@ class GSVScraper(object):
                 if verbose:
                     print('File already exists.')
                 continue
-            
+
             url = api_header + '&panoid=' + pano_id
-            req = request.urlopen(url)
+            # req = request.urlopen(url)
+            req = requests.get(url)
 
             if save_as_file:
-
                 with open(target_dir + pano_id + '/meta.xml', 'w+') as my_file:
-                    for line in req:
+                    for line in req.content.splitlines():
                         my_file.write(line)
-
-
 
             # Wait a little bit so you don't get blocked by Google
             sleep_in_milliseconds = float(delay) / 1000
             sleep(sleep_in_milliseconds)
             if verbose:
                 print('Done.')
-        
+
         return
-    
+
     def pano_is_provided_by_users(self, link_pano):
         """
         This method checks if the panorama has level_id attribute (which exists only in user provided panorama images.)
@@ -374,14 +379,14 @@ class GSVScraper(object):
         except ET.ParseError:
             print(link_pano)
             raise
-        
+
         if tree.find('levels') != None:
             return True
         elif tree.find('data_properties/attribution_name') != None:
             return True
         else:
             return False
-    
+
     def pano_is_provided_by_google(self, link_pano):
         """
         This method checks if the panorama is provided by Google
@@ -390,8 +395,7 @@ class GSVScraper(object):
             return False
         else:
             return True
-        
-    
+
     def pano_is_in_bounding_box(self, link_pano, bounding_box):
         """
             :param link_pano: A panorama id.
@@ -412,7 +416,7 @@ class GSVScraper(object):
         lat = float(data['lat'])
         lng = float(data['lng'])"""
         # coffee
-        
+
         if min_lat < lat and max_lat > lat and min_lng < lng and max_lng > lng:
             return True
         else:
@@ -425,7 +429,7 @@ class GSVScraper(object):
         """
         lat, lng = self.get_pano_coordinate(pano_id)
         return point_inside_polygon(lng, lat, poly)
-    
+
     def set_pano_ids(self, pano_ids):
         '''
          This method sets pano_ids of your interest. This method creates data folders
@@ -433,13 +437,14 @@ class GSVScraper(object):
          pano_id.
         '''
         self.pano_ids = pano_ids
-        
+
         for pano_id in pano_ids:
             ensure_dir(self.data_dir + pano_id + '/')
-            
+
+
 """
  Helper functions
-"""        
+"""
 
 
 def read_depth_file(path, show_image=True):
@@ -484,16 +489,18 @@ def read_depth_file(path, show_image=True):
             xi, yi = (int(round(n)) for n in (event.xdata, event.ydata))
             # value = im.get_array()[xi,yi]
             # color = im.cmap(im.norm(value))
-            
-            val_x, val_y, val_z = interpolated_3d_point(xi, yi, depth_x, depth_y, depth_z)            
+
+            val_x, val_y, val_z = interpolated_3d_point(xi, yi, depth_x, depth_y, depth_z)
             print('depth_x, depth_y, depth_z', val_x, val_y, val_z)
-            
+
             user_points = [(val_x, val_y)]
             latlngs = points_to_latlng(path, user_points)
             lat = latlngs[0][0]
             lng = latlngs[0][1]
             print('lat, lng:', lat, lng)
-            print('Distance from previous point:', math.sqrt(math.pow((val_x - self.prev_x),2) + math.pow((val_y - self.prev_y), 2) + math.pow((val_z - self.prev_z), 2)))
+            print('Distance from previous point:', math.sqrt(
+                math.pow((val_x - self.prev_x), 2) + math.pow((val_y - self.prev_y), 2) + math.pow(
+                    (val_z - self.prev_z), 2)))
             self.prev_x = val_x
             self.prev_y = val_y
             self.prev_z = val_z
@@ -510,16 +517,16 @@ def decode_depthmap(file_in, file_out, verbose=True):
 
      call function
      http://stackoverflow.com/questions/89228/calling-an-external-command-in-python
-    """    
-    if verbose: print('-- Decoding depth data...',)
+    """
+    if verbose: print('-- Decoding depth data...', )
     if os.path.isfile(file_out):
         print('File already exists.')
         return
-    
+
     import platform
-    
+
     operating_system = platform.system()
-    
+
     if operating_system == 'Windows':
         # Windows
         #
@@ -528,17 +535,17 @@ def decode_depthmap(file_in, file_out, verbose=True):
         # Will investigate the solution in future.
         # http://stackoverflow.com/questions/3022013/windows-cant-find-the-file-on-subprocess-call
         # http://stackoverflow.com/questions/10236260/subprocess-pydev-console-vs-cmd-exe
-        
+
         # pwd = os.path.dirname(os.path.abspath(__file__))
         # bin_dir = "\\".join(pwd.split("\\")[:-1]) + "\\bin"
         # my_env = os.environ.copy()
         # my_env["PATH"] += os.pathsep + bin_dir
 
         call(["../bin/decode_depthmap_win.exe", file_in, file_out])
-        #popen = subprocess.Popen(["../bin/decode_depthmap_win.exe", file_in, file_out], creationflags=subprocess.CREATE_NEW_CONSOLE)
-        #popen.wait()
-        #out = check_output([bin_dir + "\decode_depthmap_win.exe", file_in, file_out], env=my_env)
-        #if verbose: print out
+        # popen = subprocess.Popen(["../bin/decode_depthmap_win.exe", file_in, file_out], creationflags=subprocess.CREATE_NEW_CONSOLE)
+        # popen.wait()
+        # out = check_output([bin_dir + "\decode_depthmap_win.exe", file_in, file_out], env=my_env)
+        # if verbose: print out
     else:
         # Mac
         call(["../bin/decode_depthmap", file_in, file_out])
@@ -567,7 +574,7 @@ AND LabelTypeId=1
     im_width = GSVImage.GSVImage.im_width
     im_height = GSVImage.GSVImage.im_height
     PanoYawDeg = float(records[0][3])
-    
+
     filename = '../data/GSV/' + pano_id + '/images/pano.png'
     im = Image.open(filename)
     draw = ImageDraw.Draw(im)
@@ -578,30 +585,34 @@ AND LabelTypeId=1
         # User input data 
         sv_image_x = int(record[1]) - 100
         sv_image_y = int(record[2])
-        x = ((PanoYawDeg / 360) * im_width  + sv_image_x) % im_width
+        x = ((PanoYawDeg / 360) * im_width + sv_image_x) % im_width
         y = im_height / 2 - sv_image_y
         r = 30
-        draw.ellipse((x-r, y-r, x+r, y+r), fill=128)
-        
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=128)
+
     figure()
     imshow(im)
     show()
     return
 
+
 """
  Helper functions
 """
+
+
 def batch_decode_depth_data():
     #
     # Retrive task panoramas and store them into TaskPanoramaTable
     sql = "SELECT * FROM TaskPanoramas WHERE TaskDescription=%s"
     with SidewalkDB() as db:
         records = db.query(sql, ('PilotTask_v2_MountPleasant'))
-        
+
     pano_ids = [record[1] for record in records]
     scraper = GSVScraper()
     scraper.set_pano_ids(pano_ids)
     scraper.get_pano_depthdata()
+
 
 def format_pano_metadata(pano_id, delay=1000.0, verbose=False):
     """
@@ -668,7 +679,7 @@ def format_pano_metadata(pano_id, delay=1000.0, verbose=False):
                             link_attrib['link_text'] = NOT_PROVIDED
 
                         pano['links'].append(link_attrib)
-        pano['intersection'] = {'lat' : pano['data_properties']['lat'], 'lng' : pano['data_properties']['lng']}
+        pano['intersection'] = {'lat': pano['data_properties']['lat'], 'lng': pano['data_properties']['lng']}
         if verbose:
             print(pano)
     except:
@@ -699,7 +710,8 @@ def get_nearby_pano_ids(pano_id, max_step_size=2, delay=2000.0, verbose=False):
             pano_data = get_pano_metadata(pano_item['pano_id'], verbose)
             linked_pano_ids = [link['pano_id'] for link in pano_data['links']]
             for linked_pano_id in linked_pano_ids:
-                queue.append({'step_size' : pano_item['step_size'] + 1, 'pano_id': linked_pano_id, 'origin_pano_id': pano_id})
+                queue.append(
+                    {'step_size': pano_item['step_size'] + 1, 'pano_id': linked_pano_id, 'origin_pano_id': pano_id})
 
     return ret
 
@@ -721,7 +733,7 @@ def get_pano_metadata(pano_id, verbose=False):
     api_parameter += '&panoid=' + pano_id
     api_path = api_header + api_parameter
     try:
-        pano = {'pano_id' : pano_id}
+        pano = {'pano_id': pano_id}
 
         gsv.get_pano_metadata([pano_id])
         pano_xml = open('../data/GSV/' + pano_id + '/meta.xml', 'rb')
@@ -767,13 +779,14 @@ def get_pano_metadata(pano_id, verbose=False):
                             link_attrib['link_text'] = NOT_PROVIDED
 
                         pano['links'].append(link_attrib)
-        pano['bus_stop'] = {'lat' : pano['data_properties']['lat'], 'lng' : pano['data_properties']['lng']}
+        pano['bus_stop'] = {'lat': pano['data_properties']['lat'], 'lng': pano['data_properties']['lng']}
         if verbose:
             print(pano)
     except:
         raise
 
     return pano
+
 
 def get_nearest_pano_metadata(latlng, delay=1000.0, verbose='True'):
     """
@@ -872,11 +885,7 @@ def collect_all_busstop_depth_data():
         scraper.set_pano_ids([panorama_id])
         scraper.get_pano_depthdata()
 
+
 if __name__ == '__main__':
     print("GSVScraper")
     collect_all_busstop_depth_data()
-
-
-
-
-
