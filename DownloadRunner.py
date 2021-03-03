@@ -7,9 +7,7 @@ import stat
 import http.client
 import json
 import logging
-from io import BytesIO
 from datetime import datetime
-from urllib import request
 import requests
 from PIL import Image
 import fnmatch
@@ -162,10 +160,10 @@ def download_single_pano(storage_path, pano_id):
     url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                  'spherical&v=4&panoid='
 
-    req_zoom_5 = requests.get(url_zoom_5 + pano_id, stream=True).raw
-    im_zoom_5 = Image.open(req_zoom_5)
     req_zoom_3 = requests.get(url_zoom_3 + pano_id, stream=True).raw
     im_zoom_3 = Image.open(req_zoom_3)
+    req_zoom_5 = requests.get(url_zoom_5 + pano_id, stream=True).raw
+    im_zoom_5 = Image.open(req_zoom_5)
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
         fallback = False
@@ -190,13 +188,9 @@ def download_single_pano(storage_path, pano_id):
             url = base_url + url_param
 
             # Open an image, resize it to 512x512, and paste it into a canvas
-
-            req = request.urlopen(url)
-            file = BytesIO(req.read())
-
+            file = requests.get(url, stream=True).raw
             im = Image.open(file)
             im = im.resize((512, 512))
-
             blank_image.paste(im, (512 * x, 512 * y))
 
             # Wait a little bit so you don't get blocked by Google
@@ -268,8 +262,9 @@ def download_single_metadata_xml(storage_path, pano_id):
     url = base_url + pano_id
 
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
-    req = request.urlopen(url)
-    firstline = req.readline()
+    req = requests.get(url)
+    firstline = req.content.splitlines()[0]
+
     if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
         return DownloadResult.failure
     else:
