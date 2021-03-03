@@ -252,8 +252,6 @@ class GSVScraper(object):
                     url = base_url + url_param
 
                     # Open an image, resize it to 512x512, and paste it into a canvas
-                    # req = request.urlopen(url)
-                    # file = BytesIO(req.read())
                     file = requests.get(url, stream=True).raw
                     im = Image.open(file)
                     im = im.resize((512, 512))
@@ -278,8 +276,6 @@ class GSVScraper(object):
                             y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
                         url = base_url + url_param
                         # Open an image, resize it to 512x512, and paste it into a canvas
-                        # req = request.urlopen(url)
-                        # file = BytesIO(req.read())
                         file = requests.get(url, stream=True).raw
                         im = Image.open(file)
                         im = im.resize((512, 512))
@@ -351,7 +347,6 @@ class GSVScraper(object):
                 continue
 
             url = api_header + '&panoid=' + pano_id
-            # req = request.urlopen(url)
             req = requests.get(url)
 
             if save_as_file:
