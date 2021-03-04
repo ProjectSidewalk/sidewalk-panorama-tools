@@ -9,6 +9,8 @@ import json
 import logging
 from datetime import datetime
 import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 from PIL import Image
 import fnmatch
 import pandas as pd
@@ -45,6 +47,14 @@ storage_location = "testing/"
 metadata_csv_path = "metadata/csv-metadata-seattle.csv"
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
+
+# Set up the requests session for better robustness/respect of crawling
+# https://stackoverflow.com/questions/23013220/max-retries-exceeded-with-url-in-requests
+session = requests.Session()
+retry = Retry(connect=3, backoff_factor=0.5)
+adapter = HTTPAdapter(max_retries=retry)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
 
 # comment out for now, will use csv for data
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
