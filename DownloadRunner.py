@@ -12,6 +12,7 @@ import requests
 from PIL import Image
 import fnmatch
 import pandas as pd
+import random
 
 try:
     from xml.etree import cElementTree as ET
@@ -49,6 +50,14 @@ if not os.path.exists(storage_location):
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
 
+def new_random_delay():
+    """
+    New random delay value generated
+    :return: int between 50 and 250 in steps of 3
+    """
+    return random.randrange(50, 250, 3)
+
+
 def check_download_failed_previously(panoId):
     if panoId in open('scrape.log').read():
         return True
@@ -56,8 +65,11 @@ def check_download_failed_previously(panoId):
         return False
 
 
-def extract_pano_width_height_csv():
-    pass
+def extract_pano_width_height_csv(df_meta, pano_id):
+    pano_id_row = df_meta[df_meta['gsv_panorama_id'] == pano_id]
+    image_width = int(pano_id_row['image_width'])
+    image_height = int(pano_id_row['image_height'])
+    return image_width, image_height
 
 # Broken, needs to reference csv for width and height
 def extract_panowidthheight(path_to_metadata_xml):
@@ -151,6 +163,7 @@ def download_panorama_images(storage_path, df_meta):
 # Update to use df to get meta information. Also function is very long, would be good to break up into sub-functions...
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
+
     pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
 
     destination_dir = os.path.join(storage_path, pano_id[:2])
@@ -165,13 +178,17 @@ def download_single_pano(storage_path, pano_id):
     if os.path.isfile(out_image_name):
         return DownloadResult.skipped
 
+    # default values
     final_image_height = 6656
     final_image_width = 13312
-    if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
-        final_image_width = 16384
-        final_image_height = 8192
+
+    # remove as not accessing server
+    # if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
+    #     final_image_width = 16384
+    #     final_image_height = 8192
     try:
-        (final_image_width, final_image_height) = extract_panowidthheight(pano_xml_path)
+        # (final_image_width, final_image_height) = extract_panowidthheight(pano_xml_path)
+        (final_image_width, final_image_height) = extract_pano_width_height_csv(df_meta, pano_id)
     except Exception as e:
         print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
     final_im_dimension = (final_image_width, final_image_height)
@@ -220,6 +237,7 @@ def download_single_pano(storage_path, pano_id):
             blank_image.paste(im, (512 * x, 512 * y))
 
             # Wait a little bit so you don't get blocked by Google
+            delay = new_random_delay()
             sleep_in_milliseconds = float(delay) / 1000
             sleep(sleep_in_milliseconds)
 
