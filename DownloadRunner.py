@@ -41,7 +41,7 @@ delay = 0
 # sidewalk_server_fqdn = argv[1]
 sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu"
 storage_location = "testing/"
-metadata_csv_path = "metadata/cv-metadata-seattle.csv"
+metadata_csv_path = "metadata/csv-metadata-seattle.csv"
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
 
@@ -108,9 +108,9 @@ def fetch_pano_ids_from_webserver():
     return unique_ids
 
 
-def download_panorama_images(storage_path, pano_list):
+def download_panorama_images(storage_path, df_meta):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
-
+    pano_list = df_meta['gsv_panorama_id']
     success_count = 0
     skipped_count = 0
     fallback_success_count = 0
@@ -147,6 +147,48 @@ def download_panorama_images(storage_path, pano_list):
         skipped_count)
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
+
+# def download_panorama_images(storage_path, pano_list):
+#     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
+#
+#     success_count = 0
+#     skipped_count = 0
+#     fallback_success_count = 0
+#     fail_count = 0
+#     total_completed = 0
+#     total_panos = len(pano_list)
+#
+#     for pano_id in pano_list:
+#         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
+#         try:
+#             result_code = download_single_pano(storage_path, pano_id)
+#             if result_code == DownloadResult.success:
+#                 success_count += 1
+#             elif result_code == DownloadResult.fallback_success:
+#                 fallback_success_count += 1
+#             elif result_code == DownloadResult.skipped:
+#                 skipped_count += 1
+#             elif result_code == DownloadResult.failure:
+#                 fail_count += 1
+#         except Exception as e:
+#             fail_count += 1
+#             logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
+#         total_completed = success_count + fallback_success_count + fail_count + skipped_count
+#         print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
+#               % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
+#
+#     logging.debug(
+#         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
+#         total_completed,
+#         total_panos,
+#         success_count,
+#         fallback_success_count,
+#         fail_count,
+#         skipped_count)
+#     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
+
+
+# Update to use df to get meta information. Also function is very long, would be good to break up into sub-functions...
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
     pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
@@ -339,7 +381,7 @@ def generate_depthmapfiles(path_to_scrapes):
     return success_count, fail_count, skip_count, total_completed
 
 
-def run_scraper_and_log_results():
+def run_scraper_and_log_results(df_meta):
     start_time = datetime.now()
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
@@ -350,7 +392,13 @@ def run_scraper_and_log_results():
     # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
     #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
-    im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
+
+
+    # im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
+    im_res = download_panorama_images(storage_location, df_meta)  # Trailing slash required
+
+
+
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -368,14 +416,16 @@ def run_scraper_and_log_results():
 
 # replace with call to make metadata dataframe
 print("Fetching pano-ids")
-pano_list = fetch_pano_ids_from_webserver()
-pano_list.remove('tutorial')
+# pano_list = fetch_pano_ids_from_webserver()
+# pano_list.remove('tutorial')
 
-
+# Initialisation of dataframe with downloaded metadata
+df_meta = fetch_pano_ids_csv(metadata_csv_path)
 
 ##### Debug Line - remove for prod ##########
 # pano_list = [pano_list[111], pano_list[112]]
 #############################################
 
 print("Fetching Panoramas")
-run_scraper_and_log_results()
+# run_scraper_and_log_results()
+run_scraper_and_log_results(df_meta)
