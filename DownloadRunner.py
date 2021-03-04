@@ -11,6 +11,7 @@ from datetime import datetime
 import requests
 from PIL import Image
 import fnmatch
+import pandas as pd
 
 try:
     from xml.etree import cElementTree as ET
@@ -40,9 +41,11 @@ delay = 0
 # sidewalk_server_fqdn = argv[1]
 sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu"
 storage_location = "testing/"
+metadata_csv_path = "metadata/cv-metadata-seattle.csv"
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
 
+# comment out for now, will use csv for data
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
 
@@ -51,6 +54,10 @@ def check_download_failed_previously(panoId):
         return True
     else:
         return False
+
+
+def extract_pano_width_height_csv():
+    pass
 
 # Broken, needs to reference csv for width and height
 def extract_panowidthheight(path_to_metadata_xml):
@@ -63,6 +70,23 @@ def extract_panowidthheight(path_to_metadata_xml):
             pano[child.tag] = child.attrib
 
     return int(pano['data_properties']['image_width']), int(pano['data_properties']['image_height'])
+
+
+def fetch_pano_ids_csv(metadata_csv_path):
+    """
+    Function loads the provided metadata csv file (downloaded from the server) as a dataframe. This dataframe replaces
+    all the information that previously needed to be gather from Google maps, such as image size, image capture
+    coordinates etc. This dataframe replaces the previously used fetch_pano_ids_from_webserver() function.
+    :param metadata_csv_path: The path to the metadata csv file and the file's name eg. metadata/csv_meta.csv
+    :return: A dataframe containing the follow metadata headings: gsv_panorama_id	sv_image_x, sv_image_y, zoom,
+    label_type_id, photographer_heading, heading, pitch, label_id, image_width, image_height, tile_width, tile_height,
+    image_date, imagery_type, panorama_lat, panorama_lng, label_lat,
+    label_lng,
+    """
+    df = pd.read_csv(metadata_csv_path)
+    df = df.drop_duplicates(subset=['gsv_panorama_id'])
+    assert df.shape == (52208, 21) # assertion check for csv provided by Mikey, needs to be updated for future use
+    return df
 
 # No longer using webserver, keep but make new function referencing csv
 def fetch_pano_ids_from_webserver():
@@ -207,7 +231,7 @@ def download_single_pano(storage_path, pano_id):
         os.chmod(out_image_name, 0o664)
         return DownloadResult.success
 
-# Broken, no longer needed
+# Broken, no longer needed, reference csv instead
 def download_panorama_metadata_xmls(storage_path, pano_list):
     '''
      This method downloads a xml file that contains depth information from GSV. It first
@@ -243,6 +267,8 @@ def download_panorama_metadata_xmls(storage_path, pano_list):
     logging.debug("METADOWNLOAD: Final result: Completed %d of %d (%d success, %d failed, %d skipped)",
                   total_completed, total_panos, success_count, fail_count, skipped_count)
     return (success_count, fail_count, skipped_count, total_completed)
+
+
 
 # No longer downloading, reference csv (for now)
 def download_single_metadata_xml(storage_path, pano_id):
@@ -340,10 +366,12 @@ def run_scraper_and_log_results():
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d" % (total_duration))
 
-
+# replace with call to make metadata dataframe
 print("Fetching pano-ids")
 pano_list = fetch_pano_ids_from_webserver()
 pano_list.remove('tutorial')
+
+
 
 ##### Debug Line - remove for prod ##########
 # pano_list = [pano_list[111], pano_list[112]]
