@@ -15,6 +15,7 @@ from PIL import Image
 import fnmatch
 import pandas as pd
 import random
+from headers_list import headers_list
 
 try:
     from xml.etree import cElementTree as ET
@@ -65,7 +66,13 @@ def new_random_delay():
     New random delay value generated
     :return: int between 50 and 250 in steps of 3
     """
-    return random.randrange(50, 250, 3)
+    return random.randrange(100, 200, 3)
+
+
+# Choose header at random from the list
+def random_header():
+    headers = random.choice(headers_list)
+    return headers
 
 
 def check_download_failed_previously(panoId):
@@ -105,12 +112,12 @@ def fetch_pano_ids_csv(metadata_csv_path):
     image_date, imagery_type, panorama_lat, panorama_lng, label_lat,
     label_lng,
     """
-    df = pd.read_csv(metadata_csv_path)
-    df = df.drop_duplicates(subset=['gsv_panorama_id'])
-    assert df.shape == (52208, 21) # assertion check for csv provided by Mikey, needs to be updated for future use
-    return df
+    df_meta = pd.read_csv(metadata_csv_path)
+    df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id'])
+    assert df_meta.shape == (52208, 21)  # assertion check for csv provided by Mikey, needs to be updated for future use
+    return df_meta
 
-# No longer using webserver, keep but make new function referencing csv
+# No longer using webserver, keep for future server request implementation
 def fetch_pano_ids_from_webserver():
     unique_ids = []
     conn = http.client.HTTPSConnection(sidewalk_server_fqdn)
@@ -132,6 +139,7 @@ def fetch_pano_ids_from_webserver():
 
 def download_panorama_images(storage_path, df_meta):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
+    # log to csv for human readable info
     pano_list = df_meta['gsv_panorama_id']
     success_count = 0
     skipped_count = 0
@@ -213,9 +221,9 @@ def download_single_pano(storage_path, pano_id):
     url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                  'spherical&v=4&panoid='
 
-    req_zoom_3 = session.get(url_zoom_3 + pano_id, stream=True).raw
+    req_zoom_3 = session.get(url_zoom_3 + pano_id, headers=random_header(), stream=True).raw
     im_zoom_3 = Image.open(req_zoom_3)
-    req_zoom_5 = session.get(url_zoom_5 + pano_id, stream=True).raw
+    req_zoom_5 = session.get(url_zoom_5 + pano_id, headers=random_header(), stream=True).raw
     im_zoom_5 = Image.open(req_zoom_5)
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
@@ -241,7 +249,7 @@ def download_single_pano(storage_path, pano_id):
             url = base_url + url_param
 
             # Open an image, resize it to 512x512, and paste it into a canvas
-            file = session.get(url, stream=True).raw
+            file = session.get(url, headers=random_header(), stream=True).raw
             im = Image.open(file)
             im = im.resize((512, 512))
             blank_image.paste(im, (512 * x, 512 * y))
@@ -318,7 +326,7 @@ def download_single_metadata_xml(storage_path, pano_id):
     url = base_url + pano_id
 
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
-    req = session.get(url)
+    req = session.get(url, headers=random_header())
     firstline = req.content.splitlines()[0]
 
     if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
