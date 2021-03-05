@@ -71,6 +71,15 @@ def random_header():
 # Set up the requests session for better robustness/respect of crawling
 # https://stackoverflow.com/questions/23013220/max-retries-exceeded-with-url-in-requests
 def request_session(url, stream=False):
+    """
+    Each time the function is called sets up a new requests session. This is more robust as it allows retries and a
+    backoff factor for each subsequent retry. A new session is made for each request to handle the use of rotating
+    proxies when making requests (new IP for each subsequent request). A get is then made for the provided url and the
+    response returned.
+    :param url: The url where the get request is sent to.
+    :param stream: Default false. Pass in 'True' when consuming image data.
+    :return: response
+    """
     session = requests.Session()
     retry = Retry(connect=5, backoff_factor=0.5)
     adapter = HTTPAdapter(max_retries=retry)
