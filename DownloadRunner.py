@@ -78,7 +78,7 @@ def request_session():
     :return:
     """
     session = requests.Session()
-    retry = Retry(total=10, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+    retry = Retry(total=10, connect=5, status_forcelist=[400, 429, 500, 502, 503, 504], backoff_factor=1)
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
@@ -175,9 +175,9 @@ def download_panorama_images(storage_path, df_meta):
     fail_count = 0
     total_completed = 0
     total_panos = len(pano_list)
-    start_time = time.time()
+
     for pano_id in pano_list:
-        pano_id ='E6_AG3SxejfUOOVftGSs8A'
+        start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
             result_code = download_single_pano(storage_path, pano_id)
@@ -196,7 +196,6 @@ def download_panorama_images(storage_path, df_meta):
         print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
               % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
         print("--- %s seconds ---" % (time.time() - start_time))
-        exit()
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -276,13 +275,12 @@ def download_single_pano(storage_path, pano_id):
     im_dimension = (image_width, image_height)
     blank_image = Image.new('RGB', im_dimension, (0, 0, 0, 0))
 
-    session = request_session()
-    session_calls = 0
+    session_calls = 2
+    i = 0
 
     for y in range(int(round(image_height / 512.0))):
         for x in range(int(round(image_width / 512.0))):
-            if session_calls >= 50:
-                print("On call:", session_calls)
+            if session_calls >= 85:
                 session = request_session()
                 session_calls = 0
 
@@ -351,7 +349,6 @@ def download_panorama_metadata_xmls(storage_path, pano_list):
     logging.debug("METADOWNLOAD: Final result: Completed %d of %d (%d success, %d failed, %d skipped)",
                   total_completed, total_panos, success_count, fail_count, skipped_count)
     return (success_count, fail_count, skipped_count, total_completed)
-
 
 
 # No longer downloading, reference csv (for now)
@@ -437,23 +434,19 @@ def run_scraper_and_log_results(df_meta):
     # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
     #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
-
-
     # im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
     im_res = download_panorama_images(storage_location, df_meta)  # Trailing slash required
-
-
 
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d,%d" % (im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration))
 
-    depth_res = generate_depthmapfiles(storage_location)
+    # depth_res = generate_depthmapfiles(storage_location)
     depth_end_time = datetime.now()
-    depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
-    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-        log.write(",%d,%d,%d,%d,%d" % (depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration))
+    # depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
+    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+    #     log.write(",%d,%d,%d,%d,%d" % (depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration))
 
     total_duration = int(round((depth_end_time - start_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
