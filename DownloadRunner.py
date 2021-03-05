@@ -70,13 +70,13 @@ def random_header():
 
 # Set up the requests session for better robustness/respect of crawling
 # https://stackoverflow.com/questions/23013220/max-retries-exceeded-with-url-in-requests
-def request_session(url):
+def request_session(url, stream=False):
     session = requests.Session()
     retry = Retry(connect=5, backoff_factor=0.5)
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
-    r = session.get(url, proxies=proxies)
+    r = session.get(url, headers=random_header(), proxies=proxies, stream=stream)
     return r
 
 
