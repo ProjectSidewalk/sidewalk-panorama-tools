@@ -15,7 +15,7 @@ from PIL import Image
 import fnmatch
 import pandas as pd
 import random
-from headers_list import headers_list
+from config import headers_list, proxies
 
 try:
     from xml.etree import cElementTree as ET
@@ -49,13 +49,6 @@ metadata_csv_path = "metadata/csv-metadata-seattle.csv"
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
 
-# Set up the requests session for better robustness/respect of crawling
-# https://stackoverflow.com/questions/23013220/max-retries-exceeded-with-url-in-requests
-session = requests.Session()
-retry = Retry(connect=3, backoff_factor=0.5)
-adapter = HTTPAdapter(max_retries=retry)
-session.mount('http://', adapter)
-session.mount('https://', adapter)
 
 # comment out for now, will use csv for data
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
@@ -75,6 +68,18 @@ def random_header():
     return headers
 
 
+# Set up the requests session for better robustness/respect of crawling
+# https://stackoverflow.com/questions/23013220/max-retries-exceeded-with-url-in-requests
+def request_session(url):
+    session = requests.Session()
+    retry = Retry(connect=5, backoff_factor=0.5)
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    r = session.get(url, proxies=proxies)
+    return r
+
+
 def check_download_failed_previously(panoId):
     if panoId in open('scrape.log').read():
         return True
@@ -87,6 +92,7 @@ def extract_pano_width_height_csv(df_meta, pano_id):
     image_width = int(pano_id_row['image_width'])
     image_height = int(pano_id_row['image_height'])
     return image_width, image_height
+
 
 # Broken, needs to reference csv for width and height
 def extract_panowidthheight(path_to_metadata_xml):
@@ -116,6 +122,7 @@ def fetch_pano_ids_csv(metadata_csv_path):
     df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id'])
     assert df_meta.shape == (52208, 21)  # assertion check for csv provided by Mikey, needs to be updated for future use
     return df_meta
+
 
 # No longer using webserver, keep for future server request implementation
 def fetch_pano_ids_from_webserver():
@@ -221,9 +228,14 @@ def download_single_pano(storage_path, pano_id):
     url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                  'spherical&v=4&panoid='
 
-    req_zoom_3 = session.get(url_zoom_3 + pano_id, headers=random_header(), stream=True).raw
+    # request_session(url)
+
+    req_zoom_3 = session.get(url_zoom_3 + pano_id, headers=random_header(), proxies=proxies, stream=True).raw
     im_zoom_3 = Image.open(req_zoom_3)
-    req_zoom_5 = session.get(url_zoom_5 + pano_id, headers=random_header(), stream=True).raw
+
+    # request_session(url)
+
+    req_zoom_5 = session.get(url_zoom_5 + pano_id, headers=random_header(), proxies=proxies, stream=True).raw
     im_zoom_5 = Image.open(req_zoom_5)
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
@@ -248,8 +260,10 @@ def download_single_pano(storage_path, pano_id):
                 y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
             url = base_url + url_param
 
+            # request_session(url)
+
             # Open an image, resize it to 512x512, and paste it into a canvas
-            file = session.get(url, headers=random_header(), stream=True).raw
+            file = session.get(url, headers=random_header(), proxies=proxies, stream=True).raw
             im = Image.open(file)
             im = im.resize((512, 512))
             blank_image.paste(im, (512 * x, 512 * y))
@@ -325,8 +339,11 @@ def download_single_metadata_xml(storage_path, pano_id):
 
     url = base_url + pano_id
 
+    # request_session(url)
+
+
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
-    req = session.get(url, headers=random_header())
+    req = session.get(url, headers=random_header(), proxies=proxies)
     firstline = req.content.splitlines()[0]
 
     if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
