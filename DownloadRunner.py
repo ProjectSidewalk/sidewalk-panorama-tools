@@ -8,6 +8,7 @@ import http.client
 import json
 import logging
 from datetime import datetime
+import time
 import requests
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
@@ -70,23 +71,34 @@ def random_header():
 
 # Set up the requests session for better robustness/respect of crawling
 # https://stackoverflow.com/questions/23013220/max-retries-exceeded-with-url-in-requests
-def request_session(url, stream=False):
+# Server errors while using proxy - https://findwork.dev/blog/advanced-usage-python-requests-timeouts-retries-hooks/
+def request_session():
     """
-    Each time the function is called sets up a new requests session. This is more robust as it allows retries and a
-    backoff factor for each subsequent retry. A new session is made for each request to handle the use of rotating
-    proxies when making requests (new IP for each subsequent request). A get is then made for the provided url and the
-    response returned.
-    :param url: The url where the get request is sent to.
-    :param stream: Default false. Pass in 'True' when consuming image data.
-    :return: response
+
+    :return:
     """
     session = requests.Session()
-    retry = Retry(connect=5, backoff_factor=0.5)
+    retry = Retry(total=10, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
-    r = session.get(url, headers=random_header(), proxies=proxies, stream=stream)
-    return r
+    return session
+
+
+def get_response(url, session, stream=False):
+    """
+
+    :param url:
+    :param session:
+    :param stream:
+    :return:
+    """
+    response = session.get(url, headers=random_header(), proxies=proxies, stream=stream)
+
+    if not stream:
+        return response
+    else:
+        return response.raw
 
 
 def check_download_failed_previously(panoId):
@@ -163,8 +175,9 @@ def download_panorama_images(storage_path, df_meta):
     fail_count = 0
     total_completed = 0
     total_panos = len(pano_list)
-
+    start_time = time.time()
     for pano_id in pano_list:
+        pano_id ='E6_AG3SxejfUOOVftGSs8A'
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
             result_code = download_single_pano(storage_path, pano_id)
@@ -182,6 +195,8 @@ def download_panorama_images(storage_path, df_meta):
         total_completed = success_count + fallback_success_count + fail_count + skipped_count
         print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
               % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
+        print("--- %s seconds ---" % (time.time() - start_time))
+        exit()
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -237,14 +252,12 @@ def download_single_pano(storage_path, pano_id):
     url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                  'spherical&v=4&panoid='
 
-    # request_session(url)
+    session = request_session()
 
-    req_zoom_3 = session.get(url_zoom_3 + pano_id, headers=random_header(), proxies=proxies, stream=True).raw
+    req_zoom_3 = get_response(url_zoom_3 + pano_id, session, stream=True)
     im_zoom_3 = Image.open(req_zoom_3)
 
-    # request_session(url)
-
-    req_zoom_5 = session.get(url_zoom_5 + pano_id, headers=random_header(), proxies=proxies, stream=True).raw
+    req_zoom_5 = get_response(url_zoom_5 + pano_id, session, stream=True)
     im_zoom_5 = Image.open(req_zoom_5)
 
     if im_zoom_5.convert("L").getextrema() != (0, 0):
@@ -263,24 +276,34 @@ def download_single_pano(storage_path, pano_id):
     im_dimension = (image_width, image_height)
     blank_image = Image.new('RGB', im_dimension, (0, 0, 0, 0))
 
+    session = request_session()
+    session_calls = 0
+
     for y in range(int(round(image_height / 512.0))):
         for x in range(int(round(image_width / 512.0))):
+            if session_calls >= 50:
+                print("On call:", session_calls)
+                session = request_session()
+                session_calls = 0
+
             url_param = 'output=tile&zoom=' + str(zoom) + '&x=' + str(x) + '&y=' + str(
                 y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
             url = base_url + url_param
 
-            # request_session(url)
+            file = get_response(url, session, stream=True)
+            session_calls += 1
 
             # Open an image, resize it to 512x512, and paste it into a canvas
-            file = session.get(url, headers=random_header(), proxies=proxies, stream=True).raw
+            # file = session.get(url, headers=random_header(), proxies=proxies, stream=True).raw
             im = Image.open(file)
             im = im.resize((512, 512))
             blank_image.paste(im, (512 * x, 512 * y))
 
             # Wait a little bit so you don't get blocked by Google
-            delay = new_random_delay()
-            sleep_in_milliseconds = float(delay) / 1000
-            sleep(sleep_in_milliseconds)
+            # delay = new_random_delay()
+            # delay = 0
+            # sleep_in_milliseconds = float(delay) / 1000
+            # sleep(sleep_in_milliseconds)
 
     if fallback:
         blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
@@ -348,11 +371,11 @@ def download_single_metadata_xml(storage_path, pano_id):
 
     url = base_url + pano_id
 
-    # request_session(url)
-
+    session = request_session()
+    req = get_response(url, session)
 
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
-    req = session.get(url, headers=random_header(), proxies=proxies)
+    # req = session.get(url, headers=random_header(), proxies=proxies)
     firstline = req.content.splitlines()[0]
 
     if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
@@ -450,4 +473,5 @@ df_meta = fetch_pano_ids_csv(metadata_csv_path)
 
 print("Fetching Panoramas")
 # run_scraper_and_log_results()
+
 run_scraper_and_log_results(df_meta)
