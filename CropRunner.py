@@ -20,6 +20,8 @@ import fnmatch
 import logging
 from utilities import *
 from PIL import Image, ImageDraw
+from matplotlib.pyplot import imshow, figure, gcf, gca, show
+import numpy as np
 
 # *****************************************
 # Update paths below                      *
@@ -173,7 +175,7 @@ def get_depth_at_location(path_to_depth_txt, xi, yi):
     print(filename)
 
     with open(filename, 'rb') as f:
-        depth = loadtxt(f)
+        depth = np.loadtxt(f)
 
     depth_x = depth[:, 0::3]
     depth_y = depth[:, 1::3]
