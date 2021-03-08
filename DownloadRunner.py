@@ -207,6 +207,11 @@ def download_panorama_images(storage_path, df_meta):
         if pano_id not in processed_ids:
             df_data_append = pd.DataFrame([[pano_id, downloaded]], columns=columns)
             df_data_append.to_csv(csv_pano_log_path, mode='a', header=False, index=False)
+        else:
+            df_pano_id_log = pd.read_csv(csv_pano_log_path)
+            df_pano_id_log.loc[df_pano_id_log['gsv_pano_id'] == pano_id, 'downloaded'] = downloaded
+            df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
+            processed_ids.append(pano_id)
 
         print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
               % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
