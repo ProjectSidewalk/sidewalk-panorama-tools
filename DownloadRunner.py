@@ -169,14 +169,19 @@ def download_panorama_images(storage_path, df_meta):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
     # log to csv for human readable info
     pano_list = df_meta['gsv_panorama_id']
-    success_count = 0
-    skipped_count = 0
-    fallback_success_count = 0
-    fail_count = 0
-    total_completed = 0
+    success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
+
+
     total_panos = len(pano_list)
+    # csv log file for pano_id failures, place in 'storage' folder (alongside pano results
+
+    # check if csv exists
+    # if exits, open dataframe
+
+    # if does not exist, create dataframe with headers
 
     for pano_id in pano_list:
+        # pano_id =  "KTm8O33nLTHzLDG3x0cIgQ"
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -234,6 +239,7 @@ def download_single_pano(storage_path, pano_id):
     # if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
     #     final_image_width = 16384
     #     final_image_height = 8192
+
     try:
         # (final_image_width, final_image_height) = extract_panowidthheight(pano_xml_path)
         (final_image_width, final_image_height) = extract_pano_width_height_csv(df_meta, pano_id)
@@ -292,7 +298,6 @@ def download_single_pano(storage_path, pano_id):
             session_calls += 1
 
             # Open an image, resize it to 512x512, and paste it into a canvas
-            # file = session.get(url, headers=random_header(), proxies=proxies, stream=True).raw
             im = Image.open(file)
             im = im.resize((512, 512))
             blank_image.paste(im, (512 * x, 512 * y))
