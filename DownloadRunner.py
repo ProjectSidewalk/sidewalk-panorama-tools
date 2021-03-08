@@ -3,6 +3,7 @@
 from SidewalkDB import *
 from sys import argv
 import os
+from os.path import exists
 import stat
 import http.client
 import json
@@ -167,18 +168,19 @@ def fetch_pano_ids_from_webserver():
 
 def download_panorama_images(storage_path, df_meta):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
-    # log to csv for human readable info
     pano_list = df_meta['gsv_panorama_id']
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
-
-
     total_panos = len(pano_list)
-    # csv log file for pano_id failures, place in 'storage' folder (alongside pano results
 
-    # check if csv exists
-    # if exits, open dataframe
-
-    # if does not exist, create dataframe with headers
+    # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
+    csv_pano_log_path = storage_location + "gsv_panorama_id_log.csv"
+    columns = ['gsv_pano_id', 'downloaded']
+    if not exists(csv_pano_log_path):
+        df_pano_id_log = pd.DataFrame(columns=columns)
+        df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
+    else:
+        df_pano_id_log = pd.read_csv(csv_pano_log_path)
+    processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
     for pano_id in pano_list:
         # pano_id =  "KTm8O33nLTHzLDG3x0cIgQ"
@@ -194,10 +196,18 @@ def download_panorama_images(storage_path, df_meta):
                 skipped_count += 1
             elif result_code == DownloadResult.failure:
                 fail_count += 1
+            downloaded = 0 if result_code == DownloadResult.failure else 1
+
         except Exception as e:
             fail_count += 1
+            downloaded = 0
             logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
         total_completed = success_count + fallback_success_count + fail_count + skipped_count
+
+        if pano_id not in processed_ids:
+            df_data_append = pd.DataFrame([[pano_id, downloaded]], columns=columns)
+            df_data_append.to_csv(csv_pano_log_path, mode='a', header=False, index=False)
+
         print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
               % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
         print("--- %s seconds ---" % (time.time() - start_time))
@@ -210,6 +220,7 @@ def download_panorama_images(storage_path, df_meta):
         fallback_success_count,
         fail_count,
         skipped_count)
+
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
 
