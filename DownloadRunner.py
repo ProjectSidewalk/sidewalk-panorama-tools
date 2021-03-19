@@ -183,7 +183,7 @@ def download_panorama_images(storage_path, df_meta):
     processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
     for pano_id in pano_list:
-        # pano_id =  "KTm8O33nLTHzLDG3x0cIgQ"
+        pano_id = "vzF4M9R5w4zhBlG6DaPsVw" # for simple testing purposes
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -216,6 +216,7 @@ def download_panorama_images(storage_path, df_meta):
         print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
               % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
         print("--- %s seconds ---" % (time.time() - start_time))
+        exit()
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -251,16 +252,16 @@ def download_single_pano(storage_path, pano_id):
     final_image_height = 6656
     final_image_width = 13312
 
-    # remove as not accessing server
-    # if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
-    #     final_image_width = 16384
-    #     final_image_height = 8192
+    if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
+        final_image_width = 16384
+        final_image_height = 8192
 
-    try:
-        # (final_image_width, final_image_height) = extract_panowidthheight(pano_xml_path)
-        (final_image_width, final_image_height) = extract_pano_width_height_csv(df_meta, pano_id)
-    except Exception as e:
-        print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
+    # try:
+    #     # (final_image_width, final_image_height) = extract_panowidthheight(pano_xml_path)
+    #     (final_image_width, final_image_height) = extract_pano_width_height_csv(df_meta, pano_id)
+    # except Exception as e:
+    #     print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
+
     final_im_dimension = (final_image_width, final_image_height)
 
     # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a
@@ -302,6 +303,7 @@ def download_single_pano(storage_path, pano_id):
 
     for y in range(int(round(image_height / 512.0))):
         for x in range(int(round(image_width / 512.0))):
+            print(x,y)
             if session_calls >= 85:
                 session = request_session()
                 session_calls = 0
