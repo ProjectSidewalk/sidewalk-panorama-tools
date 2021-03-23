@@ -18,6 +18,11 @@ import fnmatch
 import pandas as pd
 import random
 from config import headers_list, proxies
+import asyncio
+import aiohttp
+import backoff
+from io import BytesIO
+
 
 try:
     from xml.etree import cElementTree as ET
@@ -51,7 +56,6 @@ metadata_csv_path = "metadata/csv-metadata-seattle.csv"
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
 
-
 # comment out for now, will use csv for data
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
@@ -79,7 +83,7 @@ def request_session():
     :return:
     """
     session = requests.Session()
-    retry = Retry(total=10, connect=5, status_forcelist=[400, 429, 500, 502, 503, 504], backoff_factor=1)
+    retry = Retry(total=10, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
@@ -183,7 +187,7 @@ def download_panorama_images(storage_path, df_meta):
     processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
     for pano_id in pano_list:
-        pano_id = "vzF4M9R5w4zhBlG6DaPsVw" # for simple testing purposes
+        # pano_id = "vzF4M9R5w4zhBlG6DaPsVw"  # for simple testing purposes
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -216,7 +220,6 @@ def download_panorama_images(storage_path, df_meta):
         print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
               % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
         print("--- %s seconds ---" % (time.time() - start_time))
-        exit()
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -262,7 +265,7 @@ def download_single_pano(storage_path, pano_id):
     # except Exception as e:
     #     print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
 
-    final_im_dimension = (final_image_width, final_image_height)
+
 
     # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a
     # transparent image. This means we need to set the zoom level to 3. Google also returns a
@@ -274,6 +277,9 @@ def download_single_pano(storage_path, pano_id):
     url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                  'spherical&v=4&panoid='
 
+    url_zoom_5_edge = 'http://maps.google.com/cbk?output=tile&zoom=5&x=26&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
+                 'spherical&v=4&panoid='
+
     session = request_session()
 
     req_zoom_3 = get_response(url_zoom_3 + pano_id, session, stream=True)
@@ -282,11 +288,21 @@ def download_single_pano(storage_path, pano_id):
     req_zoom_5 = get_response(url_zoom_5 + pano_id, session, stream=True)
     im_zoom_5 = Image.open(req_zoom_5)
 
+    req_zoom_5_extreme = get_response(url_zoom_5_edge + pano_id, session, stream=True)
+    im_zoom_5_extreme = Image.open(req_zoom_5_extreme)
+
     if im_zoom_5.convert("L").getextrema() != (0, 0):
         fallback = False
         zoom = 5
-        image_width = final_image_width
-        image_height = final_image_height
+        # check how far the GSV image canvas goes to (will decide image final width)
+        if im_zoom_5_extreme.convert("L").getextrema() != (0, 0):
+            image_width = final_image_width
+            image_height = final_image_height
+            print("Image set to large size")
+        else:
+            image_width = 13312
+            image_height = 6656
+            print("Image set to smaller size, final_im_dimension updates")
     elif im_zoom_3.convert("L").getextrema() != (0, 0):
         fallback = True
         zoom = 3
@@ -295,37 +311,55 @@ def download_single_pano(storage_path, pano_id):
     else:
         return DownloadResult.failure
 
+    final_im_dimension = (image_width, image_height)
+
+    def generate_gsv_urls(zoom):
+        sites_gsv = []
+        for y in range(int(round(image_height / 512.0))):
+            for x in range(int(round(image_width / 512.0))):
+                url_param = 'output=tile&zoom=' + str(zoom) + '&x=' + str(x) + '&y=' + str(
+                    y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
+                url = base_url + url_param
+                sites_gsv.append((str(x) + " " + str(y), url))
+        return sites_gsv
+
+    @backoff.on_exception(backoff.expo, (aiohttp.ClientError, aiohttp.ClientResponseError,
+                                         aiohttp.ServerConnectionError, aiohttp.ServerDisconnectedError,
+                                         aiohttp.ClientHttpProxyError), max_tries=10)
+    async def download_single_gsv(session, url):
+        async with session.get(url[1], proxy="http://83.149.70.159:13012") as response:
+            head_content = response.headers['Content-Type']
+            # ensures content type is an image
+            if head_content[0:10] != "image/jpeg":
+                raise aiohttp.ClientResponseError(response.request_info, response.history)
+            image = await response.content.read()
+            response.close()
+            return [url[0], image]
+
+    @backoff.on_exception(backoff.expo,
+                          (aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
+                           aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError), max_tries=10)
+    async def download_all_gsv_images(sites):
+        conn = aiohttp.TCPConnector(limit=10)
+        async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
+            tasks = []
+            for url in sites:
+                task = asyncio.ensure_future(download_single_gsv(session, url))
+                tasks.append(task)
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+            return responses
+
     im_dimension = (image_width, image_height)
     blank_image = Image.new('RGB', im_dimension, (0, 0, 0, 0))
+    sites = generate_gsv_urls(zoom)
+    all_pano_images = asyncio.get_event_loop().run_until_complete(download_all_gsv_images(sites))
 
-    session_calls = 2
-    i = 0
-
-    for y in range(int(round(image_height / 512.0))):
-        for x in range(int(round(image_width / 512.0))):
-            print(x,y)
-            if session_calls >= 85:
-                session = request_session()
-                session_calls = 0
-
-            url_param = 'output=tile&zoom=' + str(zoom) + '&x=' + str(x) + '&y=' + str(
-                y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
-            url = base_url + url_param
-
-            file = get_response(url, session, stream=True)
-            session_calls += 1
-
-            # Open an image, resize it to 512x512, and paste it into a canvas
-            im = Image.open(file)
-            im = im.resize((512, 512))
-            blank_image.paste(im, (512 * x, 512 * y))
-
-            # Wait a little bit so you don't get blocked by Google
-            # delay = new_random_delay()
-            # delay = 0
-            # sleep_in_milliseconds = float(delay) / 1000
-            # sleep(sleep_in_milliseconds)
-
+    for cell_image in all_pano_images:
+        img = Image.open(BytesIO(cell_image[1]))
+        img = img.resize((512, 512))
+        x, y = int(str.split(cell_image[0])[0]), int(str.split(cell_image[0])[1])
+        blank_image.paste(img, (512 * x, 512 * y))
+    # could be failing here, different used and final dimensions...
     if fallback:
         blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
         blank_image.save(out_image_name, 'jpeg')
@@ -335,6 +369,7 @@ def download_single_pano(storage_path, pano_id):
         blank_image.save(out_image_name, 'jpeg')
         os.chmod(out_image_name, 0o664)
         return DownloadResult.success
+
 
 # Broken, no longer needed, reference csv instead
 def download_panorama_metadata_xmls(storage_path, pano_list):
@@ -409,6 +444,7 @@ def download_single_metadata_xml(storage_path, pano_id):
 
         return DownloadResult.success
 
+
 # No longer available, remove....
 def generate_depthmapfiles(path_to_scrapes):
     success_count = 0
@@ -474,6 +510,7 @@ def run_scraper_and_log_results(df_meta):
     total_duration = int(round((depth_end_time - start_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d" % (total_duration))
+
 
 # replace with call to make metadata dataframe
 print("Fetching pano-ids")
