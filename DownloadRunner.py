@@ -337,8 +337,8 @@ def download_single_pano(storage_path, pano_id):
             response.close()
             return [url[0], image]
 
-    @backoff.on_exception(backoff.expo, aiohttp.web.HTTPServerError
-                          (aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
+    @backoff.on_exception(backoff.expo,
+                          (aiohttp.web.HTTPServerError, aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
                            aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_all_gsv_images(sites):
         conn = aiohttp.TCPConnector(limit=10)
