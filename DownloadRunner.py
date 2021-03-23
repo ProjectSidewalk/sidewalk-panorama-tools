@@ -327,7 +327,7 @@ def download_single_pano(storage_path, pano_id):
                                          aiohttp.ServerConnectionError, aiohttp.ServerDisconnectedError,
                                          aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_single_gsv(session, url):
-        async with session.get(url[1], proxy="http://83.149.70.159:13012") as response:
+        async with session.get(url[1], proxy="http://83.149.70.159:13012", headers=random_header()) as response:
             head_content = response.headers['Content-Type']
             # ensures content type is an image
             if head_content[0:10] != "image/jpeg":
@@ -359,7 +359,7 @@ def download_single_pano(storage_path, pano_id):
         img = img.resize((512, 512))
         x, y = int(str.split(cell_image[0])[0]), int(str.split(cell_image[0])[1])
         blank_image.paste(img, (512 * x, 512 * y))
-    # could be failing here, different used and final dimensions...
+
     if fallback:
         blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
         blank_image.save(out_image_name, 'jpeg')
