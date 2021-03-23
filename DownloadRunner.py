@@ -17,7 +17,7 @@ from PIL import Image
 import fnmatch
 import pandas as pd
 import random
-from config import headers_list, proxies
+from config import headers_list, proxies, thread_count
 import asyncio
 import aiohttp
 from aiohttp import web
@@ -341,7 +341,7 @@ def download_single_pano(storage_path, pano_id):
                           (aiohttp.web.HTTPServerError, aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
                            aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_all_gsv_images(sites):
-        conn = aiohttp.TCPConnector(limit=10)
+        conn = aiohttp.TCPConnector(limit=thread_count)
         async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
             tasks = []
             for url in sites:
