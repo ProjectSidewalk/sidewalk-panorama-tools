@@ -20,6 +20,7 @@ import random
 from config import headers_list, proxies
 import asyncio
 import aiohttp
+from aiohttp import web
 import backoff
 from io import BytesIO
 
@@ -323,7 +324,7 @@ def download_single_pano(storage_path, pano_id):
                 sites_gsv.append((str(x) + " " + str(y), url))
         return sites_gsv
 
-    @backoff.on_exception(backoff.expo, (aiohttp.ClientError, aiohttp.ClientResponseError,
+    @backoff.on_exception(backoff.expo, (aiohttp.web.HTTPServerError, aiohttp.ClientError, aiohttp.ClientResponseError,
                                          aiohttp.ServerConnectionError, aiohttp.ServerDisconnectedError,
                                          aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_single_gsv(session, url):
@@ -336,7 +337,7 @@ def download_single_pano(storage_path, pano_id):
             response.close()
             return [url[0], image]
 
-    @backoff.on_exception(backoff.expo,
+    @backoff.on_exception(backoff.expo, aiohttp.web.HTTPServerError
                           (aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
                            aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_all_gsv_images(sites):
