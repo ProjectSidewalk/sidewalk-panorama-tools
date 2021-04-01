@@ -114,6 +114,16 @@ def check_download_failed_previously(panoId):
         return False
 
 
+def progress_check(csv_pano_log_path):
+    # temporary skip/speed up of processed panos
+    df_pano_id_check = pd.read_csv(csv_pano_log_path)
+    df_id_set = set(df_pano_id_check['gsv_pano_id'])
+    total_processed = len(df_pano_id_check.index)
+    total_success = df_pano_id_check['downloaded'].sum()
+    total_failed = total_processed - total_success
+    return df_id_set, total_processed, total_success, total_failed
+
+
 def extract_pano_width_height_csv(df_meta, pano_id):
     pano_id_row = df_meta[df_meta['gsv_panorama_id'] == pano_id]
     image_width = int(pano_id_row['image_width'])
@@ -187,8 +197,11 @@ def download_panorama_images(storage_path, df_meta):
         df_pano_id_log = pd.read_csv(csv_pano_log_path)
     processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
+    df_id_set, total_completed, success_count, fail_count = progress_check(csv_pano_log_path)
+
     for pano_id in pano_list:
-        # pano_id = "vzF4M9R5w4zhBlG6DaPsVw"  # for simple testing purposes
+        if pano_id in df_id_set:
+            continue
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -334,7 +347,6 @@ def download_single_pano(storage_path, pano_id):
             if head_content[0:10] != "image/jpeg":
                 raise aiohttp.ClientResponseError(response.request_info, response.history)
             image = await response.content.read()
-            response.close()
             return [url[0], image]
 
     @backoff.on_exception(backoff.expo,
