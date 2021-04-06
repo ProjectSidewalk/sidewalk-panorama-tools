@@ -28,7 +28,7 @@ import numpy as np
 # *****************************************
 
 # Path to CSV data from database
-csv_export_path = "metadata/csv-metadata-seattle_label_data_reduced.csv"
+csv_export_path = "metadata/csv-metadata-seattle_label_data.csv"
 # Path to panoramas downloaded using DownloadRunner.py
 gsv_pano_path = "/media/robert/1TB HDD/testing"
 # Path to location for saving the crops
@@ -391,8 +391,6 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
             continue
 
         pano_id = row[0]
-        if pano_id != "Cy9euCtmKha70JFPYXhcuw":
-            continue
         print(pano_id)
 
         sv_image_x = float(row[1])
