@@ -345,12 +345,12 @@ def predict_crop_size(x, y, im_width, im_height, sv_image_y):
 
 def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_filename, draw_mark=False):
 
-    im_width = GSVImage.GSVImage.im_width
-    im_height = GSVImage.GSVImage.im_height
-    
     im = Image.open(path_to_image)
     draw = ImageDraw.Draw(im)
-    # sv_image_x = sv_image_x - 100
+
+    im_width = im.size[0]
+    im_height =im.size[1]
+
     x = ((float(PanoYawDeg) / 360) * im_width + sv_image_x) % im_width
     y = im_height / 2 - sv_image_y
 
@@ -411,8 +411,6 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
         pano_img_path = os.path.join(path_to_gsv_scrapes, pano_id[:2], pano_id + ".jpg")
         # pano_depth_path = os.path.join(path_to_gsv_scrapes, pano_id[:2], pano_id + ".depth.txt")
         # print(pano_xml_path)  # pano_yaw_deg = float(extract_panoyawdeg(pano_xml_path))
-
-
 
         # Check that metadata exists for this image; if not skip it
         # try:
