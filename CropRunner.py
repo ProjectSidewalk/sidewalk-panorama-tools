@@ -414,16 +414,12 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
             if not os.path.isdir(destination_folder):
                 os.makedirs(destination_folder)
 
-            # crop_destination = os.path.join(destination_dir, str(label_type), str(counter) + ".jpg")
             crop_destination = os.path.join(destination_dir, str(label_type), str(label_id) + ".jpg")
 
 
             if not os.path.exists(crop_destination):
                 make_single_crop(pano_img_path, sv_image_x, sv_image_y, pano_yaw_deg, crop_destination, draw_mark=mark_label)
-                # print("Successfully extracted crop to " + str(counter) + ".jpg")
                 print("Successfully extracted crop to " + str(label_id) + ".jpg")
-                # logging.info(str(counter) + ".jpg" + " " + pano_id + " " + str(sv_image_x)
-                #              + " " + str(sv_image_y) + " " + str(pano_yaw_deg) + " " + str(label_id))
                 logging.info(str(label_id) + ".jpg" + " " + pano_id + " " + str(sv_image_x)
                              + " " + str(sv_image_y) + " " + str(pano_yaw_deg) + " " + str(label_id))
                 logging.info("---------------------------------------------------")
