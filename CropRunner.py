@@ -349,9 +349,12 @@ def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_f
     im_height = im.size[1]
     print(im_width, im_height)
 
+    predicted_crop_size = predict_crop_size(sv_image_y)
+    crop_width = predicted_crop_size
+    crop_height = predicted_crop_size
+
     # Work out scaling factor based on image dimensions
     scaling_factor = im_width / 13312
-
     sv_image_x *= scaling_factor
     sv_image_y *= scaling_factor
 
@@ -365,9 +368,7 @@ def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_f
 
     print("Plotting at " + str(x) + "," + str(y) + " using yaw " + str(PanoYawDeg))
 
-    predicted_crop_size = predict_crop_size(sv_image_y)
-    crop_width = predicted_crop_size
-    crop_height = predicted_crop_size
+
     print(x, y)
     top_left_x = x - crop_width / 2
     top_left_y = y - crop_height / 2
@@ -415,7 +416,6 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
                 os.makedirs(destination_folder)
 
             crop_destination = os.path.join(destination_dir, str(label_type), str(label_id) + ".jpg")
-
 
             if not os.path.exists(crop_destination):
                 make_single_crop(pano_img_path, sv_image_x, sv_image_y, pano_yaw_deg, crop_destination, draw_mark=mark_label)
