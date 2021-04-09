@@ -295,9 +295,9 @@ def predict_crop_size(sv_image_y):
 
     if distance > 0:
         crop_size = 8725.6 * (distance ** -1.192)
-    elif crop_size > 1500 or distance == 0:
+    if crop_size > 1500 or distance == 0:
         crop_size = 1500
-    elif crop_size < 50:
+    if crop_size < 50:
         crop_size = 50
 
     return crop_size
