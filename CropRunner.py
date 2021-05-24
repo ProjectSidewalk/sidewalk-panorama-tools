@@ -27,12 +27,12 @@ import numpy as np
 # Update paths below                      *
 # *****************************************
 
-# Path to CSV data from database
+# Path to CSV data from database - Place in 'metadata'
 csv_export_path = "metadata/csv-metadata-seattle_label_data.csv"
-# Path to panoramas downloaded using DownloadRunner.py
-gsv_pano_path = "/media/robert/1TB HDD/testing"
+# Path to panoramas downloaded using DownloadRunner.py. Reference correct directory
+gsv_pano_path = "/data/gsv_downloads"
 # Path to location for saving the crops
-destination_path = "Crops/"
+destination_path = "/data/output_crops/"
 
 # Mark the center of the crop?
 mark_center = True
@@ -202,7 +202,7 @@ def predict_crop_size_by_position(x, y, im_width, im_height):
 
     return crop_size
 
-
+# Not currently used so commented out. See simplified function below.
 # def predict_crop_size(x, y, im_width, im_height, path_to_depth_file):
 #     """
 #     # Calculate distance from point to image center
@@ -302,7 +302,7 @@ def predict_crop_size(sv_image_y):
 
     return crop_size
 
-
+# Not currently used so commented out. See simple implementation below.
 # def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_filename, path_to_depth, draw_mark=False):
 #     im_width = GSVImage.GSVImage.im_width
 #     im_height = GSVImage.GSVImage.im_height
@@ -358,7 +358,6 @@ def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_f
     sv_image_x *= scaling_factor
     sv_image_y *= scaling_factor
 
-
     x = ((float(PanoYawDeg) / 360) * im_width + sv_image_x) % im_width
     y = im_height / 2 - sv_image_y
 
@@ -367,7 +366,6 @@ def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_f
         draw.ellipse((x - r, y - r, x + r, y + r), fill=128)
 
     print("Plotting at " + str(x) + "," + str(y) + " using yaw " + str(PanoYawDeg))
-
 
     print(x, y)
     top_left_x = x - crop_width / 2
