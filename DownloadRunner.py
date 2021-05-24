@@ -2,6 +2,7 @@
 
 from SidewalkDB import *
 import os
+from sys import argv
 from os.path import exists
 import stat
 import http.client
@@ -61,16 +62,7 @@ metadata_csv_path = "metadata/csv-metadata-seattle.csv"  # Path to csv containin
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
 
-# comment out for now, will use csv for data
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
-
-
-def new_random_delay():
-    """
-    New random delay value generated
-    :return: int between 50 and 250 in steps of 3
-    """
-    return random.randrange(100, 200, 3)
 
 
 # Choose header at random from the list
