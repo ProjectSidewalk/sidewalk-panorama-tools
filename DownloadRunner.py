@@ -211,10 +211,7 @@ def download_panorama_images(storage_path, df_meta):
     processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
     df_id_set, total_completed, success_count, fail_count = progress_check(csv_pano_log_path)
-    pano_list = ['Ej9LLVoYjEPowe8LpOYnug']
     for pano_id in pano_list:
-        # if pano_id in df_id_set:
-        #     continue
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -541,4 +538,4 @@ df_meta = fetch_pano_ids_csv(metadata_csv_path)
 print("Fetching Panoramas")
 # run_scraper_and_log_results()
 
-run_scraper_and_log_results(df_meta)
+run_scraper_and_log_results(df_meta)  # pass csv file to function
