@@ -132,6 +132,12 @@ def progress_check(csv_pano_log_path):
 
 
 def extract_pano_width_height_csv(df_meta, pano_id):
+    """
+    Gets the pano width and height from the provided csv
+    :param df_meta: input dataframe of GSV metadata
+    :param pano_id: GSV pano id to be queried
+    :return: image width, image height
+    """
     pano_id_row = df_meta[df_meta['gsv_panorama_id'] == pano_id]
     image_width = int(pano_id_row['image_width'])
     image_height = int(pano_id_row['image_height'])
