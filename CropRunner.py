@@ -45,6 +45,7 @@ except ImportError as e:
     from xml.etree import ElementTree as ET
 
 
+# Not currently used, data extracted from csv file. Keep for future reference.
 def extract_panoyawdeg(path_to_metadata_xml):
     pano = {}
     pano_xml = open(path_to_metadata_xml, 'rb')
@@ -154,6 +155,7 @@ def crop_box_helper(path_to_scrapes, path_to_labeldata_csv, target_label_type=2)
             show()
 
 
+# Not currently used, data extracted from csv file. Keep for future reference.
 def extract_tiltyawdeg(path_to_metadata_xml):
     pano = {}
     pano_xml = open(path_to_metadata_xml, 'rb')
@@ -167,6 +169,7 @@ def extract_tiltyawdeg(path_to_metadata_xml):
     return pano['projection_properties']['tilt_yaw_deg']
 
 
+# Not currently used, data extracted from csv file. Keep for future reference.
 def get_depth_at_location(path_to_depth_txt, xi, yi):
     depth_location = path_to_depth_txt
 
@@ -186,6 +189,7 @@ def get_depth_at_location(path_to_depth_txt, xi, yi):
     return val_x, val_y, val_z
 
 
+# Not currently usedd.
 def predict_crop_size_by_position(x, y, im_width, im_height):
     print("Predicting crop size by panorama position")
     dist_to_center = math.sqrt((x - im_width / 2) ** 2 + (y - im_height / 2) ** 2)
@@ -289,7 +293,6 @@ def predict_crop_size(sv_image_y):
 
     print("Min dist was "+str(min_dist))
     """
-
     crop_size = 0
     distance = max(0, 19.80546390 + 0.01523952 * sv_image_y)
 
@@ -371,7 +374,6 @@ def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_f
     top_left_x = x - crop_width / 2
     top_left_y = y - crop_height / 2
     cropped_square = im.crop((top_left_x, top_left_y, top_left_x + crop_width, top_left_y + crop_height))
-
     cropped_square.save(output_filename)
 
     return
@@ -432,4 +434,4 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
 
 
 bulk_extract_crops(csv_export_path, gsv_pano_path, destination_path, mark_label=mark_center)
-# crop_box_helper(gsv_pano_path, csv_export_path)
+# crop_box_helper(gsv_pano_path, csv_export_path) # not tested and validated with new code
