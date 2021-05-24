@@ -76,8 +76,7 @@ def random_header():
 # Server errors while using proxy - https://findwork.dev/blog/advanced-usage-python-requests-timeouts-retries-hooks/
 def request_session():
     """
-
-    :return:
+    :return: session
     """
     session = requests.Session()
     retry = Retry(total=10, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
@@ -89,13 +88,12 @@ def request_session():
 
 def get_response(url, session, stream=False):
     """
-
-    :param url:
-    :param session:
-    :param stream:
-    :return:
+    Uses requests library to get response
+    :param url: url to visit
+    :param session: requests session
+    :param stream: Default False
+    :return: response
     """
-
     response = session.get(url, headers=random_header(), proxies=proxies, stream=stream)
 
     if not stream:
@@ -105,6 +103,11 @@ def get_response(url, session, stream=False):
 
 
 def check_download_failed_previously(panoId):
+    """
+    Check if image had a previous failure during downlaod
+    :param panoId: GSV pano ID to be checked
+    :return: Boolean value
+    """
     if panoId in open('scrape.log').read():
         return True
     else:
@@ -112,6 +115,13 @@ def check_download_failed_previously(panoId):
 
 
 def progress_check(csv_pano_log_path):
+    """
+    Checks download status via a csv (Has GSV been visited, success/failure downloading)
+    This speeds things up instead of trying to re-download broken links or images.
+    NB: This will not check if the failure was due to internet connection being unavailable etc. so use with caution.
+    :param csv_pano_log_path:
+    :return: pano_ids processed, total count of processed, count of success, count of failure
+    """
     # temporary skip/speed up of processed panos
     df_pano_id_check = pd.read_csv(csv_pano_log_path)
     df_id_set = set(df_pano_id_check['gsv_pano_id'])
