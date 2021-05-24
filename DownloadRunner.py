@@ -1,7 +1,6 @@
 # !/usr/bin/python3
 
 from SidewalkDB import *
-from sys import argv
 import os
 from os.path import exists
 import stat
@@ -43,6 +42,11 @@ DownloadResult = Enum(('skipped', 'success', 'fallback_success', 'failure'))
 
 delay = 0
 
+# Check proxy settings, if none provided (default) set proxies to False
+if proxies['http'] == "http://" or proxies['https'] == "https://":
+    proxies['http'] = None
+    proxies['https'] = None
+
 # if len(argv) != 3:
 #     print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
 #     print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
@@ -52,8 +56,8 @@ delay = 0
 
 # sidewalk_server_fqdn = argv[1]
 sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu"
-storage_location = "testing/"
-metadata_csv_path = "metadata/csv-metadata-seattle.csv"
+storage_location = "testing/"  # The path to where you want to store downloaded GSV panos
+metadata_csv_path = "metadata/csv-metadata-seattle.csv"  # Path to csv containing all required metadata
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
 
@@ -99,6 +103,7 @@ def get_response(url, session, stream=False):
     :param stream:
     :return:
     """
+
     response = session.get(url, headers=random_header(), proxies=proxies, stream=stream)
 
     if not stream:
@@ -198,10 +203,10 @@ def download_panorama_images(storage_path, df_meta):
     processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
     df_id_set, total_completed, success_count, fail_count = progress_check(csv_pano_log_path)
-
+    pano_list = ['Ej9LLVoYjEPowe8LpOYnug']
     for pano_id in pano_list:
-        if pano_id in df_id_set:
-            continue
+        # if pano_id in df_id_set:
+        #     continue
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -273,19 +278,6 @@ def download_single_pano(storage_path, pano_id):
         final_image_width = 16384
         final_image_height = 8192
 
-    # try:
-    #     # (final_image_width, final_image_height) = extract_panowidthheight(pano_xml_path)
-    #     (final_image_width, final_image_height) = extract_pano_width_height_csv(df_meta, pano_id)
-    # except Exception as e:
-    #     print("IMAGEDOWNLOAD - WARN - using fallback pano size for %s" % (pano_id))
-
-
-
-    # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a
-    # transparent image. This means we need to set the zoom level to 3. Google also returns a
-    # transparent image if there is no imagery. So check at both zoom levels. How to check:
-    # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-
     url_zoom_3 = 'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                  'spherical&v=4&panoid='
     url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
@@ -341,6 +333,7 @@ def download_single_pano(storage_path, pano_id):
                                          aiohttp.ServerConnectionError, aiohttp.ServerDisconnectedError,
                                          aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_single_gsv(session, url):
+
         async with session.get(url[1], proxy=proxies["http"], headers=random_header()) as response:
             head_content = response.headers['Content-Type']
             # ensures content type is an image
