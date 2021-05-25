@@ -216,7 +216,10 @@ def download_panorama_images(storage_path, df_meta):
     processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
     df_id_set, total_completed, success_count, fail_count = progress_check(csv_pano_log_path)
+
     for pano_id in pano_list:
+        if pano_id in df_id_set:
+            continue
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -314,16 +317,21 @@ def download_single_pano(storage_path, pano_id):
         if im_zoom_5_extreme.convert("L").getextrema() != (0, 0):
             image_width = final_image_width
             image_height = final_image_height
-            print("Image set to large size")
+
+            print("IMAGEDOWNLOAD - using full size for pano: " + pano_id + ", final_im_dimension updated to: " +
+                  str(image_width) + "x" + str(image_height))
         else:
             image_width = 13312
             image_height = 6656
-            print("Image set to smaller size, final_im_dimension updates")
+            print("IMAGEDOWNLOAD - using medium/older size for pano: " + pano_id + ", final_im_dimension updated to: "
+                  + str(image_width) + "x" + str(image_height))
     elif im_zoom_3.convert("L").getextrema() != (0, 0):
         fallback = True
         zoom = 3
         image_width = 3328
         image_height = 1664
+        print("IMAGEDOWNLOAD - WARN - using fallback pano size for pano: " + pano_id +
+              ", final_im_dimension updated to: " + str(image_width) + "x" + str(image_height))
     else:
         return DownloadResult.failure
 
