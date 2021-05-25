@@ -70,11 +70,21 @@ Additional settings can be configured for `DownloadRunner.py` in the configurati
 
 ### 2.3 Additional Functions To Be Aware Of
 
-When running `DownloadRunner.py` checks are carried out to see if images have been downloaded already via the filesystem. This can slow things down if each time you re-start `DownloadRunner.py` it believes an image has not yet been downloaded and retries, but this image is not available or has an error. To prevent this additional functionality was added via the functions `check_download_failed_previously` and `progress_check()`. 
+When running `DownloadRunner.py` checks are carried out to see if images have been downloaded already via the filesystem. This can slow things down if each time you re-start `DownloadRunner.py` it believes an image has not yet been downloaded and retries, but this image is not available or has an error. To prevent this additional functionality was added via the functions `check_download_failed_previously()` and `progress_check()`. 
 
 These functions simply keep track of which panorama ids have been visited previously, and if the download resulted in success or failure. Be aware while this does speed up the process of multiple runs of DownloadRunner.py (when unable to run in one continuous session) this can cause issues if your internet connection fails while running this script. This is as it may believe it has visited the link and failed, rather than a connection error being the root cause of failure. Logic could be added in the future to discern if it is a network error causing the issue. 
 
-## 3.0 Class Labels
+## 3.0 Suggested Improvements
+
+* `CropRunner.py` - implement multi core usage when creating crops. Currently runs on a single core, most modern machines
+have more than one core so would give a speed up for cropping 10's of thousands of images and objects.
+* Add a flag in csv/database for GSV panorama ids which are no longer valid (should be easy to do using `gsv_panorama_id_log.csv`).
+* Add logic to `progress_check()` function so that it can register if their is a network failure and does not log the pano id as visited and failed. 
+* Filtering of tutorial labels from the csv file containing the metadata (already implemented for the Project Sidewalk database).
+* Project Sidewalk group to delete old or commented code once they decide it is no longer required (all code which used the previously available XML data).
+
+
+## 4.0 Class Labels
 
 Note that the numbers in the `label_type_id` column correspond to these label types:
 | label_type_id  | label type |
@@ -86,3 +96,4 @@ Note that the numbers in the `label_type_id` column correspond to these label ty
 | 5 | Other |
 | 6 | Can't see the sidewalk |
 | 7 | No Sidewalk |
+
