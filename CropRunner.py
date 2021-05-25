@@ -30,9 +30,9 @@ import numpy as np
 # Path to CSV data from database - Place in 'metadata'
 csv_export_path = "metadata/csv-metadata-seattle_label_data.csv"
 # Path to panoramas downloaded using DownloadRunner.py. Reference correct directory
-gsv_pano_path = "/data/gsv_downloads"
+gsv_pano_path = "download_data/"
 # Path to location for saving the crops
-destination_path = "/data/output_crops/"
+destination_path = "/crops/"
 
 # Mark the center of the crop?
 mark_center = True
@@ -426,12 +426,12 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
         else:
             no_pano_fail += 1
             print("Panorama image not found.")
-            logging.warn("Skipped label id " + str(label_id) + " due to missing image.")
+            logging.warning("Skipped label id " + str(label_id) + " due to missing image.")
 
     print("Finished.")
     print(str(no_pano_fail) + " extractions failed because panorama image was not found.")
     print(str(no_metadata_fail) + " extractions failed because metadata was not found.")
 
 
-bulk_extract_crops(csv_export_path, gsv_pano_path, destination_path, mark_label=mark_center)
+bulk_extract_crops(csv_export_path, gsv_pano_path, destination_path, mark_label=False)
 # crop_box_helper(gsv_pano_path, csv_export_path) # not tested and validated with new code
