@@ -189,7 +189,7 @@ def get_depth_at_location(path_to_depth_txt, xi, yi):
     return val_x, val_y, val_z
 
 
-# Not currently usedd.
+# Not currently used.
 def predict_crop_size_by_position(x, y, im_width, im_height):
     print("Predicting crop size by panorama position")
     dist_to_center = math.sqrt((x - im_width / 2) ** 2 + (y - im_height / 2) ** 2)
@@ -345,6 +345,16 @@ def predict_crop_size(sv_image_y):
 #     return
 
 def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_filename, draw_mark=False):
+    """
+    Makes a crop around the object of interest
+    :param path_to_image: where the GSV pano is stored
+    :param sv_image_x: position
+    :param sv_image_y: position
+    :param PanoYawDeg: heading
+    :param output_filename: name of file for saving
+    :param draw_mark: if a dot should be drawn in the centre of the object/image
+    :return: none
+    """
     im = Image.open(path_to_image)
     draw = ImageDraw.Draw(im)
 
