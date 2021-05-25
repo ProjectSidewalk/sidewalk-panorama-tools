@@ -2,6 +2,7 @@
 
 from SidewalkDB import *
 import os
+from sys import argv
 from os.path import exists
 import stat
 import http.client
@@ -31,11 +32,11 @@ except ImportError as e:
 
 
 class Enum(object):
-    def __init__(self, tupleList):
-        self.tupleList = tupleList
+    def __init__(self, tuplelist):
+        self.tuplelist = tuplelist
 
     def __getattr__(self, name):
-        return self.tupleList.index(name)
+        return self.tuplelist.index(name)
 
 
 DownloadResult = Enum(('skipped', 'success', 'fallback_success', 'failure'))
@@ -47,6 +48,7 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
     proxies['http'] = None
     proxies['https'] = None
 
+# Not currently used as all the required pano ids should be retrieved from a provided csv file.
 # if len(argv) != 3:
 #     print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
 #     print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
@@ -54,14 +56,13 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
 #     print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
 #     exit(0)
 
-# sidewalk_server_fqdn = argv[1]
+# sidewalk_server_fqdn = argv[1]  # Not currently used
 sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu"
-storage_location = "testing/"  # The path to where you want to store downloaded GSV panos
-metadata_csv_path = "metadata/csv-metadata-seattle.csv"  # Path to csv containing all required metadata
+storage_location = "download_data/"  # The path to where you want to store downloaded GSV panos
+metadata_csv_path = "metadata/sample_csv-metadata-seattle.csv"  # Path to csv containing all required metadata
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
 
-# comment out for now, will use csv for data
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
 
@@ -73,8 +74,12 @@ def new_random_delay():
     return random.randrange(100, 200, 3)
 
 
-# Choose header at random from the list
 def random_header():
+    """
+    Takes the headers provided from the config file and randomly selections and returns one each time this function
+    is called.
+    :return: a randomly selected header file.
+    """
     headers = random.choice(headers_list)
     return headers
 
@@ -84,8 +89,8 @@ def random_header():
 # Server errors while using proxy - https://findwork.dev/blog/advanced-usage-python-requests-timeouts-retries-hooks/
 def request_session():
     """
-
-    :return:
+    Sets up a request session to bes used for duration of scripts operation.
+    :return: session
     """
     session = requests.Session()
     retry = Retry(total=10, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
@@ -97,13 +102,12 @@ def request_session():
 
 def get_response(url, session, stream=False):
     """
-
-    :param url:
-    :param session:
-    :param stream:
-    :return:
+    Uses requests library to get response
+    :param url: url to visit
+    :param session: requests session
+    :param stream: Default False
+    :return: response
     """
-
     response = session.get(url, headers=random_header(), proxies=proxies, stream=stream)
 
     if not stream:
@@ -113,6 +117,11 @@ def get_response(url, session, stream=False):
 
 
 def check_download_failed_previously(panoId):
+    """
+    Check if image had a previous failure during downlaod
+    :param panoId: GSV pano ID to be checked
+    :return: Boolean value
+    """
     if panoId in open('scrape.log').read():
         return True
     else:
@@ -120,6 +129,13 @@ def check_download_failed_previously(panoId):
 
 
 def progress_check(csv_pano_log_path):
+    """
+    Checks download status via a csv (Has GSV been visited, success/failure downloading)
+    This speeds things up instead of trying to re-download broken links or images.
+    NB: This will not check if the failure was due to internet connection being unavailable etc. so use with caution.
+    :param csv_pano_log_path:
+    :return: pano_ids processed, total count of processed, count of success, count of failure
+    """
     # temporary skip/speed up of processed panos
     df_pano_id_check = pd.read_csv(csv_pano_log_path)
     df_id_set = set(df_pano_id_check['gsv_pano_id'])
@@ -130,13 +146,19 @@ def progress_check(csv_pano_log_path):
 
 
 def extract_pano_width_height_csv(df_meta, pano_id):
+    """
+    Gets the pano width and height from the provided csv
+    :param df_meta: input dataframe of GSV metadata
+    :param pano_id: GSV pano id to be queried
+    :return: image width, image height
+    """
     pano_id_row = df_meta[df_meta['gsv_panorama_id'] == pano_id]
     image_width = int(pano_id_row['image_width'])
     image_height = int(pano_id_row['image_height'])
     return image_width, image_height
 
 
-# Broken, needs to reference csv for width and height
+# Not currently used - data retrieved from csv
 def extract_panowidthheight(path_to_metadata_xml):
     pano = {}
     pano_xml = open(path_to_metadata_xml, 'rb')
@@ -173,7 +195,6 @@ def fetch_pano_ids_from_webserver():
     conn.request("GET", "/adminapi/labels/panoid")
     r1 = conn.getresponse()
     data = r1.read()
-    # print(data)
     jsondata = json.loads(data)
 
     for value in jsondata["features"]:
@@ -203,10 +224,10 @@ def download_panorama_images(storage_path, df_meta):
     processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
     df_id_set, total_completed, success_count, fail_count = progress_check(csv_pano_log_path)
-    pano_list = ['Ej9LLVoYjEPowe8LpOYnug']
+
     for pano_id in pano_list:
-        # if pano_id in df_id_set:
-        #     continue
+        if pano_id in df_id_set:
+            continue
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -256,7 +277,7 @@ def download_panorama_images(storage_path, df_meta):
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
 
-    pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
+    pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")  # No longer used
 
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
@@ -304,22 +325,32 @@ def download_single_pano(storage_path, pano_id):
         if im_zoom_5_extreme.convert("L").getextrema() != (0, 0):
             image_width = final_image_width
             image_height = final_image_height
-            print("Image set to large size")
+
+            print("IMAGEDOWNLOAD - using full size for pano: " + pano_id + ", final_im_dimension updated to: " +
+                  str(image_width) + "x" + str(image_height))
         else:
             image_width = 13312
             image_height = 6656
-            print("Image set to smaller size, final_im_dimension updates")
+            print("IMAGEDOWNLOAD - using medium/older size for pano: " + pano_id + ", final_im_dimension updated to: "
+                  + str(image_width) + "x" + str(image_height))
     elif im_zoom_3.convert("L").getextrema() != (0, 0):
         fallback = True
         zoom = 3
         image_width = 3328
         image_height = 1664
+        print("IMAGEDOWNLOAD - WARN - using fallback pano size for pano: " + pano_id +
+              ", final_im_dimension updated to: " + str(image_width) + "x" + str(image_height))
     else:
         return DownloadResult.failure
 
     final_im_dimension = (image_width, image_height)
 
     def generate_gsv_urls(zoom):
+        """
+        Generates all valid urls of GSV tiles to be downloaded for stitching into single panorama.
+        :param zoom: the valid/working zoom value for this pano_id
+        :return: a list of all valid urls to be accessed for downloading the panorama
+        """
         sites_gsv = []
         for y in range(int(round(image_height / 512.0))):
             for x in range(int(round(image_width / 512.0))):
@@ -333,7 +364,15 @@ def download_single_pano(storage_path, pano_id):
                                          aiohttp.ServerConnectionError, aiohttp.ServerDisconnectedError,
                                          aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_single_gsv(session, url):
-
+        """
+        Downloads a single 512x512 panorama tile
+        :param session: requests sessions object
+        :param url: the url to be accessed where the target image is
+        :return: a list containing - x and y position of the download image, downloaded image
+        """
+        # # If not using proxies, delay for a little bit to avoid hammering the server
+        if proxies["http"] is None:
+            time.sleep(new_random_delay() / 1000)
         async with session.get(url[1], proxy=proxies["http"], headers=random_header()) as response:
             head_content = response.headers['Content-Type']
             # ensures content type is an image
@@ -346,6 +385,13 @@ def download_single_pano(storage_path, pano_id):
                           (aiohttp.web.HTTPServerError, aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
                            aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_all_gsv_images(sites):
+        """
+        For the given list of sites/urls that make up a single GSV panorama, starts the connections, breaks each of the
+        sites into tasks, then runs these tasks through asyncio.
+        :param sites: list of all valid urls that make up the image
+        :return: responses from the tasks which contains all the images and their position x and y data
+        (needed for stitching)
+        """
         conn = aiohttp.TCPConnector(limit=thread_count)
         async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
             tasks = []
@@ -377,7 +423,7 @@ def download_single_pano(storage_path, pano_id):
         return DownloadResult.success
 
 
-# Broken, no longer needed, reference csv instead
+# No longer used
 def download_panorama_metadata_xmls(storage_path, pano_list):
     '''
      This method downloads a xml file that contains depth information from GSV. It first
@@ -436,7 +482,6 @@ def download_single_metadata_xml(storage_path, pano_id):
     req = get_response(url, session)
 
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
-    # req = session.get(url, headers=random_header(), proxies=proxies)
     firstline = req.content.splitlines()[0]
 
     if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
@@ -451,7 +496,7 @@ def download_single_metadata_xml(storage_path, pano_id):
         return DownloadResult.success
 
 
-# No longer available, remove....
+# No longer used
 def generate_depthmapfiles(path_to_scrapes):
     success_count = 0
     fail_count = 0
@@ -493,24 +538,24 @@ def run_scraper_and_log_results(df_meta):
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
-    # xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
+    # xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)  # no longer used
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
-    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-    #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
+    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:  # no longer used
+    #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))  # not used
 
-    # im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
-    im_res = download_panorama_images(storage_location, df_meta)  # Trailing slash required
+    # im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required NB: no longer used
+    im_res = download_panorama_images(storage_location, df_meta)  # Trailing slash required NB: no longer used
 
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d,%d" % (im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration))
 
-    # depth_res = generate_depthmapfiles(storage_location)
+    # depth_res = generate_depthmapfiles(storage_location)  # no longer used
     depth_end_time = datetime.now()
-    # depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
-    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+    # depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))  # no longer used
+    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:  # no longer used
     #     log.write(",%d,%d,%d,%d,%d" % (depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration))
 
     total_duration = int(round((depth_end_time - start_time).total_seconds() / 60.0))
@@ -520,8 +565,8 @@ def run_scraper_and_log_results(df_meta):
 
 # replace with call to make metadata dataframe
 print("Fetching pano-ids")
-# pano_list = fetch_pano_ids_from_webserver()
-# pano_list.remove('tutorial')
+# pano_list = fetch_pano_ids_from_webserver()  # no longer used
+# pano_list.remove('tutorial')  # no longer used
 
 # Initialisation of dataframe with downloaded metadata
 df_meta = fetch_pano_ids_csv(metadata_csv_path)
@@ -531,6 +576,4 @@ df_meta = fetch_pano_ids_csv(metadata_csv_path)
 #############################################
 
 print("Fetching Panoramas")
-# run_scraper_and_log_results()
-
-run_scraper_and_log_results(df_meta)
+run_scraper_and_log_results(df_meta)  # pass csv file to function
