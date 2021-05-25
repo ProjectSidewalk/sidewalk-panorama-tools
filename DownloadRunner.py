@@ -371,7 +371,8 @@ def download_single_pano(storage_path, pano_id):
         For the given list of sites/urls that make up a single GSV panorama, starts the connections, breaks each of the
         sites into tasks, then runs these tasks through asyncio.
         :param sites: list of all valid urls that make up the image
-        :return: responses containing all the images
+        :return: responses from the tasks which contains all the images and their position x and y data
+        (needed for stitching)
         """
         conn = aiohttp.TCPConnector(limit=thread_count)
         async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
@@ -520,24 +521,24 @@ def run_scraper_and_log_results(df_meta):
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
-    # xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)
+    # xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)  # no longer used
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
-    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-    #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
+    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:  # no longer used
+    #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))  # not used
 
-    # im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required
-    im_res = download_panorama_images(storage_location, df_meta)  # Trailing slash required
+    # im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required NB: no longer used
+    im_res = download_panorama_images(storage_location, df_meta)  # Trailing slash required NB: no longer used
 
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d,%d" % (im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration))
 
-    # depth_res = generate_depthmapfiles(storage_location)
+    # depth_res = generate_depthmapfiles(storage_location)  # no longer used
     depth_end_time = datetime.now()
-    # depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
-    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+    # depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))  # no longer used
+    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:  # no longer used
     #     log.write(",%d,%d,%d,%d,%d" % (depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration))
 
     total_duration = int(round((depth_end_time - start_time).total_seconds() / 60.0))
@@ -547,8 +548,8 @@ def run_scraper_and_log_results(df_meta):
 
 # replace with call to make metadata dataframe
 print("Fetching pano-ids")
-# pano_list = fetch_pano_ids_from_webserver()
-# pano_list.remove('tutorial')
+# pano_list = fetch_pano_ids_from_webserver()  # no longer used
+# pano_list.remove('tutorial')  # no longer used
 
 # Initialisation of dataframe with downloaded metadata
 df_meta = fetch_pano_ids_csv(metadata_csv_path)
@@ -558,6 +559,4 @@ df_meta = fetch_pano_ids_csv(metadata_csv_path)
 #############################################
 
 print("Fetching Panoramas")
-# run_scraper_and_log_results()
-
 run_scraper_and_log_results(df_meta)  # pass csv file to function
