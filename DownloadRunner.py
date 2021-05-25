@@ -370,6 +370,9 @@ def download_single_pano(storage_path, pano_id):
         :param url: the url to be accessed where the target image is
         :return: a list containing - x and y position of the download image, downloaded image
         """
+        # # If not using proxies, delay for a little bit to avoid hammering the server
+        if proxies["http"] is None:
+            time.sleep(new_random_delay() / 1000)
         async with session.get(url[1], proxy=proxies["http"], headers=random_header()) as response:
             head_content = response.headers['Content-Type']
             # ensures content type is an image
