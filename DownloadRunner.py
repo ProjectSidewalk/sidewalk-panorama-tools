@@ -331,6 +331,11 @@ def download_single_pano(storage_path, pano_id):
     final_im_dimension = (image_width, image_height)
 
     def generate_gsv_urls(zoom):
+        """
+        Generates all valid urls of GSV tiles to be downloaded for stitching into single panorama.
+        :param zoom: the valid/working zoom value for this pano_id
+        :return: a list of all valid urls to be accessed for downloading the panorama
+        """
         sites_gsv = []
         for y in range(int(round(image_height / 512.0))):
             for x in range(int(round(image_width / 512.0))):
@@ -344,7 +349,12 @@ def download_single_pano(storage_path, pano_id):
                                          aiohttp.ServerConnectionError, aiohttp.ServerDisconnectedError,
                                          aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_single_gsv(session, url):
-
+        """
+        Downloads a single 512x512 panorama tile
+        :param session: requests sessions object
+        :param url: the url to be accessed where the target image is
+        :return: a list containing - x and y position of the download image, downloaded image
+        """
         async with session.get(url[1], proxy=proxies["http"], headers=random_header()) as response:
             head_content = response.headers['Content-Type']
             # ensures content type is an image
@@ -357,6 +367,12 @@ def download_single_pano(storage_path, pano_id):
                           (aiohttp.web.HTTPServerError, aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
                            aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_all_gsv_images(sites):
+        """
+        For the given list of sites/urls that make up a single GSV panorama, starts the connections, breaks each of the
+        sites into tasks, then runs these tasks through asyncio.
+        :param sites: list of all valid urls that make up the image
+        :return: responses containing all the images
+        """
         conn = aiohttp.TCPConnector(limit=thread_count)
         async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
             tasks = []
