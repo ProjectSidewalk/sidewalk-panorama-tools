@@ -116,18 +116,6 @@ def get_response(url, session, stream=False):
         return response.raw
 
 
-def check_download_failed_previously(panoId):
-    """
-    Check if image had a previous failure during downlaod
-    :param panoId: GSV pano ID to be checked
-    :return: Boolean value
-    """
-    if panoId in open('scrape.log').read():
-        return True
-    else:
-        return False
-
-
 def progress_check(csv_pano_log_path):
     """
     Checks download status via a csv (Has GSV been visited, success/failure downloading)
