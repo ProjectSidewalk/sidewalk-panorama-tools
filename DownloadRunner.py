@@ -66,6 +66,14 @@ if not os.path.exists(storage_location):
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
 
+def new_random_delay():
+    """
+    New random delay value generated
+    :return: int between 50 and 250 in steps of 3
+    """
+    return random.randrange(100, 200, 3)
+
+
 def random_header():
     """
     Takes the headers provided from the config file and randomly selections and returns one each time this function
