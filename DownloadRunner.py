@@ -67,6 +67,11 @@ print("Starting run with pano list fetched from %s and destination path %s" % (s
 
 # Choose header at random from the list
 def random_header():
+    """
+    Takes the headers provided from the config file and randomly selections and returns one each time this function
+    is called.
+    :return: a randomly selected header file.
+    """
     headers = random.choice(headers_list)
     return headers
 
@@ -76,6 +81,7 @@ def random_header():
 # Server errors while using proxy - https://findwork.dev/blog/advanced-usage-python-requests-timeouts-retries-hooks/
 def request_session():
     """
+    Sets up a request session to bes used for duration of scripts operation.
     :return: session
     """
     session = requests.Session()
