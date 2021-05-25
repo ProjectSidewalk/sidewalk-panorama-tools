@@ -28,7 +28,7 @@ import numpy as np
 # *****************************************
 
 # Path to CSV data from database - Place in 'metadata'
-csv_export_path = "metadata/csv-metadata-seattle_label_data.csv"
+csv_export_path = "metadata/sample_csv-metadata-seattle.csv"
 # Path to panoramas downloaded using DownloadRunner.py. Reference correct directory
 gsv_pano_path = "download_data/"
 # Path to location for saving the crops
