@@ -32,7 +32,7 @@ pip install -r requirements.txt
 #### 2.1.3 CSV Containing Metadata
 
 To download and crop the GSV images, a csv containing the metadata is required. 
-* **TBC**
+* A sample csv can be found in `metadata/sample_csv-metadata-seattle.csv` [test](sidewalk-panorama-tools/tree/master/metadata)
 
 ### 2.2 Usage
 
