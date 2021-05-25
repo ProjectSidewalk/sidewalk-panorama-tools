@@ -58,7 +58,7 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
 
 # sidewalk_server_fqdn = argv[1]  # Not currently used
 sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu"
-storage_location = "testing/"  # The path to where you want to store downloaded GSV panos
+storage_location = "download_data/"  # The path to where you want to store downloaded GSV panos
 metadata_csv_path = "metadata/csv-metadata-seattle.csv"  # Path to csv containing all required metadata
 if not os.path.exists(storage_location):
     os.mkdir(storage_location)
