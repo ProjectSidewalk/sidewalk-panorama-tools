@@ -32,13 +32,13 @@ pip install -r requirements.txt
 #### 2.1.3 CSV Containing Metadata
 
 To download and crop the GSV images, a csv containing the metadata is required. 
-* A sample csv can be found in `metadata/sample_csv-metadata-seattle.csv` [test](/metadata)
+* A sample csv can be found in [metadata/sample_csv-metadata-seattle](/metadata)
 
 ### 2.2 Usage
 
 #### 2.2.1 Order of execution
-1. `DownloadRunner.py`
-2. `CropRunner.py`
+1. [DownloadRunner.py](DownloadRunner.py)
+2. [CropRunner.py](CropRunner.py)
 
 `DownloadRunner.py` and `CropRunner.py` are the scripts you should run. `DownloadRunner.py` downloads panorama images
 from Google Street View and saves the data to a folder of your choice. Previously `DownloadRunner.py` would also download the relevant depth data and metadata from Google Street View, but this is no longer publicly available. As a result you must load a csv file with this required metadata for the script to run correctly. 
