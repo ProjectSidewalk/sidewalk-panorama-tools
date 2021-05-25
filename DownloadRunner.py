@@ -48,6 +48,7 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
     proxies['http'] = None
     proxies['https'] = None
 
+# Not currently used as all the required pano ids should be retrieved from a provided csv file.
 # if len(argv) != 3:
 #     print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
 #     print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
@@ -55,7 +56,7 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
 #     print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
 #     exit(0)
 
-# sidewalk_server_fqdn = argv[1]
+# sidewalk_server_fqdn = argv[1]  # Not currently used
 sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu"
 storage_location = "testing/"  # The path to where you want to store downloaded GSV panos
 metadata_csv_path = "metadata/csv-metadata-seattle.csv"  # Path to csv containing all required metadata
@@ -65,7 +66,6 @@ if not os.path.exists(storage_location):
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
 
-# Choose header at random from the list
 def random_header():
     """
     Takes the headers provided from the config file and randomly selections and returns one each time this function
@@ -150,7 +150,7 @@ def extract_pano_width_height_csv(df_meta, pano_id):
     return image_width, image_height
 
 
-# Broken, needs to reference csv for width and height
+# Not currently used - data retrieved from csv
 def extract_panowidthheight(path_to_metadata_xml):
     pano = {}
     pano_xml = open(path_to_metadata_xml, 'rb')
@@ -187,7 +187,6 @@ def fetch_pano_ids_from_webserver():
     conn.request("GET", "/adminapi/labels/panoid")
     r1 = conn.getresponse()
     data = r1.read()
-    # print(data)
     jsondata = json.loads(data)
 
     for value in jsondata["features"]:
@@ -267,7 +266,7 @@ def download_panorama_images(storage_path, df_meta):
 def download_single_pano(storage_path, pano_id):
     base_url = 'http://maps.google.com/cbk?'
 
-    pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")
+    pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")  # No longer used
 
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
@@ -405,7 +404,7 @@ def download_single_pano(storage_path, pano_id):
         return DownloadResult.success
 
 
-# Broken, no longer needed, reference csv instead
+# No longer used
 def download_panorama_metadata_xmls(storage_path, pano_list):
     '''
      This method downloads a xml file that contains depth information from GSV. It first
@@ -464,7 +463,6 @@ def download_single_metadata_xml(storage_path, pano_id):
     req = get_response(url, session)
 
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
-    # req = session.get(url, headers=random_header(), proxies=proxies)
     firstline = req.content.splitlines()[0]
 
     if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
@@ -479,7 +477,7 @@ def download_single_metadata_xml(storage_path, pano_id):
         return DownloadResult.success
 
 
-# No longer available, remove....
+# No longer used
 def generate_depthmapfiles(path_to_scrapes):
     success_count = 0
     fail_count = 0
