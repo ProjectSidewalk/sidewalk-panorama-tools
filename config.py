@@ -1,5 +1,5 @@
 # Threads to use for asyncio - test but usually more threads the better as I/O task
-thread_count = 1
+thread_count = 8
 
 # Proxy settings - if proxy not added, leave as is
 proxies = {
