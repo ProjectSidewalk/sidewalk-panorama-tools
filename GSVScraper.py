@@ -81,7 +81,6 @@ class GSVScraper(object):
             while len(panorama_stack) > 0:
                 if verbose:
                     print('.', )
-                if verbose:
                     print(panorama_stack)
                 curr_pano = panorama_stack[-1]
                 if curr_pano not in visited_panoramas:
