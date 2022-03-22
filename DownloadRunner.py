@@ -49,19 +49,20 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
     proxies['https'] = None
 
 # Not currently used as all the required pano ids should be retrieved from a provided csv file.
-# if len(argv) != 3:
-#     print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
-#     print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
-#     print("    storage_path - location to store scraped panos")
-#     print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
-#     exit(0)
+if len(argv) != 3:
+    print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
+    print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
+    print("    storage_path - location to store scraped panos")
+    print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
+    exit(0)
 
-# sidewalk_server_fqdn = argv[1]  # Not currently used
-sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu"
-storage_location = "download_data/"  # The path to where you want to store downloaded GSV panos
-metadata_csv_path = "metadata/sample_csv-metadata-seattle.csv"  # Path to csv containing all required metadata
+sidewalk_server_fqdn = argv[1]
+storage_location = argv[2]
+# sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu" # TODO: use as defaults?
+# storage_location = "download_data/"  # The path to where you want to store downloaded GSV panos
+
 if not os.path.exists(storage_location):
-    os.mkdir(storage_location)
+    os.makedirs(storage_location)
 
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
@@ -133,7 +134,7 @@ def progress_check(csv_pano_log_path):
     return df_id_set, total_processed, total_success, total_failed
 
 
-# Not currently used - data retrieved from csv
+# Not currently used - data retrieved from Project Sidewalk API
 def extract_panowidthheight(path_to_metadata_xml):
     pano = {}
     pano_xml = open(path_to_metadata_xml, 'rb')
@@ -145,7 +146,8 @@ def extract_panowidthheight(path_to_metadata_xml):
 
     return int(pano['data_properties']['image_width']), int(pano['data_properties']['image_height'])
 
-
+# Not currently used
+# Fallback function to get unique pano_ids in case we want to determine panoramas for scraping from a CSV
 def fetch_pano_ids_csv(metadata_csv_path):
     """
     Function loads the provided metadata csv file (downloaded from the server) as a dataframe. This dataframe replaces
@@ -163,33 +165,47 @@ def fetch_pano_ids_csv(metadata_csv_path):
     return df_meta
 
 
-# No longer using webserver, keep for future server request implementation
 def fetch_pano_ids_from_webserver():
-    unique_ids = []
+    unique_ids = {}
     conn = http.client.HTTPSConnection(sidewalk_server_fqdn)
-    conn.request("GET", "/adminapi/labels/panoid")
+    conn.request("GET", "/adminapi/panos")
     r1 = conn.getresponse()
     data = r1.read()
     jsondata = json.loads(data)
 
-    for value in jsondata["features"]:
-        if value["properties"]["gsv_panorama_id"] not in unique_ids:
-            # Check if the pano_id is an empty string
-            if value["properties"]["gsv_panorama_id"]:
-                unique_ids.append(value["properties"]["gsv_panorama_id"])
-            else:
-                print("Pano ID is an empty string")
+    # Structure of JSON data
+    # [
+    #     {
+    #         "gsv_panorama_id": "example-id",
+    #         "image_width": 16384,
+    #         "image_height": 8192
+    #     },
+    #     ...
+    # ]
+    for value in jsondata:
+        pano_id = value["gsv_panorama_id"]
+        if pano_id != 'tutorial':
+            if pano_id not in unique_ids:
+                # Check if the pano_id is an empty string
+                if pano_id:
+                    # Check if image_width and image_height are non-None
+                    if value["image_width"] and value["image_height"]:
+                        unique_ids[pano_id] = (value["image_width"], value["image_height"])
+                    else:
+                        print(f'Image width and height unknown for {pano_id}')
+                else:
+                    print("Pano ID is an empty string")
     return unique_ids
 
 
-def download_panorama_images(storage_path, df_meta):
+def download_panorama_images(storage_path, pano_infos):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
-    pano_list = df_meta['gsv_panorama_id']
+    pano_list = pano_infos.keys()
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
     total_panos = len(pano_list)
 
     # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
-    csv_pano_log_path = storage_location + "gsv_panorama_id_log.csv"
+    csv_pano_log_path = os.path.join(storage_path, "gsv_panorama_id_log.csv")
     columns = ['gsv_pano_id', 'downloaded']
     if not exists(csv_pano_log_path):
         df_pano_id_log = pd.DataFrame(columns=columns)
@@ -206,7 +222,8 @@ def download_panorama_images(storage_path, df_meta):
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
-            result_code = download_single_pano(storage_path, pano_id)
+            pano_dims = pano_infos[pano_id]
+            result_code = download_single_pano(storage_path, pano_id, pano_dims)
             if result_code == DownloadResult.success:
                 success_count += 1
             elif result_code == DownloadResult.fallback_success:
@@ -248,11 +265,8 @@ def download_panorama_images(storage_path, df_meta):
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
 
-# Update to use df to get meta information. Also function is very long, would be good to break up into sub-functions...
-def download_single_pano(storage_path, pano_id):
+def download_single_pano(storage_path, pano_id, pano_dims):
     base_url = 'http://maps.google.com/cbk?'
-
-    pano_xml_path = os.path.join(storage_path, pano_id[:2], pano_id + ".xml")  # No longer used
 
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
@@ -266,20 +280,12 @@ def download_single_pano(storage_path, pano_id):
     if os.path.isfile(out_image_name):
         return DownloadResult.skipped
 
-    # default values
-    final_image_height = 6656
-    final_image_width = 13312
-
-    if sidewalk_server_fqdn == 'sidewalk-sea.cs.washington.edu':
-        final_image_width = 16384
-        final_image_height = 8192
+    final_image_width = pano_dims[0]
+    final_image_height = pano_dims[1]
 
     url_zoom_3 = 'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                  'spherical&v=4&panoid='
     url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
-                 'spherical&v=4&panoid='
-
-    url_zoom_5_edge = 'http://maps.google.com/cbk?output=tile&zoom=5&x=26&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                  'spherical&v=4&panoid='
 
     session = request_session()
@@ -290,24 +296,16 @@ def download_single_pano(storage_path, pano_id):
     req_zoom_5 = get_response(url_zoom_5 + pano_id, session, stream=True)
     im_zoom_5 = Image.open(req_zoom_5)
 
-    req_zoom_5_extreme = get_response(url_zoom_5_edge + pano_id, session, stream=True)
-    im_zoom_5_extreme = Image.open(req_zoom_5_extreme)
-
+    # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a
+    # transparent image. This means we need to set the zoom level to 3. Google also returns a
+    # transparent image if there is no imagery. So check at both zoom levels. How to check:
+    # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
     if im_zoom_5.convert("L").getextrema() != (0, 0):
         fallback = False
         zoom = 5
-        # check how far the GSV image canvas goes to (will decide image final width)
-        if im_zoom_5_extreme.convert("L").getextrema() != (0, 0):
-            image_width = final_image_width
-            image_height = final_image_height
-
-            print("IMAGEDOWNLOAD - using full size for pano: " + pano_id + ", final_im_dimension updated to: " +
-                  str(image_width) + "x" + str(image_height))
-        else:
-            image_width = 13312
-            image_height = 6656
-            print("IMAGEDOWNLOAD - using medium/older size for pano: " + pano_id + ", final_im_dimension updated to: "
-                  + str(image_width) + "x" + str(image_height))
+        image_width = final_image_width
+        image_height = final_image_height
+        print("IMAGEDOWNLOAD - pano: " + pano_id + ", final_im_dimension updated to: " + str(image_width) + "x" + str(image_height))
     elif im_zoom_3.convert("L").getextrema() != (0, 0):
         fallback = True
         zoom = 3
@@ -345,9 +343,10 @@ def download_single_pano(storage_path, pano_id):
         :param url: the url to be accessed where the target image is
         :return: a list containing - x and y position of the download image, downloaded image
         """
+        # TODO: possibly not needed
         # # If not using proxies, delay for a little bit to avoid hammering the server
-        if proxies["http"] is None:
-            time.sleep(new_random_delay() / 1000)
+        # if proxies["http"] is None:
+        #     time.sleep(new_random_delay() / 1000)
         async with session.get(url[1], proxy=proxies["http"], headers=random_header()) as response:
             head_content = response.headers['Content-Type']
             # ensures content type is an image
@@ -387,6 +386,8 @@ def download_single_pano(storage_path, pano_id):
         x, y = int(str.split(cell_image[0])[0]), int(str.split(cell_image[0])[1])
         blank_image.paste(img, (512 * x, 512 * y))
 
+    # TODO: sleep after entire pano downlaoded versus each tile?
+
     if fallback:
         blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
         blank_image.save(out_image_name, 'jpeg')
@@ -398,23 +399,19 @@ def download_single_pano(storage_path, pano_id):
         return DownloadResult.success
 
 
-# No longer used
-def download_panorama_metadata_xmls(storage_path, pano_list):
+def download_panorama_metadata_xmls(storage_path, pano_infos):
     '''
      This method downloads a xml file that contains depth information from GSV. It first
      checks if we have a folder for each pano_id, and checks if we already have the corresponding
      depth file or not.
     '''
-
-    base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
-
-    total_panos = len(pano_list)
+    total_panos = len(pano_infos)
     success_count = 0
     fail_count = 0
     skipped_count = 0
     total_completed = 0
 
-    for pano_id in pano_list:
+    for pano_id in pano_infos.keys():
         print("METADOWNLOAD: Processing pano %s " % (pano_id))
         try:
             result_code = download_single_metadata_xml(storage_path, pano_id)
@@ -436,7 +433,6 @@ def download_panorama_metadata_xmls(storage_path, pano_list):
     return (success_count, fail_count, skipped_count, total_completed)
 
 
-# No longer downloading, reference csv (for now)
 def download_single_metadata_xml(storage_path, pano_id):
     base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
 
@@ -471,7 +467,6 @@ def download_single_metadata_xml(storage_path, pano_id):
         return DownloadResult.success
 
 
-# No longer used
 def generate_depthmapfiles(path_to_scrapes):
     success_count = 0
     fail_count = 0
@@ -508,47 +503,39 @@ def generate_depthmapfiles(path_to_scrapes):
     return success_count, fail_count, skip_count, total_completed
 
 
-def run_scraper_and_log_results(df_meta):
+def run_scraper_and_log_results(pano_infos):
     start_time = datetime.now()
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
-    # xml_res = download_panorama_metadata_xmls(storage_location, pano_list=pano_list)  # no longer used
+    xml_res = download_panorama_metadata_xmls(storage_location, pano_infos)
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
-    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:  # no longer used
-    #     log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))  # not used
+    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
-    # im_res = download_panorama_images(storage_location, pano_list)  # Trailing slash required NB: no longer used
-    im_res = download_panorama_images(storage_location, df_meta)  # Trailing slash required NB: no longer used
-
+    im_res = download_panorama_images(storage_location, pano_infos)
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d,%d" % (im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration))
 
-    # depth_res = generate_depthmapfiles(storage_location)  # no longer used
+    depth_res = generate_depthmapfiles(storage_location)
     depth_end_time = datetime.now()
-    # depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))  # no longer used
-    # with open(os.path.join(storage_location, "log.csv"), 'a') as log:  # no longer used
-    #     log.write(",%d,%d,%d,%d,%d" % (depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration))
+    depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
+    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log.write(",%d,%d,%d,%d,%d" % (depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration))
 
     total_duration = int(round((depth_end_time - start_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d" % (total_duration))
 
 
-# replace with call to make metadata dataframe
+# Access Project Sidewalk API to get Pano IDs for city
 print("Fetching pano-ids")
-# pano_list = fetch_pano_ids_from_webserver()  # no longer used
-# pano_list.remove('tutorial')  # no longer used
+pano_infos = fetch_pano_ids_from_webserver()
+# print(pano_infos)
 
-# Initialisation of dataframe with downloaded metadata
-df_meta = fetch_pano_ids_csv(metadata_csv_path)
-
-##### Debug Line - remove for prod ##########
-# pano_list = [pano_list[111], pano_list[112]]
-#############################################
-
+# Use pano_id list and associated info to gather panos from GSV API
 print("Fetching Panoramas")
-run_scraper_and_log_results(df_meta)  # pass csv file to function
+run_scraper_and_log_results(pano_infos)
