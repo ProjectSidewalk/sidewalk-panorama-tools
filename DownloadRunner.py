@@ -536,6 +536,10 @@ print("Fetching pano-ids")
 pano_infos = fetch_pano_ids_from_webserver()
 # print(len(pano_infos))
 
+# Uncomment this to test on a smaller subset of the pano_info
+# pano_infos = dict(random.sample(pano_infos.items(), 10))
+# print(pano_infos)
+
 # Use pano_id list and associated info to gather panos from GSV API
 print("Fetching Panoramas")
 run_scraper_and_log_results(pano_infos)
