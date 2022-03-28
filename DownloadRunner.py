@@ -534,7 +534,7 @@ def run_scraper_and_log_results(pano_infos):
 # Access Project Sidewalk API to get Pano IDs for city
 print("Fetching pano-ids")
 pano_infos = fetch_pano_ids_from_webserver()
-# print(pano_infos)
+# print(len(pano_infos))
 
 # Use pano_id list and associated info to gather panos from GSV API
 print("Fetching Panoramas")
