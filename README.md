@@ -1,12 +1,12 @@
 # sidewalk-panorama-tools
 
 ## 1.0 About
-This repository contains a set of Python scripts, intended to be used with data from [Project Sidewalk](https://github.com/ProjectSidewalk/SidewalkWebpage). Previously they took label data pulled from the Sidewalk database. In the new implementation the metadata must be provided by CSV file. After downloading the appropriate panoramas from Google Street View, it will create a folder full of JPEG crops of these labels. These crops can be used for ML and computer vision applications.
+This repository contains a set of Python scripts, intended to be used with data from [Project Sidewalk](https://github.com/ProjectSidewalk/SidewalkWebpage). The purpose of these scripts is to create crops of sidewalk accessibility issues/features usable for ML and computer vision applications from Google Streetview Panoramas via crowd-sourced label data from Project Sidewalk. 
 
 The scripts were written on a Linux system, and specifically tested only on Ubuntu 20.04 64-bit. However, any Linux distro should
 work as long as the required python packages listed in `requirements.txt` can be installed. 
 
-Previously depth maps were calculated using downloaded metadata from Google Street View. This data is no longer available online, but the method of setting this up on different operating systems has been maintained for reference below: 
+Previously depth maps were calculated using downloaded metadata from Google Street View. While this data is still available, the endpoint being used to gather the needed XML metadata for depth map calculation isn't a publicly supported GSV endpoint and may be set for deprecation. However, the method of setting this up on different operating systems has been maintained for reference below: 
 
 * Usage on any other OS will likely require
 recompiling the `decode_depthmap` binary for your system using [this source](https://github.com/jianxiongxiao/ProfXkit/blob/master/GoogleMapsScraper/decode_depthmap.cpp).
@@ -29,29 +29,40 @@ sudo apt-get install libfreetype6-dev libxft-dev python-dev libjpeg8-dev libblas
 pip install -r requirements.txt
 ```
 
-#### 2.1.3 CSV Containing Metadata
-
-To download and crop the GSV images, a csv containing the metadata is required. 
-* A sample csv can be found in [metadata/sample_csv-metadata-seattle](/metadata)
-
 ### 2.2 Usage
 
 #### 2.2.1 Order of execution
 1. [DownloadRunner.py](DownloadRunner.py)
 2. [CropRunner.py](CropRunner.py)
 
-`DownloadRunner.py` and `CropRunner.py` are the scripts you should run. `DownloadRunner.py` downloads panorama images
-from Google Street View and saves the data to a folder of your choice. Previously `DownloadRunner.py` would also download the relevant depth data and metadata from Google Street View, but this is no longer publicly available. As a result you must load a csv file with this required metadata for the script to run correctly. 
+`DownloadRunner.py` should be executed before `CropRunner.py`.
 
+`DownloadRunner.py` downloads panorama images from Google Street View and saves the data to a folder of your choice. `DownloadRunner.py` also downloads the relevant depth data and metadata from Google Street View, but Google may soon drop support for this leading to the data no longer being publicly available. 
 
-`CropRunner.py` creates crops of the object classes from the downloaded GSV panoramas images. `DownloadRunner.py` 
-should be executed before `CropRunner.py`.
+`CropRunner.py` creates crops of the accessibility featres from the downloaded GSV panoramas images via label data from Project Sidewalk.
 
 #### 2.2.2 Running `DownloadRunner.py`
 
-Previously DownloadRunner accessed the Project Sidewalk server to download the list of panorama ids. It is recommended to use the csv file contained in the folder. The path to this file should be set in the variable `metadata_csv_path`.
+Usage:
 
-Simply update the destination path variable at the top of the file to specify the save location. Then run `python DownloadRunner.py`. 
+```
+DownloadRunner.py [-h] [-c [C]] d s
+
+positional arguments:
+  d           sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-sea.cs.washington.edu
+  s           storage_path - location to store scraped panos
+
+optional arguments:
+  -h, --help  show this help message and exit
+  -c [C]      csv_path - location of csv from which to read pano metadata
+```
+
+Currently, there is support for two panorama metadata acquisition methods:
+
+1. API endpoint (i.e., `adminapi/pano`) from the Sidewalk servers returning panorama metadata
+2. A CSV file containing panorama metadata (the path to the CSV is provided via the optional `-c` flag)
+
+After downloading the appropriate panoramas from Google Street View via the `DownloadRunner.py` script, for each panorama id that metadata is downloaded for, an XML metadata file, depth data text file, and full-sized equirectangular panorama JPG will be contained within the specified storage folder.
 
 #### 2.2.3 Running `CropRunner.py`
 
