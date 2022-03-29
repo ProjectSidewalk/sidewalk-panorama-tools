@@ -50,18 +50,10 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
     proxies['https'] = None
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-sea.cs.washington.edu')
-parser.add_argument('-s', help='storage_path - location to store scraped panos')
+parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-sea.cs.washington.edu')
+parser.add_argument('s', help='storage_path - location to store scraped panos')
 parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
 args = parser.parse_args()
-
-# Not currently used as all the required pano ids should be retrieved from a provided csv file.
-# if len(argv) != 3:
-#     print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
-#     print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
-#     print("    storage_path - location to store scraped panos")
-#     print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
-#     exit(0)
 
 sidewalk_server_fqdn = args.d # argv[1]
 storage_location = args.s # argv[2]
