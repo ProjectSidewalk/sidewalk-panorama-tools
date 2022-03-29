@@ -18,6 +18,7 @@ import fnmatch
 import pandas as pd
 import random
 from config import headers_list, proxies, thread_count
+import argparse
 import asyncio
 import aiohttp
 from aiohttp import web
@@ -48,16 +49,27 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
     proxies['http'] = None
     proxies['https'] = None
 
-# Not currently used as all the required pano ids should be retrieved from a provided csv file.
-if len(argv) != 3:
-    print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
-    print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
-    print("    storage_path - location to store scraped panos")
-    print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
-    exit(0)
+parser = argparse.ArgumentParser()
+parser.add_argument('-d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-sea.cs.washington.edu')
+parser.add_argument('-s', help='storage_path - location to store scraped panos')
+parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
+args = parser.parse_args()
 
-sidewalk_server_fqdn = argv[1]
-storage_location = argv[2]
+# Not currently used as all the required pano ids should be retrieved from a provided csv file.
+# if len(argv) != 3:
+#     print("Usage: python DownloadRunner.py sidewalk_server_domain storage_path")
+#     print("    sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from")
+#     print("    storage_path - location to store scraped panos")
+#     print("    Example: python DownloadRunner.py sidewalk-sea.cs.washington.edu /destination/path")
+#     exit(0)
+
+sidewalk_server_fqdn = args.d # argv[1]
+storage_location = args.s # argv[2]
+pano_metadata_csv = args.c
+
+print(sidewalk_server_fqdn)
+print(storage_location)
+print(pano_metadata_csv)
 # sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu" # TODO: use as defaults?
 # storage_location = "download_data/"  # The path to where you want to store downloaded GSV panos
 
@@ -146,7 +158,6 @@ def extract_panowidthheight(path_to_metadata_xml):
 
     return int(pano['data_properties']['image_width']), int(pano['data_properties']['image_height'])
 
-# Not currently used
 # Fallback function to get unique pano_ids in case we want to determine panoramas for scraping from a CSV
 def fetch_pano_ids_csv(metadata_csv_path):
     """
@@ -160,13 +171,13 @@ def fetch_pano_ids_csv(metadata_csv_path):
     label_lng,
     """
     df_meta = pd.read_csv(metadata_csv_path)
-    df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id'])
-    assert df_meta.shape == (52208, 21)  # assertion check for csv provided by Mikey, needs to be updated for future use
+    df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id']).to_dict('records')
     return df_meta
 
 
 def fetch_pano_ids_from_webserver():
-    unique_ids = {}
+    unique_ids = set()
+    pano_info = []
     conn = http.client.HTTPSConnection(sidewalk_server_fqdn)
     conn.request("GET", "/adminapi/panos")
     r1 = conn.getresponse()
@@ -184,25 +195,27 @@ def fetch_pano_ids_from_webserver():
     # ]
     for value in jsondata:
         pano_id = value["gsv_panorama_id"]
-        if pano_id != 'tutorial':
-            if pano_id not in unique_ids:
-                # Check if the pano_id is an empty string
-                if pano_id:
-                    # Check if image_width and image_height are non-None
-                    if value["image_width"] and value["image_height"]:
-                        unique_ids[pano_id] = (value["image_width"], value["image_height"])
-                    else:
-                        print(f'Image width and height unknown for {pano_id}')
+        if pano_id not in unique_ids:
+            # Check if the pano_id is an empty string
+            if pano_id and pano_id != 'tutorial':
+                # Check if image_width and image_height are non-None
+                if value["image_width"] and value["image_height"]:
+                    unique_ids.add(pano_id)
+                    pano_info.append(value)
                 else:
-                    print("Pano ID is an empty string")
-    return unique_ids
+                    continue#print(f'Image width and height unknown for {pano_id}')
+            else:
+                print("Pano ID is an empty string or is for tutorial")
+        else:
+            print("Duplicate pano ID")
+    assert len(unique_ids) == len(pano_info)
+    return pano_info
 
 
 def download_panorama_images(storage_path, pano_infos):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
-    pano_list = pano_infos.keys()
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
-    total_panos = len(pano_list)
+    total_panos = len(pano_infos)
 
     # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
     csv_pano_log_path = os.path.join(storage_path, "gsv_panorama_id_log.csv")
@@ -216,13 +229,14 @@ def download_panorama_images(storage_path, pano_infos):
 
     df_id_set, total_completed, success_count, fail_count = progress_check(csv_pano_log_path)
 
-    for pano_id in pano_list:
+    for pano_info in pano_infos:
+        pano_id = pano_info['gsv_panorama_id']
         if pano_id in df_id_set:
             continue
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
-            pano_dims = pano_infos[pano_id]
+            pano_dims = (pano_info['image_width'], pano_info['image_height'])
             result_code = download_single_pano(storage_path, pano_id, pano_dims)
             if result_code == DownloadResult.success:
                 success_count += 1
@@ -411,7 +425,8 @@ def download_panorama_metadata_xmls(storage_path, pano_infos):
     skipped_count = 0
     total_completed = 0
 
-    for pano_id in pano_infos.keys():
+    for pano_info in pano_infos:
+        pano_id = pano_info['gsv_panorama_id']
         print("METADOWNLOAD: Processing pano %s " % (pano_id))
         try:
             result_code = download_single_metadata_xml(storage_path, pano_id)
@@ -533,13 +548,18 @@ def run_scraper_and_log_results(pano_infos):
 
 # Access Project Sidewalk API to get Pano IDs for city
 print("Fetching pano-ids")
-pano_infos = fetch_pano_ids_from_webserver()
+
+if pano_metadata_csv is not None:
+    pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
+else:
+    pano_infos = fetch_pano_ids_from_webserver()
+
 # print(len(pano_infos))
 
 # Uncomment this to test on a smaller subset of the pano_info
-# pano_infos = dict(random.sample(pano_infos.items(), 10))
-# print(pano_infos)
+pano_infos = random.sample(pano_infos, 10)
+print(pano_infos)
 
-# Use pano_id list and associated info to gather panos from GSV API
+# # Use pano_id list and associated info to gather panos from GSV API
 print("Fetching Panoramas")
 run_scraper_and_log_results(pano_infos)
