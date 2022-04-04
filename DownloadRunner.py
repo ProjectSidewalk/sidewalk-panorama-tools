@@ -24,7 +24,7 @@ import aiohttp
 from aiohttp import web
 import backoff
 from io import BytesIO
-
+import math
 
 try:
     from xml.etree import cElementTree as ET
@@ -288,41 +288,49 @@ def download_single_pano(storage_path, pano_id, pano_dims):
 
     final_image_width = pano_dims[0]
     final_image_height = pano_dims[1]
+    zoom = None
 
-    url_zoom_3 = 'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
-                 'spherical&v=4&panoid='
-    url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
-                 'spherical&v=4&panoid='
+    # Check XML metadata for max zoom if its downloaded
+    xml_metadata_path = os.path.join(destination_dir, pano_id + ".xml")
+    if os.path.isfile(xml_metadata_path):
+        print(xml_metadata_path)
+        with open(xml_metadata_path, 'rb') as pano_xml:
+            tree = ET.parse(pano_xml)
+            root = tree.getroot()
 
-    session = request_session()
-
-    req_zoom_3 = get_response(url_zoom_3 + pano_id, session, stream=True)
-    im_zoom_3 = Image.open(req_zoom_3)
-
-    req_zoom_5 = get_response(url_zoom_5 + pano_id, session, stream=True)
-    im_zoom_5 = Image.open(req_zoom_5)
-
-    # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a
-    # transparent image. This means we need to set the zoom level to 3. Google also returns a
-    # transparent image if there is no imagery. So check at both zoom levels. How to check:
-    # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-    if im_zoom_5.convert("L").getextrema() != (0, 0):
-        fallback = False
-        zoom = 5
-        image_width = final_image_width
-        image_height = final_image_height
-        print("IMAGEDOWNLOAD - pano: " + pano_id + ", final_im_dimension updated to: " + str(image_width) + "x" + str(image_height))
-    elif im_zoom_3.convert("L").getextrema() != (0, 0):
-        fallback = True
-        zoom = 3
-        image_width = 3328
-        image_height = 1664
-        print("IMAGEDOWNLOAD - WARN - using fallback pano size for pano: " + pano_id +
-              ", final_im_dimension updated to: " + str(image_width) + "x" + str(image_height))
+            # get num_zoom_levels
+            for child in root:
+                if child.tag == 'data_properties':
+                    zoom = child.attrib['num_zoom_levels']
     else:
-        return DownloadResult.failure
+        url_zoom_3 = 'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
+                    'spherical&v=4&panoid='
+        url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
+                    'spherical&v=4&panoid='
 
-    final_im_dimension = (image_width, image_height)
+        session = request_session()
+
+        req_zoom_3 = get_response(url_zoom_3 + pano_id, session, stream=True)
+        im_zoom_3 = Image.open(req_zoom_3)
+
+        req_zoom_5 = get_response(url_zoom_5 + pano_id, session, stream=True)
+        im_zoom_5 = Image.open(req_zoom_5)
+
+        # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a
+        # transparent image. This means we need to set the zoom level to 3. Google also returns a
+        # transparent image if there is no imagery. So check at both zoom levels. How to check:
+        # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
+        if im_zoom_5.convert("L").getextrema() != (0, 0):
+            zoom = 5
+            print("IMAGEDOWNLOAD - pano: " + pano_id)
+        elif im_zoom_3.convert("L").getextrema() != (0, 0):
+            zoom = 3
+            print("IMAGEDOWNLOAD - WARN - using zoom 3 for pano: " + pano_id)
+        else:
+            # can't determine zoom
+            return DownloadResult.failure
+
+    final_im_dimension = (final_image_width, final_image_height)
 
     def generate_gsv_urls(zoom):
         """
@@ -331,8 +339,8 @@ def download_single_pano(storage_path, pano_id, pano_dims):
         :return: a list of all valid urls to be accessed for downloading the panorama
         """
         sites_gsv = []
-        for y in range(int(round(image_height / 512.0))):
-            for x in range(int(round(image_width / 512.0))):
+        for y in range(int(math.ceil(final_image_height / 512.0))):
+            for x in range(int(math.ceil(final_image_width / 512.0))):
                 url_param = 'output=tile&zoom=' + str(zoom) + '&x=' + str(x) + '&y=' + str(
                     y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
                 url = base_url + url_param
@@ -381,8 +389,7 @@ def download_single_pano(storage_path, pano_id, pano_dims):
             responses = await asyncio.gather(*tasks, return_exceptions=True)
             return responses
 
-    im_dimension = (image_width, image_height)
-    blank_image = Image.new('RGB', im_dimension, (0, 0, 0, 0))
+    blank_image = Image.new('RGB', final_im_dimension, (0, 0, 0, 0))
     sites = generate_gsv_urls(zoom)
     all_pano_images = asyncio.get_event_loop().run_until_complete(download_all_gsv_images(sites))
 
@@ -394,15 +401,11 @@ def download_single_pano(storage_path, pano_id, pano_dims):
 
     # TODO: sleep after entire pano downlaoded versus each tile?
 
-    if fallback:
+    if zoom == 3:
         blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
-        blank_image.save(out_image_name, 'jpeg')
-        os.chmod(out_image_name, 0o664)
-        return DownloadResult.fallback_success
-    else:
-        blank_image.save(out_image_name, 'jpeg')
-        os.chmod(out_image_name, 0o664)
-        return DownloadResult.success
+    blank_image.save(out_image_name, 'jpeg')
+    os.chmod(out_image_name, 0o664)
+    return DownloadResult.success
 
 
 def download_panorama_metadata_xmls(storage_path, pano_infos):
@@ -462,13 +465,11 @@ def download_single_metadata_xml(storage_path, pano_id):
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
     firstline = req.content.splitlines()[0]
 
-    if firstline == '<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
+    if firstline == b'<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
         return DownloadResult.failure
     else:
         with open(destination_file, 'wb') as f:
-            f.write(firstline)
-            for line in req:
-                f.write(line)
+            f.write(req.content)
         os.chmod(destination_file, 0o664)
 
         return DownloadResult.success
@@ -549,7 +550,7 @@ else:
 # print(len(pano_infos))
 
 # Uncomment this to test on a smaller subset of the pano_info
-pano_infos = random.sample(pano_infos, 10)
+# pano_infos = random.sample(pano_infos, 10)
 print(pano_infos)
 
 # # Use pano_id list and associated info to gather panos from GSV API
