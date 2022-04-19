@@ -547,11 +547,11 @@ if pano_metadata_csv is not None:
 else:
     pano_infos = fetch_pano_ids_from_webserver()
 
-# print(len(pano_infos))
 
 # Uncomment this to test on a smaller subset of the pano_info
 # pano_infos = random.sample(pano_infos, 10)
-print(pano_infos)
+print(len(pano_infos))
+# print(pano_infos)
 
 # # Use pano_id list and associated info to gather panos from GSV API
 print("Fetching Panoramas")
