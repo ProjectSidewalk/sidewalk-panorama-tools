@@ -94,7 +94,7 @@ def random_header():
 # Server errors while using proxy - https://findwork.dev/blog/advanced-usage-python-requests-timeouts-retries-hooks/
 def request_session():
     """
-    Sets up a request session to bes used for duration of scripts operation.
+    Sets up a request session to be used for duration of scripts operation.
     :return: session
     """
     session = requests.Session()
@@ -290,18 +290,9 @@ def download_single_pano(storage_path, pano_id, pano_dims):
     final_image_height = int(pano_dims[1])
     zoom = None
 
-    # Check if pano tiles are retrievable
     session = request_session()
-    url_zoom_3 = 'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
-                    'spherical&v=4&panoid='
 
-    req_zoom_3 = get_response(url_zoom_3 + pano_id, session, stream=True)
-    im_zoom_3 = Image.open(req_zoom_3)
-
-    if im_zoom_3.convert("L").getextrema() == (0, 0):
-        return DownloadResult.failure
-
-    # Check XML metadata for max zoom if its downloaded
+    # Check XML metadata for max zoom if its downloaded.
     xml_metadata_path = os.path.join(destination_dir, pano_id + ".xml")
     if os.path.isfile(xml_metadata_path):
         print(xml_metadata_path)
@@ -309,14 +300,25 @@ def download_single_pano(storage_path, pano_id, pano_dims):
             tree = ET.parse(pano_xml)
             root = tree.getroot()
 
-            # get num_zoom_levels
+            # Get the number of zoom levels.
             for child in root:
                 if child.tag == 'data_properties':
                     zoom = child.attrib['num_zoom_levels']
+
+            # Check if the image exists (occasionally we will have XML but no JPG).
+            test_url = f'http://maps.google.com/cbk?output=tile&zoom={zoom}&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid={pano_id}'
+            test_request = get_response(test_url, session, stream=True)
+            test_tile = Image.open(test_request)
+            if test_tile.convert("L").getextrema() == (0, 0):
+                return DownloadResult.failure
     else:
+        url_zoom_3 = 'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
+                    'spherical&v=4&panoid='
         url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
                     'spherical&v=4&panoid='
 
+        req_zoom_3 = get_response(url_zoom_3 + pano_id, session, stream=True)
+        im_zoom_3 = Image.open(req_zoom_3)
         req_zoom_5 = get_response(url_zoom_5 + pano_id, session, stream=True)
         im_zoom_5 = Image.open(req_zoom_5)
 
@@ -327,9 +329,12 @@ def download_single_pano(storage_path, pano_id, pano_dims):
         if im_zoom_5.convert("L").getextrema() != (0, 0):
             zoom = 5
             print("IMAGEDOWNLOAD - pano: " + pano_id)
-        else:
+        elif im_zoom_3.convert("L").getextrema() != (0, 0):
             zoom = 3
             print("IMAGEDOWNLOAD - WARN - using zoom 3 for pano: " + pano_id)
+        else:
+            # can't determine zoom
+            return DownloadResult.failure
 
     final_im_dimension = (final_image_width, final_image_height)
 
