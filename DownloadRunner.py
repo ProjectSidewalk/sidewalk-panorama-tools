@@ -272,7 +272,7 @@ def download_panorama_images(storage_path, pano_infos):
 
 
 def download_single_pano(storage_path, pano_id, pano_dims):
-    base_url = 'http://maps.google.com/cbk?'
+    base_url = 'http://maps.google.com/cbk?output=tile&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4'
 
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
@@ -306,16 +306,14 @@ def download_single_pano(storage_path, pano_id, pano_dims):
                     zoom = child.attrib['num_zoom_levels']
 
             # Check if the image exists (occasionally we will have XML but no JPG).
-            test_url = f'http://maps.google.com/cbk?output=tile&zoom={zoom}&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid={pano_id}'
+            test_url = f'{base_url}&zoom={zoom}&x=0&y=0&panoid={pano_id}'
             test_request = get_response(test_url, session, stream=True)
             test_tile = Image.open(test_request)
             if test_tile.convert("L").getextrema() == (0, 0):
                 return DownloadResult.failure
     else:
-        url_zoom_3 = 'http://maps.google.com/cbk?output=tile&zoom=3&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
-                    'spherical&v=4&panoid='
-        url_zoom_5 = 'http://maps.google.com/cbk?output=tile&zoom=5&x=0&y=0&cb_client=maps_sv&fover=2&onerr=3&renderer=' \
-                    'spherical&v=4&panoid='
+        url_zoom_3 = f'{base_url}&zoom=3&x=0&y=0&panoid={pano_id}'
+        url_zoom_5 = f'{base_url}&zoom=5&x=0&y=0&panoid={pano_id}'
 
         req_zoom_3 = get_response(url_zoom_3 + pano_id, session, stream=True)
         im_zoom_3 = Image.open(req_zoom_3)
@@ -347,9 +345,7 @@ def download_single_pano(storage_path, pano_id, pano_dims):
         sites_gsv = []
         for y in range(int(math.ceil(final_image_height / 512.0))):
             for x in range(int(math.ceil(final_image_width / 512.0))):
-                url_param = 'output=tile&zoom=' + str(zoom) + '&x=' + str(x) + '&y=' + str(
-                    y) + '&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4&panoid=' + pano_id
-                url = base_url + url_param
+                url = f'{base_url}&zoom={zoom}&x={str(x)}&y={str(y)}&panoid={pano_id}'
                 sites_gsv.append((str(x) + " " + str(y), url))
         return sites_gsv
 
