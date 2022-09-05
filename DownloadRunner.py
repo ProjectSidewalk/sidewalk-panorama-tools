@@ -272,7 +272,7 @@ def download_panorama_images(storage_path, pano_infos):
 
 
 def download_single_pano(storage_path, pano_id, pano_dims):
-    base_url = 'http://maps.google.com/cbk?output=tile&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4'
+    base_url = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4'
 
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
@@ -446,7 +446,7 @@ def download_panorama_metadata_xmls(storage_path, pano_infos):
 
 
 def download_single_metadata_xml(storage_path, pano_id):
-    base_url = "http://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
+    base_url = "https://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
 
     # Check if the directory exists. Then check if the file already exists and skip if it does.
     destination_folder = os.path.join(storage_path, pano_id[:2])
