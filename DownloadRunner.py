@@ -305,13 +305,17 @@ def download_single_pano(storage_path, pano_id, pano_dims):
                 if child.tag == 'data_properties':
                     zoom = child.attrib['num_zoom_levels']
 
-            # Check if the image exists (occasionally we will have XML but no JPG).
-            test_url = f'{base_url}&zoom={zoom}&x=0&y=0&panoid={pano_id}'
-            test_request = get_response(test_url, session, stream=True)
-            test_tile = Image.open(test_request)
-            if test_tile.convert("L").getextrema() == (0, 0):
-                return DownloadResult.failure
-    else:
+            # If there is no zoom in the XML, then we skip this and try some zoom levels below.
+            if zoom is not None:
+                # Check if the image exists (occasionally we will have XML but no JPG).
+                test_url = f'{base_url}&zoom={zoom}&x=0&y=0&panoid={pano_id}'
+                test_request = get_response(test_url, session, stream=True)
+                test_tile = Image.open(test_request)
+                if test_tile.convert("L").getextrema() == (0, 0):
+                    return DownloadResult.failure
+
+    # If we did not find a zoom level in the XML above, then try a couple zoom level options here.
+    if zoom is None:
         url_zoom_3 = f'{base_url}&zoom=3&x=0&y=0&panoid={pano_id}'
         url_zoom_5 = f'{base_url}&zoom=5&x=0&y=0&panoid={pano_id}'
 
