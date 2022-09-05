@@ -123,7 +123,7 @@ def get_response(url, session, stream=False):
 
 def progress_check(csv_pano_log_path):
     """
-    Checks download status via a csv (Has GSV been visited, success/failure downloading)
+    Checks download status via a csv: log as skipped if downloaded == 1, failure if download == 0.
     This speeds things up instead of trying to re-download broken links or images.
     NB: This will not check if the failure was due to internet connection being unavailable etc. so use with caution.
     :param csv_pano_log_path:
@@ -219,7 +219,7 @@ def download_panorama_images(storage_path, pano_infos):
         df_pano_id_log = pd.read_csv(csv_pano_log_path)
     processed_ids = list(df_pano_id_log['gsv_pano_id'])
 
-    df_id_set, total_completed, success_count, fail_count = progress_check(csv_pano_log_path)
+    df_id_set, total_completed, skipped_count, fail_count = progress_check(csv_pano_log_path)
 
     for pano_info in pano_infos:
         pano_id = pano_info['gsv_panorama_id']
