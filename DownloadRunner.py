@@ -465,9 +465,10 @@ def download_single_metadata_xml(storage_path, pano_id):
     req = get_response(url, session)
 
     # Check if the XML file is empty. If not, write it out to a file and set the permissions.
-    firstline = req.content.splitlines()[0]
+    lineOne = req.content.splitlines()[0]
+    lineFive = req.content.splitlines()[4]
 
-    if firstline == b'<?xml version="1.0" encoding="UTF-8" ?><panorama/>':
+    if lineOne == b'<?xml version="1.0" encoding="UTF-8" ?><panorama/>' or lineFive == b'  <title>Error 404 (Not Found)!!1</title>':
         return DownloadResult.failure
     else:
         with open(destination_file, 'wb') as f:
