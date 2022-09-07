@@ -191,9 +191,7 @@ def fetch_pano_ids_from_webserver():
             # Check if the pano_id is an empty string.
             if pano_id and pano_id != 'tutorial':
                 unique_ids.add(pano_id)
-                # Include image_width/height if provided by API.
-                if value["image_width"] and value["image_height"]:
-                    pano_info.append(value)
+                pano_info.append(value)
             else:
                 print("Pano ID is an empty string or is for tutorial")
         else:
