@@ -188,14 +188,12 @@ def fetch_pano_ids_from_webserver():
     for value in jsondata:
         pano_id = value["gsv_panorama_id"]
         if pano_id not in unique_ids:
-            # Check if the pano_id is an empty string
+            # Check if the pano_id is an empty string.
             if pano_id and pano_id != 'tutorial':
-                # Check if image_width and image_height are non-None
+                unique_ids.add(pano_id)
+                # Include image_width/height if provided by API.
                 if value["image_width"] and value["image_height"]:
-                    unique_ids.add(pano_id)
                     pano_info.append(value)
-                else:
-                    continue#print(f'Image width and height unknown for {pano_id}')
             else:
                 print("Pano ID is an empty string or is for tutorial")
         else:
@@ -286,13 +284,13 @@ def download_single_pano(storage_path, pano_id, pano_dims):
     if os.path.isfile(out_image_name):
         return DownloadResult.skipped
 
-    final_image_width = int(pano_dims[0])
-    final_image_height = int(pano_dims[1])
+    final_image_width = int(pano_dims[0]) if pano_dims[0] is not None else None
+    final_image_height = int(pano_dims[1]) if pano_dims[1] is not None else None
     zoom = None
 
     session = request_session()
 
-    # Check XML metadata for max zoom if its downloaded.
+    # Check XML metadata for image width/height max zoom if its downloaded.
     xml_metadata_path = os.path.join(destination_dir, pano_id + ".xml")
     if os.path.isfile(xml_metadata_path):
         print(xml_metadata_path)
@@ -303,7 +301,9 @@ def download_single_pano(storage_path, pano_id, pano_dims):
             # Get the number of zoom levels.
             for child in root:
                 if child.tag == 'data_properties':
-                    zoom = child.attrib['num_zoom_levels']
+                    zoom = int(child.attrib['num_zoom_levels'])
+                    if final_image_width is None: final_image_width = int(child.attrib['image_width'])
+                    if final_image_height is None: final_image_height = int(child.attrib['image_height'])
 
             # If there is no zoom in the XML, then we skip this and try some zoom levels below.
             if zoom is not None:
@@ -314,14 +314,18 @@ def download_single_pano(storage_path, pano_id, pano_dims):
                 if test_tile.convert("L").getextrema() == (0, 0):
                     return DownloadResult.failure
 
+    # If we did not find image width/height from API or XML, then set download to failure.
+    if final_image_width is None or final_image_height is None:
+        return DownloadResult.failure
+
     # If we did not find a zoom level in the XML above, then try a couple zoom level options here.
     if zoom is None:
         url_zoom_3 = f'{base_url}&zoom=3&x=0&y=0&panoid={pano_id}'
         url_zoom_5 = f'{base_url}&zoom=5&x=0&y=0&panoid={pano_id}'
 
-        req_zoom_3 = get_response(url_zoom_3 + pano_id, session, stream=True)
+        req_zoom_3 = get_response(url_zoom_3, session, stream=True)
         im_zoom_3 = Image.open(req_zoom_3)
-        req_zoom_5 = get_response(url_zoom_5 + pano_id, session, stream=True)
+        req_zoom_5 = get_response(url_zoom_5, session, stream=True)
         im_zoom_5 = Image.open(req_zoom_5)
 
         # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a
@@ -330,10 +334,8 @@ def download_single_pano(storage_path, pano_id, pano_dims):
         # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
         if im_zoom_5.convert("L").getextrema() != (0, 0):
             zoom = 5
-            print("IMAGEDOWNLOAD - pano: " + pano_id)
         elif im_zoom_3.convert("L").getextrema() != (0, 0):
             zoom = 3
-            print("IMAGEDOWNLOAD - WARN - using zoom 3 for pano: " + pano_id)
         else:
             # can't determine zoom
             return DownloadResult.failure
@@ -560,6 +562,6 @@ else:
 print(len(pano_infos))
 # print(pano_infos)
 
-# # Use pano_id list and associated info to gather panos from GSV API
+# Use pano_id list and associated info to gather panos from GSV API
 print("Fetching Panoramas")
 run_scraper_and_log_results(pano_infos)
