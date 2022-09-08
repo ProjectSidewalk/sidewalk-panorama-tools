@@ -293,24 +293,27 @@ def download_single_pano(storage_path, pano_id, pano_dims):
     if os.path.isfile(xml_metadata_path):
         print(xml_metadata_path)
         with open(xml_metadata_path, 'rb') as pano_xml:
-            tree = ET.parse(pano_xml)
-            root = tree.getroot()
+            try:
+                tree = ET.parse(pano_xml)
+                root = tree.getroot()
 
-            # Get the number of zoom levels.
-            for child in root:
-                if child.tag == 'data_properties':
-                    zoom = int(child.attrib['num_zoom_levels'])
-                    if final_image_width is None: final_image_width = int(child.attrib['image_width'])
-                    if final_image_height is None: final_image_height = int(child.attrib['image_height'])
+                # Get the number of zoom levels.
+                for child in root:
+                    if child.tag == 'data_properties':
+                        zoom = int(child.attrib['num_zoom_levels'])
+                        if final_image_width is None: final_image_width = int(child.attrib['image_width'])
+                        if final_image_height is None: final_image_height = int(child.attrib['image_height'])
 
-            # If there is no zoom in the XML, then we skip this and try some zoom levels below.
-            if zoom is not None:
-                # Check if the image exists (occasionally we will have XML but no JPG).
-                test_url = f'{base_url}&zoom={zoom}&x=0&y=0&panoid={pano_id}'
-                test_request = get_response(test_url, session, stream=True)
-                test_tile = Image.open(test_request)
-                if test_tile.convert("L").getextrema() == (0, 0):
-                    return DownloadResult.failure
+                # If there is no zoom in the XML, then we skip this and try some zoom levels below.
+                if zoom is not None:
+                    # Check if the image exists (occasionally we will have XML but no JPG).
+                    test_url = f'{base_url}&zoom={zoom}&x=0&y=0&panoid={pano_id}'
+                    test_request = get_response(test_url, session, stream=True)
+                    test_tile = Image.open(test_request)
+                    if test_tile.convert("L").getextrema() == (0, 0):
+                        return DownloadResult.failure
+            except Exception as e:
+                pass
 
     # If we did not find image width/height from API or XML, then set download to failure.
     if final_image_width is None or final_image_height is None:
