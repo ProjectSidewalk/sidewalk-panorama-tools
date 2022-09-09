@@ -34,7 +34,7 @@ class GSV3DPointImage(object):
         self.image_filename = path + 'images/pano.jpg'
 
         with open(self.depth_filename, 'rb') as f:
-            depth = loadtxt(f)
+            depth = np.loadtxt(f)
     
         self.depth = depth
         self.px = depth[:, 0::3]
@@ -57,14 +57,14 @@ class GSV3DPointImage(object):
         # Then calculate the normal vector by generating and solving a homogeneous equation (Ax = 0) by svd.
         if not os.path.isfile(path + 'normal.txt'):
         #if True:
-            normal_matrix = zeros((self.height, self.width * 3)) 
+            normal_matrix = np.zeros((self.height, self.width * 3))
             for row_idx in range(self.height):
                 for col_idx in range(self.width):
                     vectors = []
-                    p = array([self.px[row_idx, col_idx], self.py[row_idx, col_idx], self.pz[row_idx, col_idx]])
+                    p = np.array([self.px[row_idx, col_idx], self.py[row_idx, col_idx], self.pz[row_idx, col_idx]])
                     if math.isnan(p[0]) or math.isnan(p[1]) or math.isnan(p[2]):
                         # If p is nan, normal is also nan
-                        normal = array([float('nan'), float('nan'), float('nan')])
+                        normal = np.array([float('nan'), float('nan'), float('nan')])
                         normal_matrix[row_idx, 3 * col_idx] = normal[0]
                         normal_matrix[row_idx, 3 * col_idx + 1] = normal[1]
                         normal_matrix[row_idx, 3 * col_idx + 2] = normal[2]
@@ -79,26 +79,26 @@ class GSV3DPointImage(object):
                             # Check for the corner cases and the case where one of the vector is nan.
                             if ri > 0 and ri < self.height and ci > 0 and ci < self.width:
                                 if not math.isnan(self.px[idx]) and not math.isnan(self.py[idx]) and not math.isnan(self.pz[idx]):  
-                                    vec = array([self.px[idx], self.py[idx], self.pz[idx]]) - p
+                                    vec = np.array([self.px[idx], self.py[idx], self.pz[idx]]) - p
                                     vectors.append(vec)
                     
                         # You need at least 3 vectors to calculate normal vectors
                         if len(vectors) > 2:
-                            vectors = array(vectors)
+                            vectors = np.array(vectors)
                             U, S, Vh = svd(vectors)
-                            normal = array(Vh[-1])
+                            normal = np.array(Vh[-1])
                             normal = normal / sqrt(sum(normal ** 2))
                         else:
-                            normal = array([float('nan'), float('nan'), float('nan')])
+                            normal = np.array([float('nan'), float('nan'), float('nan')])
                         
         
                         normal_matrix[row_idx, 3 * col_idx] = normal[0]
                         normal_matrix[row_idx, 3 * col_idx + 1] = normal[1]
                         normal_matrix[row_idx, 3 * col_idx + 2] = normal[2]
                     
-            savetxt(path + 'normal.txt', normal_matrix)
+            np.savetxt(path + 'normal.txt', normal_matrix)
         else:
-            normal_matrix = loadtxt(path + 'normal.txt')
+            normal_matrix = np.loadtxt(path + 'normal.txt')
         
         self.normal = normal_matrix
         self.nx = normal_matrix[:, 0::3]
@@ -127,19 +127,19 @@ class GSV3DPointImage(object):
             #
             # Morphology operation. Get rid of black peppers.
             from scipy import ndimage
-            kernel = array([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]])
+            kernel = np.array([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]])
             dr = ndimage.convolve(depth, kernel, mode='reflect', cval=0.0)
             # Image.fromarray(array(depth, dtype=float)).show()
             # Image.fromarray(array(dr, dtype=float)).show()
             # Image.open(self.image_filename).resize((512,256)).convert('L').show()
             #
-            imarray = asarray(Image.open(self.image_filename).resize((512,256)).convert('L'))
+            imarray = np.asarray(Image.open(self.image_filename).resize((512,256)).convert('L'))
 
             import matplotlib.pyplot as plt
             from skimage.data import lena
 
             # depth = depth / 100
-            depth_image = Image.fromarray(array(depth, dtype=float))
+            depth_image = Image.fromarray(np.array(depth, dtype=float))
             # normal_image = normal_image.convert('1')
             depth_image.show()
             #normal_image.save(destination, 'PNG')
@@ -150,8 +150,8 @@ class GSV3DPointImage(object):
         """
         
         if verbose:
-            print 
-            print 'x, y: ', x, y
+            print()
+            print('x, y: ', x, y)
             
         gsv_im_width = self.gsv_image_width
         gsv_im_height = self.gsv_image_height
@@ -214,7 +214,7 @@ class GSV3DPointImage(object):
 
         #
         # Convert a normal bitmap to a png image
-        normal_array = array(self.nz * 255, dtype=uint8)
+        normal_array = np.array(self.nz * 255, dtype=uint8)
         if morphology:
             binary_array = normal_array > 128
             binary_array = ndimage.binary_opening(binary_array, iterations=2)
@@ -234,10 +234,10 @@ class GSV3DPointImage(object):
         # First get 4 points available on the depth image that are closest to the passed point 
         depth_x = self.gsv_depth_width * (float(x) / self.gsv_image_width)
         depth_y = self.gsv_depth_height * (float(y) / self.gsv_image_height)
-        depth_x_floor = floor(depth_x)
-        depth_y_floor = floor(depth_y)
-        depth_x_ceil = ceil(depth_x)
-        depth_y_ceil = ceil(depth_y)
+        depth_x_floor = math.floor(depth_x)
+        depth_y_floor = math.floor(depth_y)
+        depth_x_ceil = math.ceil(depth_x)
+        depth_y_ceil = math.ceil(depth_y)
         
         if depth_x_ceil == self.gsv_depth_width:
             depth_x_ceil_ = 0
@@ -273,10 +273,10 @@ class GSV3DPointImage(object):
         # First get 4 points available on the depth image that are closest to the passed point 
         depth_x = self.gsv_depth_width * (float(x) / self.gsv_image_width)
         depth_y = self.gsv_depth_height * (float(y) / self.gsv_image_height)
-        depth_x_floor = floor(depth_x)
-        depth_y_floor = floor(depth_y)
-        depth_x_ceil = ceil(depth_x)
-        depth_y_ceil = ceil(depth_y)
+        depth_x_floor = math.floor(depth_x)
+        depth_y_floor = math.floor(depth_y)
+        depth_x_ceil = math.ceil(depth_x)
+        depth_y_ceil = math.ceil(depth_y)
         
         if depth_x_ceil == self.gsv_depth_width:
             depth_x_ceil_ = 0
@@ -315,7 +315,7 @@ class GSV3DPointImage(object):
         latlng = distance_to_latlng(self.path, distance, heading)
         
         #latlng = point_to_latlng(self.path, (depth_3d_x_value, depth_3d_y_value)) # This function is is utilities
-        if verbose: latlng 
+        if verbose: latlng
         return latlng
     
     def save_overlay(self, outfile, overlay_type="depth", mask=None):
@@ -338,7 +338,7 @@ class GSV3DPointImage(object):
             # I am assuming mask is 256x512 numpy array with dtype=uint8
             mask_image = Image.fromarray(mask)
             mask_image = mask_image.convert('RGB')
-            overlay = asarray(mask_image)
+            overlay = np.asarray(mask_image)
             overlay = overlay.astype('float')
             overlay = (overlay / 255) * overlay_layer_intensity
         else:
@@ -348,7 +348,7 @@ class GSV3DPointImage(object):
         panorama_image = Image.open(self.image_filename)
         panorama_image = panorama_image.resize((512, 256))
         panorama_image = panorama_image.convert('RGB')
-        panorama_image = asarray(panorama_image)
+        panorama_image = np.asarray(panorama_image)
         panorama_image = panorama_image.astype('float')
         panorama_image = (panorama_image / 256) * panorama_image_intensity
         
@@ -371,8 +371,8 @@ class GSV3DPointImage(object):
             depth_threshold = 50  # 50
             
             depth = sqrt(self.px ** 2 + self.py ** 2 + self.pz ** 2)
-            temp_mask = isnan(depth)
-            depth[isnan(depth)] = depth_threshold
+            temp_mask = np.isnan(depth)
+            depth[np.isnan(depth)] = depth_threshold
             depth[depth > depth_threshold] = depth_threshold
             depth = depth - depth.min()
             depth = depth / depth.max()
@@ -387,7 +387,7 @@ class GSV3DPointImage(object):
             
             overlay = depth.astype('uint8')
             overlay = Image.fromarray(overlay).convert('RGB')
-            overlay = asarray(overlay)
+            overlay = np.asarray(overlay)
             overlay = overlay.astype('float')
             overlay[:,:,2] = 0.
             overlay[:,:,0] = 255.
@@ -400,19 +400,19 @@ class GSV3DPointImage(object):
             vertical_axis_threshold = -2.5
             
             overlay = self.pz            
-            overlay[isnan(overlay)] = 0
+            overlay[np.isnan(overlay)] = 0
             overlay[overlay > vertical_axis_threshold] = 0
             overlay[overlay < vertical_axis_threshold] = 255
             overlay = overlay.astype('uint8')
             
             overlay = Image.fromarray(overlay).convert('RGB')
-            overlay = asarray(overlay)
+            overlay = np.asarray(overlay)
             overlay = overlay.astype('float')
             overlay = (overlay / 256) * overlay_layer_intensity
         elif overlay_type == 'normal_z_component':
             # Show z-component of normal vectors at each point on top of a GSV image 
             
-            normal_array = array(self.nz * 255, dtype=uint8)
+            normal_array = np.array(self.nz * 255, dtype=uint8)
             if morphology:
                 binary_array = normal_array > 128
                 binary_array = ndimage.binary_opening(binary_array, iterations=2)
@@ -426,7 +426,7 @@ class GSV3DPointImage(object):
             
             # Blending. Superimpose one image on top of another.
             # http://stackoverflow.com/questions/5605174/python-pil-function-to-divide-blend-two-images
-            overlay = asarray(normal_image)
+            overlay = np.asarray(normal_image)
             #overlay.flags.writeable = True
             #thresh = median(overlay[overlay>0]) - 0.5    
             #overlay[overlay > thresh] = 255
@@ -438,7 +438,7 @@ class GSV3DPointImage(object):
             # I am assuming mask is 512x1024 numpy array with dtype=uint8
             mask_image = Image.fromarray(mask.astype(np.uint8))
             mask_image = mask_image.convert('RGB')
-            overlay = asarray(mask_image)
+            overlay = np.asarray(mask_image)
             overlay = overlay.astype(np.float)
             overlay = (overlay / 255) * overlay_layer_intensity
         else:
@@ -452,7 +452,7 @@ class GSV3DPointImage(object):
         panorama_image = Image.open(self.image_filename)
         panorama_image = panorama_image.resize(im_shape)
         panorama_image = panorama_image.convert('RGB')
-        panorama_image = asarray(panorama_image)
+        panorama_image = np.asarray(panorama_image)
         panorama_image = panorama_image.astype(np.float)
         panorama_image = (panorama_image / 256) * panorama_image_intensity
         
@@ -484,13 +484,13 @@ class GSV3DPointImage(object):
         #
         # Get th size of 3d point image
         height_3d, width_3d = self.px.shape
-        x_grid, y_grid = mgrid[0:height_3d, 0:width_3d]
+        x_grid, y_grid = np.mgrid[0:height_3d, 0:width_3d]
 
         #
         # Interpolate the depth data to match the output image size
         grid_points = np.array([x_grid.flatten(), y_grid.flatten()]).T
         grid_points = grid_points * scale
-        x_image_grid, y_image_grid = mgrid[0:pano_im_height, 0:pano_im_width]
+        x_image_grid, y_image_grid = np.mgrid[0:pano_im_height, 0:pano_im_width]
 
         px = self.px.flatten()
         py = self.py.flatten()
@@ -503,8 +503,8 @@ class GSV3DPointImage(object):
 
         #
         # Vectorize
-        x = arange(0, pano_im_width)
-        y = arange(0, pano_im_height)
+        x = np.arange(0, pano_im_width)
+        y = np.arange(0, pano_im_height)
         xx, yy = np.meshgrid(x, y)
 
         def pixel_mapping(x, y):
@@ -643,7 +643,7 @@ def script():
     return
 
 if __name__ == "__main__":
-    print "GSV3DPointImage.py"
+    print("GSV3DPointImage.py")
     script()
 
 

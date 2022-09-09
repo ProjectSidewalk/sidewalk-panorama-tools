@@ -5,7 +5,6 @@ old
 *.swp
 id_rsa
 venv
-crops/*
 *.log
 crop.log.bak.txt
 .idea

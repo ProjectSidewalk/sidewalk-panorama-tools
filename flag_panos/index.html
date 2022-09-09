@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Street View split-map-panes</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=default"></script>
+    <!-- jsFiddle will insert css and js -->
+  </head>
+  <style type="text/css">
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+
+    a {
+      display: block;
+    }
+
+    #map {
+      height: 0px;
+      width: 0px;
+    }
+
+    #pano {
+      position: absolute;
+      height: 720px;
+      width: 1080px;
+    }
+  </style>
+  <body>
+    <div id="json-download"></div>
+    <!-- <div id="map"></div>
+    <div id="pano" style="opacity: 0.7"></div>
+    <div
+      id="over"
+      style="
+        background: #000000;
+        position: absolute;
+        margin-left: 537px;
+        margin-top: 357px;
+        width: 6px;
+        height: 6px;
+        color: #ffffff;
+      "
+    ></div> -->
+
+    <!-- Async script executes immediately and must be after any DOM elements used in callback. -->
+    <script src="index.js"></script>
+    <script
+      src="https://maps.googleapis.com/maps/api/js?key={API_KEY_HERE}&callback=initialize&v=weekly&channel=2"
+      async
+    ></script>
+    <!-- <button style="margin-top: 750px" onclick="panLeft()">left</button>
+    <button style="margin-top: 750px; margin-left: 100px" onclick="panRight()">
+      right
+    </button>
+    <br />
+    <button onclick="panUp()">up</button>
+    <button style="margin-left: 100px" onclick="panDown()">down</button> -->
+  </body>
+</html>
