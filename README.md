@@ -5,11 +5,7 @@ This repository contains a set of Python scripts, intended to be used with data 
 
 The scripts are intended to be run inside a Docker container running Ubuntu 20.04 64-bit. However, one should be able to run these scripts on most Linux distros without the need for Docker, assuming the Python packages listed in `requirements.txt` can be installed. Additional effort would be required to use the downloader on a Mac or Windows machine without Docker.
 
-There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [CropRunner.py](CropRunner.py). The downloader has been well tested and should be fully functional. The cropper has not been as thoroughly tested as of late, partially due to some issues we've found with the cropper. As of Sep 2022 we are in the process of working on a newer version of the cropper that should perform better, but it still requires some work.
-
-Depth maps are calculated using downloaded metadata from Google Street View. The endpoint being used to gather the needed XML metadata for depth map calculation isn't a publicly supported API endpoint from Google. It has been only sporadically available throughout 2022, and as of Apr 2023, has been unavailable for the past nine months. We continue to include the code to download the XML and decode the depth data in our download scripts on the off chance that the endpoint comes back online at some point.
-
-**Note:** Decoding the depth maps on an OS other than Linux will likely require recompiling the `decode_depthmap` binary for your system using [this source](https://github.com/jianxiongxiao/ProfXkit/blob/master/GoogleMapsScraper/decode_depthmap.cpp).
+There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [CropRunner.py](CropRunner.py). Both should be fully functional, but only the downloader is actively in use (a new version is in the works), so we may not notice bugs with the cropper as quickly. More details on both below!
 
 **Note:** At least 2GB RAM is recommended, as these scripts may crash on very low memory systems due to the size of the images processed.
 
@@ -34,21 +30,12 @@ Additional settings can be configured for `DownloadRunner.py` in the configurati
 
 ## Cropper
 
-**Note:** The cropper has not been as thoroughly tested as of late, partially due to some issues we've found with the cropper. As of Sep 2022 we are in the process of working on a newer version of the cropper that should perform better, but it still requires some work. We are including the old instructions for using the cropper below in case they still work and are helpful for someone in the interim!
-
-`CropRunner.py` creates crops of the accessibility features from the downloaded GSV panoramas images via label data from Project Sidewalk.
-
-`CropRunner` requires some data about the labels in CSV format. This is also contained in the aforementioned csv file. You can set the path to this file using the variable `csv_export_path`. For an example of a valid CSV file, see `samples/labeldata.csv`.
+`CropRunner.py` creates crops of the accessibility features from the downloaded GSV panoramas images via label data from Project Sidewalk. The script requires some data about the labels in CSV format. You can set the path to this file using the variable `csv_export_path`. For an example of a valid CSV file, see `samples/labeldata.csv`.
 
 Update the variables at the top of the file with the path to the CSV file, the path to the folder of panoramas retrieved by `DownloadRunner`,
-and the path to the save destination. Then run `python CropRunner.py`.
+and the path to the save destination. Then run `python3 CropRunner.py`.
 
-## Suggested Improvements
-
-* `CropRunner.py` - implement multi core usage when creating crops. Currently runs on a single core, most modern machines
-have more than one core so would give a speed up for cropping 10's of thousands of images and objects.
-* Add logic to `progress_check()` function so that it can register if their is a network failure and does not log the pano id as visited and failed.
-* Project Sidewalk group to delete old or commented code once they decide it is no longer required (all code which used the previously available XML data).
+**Note** We have noticed some error in the y-position of labels on the panorama. We believe that this either comes from a bug in the GSV API, or it may be there there is some metadata that Google is not providing us. The errors are relatively small and in the y-direction. As of Apr 2023 we are working on an alternative cropper that attempts to correct for these errors, but it is in development. The version here should work pretty well for now though!
 
 ## Class Labels Reference
 
@@ -66,3 +53,15 @@ Note that the numbers in the `label_type_id` column correspond to these label ty
 | 9 | Crosswalk |
 | 10 | Pedestrian Signal |
 
+## Suggested Improvements
+
+* `CroppRunner.py` should use data from our servers instead of a CSV.
+* `CropRunner.py` - implement multi core usage when creating crops. Currently runs on a single core, most modern machines
+  have more than one core so would give a speed up for cropping 10's of thousands of images and objects.
+* Add logic to `progress_check()` function so that it can register if their is a network failure and does not log the pano id as visited and failed.
+* Project Sidewalk group to delete old or commented code once they decide it is no longer required (all code which used the previously available XML data).
+
+## Depth Maps
+Depth maps are calculated using downloaded metadata from Google Street View. The endpoint being used to gather the needed XML metadata for depth map calculation isn't a publicly supported API endpoint from Google. It has been only sporadically available throughout 2022, and as of Apr 2023, has been unavailable for the past nine months. We continue to include the code to download the XML and decode the depth data in our download scripts on the off chance that the endpoint comes back online at some point.
+
+**Note:** Decoding the depth maps on an OS other than Linux will likely require recompiling the `decode_depthmap` binary for your system using [this source](https://github.com/jianxiongxiao/ProfXkit/blob/master/GoogleMapsScraper/decode_depthmap.cpp).
