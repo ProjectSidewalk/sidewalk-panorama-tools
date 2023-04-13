@@ -577,10 +577,10 @@ AND LabelTypeId=1
         # http://stackoverflow.com/questions/2980366/draw-circle-pil-python
         # http://www.pythonware.com/library/pil/handbook/imagedraw.htm
         # User input data 
-        sv_image_x = int(record[1]) - 100
-        sv_image_y = int(record[2])
-        x = ((PanoYawDeg / 360) * im_width + sv_image_x) % im_width
-        y = im_height / 2 - sv_image_y
+        pano_x = int(record[1]) - 100
+        pano_y = int(record[2])
+        x = ((PanoYawDeg / 360) * im_width + pano_x) % im_width
+        y = im_height / 2 - pano_y
         r = 30
         draw.ellipse((x - r, y - r, x + r, y + r), fill=128)
 
