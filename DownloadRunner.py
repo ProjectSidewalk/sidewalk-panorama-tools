@@ -50,7 +50,7 @@ if proxies['http'] == "http://" or proxies['https'] == "https://":
     proxies['https'] = None
 
 parser = argparse.ArgumentParser()
-parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-sea.cs.washington.edu')
+parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
 parser.add_argument('s', help='storage_path - location to store scraped panos')
 parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
 args = parser.parse_args()
@@ -148,19 +148,17 @@ def extract_panowidthheight(path_to_metadata_xml):
         if child.tag == 'data_properties':
             pano[child.tag] = child.attrib
 
-    return int(pano['data_properties']['image_width']), int(pano['data_properties']['image_height'])
+    return int(pano['data_properties']['width']), int(pano['data_properties']['height'])
 
 # Fallback function to get unique pano_ids in case we want to determine panoramas for scraping from a CSV
 def fetch_pano_ids_csv(metadata_csv_path):
     """
     Function loads the provided metadata csv file (downloaded from the server) as a dataframe. This dataframe replaces
-    all the information that previously needed to be gather from Google maps, such as image size, image capture
-    coordinates etc. This dataframe replaces the previously used fetch_pano_ids_from_webserver() function.
+    all the information that is needed to be gathered from Google maps, such as image size, image capture, coordinates.
     :param metadata_csv_path: The path to the metadata csv file and the file's name eg. metadata/csv_meta.csv
-    :return: A dataframe containing the follow metadata headings: gsv_panorama_id	sv_image_x, sv_image_y, zoom,
-    label_type_id, photographer_heading, heading, pitch, label_id, image_width, image_height, tile_width, tile_height,
-    image_date, imagery_type, panorama_lat, panorama_lng, label_lat,
-    label_lng,
+    :return: A dataframe containing the follow metadata: gsv_panorama_id, pano_x, pano_y, zoom, label_type_id,
+             camera_heading, heading, pitch, label_id, width, height, tile_width, tile_height, image_date, imagery_type,
+             pano_lat, pano_lng, label_lat, label_lng, computation_method, copyright, scaling_factor
     """
     df_meta = pd.read_csv(metadata_csv_path)
     df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id']).to_dict('records')
@@ -179,9 +177,13 @@ def fetch_pano_ids_from_webserver():
     # Structure of JSON data
     # [
     #     {
-    #         "gsv_panorama_id": "example-id",
-    #         "image_width": 16384,
-    #         "image_height": 8192
+    #         "gsv_panorama_id": String,
+    #         "width": Int,
+    #         "height": Int,
+    #         "lat": Float,
+    #         "lng": Float,
+    #         "camera_heading": Float,
+    #         "camera_pitch": Float
     #     },
     #     ...
     # ]
@@ -224,7 +226,7 @@ def download_panorama_images(storage_path, pano_infos):
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
-            pano_dims = (pano_info['image_width'], pano_info['image_height'])
+            pano_dims = (pano_info['width'], pano_info['height'])
             result_code = download_single_pano(storage_path, pano_id, pano_dims)
             if result_code == DownloadResult.success:
                 success_count += 1
@@ -301,8 +303,8 @@ def download_single_pano(storage_path, pano_id, pano_dims):
                 for child in root:
                     if child.tag == 'data_properties':
                         zoom = int(child.attrib['num_zoom_levels'])
-                        if final_image_width is None: final_image_width = int(child.attrib['image_width'])
-                        if final_image_height is None: final_image_height = int(child.attrib['image_height'])
+                        if final_image_width is None: final_image_width = int(child.attrib['width'])
+                        if final_image_height is None: final_image_height = int(child.attrib['height'])
 
                 # If there is no zoom in the XML, then we skip this and try some zoom levels below.
                 if zoom is not None:
@@ -408,7 +410,7 @@ def download_single_pano(storage_path, pano_id, pano_dims):
         x, y = int(str.split(cell_image[0])[0]), int(str.split(cell_image[0])[1])
         blank_image.paste(img, (512 * x, 512 * y))
 
-    # TODO: sleep after entire pano downlaoded versus each tile?
+    # TODO: sleep after entire pano downloaded versus each tile?
 
     if zoom == 3:
         blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
