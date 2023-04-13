@@ -62,7 +62,7 @@ pano_metadata_csv = args.c
 print(sidewalk_server_fqdn)
 print(storage_location)
 print(pano_metadata_csv)
-# sidewalk_server_fqdn = "sidewalk-sea.cs.washington.edu" # TODO: use as defaults?
+# sidewalk_server_fqdn = "sidewalk-columbus.cs.washington.edu" # TODO: use as defaults?
 # storage_location = "download_data/"  # The path to where you want to store downloaded GSV panos
 
 if not os.path.exists(storage_location):
@@ -150,7 +150,7 @@ def extract_panowidthheight(path_to_metadata_xml):
 
     return int(pano['data_properties']['width']), int(pano['data_properties']['height'])
 
-# Fallback function to get unique pano_ids in case we want to determine panoramas for scraping from a CSV
+# Fallback function to get unique pano_ids in case we want to determine panoramas for scraping from a CSV.
 def fetch_pano_ids_csv(metadata_csv_path):
     """
     Function loads the provided metadata csv file (downloaded from the server) as a dataframe. This dataframe replaces
@@ -158,7 +158,7 @@ def fetch_pano_ids_csv(metadata_csv_path):
     :param metadata_csv_path: The path to the metadata csv file and the file's name eg. metadata/csv_meta.csv
     :return: A dataframe containing the follow metadata: gsv_panorama_id, pano_x, pano_y, zoom, label_type_id,
              camera_heading, heading, pitch, label_id, width, height, tile_width, tile_height, image_date, imagery_type,
-             pano_lat, pano_lng, label_lat, label_lng, computation_method, copyright, scaling_factor
+             pano_lat, pano_lng, label_lat, label_lng, computation_method, copyright
     """
     df_meta = pd.read_csv(metadata_csv_path)
     df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id']).to_dict('records')

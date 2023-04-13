@@ -28,14 +28,14 @@ import numpy as np
 # *****************************************
 
 # Path to CSV data from database - Place in 'metadata'
-csv_export_path = "metadata/sample_csv-metadata-seattle.csv"
+csv_export_path = "samples/labeldata.csv"
 # Path to panoramas downloaded using DownloadRunner.py. Reference correct directory
-gsv_pano_path = "download_data/"
+gsv_pano_path = "/tmp/download_dest/"
 # Path to location for saving the crops
 destination_path = "/crops/"
 
 # Mark the center of the crop?
-mark_center = True
+mark_label = True
 
 logging.basicConfig(filename='crop.log', level=logging.DEBUG)
 
@@ -61,7 +61,7 @@ def extract_panoyawdeg(path_to_metadata_xml):
 
 def crop_box_helper(path_to_scrapes, path_to_labeldata_csv, target_label_type=2):
     target = open("cropboxes.log", 'w')
-    target.truncate();
+    target.truncate()
 
     for root, dirnames, filenames in os.walk(path_to_scrapes):
         for filename in fnmatch.filter(filenames, '*.depth.txt'):
@@ -82,24 +82,23 @@ def crop_box_helper(path_to_scrapes, path_to_labeldata_csv, target_label_type=2)
                 if row[0] == "gsv_panorama_id":
                     continue
                 csv_pano_id = row[0]
-                sv_image_x = float(row[1])
-
-                sv_image_y = float(row[2])
+                pano_x = float(row[1])
+                pano_y = float(row[2])
                 label_type = int(row[3])
-                photographer_heading = float(row[4])
+                camera_heading = float(row[4])
                 heading = float(row[5])
                 label_id = int(row[7])
 
-                pano_yaw_deg = 180 - photographer_heading
+                pano_yaw_deg = 180 - camera_heading
                 if csv_pano_id == pano_id and label_type == target_label_type:
                     num_matching_labels += 1
                     im_width = GSVImage.GSVImage.im_width
                     im_height = GSVImage.GSVImage.im_height
 
                     draw = ImageDraw.Draw(pano_im)
-                    # sv_image_x = sv_image_x - 100
-                    x = ((float(pano_yaw_deg) / 360) * im_width + sv_image_x) % im_width
-                    y = im_height / 2 - sv_image_y
+                    # pano_x = pano_x - 100
+                    x = ((float(pano_yaw_deg) / 360) * im_width + pano_x) % im_width
+                    y = im_height / 2 - pano_y
                     r = 50
                     draw.ellipse((x - r, y - r, x + r, y + r), fill=128)
             if num_matching_labels == 0:
@@ -224,7 +223,7 @@ def predict_crop_size_by_position(x, y, im_width, im_height):
 #     """
 #     crop_size = 0
 # 
-#     istance = max(0, 19.80546390 + 0.01523952 * sv_image_y)
+#     istance = max(0, 19.80546390 + 0.01523952 * pano_y)
 # 
 #     try:
 #         depth = get_depth_at_location(path_to_depth_file, x, y)
@@ -278,23 +277,16 @@ def predict_crop_size_by_position(x, y, im_width, im_height):
 # 
 #     return crop_size
 
-def predict_crop_size(sv_image_y):
+
+def predict_crop_size(pano_y, pano_height):
     """
-    # Calculate distance from point to image center
-    dist_to_center = math.sqrt((x-im_width/2)**2 + (y-im_height/2)**2)
-    # Calculate distance from point to center of left edge
-    dist_to_left_edge = math.sqrt((x-0)**2 + (y-im_height/2)**2)
-    # Calculate distance from point to center of right edge
-    dist_to_right_edge = math.sqrt((x - im_width) ** 2 + (y - im_height/2) ** 2)
-
-    min_dist = min([dist_to_center, dist_to_left_edge, dist_to_right_edge])
-
-    crop_size = (4.0/15.0)*min_dist + 200
-
-    print("Min dist was "+str(min_dist))
+    I honestly have no idea what the math behind this is supposed to be, but if gives reasonably sized crops! When
+    written, it just used pano_y. But the y-pixel location was actually y = pnoa_height / 2 - pano_y. Since we don't
+    know what's going on with the math here, I just reverse-engineered the old input instead of rewriting the func.
     """
+    old_pano_y = pano_height / 2 - pano_y
     crop_size = 0
-    distance = max(0, 19.80546390 + 0.01523952 * sv_image_y)
+    distance = max(0, 19.80546390 + 0.01523952 * old_pano_y)
 
     if distance > 0:
         crop_size = 8725.6 * (distance ** -1.192)
@@ -306,14 +298,14 @@ def predict_crop_size(sv_image_y):
     return crop_size
 
 # Not currently used so commented out. See simple implementation below.
-# def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_filename, path_to_depth, draw_mark=False):
+# def make_single_crop(path_to_image, pano_x, pano_y, PanoYawDeg, output_filename, path_to_depth, draw_mark=False):
 #     im_width = GSVImage.GSVImage.im_width
 #     im_height = GSVImage.GSVImage.im_height
 #     im = Image.open(path_to_image)
 #     draw = ImageDraw.Draw(im)
-#     # sv_image_x = sv_image_x - 100
-#     x = ((float(PanoYawDeg) / 360) * im_width + sv_image_x) % im_width
-#     y = im_height / 2 - sv_image_y
+#     # pano_x = pano_x - 100
+#     x = ((float(PanoYawDeg) / 360) * im_width + pano_x) % im_width
+#     y = im_height / 2 - pano_y
 #
 #     r = 10
 #     if draw_mark:
@@ -344,46 +336,37 @@ def predict_crop_size(sv_image_y):
 #
 #     return
 
-def make_single_crop(path_to_image, sv_image_x, sv_image_y, PanoYawDeg, output_filename, draw_mark=False):
+
+def make_single_crop(path_to_image, pano_x, pano_y, output_filename, draw_mark=False):
     """
     Makes a crop around the object of interest
     :param path_to_image: where the GSV pano is stored
-    :param sv_image_x: position
-    :param sv_image_y: position
-    :param PanoYawDeg: heading
+    :param pano_x: x-pixel of label on the GSV image
+    :param pano_y: y-pixel of label on the GSV image
     :param output_filename: name of file for saving
     :param draw_mark: if a dot should be drawn in the centre of the object/image
     :return: none
     """
-    im = Image.open(path_to_image)
-    draw = ImageDraw.Draw(im)
+    pano = Image.open(path_to_image)
+    draw = ImageDraw.Draw(pano)
 
-    im_width = im.size[0]
-    im_height = im.size[1]
-    print(im_width, im_height)
+    pano_width = pano.size[0]
+    pano_height = pano.size[1]
+    print(pano_width, pano_height)
 
-    predicted_crop_size = predict_crop_size(sv_image_y)
+    predicted_crop_size = predict_crop_size(pano_y, pano_height)
     crop_width = predicted_crop_size
     crop_height = predicted_crop_size
 
-    # Work out scaling factor based on image dimensions
-    scaling_factor = im_width / 13312
-    sv_image_x *= scaling_factor
-    sv_image_y *= scaling_factor
-
-    x = ((float(PanoYawDeg) / 360) * im_width + sv_image_x) % im_width
-    y = im_height / 2 - sv_image_y
-
     r = 10
     if draw_mark:
-        draw.ellipse((x - r, y - r, x + r, y + r), fill=128)
+        draw.ellipse((pano_x - r, pano_y - r, pano_x + r, pano_y + r), fill=128)
 
-    print("Plotting at " + str(x) + "," + str(y) + " using yaw " + str(PanoYawDeg))
+    print("Plotting at " + str(pano_x) + "," + str(pano_y))
 
-    print(x, y)
-    top_left_x = x - crop_width / 2
-    top_left_y = y - crop_height / 2
-    cropped_square = im.crop((top_left_x, top_left_y, top_left_x + crop_width, top_left_y + crop_height))
+    top_left_x = pano_x - crop_width / 2
+    top_left_y = pano_y - crop_height / 2
+    cropped_square = pano.crop((top_left_x, top_left_y, top_left_x + crop_width, top_left_y + crop_height))
     cropped_square.save(output_filename)
 
     return
@@ -403,21 +386,14 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
 
         pano_id = row[0]
         print(pano_id)
-        sv_image_x = float(row[1])
-        sv_image_y = float(row[2])
+        pano_x = float(row[1])
+        pano_y = float(row[2])
         label_type = int(row[3])
-        photographer_heading = float(row[4])
-        heading = float(row[5])
         label_id = int(row[7])
 
         pano_img_path = os.path.join(path_to_gsv_scrapes, pano_id[:2], pano_id + ".jpg")
 
-        print("Photographer heading is " + str(photographer_heading))
-        print("Viewer heading is " + str(heading))
-        pano_yaw_deg = 180 - photographer_heading
-
-        print("Yaw:" + str(pano_yaw_deg))
-
+        print(pano_img_path)
         # Extract the crop
         if os.path.exists(pano_img_path):
             counter += 1
@@ -428,10 +404,9 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
             crop_destination = os.path.join(destination_dir, str(label_type), str(label_id) + ".jpg")
 
             if not os.path.exists(crop_destination):
-                make_single_crop(pano_img_path, sv_image_x, sv_image_y, pano_yaw_deg, crop_destination, draw_mark=mark_label)
+                make_single_crop(pano_img_path, pano_x, pano_y, crop_destination, draw_mark=mark_label)
                 print("Successfully extracted crop to " + str(label_id) + ".jpg")
-                logging.info(str(label_id) + ".jpg" + " " + pano_id + " " + str(sv_image_x)
-                             + " " + str(sv_image_y) + " " + str(pano_yaw_deg) + " " + str(label_id))
+                logging.info(f'{str(label_id)}.jpg {pano_id} {str(pano_x)} {str(pano_y)} {str(label_id)}')
                 logging.info("---------------------------------------------------")
         else:
             no_pano_fail += 1
@@ -443,5 +418,6 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
     print(str(no_metadata_fail) + " extractions failed because metadata was not found.")
 
 
-bulk_extract_crops(csv_export_path, gsv_pano_path, destination_path, mark_label=False)
+bulk_extract_crops(csv_export_path, gsv_pano_path, destination_path, mark_label=mark_label)
 # crop_box_helper(gsv_pano_path, csv_export_path) # not tested and validated with new code
+

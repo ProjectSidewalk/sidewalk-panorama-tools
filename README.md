@@ -7,11 +7,11 @@ The scripts are intended to be run inside a Docker container running Ubuntu 20.0
 
 There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [CropRunner.py](CropRunner.py). The downloader has been well tested and should be fully functional. The cropper has not been as thoroughly tested as of late, partially due to some issues we've found with the cropper. As of Sep 2022 we are in the process of working on a newer version of the cropper that should perform better, but it still requires some work.
 
-Depth maps are calculated using downloaded metadata from Google Street View. The endpoint being used to gather the needed XML metadata for depth map calculation isn't a publicly supported API endpoint from Google. It has been only sporadically available throughout 2022, and as of Sep 2022, has been unavailable for the past two months. We continue to include the code to download the XML and decode the depth data in our download scripts on the off chance that the endpoint comes back online at some point.
-
-**Note:** At least 2GB RAM is recommended, as these scripts may crash on very low memory systems due to the size of the images processed.
+Depth maps are calculated using downloaded metadata from Google Street View. The endpoint being used to gather the needed XML metadata for depth map calculation isn't a publicly supported API endpoint from Google. It has been only sporadically available throughout 2022, and as of Apr 2023, has been unavailable for the past nine months. We continue to include the code to download the XML and decode the depth data in our download scripts on the off chance that the endpoint comes back online at some point.
 
 **Note:** Decoding the depth maps on an OS other than Linux will likely require recompiling the `decode_depthmap` binary for your system using [this source](https://github.com/jianxiongxiao/ProfXkit/blob/master/GoogleMapsScraper/decode_depthmap.cpp).
+
+**Note:** At least 2GB RAM is recommended, as these scripts may crash on very low memory systems due to the size of the images processed.
 
 ## Downloader
 1. [Install  Docker Desktop](https://www.docker.com/get-started).

@@ -1,5 +1,5 @@
-sv_image_x 5110
-sv_image_y -688
+pano_x 5110
+pano_y -688
 
 7442
 -708
