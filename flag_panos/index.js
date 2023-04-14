@@ -15,7 +15,7 @@ function getPanos(url, callback) {
 
 async function flag_panos_for_redownload(pano_data) {
     // initially, filter out panos that already have image data or have empty pano_id
-    filtered_pano_data = pano_data.filter(pano => pano["gsv_panorama_id"] && (!pano["image_width"] || !pano["image_height"]));
+    filtered_pano_data = pano_data.filter(pano => pano["gsv_panorama_id"] && (!pano["width"] || !pano["height"]));
     console.log(filtered_pano_data.length);
 
     // instantiate streetviewservice instance
