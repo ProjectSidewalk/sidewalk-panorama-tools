@@ -14,11 +14,11 @@ There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [
 1. Run `git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git` in the directory where you want to put the code.
 1. Create the Docker image
   ```
-  docker build --no-cache --pull -t projectsidewalk/scraper:v4 <path-to-pano-tools-repo>
+  docker build --no-cache --pull -t projectsidewalk/scraper:v5 <path-to-pano-tools-repo>
   ```
 1. You can then run the downloader using the following command:
   ```
-  docker run --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined projectsidewalk/scraper:v4 <project-sidewalk-url>
+  docker run --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined projectsidewalk/scraper:v5 <project-sidewalk-url>
   ```
   Where the `<project-sidewalk-url>` looks like `sidewalk-columbus.cs.washington.edu` if you want data from Columbus. If you visit that URL, you will see a dropdown menu with a list of publicly deployed cities that you can pull data from.
 1. Right now the data is stored in a temporary directory in the Docker container. You could set up a shared volume for it, but for now you can just copy the data over using `docker cp <container-id>:/tmp/download_dest/ <local-storage-location>`, where `<local-storage-location>` is the place on your local machine where you want to save the files. You can find the `<container-id>` using `docker ps -a`.
@@ -65,3 +65,8 @@ Note that the numbers in the `label_type_id` column correspond to these label ty
 Depth maps are calculated using downloaded metadata from Google Street View. The endpoint being used to gather the needed XML metadata for depth map calculation isn't a publicly supported API endpoint from Google. It has been only sporadically available throughout 2022, and as of Apr 2023, has been unavailable for the past nine months. We continue to include the code to download the XML and decode the depth data in our download scripts on the off chance that the endpoint comes back online at some point.
 
 **Note:** Decoding the depth maps on an OS other than Linux will likely require recompiling the `decode_depthmap` binary for your system using [this source](https://github.com/jianxiongxiao/ProfXkit/blob/master/GoogleMapsScraper/decode_depthmap.cpp).
+
+## Old Code We've Removed
+In PR [#26](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/26), we removed some old code. Some was related to our Tohme paper from 2014, some had to do with using depth maps for cropping images. Given that no one seems to be using the Tohme code (those on our team don't even know how it works) and Google has removed access to their depth data API, we removed this code in Apr 2023. We are hoping that this will simplify the repository, making it easier to make use of our newer work, while making it easier to maintain the code that's actually being used.
+
+If any of this code ever needs to be revived, it exists in the git history, and can be found in the PR linked above!

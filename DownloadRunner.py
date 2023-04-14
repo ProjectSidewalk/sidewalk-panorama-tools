@@ -1,8 +1,6 @@
 # !/usr/bin/python3
 
-from SidewalkDB import *
 import os
-from sys import argv
 from os.path import exists
 import stat
 import http.client
@@ -55,8 +53,8 @@ parser.add_argument('s', help='storage_path - location to store scraped panos')
 parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
 args = parser.parse_args()
 
-sidewalk_server_fqdn = args.d # argv[1]
-storage_location = args.s # argv[2]
+sidewalk_server_fqdn = args.d
+storage_location = args.s
 pano_metadata_csv = args.c
 
 print(sidewalk_server_fqdn)
@@ -155,7 +153,7 @@ def fetch_pano_ids_csv(metadata_csv_path):
     """
     Function loads the provided metadata csv file (downloaded from the server) as a dataframe. This dataframe replaces
     all the information that is needed to be gathered from Google maps, such as image size, image capture, coordinates.
-    :param metadata_csv_path: The path to the metadata csv file and the file's name eg. metadata/csv_meta.csv
+    :param metadata_csv_path: The path to the metadata csv file and the file's name eg. sample/metadata-seattle.csv
     :return: A dataframe containing the follow metadata: gsv_panorama_id, pano_x, pano_y, zoom, label_type_id,
              camera_heading, heading, pitch, label_id, width, height, tile_width, tile_height, image_date, imagery_type,
              pano_lat, pano_lng, label_lat, label_lng, computation_method, copyright
