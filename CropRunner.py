@@ -18,6 +18,11 @@ import csv
 import logging
 import os
 from PIL import Image, ImageDraw
+import json
+import requests
+from requests.adapters import HTTPAdapter
+import urllib3
+from urllib3.util.retry import Retry
 
 # *****************************************
 # Update paths below                      *
@@ -40,6 +45,54 @@ try:
 except ImportError as e:
     from xml.etree import ElementTree as ET
 
+def request_session():
+    """
+    Sets up a request session to properly handle server HTTP requests to gather metadata from
+    webserver. Handles possible HTTP errors to retry several times
+    :return: session
+    """
+    session = requests.Session()
+    retries = Retry(total=5,
+                    connect=5,
+                    status_forcelist=[429, 500, 502, 503, 504],
+                    backoff_factor=1,
+                    raise_on_status=False)
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount('https://', adapter)
+    return session
+
+
+def fetch_cvMetadata_from_server():
+    """
+    Function that uses HTTP request to server to fetch cvMetadata. Then parses the data to json and transforms it
+    into list of dicts. Each element associates to a single label.
+    :return: list of labels
+    """
+
+    session = request_session()
+    try:
+        print("Getting metadata from web server")
+        response = session.get('https://sidewalk-sea.cs.washington.edu/adminapi/labels/cvMetadata')
+    except requests.exceptions.HTTPError as e:
+        logging.error('HTTPError: {}'.format(e))
+        print("Cannot fetch metadata from webserver. Check log file")
+    except urllib3.exceptions.MaxRetryError as e:
+        print("Cannot fetch metadata from webserver. Check log file")
+        logging.error('Retries: '.format(e))
+
+    jsondata = response.json()
+    unique_label_ids = set()
+    label_info = []
+    
+    for value in jsondata:
+        label_id = value["label_id"]
+        if label_id not in unique_label_ids:
+            unique_label_ids.add(label_id)
+            label_info.append(value)
+        else:
+            print("Duplicate label ID")
+    assert len(unique_label_ids) == len(label_info)
+    return label_info
 
 def predict_crop_size(pano_y, pano_height):
     """
