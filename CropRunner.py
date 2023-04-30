@@ -23,6 +23,7 @@ import requests
 from requests.adapters import HTTPAdapter
 import urllib3
 from urllib3.util.retry import Retry
+import pandas as pd
 
 # *****************************************
 # Update paths below                      *
@@ -94,6 +95,19 @@ def fetch_cvMetadata_from_server():
     assert len(unique_label_ids) == len(label_info)
     return label_info
 
+# This function may be deprecated, since json is the only and current file format of metadata
+def fetch_pano_ids_csv(metadata_csv_path):
+    """
+    Reads metadata from a csv. Useful for old csv formats of cvMetadata such as cv-metadata-seatle.csv
+    :param metadata_csv_path: The path to the metadata csv file and the file's name eg. sample/metadata-seattle.csv
+    :return: A list of dicts containing the follow metadata: gsv_panorama_id, pano_x, pano_y, zoom, label_type_id,
+             camera_heading, heading, pitch, label_id, width, height, tile_width, tile_height, image_date, imagery_type,
+             pano_lat, pano_lng, label_lat, label_lng, computation_method, copyright
+    """
+    df_meta = pd.read_csv(metadata_csv_path)
+    df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id']).to_dict('records')
+    return df_meta
+
 def predict_crop_size(pano_y, pano_height):
     """
     I honestly have no idea what the math behind this is supposed to be, but if gives reasonably sized crops! When
@@ -149,9 +163,8 @@ def make_single_crop(path_to_image, pano_x, pano_y, output_filename, draw_mark=F
     return
 
 
-def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, mark_label=False):
-    csv_file = open(path_to_db_export)
-    csv_f = csv.reader(csv_file)
+def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_label=False):
+    
     counter = 0
     no_metadata_fail = 0
     no_pano_fail = 0
@@ -194,5 +207,4 @@ def bulk_extract_crops(path_to_db_export, path_to_gsv_scrapes, destination_dir, 
     print(str(no_pano_fail) + " extractions failed because panorama image was not found.")
     print(str(no_metadata_fail) + " extractions failed because metadata was not found.")
 
-
-bulk_extract_crops(csv_export_path, gsv_pano_path, destination_path, mark_label=mark_label)
+bulk_extract_crops(label_infos, gsv_pano_path, destination_path, mark_label=mark_label)
