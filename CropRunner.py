@@ -24,17 +24,11 @@ from requests.adapters import HTTPAdapter
 import urllib3
 from urllib3.util.retry import Retry
 import pandas as pd
+import argparse
 
 # *****************************************
 # Update paths below                      *
 # *****************************************
-
-# Path to CSV data from database - Place in 'metadata'
-csv_export_path = "samples/labeldata.csv"
-# Path to panoramas downloaded using DownloadRunner.py. Reference correct directory
-gsv_pano_path = "/tmp/download_dest/"
-# Path to location for saving the crops
-destination_path = "/crops/"
 
 # Mark the center of the crop?
 mark_label = True
@@ -45,6 +39,23 @@ try:
     from xml.etree import cElementTree as ET
 except ImportError as e:
     from xml.etree import ElementTree as ET
+
+parser =  argparse.ArgumentParser()
+group_parser = parser.add_mutually_exclusive_group(required=True)
+group_parser.add_argument('-d', nargs='?', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch label list from, i.e. sidewalk-columbus.cs.washington.edu')
+group_parser.add_argument('-f', nargs='?', help='metadata_file - path to file containing label_ids and their properties. It may be csv or json. i.e. samples/labeldata.csv')
+parser.add_argument('-s', default='/tmp/download_dest/', help='directory_of_panos - path to directory containing panoramas downloaded using DownloadRunner.py. default=/tmp/download_dest/')
+parser.add_argument('-c', default='/crops/', help='directory_of_crops - path to location for saving the crops. default=/crops/')
+args = parser.parse_args()
+
+# FDQN SidewalkWebpage server
+sidewalk_server_fdqn = args.d
+# Path to json or CSV data from database
+label_metadata_file = args.f
+# Path to panoramas downloaded using DownloadRunner.py.
+gsv_pano_path = args.s
+# Path to location for saving the crops
+crop_destination_path = args.c
 
 def request_session():
     """
@@ -62,18 +73,20 @@ def request_session():
     session.mount('https://', adapter)
     return session
 
-
-def fetch_cvMetadata_from_server():
+# https://stackoverflow.com/questions/54356759/python-requests-how-to-determine-response-code-on-maxretries-exception
+def fetch_cvMetadata_from_server(server_fdqn):
     """
     Function that uses HTTP request to server to fetch cvMetadata. Then parses the data to json and transforms it
     into list of dicts. Each element associates to a single label.
     :return: list of labels
     """
 
+    url='https://' + server_fdqn + '/adminapi/labels/cvMetadata'
+
     session = request_session()
     try:
         print("Getting metadata from web server")
-        response = session.get('https://sidewalk-sea.cs.washington.edu/adminapi/labels/cvMetadata')
+        response = session.get(url)
     except requests.exceptions.HTTPError as e:
         logging.error('HTTPError: {}'.format(e))
         print("Cannot fetch metadata from webserver. Check log file")
@@ -207,4 +220,12 @@ def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_l
     print(str(no_pano_fail) + " extractions failed because panorama image was not found.")
     print(str(no_metadata_fail) + " extractions failed because metadata was not found.")
 
-bulk_extract_crops(label_infos, gsv_pano_path, destination_path, mark_label=mark_label)
+print("Cropping labels")
+
+if label_metadata_file is not None:
+    # TODO: create function to read metadata from json/csv file
+    label_infos = fetch_cvMetadata_from_file()
+else:
+    label_infos = fetch_cvMetadata_from_server(sidewalk_server_fdqn)
+
+bulk_extract_crops(label_infos, gsv_pano_path, crop_destination_path, mark_label=mark_label)
