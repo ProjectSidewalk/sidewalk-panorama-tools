@@ -207,12 +207,12 @@ def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_l
             counter += 1
             continue
 
-        pano_id = row[0]
+        pano_id = row['gsv_panorama_id']
         print(pano_id)
-        pano_x = float(row[1])
-        pano_y = float(row[2])
-        label_type = int(row[3])
-        label_id = int(row[7])
+        pano_x = float(row['pano_x'])
+        pano_y = float(row['pano_y'])
+        label_type = int(row['label_type_id'])
+        label_id = int(row['label_id'])
 
         pano_img_path = os.path.join(path_to_gsv_scrapes, pano_id[:2], pano_id + ".jpg")
 
