@@ -14,6 +14,7 @@ path to the folder containing these files.
 
 """
 
+import sys
 import csv
 import logging
 import os
@@ -115,7 +116,8 @@ def fetch_cvMetadata_from_file(metadata_json_path):
     disagree_count, notsure_count, pano_width, pano_height, pano_x, pano_y, canvas_width, canvas_height, canvas_x,
     canvas_y, zoom, heading, pitch, camera_heading, camera_pitch
     """
-    json_meta = json.load(metadata_json_path)
+    with open(metadata_json_path) as json_file:
+        json_meta = json.load(json_file)
     return json_to_list(json_meta)
 
 # https://stackoverflow.com/questions/54356759/python-requests-how-to-determine-response-code-on-maxretries-exception
@@ -132,12 +134,15 @@ def fetch_cvMetadata_from_server(server_fdqn):
     try:
         print("Getting metadata from web server")
         response = session.get(url)
+        response.raise_for_status()
     except requests.exceptions.HTTPError as e:
         logging.error('HTTPError: {}'.format(e))
         print("Cannot fetch metadata from webserver. Check log file")
+        sys.exit(1)
     except urllib3.exceptions.MaxRetryError as e:
-        print("Cannot fetch metadata from webserver. Check log file")
         logging.error('Retries: '.format(e))
+        print("Cannot fetch metadata from webserver. Check log file")
+        sys.exit(1)
 
     jsondata = response.json()
     return json_to_list(jsondata)
@@ -243,10 +248,10 @@ def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_l
 print("Cropping labels")
 
 if label_metadata_file is not None:
-    metadata_file_path = os.path.splitext(label_metadata_file)
-    if metadata_file_path[-1] == ".csv":
+    file_path = os.path.splitext(label_metadata_file)
+    if file_path[-1] == ".csv":
         label_infos = fetch_label_ids_csv(label_metadata_file)
-    elif metadata_file_path[-1] == ".json":
+    elif file_path[-1] == ".json":
         label_infos = fetch_cvMetadata_from_file(label_metadata_file)
 else:
     label_infos = fetch_cvMetadata_from_server(sidewalk_server_fdqn)
