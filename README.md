@@ -30,10 +30,22 @@ Additional settings can be configured for `DownloadRunner.py` in the configurati
 
 ## Cropper
 
-`CropRunner.py` creates crops of the accessibility features from the downloaded GSV panoramas images via label data from Project Sidewalk. The script requires some data about the labels in CSV format. You can set the path to this file using the variable `csv_export_path`. For an example of a valid CSV file, see `samples/labeldata.csv`.
+`CropRunner.py` creates crops of the accessibility features from the downloaded GSV panoramas images via label data from Project Sidewalk. The script requires some data about the labels in json or CSV format.
 
-Update the variables at the top of the file with the path to the CSV file, the path to the folder of panoramas retrieved by `DownloadRunner`,
-and the path to the save destination. Then run `python3 CropRunner.py`.
+Usage:
+```python
+python CropRunner.py [-h] (-d [D] | -f [F]) [-s S] [-c C]
+```
+- To fetch label metadata from webserver or a file, use respectively (mutually exclusive, required):
+  - ``-d <project-sidewalk-url>``
+  - ``-f <path-to-label-metadata-file>``
+- ``-s <path-to-panoramas-dir>`` (optional). Specify if using a different directory containing panoramas. Panoramas are used to crop the labels.
+- ``-c <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored.
+
+As an example:
+```python
+python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbus/panos/ -c /sidewalk/columbus/crops/
+```
 
 **Note** You will likely want to filter out labels where `disagree_count > agree_count`. These are based on human-provided validations from other Project Sidewalk users. This is not written in the code by default. There is also an option for a filter that is even more strict. This of course has the tradeoff of using less data, so this depends on the the needs of your project: more data vs more accurate data. To do this, you would query the `/v2/access/attributesWithLabels` API endpoint for the city you're looking at. Then you would only include labels where the `label_id` is also present in the attributesWithLabels API. This is a more aggressive filter that removes labels from some users that we suspect are providing low quality data based on some heuristics.
 
@@ -95,7 +107,6 @@ Note that the numbers in the `label_type_id` column correspond to these label ty
 
 ## Suggested Improvements
 
-* `CroppRunner.py` should use data from our servers instead of a CSV.
 * `CropRunner.py` - implement multi core usage when creating crops. Currently runs on a single core, most modern machines
   have more than one core so would give a speed up for cropping 10's of thousands of images and objects.
 * Add logic to `progress_check()` function so that it can register if their is a network failure and does not log the pano id as visited and failed.
