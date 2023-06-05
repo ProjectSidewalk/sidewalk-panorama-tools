@@ -15,7 +15,6 @@ path to the folder containing these files.
 """
 
 import sys
-import csv
 import logging
 import os
 from PIL import Image, ImageDraw
@@ -77,7 +76,7 @@ def request_session():
 # This function may be deprecated, since json is the only and current file format of metadata
 def fetch_label_ids_csv(metadata_csv_path):
     """
-    Reads metadata from a csv. Useful for old csv formats of cvMetadata such as cv-metadata-seatle.csv
+    Reads metadata from a csv. Useful for old csv formats of cvMetadata such as cv-metadata-seattle.csv
     :param metadata_csv_path: The path to the metadata csv file and the file's name eg. sample/metadata-seattle.csv
     :return: A list of dicts containing the follow metadata: gsv_panorama_id, pano_x, pano_y, zoom, label_type_id,
              camera_heading, heading, pitch, label_id, width, height, tile_width, tile_height, image_date, imagery_type,
@@ -203,15 +202,10 @@ def make_single_crop(path_to_image, pano_x, pano_y, output_filename, draw_mark=F
 
 
 def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_label=False):
-    counter = 0
     no_metadata_fail = 0
     no_pano_fail = 0
 
     for row in label_infos:
-        if counter == 0:
-            counter += 1
-            continue
-
         pano_id = row['gsv_panorama_id']
         print(pano_id)
         pano_x = float(row['pano_x'])
@@ -224,7 +218,6 @@ def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_l
         print(pano_img_path)
         # Extract the crop
         if os.path.exists(pano_img_path):
-            counter += 1
             destination_folder = os.path.join(destination_dir, str(label_type))
             if not os.path.isdir(destination_folder):
                 os.makedirs(destination_folder)
