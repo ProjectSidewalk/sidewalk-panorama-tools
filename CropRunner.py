@@ -1,16 +1,13 @@
 """
 ** Crop Extractor for Project Sidewalk **
 
-Given label metadata from the Project Sidewalk database, this script will
-extract JPEG crops of the features that have been labeled. The required metadata
-may be obtained by running the SQL query in "samples/getFullLabelList.sql" on the
-Sidewalk database, and exporting the results in CSV format. You must supply the
-path to the CSV file containing this data below. You can find an example of what
-this file should look like in "samples/labeldata.csv".
+Given label metadata from the Project Sidewalk database, this script will extract JPEG crops of the features that have
+been labeled. The required metadata should be obtained through an API endpoint on the Project Sidewalk server for a
+given city, passed as an argument to this script. Alternatively, if you have a CSV containing this data (from running
+the samples/getFullLabelList.sql script) you can pass in the name of that CSV file as an argument.
 
-Additionally, you should have downloaded original panorama
-images from Street View using DownloadRunner.py. You will need to supply the
-path to the folder containing these files.
+Additionally, you should have downloaded original panorama images from Street View using DownloadRunner.py. You will
+need to supply the path to the folder containing these files.
 
 """
 
@@ -25,27 +22,22 @@ import urllib3
 from urllib3.util.retry import Retry
 import pandas as pd
 import argparse
-
-# *****************************************
-# Update paths below                      *
-# *****************************************
-
-# Mark the center of the crop?
-mark_label = True
-
-logging.basicConfig(filename='crop.log', level=logging.DEBUG)
-
 try:
     from xml.etree import cElementTree as ET
 except ImportError as e:
     from xml.etree import ElementTree as ET
 
-parser =  argparse.ArgumentParser()
+# Mark the center of the crop?
+MARK_LABEL = True
+
+logging.basicConfig(filename='crop.log', level=logging.DEBUG)
+
+parser = argparse.ArgumentParser()
 group_parser = parser.add_mutually_exclusive_group(required=True)
-group_parser.add_argument('-d', nargs='?', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch label list from, i.e. sidewalk-columbus.cs.washington.edu')
-group_parser.add_argument('-f', nargs='?', help='metadata_file - path to file containing label_ids and their properties. It may be csv or json. i.e. samples/labeldata.csv')
-parser.add_argument('-s', default='/tmp/download_dest/', help='directory_of_panos - path to directory containing panoramas downloaded using DownloadRunner.py. default=/tmp/download_dest/')
-parser.add_argument('-c', default='/crops/', help='directory_of_crops - path to location for saving the crops. default=/crops/')
+group_parser.add_argument('-d', nargs='?', help='sidewalk_server_domain (preferred over metadata_file) - FDQN of SidewalkWebpage server to fetch label list from, i.e. sidewalk-columbus.cs.washington.edu')
+group_parser.add_argument('-f', nargs='?', help='metadata_file - path to file containing label_ids and their properties. It may be CSV or JSON. i.e. samples/labeldata.csv')
+parser.add_argument('-s', default='/tmp/download_dest/', help='pano_storage_directory - path to directory containing panoramas downloaded using DownloadRunner.py. default=/tmp/download_dest/')
+parser.add_argument('-o', default='/crops/', help='crop_output_directory - path to location for saving the crops. default=/crops/')
 args = parser.parse_args()
 
 # FDQN SidewalkWebpage server
@@ -55,25 +47,19 @@ label_metadata_file = args.f
 # Path to panoramas downloaded using DownloadRunner.py.
 gsv_pano_path = args.s
 # Path to location for saving the crops
-crop_destination_path = args.c
+crop_destination_path = args.o
 
 def request_session():
     """
-    Sets up a request session to properly handle server HTTP requests to gather metadata from
-    webserver. Handles possible HTTP errors to retry several times
+    Sets up a request session to handle server HTTP requests, retrying in case of errors.
     :return: session
     """
     session = requests.Session()
-    retries = Retry(total=5,
-                    connect=5,
-                    status_forcelist=[429, 500, 502, 503, 504],
-                    backoff_factor=1,
-                    raise_on_status=False)
+    retries = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1, raise_on_status=False)
     adapter = HTTPAdapter(max_retries=retries)
     session.mount('https://', adapter)
     return session
 
-# This function may be deprecated, since json is the only and current file format of metadata
 def fetch_label_ids_csv(metadata_csv_path):
     """
     Reads metadata from a csv. Useful for old csv formats of cvMetadata such as cv-metadata-seattle.csv
@@ -123,12 +109,10 @@ def fetch_cvMetadata_from_file(metadata_json_path):
 def fetch_cvMetadata_from_server(server_fdqn):
     """
     Function that uses HTTP request to server to fetch cvMetadata. Then parses the data to json and transforms it
-    into list of dicts. Each element associates to a single label.
+    into list of dicts. Each element is associated with a single label.
     :return: list of labels
     """
-
-    url='https://' + server_fdqn + '/adminapi/labels/cvMetadata'
-
+    url = 'https://' + server_fdqn + '/adminapi/labels/cvMetadata'
     session = request_session()
     try:
         print("Getting metadata from web server")
@@ -136,11 +120,11 @@ def fetch_cvMetadata_from_server(server_fdqn):
         response.raise_for_status()
     except requests.exceptions.HTTPError as e:
         logging.error('HTTPError: {}'.format(e))
-        print("Cannot fetch metadata from webserver. Check log file")
+        print("Cannot fetch metadata from webserver. Check log file.")
         sys.exit(1)
     except urllib3.exceptions.MaxRetryError as e:
         logging.error('Retries: '.format(e))
-        print("Cannot fetch metadata from webserver. Check log file")
+        print("Cannot fetch metadata from webserver. Check log file.")
         sys.exit(1)
 
     jsondata = response.json()
@@ -148,8 +132,8 @@ def fetch_cvMetadata_from_server(server_fdqn):
 
 def predict_crop_size(pano_y, pano_height):
     """
-    I honestly have no idea what the math behind this is supposed to be, but if gives reasonably sized crops! When
-    written, it just used pano_y. But the y-pixel location was actually y = pnoa_height / 2 - pano_y. Since we don't
+    I honestly have no idea what the math behind this is supposed to be, but it gives reasonably sized crops! When
+    written, it just used pano_y. But the y-pixel location was actually y = pana_height / 2 - pano_y. Since we don't
     know what's going on with the math here, I just reverse-engineered the old input instead of rewriting the func.
     """
     old_pano_y = pano_height / 2 - pano_y
@@ -201,11 +185,13 @@ def make_single_crop(path_to_image, pano_x, pano_y, output_filename, draw_mark=F
     return
 
 
-def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_label=False):
+def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False):
+    total_labels = len(labels_to_crop)
     no_metadata_fail = 0
     no_pano_fail = 0
+    success = 0
 
-    for row in label_infos:
+    for row in labels_to_crop:
         pano_id = row['gsv_panorama_id']
         print(pano_id)
         pano_x = float(row['pano_x'])
@@ -215,8 +201,9 @@ def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_l
 
         pano_img_path = os.path.join(path_to_gsv_scrapes, pano_id[:2], pano_id + ".jpg")
 
+        print(f'Cropping label {1 + no_pano_fail + no_metadata_fail + success} of {total_labels}')
         print(pano_img_path)
-        # Extract the crop
+        # Extract the crop.
         if os.path.exists(pano_img_path):
             destination_folder = os.path.join(destination_dir, str(label_type))
             if not os.path.isdir(destination_folder):
@@ -229,14 +216,18 @@ def bulk_extract_crops(label_infos, path_to_gsv_scrapes, destination_dir, mark_l
                 print("Successfully extracted crop to " + str(label_id) + ".jpg")
                 logging.info(f'{str(label_id)}.jpg {pano_id} {str(pano_x)} {str(pano_y)} {str(label_id)}')
                 logging.info("---------------------------------------------------")
+                success += 1
         else:
             no_pano_fail += 1
             print("Panorama image not found.")
             logging.warning("Skipped label id " + str(label_id) + " due to missing image.")
 
     print("Finished.")
-    print(str(no_pano_fail) + " extractions failed because panorama image was not found.")
-    print(str(no_metadata_fail) + " extractions failed because metadata was not found.")
+    print(f"{no_pano_fail} extractions failed because panorama image was not found.")
+    print(f"{no_metadata_fail} extractions failed because metadata was not found.")
+    print(f"{success} extractions were successful.")
+    return
+
 
 print("Cropping labels")
 
@@ -249,4 +240,4 @@ if label_metadata_file is not None:
 else:
     label_infos = fetch_cvMetadata_from_server(sidewalk_server_fdqn)
 
-bulk_extract_crops(label_infos, gsv_pano_path, crop_destination_path, mark_label=mark_label)
+bulk_extract_crops(label_infos, gsv_pano_path, crop_destination_path, mark_label=MARK_LABEL)

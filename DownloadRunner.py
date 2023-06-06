@@ -96,7 +96,7 @@ def request_session():
     :return: session
     """
     session = requests.Session()
-    retry = Retry(total=10, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+    retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)

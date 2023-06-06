@@ -13,14 +13,14 @@ There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [
 1. [Install  Docker Desktop](https://www.docker.com/get-started).
 1. Run `git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git` in the directory where you want to put the code.
 1. Create the Docker image
-  ```
-  docker build --no-cache --pull -t projectsidewalk/scraper:v5 <path-to-pano-tools-repo>
-  ```
+    ```
+    docker build --no-cache --pull -t projectsidewalk/scraper:v5 <path-to-pano-tools-repo>
+    ```
 1. You can then run the downloader using the following command:
-  ```
-  docker run --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined projectsidewalk/scraper:v5 <project-sidewalk-url>
-  ```
-  Where the `<project-sidewalk-url>` looks like `sidewalk-columbus.cs.washington.edu` if you want data from Columbus. If you visit that URL, you will see a dropdown menu with a list of publicly deployed cities that you can pull data from.
+    ```
+    docker run --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined projectsidewalk/scraper:v5 <project-sidewalk-url>
+    ```
+    Where the `<project-sidewalk-url>` looks like `sidewalk-columbus.cs.washington.edu` if you want data from Columbus. If you visit that URL, you will see a dropdown menu with a list of publicly deployed cities that you can pull data from.
 1. Right now the data is stored in a temporary directory in the Docker container. You could set up a shared volume for it, but for now you can just copy the data over using `docker cp <container-id>:/tmp/download_dest/ <local-storage-location>`, where `<local-storage-location>` is the place on your local machine where you want to save the files. You can find the `<container-id>` using `docker ps -a`.
 
 Additional settings can be configured for `DownloadRunner.py` in the configuration file `config.py`. 
@@ -30,21 +30,21 @@ Additional settings can be configured for `DownloadRunner.py` in the configurati
 
 ## Cropper
 
-`CropRunner.py` creates crops of the accessibility features from the downloaded GSV panoramas images via label data from Project Sidewalk. The script requires some data about the labels in json or CSV format.
+`CropRunner.py` creates crops of the accessibility features from the downloaded GSV panoramas images via label data from Project Sidewalk, provided by their API.
 
 Usage:
 ```python
 python CropRunner.py [-h] (-d [D] | -f [F]) [-s S] [-c C]
 ```
-- To fetch label metadata from webserver or a file, use respectively (mutually exclusive, required):
-  - ``-d <project-sidewalk-url>``
-  - ``-f <path-to-label-metadata-file>``
-- ``-s <path-to-panoramas-dir>`` (optional). Specify if using a different directory containing panoramas. Panoramas are used to crop the labels.
-- ``-c <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored.
+* To fetch label metadata from webserver or a file, use respectively (mutually exclusive, required):
+  * ``-d <project-sidewalk-url>``
+  * ``-f <path-to-label-metadata-file>``
+* ``-s <path-to-panoramas-dir>`` (optional). Specify if using a different directory containing panoramas. Panoramas are used to crop the labels.
+* ``-o <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored.
 
 As an example:
 ```python
-python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbus/panos/ -c /sidewalk/columbus/crops/
+python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbus/panos/ -o /sidewalk/columbus/crops/
 ```
 
 **Note** You will likely want to filter out labels where `disagree_count > agree_count`. These are based on human-provided validations from other Project Sidewalk users. This is not written in the code by default. There is also an option for a filter that is even more strict. This of course has the tradeoff of using less data, so this depends on the the needs of your project: more data vs more accurate data. To do this, you would query the `/v2/access/attributesWithLabels` API endpoint for the city you're looking at. Then you would only include labels where the `label_id` is also present in the attributesWithLabels API. This is a more aggressive filter that removes labels from some users that we suspect are providing low quality data based on some heuristics.
