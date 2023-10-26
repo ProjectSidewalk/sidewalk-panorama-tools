@@ -132,9 +132,19 @@ def fetch_cvMetadata_from_server(server_fdqn):
 
 def predict_crop_size(pano_y, pano_height):
     """
-    I honestly have no idea what the math behind this is supposed to be, but it gives reasonably sized crops! When
-    written, it just used pano_y. But the y-pixel location was actually y = pana_height / 2 - pano_y. Since we don't
-    know what's going on with the math here, I just reverse-engineered the old input instead of rewriting the func.
+    As it stands, this algorithm:
+    1. Converts `pano_y` and `pano_height` to the old version of `pano_y` that we had when this alg was written.
+    2. Approximates the distance to label from camera using an experimentally determined formula.
+    3. Predict an ideal crop size using an experimentally determined formula based on the estimated distance.
+
+    Here is some context for the current formulae:
+    https://github.com/ProjectSidewalk/sidewalk-cv-tools/issues/2#issuecomment-510609873
+    https://github.com/ProjectSidewalk/SidewalkWebpage/issues/633#issuecomment-307283178
+
+    There are some clear areas to improve this function:
+    1. We have an updated distance estimation formula that takes into account zoom level:
+       https://github.com/ProjectSidewalk/SidewalkWebpage/blob/develop/public/javascripts/SVLabel/src/SVLabel/label/Label.js#L17
+    2. That distance estimation formula should be recreated given some of the bugs we've fixed in the past few years.
     """
     old_pano_y = pano_height / 2 - pano_y
     crop_size = 0
