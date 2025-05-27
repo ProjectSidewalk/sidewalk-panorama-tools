@@ -69,7 +69,7 @@ def fetch_label_ids_csv(metadata_csv_path):
              pano_lat, pano_lng, label_lat, label_lng, computation_method, copyright
     """
     df_meta = pd.read_csv(metadata_csv_path)
-    df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id']).to_dict('records')
+    df_meta = df_meta.drop_duplicates(subset=['label_id']).to_dict('records')
     return df_meta
 
 def json_to_list(jsondata):
