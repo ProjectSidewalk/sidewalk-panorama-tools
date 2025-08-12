@@ -51,15 +51,18 @@ parser = argparse.ArgumentParser()
 parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
 parser.add_argument('s', help='storage_path - location to store scraped panos')
 parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
+parser.add_argument('--all-panos', action='store_true', help='Run on all panos that users visited, even if no labels were added on them.')
 args = parser.parse_args()
 
 sidewalk_server_fqdn = args.d
 storage_location = args.s
 pano_metadata_csv = args.c
+all_panos = args.all_panos
 
 print(sidewalk_server_fqdn)
 print(storage_location)
 print(pano_metadata_csv)
+print(all_panos)
 # sidewalk_server_fqdn = "sidewalk-columbus.cs.washington.edu" # TODO: use as defaults?
 # storage_location = "download_data/"  # The path to where you want to store downloaded GSV panos
 
@@ -163,7 +166,17 @@ def fetch_pano_ids_csv(metadata_csv_path):
     return df_meta
 
 
-def fetch_pano_ids_from_webserver():
+def fetch_pano_ids_from_webserver(include_all_panos):
+    """
+    Fetch panoramic image IDs from the web server.
+    
+    Args:
+        include_all_panos (bool): If True, output all panos, whether or not they have a label.
+                                  If False, output only panos with labels on them.
+    
+    Returns:
+        list[str]: A list of panoramic image ID strings retrieved from the server.
+    """
     unique_ids = set()
     pano_info = []
     conn = http.client.HTTPSConnection(sidewalk_server_fqdn)
@@ -187,15 +200,14 @@ def fetch_pano_ids_from_webserver():
     # ]
     for value in jsondata:
         pano_id = value["gsv_panorama_id"]
-        if pano_id not in unique_ids:
+        has_labels = value["has_labels"]
+        if (include_all_panos or has_labels) and pano_id not in unique_ids:
             # Check if the pano_id is an empty string.
             if pano_id and pano_id != 'tutorial':
                 unique_ids.add(pano_id)
                 pano_info.append(value)
             else:
                 print("Pano ID is an empty string or is for tutorial")
-        else:
-            print("Duplicate pano ID")
     assert len(unique_ids) == len(pano_info)
     return pano_info
 
@@ -555,7 +567,7 @@ print("Fetching pano-ids")
 if pano_metadata_csv is not None:
     pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
 else:
-    pano_infos = fetch_pano_ids_from_webserver()
+    pano_infos = fetch_pano_ids_from_webserver(all_panos)
 
 
 # Uncomment this to test on a smaller subset of the pano_info
