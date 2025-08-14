@@ -5,14 +5,29 @@
 mkdir -p /tmp/download_dest
 chmod 600 /app/id_rsa
 
-# Check if last argument is --all-panos
+# Parse optional parameters at the end
 all_panos=""
-args=("$@")
-if [[ "${@: -1}" == "--all-panos" ]]; then
-    all_panos="--all-panos"
-    # Remove last argument
-    set -- "${@:1:$(($#-1))}"
-fi
+attempt_depth=""
+
+# Process arguments from the end
+while [[ $# -gt 0 ]]; do
+    case "${@: -1}" in
+        "--all-panos")
+            all_panos="--all-panos"
+            set -- "${@:1:$(($#-1))}"
+            ;;
+        "--attempt-depth")
+            attempt_depth="--attempt-depth"
+            set -- "${@:1:$(($#-1))}"
+            ;;
+        *)
+            # Not an optional parameter, stop processing
+            break
+            ;;
+    esac
+done
+
+# If one param, just download to /tmp. If three params, this means a host and port has been supplied.
 if [ $# -eq 1 ]; then
     python3 DownloadRunner.py $1 /tmp/download_dest $all_panos
 elif [ $# -eq 3 ]; then

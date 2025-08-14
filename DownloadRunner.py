@@ -52,12 +52,14 @@ parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage 
 parser.add_argument('s', help='storage_path - location to store scraped panos')
 parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
 parser.add_argument('--all-panos', action='store_true', help='Run on all panos that users visited, even if no labels were added on them.')
+parser.add_argument('--attempt-depth', action='store_true', help='Attempt do download depth data (we believe that this endpoint was removed in 2022 and expect depth download to always fail).')
 args = parser.parse_args()
 
 sidewalk_server_fqdn = args.d
 storage_location = args.s
 pano_metadata_csv = args.c
 all_panos = args.all_panos
+attempt_depth = args.attempt_depth
 
 print(sidewalk_server_fqdn)
 print(storage_location)
@@ -169,11 +171,11 @@ def fetch_pano_ids_csv(metadata_csv_path):
 def fetch_pano_ids_from_webserver(include_all_panos):
     """
     Fetch panoramic image IDs from the web server.
-    
+
     Args:
         include_all_panos (bool): If True, output all panos, whether or not they have a label.
                                   If False, output only panos with labels on them.
-    
+
     Returns:
         list[str]: A list of panoramic image ID strings retrieved from the server.
     """
@@ -533,12 +535,17 @@ def generate_depthmapfiles(path_to_scrapes):
     return success_count, fail_count, skip_count, total_completed
 
 
-def run_scraper_and_log_results(pano_infos):
+def run_scraper_and_log_results(pano_infos, attempt_depth):
     start_time = datetime.now()
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
-    xml_res = download_panorama_metadata_xmls(storage_location, pano_infos)
+    # Try to download xml (which contains the depth data) if attempt_depth=True.
+    xml_res = ()
+    if attempt_depth:
+        xml_res = download_panorama_metadata_xmls(storage_location, pano_infos)
+    else:
+        xml_res = (0, 0, len(pano_infos), len(pano_infos))
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -550,7 +557,12 @@ def run_scraper_and_log_results(pano_infos):
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d,%d" % (im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration))
 
-    depth_res = generate_depthmapfiles(storage_location)
+    # Try to extract depth data from the xml if attempt_depth=True.
+    depth_res = ()
+    if attempt_depth:
+        depth_res = generate_depthmapfiles(storage_location)
+    else:
+        depth_res = (0, 0, 0, 0)
     depth_end_time = datetime.now()
     depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -577,4 +589,4 @@ print(len(pano_infos))
 
 # Use pano_id list and associated info to gather panos from GSV API
 print("Fetching Panoramas")
-run_scraper_and_log_results(pano_infos)
+run_scraper_and_log_results(pano_infos, attempt_depth)
