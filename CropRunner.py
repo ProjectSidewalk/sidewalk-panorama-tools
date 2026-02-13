@@ -64,7 +64,7 @@ def fetch_label_ids_csv(metadata_csv_path):
     """
     Reads metadata from a csv. Useful for old csv formats of cvMetadata such as cv-metadata-seattle.csv
     :param metadata_csv_path: The path to the metadata csv file and the file's name eg. sample/metadata-seattle.csv
-    :return: A list of dicts containing the follow metadata: gsv_panorama_id, pano_x, pano_y, zoom, label_type_id,
+    :return: A list of dicts containing the follow metadata: pano_id, source, pano_x, pano_y, zoom, label_type_id,
              camera_heading, heading, pitch, label_id, width, height, tile_width, tile_height, image_date, imagery_type,
              pano_lat, pano_lng, label_lat, label_lng, computation_method, copyright
     """
@@ -76,13 +76,13 @@ def json_to_list(jsondata):
     """
     Transforms json like object to a list of dict to be read in bulk_extract_crops() to crop panos with label metadata
     :param jsondata: json object containing label ids and their associated properties
-    :return: A list of dicts containing the following metadata: label_id, gsv_panorama_id, label_type_id, agree_count,
+    :return: A list of dicts containing the following metadata: label_id, pano_id, label_type_id, agree_count,
     disagree_count, notsure_count, pano_width, pano_height, pano_x, pano_y, canvas_width, canvas_height, canvas_x,
-    canvas_y, zoom, heading, pitch, camera_heading, camera_pitch
+    canvas_y, zoom, heading, pitch, camera_heading, camera_pitch, source
     """
     unique_label_ids = set()
     label_info = []
-    
+
     for value in jsondata:
         label_id = value["label_id"]
         if label_id not in unique_label_ids:
@@ -97,9 +97,9 @@ def fetch_cvMetadata_from_file(metadata_json_path):
     """
     Reads json file to exctact labels.
     :param metadata_file_path: the path of the json file containing all label ids and their associated data.
-    :return: A list of dicts containing the following metadata: label_id, gsv_panorama_id, label_type_id, agree_count,
+    :return: A list of dicts containing the following metadata: label_id, pano_id, label_type_id, agree_count,
     disagree_count, notsure_count, pano_width, pano_height, pano_x, pano_y, canvas_width, canvas_height, canvas_x,
-    canvas_y, zoom, heading, pitch, camera_heading, camera_pitch
+    canvas_y, zoom, heading, pitch, camera_heading, camera_pitch, source
     """
     with open(metadata_json_path) as json_file:
         json_meta = json.load(json_file)
@@ -202,7 +202,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     success = 0
 
     for row in labels_to_crop:
-        pano_id = row['gsv_panorama_id']
+        pano_id = row['pano_id']
         print(pano_id)
         pano_x = float(row['pano_x'])
         pano_y = float(row['pano_y'])

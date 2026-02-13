@@ -134,7 +134,7 @@ def progress_check(csv_pano_log_path):
     """
     # temporary skip/speed up of processed panos
     df_pano_id_check = pd.read_csv(csv_pano_log_path)
-    df_id_set = set(df_pano_id_check['gsv_pano_id'])
+    df_id_set = set(df_pano_id_check['pano_id'])
     total_processed = len(df_pano_id_check.index)
     total_success = df_pano_id_check['downloaded'].sum()
     total_failed = total_processed - total_success
@@ -159,12 +159,12 @@ def fetch_pano_ids_csv(metadata_csv_path):
     Function loads the provided metadata csv file (downloaded from the server) as a dataframe. This dataframe replaces
     all the information that is needed to be gathered from Google maps, such as image size, image capture, coordinates.
     :param metadata_csv_path: The path to the metadata csv file and the file's name eg. sample/metadata-seattle.csv
-    :return: A dataframe containing the follow metadata: gsv_panorama_id, pano_x, pano_y, zoom, label_type_id,
+    :return: A dataframe containing the follow metadata: pano_id, source, pano_x, pano_y, zoom, label_type_id,
              camera_heading, heading, pitch, label_id, width, height, tile_width, tile_height, image_date, imagery_type,
              pano_lat, pano_lng, label_lat, label_lng, computation_method, copyright
     """
     df_meta = pd.read_csv(metadata_csv_path)
-    df_meta = df_meta.drop_duplicates(subset=['gsv_panorama_id']).to_dict('records')
+    df_meta = df_meta.drop_duplicates(subset=['pano_id']).to_dict('records')
     return df_meta
 
 
@@ -190,18 +190,19 @@ def fetch_pano_ids_from_webserver(include_all_panos):
     # Structure of JSON data
     # [
     #     {
-    #         "gsv_panorama_id": String,
+    #         "pano_id": String,
     #         "width": Int,
     #         "height": Int,
     #         "lat": Float,
     #         "lng": Float,
     #         "camera_heading": Float,
-    #         "camera_pitch": Float
+    #         "camera_pitch": Float,
+    #         "source": String
     #     },
     #     ...
     # ]
     for value in jsondata:
-        pano_id = value["gsv_panorama_id"]
+        pano_id = value["pano_id"]
         has_labels = value["has_labels"]
         if (include_all_panos or has_labels) and pano_id not in unique_ids:
             # Check if the pano_id is an empty string.
@@ -221,18 +222,18 @@ def download_panorama_images(storage_path, pano_infos):
 
     # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
     csv_pano_log_path = os.path.join(storage_path, "gsv_panorama_id_log.csv")
-    columns = ['gsv_pano_id', 'downloaded']
+    columns = ['pano_id', 'downloaded']
     if not exists(csv_pano_log_path):
         df_pano_id_log = pd.DataFrame(columns=columns)
         df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
     else:
         df_pano_id_log = pd.read_csv(csv_pano_log_path)
-    processed_ids = list(df_pano_id_log['gsv_pano_id'])
+    processed_ids = list(df_pano_id_log['pano_id'])
 
     df_id_set, total_completed, skipped_count, fail_count = progress_check(csv_pano_log_path)
 
     for pano_info in pano_infos:
-        pano_id = pano_info['gsv_panorama_id']
+        pano_id = pano_info['pano_id']
         if pano_id in df_id_set:
             continue
         start_time = time.time()
@@ -261,7 +262,7 @@ def download_panorama_images(storage_path, pano_infos):
             df_data_append.to_csv(csv_pano_log_path, mode='a', header=False, index=False)
         else:
             df_pano_id_log = pd.read_csv(csv_pano_log_path)
-            df_pano_id_log.loc[df_pano_id_log['gsv_pano_id'] == pano_id, 'downloaded'] = downloaded
+            df_pano_id_log.loc[df_pano_id_log['pano_id'] == pano_id, 'downloaded'] = downloaded
             df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
             processed_ids.append(pano_id)
 
@@ -444,7 +445,7 @@ def download_panorama_metadata_xmls(storage_path, pano_infos):
     total_completed = 0
 
     for pano_info in pano_infos:
-        pano_id = pano_info['gsv_panorama_id']
+        pano_id = pano_info['pano_id']
         print("METADOWNLOAD: Processing pano %s " % (pano_id))
         try:
             result_code = download_single_metadata_xml(storage_path, pano_id)

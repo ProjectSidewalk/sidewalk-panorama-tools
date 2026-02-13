@@ -15,7 +15,7 @@ function getPanos(url, callback) {
 
 async function flag_panos_for_redownload(pano_data) {
     // initially, filter out panos that already have image data or have empty pano_id
-    filtered_pano_data = pano_data.filter(pano => pano["gsv_panorama_id"] && (!pano["width"] || !pano["height"]));
+    filtered_pano_data = pano_data.filter(pano => pano["pano_id"] && (!pano["width"] || !pano["height"]));
     console.log(filtered_pano_data.length);
 
     // instantiate streetviewservice instance
@@ -31,11 +31,11 @@ async function flag_panos_for_redownload(pano_data) {
         pano_slice = filtered_pano_data.slice(i, i + CHUNK_SIZE);
         for (let pano of pano_slice) {
             // console.log(pano)
-            let metadata_promise = streetViewService.getPanorama({pano: pano["gsv_panorama_id"]}, function(svPanoData, status) {
+            let metadata_promise = streetViewService.getPanorama({pano: pano["pano_id"]}, function(svPanoData, status) {
                 if (status === google.maps.StreetViewStatus.OK) {
                     tiles = svPanoData.tiles;
                     new_pano_data.push({
-                        gsv_panorama_id: pano["gsv_panorama_id"],
+                        pano_id: pano["pano_id"],
                         image_width: tiles.worldSize.width,
                         image_height: tiles.worldSize.height,
                         tile_width: tiles.tileSize.width,
@@ -47,25 +47,25 @@ async function flag_panos_for_redownload(pano_data) {
                     });
                 } else {
                     // no street view data available for this panorama.
-                    //console.error(`Error loading Street View imagery for ${pano["gsv_panorama_id"]}: ${status}`);
-                    failed_to_retrieve_metadata.push({gsv_panorama_id: pano["gsv_panorama_id"]});
+                    //console.error(`Error loading Street View imagery for ${pano["pano_id"]}: ${status}`);
+                    failed_to_retrieve_metadata.push({pano_id: pano["pano_id"]});
                 }
             });
-            
+
             metadata_promises.push(metadata_promise);
         }
 
         // wait for all metadata promises to resolve
         // TODO: add a final flag in order to post everything when all batches iterated over
         results = await Promise.allSettled(metadata_promises)
-        
+
         // .then(results => {
         // see how many failed in chunk
         console.log(results.filter(result => result.status == "rejected").length);
 
         // check updated new_pano_data length
         console.log(new_pano_data.length);
-        
+
         // check if this chunk was the last chunk
         last_chunk = i + CHUNK_SIZE >= filtered_pano_data.length;
 

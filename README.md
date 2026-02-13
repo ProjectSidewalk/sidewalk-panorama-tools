@@ -54,41 +54,43 @@ python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbu
 ## Definitions of variables found in APIs
 
 ### Downloader: /adminapi/panos
-| Attribute | Definition |
-| ------------- | ------------- |
-| gsv_panorama_id | A unique ID, provided by Google, for the panoramic image |
-| width | The width of the pano image in pixels |
-| height | The height of the pano image in pixels |
-| lat | The latitude of the camera when the image was taken |
-| lng | The longitude of the camera when the image was taken |
+| Attribute      | Definition                                                                     |
+|----------------|--------------------------------------------------------------------------------|
+| pano_id        | A unique ID, provided by Google, for the panoramic image                       |
+| width          | The width of the pano image in pixels                                          |
+| height         | The height of the pano image in pixels                                         |
+| lat            | The latitude of the camera when the image was taken                            |
+| lng            | The longitude of the camera when the image was taken                           |
 | camera_heading | The heading (in degrees) of the center of the image with respect to true north |
-| camera_pitch | The pitch (in degrees) of the camera with respect to horizontal |
+| camera_pitch   | The pitch (in degrees) of the camera with respect to horizontal                |
+| source         | The source of the imagery (gsv, mapillary, etc)                                |
 
 
 ### Cropper: /adminapi/labels/cvMetadata
 You won't need most of this data in your work, but it's all here for reference. Everything through `notsure_count` might be useful, then there are a few that are duplicates from the API described above, then everything starting with `canvas_width` probably won't matter for you.
 
-| Attribute | Definition |
-| ------------- | ------------- |
-| label_id | A unique ID for each label (within a given city), provided by Project Sidewalk |
+| Attribute       | Definition |
+|-----------------| ------------- |
+| label_id        | A unique ID for each label (within a given city), provided by Project Sidewalk |
 | gsv_panorama_id | A unique ID, provided by Google, for the panoramic image [same as /adminapi/panos] |
-| label_type_id | An integer ID denoting the type of label placed, defined in the chart below |
-| pano_x | The x-pixel location of the label on the pano, where top-left is (0,0) |
-| pano_y | The y-pixel location of the label on the pano, where top-left is (0,0) |
-| agree_count | The number of "agree" validations provided by Project Sidewalk users |
-| disagree_count | The number of "disagree" validations provided by Project Sidewalk users |
-| notsure_count | The number of "not sure" validations provided by Project Sidewalk users |
-| pano_width | The width of the pano image in pixels [same as /adminapi/panos] |
-| pano_height | The height of the pano image in pixels [same as /adminapi/panos] |
-| camera_heading | The heading (in degrees) of the center of the image with respect to true north [same as /adminapi/panos] |
-| camera_pitch | The pitch (in degrees) of the camera with respect to horizontal [same as /adminapi/panos] |
-| canvas_width | The width of the canvas where the user placed a label in Project Sidewalk |
-| canvas_height | The height of the canvas where the user placed a label in Project Sidewalk |
-| canvas_x | The x-pixel location where the user clicked on the canvas to place the label, where top-left is (0,0) |
-| canvas_y | The y-pixel location where the user clicked on the canvas to place the label, where top-left is (0,0) |
-| heading | The heading (in degrees) of the center of the canvas with respect to true north when the label was placed |
-| pitch | The pitch (in degrees) of the center of the canvas with respect to _the camera's pitch_ when the label was placed |
-| zoom | The zoom level in the GSV interface when the user placed the label |
+| source          | The source of the imagery (gsv, mapillary, etc) [same as /adminapi/panos] |
+| label_type_id   | An integer ID denoting the type of label placed, defined in the chart below |
+| pano_x          | The x-pixel location of the label on the pano, where top-left is (0,0) |
+| pano_y          | The y-pixel location of the label on the pano, where top-left is (0,0) |
+| agree_count     | The number of "agree" validations provided by Project Sidewalk users |
+| disagree_count  | The number of "disagree" validations provided by Project Sidewalk users |
+| notsure_count   | The number of "not sure" validations provided by Project Sidewalk users |
+| pano_width      | The width of the pano image in pixels [same as /adminapi/panos] |
+| pano_height     | The height of the pano image in pixels [same as /adminapi/panos] |
+| camera_heading  | The heading (in degrees) of the center of the image with respect to true north [same as /adminapi/panos] |
+| camera_pitch    | The pitch (in degrees) of the camera with respect to horizontal [same as /adminapi/panos] |
+| canvas_width    | The width of the canvas where the user placed a label in Project Sidewalk |
+| canvas_height   | The height of the canvas where the user placed a label in Project Sidewalk |
+| canvas_x        | The x-pixel location where the user clicked on the canvas to place the label, where top-left is (0,0) |
+| canvas_y        | The y-pixel location where the user clicked on the canvas to place the label, where top-left is (0,0) |
+| heading         | The heading (in degrees) of the center of the canvas with respect to true north when the label was placed |
+| pitch           | The pitch (in degrees) of the center of the canvas with respect to _the camera's pitch_ when the label was placed |
+| zoom            | The zoom level in the GSV interface when the user placed the label |
 
 
 Note that the numbers in the `label_type_id` column correspond to these label types (yes, 8 was skipped! :shrug:):
