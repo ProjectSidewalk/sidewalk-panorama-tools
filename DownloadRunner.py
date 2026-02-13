@@ -221,7 +221,7 @@ def download_panorama_images(storage_path, pano_infos):
     total_panos = len(pano_infos)
 
     # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
-    csv_pano_log_path = os.path.join(storage_path, "gsv_panorama_id_log.csv")
+    csv_pano_log_path = os.path.join(storage_path, "pano_id_log.csv")
     columns = ['pano_id', 'downloaded']
     if not exists(csv_pano_log_path):
         df_pano_id_log = pd.DataFrame(columns=columns)
