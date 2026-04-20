@@ -201,9 +201,14 @@ def fetch_pano_ids_from_webserver(include_all_panos):
     #     },
     #     ...
     # ]
+    non_gsv_skipped = 0
     for value in jsondata:
         pano_id = value["pano_id"]
         has_labels = value["has_labels"]
+        # Only GSV panos are supported by this downloader; infra3d and mapillary need different pipelines.
+        if value.get("source") != "gsv":
+            non_gsv_skipped += 1
+            continue
         if (include_all_panos or has_labels) and pano_id not in unique_ids:
             # Check if the pano_id is an empty string.
             if pano_id and pano_id != 'tutorial':
@@ -211,6 +216,8 @@ def fetch_pano_ids_from_webserver(include_all_panos):
                 pano_info.append(value)
             else:
                 print("Pano ID is an empty string or is for tutorial")
+    if non_gsv_skipped:
+        print("Skipped %d non-GSV panos (infra3d/mapillary are not supported)" % non_gsv_skipped)
     assert len(unique_ids) == len(pano_info)
     return pano_info
 
