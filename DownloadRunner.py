@@ -45,7 +45,7 @@ def progress_check(csv_pano_log_path):
     This speeds things up instead of trying to re-download broken links or images.
     NB: This will not check if the failure was due to internet connection being unavailable etc. so use with caution.
     """
-    df_pano_id_check = pd.read_csv(csv_pano_log_path)
+    df_pano_id_check = pd.read_csv(csv_pano_log_path, dtype={'pano_id': str})
     df_id_set = set(df_pano_id_check['pano_id'])
     total_processed = len(df_pano_id_check.index)
     total_success = df_pano_id_check['downloaded'].sum()
@@ -133,9 +133,15 @@ def download_panorama_images(storage_path, pano_infos):
         df_pano_id_log = pd.read_csv(csv_pano_log_path)
     processed_ids = set(df_pano_id_log['pano_id'])
 
-    df_id_set = progress_check(csv_pano_log_path)[0]
-    # total_panos counts only panos not already logged, so the progress denominator is accurate.
-    total_panos = sum(1 for p in pano_infos if p['pano_id'] not in df_id_set)
+    df_id_set, prior_total, prior_success, prior_fail = progress_check(csv_pano_log_path)
+    # Seed counters from the log so "skipped" in the progress line includes panos already
+    # downloaded on previous runs (same semantics as the original code).
+    skipped_count = prior_success
+    fail_count = prior_fail
+    total_completed = prior_total
+    # Denominator = previously logged + panos we'll attempt this run, so it can never be exceeded.
+    new_panos = sum(1 for p in pano_infos if p['pano_id'] not in df_id_set)
+    total_panos = prior_total + new_panos
 
     for pano_info in pano_infos:
         pano_id = pano_info['pano_id']
