@@ -122,7 +122,6 @@ def filter_supported_sources(pano_infos):
 def download_panorama_images(storage_path, pano_infos):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
-    total_panos = len(pano_infos)
 
     # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
     csv_pano_log_path = os.path.join(storage_path, "pano_id_log.csv")
@@ -132,9 +131,11 @@ def download_panorama_images(storage_path, pano_infos):
         df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
     else:
         df_pano_id_log = pd.read_csv(csv_pano_log_path)
-    processed_ids = list(df_pano_id_log['pano_id'])
+    processed_ids = set(df_pano_id_log['pano_id'])
 
-    df_id_set, total_completed, skipped_count, fail_count = progress_check(csv_pano_log_path)
+    df_id_set = progress_check(csv_pano_log_path)[0]
+    # total_panos counts only panos not already logged, so the progress denominator is accurate.
+    total_panos = sum(1 for p in pano_infos if p['pano_id'] not in df_id_set)
 
     for pano_info in pano_infos:
         pano_id = pano_info['pano_id']
@@ -163,11 +164,11 @@ def download_panorama_images(storage_path, pano_infos):
         if pano_id not in processed_ids:
             df_data_append = pd.DataFrame([[pano_id, downloaded]], columns=columns)
             df_data_append.to_csv(csv_pano_log_path, mode='a', header=False, index=False)
+            processed_ids.add(pano_id)
         else:
             df_pano_id_log = pd.read_csv(csv_pano_log_path)
             df_pano_id_log.loc[df_pano_id_log['pano_id'] == pano_id, 'downloaded'] = downloaded
             df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
-            processed_ids.append(pano_id)
 
         print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
               % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
