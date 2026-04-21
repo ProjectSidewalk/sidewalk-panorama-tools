@@ -28,6 +28,27 @@ Additional settings can be configured for `DownloadRunner.py` in the configurati
 * `proxies` - if you wish to use a proxy when downloading, update this dictionary with the relevant details, otherwise leave as is and no proxy will be used. 
 * `headers` - this is a list of real headers that is used when making requests. You can add to this list, edit it, or leave as is. 
 
+### Imagery sources
+
+The downloader dispatches each pano to a source-specific module based on the `source` field from `/adminapi/panos`. Per-source modules live in the `downloaders/` package.
+
+* **Google Street View (`gsv`)** — no configuration needed; stitches tiles from the undocumented CBK endpoint.
+* **Mapillary (`mapillary`)** — downloads the original-resolution equirectangular image via the [Graph API v4](https://www.mapillary.com/developer/api-documentation). Requires a client token.
+  1. Create a token at <https://www.mapillary.com/dashboard/developers> (the default read scopes are sufficient).
+  2. Export it as `MAPILLARY_ACCESS_TOKEN` before running. Examples:
+     ```bash
+     # Local
+     export MAPILLARY_ACCESS_TOKEN='MLY|...'
+     python3 DownloadRunner.py <sidewalk-fqdn> <storage-dir>
+
+     # Docker (pass the variable through to the container)
+     docker run -e MAPILLARY_ACCESS_TOKEN --cap-add SYS_ADMIN --device=/dev/fuse \
+       --security-opt apparmor:unconfined \
+       projectsidewalk/scraper:v5 <sidewalk-fqdn>
+     ```
+
+Panos with any other `source` value are skipped with a warning.
+
 ## Cropper
 
 `CropRunner.py` creates crops of the accessibility features from the downloaded GSV panoramas images via label data from Project Sidewalk, provided by their API.
@@ -111,7 +132,7 @@ Note that the numbers in the `label_type_id` column correspond to these label ty
 
 * `CropRunner.py` - implement multi core usage when creating crops. Currently runs on a single core, most modern machines
   have more than one core so would give a speed up for cropping 10's of thousands of images and objects.
-* Add logic to `progress_check()` function so that it can register if their is a network failure and does not log the pano id as visited and failed.
+* Add logic to `progress_check()` function so that it can register if there is a network failure and does not log the pano id as visited and failed.
 * Project Sidewalk group to delete old or commented code once they decide it is no longer required (all code which used the previously available XML data).
 
 ## Depth Maps
