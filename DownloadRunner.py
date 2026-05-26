@@ -20,6 +20,7 @@ parser.add_argument('s', help='storage_path - location to store scraped panos')
 parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
 parser.add_argument('--all-panos', action='store_true', help='Run on all panos that users visited, even if no labels were added on them.')
 parser.add_argument('--attempt-depth', action='store_true', help='Attempt do download depth data (we believe that this endpoint was removed in 2022 and expect depth download to always fail).')
+parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
 args = parser.parse_args()
 
 sidewalk_server_fqdn = args.d
@@ -27,6 +28,7 @@ storage_location = args.s
 pano_metadata_csv = args.c
 all_panos = args.all_panos
 attempt_depth = args.attempt_depth
+max_runtime_minutes = args.max_runtime
 
 print(sidewalk_server_fqdn)
 print(storage_location)
@@ -119,7 +121,7 @@ def filter_supported_sources(pano_infos):
     return kept
 
 
-def download_panorama_images(storage_path, pano_infos):
+def download_panorama_images(storage_path, pano_infos, run_start_time=None, max_runtime_minutes=None):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
@@ -147,6 +149,11 @@ def download_panorama_images(storage_path, pano_infos):
         pano_id = pano_info['pano_id']
         if pano_id in df_id_set:
             continue
+        if max_runtime_minutes is not None and run_start_time is not None:
+            elapsed_minutes = (datetime.now() - run_start_time).total_seconds() / 60.0
+            if elapsed_minutes >= max_runtime_minutes:
+                print("IMAGEDOWNLOAD: Max runtime of %.1f minutes reached (%.1f elapsed). Stopping." % (max_runtime_minutes, elapsed_minutes))
+                break
         start_time = time.time()
         print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
         try:
@@ -192,7 +199,7 @@ def download_panorama_images(storage_path, pano_infos):
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
 
-def run_scraper_and_log_results(pano_infos, attempt_depth):
+def run_scraper_and_log_results(pano_infos, attempt_depth, max_runtime_minutes=None):
     start_time = datetime.now()
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
@@ -209,7 +216,7 @@ def run_scraper_and_log_results(pano_infos, attempt_depth):
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
-    im_res = download_panorama_images(storage_location, pano_infos)
+    im_res = download_panorama_images(storage_location, pano_infos, start_time, max_runtime_minutes)
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -244,10 +251,10 @@ pano_infos = filter_supported_sources(pano_infos)
 # import random
 # n = 3
 # if len(pano_infos) > n:
-#     pano_infos = random.sample(pano_infos, 3)
+#     pano_infos = random.sample(pano_infos, n)
 
 print(len(pano_infos))
 
 # Use pano_id list and associated info to gather panos from respective APIs
 print("Fetching Panoramas")
-run_scraper_and_log_results(pano_infos, attempt_depth)
+run_scraper_and_log_results(pano_infos, attempt_depth, max_runtime_minutes)
