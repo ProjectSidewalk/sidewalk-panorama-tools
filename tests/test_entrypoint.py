@@ -10,8 +10,13 @@ import subprocess
 
 import pytest
 
+from conftest import posix_only
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRYPOINT = os.path.join(REPO_ROOT, 'DownloadRunnerDockerEntrypoint.sh')
+
+# Windows' bash mangles the drive-letter path and can't chmod the python3 stub executable.
+pytestmark = posix_only
 
 
 @pytest.fixture

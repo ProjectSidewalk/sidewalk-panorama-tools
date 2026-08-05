@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
 parser.add_argument('s', help='storage_path - location to store scraped panos')
 parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
-parser.add_argument('--all-panos', action='store_true', help='Run on all panos that users visited, even if no labels were added on them.')
+parser.add_argument('--all-panos', action='store_true', help='Download images for all panos that users visited, even if no labels were added on them. Does not affect depth, which always covers every pano.')
 parser.add_argument('--skip-depth', action='store_true', help='Skip downloading GSV depth maps (downloaded by default via the streetlevel library).')
 parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
 parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
@@ -73,13 +73,15 @@ def fetch_pano_ids_csv(metadata_csv_path):
     return df_meta
 
 
-def fetch_pano_ids_from_webserver(include_all_panos):
+def fetch_pano_ids_from_webserver():
     """
     Fetch pano metadata from /adminapi/panos.
 
     Each entry is a dict with: pano_id, width, height, lat, lng, camera_heading, camera_pitch, source, has_labels.
 
-    Source-specific dispatch happens at download time, so all sources are kept here.
+    Returns every pano the server knows about. Source-specific dispatch happens at download time, and the
+    --all-panos / has_labels split happens in select_image_panos() - the depth phase wants the whole corpus, so
+    filtering here would hide unlabelled panos from it.
     """
     unique_ids = set()
     pano_info = []
@@ -91,15 +93,30 @@ def fetch_pano_ids_from_webserver(include_all_panos):
 
     for value in jsondata:
         pano_id = value["pano_id"]
-        has_labels = value["has_labels"]
-        if (include_all_panos or has_labels) and pano_id not in unique_ids:
-            if pano_id and pano_id != 'tutorial':
-                unique_ids.add(pano_id)
-                pano_info.append(value)
-            else:
-                print("Pano ID is an empty string or is for tutorial")
+        if pano_id in unique_ids:
+            continue
+        if pano_id and pano_id != 'tutorial':
+            unique_ids.add(pano_id)
+            pano_info.append(value)
+        else:
+            print("Pano ID is an empty string or is for tutorial")
     assert len(unique_ids) == len(pano_info)
     return pano_info
+
+
+def select_image_panos(pano_infos, include_all_panos):
+    """
+    Narrow the pano list to what the image phase should download.
+
+    --all-panos gates images only: depth is wanted for every pano including ones nobody has labelled, and it costs
+    one metadata request per pano either way, so the depth phase always gets the full list.
+
+    A pano with no has_labels key counts as labelled. That preserves the -c path's behaviour for hand-made CSVs,
+    which have always downloaded everything in the file regardless of --all-panos.
+    """
+    if include_all_panos:
+        return pano_infos
+    return [p for p in pano_infos if p.get('has_labels', True)]
 
 
 def filter_supported_sources(pano_infos):
@@ -207,21 +224,28 @@ def download_panorama_images(storage_path, pano_infos, run_start_time=None, max_
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
 
-def run_scraper_and_log_results(pano_infos, skip_depth, max_runtime_minutes=None, max_depth_requests=None):
+def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, max_runtime_minutes=None,
+                                max_depth_requests=None):
+    """Run the image and depth phases and append this run's row to log.csv.
+
+    @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
+    @param depth_pano_infos Every supported pano; the depth phase filters this to source == 'gsv' itself.
+    """
     start_time = datetime.now()
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
     # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below), but
     # its log.csv columns are stubbed with the values every production run has always written so the positional
-    # 18-column format parsed by scraper-log-analyzer doesn't shift.
-    xml_res = (0, 0, len(pano_infos), len(pano_infos))
+    # 18-column format parsed by scraper-log-analyzer doesn't shift. Deliberately the image list's length, which
+    # is what this counted before depth stopped honouring --all-panos.
+    xml_res = (0, 0, len(image_pano_infos), len(image_pano_infos))
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
-    im_res = download_panorama_images(storage_location, pano_infos, start_time, max_runtime_minutes)
+    im_res = download_panorama_images(storage_location, image_pano_infos, start_time, max_runtime_minutes)
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -229,11 +253,12 @@ def run_scraper_and_log_results(pano_infos, skip_depth, max_runtime_minutes=None
 
     # Depth maps are GSV-only. This phase runs after the image phase sharing the same --max-runtime budget, so
     # on catch-up days images (the primary artifact) win the whole window. It iterates the full pano list — not
-    # the pano_id_log.csv-gated image loop — which is what backfills depth for panos downloaded in earlier runs.
+    # the pano_id_log.csv-gated image loop, and not narrowed by --all-panos — which is what backfills depth for
+    # panos downloaded in earlier runs and for panos nobody has labelled.
     if skip_depth:
         depth_res = (0, 0, 0, 0)
     else:
-        gsv_panos = [p for p in pano_infos if p.get('source') == 'gsv']
+        gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
         depth_res = gsv.download_depth_maps(storage_location, gsv_panos, start_time, max_runtime_minutes,
                                             max_depth_requests)
     depth_end_time = datetime.now()
@@ -252,9 +277,10 @@ print("Fetching pano-ids")
 if pano_metadata_csv is not None:
     pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
 else:
-    pano_infos = fetch_pano_ids_from_webserver(all_panos)
+    pano_infos = fetch_pano_ids_from_webserver()
 
 pano_infos = filter_supported_sources(pano_infos)
+image_pano_infos = select_image_panos(pano_infos, all_panos)
 
 # Uncomment this to test on a smaller subset of the pano_info.
 # import random
@@ -262,8 +288,9 @@ pano_infos = filter_supported_sources(pano_infos)
 # if len(pano_infos) > n:
 #     pano_infos = random.sample(pano_infos, n)
 
-print(len(pano_infos))
+print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth"
+      % (len(pano_infos), len(image_pano_infos), sum(1 for p in pano_infos if p.get('source') == 'gsv')))
 
 # Use pano_id list and associated info to gather panos from respective APIs
 print("Fetching Panoramas")
-run_scraper_and_log_results(pano_infos, skip_depth, max_runtime_minutes, max_depth_requests)
+run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes, max_depth_requests)

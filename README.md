@@ -24,7 +24,7 @@ There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [
 1. Right now the data is stored in a temporary directory in the Docker container. You could set up a shared volume for it, but for now you can just copy the data over using `docker cp <container-id>:/tmp/download_dest/ <local-storage-location>`, where `<local-storage-location>` is the place on your local machine where you want to save the files. You can find the `<container-id>` using `docker ps -a`.
 
 Optional flags (accepted both by `DownloadRunner.py` and, appended after the positional args, by the Docker entrypoint):
-* `--all-panos` — include panos that users visited but never labeled.
+* `--all-panos` — download *images* for panos that users visited but never labeled. This does not affect depth, which always covers every pano (see [Depth Maps](#depth-maps)).
 * `--skip-depth` — skip the GSV depth-map phase (on by default; see [Depth Maps](#depth-maps)).
 * `--max-runtime MINUTES` — stop starting new downloads/requests after this much wall time (the daily cron uses this).
 * `--max-depth-requests N` — stop the depth phase after N metadata requests (useful to throttle the initial backfill).
@@ -156,6 +156,21 @@ Artifacts and bookkeeping, relative to the storage root:
 
 The depth phase runs after the image phase and shares its `--max-runtime` budget, so on a fresh city (or the first runs after this feature) images download first and depth backfills incrementally across daily runs. Use `--max-depth-requests` to cap the phase's request volume during backfill.
 
+### Being a good citizen of Google's servers
+
+The phase is serial — one metadata request in flight at a time, unlike the image phase's `thread_count` fan-out — and on top of that:
+
+* **Requests stop when Google pushes back.** The photometa endpoint doesn't answer scraping pressure with an HTTP 429; it serves (or redirects to) a captcha/consent interstitial carrying a 200, which would otherwise look identical to one pano having a bad payload. A response hook spots those, and the phase stops for the run rather than spending the rest of its budget on a wall. Exhausting the retry policy against 429/5xx is treated the same way.
+* **A circuit breaker** stops the phase after 25 consecutive transient failures, with escalating back-off (30 s / 2 min / 5 min) before it gives up. Nothing is concluded from a block — every unresolved pano simply retries next run — but the run prints a loud warning, so check for a rate limit before the next one.
+* **`depth_min_request_interval`** in `config.py` sets a floor (with jitter) on the gap between depth requests. It defaults to `0.0`. Leave it there unless a canary run shows Google pushing back: the backfill is inherently a multi-month job, so pacing costs real weeks. **The throttle is per-process** — if several cities scrape concurrently from one box, the rate Google sees is this multiplied by however many runs overlap.
+
+### Ops notes
+
+* **Depth ignores `--all-panos`.** The image phase only downloads labeled panos unless you pass that flag, but depth always covers every GSV pano the server knows about — including ones nobody has labeled, and ones whose image download failed or was never attempted. It costs one metadata request per pano either way, and the goal is depth for the whole corpus. As a result the depth phase's pano count is normally larger than the image phase's; both are printed at startup.
+* Unresolved panos are shuffled each run. Iteration order is otherwise stable, so a cluster of panos that fail every time would monopolise `--max-depth-requests` run after run and the backfill would never reach anything behind it.
+* **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs will show large failure numbers that are entirely normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; `log.csv` keeps its 18-column positional shape, so there was no room for a separate column.
+* Storage or ledger write failures (a full or unmounted store) are treated as transient per-pano failures and retried next run. They must never escape the phase: `DownloadRunner.py` writes the depth and total-duration columns *after* it returns, so a crash here would leave a 12-field `log.csv` line where the analyzer expects 18.
+
 The depth map is Google's plane-based encoding decoded to a per-pixel distance grid; note that it appears to be synthesized from elevation data and building footprints rather than measured directly, so treat it as approximate near fine structures.
 
 ## Tests
@@ -165,6 +180,8 @@ A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artif
 pip3 install -r requirements.txt -r requirements-dev.txt
 python3 -m pytest tests
 ```
+
+One module (`test_streetlevel_api.py`) does import the real streetlevel, to pin the handful of API details `downloaders/gsv.py` depends on — the mocked suite can't catch drift there, since the stub accepts any arguments. It skips itself if streetlevel isn't installed (its `pyfrpc` dependency needs a C compiler). Tests that assert POSIX file modes or run the bash entrypoint skip on Windows; CI runs everything on Ubuntu 22.04.
 
 ## Old Code We've Removed
 In PR [#26](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/26), we removed some old code. Some was related to our Tohme paper from 2014, some had to do with using depth maps for cropping images. Given that no one seems to be using the Tohme code (those on our team don't even know how it works) and Google has removed access to their depth data API, we removed this code in Apr 2023. We are hoping that this will simplify the repository, making it easier to make use of our newer work, while making it easier to maintain the code that's actually being used.

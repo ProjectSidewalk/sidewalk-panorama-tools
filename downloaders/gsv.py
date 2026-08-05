@@ -10,6 +10,7 @@ import math
 import os
 import random
 import stat
+import time
 from datetime import datetime
 from io import BytesIO
 
@@ -23,6 +24,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from config import headers_list, proxies, thread_count
+
+try:
+    from config import depth_min_request_interval
+except ImportError:
+    # config.py predates the depth phase (the scraper box carries local edits to this file, so a `git pull` can
+    # leave it behind). Don't take the whole scraper down over a throttle that defaults to off anyway.
+    depth_min_request_interval = 0.0
 
 try:
     from xml.etree import cElementTree as ET
@@ -192,6 +200,38 @@ def download_single_pano(storage_path, pano_info):
 DEPTH_LOG_FILENAME = 'depth_log.csv'
 DEPTH_ARTIFACT_SUFFIX = '.depth.npz'
 
+# Consecutive transient failures after which the depth phase gives up for this run. Without a breaker, a run that
+# hits a wall (rate limit, captcha, DNS outage) spends its whole --max-runtime budget re-hitting it, then does the
+# same thing again the next night.
+DEPTH_MAX_CONSECUTIVE_FAILURES = 25
+
+# consecutive-failure count -> seconds to sleep before carrying on. Gives a blip a chance to clear before we spend
+# the breaker, without pounding while we wait.
+DEPTH_RETREAT_SCHEDULE = {5: 30, 10: 120, 15: 300}
+
+# Substrings that mark Google's "you are a robot" landing pages rather than pano metadata.
+_BLOCK_URL_MARKERS = ('/sorry/', 'consent.google.com')
+
+
+class DepthBlockedError(Exception):
+    """Google answered a photometa request with a rate-limit or captcha/consent interstitial instead of data."""
+
+
+def _raise_if_blocked(response, *args, **kwargs):
+    """requests response hook: spot Google pushing back before the response reaches streetlevel's JSON parser.
+
+    The photometa endpoint doesn't answer scraping pressure with a 429 - it serves, or redirects to, an
+    interstitial carrying HTTP 200, which streetlevel then fails to parse. Without this hook that is
+    indistinguishable from one pano having a malformed payload, so a blocked run would keep hammering instead of
+    standing down. Hooks fire on redirect hops too, hence checking Location as well as the landing URL.
+    """
+    if response.status_code == 403:
+        raise DepthBlockedError("HTTP 403 from %s" % (response.url))
+    for url in (response.url or '', response.headers.get('Location', '')):
+        for marker in _BLOCK_URL_MARKERS:
+            if marker in url:
+                raise DepthBlockedError("redirected to %s" % (url))
+
 
 class _TimeoutHTTPAdapter(HTTPAdapter):
     """HTTPAdapter that applies a default timeout to every request.
@@ -215,19 +255,41 @@ class _TimeoutHTTPAdapter(HTTPAdapter):
 def _depth_session():
     """Build the requests.Session handed to streetlevel for photometa requests.
 
-    Same retry policy as _request_session(), plus a default timeout (streetlevel never sets one). Headers and
-    proxies must live on the session because streetlevel doesn't pass per-request options.
+    Same retry policy as _request_session(), plus a default timeout (streetlevel never sets one), backoff jitter,
+    and the block-detection hook.
+
+    Deliberately does NOT borrow config.headers_list the way the tile downloader does. streetlevel sends its own
+    Accept/Host/Referer/User-Agent on every photometa request, and in requests a request-level header beats a
+    session-level one, so all of those would be dead on arrival - leaving only the leftovers (Accept-Language,
+    Upgrade-Insecure-Requests, DNT) to contradict streetlevel's Firefox User-Agent, which is a more anomalous
+    fingerprint than either set alone. Proxies still have to live on the session because streetlevel passes no
+    per-request options.
     """
     session = requests.Session()
-    retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+    # backoff_jitter keeps concurrent city runs from resynchronising onto an identical retry schedule after a
+    # shared outage and pounding in lockstep (requires urllib3 >= 2.0).
+    retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1,
+                  backoff_jitter=0.5)
     adapter = _TimeoutHTTPAdapter(max_retries=retry, timeout=30)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
-    # Drop Host (one config.py entry pins it to maps.google.com, but photometa lives on www.google.com) and the
-    # HTML-oriented Accept from the borrowed browser headers.
-    session.headers.update({k: v for k, v in _random_header().items() if k not in ('Host', 'Accept')})
     session.proxies.update({k: v for k, v in _proxies.items() if v})
+    session.hooks['response'].append(_raise_if_blocked)
     return session
+
+
+def _pace(last_request_at):
+    """Sleep so consecutive depth requests are at least config.depth_min_request_interval apart.
+
+    @param last_request_at time.monotonic() of the previous request, or None if this is the first one.
+    """
+    if depth_min_request_interval <= 0 or last_request_at is None:
+        return
+    # Jitter on top of the floor so overlapping city runs don't settle into a shared cadence.
+    wait = depth_min_request_interval - (time.monotonic() - last_request_at)
+    wait += random.uniform(0, depth_min_request_interval * 0.25)
+    if wait > 0:
+        time.sleep(wait)
 
 
 def _load_depth_log(depth_log_path):
@@ -266,14 +328,23 @@ def _write_depth_artifact(storage_path, pano_id, pano):
     def scalar(value):
         return float(value) if value is not None else float('nan')
 
-    # savez_compressed needs an open file object: given a path without a .npz extension it silently appends one,
-    # which would write to the wrong filename.
-    with open(tmp_path, 'wb') as f:
-        np.savez_compressed(f, depth=pano.depth.data.astype(np.float32), heading=scalar(pano.heading),
-                            pitch=scalar(pano.pitch), roll=scalar(pano.roll))
-    os.chmod(tmp_path, 0o664)
-    # Atomic rename so a crash can never leave a truncated .npz that would be treated as done forever.
-    os.replace(tmp_path, final_path)
+    try:
+        # savez_compressed needs an open file object: given a path without a .npz extension it silently appends
+        # one, which would write to the wrong filename.
+        with open(tmp_path, 'wb') as f:
+            np.savez_compressed(f, depth=pano.depth.data.astype(np.float32), heading=scalar(pano.heading),
+                                pitch=scalar(pano.pitch), roll=scalar(pano.roll))
+        os.chmod(tmp_path, 0o664)
+        # Atomic rename so a crash can never leave a truncated .npz that would be treated as done forever.
+        os.replace(tmp_path, final_path)
+    except BaseException:
+        # A half-written .part would otherwise accumulate on the store forever - nothing else ever cleans it up,
+        # and the retry next run writes to the same name.
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runtime_minutes=None, max_requests=None):
@@ -282,9 +353,18 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
     Callers pre-filter to source == 'gsv'. Depth rides Google's photometa response, so this costs one metadata
     request per unresolved pano. Outcomes are remembered in <storage_path>/depth_log.csv: 'saved' (artifact
     written) and 'unavailable' (pano gone or no depth payload — permanent for a given pano id, never retried).
-    Transient errors are counted as failures but NOT ledgered, so they retry on the next run. The artifact on
-    disk is the ground truth; deleting the ledger just makes the next run re-stat artifacts (re-appending
-    'saved') and re-request unresolved panos.
+    Transient errors — including storage failures — are counted as failures but NOT ledgered, so they retry on the
+    next run. The artifact on disk is the ground truth; deleting the ledger just makes the next run re-stat
+    artifacts (re-appending 'saved') and re-request unresolved panos.
+
+    Unresolved panos are shuffled, so a cluster that fails on every run can't permanently starve max_requests.
+    The phase stops early if Google starts refusing requests (see DepthBlockedError) or after
+    DEPTH_MAX_CONSECUTIVE_FAILURES transient failures in a row, rather than spending the rest of the budget on a
+    wall. config.depth_min_request_interval paces requests if set.
+
+    Note that 'unavailable' — a permanent, expected, non-actionable outcome — is counted in fail_count, and so
+    lands in log.csv's depth failure column. That column is therefore not usable as an alert signal; the split is
+    printed to stdout and scrape.log instead.
 
     @param storage_path        Root of the pano store (shard dirs + depth_log.csv live here).
     @param pano_infos          Pano dicts (needs 'pano_id'); typically the full /adminapi/panos list, which is
@@ -303,33 +383,65 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
     total_panos = len(pano_infos)
     success_count, fail_count, skipped_count, unavailable_count = 0, 0, 0, 0
     request_count = 0
+    consecutive_failures = 0
+    blocked = False
 
     depth_log_path = os.path.join(storage_path, DEPTH_LOG_FILENAME)
-    resolved_ids = _load_depth_log(depth_log_path)
     log_existed = os.path.isfile(depth_log_path)
+    try:
+        resolved_ids = _load_depth_log(depth_log_path)
+    except OSError as e:
+        # Deliberately not degrading to "nothing is resolved": that would re-request the entire corpus against an
+        # already-sick store. If the ledger can't be read, sit this run out.
+        logging.error("DEPTHDOWNLOAD: Cannot read %s (%s); skipping the depth phase", depth_log_path, str(e))
+        print("DEPTHDOWNLOAD: Cannot read the depth ledger (%s). Skipping the depth phase." % (e))
+        return 0, 0, 0, 0
+
+    # Partition before requesting anything. Counting the ledger skips up front keeps log.csv's 'skipped' column
+    # honest even when a budget cuts the run short, and it means the shuffle below only has to touch panos we
+    # might actually fetch - after backfill that's a small set, so this stays cheap on a multi-million-pano corpus.
+    candidates = [p for p in pano_infos if p['pano_id'] not in resolved_ids]
+    skipped_count = total_panos - len(candidates)
+
+    # Shuffle so a cluster of panos that fail every time can't monopolise --max-depth-requests run after run and
+    # starve the rest of the backfill: iteration order is otherwise stable, so the same head block would be
+    # re-attempted forever and never make progress.
+    random.shuffle(candidates)
 
     session = _depth_session()
-    with open(depth_log_path, 'a', newline='') as depth_log:
+    try:
+        depth_log = open(depth_log_path, 'a', newline='')
         ledger = csv.writer(depth_log)
         if not log_existed:
             ledger.writerow(['pano_id', 'status'])
+            depth_log.flush()
             os.chmod(depth_log_path, 0o664)
+    except OSError as e:
+        # The ledger isn't writable at all (full, read-only, or the sshfs mount dropped). Without it nothing could
+        # be remembered, so there's no useful work this run - but don't take the whole run down over it.
+        logging.error("DEPTHDOWNLOAD: Cannot write %s (%s); skipping the depth phase", depth_log_path, str(e))
+        print("DEPTHDOWNLOAD: Cannot write the depth ledger (%s). Skipping the depth phase." % (e))
+        return 0, 0, skipped_count, skipped_count
+
+    with depth_log:
 
         def record(pano_id, status):
             ledger.writerow([pano_id, status])
             depth_log.flush()
             resolved_ids.add(pano_id)
 
-        for pano_info in pano_infos:
+        last_request_at = None
+        for pano_info in candidates:
             pano_id = pano_info['pano_id']
-            if pano_id in resolved_ids:
-                skipped_count += 1
-                continue
 
             artifact_path = os.path.join(storage_path, pano_id[:2], pano_id + DEPTH_ARTIFACT_SUFFIX)
             if os.path.isfile(artifact_path):
                 # Artifact exists but the ledger doesn't know it (e.g. the ledger was deleted): self-heal.
-                record(pano_id, 'saved')
+                try:
+                    record(pano_id, 'saved')
+                except OSError as e:
+                    logging.error("DEPTHDOWNLOAD: Could not ledger existing artifact for pano %s: %s", pano_id,
+                                  str(e))
                 skipped_count += 1
                 continue
 
@@ -343,22 +455,13 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 print("DEPTHDOWNLOAD: Max depth requests (%d) reached. Stopping." % (max_requests))
                 break
 
+            _pace(last_request_at)
+            last_request_at = time.monotonic()
+
             print("DEPTHDOWNLOAD: Processing pano %s " % (pano_id))
             request_count += 1
             try:
                 pano = streetview.find_panorama_by_id(pano_id, download_depth=True, session=session)
-            except (requests.RequestException, ValueError) as e:
-                # Transient: connection errors/timeouts, retries exhausted, or a non-JSON (error/captcha) page —
-                # streetlevel never checks status codes, so non-200 responses surface as JSONDecodeError. Not
-                # ledgered, so the pano retries next run.
-                fail_count += 1
-                logging.error("DEPTHDOWNLOAD: Failed to fetch depth for pano %s due to error %s", pano_id, str(e))
-            except Exception as e:
-                # Unexpected (e.g. a malformed depth payload crashing streetlevel's parser). Treated as
-                # transient; worst case a permanently-bad pano costs one request per run.
-                fail_count += 1
-                logging.exception("DEPTHDOWNLOAD: Unexpected error fetching depth for pano %s: %s", pano_id, str(e))
-            else:
                 if pano is None or pano.depth is None or pano.depth.data is None:
                     # Pano deleted/id rotated, or it has no depth payload. Depth availability for a given pano id
                     # is static, so remember the outcome and never re-request.
@@ -369,13 +472,63 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                     _write_depth_artifact(storage_path, pano_id, pano)
                     record(pano_id, 'saved')
                     success_count += 1
+                # Either outcome proves we're still talking to Google, so the breaker resets.
+                consecutive_failures = 0
+            except (DepthBlockedError, requests.exceptions.RetryError) as e:
+                # Google is refusing us: an interstitial, or a 429/5xx that survived every retry. That's a verdict
+                # on the endpoint, not on this pano, so stop rather than spend the rest of the budget on a wall.
+                fail_count += 1
+                blocked = True
+                logging.error("DEPTHDOWNLOAD: Stopping depth phase, Google is refusing requests (%s)", str(e))
+                print("DEPTHDOWNLOAD: Google is refusing requests (%s). Stopping the depth phase." % (e))
+                break
+            except (requests.RequestException, ValueError) as e:
+                # Transient: connection errors/timeouts, or a non-JSON page that isn't a recognised interstitial -
+                # streetlevel never checks status codes, so non-200 responses surface as JSONDecodeError. Not
+                # ledgered, so the pano retries next run.
+                # NB: requests.RequestException subclasses OSError, so it must be caught above the OSError arm.
+                fail_count += 1
+                consecutive_failures += 1
+                logging.error("DEPTHDOWNLOAD: Failed to fetch depth for pano %s due to error %s", pano_id, str(e))
+            except OSError as e:
+                # Storage-side failure writing the artifact or the ledger - ENOSPC/EIO on the sshfs mount is the
+                # realistic one, given this feature adds terabytes. Also transient and also not ledgered. Caught
+                # deliberately: escaping here would abort the run part-way through log.csv and leave a 12-field
+                # line where the analyzer expects 18.
+                fail_count += 1
+                consecutive_failures += 1
+                logging.error("DEPTHDOWNLOAD: Could not store depth for pano %s: %s", pano_id, str(e))
+            except Exception as e:
+                # Unexpected (e.g. a malformed depth payload crashing streetlevel's parser). Treated as
+                # transient; worst case a permanently-bad pano costs one request per run.
+                fail_count += 1
+                consecutive_failures += 1
+                logging.exception("DEPTHDOWNLOAD: Unexpected error fetching depth for pano %s: %s", pano_id, str(e))
 
             total_completed = success_count + fail_count + skipped_count
             print("DEPTHDOWNLOAD: Completed %d of %d (%d success, %d failed [%d unavailable], %d skipped)"
                   % (total_completed, total_panos, success_count, fail_count, unavailable_count, skipped_count))
 
+            if consecutive_failures >= DEPTH_MAX_CONSECUTIVE_FAILURES:
+                blocked = True
+                logging.error("DEPTHDOWNLOAD: Stopping depth phase after %d consecutive failures",
+                              consecutive_failures)
+                print("DEPTHDOWNLOAD: %d consecutive failures. Stopping the depth phase."
+                      % (consecutive_failures))
+                break
+            retreat_seconds = DEPTH_RETREAT_SCHEDULE.get(consecutive_failures)
+            if retreat_seconds:
+                print("DEPTHDOWNLOAD: %d consecutive failures, backing off for %ds before continuing."
+                      % (consecutive_failures, retreat_seconds))
+                time.sleep(retreat_seconds)
+
     total_completed = success_count + fail_count + skipped_count
+    if blocked:
+        # Loud on stdout because cron mails it: a blocked phase means nothing is progressing, and the per-pano
+        # detail is buried in scrape.log.
+        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early because Google stopped answering. No panos "
+              "were lost (unresolved panos are retried next run), but check for a rate limit before the next run.")
     logging.debug("DEPTHDOWNLOAD: Final result: Completed %d of %d (%d success, %d failed [%d unavailable], "
-                  "%d skipped)", total_completed, total_panos, success_count, fail_count, unavailable_count,
-                  skipped_count)
+                  "%d skipped, %d requests, blocked=%s)", total_completed, total_panos, success_count, fail_count,
+                  unavailable_count, skipped_count, request_count, blocked)
     return success_count, fail_count, skipped_count, total_completed
