@@ -19,16 +19,24 @@ parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage 
 parser.add_argument('s', help='storage_path - location to store scraped panos')
 parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
 parser.add_argument('--all-panos', action='store_true', help='Run on all panos that users visited, even if no labels were added on them.')
-parser.add_argument('--attempt-depth', action='store_true', help='Attempt do download depth data (we believe that this endpoint was removed in 2022 and expect depth download to always fail).')
+parser.add_argument('--skip-depth', action='store_true', help='Skip downloading GSV depth maps (downloaded by default via the streetlevel library).')
 parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
+parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
+# Deprecated no-op, kept for one release so existing invocations don't crash argparse.
+parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
 
 sidewalk_server_fqdn = args.d
 storage_location = args.s
 pano_metadata_csv = args.c
 all_panos = args.all_panos
-attempt_depth = args.attempt_depth
+skip_depth = args.skip_depth
 max_runtime_minutes = args.max_runtime
+max_depth_requests = args.max_depth_requests
+
+if args.attempt_depth:
+    print("WARNING: --attempt-depth is deprecated and ignored; depth download is now on by default "
+          "(use --skip-depth to disable).")
 
 print(sidewalk_server_fqdn)
 print(storage_location)
@@ -199,18 +207,15 @@ def download_panorama_images(storage_path, pano_infos, run_start_time=None, max_
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
 
-def run_scraper_and_log_results(pano_infos, attempt_depth, max_runtime_minutes=None):
+def run_scraper_and_log_results(pano_infos, skip_depth, max_runtime_minutes=None, max_depth_requests=None):
     start_time = datetime.now()
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
-    # XML metadata + depth-map processing are GSV-only.
-    xml_res = ()
-    if attempt_depth:
-        gsv_panos = [p for p in pano_infos if p.get('source') == 'gsv']
-        xml_res = gsv.download_panorama_metadata_xmls(storage_location, gsv_panos)
-    else:
-        xml_res = (0, 0, len(pano_infos), len(pano_infos))
+    # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below), but
+    # its log.csv columns are stubbed with the values every production run has always written so the positional
+    # 18-column format parsed by scraper-log-analyzer doesn't shift.
+    xml_res = (0, 0, len(pano_infos), len(pano_infos))
     xml_end_time = datetime.now()
     xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -222,11 +227,15 @@ def run_scraper_and_log_results(pano_infos, attempt_depth, max_runtime_minutes=N
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d,%d" % (im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration))
 
-    depth_res = ()
-    if attempt_depth:
-        depth_res = gsv.generate_depthmapfiles(storage_location)
-    else:
+    # Depth maps are GSV-only. This phase runs after the image phase sharing the same --max-runtime budget, so
+    # on catch-up days images (the primary artifact) win the whole window. It iterates the full pano list — not
+    # the pano_id_log.csv-gated image loop — which is what backfills depth for panos downloaded in earlier runs.
+    if skip_depth:
         depth_res = (0, 0, 0, 0)
+    else:
+        gsv_panos = [p for p in pano_infos if p.get('source') == 'gsv']
+        depth_res = gsv.download_depth_maps(storage_location, gsv_panos, start_time, max_runtime_minutes,
+                                            max_depth_requests)
     depth_end_time = datetime.now()
     depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -257,4 +266,4 @@ print(len(pano_infos))
 
 # Use pano_id list and associated info to gather panos from respective APIs
 print("Fetching Panoramas")
-run_scraper_and_log_results(pano_infos, attempt_depth, max_runtime_minutes)
+run_scraper_and_log_results(pano_infos, skip_depth, max_runtime_minutes, max_depth_requests)

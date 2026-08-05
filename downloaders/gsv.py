@@ -1,26 +1,26 @@
 # Google Street View panorama downloader.
 #
-# Stitches 512x512 tiles from Google's undocumented CBK endpoint into a single equirectangular JPEG. The XML
-# metadata / depth-map branch of this module has been dead since 2022 (endpoint removed); it stays here so that if the
-# endpoint returns, --attempt-depth still works.
+# Stitches 512x512 tiles from Google's undocumented CBK endpoint into a single equirectangular JPEG, and fetches
+# depth maps from Google's photometa endpoint via the streetlevel library (see download_depth_maps).
 
 import asyncio
-import fnmatch
+import csv
 import logging
 import math
 import os
 import random
 import stat
+from datetime import datetime
 from io import BytesIO
-from subprocess import call
 
 import aiohttp
 import backoff
+import numpy as np
 import requests
 from PIL import Image
 from aiohttp import web  # noqa: F401  (imported for aiohttp.web.HTTPServerError)
 from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
+from urllib3.util.retry import Retry
 
 from config import headers_list, proxies, thread_count
 
@@ -174,7 +174,7 @@ def download_single_pano(storage_path, pano_info):
 
     blank_image = Image.new('RGB', final_im_dimension, (0, 0, 0, 0))
     sites = generate_gsv_urls(zoom)
-    all_pano_images = asyncio.get_event_loop().run_until_complete(download_all_gsv_images(sites))
+    all_pano_images = asyncio.run(download_all_gsv_images(sites))
 
     for cell_image in all_pano_images:
         img = Image.open(BytesIO(cell_image[1]))
@@ -183,104 +183,199 @@ def download_single_pano(storage_path, pano_info):
         blank_image.paste(img, (512 * x, 512 * y))
 
     if zoom == 3:
-        blank_image = blank_image.resize(final_im_dimension, Image.ANTIALIAS)
+        blank_image = blank_image.resize(final_im_dimension, Image.LANCZOS)
     blank_image.save(out_image_name, 'jpeg')
     os.chmod(out_image_name, 0o664)
     return DownloadResult.success
 
 
-def download_panorama_metadata_xmls(storage_path, pano_infos):
-    """Bulk-download the XML metadata that backs depth-map generation.
+DEPTH_LOG_FILENAME = 'depth_log.csv'
+DEPTH_ARTIFACT_SUFFIX = '.depth.npz'
 
-    Expected to fail end-to-end since 2022 (endpoint removed); only invoked when --attempt-depth is passed.
+
+class _TimeoutHTTPAdapter(HTTPAdapter):
+    """HTTPAdapter that applies a default timeout to every request.
+
+    streetlevel's internal requests carry no timeout, so without this a single hung connection would stall a
+    nightly cron run indefinitely.
     """
+
+    def __init__(self, *args, timeout=30, **kwargs):
+        self._timeout = timeout
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):
+        # Session.send always passes timeout as a kwarg (None when the caller set nothing), so a plain
+        # setdefault would never fire.
+        if kwargs.get('timeout') is None:
+            kwargs['timeout'] = self._timeout
+        return super().send(request, **kwargs)
+
+
+def _depth_session():
+    """Build the requests.Session handed to streetlevel for photometa requests.
+
+    Same retry policy as _request_session(), plus a default timeout (streetlevel never sets one). Headers and
+    proxies must live on the session because streetlevel doesn't pass per-request options.
+    """
+    session = requests.Session()
+    retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+    adapter = _TimeoutHTTPAdapter(max_retries=retry, timeout=30)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    # Drop Host (one config.py entry pins it to maps.google.com, but photometa lives on www.google.com) and the
+    # HTML-oriented Accept from the borrowed browser headers.
+    session.headers.update({k: v for k, v in _random_header().items() if k not in ('Host', 'Accept')})
+    session.proxies.update({k: v for k, v in _proxies.items() if v})
+    return session
+
+
+def _load_depth_log(depth_log_path):
+    """Read the depth ledger into a set of resolved pano ids.
+
+    Tolerates malformed rows (e.g. a line truncated by a crash mid-append) by skipping them, so a damaged ledger
+    degrades to re-checking a few panos rather than crashing the run.
+
+    @return Set of pano ids whose depth outcome is already known ('saved' or 'unavailable').
+    """
+    resolved = set()
+    if not os.path.isfile(depth_log_path):
+        return resolved
+    with open(depth_log_path, newline='') as f:
+        for row in csv.reader(f):
+            if len(row) == 2 and row[0] != 'pano_id' and row[1] in ('saved', 'unavailable'):
+                resolved.add(row[0])
+    return resolved
+
+
+def _write_depth_artifact(storage_path, pano_id, pano):
+    """Atomically write <pano_id[:2]>/<pano_id>.depth.npz for a streetlevel pano with depth data.
+
+    Contents: 'depth' = float32 (height, width) array of meters with -1 meaning sky/infinitely far, plus
+    'heading'/'pitch'/'roll' scalars in radians (NaN if absent) so the artifact is self-contained for
+    pixel<->world alignment.
+    """
+    destination_dir = os.path.join(storage_path, pano_id[:2])
+    if not os.path.isdir(destination_dir):
+        os.makedirs(destination_dir)
+        os.chmod(destination_dir, 0o775 | stat.S_ISGID)
+
+    final_path = os.path.join(destination_dir, pano_id + DEPTH_ARTIFACT_SUFFIX)
+    tmp_path = final_path + '.part'
+
+    def scalar(value):
+        return float(value) if value is not None else float('nan')
+
+    # savez_compressed needs an open file object: given a path without a .npz extension it silently appends one,
+    # which would write to the wrong filename.
+    with open(tmp_path, 'wb') as f:
+        np.savez_compressed(f, depth=pano.depth.data.astype(np.float32), heading=scalar(pano.heading),
+                            pitch=scalar(pano.pitch), roll=scalar(pano.roll))
+    os.chmod(tmp_path, 0o664)
+    # Atomic rename so a crash can never leave a truncated .npz that would be treated as done forever.
+    os.replace(tmp_path, final_path)
+
+
+def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runtime_minutes=None, max_requests=None):
+    """Fetch GSV depth maps via the streetlevel library for every pano in pano_infos.
+
+    Callers pre-filter to source == 'gsv'. Depth rides Google's photometa response, so this costs one metadata
+    request per unresolved pano. Outcomes are remembered in <storage_path>/depth_log.csv: 'saved' (artifact
+    written) and 'unavailable' (pano gone or no depth payload — permanent for a given pano id, never retried).
+    Transient errors are counted as failures but NOT ledgered, so they retry on the next run. The artifact on
+    disk is the ground truth; deleting the ledger just makes the next run re-stat artifacts (re-appending
+    'saved') and re-request unresolved panos.
+
+    @param storage_path        Root of the pano store (shard dirs + depth_log.csv live here).
+    @param pano_infos          Pano dicts (needs 'pano_id'); typically the full /adminapi/panos list, which is
+                               what backfills panos downloaded before this feature existed.
+    @param run_start_time      Shared run start used for the max_runtime_minutes budget.
+    @param max_runtime_minutes Stop starting new requests once this much wall time has elapsed since run start.
+    @param max_requests        Stop after this many HTTP attempts this run (manual backfill throttle).
+    @return                    (success_count, fail_count, skipped_count, total_completed).
+    """
+    try:
+        from streetlevel import streetview
+    except ImportError as e:
+        logging.error("DEPTHDOWNLOAD: streetlevel is not installed (%s); skipping depth phase", str(e))
+        return 0, 0, 0, 0
+
     total_panos = len(pano_infos)
-    success_count = 0
-    fail_count = 0
-    skipped_count = 0
-    total_completed = 0
+    success_count, fail_count, skipped_count, unavailable_count = 0, 0, 0, 0
+    request_count = 0
 
-    for pano_info in pano_infos:
-        pano_id = pano_info['pano_id']
-        print("METADOWNLOAD: Processing pano %s " % (pano_id))
-        try:
-            result_code = _download_single_metadata_xml(storage_path, pano_id)
-            if result_code == DownloadResult.failure:
-                fail_count += 1
-            elif result_code == DownloadResult.success:
-                success_count += 1
-            elif result_code == DownloadResult.skipped:
+    depth_log_path = os.path.join(storage_path, DEPTH_LOG_FILENAME)
+    resolved_ids = _load_depth_log(depth_log_path)
+    log_existed = os.path.isfile(depth_log_path)
+
+    session = _depth_session()
+    with open(depth_log_path, 'a', newline='') as depth_log:
+        ledger = csv.writer(depth_log)
+        if not log_existed:
+            ledger.writerow(['pano_id', 'status'])
+            os.chmod(depth_log_path, 0o664)
+
+        def record(pano_id, status):
+            ledger.writerow([pano_id, status])
+            depth_log.flush()
+            resolved_ids.add(pano_id)
+
+        for pano_info in pano_infos:
+            pano_id = pano_info['pano_id']
+            if pano_id in resolved_ids:
                 skipped_count += 1
-        except Exception as e:
-            fail_count += 1
-            logging.error("METADOWNLOAD: Failed to download metadata for pano %s due to error %s", pano_id, str(e))
-        total_completed = fail_count + success_count + skipped_count
-        print("METADOWNLOAD: Completed %d of %d (%d success, %d failed, %d skipped)" %
-              (total_completed, total_panos, success_count, fail_count, skipped_count))
+                continue
 
-    logging.debug("METADOWNLOAD: Final result: Completed %d of %d (%d success, %d failed, %d skipped)",
-                  total_completed, total_panos, success_count, fail_count, skipped_count)
-    return (success_count, fail_count, skipped_count, total_completed)
+            artifact_path = os.path.join(storage_path, pano_id[:2], pano_id + DEPTH_ARTIFACT_SUFFIX)
+            if os.path.isfile(artifact_path):
+                # Artifact exists but the ledger doesn't know it (e.g. the ledger was deleted): self-heal.
+                record(pano_id, 'saved')
+                skipped_count += 1
+                continue
 
+            if max_runtime_minutes is not None and run_start_time is not None:
+                elapsed_minutes = (datetime.now() - run_start_time).total_seconds() / 60.0
+                if elapsed_minutes >= max_runtime_minutes:
+                    print("DEPTHDOWNLOAD: Max runtime of %.1f minutes reached (%.1f elapsed). Stopping."
+                          % (max_runtime_minutes, elapsed_minutes))
+                    break
+            if max_requests is not None and request_count >= max_requests:
+                print("DEPTHDOWNLOAD: Max depth requests (%d) reached. Stopping." % (max_requests))
+                break
 
-def _download_single_metadata_xml(storage_path, pano_id):
-    base_url = "https://maps.google.com/cbk?output=xml&cb_client=maps_sv&hl=en&dm=1&pm=1&ph=1&renderer=cubic,spherical&v=4&panoid="
-
-    destination_folder = os.path.join(storage_path, pano_id[:2])
-    if not os.path.isdir(destination_folder):
-        os.makedirs(destination_folder)
-        os.chmod(destination_folder, 0o775 | stat.S_ISGID)
-
-    filename = pano_id + ".xml"
-    destination_file = os.path.join(destination_folder, filename)
-    if os.path.isfile(destination_file):
-        return DownloadResult.skipped
-
-    url = base_url + pano_id
-
-    session = _request_session()
-    req = _get_response(url, session)
-
-    lineOne = req.content.splitlines()[0]
-    lineFive = req.content.splitlines()[4]
-
-    if lineOne == b'<?xml version="1.0" encoding="UTF-8" ?><panorama/>' or lineFive == b'  <title>Error 404 (Not Found)!!1</title>':
-        return DownloadResult.failure
-    else:
-        with open(destination_file, 'wb') as f:
-            f.write(req.content)
-        os.chmod(destination_file, 0o664)
-        return DownloadResult.success
-
-
-def generate_depthmapfiles(path_to_scrapes):
-    success_count = 0
-    fail_count = 0
-    skip_count = 0
-    total_completed = 0
-    for root, dirnames, filenames in os.walk(path_to_scrapes):
-        for filename in fnmatch.filter(filenames, '*.xml'):
-            xml_location = os.path.join(root, filename)
-
-            pano_id = filename[:-4]
-            print("GENERATEDEPTH: Processing pano %s " % (pano_id))
-
-            output_file = os.path.join(root, pano_id + ".depth.txt")
-            if os.path.isfile(output_file):
-                skip_count += 1
+            print("DEPTHDOWNLOAD: Processing pano %s " % (pano_id))
+            request_count += 1
+            try:
+                pano = streetview.find_panorama_by_id(pano_id, download_depth=True, session=session)
+            except (requests.RequestException, ValueError) as e:
+                # Transient: connection errors/timeouts, retries exhausted, or a non-JSON (error/captcha) page —
+                # streetlevel never checks status codes, so non-200 responses surface as JSONDecodeError. Not
+                # ledgered, so the pano retries next run.
+                fail_count += 1
+                logging.error("DEPTHDOWNLOAD: Failed to fetch depth for pano %s due to error %s", pano_id, str(e))
+            except Exception as e:
+                # Unexpected (e.g. a malformed depth payload crashing streetlevel's parser). Treated as
+                # transient; worst case a permanently-bad pano costs one request per run.
+                fail_count += 1
+                logging.exception("DEPTHDOWNLOAD: Unexpected error fetching depth for pano %s: %s", pano_id, str(e))
             else:
-                output_code = call(["./decode_depthmap", xml_location, output_file])
-                if output_code == 0:
-                    os.chmod(output_file, 0o664)
-                    success_count += 1
-                else:
+                if pano is None or pano.depth is None or pano.depth.data is None:
+                    # Pano deleted/id rotated, or it has no depth payload. Depth availability for a given pano id
+                    # is static, so remember the outcome and never re-request.
+                    record(pano_id, 'unavailable')
+                    unavailable_count += 1
                     fail_count += 1
-                    logging.error("GENERATEDEPTH: Could not create depth.txt for pano %s, error code was %s", pano_id,
-                                  str(output_code))
-            total_completed = fail_count + success_count + skip_count
-            print("GENERATEDEPTH: Completed %d (%d success, %d failed, %d skipped)" %
-                  (total_completed, success_count, fail_count, skip_count))
+                else:
+                    _write_depth_artifact(storage_path, pano_id, pano)
+                    record(pano_id, 'saved')
+                    success_count += 1
 
-    logging.debug("GENERATEDEPTH: Final result: Completed %d (%d success, %d failed, %d skipped)",
-                  total_completed, success_count, fail_count, skip_count)
-    return success_count, fail_count, skip_count, total_completed
+            total_completed = success_count + fail_count + skipped_count
+            print("DEPTHDOWNLOAD: Completed %d of %d (%d success, %d failed [%d unavailable], %d skipped)"
+                  % (total_completed, total_panos, success_count, fail_count, unavailable_count, skipped_count))
+
+    total_completed = success_count + fail_count + skipped_count
+    logging.debug("DEPTHDOWNLOAD: Final result: Completed %d of %d (%d success, %d failed [%d unavailable], "
+                  "%d skipped)", total_completed, total_panos, success_count, fail_count, unavailable_count,
+                  skipped_count)
+    return success_count, fail_count, skipped_count, total_completed
