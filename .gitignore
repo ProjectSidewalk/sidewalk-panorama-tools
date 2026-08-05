@@ -1,5 +1,7 @@
 .vscode
 *.pyc
+__pycache__/
+.pytest_cache/
 *.swp
 id_rsa
 venv

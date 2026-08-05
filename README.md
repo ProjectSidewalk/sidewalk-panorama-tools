@@ -3,7 +3,7 @@
 ## About
 This repository contains a set of Python scripts, intended to be used with data from [Project Sidewalk](https://github.com/ProjectSidewalk/SidewalkWebpage). The purpose of these scripts are to create crops of sidewalk accessibility issues/features usable for ML and computer vision applications from Google Streetview Panoramas via crowd-sourced label data from Project Sidewalk. 
 
-The scripts are intended to be run inside a Docker container running Ubuntu 20.04 64-bit. However, one should be able to run these scripts on most Linux distros without the need for Docker, assuming the Python packages listed in `requirements.txt` can be installed. Additional effort would be required to use the downloader on a Mac or Windows machine without Docker.
+The scripts are intended to be run inside a Docker container running Ubuntu 22.04 64-bit. However, one should be able to run these scripts on most Linux distros without the need for Docker, assuming the Python packages listed in `requirements.txt` can be installed. Additional effort would be required to use the downloader on a Mac or Windows machine without Docker.
 
 There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [CropRunner.py](CropRunner.py). Both should be fully functional, but only the downloader is actively in use (a new version is in the works), so we may not notice bugs with the cropper as quickly. More details on both below!
 
@@ -14,14 +14,20 @@ There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [
 1. Run `git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git` in the directory where you want to put the code.
 1. Create the Docker image
     ```
-    docker build --no-cache --pull -t projectsidewalk/scraper:v5 <path-to-pano-tools-repo>
+    docker build --no-cache --pull -t projectsidewalk/scraper:v6 <path-to-pano-tools-repo>
     ```
 1. You can then run the downloader using the following command:
     ```
-    docker run --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined projectsidewalk/scraper:v5 <project-sidewalk-url>
+    docker run --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined projectsidewalk/scraper:v6 <project-sidewalk-url>
     ```
     Where the `<project-sidewalk-url>` looks like `sidewalk-columbus.cs.washington.edu` if you want data from Columbus. If you visit that URL, you will see a dropdown menu with a list of publicly deployed cities that you can pull data from.
 1. Right now the data is stored in a temporary directory in the Docker container. You could set up a shared volume for it, but for now you can just copy the data over using `docker cp <container-id>:/tmp/download_dest/ <local-storage-location>`, where `<local-storage-location>` is the place on your local machine where you want to save the files. You can find the `<container-id>` using `docker ps -a`.
+
+Optional flags (accepted both by `DownloadRunner.py` and, appended after the positional args, by the Docker entrypoint):
+* `--all-panos` — download *images* for panos that users visited but never labeled. This does not affect depth, which always covers every pano (see [Depth Maps](#depth-maps)).
+* `--skip-depth` — skip the GSV depth-map phase (on by default; see [Depth Maps](#depth-maps)).
+* `--max-runtime MINUTES` — stop starting new downloads/requests after this much wall time (the daily cron uses this).
+* `--max-depth-requests N` — stop the depth phase after N metadata requests (useful to throttle the initial backfill).
 
 Additional settings can be configured for `DownloadRunner.py` in the configuration file `config.py`. 
 * `thread_count` - the number of threads you wish to run in parallel. As this uses asyncio and is an I/O task, the higher the count the faster the operation, but you will need to test what the upper limit is for your own device and network connection.
@@ -44,7 +50,7 @@ The downloader dispatches each pano to a source-specific module based on the `so
      # Docker (pass the variable through to the container)
      docker run -e MAPILLARY_ACCESS_TOKEN --cap-add SYS_ADMIN --device=/dev/fuse \
        --security-opt apparmor:unconfined \
-       projectsidewalk/scraper:v5 <sidewalk-fqdn>
+       projectsidewalk/scraper:v6 <sidewalk-fqdn>
      ```
 
 Panos with any other `source` value are skipped with a warning.
@@ -133,14 +139,53 @@ Note that the numbers in the `label_type_id` column correspond to these label ty
 * `CropRunner.py` - implement multi core usage when creating crops. Currently runs on a single core, most modern machines
   have more than one core so would give a speed up for cropping 10's of thousands of images and objects.
 * Add logic to `progress_check()` function so that it can register if there is a network failure and does not log the pano id as visited and failed.
-* Project Sidewalk group to delete old or commented code once they decide it is no longer required (all code which used the previously available XML data).
 
 ## Depth Maps
-Depth maps are calculated using downloaded metadata from Google Street View. The endpoint being used to gather the needed XML metadata for depth map calculation isn't a publicly supported API endpoint from Google. It has been only sporadically available throughout 2022, and as of Apr 2023, has been unavailable for the past nine months. We continue to include the code to download the XML and decode the depth data in our download scripts on the off chance that the endpoint comes back online at some point.
+`DownloadRunner.py` downloads a depth map for every GSV pano by default, using the [streetlevel](https://github.com/sk-zk/streetlevel) library to fetch and decode Google's photometa response (pass `--skip-depth` to turn this off). Not every pano has depth data — third-party and some older panos don't — so the phase saves it where available and records the outcome either way.
 
-**Note:** Decoding the depth maps on an OS other than Linux will likely require recompiling the `decode_depthmap` binary for your system using [this source](https://github.com/jianxiongxiao/ProfXkit/blob/master/GoogleMapsScraper/decode_depthmap.cpp).
+Artifacts and bookkeeping, relative to the storage root:
+
+* `<first-2-chars-of-pano-id>/<pano_id>.depth.npz` — the depth map, stored next to the pano's `.jpg`. Load with numpy:
+  ```python
+  import numpy as np
+  d = np.load("aB/aBcDeF....depth.npz")
+  d["depth"]    # float32 (height, width) array, typically 256x512; distance from camera in meters; -1 = sky/infinitely far
+  d["heading"]  # camera heading in radians (NaN if Google omitted it); likewise d["pitch"], d["roll"]
+  ```
+* `depth_log.csv` — an append-only ledger (`pano_id,status`) of resolved outcomes: `saved` (artifact written) or `unavailable` (pano gone from Google, or no depth payload). Ledgered panos are never re-requested; transient network failures are *not* ledgered, so they retry on the next run. The artifacts on disk are the ground truth — deleting the ledger is safe and just makes the next run re-check everything (existing artifacts are re-registered without re-downloading).
+
+The depth phase runs after the image phase and shares its `--max-runtime` budget, so on a fresh city (or the first runs after this feature) images download first and depth backfills incrementally across daily runs. Use `--max-depth-requests` to cap the phase's request volume during backfill.
+
+### Being a good citizen of Google's servers
+
+The phase is serial — one metadata request in flight at a time, unlike the image phase's `thread_count` fan-out — and on top of that:
+
+* **Requests stop when Google pushes back.** The photometa endpoint doesn't answer scraping pressure with an HTTP 429; it serves (or redirects to) a captcha/consent interstitial carrying a 200, which would otherwise look identical to one pano having a bad payload. A response hook spots those, and the phase stops for the run rather than spending the rest of its budget on a wall. Exhausting the retry policy against 429/5xx is treated the same way.
+* **A circuit breaker** stops the phase after 25 consecutive transient failures, with escalating back-off (30 s / 2 min / 5 min) before it gives up. Nothing is concluded from a block — every unresolved pano simply retries next run — but the run prints a loud warning, so check for a rate limit before the next one.
+* **`depth_min_request_interval`** in `config.py` sets a floor (with jitter) on the gap between depth requests. It defaults to `0.0`. Leave it there unless a canary run shows Google pushing back: the backfill is inherently a multi-month job, so pacing costs real weeks. **The throttle is per-process** — if several cities scrape concurrently from one box, the rate Google sees is this multiplied by however many runs overlap.
+
+### Ops notes
+
+* **Depth ignores `--all-panos`.** The image phase only downloads labeled panos unless you pass that flag, but depth always covers every GSV pano the server knows about — including ones nobody has labeled, and ones whose image download failed or was never attempted. It costs one metadata request per pano either way, and the goal is depth for the whole corpus. As a result the depth phase's pano count is normally larger than the image phase's; both are printed at startup.
+* Unresolved panos are shuffled each run. Iteration order is otherwise stable, so a cluster of panos that fail every time would monopolise `--max-depth-requests` run after run and the backfill would never reach anything behind it.
+* **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs will show large failure numbers that are entirely normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; `log.csv` keeps its 18-column positional shape, so there was no room for a separate column.
+* Storage or ledger write failures (a full or unmounted store) are treated as transient per-pano failures and retried next run. They must never escape the phase: `DownloadRunner.py` writes the depth and total-duration columns *after* it returns, so a crash here would leave a 12-field `log.csv` line where the analyzer expects 18.
+
+The depth map is Google's plane-based encoding decoded to a per-pixel distance grid; note that it appears to be synthesized from elevation data and building footprints rather than measured directly, so treat it as approximate near fine structures.
+
+## Tests
+A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract that our log-analyzer tooling parses, and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need only the packages in `requirements.txt` plus `pytest`:
+
+```bash
+pip3 install -r requirements.txt -r requirements-dev.txt
+python3 -m pytest tests
+```
+
+One module (`test_streetlevel_api.py`) does import the real streetlevel, to pin the handful of API details `downloaders/gsv.py` depends on — the mocked suite can't catch drift there, since the stub accepts any arguments. It skips itself if streetlevel isn't installed (its `pyfrpc` dependency needs a C compiler). Tests that assert POSIX file modes or run the bash entrypoint skip on Windows; CI runs everything on Ubuntu 22.04.
 
 ## Old Code We've Removed
 In PR [#26](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/26), we removed some old code. Some was related to our Tohme paper from 2014, some had to do with using depth maps for cropping images. Given that no one seems to be using the Tohme code (those on our team don't even know how it works) and Google has removed access to their depth data API, we removed this code in Apr 2023. We are hoping that this will simplify the repository, making it easier to make use of our newer work, while making it easier to maintain the code that's actually being used.
 
-If any of this code ever needs to be revived, it exists in the git history, and can be found in the PR linked above!
+In [#39](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/39) (Aug 2026), we removed the rest of the legacy depth pipeline: the XML metadata downloader (the `cbk?output=xml` endpoint it relied on died in 2022) and the `decode_depthmap` binary. Depth maps are downloaded via the streetlevel library instead — see [Depth Maps](#depth-maps).
+
+If any of this code ever needs to be revived, it exists in the git history, and can be found in the PRs linked above!

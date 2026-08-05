@@ -7,6 +7,13 @@ proxies = {
     "https": "http://",
 }
 
+# Minimum seconds between GSV depth-map metadata requests; 0 disables the throttle. The depth phase is already
+# serial (one request in flight at a time, unlike the image phase's `thread_count` fan-out), so this is a further,
+# deliberate slowdown. Leave it at 0 unless a canary run shows Google pushing back: the backfill is inherently a
+# multi-month job, so pacing costs real weeks. Raise it if several cities scrape concurrently from one box - the
+# throttle is per-process, so the rate Google sees is this multiplied by however many runs overlap.
+depth_min_request_interval = 0.0
+
 # -------------------------------
 # Windows Headers
 # -------------------------------
