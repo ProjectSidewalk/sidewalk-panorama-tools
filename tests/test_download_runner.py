@@ -69,6 +69,46 @@ def test_max_depth_requests_flag_is_accepted(tmp_path):
     assert len(last_log_fields(storage)) == 18
 
 
+class TestDepthBudgetFloor:
+    """--min-depth-runtime reserves the tail of --max-runtime for the depth phase (#43).
+
+    Without a reservation, the images-first shared budget lets an image backlog (a mapathon is the #38
+    scenario) starve the depth backfill night after night - exactly when the most new panos arrive. All runs
+    here use the unsupported-source CSV, so both phases see empty pano lists and nothing touches the network;
+    the assertions read the budget-split line the run prints for cron mail.
+    """
+
+    def test_default_reserves_an_hour_for_depth(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120')
+        assert result.returncode == 0, result.stderr
+        assert 'image phase capped at 60.0 min (60.0 reserved for depth)' in result.stdout
+
+    def test_flag_sets_the_reservation(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45')
+        assert result.returncode == 0, result.stderr
+        assert 'image phase capped at 75.0 min (45.0 reserved for depth)' in result.stdout
+
+    def test_zero_floor_restores_the_old_behaviour(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '0')
+        assert result.returncode == 0, result.stderr
+        assert 'reserved for depth' not in result.stdout
+
+    def test_floor_larger_than_total_clamps_image_budget_to_zero(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '30')
+        assert result.returncode == 0, result.stderr
+        assert 'image phase capped at 0.0 min (60.0 reserved for depth)' in result.stdout
+
+    def test_skip_depth_gives_images_the_whole_budget(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--skip-depth')
+        assert result.returncode == 0, result.stderr
+        assert 'reserved for depth' not in result.stdout
+
+    def test_no_max_runtime_means_no_reservation(self, tmp_path):
+        storage, result = run_downloader(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert 'reserved for depth' not in result.stdout
+
+
 def write_mixed_label_csv(tmp_path):
     """Two GSV panos, only one of which carries labels."""
     csv_path = tmp_path / 'mixed.csv'

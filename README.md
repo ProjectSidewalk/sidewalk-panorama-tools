@@ -26,7 +26,8 @@ There are two main scripts of note: [DownloadRunner.py](DownloadRunner.py) and [
 Optional flags (accepted both by `DownloadRunner.py` and, appended after the positional args, by the Docker entrypoint):
 * `--all-panos` — download *images* for panos that users visited but never labeled. This does not affect depth, which always covers every pano (see [Depth Maps](#depth-maps)).
 * `--skip-depth` — skip the GSV depth-map phase (on by default; see [Depth Maps](#depth-maps)).
-* `--max-runtime MINUTES` — stop starting new downloads/requests after this much wall time (the daily cron uses this).
+* `--max-runtime MINUTES` — stop starting new downloads/requests after this much wall time (the daily cron uses this; it exists to keep a run inside its daily slot, see [#38](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/38)).
+* `--min-depth-runtime MINUTES` — reserve the last MINUTES of `--max-runtime` for the depth phase (default 60). The image phase stops early enough to leave depth this slice, so an image backlog can't starve the depth backfill; depth still runs until `--max-runtime`, so it also gets any slack images leave. Ignored without `--max-runtime` or with `--skip-depth`; pass 0 to let images use the whole budget.
 * `--max-depth-requests N` — stop the depth phase after N metadata requests (useful to throttle the initial backfill).
 
 Additional settings can be configured for `DownloadRunner.py` in the configuration file `config.py`. 
@@ -154,7 +155,7 @@ Artifacts and bookkeeping, relative to the storage root:
   ```
 * `depth_log.csv` — an append-only ledger (`pano_id,status`) of resolved outcomes: `saved` (artifact written) or `unavailable` (pano gone from Google, or no depth payload). Ledgered panos are never re-requested; transient network failures are *not* ledgered, so they retry on the next run. The artifacts on disk are the ground truth — deleting the ledger is safe and just makes the next run re-check everything (existing artifacts are re-registered without re-downloading).
 
-The depth phase runs after the image phase and shares its `--max-runtime` budget, so on a fresh city (or the first runs after this feature) images download first and depth backfills incrementally across daily runs. Use `--max-depth-requests` to cap the phase's request volume during backfill.
+The depth phase runs after the image phase, and the two share one `--max-runtime` budget — that flag bounds the whole run to its daily cron slot, and the slot doesn't care which phase spends the clock. Within it, `--min-depth-runtime` (default 60) reserves the tail of the budget for depth: the image phase must stop at `max-runtime − min-depth-runtime`, so a big image backlog (a mapathon influx — which is also exactly when many new panos want depth) cannot starve the backfill night after night. On light nights images finish early and depth gets the slack too. Use `--max-depth-requests` to cap the phase's request volume during backfill.
 
 ### Being a good citizen of Google's servers
 

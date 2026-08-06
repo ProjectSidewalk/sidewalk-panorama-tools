@@ -50,6 +50,12 @@ def test_forwards_all_optional_flags(run_entrypoint):
     assert forwarded[forwarded.index('--max-depth-requests') + 1] == '100'
 
 
+def test_forwards_min_depth_runtime(run_entrypoint):
+    result, forwarded = run_entrypoint('sidewalk-test.invalid', '--min-depth-runtime', '45')
+    assert result.returncode == 0
+    assert forwarded[forwarded.index('--min-depth-runtime') + 1] == '45'
+
+
 def test_forwards_skip_depth(run_entrypoint):
     result, forwarded = run_entrypoint('sidewalk-test.invalid', '--skip-depth')
     assert result.returncode == 0
