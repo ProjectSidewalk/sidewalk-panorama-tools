@@ -1,8 +1,6 @@
 # !/usr/bin/python3
 
 import argparse
-import http.client
-import json
 import logging
 import os
 import time
@@ -10,6 +8,9 @@ from datetime import datetime
 from os.path import exists
 
 import pandas as pd
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from downloaders import DownloadResult, download_pano, gsv, mapillary
 
@@ -85,11 +86,16 @@ def fetch_pano_ids_from_webserver():
     """
     unique_ids = set()
     pano_info = []
-    conn = http.client.HTTPSConnection(sidewalk_server_fqdn)
-    conn.request("GET", "/adminapi/panos")
-    r1 = conn.getresponse()
-    data = r1.read()
-    jsondata = json.loads(data)
+    # requests with retries and a timeout, like everything else in the repo. The raw http.client this replaced
+    # had no timeout (a hung server stalled the nightly run indefinitely), no status check (a 500 or a proxy
+    # error page surfaced as an unexplained JSONDecodeError), and never closed the connection (#51).
+    with requests.Session() as session:
+        retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+        session.mount('https://', HTTPAdapter(max_retries=retry))
+        # (connect, read) timeouts; read applies per socket op, so a huge-but-flowing pano list won't trip it.
+        response = session.get('https://%s/adminapi/panos' % (sidewalk_server_fqdn), timeout=(30, 120))
+        response.raise_for_status()
+        jsondata = response.json()
 
     for value in jsondata:
         pano_id = value["pano_id"]
@@ -146,7 +152,7 @@ def filter_supported_sources(pano_infos):
     return kept
 
 
-def download_panorama_images(storage_path, pano_infos, run_start_time=None, max_runtime_minutes=None):
+def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None):
     logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
@@ -174,8 +180,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_time=None, max_
         pano_id = pano_info['pano_id']
         if pano_id in df_id_set:
             continue
-        if max_runtime_minutes is not None and run_start_time is not None:
-            elapsed_minutes = (datetime.now() - run_start_time).total_seconds() / 60.0
+        if max_runtime_minutes is not None and run_start_monotonic is not None:
+            # time.monotonic, not the wall clock: an NTP step or DST transition must not stretch or shrink
+            # the budget (#51).
+            elapsed_minutes = (time.monotonic() - run_start_monotonic) / 60.0
             if elapsed_minutes >= max_runtime_minutes:
                 print("IMAGEDOWNLOAD: Max runtime of %.1f minutes reached (%.1f elapsed). Stopping." % (max_runtime_minutes, elapsed_minutes))
                 break
@@ -232,6 +240,8 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
     @param depth_pano_infos Every supported pano; the depth phase filters this to source == 'gsv' itself.
     """
     start_time = datetime.now()
+    # Wall-clock datetimes feed the log; the runtime budget gets a monotonic reference instead (#51).
+    run_start_monotonic = time.monotonic()
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write("\n%s" % (str(start_time)))
 
@@ -245,7 +255,7 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
-    im_res = download_panorama_images(storage_location, image_pano_infos, start_time, max_runtime_minutes)
+    im_res = download_panorama_images(storage_location, image_pano_infos, run_start_monotonic, max_runtime_minutes)
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -259,8 +269,8 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
         depth_res = (0, 0, 0, 0)
     else:
         gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
-        depth_res = gsv.download_depth_maps(storage_location, gsv_panos, start_time, max_runtime_minutes,
-                                            max_depth_requests)
+        depth_res = gsv.download_depth_maps(storage_location, gsv_panos, run_start_monotonic,
+                                            max_runtime_minutes, max_depth_requests)
     depth_end_time = datetime.now()
     depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:

@@ -52,6 +52,27 @@ class TestWriteDepthArtifact:
         mode = os.stat(os.path.join(storage, 'ab')).st_mode
         assert mode & 0o2777 == 0o2775
 
+    def test_losing_the_shard_dir_race_is_not_an_error(self, tmp_path, monkeypatch):
+        """Two processes (or the image and depth phases) can create the same shard dir concurrently; losing
+        the isdir/makedirs race must not fail the pano (#51)."""
+        storage = str(tmp_path)
+        os.makedirs(os.path.join(storage, 'ab'))
+        # Simulate the race: only the guard's isdir call - the first one - sees the dir as missing. Later
+        # calls (including makedirs' own exist_ok check) see reality.
+        real_isdir, guard_called = os.path.isdir, []
+
+        def racy_isdir(path):
+            if not guard_called:
+                guard_called.append(path)
+                return False
+            return real_isdir(path)
+
+        monkeypatch.setattr(gsv.os.path, 'isdir', racy_isdir)
+
+        gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
+
+        assert os.path.isfile(os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX))
+
     def test_part_file_is_cleaned_up_when_the_write_fails(self, tmp_path, monkeypatch):
         """Nothing else ever sweeps .part files, so a failed write must not leave one on the store."""
         storage = str(tmp_path)
@@ -64,6 +85,29 @@ class TestWriteDepthArtifact:
         with pytest.raises(OSError):
             gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((2, 2))))
         assert os.listdir(os.path.join(storage, 'ab')) == []
+
+
+class TestNormalizeProxies:
+    """config.py ships placeholder proxy values; anything that isn't a real proxy URL must reach requests as
+    unset, per key (#51). The old all-or-nothing check blanked both entries only when the http key held its
+    placeholder, so one real proxy could leak the other key's placeholder to requests as a URL."""
+
+    def test_shipped_placeholders_are_unset(self):
+        # Exactly what config.py ships: note the https key's placeholder is 'http://', not 'https://'.
+        assert gsv._normalize_proxies({'http': 'http://', 'https': 'http://'}) == {'http': None, 'https': None}
+
+    def test_https_style_placeholder_is_unset_too(self):
+        assert gsv._normalize_proxies({'http': 'http://', 'https': 'https://'}) == {'http': None, 'https': None}
+
+    def test_real_proxy_survives_a_placeholder_on_the_other_key(self):
+        assert gsv._normalize_proxies({'http': 'http://proxy.example:8080', 'https': 'http://'}) == \
+               {'http': 'http://proxy.example:8080', 'https': None}
+
+    def test_empty_and_missing_values_are_unset(self):
+        assert gsv._normalize_proxies({'http': '', 'https': None}) == {'http': None, 'https': None}
+
+    def test_trimmed_dict_is_tolerated(self):
+        assert gsv._normalize_proxies({}) == {}
 
 
 class TestTimeoutHTTPAdapter:

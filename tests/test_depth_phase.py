@@ -3,7 +3,7 @@
 import csv
 import os
 import sys
-from datetime import datetime, timedelta
+import time
 
 import numpy as np
 import pytest
@@ -167,12 +167,32 @@ def test_max_requests_caps_http_attempts(tmp_path, fake_streetview):
 
 def test_max_runtime_stops_before_any_request(tmp_path, fake_streetview):
     storage = str(tmp_path)
-    started_long_ago = datetime.now() - timedelta(minutes=10)
+    started_long_ago = time.monotonic() - 600.0
 
-    result = gsv.download_depth_maps(storage, pano_infos('aaaaaa'), run_start_time=started_long_ago,
+    result = gsv.download_depth_maps(storage, pano_infos('aaaaaa'), run_start_monotonic=started_long_ago,
                                      max_runtime_minutes=5)
 
     assert result == (0, 0, 0, 0)
+
+
+def test_runtime_budget_uses_the_monotonic_clock(tmp_path, fake_streetview, monkeypatch):
+    """An NTP step or DST transition perturbs datetime.now() - backwards extends the run, forwards ends it
+    early. The budget must come from time.monotonic (#51), which _pace() a few lines away already uses."""
+    storage = str(tmp_path)
+    fake_now = [1000.0]
+    monkeypatch.setattr(gsv.time, 'monotonic', lambda: fake_now[0])
+
+    def find(pano_id, **kwargs):
+        fake_now[0] += 600.0  # each request "takes" 10 minutes of monotonic time
+        return make_pano(default_depth_array())
+
+    fake_streetview.find_panorama_by_id = find
+
+    result = gsv.download_depth_maps(storage, pano_infos('aaaaaa', 'bbbbbb'),
+                                     run_start_monotonic=fake_now[0], max_runtime_minutes=5)
+
+    # First pano fits the budget; the 10 monotonic minutes it consumed must stop the second.
+    assert result == (1, 0, 0, 1)
 
 
 def test_resolved_panos_are_counted_even_when_the_budget_is_exhausted(tmp_path, fake_streetview):
@@ -184,10 +204,10 @@ def test_resolved_panos_are_counted_even_when_the_budget_is_exhausted(tmp_path, 
     storage = str(tmp_path)
     with open(os.path.join(storage, gsv.DEPTH_LOG_FILENAME), 'w', newline='') as f:
         f.write('pano_id,status\naaaaaa,saved\nbbbbbb,saved\ncccccc,unavailable\n')
-    started_long_ago = datetime.now() - timedelta(minutes=10)
+    started_long_ago = time.monotonic() - 600.0
 
     result = gsv.download_depth_maps(storage, pano_infos('dddddd', 'aaaaaa', 'bbbbbb', 'cccccc'),
-                                     run_start_time=started_long_ago, max_runtime_minutes=5)
+                                     run_start_monotonic=started_long_ago, max_runtime_minutes=5)
 
     assert result == (0, 0, 3, 3)
 
