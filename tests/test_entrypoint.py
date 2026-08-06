@@ -25,18 +25,31 @@ def run_entrypoint(tmp_path):
     stub_dir.mkdir()
     capture_file = tmp_path / 'python3-args.txt'
     stub = stub_dir / 'python3'
-    stub.write_text('#!/bin/bash\necho "$@" > "$CAPTURE_FILE"\n')
+    stub.write_text('#!/bin/bash\necho "$@" > "$CAPTURE_FILE"\nexit "${PYTHON3_EXIT_CODE:-0}"\n')
     stub.chmod(0o755)
+    # sshfs/umount stubs so the remote-mount path is testable without a mount. umount records that it ran,
+    # since the entrypoint must unmount even when the runner crashes.
+    sshfs = stub_dir / 'sshfs'
+    sshfs.write_text('#!/bin/bash\nexit "${SSHFS_EXIT_CODE:-0}"\n')
+    sshfs.chmod(0o755)
+    umount = stub_dir / 'umount'
+    umount.write_text('#!/bin/bash\ntouch "$UMOUNT_CALLED_FILE"\n')
+    umount.chmod(0o755)
+    umount_called_file = tmp_path / 'umount-called'
 
-    def run(*args):
+    def run(*args, python3_exit_code=0, sshfs_exit_code=0):
         env = dict(os.environ,
                    PATH=f"{stub_dir}:{os.environ['PATH']}",
-                   CAPTURE_FILE=str(capture_file))
+                   CAPTURE_FILE=str(capture_file),
+                   PYTHON3_EXIT_CODE=str(python3_exit_code),
+                   SSHFS_EXIT_CODE=str(sshfs_exit_code),
+                   UMOUNT_CALLED_FILE=str(umount_called_file))
         result = subprocess.run(['bash', ENTRYPOINT, *args],
                                 cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=30)
         forwarded = capture_file.read_text().split() if capture_file.exists() else None
         return result, forwarded
 
+    run.umount_called = umount_called_file.exists
     return run
 
 
@@ -68,3 +81,31 @@ def test_no_args_prints_usage_without_running(run_entrypoint):
     result, forwarded = run_entrypoint()
     assert 'Usage:' in result.stdout
     assert forwarded is None
+    # A wrong invocation from cron must not look like a successful scrape (#49).
+    assert result.returncode != 0
+
+
+class TestExitCodes:
+    """The container's exit status is the only signal cron-level monitoring sees; it must tell the truth (#49)."""
+
+    def test_runner_failure_propagates_on_the_local_path(self, run_entrypoint):
+        result, _ = run_entrypoint('sidewalk-test.invalid', python3_exit_code=7)
+        assert result.returncode == 7
+
+    def test_runner_failure_propagates_on_the_sshfs_path(self, run_entrypoint):
+        # Before #49 the trailing `; umount` made the container always exit with umount's status.
+        result, forwarded = run_entrypoint('sidewalk-test.invalid', 'user@host:/panos', '2222',
+                                           python3_exit_code=7)
+        assert forwarded is not None
+        assert result.returncode == 7
+
+    def test_umount_runs_even_when_the_runner_crashes(self, run_entrypoint):
+        run_entrypoint('sidewalk-test.invalid', 'user@host:/panos', '2222', python3_exit_code=7)
+        assert run_entrypoint.umount_called()
+
+    def test_failed_mount_skips_the_runner_and_fails(self, run_entrypoint):
+        # sshfs failing used to short-circuit the && silently: no scrape, exit 0.
+        result, forwarded = run_entrypoint('sidewalk-test.invalid', 'user@host:/panos', '2222',
+                                           sshfs_exit_code=1)
+        assert forwarded is None, "the runner must not start against an unmounted store"
+        assert result.returncode != 0

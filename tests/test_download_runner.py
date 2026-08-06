@@ -34,6 +34,38 @@ def last_log_fields(storage):
         return f.read().strip().splitlines()[-1].split(',')
 
 
+def test_scrape_log_lands_in_storage_not_cwd(tmp_path):
+    """A relative scrape.log resolves against the CWD - /app inside Docker - and dies with the container.
+    It must live on the pano store next to log.csv, where a failed run's evidence survives (#49)."""
+    storage, result = run_downloader(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (storage / 'scrape.log').exists()
+    # run_downloader's cwd is tmp_path, so this is where the old relative path would have put it.
+    assert not (tmp_path / 'scrape.log').exists()
+
+
+def test_crash_mid_run_still_writes_a_full_width_log_row(tmp_path):
+    """An exception between phases must not leave a short log.csv line the analyzer can't parse (#49).
+
+    The completed phases' fields survive (misaugstad: a failure in phase 3 must not discard what phase 2
+    downloaded); the phases that never finished are blank, not fake zeros.
+    """
+    storage = tmp_path / 'storage'
+    storage.mkdir()
+    # A pano_id_log.csv without the expected columns crashes the image phase on its first read - after the
+    # xml-stub fields are known, before any image or depth fields exist.
+    (storage / 'pano_id_log.csv').write_text('wrong,columns\n1,2\n')
+
+    _, result = run_downloader(tmp_path)
+
+    assert result.returncode != 0, "the crash must still fail the run loudly"
+    fields = last_log_fields(storage)
+    assert len(fields) == 18
+    assert fields[0] != ''  # run start timestamp
+    assert fields[1:6] == ['0'] * 5  # xml stub completed before the crash
+    assert fields[6:] == [''] * 12  # image/depth/total never completed - blank, not fabricated
+
+
 def test_log_csv_keeps_18_positional_fields(tmp_path):
     storage, result = run_downloader(tmp_path)
     assert result.returncode == 0, result.stderr

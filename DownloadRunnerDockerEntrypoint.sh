@@ -48,15 +48,25 @@ done
 
 # NB: every optional flag parsed above must appear in BOTH DownloadRunner.py invocations below — a flag that is
 # parsed but not forwarded is silently ignored.
+# The container's exit status must be DownloadRunner's: cron-level monitoring only sees the exit code, and the
+# old `... && python3 ...; umount ...` form reported umount's status, so a crashed scrape (or a mount that
+# never came up) exited 0 (#49).
 # If one param, just download to /tmp. If three params, this means a host and port has been supplied.
 if [ $# -eq 1 ]; then
     python3 DownloadRunner.py $1 /tmp/download_dest $all_panos $skip_depth $max_runtime $max_depth_requests
 elif [ $# -eq 3 ]; then
     echo "Mounting $2 port $3 for $1"
-    sshfs -o IdentityFile=/app/id_rsa,StrictHostKeyChecking=no $2 /tmp/download_dest -p $3 && python3 DownloadRunner.py $1 /tmp/download_dest $all_panos $skip_depth $max_runtime $max_depth_requests; umount /tmp/download_dest
+    if ! sshfs -o IdentityFile=/app/id_rsa,StrictHostKeyChecking=no $2 /tmp/download_dest -p $3; then
+        echo "ERROR: sshfs mount of $2 failed; not starting the scrape" >&2
+        exit 1
+    fi
+    # Unmount via a trap so it happens even when the runner crashes, without eating the runner's exit status.
+    trap 'umount /tmp/download_dest 2>/dev/null || true' EXIT
+    python3 DownloadRunner.py $1 /tmp/download_dest $all_panos $skip_depth $max_runtime $max_depth_requests
 else
     echo "Usage:"
     echo "  ./DownloadRunnerDockerEntrypoint sidewalk_server_fqdn [options]"
     echo "  ./DownloadRunnerDockerEntrypoint sidewalk_server_fqdn user@host:/remote/path port [options]"
     echo "Options: --all-panos, --skip-depth, --max-runtime MINUTES, --max-depth-requests N"
+    exit 1
 fi

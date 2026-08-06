@@ -46,6 +46,12 @@ print(all_panos)
 if not os.path.exists(storage_location):
     os.makedirs(storage_location)
 
+# scrape.log lives on the pano store next to log.csv, NOT the CWD: in Docker the CWD is /app inside the
+# container, so a relative path would discard the log - and every per-pano failure detail - when the container
+# exits (#49). Configured once here, before any phase, because logging.basicConfig silently no-ops on the
+# second call: the depth phase's records must not depend on the image phase having set logging up.
+logging.basicConfig(filename=os.path.join(storage_location, 'scrape.log'), level=logging.DEBUG)
+
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
 
@@ -147,7 +153,6 @@ def filter_supported_sources(pano_infos):
 
 
 def download_panorama_images(storage_path, pano_infos, run_start_time=None, max_runtime_minutes=None):
-    logging.basicConfig(filename='scrape.log', level=logging.DEBUG)
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
     # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
@@ -224,51 +229,59 @@ def download_panorama_images(storage_path, pano_infos, run_start_time=None, max_
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
 
+# Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration. Positional, parsed by
+# our log-analyzer tooling.
+LOG_CSV_FIELD_COUNT = 18
+
+
 def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, max_runtime_minutes=None,
                                 max_depth_requests=None):
     """Run the image and depth phases and append this run's row to log.csv.
+
+    Fields are accumulated as each phase completes and the row is written once, in a finally, padded to the
+    full 18 with blanks. A crash mid-run therefore still yields a parseable full-width line that keeps every
+    completed phase's counts (a failure in the depth phase must not discard what the image phase downloaded),
+    while the phases that never finished stay visibly blank rather than turning into fake zeros (#49).
 
     @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
     @param depth_pano_infos Every supported pano; the depth phase filters this to source == 'gsv' itself.
     """
     start_time = datetime.now()
-    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-        log.write("\n%s" % (str(start_time)))
+    fields = [str(start_time)]
+    try:
+        # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below),
+        # but its log.csv columns are stubbed with the values every production run has always written so the
+        # positional 18-column format parsed by scraper-log-analyzer doesn't shift. Deliberately the image
+        # list's length, which is what this counted before depth stopped honouring --all-panos.
+        xml_res = (0, 0, len(image_pano_infos), len(image_pano_infos))
+        xml_end_time = datetime.now()
+        xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
+        fields += [xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration]
 
-    # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below), but
-    # its log.csv columns are stubbed with the values every production run has always written so the positional
-    # 18-column format parsed by scraper-log-analyzer doesn't shift. Deliberately the image list's length, which
-    # is what this counted before depth stopped honouring --all-panos.
-    xml_res = (0, 0, len(image_pano_infos), len(image_pano_infos))
-    xml_end_time = datetime.now()
-    xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
-    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-        log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
+        im_res = download_panorama_images(storage_location, image_pano_infos, start_time, max_runtime_minutes)
+        im_end_time = datetime.now()
+        im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
+        fields += [im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration]
 
-    im_res = download_panorama_images(storage_location, image_pano_infos, start_time, max_runtime_minutes)
-    im_end_time = datetime.now()
-    im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
-    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-        log.write(",%d,%d,%d,%d,%d,%d" % (im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration))
+        # Depth maps are GSV-only. This phase runs after the image phase sharing the same --max-runtime budget,
+        # so on catch-up days images (the primary artifact) win the whole window. It iterates the full pano
+        # list — not the pano_id_log.csv-gated image loop, and not narrowed by --all-panos — which is what
+        # backfills depth for panos downloaded in earlier runs and for panos nobody has labelled.
+        if skip_depth:
+            depth_res = (0, 0, 0, 0)
+        else:
+            gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
+            depth_res = gsv.download_depth_maps(storage_location, gsv_panos, start_time, max_runtime_minutes,
+                                                max_depth_requests)
+        depth_end_time = datetime.now()
+        depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
+        fields += [depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration]
 
-    # Depth maps are GSV-only. This phase runs after the image phase sharing the same --max-runtime budget, so
-    # on catch-up days images (the primary artifact) win the whole window. It iterates the full pano list — not
-    # the pano_id_log.csv-gated image loop, and not narrowed by --all-panos — which is what backfills depth for
-    # panos downloaded in earlier runs and for panos nobody has labelled.
-    if skip_depth:
-        depth_res = (0, 0, 0, 0)
-    else:
-        gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
-        depth_res = gsv.download_depth_maps(storage_location, gsv_panos, start_time, max_runtime_minutes,
-                                            max_depth_requests)
-    depth_end_time = datetime.now()
-    depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
-    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-        log.write(",%d,%d,%d,%d,%d" % (depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration))
-
-    total_duration = int(round((depth_end_time - start_time).total_seconds() / 60.0))
-    with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-        log.write(",%d" % (total_duration))
+        fields.append(int(round((depth_end_time - start_time).total_seconds() / 60.0)))
+    finally:
+        fields += [''] * (LOG_CSV_FIELD_COUNT - len(fields))
+        with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+            log.write("\n" + ",".join(str(f) for f in fields))
 
 
 # Access Project Sidewalk API to get Pano IDs for city
