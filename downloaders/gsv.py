@@ -384,7 +384,11 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
     success_count, fail_count, skipped_count, unavailable_count = 0, 0, 0, 0
     request_count = 0
     consecutive_failures = 0
-    blocked = False
+    # Why the phase stopped early, if it did: 'blocked' (Google refused us) or 'consecutive-failures' (the
+    # breaker tripped - which storage failures also feed, so the cause is whatever last_error says, not
+    # necessarily Google).
+    stop_reason = None
+    last_error = None
 
     depth_log_path = os.path.join(storage_path, DEPTH_LOG_FILENAME)
     log_existed = os.path.isfile(depth_log_path)
@@ -478,7 +482,8 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # Google is refusing us: an interstitial, or a 429/5xx that survived every retry. That's a verdict
                 # on the endpoint, not on this pano, so stop rather than spend the rest of the budget on a wall.
                 fail_count += 1
-                blocked = True
+                stop_reason = 'blocked'
+                last_error = e
                 logging.error("DEPTHDOWNLOAD: Stopping depth phase, Google is refusing requests (%s)", str(e))
                 print("DEPTHDOWNLOAD: Google is refusing requests (%s). Stopping the depth phase." % (e))
                 break
@@ -489,6 +494,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # NB: requests.RequestException subclasses OSError, so it must be caught above the OSError arm.
                 fail_count += 1
                 consecutive_failures += 1
+                last_error = e
                 logging.error("DEPTHDOWNLOAD: Failed to fetch depth for pano %s due to error %s", pano_id, str(e))
             except OSError as e:
                 # Storage-side failure writing the artifact or the ledger - ENOSPC/EIO on the sshfs mount is the
@@ -497,12 +503,14 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # line where the analyzer expects 18.
                 fail_count += 1
                 consecutive_failures += 1
+                last_error = e
                 logging.error("DEPTHDOWNLOAD: Could not store depth for pano %s: %s", pano_id, str(e))
             except Exception as e:
                 # Unexpected (e.g. a malformed depth payload crashing streetlevel's parser). Treated as
                 # transient; worst case a permanently-bad pano costs one request per run.
                 fail_count += 1
                 consecutive_failures += 1
+                last_error = e
                 logging.exception("DEPTHDOWNLOAD: Unexpected error fetching depth for pano %s: %s", pano_id, str(e))
 
             total_completed = success_count + fail_count + skipped_count
@@ -510,7 +518,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                   % (total_completed, total_panos, success_count, fail_count, unavailable_count, skipped_count))
 
             if consecutive_failures >= DEPTH_MAX_CONSECUTIVE_FAILURES:
-                blocked = True
+                stop_reason = 'consecutive-failures'
                 logging.error("DEPTHDOWNLOAD: Stopping depth phase after %d consecutive failures",
                               consecutive_failures)
                 print("DEPTHDOWNLOAD: %d consecutive failures. Stopping the depth phase."
@@ -523,12 +531,19 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 time.sleep(retreat_seconds)
 
     total_completed = success_count + fail_count + skipped_count
-    if blocked:
-        # Loud on stdout because cron mails it: a blocked phase means nothing is progressing, and the per-pano
-        # detail is buried in scrape.log.
-        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early because Google stopped answering. No panos "
-              "were lost (unresolved panos are retried next run), but check for a rate limit before the next run.")
+    # Loud on stdout because cron mails it: a phase that stopped early means nothing is progressing, and the
+    # per-pano detail is buried in scrape.log.
+    if stop_reason == 'blocked':
+        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early because Google stopped answering (%s). No "
+              "panos were lost (unresolved panos are retried next run), but check for a rate limit before the "
+              "next run." % (last_error))
+    elif stop_reason == 'consecutive-failures':
+        # The breaker counts storage failures (ENOSPC/EIO on the sshfs mount) as well as network ones, so don't
+        # attribute the trip to Google: name the last error and let it point at the sick system.
+        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early after %d consecutive failures. Last error: "
+              "%s. No panos were lost (unresolved panos are retried next run); check whether the cause is the "
+              "store (full/unmounted) or the network before the next run." % (consecutive_failures, last_error))
     logging.debug("DEPTHDOWNLOAD: Final result: Completed %d of %d (%d success, %d failed [%d unavailable], "
-                  "%d skipped, %d requests, blocked=%s)", total_completed, total_panos, success_count, fail_count,
-                  unavailable_count, skipped_count, request_count, blocked)
+                  "%d skipped, %d requests, stop_reason=%s)", total_completed, total_panos, success_count,
+                  fail_count, unavailable_count, skipped_count, request_count, stop_reason)
     return success_count, fail_count, skipped_count, total_completed

@@ -287,6 +287,45 @@ def test_any_resolved_outcome_resets_the_breaker(tmp_path, fake_streetview, monk
     assert (success, fail, skipped, total) == (3, 6, 0, 9)
 
 
+def test_breaker_trip_on_storage_failures_reports_the_actual_cause(tmp_path, fake_streetview, monkeypatch,
+                                                                   capsys):
+    """A full or unmounted store is the most likely way this phase fails at scale, and it trips the same
+    breaker as network failures. The end-of-run warning must name the real error instead of sending whoever
+    reads the cron mail to look for a Google rate limit (#50)."""
+    storage = str(tmp_path)
+    monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 3)
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+
+    def full_disk(*args, **kwargs):
+        raise OSError(28, 'No space left on device')
+
+    monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+
+    gsv.download_depth_maps(storage, many_pano_infos(50))
+
+    out = capsys.readouterr().out
+    assert 'WARNING' in out
+    assert '3 consecutive failures' in out
+    assert 'No space left on device' in out
+    assert 'Google stopped answering' not in out
+
+
+def test_block_stop_still_blames_google(tmp_path, fake_streetview, capsys):
+    """When the phase stops because of an interstitial, the rate-limit warning is the correct one."""
+    storage = str(tmp_path)
+
+    def find(pano_id, **kwargs):
+        raise gsv.DepthBlockedError('redirected to https://www.google.com/sorry/index')
+
+    fake_streetview.find_panorama_by_id = find
+
+    gsv.download_depth_maps(storage, many_pano_infos(5))
+
+    out = capsys.readouterr().out
+    assert 'WARNING' in out
+    assert 'Google stopped answering' in out
+
+
 @pytest.mark.parametrize('error', [
     gsv.DepthBlockedError('redirected to https://www.google.com/sorry/index'),
     requests.exceptions.RetryError('too many 429s'),
