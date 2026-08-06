@@ -40,7 +40,8 @@ class TestWriteDepthArtifact:
         assert sorted(os.listdir(os.path.join(storage, 'ab'))) == ['abcdef.depth.npz']
         with np.load(path) as d:
             assert d['depth'].dtype == np.float32
-            np.testing.assert_allclose(d['depth'], depth.astype(np.float32))
+            # Stored in the JPEG's column order, i.e. streetlevel's array flipped in x (see #58).
+            np.testing.assert_allclose(d['depth'], depth[:, ::-1].astype(np.float32))
             assert float(d['heading']) == pytest.approx(0.5)
             assert np.isnan(float(d['pitch']))
             assert float(d['roll']) == pytest.approx(1.5)
@@ -51,6 +52,32 @@ class TestWriteDepthArtifact:
         gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
         mode = os.stat(os.path.join(storage, 'ab')).st_mode
         assert mode & 0o2777 == 0o2775
+
+    def test_unmirrors_streetlevels_x_order(self, tmp_path):
+        """streetlevel's decoder x-mirrors the payload (compute_depth_map writes column x to w-1-x), so the
+        array it hands us is horizontally flipped relative to the pano JPEG. The artifact must store the
+        image's column order, so a consumer indexing it with a pano_x needs no mirror correction. See #58.
+        """
+        storage = str(tmp_path)
+        # Asymmetric in x so a mirror can't be missed: streetlevel's column order is [near, far].
+        streetlevel_data = np.array([[2.0, 100.0], [3.0, 200.0]], dtype=np.float64)
+
+        gsv._write_depth_artifact(storage, 'abcdef', make_pano(streetlevel_data))
+
+        path = os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)
+        with np.load(path) as d:
+            # Image column order: [far, near] - the flip of what streetlevel delivered.
+            np.testing.assert_allclose(d['depth'], streetlevel_data[:, ::-1].astype(np.float32))
+
+    def test_stamps_format_version(self, tmp_path):
+        """Artifacts written before the #58 un-mirroring carry no version field; consumers use its presence to
+        tell a corrected artifact from a mirrored one."""
+        storage = str(tmp_path)
+        gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 2))))
+        path = os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)
+        with np.load(path) as d:
+            assert int(d['format_version']) == gsv.DEPTH_ARTIFACT_FORMAT_VERSION
+            assert int(d['format_version']) >= 2
 
     def test_part_file_is_cleaned_up_when_the_write_fails(self, tmp_path, monkeypatch):
         """Nothing else ever sweeps .part files, so a failed write must not leave one on the store."""

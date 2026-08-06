@@ -200,6 +200,10 @@ def download_single_pano(storage_path, pano_info):
 DEPTH_LOG_FILENAME = 'depth_log.csv'
 DEPTH_ARTIFACT_SUFFIX = '.depth.npz'
 
+# Stamped into every artifact so consumers can tell formats apart. Artifacts with no format_version field
+# predate v2 and store streetlevel's raw column order, which is x-mirrored relative to the pano JPEG (#58).
+DEPTH_ARTIFACT_FORMAT_VERSION = 2
+
 # Consecutive transient failures after which the depth phase gives up for this run. Without a breaker, a run that
 # hits a wall (rate limit, captcha, DNS outage) spends its whole --max-runtime budget re-hitting it, then does the
 # same thing again the next night.
@@ -313,9 +317,16 @@ def _load_depth_log(depth_log_path):
 def _write_depth_artifact(storage_path, pano_id, pano):
     """Atomically write <pano_id[:2]>/<pano_id>.depth.npz for a streetlevel pano with depth data.
 
-    Contents: 'depth' = float32 (height, width) array of meters with -1 meaning sky/infinitely far, plus
-    'heading'/'pitch'/'roll' scalars in radians (NaN if absent) so the artifact is self-contained for
-    pixel<->world alignment.
+    Contents: 'depth' = float32 (height, width) array of meters with -1 meaning no plane (sky, or anything
+    Google didn't model), 'heading'/'pitch'/'roll' scalars in radians (NaN if absent) so the artifact is
+    self-contained for pixel<->world alignment, and 'format_version' (see DEPTH_ARTIFACT_FORMAT_VERSION).
+
+    The stored array shares the pano JPEG's column order: streetlevel's decoder x-mirrors the payload
+    (compute_depth_map writes the value for payload column x to output column w-1-x), so pano.depth.data is
+    horizontally flipped relative to the imagery and is flipped back here on write (#58). A consumer can
+    therefore index it with a stored pano_x/pano_y scaled by width/height, no mirror correction needed.
+    tests/test_streetlevel_api.py pins the upstream mirror so a streetlevel change fails CI rather than
+    silently re-mirroring new artifacts.
     """
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
@@ -332,8 +343,9 @@ def _write_depth_artifact(storage_path, pano_id, pano):
         # savez_compressed needs an open file object: given a path without a .npz extension it silently appends
         # one, which would write to the wrong filename.
         with open(tmp_path, 'wb') as f:
-            np.savez_compressed(f, depth=pano.depth.data.astype(np.float32), heading=scalar(pano.heading),
-                                pitch=scalar(pano.pitch), roll=scalar(pano.roll))
+            np.savez_compressed(f, depth=pano.depth.data[:, ::-1].astype(np.float32),
+                                heading=scalar(pano.heading), pitch=scalar(pano.pitch),
+                                roll=scalar(pano.roll), format_version=DEPTH_ARTIFACT_FORMAT_VERSION)
         os.chmod(tmp_path, 0o664)
         # Atomic rename so a crash can never leave a truncated .npz that would be treated as done forever.
         os.replace(tmp_path, final_path)

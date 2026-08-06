@@ -51,7 +51,8 @@ def test_success_saves_artifact_and_ledgers(tmp_path, fake_streetview):
     with np.load(path) as d:
         assert d['depth'].dtype == np.float32
         assert d['depth'].shape == (2, 2)
-        np.testing.assert_allclose(d['depth'], default_depth_array().astype(np.float32))
+        # Stored in the JPEG's column order, i.e. streetlevel's array flipped in x (see #58).
+        np.testing.assert_allclose(d['depth'], default_depth_array()[:, ::-1].astype(np.float32))
         assert float(d['heading']) == pytest.approx(1.25)
     assert read_ledger(storage) == [['pano_id', 'status'], ['abcdef', 'saved']]
     # No leftover temp file from the atomic write.
