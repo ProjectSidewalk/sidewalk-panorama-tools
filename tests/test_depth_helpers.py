@@ -54,9 +54,10 @@ class TestDecodeDepthPlanes:
         np.testing.assert_allclose(planes.distances, [p['d'] for p in self.PLANES], rtol=1e-6)
 
     def test_offset_is_read_as_uint8_even_when_the_first_index_is_nonzero(self):
-        """The wire format's offset is a uint8 at byte 7. streetlevel 0.12.10 misreads it as a uint16
-        spanning bytes 7-8, which only parses correctly when the first index byte happens to be 0 - real
-        payloads don't guarantee that, so our decode must not inherit the misreading."""
+        """The wire format's offset is a uint8 at byte 7. streetlevel misreads it as a uint16 spanning bytes
+        7-8 (still true in 0.12.11 - see test_streetlevel_api.test_streetlevel_still_misreads_the_depth_
+        offset), which only parses correctly when the first index byte happens to be 0 - real payloads don't
+        guarantee that, so our decode must not inherit the misreading."""
         payload = encode_depth_payload(self.PLANES[:2], [1, 0, 1, 0], width=2, height=2)
 
         planes = gsv._decode_depth_planes(payload)
@@ -81,13 +82,43 @@ class TestDecodeDepthPlanes:
 
         truncated = base64.urlsafe_b64encode(raw[:-4]).decode()
 
-        with pytest.raises(ValueError):
+        with pytest.raises(gsv.DepthPayloadError):
             gsv._decode_depth_planes(truncated)
 
     def test_header_shorter_than_eight_bytes_raises(self):
         import base64
-        with pytest.raises(ValueError):
+        with pytest.raises(gsv.DepthPayloadError):
             gsv._decode_depth_planes(base64.urlsafe_b64encode(b'\x08\x00\x00').decode())
+
+    def test_unexpected_header_size_raises(self):
+        """Every field after byte 0 is read at a fixed position, so a payload announcing a different header
+        size is a wire format this decode does not know - it must refuse rather than mis-parse it into
+        plausible-looking arrays that would then be written to millions of artifacts."""
+        import base64, struct
+        raw = bytearray(base64.urlsafe_b64decode(
+            encode_depth_payload(self.PLANES[:2], [0, 0], width=2, height=1)))
+        raw[0] = 12  # header_size
+
+        with pytest.raises(gsv.DepthPayloadError, match='header_size=12'):
+            gsv._decode_depth_planes(base64.urlsafe_b64encode(bytes(raw)).decode())
+
+    def test_offset_pointing_into_the_header_raises(self):
+        """An offset below the header size would hand back header bytes dressed up as plane indices. The
+        length checks alone would not catch it: the payload is long enough, just wrong."""
+        import base64
+        raw = bytearray(base64.urlsafe_b64decode(
+            encode_depth_payload(self.PLANES[:2], [0, 0], width=2, height=1)))
+        raw[7] = 4  # offset, inside the 8-byte header
+
+        with pytest.raises(gsv.DepthPayloadError, match='offset=4'):
+            gsv._decode_depth_planes(base64.urlsafe_b64encode(bytes(raw)).decode())
+
+    def test_malformed_payload_errors_are_not_valueerrors(self):
+        """DepthPayloadError must NOT be a ValueError: download_depth_maps classes ValueError as 'network'
+        (streetlevel surfaces non-JSON responses as JSONDecodeError), and a payload we decoded and rejected
+        is a data fault. It must be a RuntimeError so it lands in the 'unexpected' arm instead."""
+        assert issubclass(gsv.DepthPayloadError, RuntimeError)
+        assert not issubclass(gsv.DepthPayloadError, ValueError)
 
     def test_empty_plane_list_yields_empty_arrays(self):
         payload = encode_depth_payload([], [0, 0], width=2, height=1)
@@ -295,11 +326,49 @@ class TestWriteDepthArtifact:
         is even opened, so nothing lands on the store."""
         storage = str(tmp_path)
 
-        with pytest.raises(ValueError):
+        with pytest.raises(gsv.DepthPayloadError):
             gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((2, 2)), planes=bad_planes),
                                       bad_planes)
 
         assert not os.path.exists(os.path.join(storage, 'ab'))
+
+    @pytest.mark.parametrize('indices', [[[1, 1]], [[0, 0]], [[0, 1]]],
+                             ids=['no-sentinel', 'extra-sentinel', 'mirrored'])
+    def test_indices_disagreeing_with_the_raster_refuse_to_write(self, tmp_path, indices):
+        """The README promises consumers that plane_indices == 0 exactly where depth == -1. That is the only
+        cross-check that streetlevel's decode of the payload (which produces the raster) and ours (which
+        produces the indices) still agree on column order and on which pixels have no plane, so it is
+        enforced rather than assumed - a one-shot backfill cannot be re-derived offline.
+
+        The 'mirrored' case is the one that matters most: it is what a future upstream change to the decode's
+        column order would look like, and its shape is identical to a correct artifact's.
+        """
+        storage = str(tmp_path)
+        # streetlevel order [-1, 5.0] -> stored (JPEG) order [5.0, -1]: the sentinel ends up on the RIGHT,
+        # so only [[1, 0]] agrees with it.
+        depth = np.array([[-1.0, 5.0]])
+        planes = SimpleNamespace(indices=np.array(indices, dtype=np.uint8),
+                                 normals=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+                                 distances=np.array([0.0, 2.5]))
+
+        with pytest.raises(gsv.DepthPayloadError, match='disagree'):
+            gsv._write_depth_artifact(storage, 'abcdef', make_pano(depth, planes=planes), planes)
+
+        assert not os.path.exists(os.path.join(storage, 'ab'))
+
+    def test_the_agreeing_case_still_writes(self, tmp_path):
+        """Guard against the check above being satisfiable only by rejecting everything."""
+        storage = str(tmp_path)
+        depth = np.array([[-1.0, 5.0]])
+        planes = SimpleNamespace(indices=np.array([[1, 0]], dtype=np.uint8),
+                                 normals=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+                                 distances=np.array([0.0, 2.5]))
+
+        gsv._write_depth_artifact(storage, 'abcdef', make_pano(depth, planes=planes), planes)
+
+        with np.load(os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)) as d:
+            np.testing.assert_allclose(d['depth'], [[5.0, -1.0]])
+            np.testing.assert_array_equal(d['plane_indices'], [[1, 0]])
 
 
 class TestGroundPlane:
@@ -312,7 +381,98 @@ class TestGroundPlane:
                 'planes_n': np.asarray(normals, dtype=np.float32),
                 'planes_d': np.asarray(distances, dtype=np.float32)}
 
-    def test_most_vertical_referenced_plane_wins(self):
+    def test_a_few_pixels_of_ceiling_do_not_outrank_the_road(self):
+        """The regression this ranking exists for. An overpass soffit, tunnel ceiling, awning, or sign gantry
+        is MORE perfectly horizontal than a real cambered road, so ranking on verticality alone let six
+        pixels of ceiling beat 65,536 pixels of road - and camera_height_from_artifact then silently returned
+        the height of the ceiling (5.4 m) instead of the camera (2.6 m)."""
+        h, w = 256, 512
+        indices = np.zeros((h, w), dtype=np.uint8)
+        indices[h // 2:, :] = 1          # the road: half the raster, below the horizon
+        indices[0:2, 0:3] = 2            # a soffit overhead: six pixels, above the horizon
+        artifact = self.artifact(indices,
+                                 [[0.0, 0.0, 0.0],
+                                  [0.03, 0.02, 1.0],   # road, slightly cambered
+                                  [0.0, 0.0, 1.0]],    # soffit, perfectly flat
+                                 [0.0, 2.6, 5.4])
+
+        assert gsv.ground_plane_from_artifact(artifact)[2] == 1
+        # 2.598, not 2.6: the road normal is not unit length, and the height is |d| / ||n||.
+        assert gsv.camera_height_from_artifact(artifact) == pytest.approx(2.598, abs=1e-3)
+        # The number that a verticality-only ranking produced, named so the regression can't creep back.
+        assert gsv.camera_height_from_artifact(artifact) != pytest.approx(5.4, abs=0.1)
+
+    def test_planes_only_above_the_horizon_are_not_ground(self):
+        """A ceiling is not a floor even when it is the ONLY horizontal plane in the pano: rows above the
+        horizon look upward, so nothing there can be what the camera is standing over. Returning None lets
+        the caller apply its own default instead of inheriting a confidently wrong height."""
+        indices = np.zeros((4, 2), dtype=np.uint8)
+        indices[0:2, :] = 1              # top half only
+
+        artifact = self.artifact(indices, [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 5.4])
+
+        assert gsv.ground_plane_from_artifact(artifact) is None
+        assert gsv.camera_height_from_artifact(artifact, default=2.5) == 2.5
+
+    def test_the_horizon_split_follows_the_frame_definition(self):
+        """Rows from h//2 on are exactly those whose rays satisfy theta < pi/2 under the decode's formula,
+        theta = (h-r-0.5)/h*pi - i.e. that point below the horizon. Pinned against the formula rather than
+        against the expression in the implementation, so a 'tidy-up' to h//2 - 1 or (h+1)//2 is caught."""
+        h = 8
+        below = [r for r in range(h) if (h - r - 0.5) / h * np.pi < np.pi / 2]
+        assert below == list(range(h // 2, h))
+
+        # A plane referenced only by the last row ABOVE the split must not qualify...
+        indices = np.zeros((h, 2), dtype=np.uint8)
+        indices[h // 2 - 1, :] = 1
+        assert gsv.ground_plane_from_artifact(
+            self.artifact(indices, [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5])) is None
+        # ...while the first row below it must.
+        indices = np.zeros((h, 2), dtype=np.uint8)
+        indices[h // 2, :] = 1
+        assert gsv.ground_plane_from_artifact(
+            self.artifact(indices, [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5]))[2] == 1
+
+    def test_better_supported_plane_wins_over_a_more_vertical_one(self):
+        """Support is the primary key: a road split across two planes should resolve to the one most of the
+        downward pixels actually land on, even if the other is geometrically flatter."""
+        indices = np.array([[1, 2, 2, 2]], dtype=np.uint8)
+        artifact = self.artifact(indices,
+                                 [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.02, 0.0, 1.0]],
+                                 [0.0, 9.9, 2.6])
+
+        normal, distance, index = gsv.ground_plane_from_artifact(artifact)
+
+        assert index == 2
+        assert distance == pytest.approx(2.6, abs=1e-3)
+
+    def test_zero_length_normal_is_skipped_not_divided_by(self):
+        """A referenced plane whose normal is all zeros has no orientation and no distance - Google's index-0
+        entry looks like that, and a malformed list could put one anywhere. Both the verticality ratio and
+        |d| / ||n|| divide by that length, so it must be skipped rather than crashing the depth phase with a
+        ZeroDivisionError."""
+        # Plane 1 is degenerate; plane 2 is a perfectly good ground plane behind it.
+        artifact = self.artifact([[1, 2]],
+                                 [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                                 [0.0, 3.0, 2.5])
+
+        assert gsv.ground_plane_from_artifact(artifact)[2] == 2
+        assert gsv.camera_height_from_artifact(artifact) == pytest.approx(2.5)
+
+        # And with the degenerate plane as the only candidate, no ground rather than an exception.
+        only_degenerate = self.artifact([[1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], [0.0, 3.0])
+        assert gsv.ground_plane_from_artifact(only_degenerate) is None
+
+    def test_non_raster_indices_are_rejected(self):
+        """The bottom-half rule is meaningless without rows, and silently slicing a flat array would pick an
+        arbitrary subset of pixels rather than an arbitrary subset of rows."""
+        with pytest.raises(ValueError, match='raster'):
+            gsv.ground_plane_from_artifact(
+                self.artifact([1, 1], [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5]))
+
+    def test_verticality_breaks_a_support_tie(self):
+        """With equal support the more vertical plane wins - the original rule, kept as the tie-break so the
+        ranking stays total and deterministic. Also pins the returned normal and distance."""
         artifact = self.artifact([[1, 2]],
                                  [[0.0, 0.0, 0.0], [0.1, 0.0, -0.99], [1.0, 0.0, -1.0]],
                                  [0.0, 2.5, 4.0])

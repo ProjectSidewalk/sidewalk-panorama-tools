@@ -90,9 +90,9 @@ def encode_depth_payload(planes, indices, width, height):
 
     Layout: uint8 header_size=8 | uint16 number_of_planes | uint16 width | uint16 height | uint8 offset=8,
     then width*height uint8 per-pixel plane indices, then 4 float32 (nx, ny, nz, d) per plane, all
-    little-endian, urlsafe-base64 encoded. NB streetlevel 0.12.10 reads the offset as a uint16 spanning
-    bytes 7-8, so a payload fed to ITS parser needs indices[0] == 0 for the offset to parse as 8 under both
-    that reading and the true wire format's (see tests/test_streetlevel_api.py).
+    little-endian, urlsafe-base64 encoded. NB streetlevel reads the offset as a uint16 spanning bytes 7-8 -
+    still true in 0.12.11 - so a payload fed to ITS parser needs indices[0] == 0 for the offset to parse as 8
+    under both that reading and the true wire format's (see tests/test_streetlevel_api.py).
 
     @param planes  [{'n': [nx, ny, nz], 'd': d}, ...] including the never-dereferenced index-0 entry.
     @param indices Flat iterable of width*height per-pixel plane indices, payload order.

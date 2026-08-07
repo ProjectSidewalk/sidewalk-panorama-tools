@@ -158,7 +158,7 @@ Artifacts and bookkeeping, relative to the storage root:
   import numpy as np
   d = np.load("aB/aBcDeF....depth.npz")
   d["depth"]           # float32 (height, width) array, typically 256x512; distance from camera in meters; -1 = no plane (sky, or unmodeled)
-  d["plane_indices"]   # uint8 (height, width): per-pixel index into the plane list below; 0 = no plane (exactly where depth is -1)
+  d["plane_indices"]   # uint8 (height, width): per-pixel index into the plane list below; 0 = no plane (exactly where depth is -1, checked on write)
   d["planes_n"]        # float32 (P, 3): plane normals, verbatim from Google's payload (pano-local frame; see below)
   d["planes_d"]        # float32 (P,): plane offsets; a plane is {p : p·n = d}, so its perpendicular camera distance is |d| / ||n||
   d["heading"]         # camera heading in radians (NaN if Google omitted it); likewise d["pitch"], d["roll"]
@@ -173,7 +173,9 @@ Artifacts and bookkeeping, relative to the storage root:
   meters = d["depth"][row, col]
   ```
 
-  The plane fields ([#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)) are the raw material for per-pano **camera height** and **ground tilt**: Google's depth is plane-based, and `depth` is derived from the planes via `depth[r, c] == |planes_d[i] / (v(r, c) · planes_n[i])|` for `i = plane_indices[r, c] > 0`, where `v(r, c)` is the unit ray at `θ = (h−r−0.5)/h·π`, `φ = (w−c−0.5)/w·2π + π/2`. That identity is CI-tested and is the operational definition of the normals' frame — `plane_indices` shares `depth`'s row/column order, and the normals are untouched by the mirror fix below. `downloaders/gsv.py` ships the reference derivations, `ground_plane_from_artifact(d)` (the most-vertical plane some pixel actually references) and `camera_height_from_artifact(d)` (its `|d| / ||n||`, sign-insensitive):
+  The plane fields ([#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)) are the raw material for per-pano **camera height** and **ground tilt**: Google's depth is plane-based, and `depth` is derived from the planes via `depth[r, c] == |planes_d[i] / (v(r, c) · planes_n[i])|` for `i = plane_indices[r, c] > 0`, where `v(r, c)` is the unit ray at `θ = (h−r−0.5)/h·π`, `φ = (w−c−0.5)/w·2π + π/2`. That identity is CI-tested and is the operational definition of the normals' frame — `plane_indices` shares `depth`'s row/column order, and the normals are untouched by the mirror fix below. The writer also refuses to emit an artifact whose `plane_indices == 0` mask doesn't match its `depth == -1` mask, so the correspondence above holds by construction rather than by assumption: it is the one cross-check that streetlevel's decode of the payload (which yields the raster) and ours (which yields the indices) still agree.
+
+  `downloaders/gsv.py` ships the reference derivations, `ground_plane_from_artifact(d)` and `camera_height_from_artifact(d)` (its `|d| / ||n||`, sign-insensitive). The ground plane is picked as the near-horizontal plane that most of the pano's *below-horizon* pixels land on — rows from `h//2` on, which are exactly those with `θ < π/2`. Both halves of that rule matter: ranking on verticality alone lets a few pixels of an overpass soffit or tunnel ceiling — flatter than any real cambered road — outrank tens of thousands of pixels of actual road, and the returned "camera height" then silently becomes the height of the ceiling. When no plane below the horizon qualifies, the helpers return `None` (or your `default`) rather than a confident wrong answer:
 
   ```python
   from downloaders.gsv import camera_height_from_artifact

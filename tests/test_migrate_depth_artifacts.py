@@ -146,6 +146,32 @@ def test_only_depth_artifacts_are_considered(tmp_path):
         assert f.read() == 'pano_id,status\nabcdef,saved\n'
 
 
+def test_main_warns_that_its_output_is_only_v2(tmp_path, monkeypatch, capsys):
+    """A store this script has just "migrated" is still short the plane fields the scraper now writes, and no
+    amount of re-running fixes that. Say so at the point someone is looking at the output, rather than leaving
+    them to infer it from a version number (#56 review)."""
+    storage = str(tmp_path)
+    write_v1(storage)
+    monkeypatch.setattr('sys.argv', ['migrate_depth_artifacts.py', storage])
+
+    assert migrate_depth_artifacts.main() == 0
+
+    out = capsys.readouterr().out
+    assert 'this produces format v2' in out
+    assert 'delete its .depth.npz AND its depth_log.csv row' in out
+
+
+def test_main_stays_quiet_about_v3_when_nothing_was_migrated(tmp_path, monkeypatch, capsys):
+    """The note is guidance for a store that just changed, not boilerplate on every no-op sweep."""
+    storage = str(tmp_path)
+    write_v2(storage)
+    monkeypatch.setattr('sys.argv', ['migrate_depth_artifacts.py', storage])
+
+    assert migrate_depth_artifacts.main() == 0
+
+    assert 'this produces format v2' not in capsys.readouterr().out
+
+
 def test_unreadable_artifact_is_counted_failed_and_does_not_stop_the_run(tmp_path):
     storage = str(tmp_path)
     corrupt = v1_path(storage, 'broken')

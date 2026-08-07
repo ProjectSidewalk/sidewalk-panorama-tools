@@ -89,9 +89,10 @@ def test_depth_decode_mirrors_x_end_to_end():
     """Same pin as above, but through parse() on a synthetic base64 payload built from the documented wire
     layout (see conftest.encode_depth_payload) - so header parsing, index extraction, plane extraction,
     decode, and the (h, w) reshape are all covered. Output column c must hold the value decoded for payload
-    index w-1-c. NB indices[0] must be 0 in payloads fed to streetlevel's parser: 0.12.10 reads the offset
-    as a uint16 spanning bytes 7-8, so byte 8 (the first index) has to be zero for the offset to parse as 8
-    under both that reading and 0.12.11's.
+    index w-1-c. NB indices[0] must be 0 in payloads fed to streetlevel's parser: it reads the offset as a
+    uint16 spanning bytes 7-8 (still true in 0.12.11 - see
+    test_streetlevel_still_misreads_the_depth_offset), so byte 8 (the first index) has to be zero for the
+    offset to parse as 8 under both that reading and the true wire format's.
     """
     from streetlevel.streetview import depth
 
@@ -104,6 +105,37 @@ def test_depth_decode_mirrors_x_end_to_end():
     # rtol 1e-5: the wire format stores the plane as float32, the decode computes in float64.
     np.testing.assert_allclose(np.ravel(depth_map.data), MIRROR_EXPECTED, rtol=1e-5,
                                err_msg="streetlevel no longer mirrors x in its depth decode")
+
+
+def test_streetlevel_still_misreads_the_depth_offset():
+    """Pin the upstream bug our own decode deliberately does not inherit: the wire format's `offset` is a
+    uint8 at byte 7, but streetlevel reads it as a uint16 spanning bytes 7-8. That is still true in 0.12.11
+    - the latest release and the floor of our pin, whose depth.py is byte-identical to 0.12.10's - so the
+    pin does NOT fix it, whatever a version number might suggest.
+
+    Consequence, and why we tolerate it: the misread only matters when the first index byte is non-zero, and
+    payload row 0 is the zenith (theta ~ pi), which is sky (index 0) on essentially every real pano. Where it
+    isn't - under a tunnel, an overpass soffit, a parking structure - streetlevel's own parser RAISES rather
+    than returning a raster that would silently disagree with our plane indices, so no bad artifact can be
+    written; that pano just never resolves (transient, retried every run, never ledgered).
+
+    If this test fails, upstream fixed the read: drop the indices[0] == 0 constraint from the payload
+    fixtures, and update the notes in gsv._decode_depth_planes and conftest.encode_depth_payload.
+    """
+    from streetlevel.streetview import depth
+
+    # header_size=8, 1 plane, 1x1, offset=8, then a single index byte of 1 - the one real payloads (almost)
+    # never have.
+    payload = encode_depth_payload([{'n': [0.0, 0.0, 1.0], 'd': 1.0}], [1], 1, 1)
+
+    header = depth.parse_header(depth.decode_b64(payload))
+
+    assert header['offset'] == 8 + (1 << 8), \
+        "streetlevel now reads the depth offset as a uint8 - see this test's docstring, the notes it names " \
+        "can be simplified"
+    # And it does not degrade quietly: the bad offset runs off the end of the payload.
+    with pytest.raises((IndexError, ValueError)):
+        depth.parse(payload)
 
 
 def test_fetch_seam_extracts_pano_and_planes_from_the_raw_response(monkeypatch):

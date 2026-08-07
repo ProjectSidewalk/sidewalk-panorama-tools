@@ -117,6 +117,13 @@ def main():
     print("Scanned %d depth artifact(s): %d %s, %d already v2, %d failed."
           % (summary.scanned, summary.migrated,
              'would be migrated' if args.dry_run else 'migrated', summary.skipped, summary.failed))
+    if summary.migrated:
+        # The output of this script is v2, which the scraper no longer writes. Saying so here saves the next
+        # person the puzzle of a "migrated" store that still lacks the plane fields (#56).
+        print("NOTE: this produces format v2. The scraper now writes v3, which adds Google's plane list "
+              "(camera height, ground tilt) - data that was never stored pre-v3 and cannot be recovered "
+              "offline. To bring a pano up to v3, delete its .depth.npz AND its depth_log.csv row, which "
+              "makes the next run re-fetch it.")
     return 1 if summary.failed else 0
 
 
