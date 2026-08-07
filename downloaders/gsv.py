@@ -474,9 +474,12 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
             request_count += 1
             try:
                 pano = streetview.find_panorama_by_id(pano_id, download_depth=True, session=session)
-                if pano is None or pano.depth is None or pano.depth.data is None:
-                    # Pano deleted/id rotated, or it has no depth payload. Depth availability for a given pano id
-                    # is static, so remember the outcome and never re-request.
+                if pano is None or pano.depth is None or pano.depth.data is None \
+                        or np.ndim(pano.depth.data) != 2:
+                    # Pano deleted/id rotated, no depth payload, or a payload that isn't the (h, w) grid
+                    # _write_depth_artifact's [:, ::-1] needs - a property of the pano, not of the network, so
+                    # it must not fall through to the write and be miscounted as transient. Depth availability
+                    # for a given pano id is static, so remember the outcome and never re-request.
                     record(pano_id, 'unavailable')
                     unavailable_count += 1
                     fail_count += 1
