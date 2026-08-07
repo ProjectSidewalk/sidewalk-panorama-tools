@@ -165,6 +165,13 @@ Artifacts and bookkeeping, relative to the storage root:
   The payload is angular (~0.7°/pixel; the middle row is the horizon), so this scaling works for any pano resolution. Note the frame caveat: `pano_x` and the pano raster are both *heading-centred* (column 0 sits at compass bearing `pano_yaw − 180°`, the vehicle's forward direction at image centre), but the legacy pre-evolution-179 `sv_image_x` is *north-referenced* (`sv_image_x / 13312 × 360` is a true compass bearing). Mixing the legacy value with the raster or this array displaces a label by up to half a panorama — and by nothing at all on a pano that happens to face south, so a one-example sanity check can pass on the wrong convention.
 * `depth_log.csv` — an append-only ledger (`pano_id,status`) of resolved outcomes: `saved` (artifact written) or `unavailable` (pano gone from Google, or no depth payload). Ledgered panos are never re-requested; transient network failures are *not* ledgered, so they retry on the next run. The artifacts on disk are the ground truth — deleting the ledger is safe and just makes the next run re-check everything (existing artifacts are re-registered without re-downloading).
 
+**Migrating a pre-v2 store.** Any store scraped before the [#58](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/58) fix holds x-mirrored artifacts, and the scraper will never correct them on its own — existing artifacts are never re-fetched or rewritten. `migrate_depth_artifacts.py` detects and fixes them offline: it scans a storage root, flips every artifact whose `format_version` is missing or below 2, and stamps it, leaving v2 artifacts byte-for-byte untouched (idempotent, so re-running on a healthy store is a no-op):
+
+```bash
+python3 migrate_depth_artifacts.py /path/to/storage --dry-run   # count pre-v2 artifacts, change nothing
+python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them in place
+```
+
 The depth phase runs after the image phase and shares its `--max-runtime` budget, so on a fresh city (or the first runs after this feature) images download first and depth backfills incrementally across daily runs. Use `--max-depth-requests` to cap the phase's request volume during backfill.
 
 ### Being a good citizen of Google's servers
