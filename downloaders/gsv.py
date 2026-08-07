@@ -19,7 +19,6 @@ import backoff
 import numpy as np
 import requests
 from PIL import Image
-from aiohttp import web  # noqa: F401  (imported for aiohttp.web.HTTPServerError)
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -78,11 +77,143 @@ def _get_response(url, session, stream=False):
     return response.raw
 
 
+TILE_SIZE = 512
+
+_CBK_BASE_URL = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4'
+
+# Tile failures worth retrying. aiohttp.web.HTTPServerError used to head this tuple, but it is a SERVER-side
+# response class that client code never raises (#52 item 3) - importing aiohttp.web for it was pure cost.
+_TILE_RETRY_ERRORS = (aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
+                      aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError)
+
+
+def _pano_max_zoom(width):
+    """The pano's own maximum zoom level, inferred from its reported full width.
+
+    At zoom z a pano is at most 2**z x 2**(z-1) tiles of 512px, so the max zoom is the smallest z whose tile
+    budget covers the reported width: 16384 -> 5, 13312 -> 5, 3328 (an old zoom-3-native pano) -> 3.
+    """
+    return max(0, int(math.ceil(math.log2(width / float(TILE_SIZE)))))
+
+
+def _dims_at_zoom(width, height, zoom):
+    """Pixel dimensions of the pano at `zoom`, given its reported full (= max-zoom) dimensions.
+
+    Each zoom step halves both axes; at the pano's max zoom (the common case) this is the identity. The #44
+    bug was ignoring this: the tile grid was always derived from the FULL dims, so a zoom-3 download of a
+    16384x8192 pano requested a 32x16 grid of which 480 tiles were out of range, and the imagery landed in
+    1/16 of a black canvas - saved as success.
+    """
+    scale = 2 ** max(0, _pano_max_zoom(width) - zoom)
+    return int(math.ceil(width / float(scale))), int(math.ceil(height / float(scale)))
+
+
+def _tile_grid(width, height, zoom):
+    zoom_width, zoom_height = _dims_at_zoom(width, height, zoom)
+    return (int(math.ceil(zoom_width / float(TILE_SIZE))), int(math.ceil(zoom_height / float(TILE_SIZE))))
+
+
+def _generate_tile_urls(pano_id, width, height, zoom):
+    """The tile fan-out for one pano: a list of (x, y, url) covering exactly the grid `zoom` has."""
+    tiles_x, tiles_y = _tile_grid(width, height, zoom)
+    return [(x, y, f'{_CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}')
+            for y in range(tiles_y) for x in range(tiles_x)]
+
+
+async def _fetch_tile(session, tile):
+    """Fetch one tile; return (x, y, jpeg_bytes).
+
+    Undecorated so tests can drive it without backoff's sleeps; _download_tile below is the retrying variant
+    the fan-out uses.
+    """
+    x, y, url = tile
+    async with session.get(url, proxy=_proxies.get("http"), headers=_random_header()) as response:
+        # .get(), not [..]: a response with no Content-Type must raise the same retryable error as a wrong
+        # one, not a bare KeyError that is in neither backoff tuple (#45).
+        content_type = response.headers.get('Content-Type', '')
+        if content_type[0:10] != "image/jpeg":
+            raise aiohttp.ClientResponseError(
+                response.request_info, response.history, status=response.status,
+                message="unexpected Content-Type %r for tile (%d, %d)" % (content_type, x, y))
+        return x, y, await response.content.read()
+
+
+_download_tile = backoff.on_exception(backoff.expo, _TILE_RETRY_ERRORS, max_tries=10)(_fetch_tile)
+
+
+async def _download_tiles(tiles):
+    """Fetch every tile concurrently; failures come back as exception OBJECTS in the result list.
+
+    No whole-batch backoff on purpose: each tile already retries up to 10 times in _download_tile, and with
+    return_exceptions=True nothing propagates out of the gather anyway - the decorator this replaces could
+    never fire for tile errors and only re-ran connector construction, re-downloading every tile (#45).
+    """
+    conn = aiohttp.TCPConnector(limit=thread_count)
+    async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
+        tasks = [asyncio.ensure_future(_download_tile(session, tile)) for tile in tiles]
+        return await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _partition_tile_results(tiles, results):
+    """Split a gather's results into (ok [(x, y, bytes)], failed [((x, y), exception)]).
+
+    The pre-#45 stitch loop indexed every result unconditionally, so one failed tile crashed the pano with
+    'ClientResponseError object is not subscriptable' and the real cause never reached scrape.log.
+    """
+    ok, failed = [], []
+    for (x, y, _url), result in zip(tiles, results):
+        if isinstance(result, BaseException):
+            failed.append(((x, y), result))
+        else:
+            ok.append(result)
+    return ok, failed
+
+
+def _stitch_tiles(tile_results, zoom_dims, final_dims):
+    """Paste tiles into a zoom-native canvas, crop to the zoom's true size, and scale to the reported dims.
+
+    Tiles are pasted at their grid offsets WITHOUT resizing: Google normally pads edge tiles to 512, but if
+    a variant ever returns a true-size edge tile, resizing would stretch the edge geometry while a plain
+    paste stays correct either way. The final resize is what the pre-#44 code's `if zoom == 3` no-op resize
+    was reaching for: downstream consumers (label pixel coords, depth-map alignment) assume the JPEG is at
+    the server-reported dimensions, so a zoom-3 download is upscaled rather than saved at native size.
+    """
+    tiles_x = int(math.ceil(zoom_dims[0] / float(TILE_SIZE)))
+    tiles_y = int(math.ceil(zoom_dims[1] / float(TILE_SIZE)))
+    canvas = Image.new('RGB', (tiles_x * TILE_SIZE, tiles_y * TILE_SIZE))
+    for x, y, data in tile_results:
+        with Image.open(BytesIO(data)) as tile_image:
+            canvas.paste(tile_image, (TILE_SIZE * x, TILE_SIZE * y))
+    image = canvas.crop((0, 0, zoom_dims[0], zoom_dims[1]))
+    if image.size != tuple(final_dims):
+        image = image.resize(final_dims, Image.LANCZOS)
+    return image
+
+
+def _save_pano_image(image, out_image_name):
+    """Atomically write the stitched JPEG: .part + os.replace, like _write_depth_artifact.
+
+    The skip check in download_single_pano treats ANY existing file as done, so a direct save that crashed
+    mid-write used to leave a truncated JPEG that was never re-attempted.
+    """
+    tmp_path = out_image_name + '.part'
+    try:
+        image.save(tmp_path, 'jpeg')
+        os.chmod(tmp_path, 0o664)
+        os.replace(tmp_path, out_image_name)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
     pano_dims = (pano_info.get('width'), pano_info.get('height'))
 
-    base_url = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4'
+    base_url = _CBK_BASE_URL
 
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
@@ -164,53 +295,21 @@ def download_single_pano(storage_path, pano_info):
 
     final_im_dimension = (final_image_width, final_image_height)
 
-    def generate_gsv_urls(zoom):
-        sites_gsv = []
-        for y in range(int(math.ceil(final_image_height / 512.0))):
-            for x in range(int(math.ceil(final_image_width / 512.0))):
-                url = f'{base_url}&zoom={zoom}&x={str(x)}&y={str(y)}&panoid={pano_id}'
-                sites_gsv.append((str(x) + " " + str(y), url))
-        return sites_gsv
+    tiles = _generate_tile_urls(pano_id, final_image_width, final_image_height, zoom)
+    results = asyncio.run(_download_tiles(tiles))
+    ok, failed = _partition_tile_results(tiles, results)
+    if failed:
+        # Fail the whole pano: a partial stitch would leave silently-black regions that downstream crops
+        # can't detect - exactly the corruption #44 is about. Raise (rather than return failure) so the
+        # failure is treated as transient: the tile that timed out today usually exists tomorrow, and under
+        # #41's ledger semantics a raised pano is re-attempted next run instead of blacklisted.
+        (x, y), first_error = failed[0]
+        logging.error("IMAGEDOWNLOAD: pano %s: %d/%d tiles failed; first failure: tile (%d, %d): %r",
+                      pano_id, len(failed), len(tiles), x, y, first_error)
+        raise first_error
 
-    @backoff.on_exception(backoff.expo, (aiohttp.web.HTTPServerError, aiohttp.ClientError, aiohttp.ClientResponseError,
-                                         aiohttp.ServerConnectionError, aiohttp.ServerDisconnectedError,
-                                         aiohttp.ClientHttpProxyError), max_tries=10)
-    async def download_single_gsv(session, url):
-        async with session.get(url[1], proxy=_proxies.get("http"), headers=_random_header()) as response:
-            head_content = response.headers['Content-Type']
-            # Ensures content type is an image.
-            if head_content[0:10] != "image/jpeg":
-                raise aiohttp.ClientResponseError(response.request_info, response.history)
-            image = await response.content.read()
-            return [url[0], image]
-
-    @backoff.on_exception(backoff.expo,
-                          (aiohttp.web.HTTPServerError, aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
-                           aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError), max_tries=10)
-    async def download_all_gsv_images(sites):
-        conn = aiohttp.TCPConnector(limit=thread_count)
-        async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
-            tasks = []
-            for url in sites:
-                task = asyncio.ensure_future(download_single_gsv(session, url))
-                tasks.append(task)
-            responses = await asyncio.gather(*tasks, return_exceptions=True)
-            return responses
-
-    blank_image = Image.new('RGB', final_im_dimension, (0, 0, 0, 0))
-    sites = generate_gsv_urls(zoom)
-    all_pano_images = asyncio.run(download_all_gsv_images(sites))
-
-    for cell_image in all_pano_images:
-        img = Image.open(BytesIO(cell_image[1]))
-        img = img.resize((512, 512))
-        x, y = int(str.split(cell_image[0])[0]), int(str.split(cell_image[0])[1])
-        blank_image.paste(img, (512 * x, 512 * y))
-
-    if zoom == 3:
-        blank_image = blank_image.resize(final_im_dimension, Image.LANCZOS)
-    blank_image.save(out_image_name, 'jpeg')
-    os.chmod(out_image_name, 0o664)
+    image = _stitch_tiles(ok, _dims_at_zoom(final_image_width, final_image_height, zoom), final_im_dimension)
+    _save_pano_image(image, out_image_name)
     return DownloadResult.success
 
 

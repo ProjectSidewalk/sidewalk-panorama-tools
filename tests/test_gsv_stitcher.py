@@ -5,6 +5,7 @@ gsv module boundary."""
 import logging
 import os
 from io import BytesIO
+from types import SimpleNamespace
 
 import aiohttp
 import pytest
@@ -76,7 +77,8 @@ class _FakeResponse:
     def __init__(self, headers, body=b''):
         self.headers = headers
         self._body = body
-        self.request_info = None
+        # str(ClientResponseError) reads request_info.real_url, so the fake needs one.
+        self.request_info = SimpleNamespace(real_url='https://tile.invalid')
         self.history = ()
         self.status = 200
         self.content = self
