@@ -1,10 +1,12 @@
 # !/usr/bin/python3
 
 import argparse
+import csv
 import logging
 import logging.handlers
 import math
 import os
+import random
 import signal
 import sys
 import time
@@ -34,45 +36,19 @@ def _reservation_minutes(value):
     return minutes
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
-parser.add_argument('s', help='storage_path - location to store scraped panos')
-parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
-parser.add_argument('--all-panos', action='store_true', help='Download images for all panos that users visited, even if no labels were added on them. Does not affect depth, which always covers every pano.')
-parser.add_argument('--skip-depth', action='store_true', help='Skip downloading GSV depth maps (downloaded by default via the streetlevel library).')
-parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
-parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
-parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
-# Deprecated no-op, kept for one release so existing invocations don't crash argparse.
-parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
-args = parser.parse_args()
-
-sidewalk_server_fqdn = args.d
-storage_location = args.s
-pano_metadata_csv = args.c
-all_panos = args.all_panos
-skip_depth = args.skip_depth
-max_runtime_minutes = args.max_runtime
-min_depth_runtime = args.min_depth_runtime
-max_depth_requests = args.max_depth_requests
-
-if args.attempt_depth:
-    print("WARNING: --attempt-depth is deprecated and ignored; depth download is now on by default "
-          "(use --skip-depth to disable).")
-
-# min_depth_runtime > 0 implies the operator typed the flag (the default is 0), so tell them when the
-# combination they ran it in means it cannot do anything.
-if min_depth_runtime > 0 and (max_runtime_minutes is None or skip_depth):
-    print("WARNING: --min-depth-runtime has no effect %s; no time will be reserved for the depth phase."
-          % ("with --skip-depth" if skip_depth else "without --max-runtime"))
-
-print(sidewalk_server_fqdn)
-print(storage_location)
-print(pano_metadata_csv)
-print(all_panos)
-
-# exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
-os.makedirs(storage_location, exist_ok=True)
+def build_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
+    parser.add_argument('s', help='storage_path - location to store scraped panos')
+    parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
+    parser.add_argument('--all-panos', action='store_true', help='Download images for all panos that users visited, even if no labels were added on them. Does not affect depth, which always covers every pano.')
+    parser.add_argument('--skip-depth', action='store_true', help='Skip downloading GSV depth maps (downloaded by default via the streetlevel library).')
+    parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
+    parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
+    parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
+    # Deprecated no-op, kept for one release so existing invocations don't crash argparse.
+    parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
+    return parser
 
 
 def configure_logging(log_path):
@@ -98,47 +74,79 @@ def configure_logging(log_path):
     logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 
-# scrape.log lives on the pano store next to log.csv, NOT the CWD: in Docker the CWD is /app inside the
-# container, so a relative path would discard the log - and every per-pano failure detail - when the container
-# exits (#49). Configured once here at startup so every part of the run logs to the same file - including a
-# crash in the pano-list fetch below, which happens before any phase's own code gets a chance to run.
-configure_logging(os.path.join(storage_location, 'scrape.log'))
-
-# docker stop sends SIGTERM, which CPython by default dies from without running finally blocks - taking the
-# log.csv evidence row with it (#49). Translate it into a SystemExit carrying the conventional 128+15 code, so
-# cleanup runs and the exit still reads as a signal death.
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-
-print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
-
-
 def progress_check(csv_pano_log_path):
+    """Read the image ledger once: every ledgered pano id, plus the prior counters seeded into this run's.
+
+    A row means "resolved": downloaded == 1 counts as a prior success (skipped this run), 0 as a permanent
+    failure (the source has nothing for this pano); either way the pano is never re-attempted. Transient
+    failures are not ledgered at all (#41), so they are absent here and retry next run.
+
+    Row-tolerant on the gsv._load_depth_log model: a line torn by a crash mid-append (or a float minted by
+    the old rewrite path) is skipped, so a damaged ledger degrades to re-attempting a few panos instead of a
+    ParserError that crashes every future run (#55). Reads with csv, not pandas, so the id type can never
+    depend on what the ids happen to look like (#46).
     """
-    Checks download status via a csv: log as skipped if downloaded == 1, failure if download == 0.
-    This speeds things up instead of trying to re-download broken links or images.
-    NB: This will not check if the failure was due to internet connection being unavailable etc. so use with caution.
+    ledgered_ids, total_processed, total_success = set(), 0, 0
+    with open(csv_pano_log_path, newline='') as f:
+        for row in csv.reader(f):
+            if len(row) != 2 or row[0] == 'pano_id' or row[1] not in ('0', '1'):
+                continue
+            ledgered_ids.add(row[0])
+            total_processed += 1
+            total_success += row[1] == '1'
+    return ledgered_ids, total_processed, total_success, total_processed - total_success
+
+
+def _normalize_pano_records(records):
+    """Coerce pano_id to str at the intake boundary, drop empty/'tutorial' rows, dedupe keeping the first.
+
+    Numeric (Mapillary) ids otherwise arrive as ints and crash every pano_id[:2] shard slice, and set
+    membership against the ledger's string ids silently misses (#46). Centralised so the CSV and webserver
+    paths cannot drift - the CSV path also gains the tutorial/empty filter the webserver path always had.
     """
-    df_pano_id_check = pd.read_csv(csv_pano_log_path, dtype={'pano_id': str})
-    df_id_set = set(df_pano_id_check['pano_id'])
-    total_processed = len(df_pano_id_check.index)
-    total_success = df_pano_id_check['downloaded'].sum()
-    total_failed = total_processed - total_success
-    return df_id_set, total_processed, total_success, total_failed
+    unique_ids = set()
+    kept = []
+    for record in records:
+        raw = record.get('pano_id')
+        # A blank CSV cell arrives as float nan, which str() would keep as the id 'nan'.
+        if raw is None or (isinstance(raw, float) and math.isnan(raw)):
+            pano_id = ''
+        else:
+            pano_id = str(raw)
+        if pano_id in unique_ids:
+            continue
+        if not pano_id or pano_id == 'tutorial':
+            print("Pano ID is an empty string or is for tutorial")
+            continue
+        record['pano_id'] = pano_id
+        unique_ids.add(pano_id)
+        kept.append(record)
+    return kept
 
 
 def fetch_pano_ids_csv(metadata_csv_path):
     """
     Loads pano metadata from a CSV file (downloaded from the server). Dedupes on pano_id.
     Expected to include the same columns as /adminapi/panos, notably `source`.
+
+    pano_id is dtype-pinned to str: an all-numeric (Mapillary) column otherwise infers int64 (#46), and one
+    with a single blank cell would infer float64 - whose str() would mint ids like '1.23e+14' - so both the
+    pin here and the normalisation are needed.
     """
-    df_meta = pd.read_csv(metadata_csv_path)
-    df_meta = df_meta.drop_duplicates(subset=['pano_id']).to_dict('records')
-    return df_meta
+    df_meta = pd.read_csv(metadata_csv_path, dtype={'pano_id': str})
+    # Fail loudly on a header typo. -c exists for hand-made CSVs, and _normalize_pano_records would
+    # otherwise read every row's missing id as blank and filter the whole file out - a run that downloads
+    # nothing, prints one 'empty string or tutorial' line per row, and exits 0. pd.read_csv ignores dtype
+    # keys for absent columns, so the pin above doesn't catch this either.
+    if 'pano_id' not in df_meta.columns:
+        raise ValueError("%s has no 'pano_id' column; found %r"
+                         % (metadata_csv_path, list(df_meta.columns)))
+    return _normalize_pano_records(df_meta.to_dict('records'))
 
 
-def fetch_pano_ids_from_webserver():
+def fetch_pano_ids_from_webserver(sidewalk_server_fqdn):
     """
-    Fetch pano metadata from /adminapi/panos.
+    Fetch pano metadata from /adminapi/panos on sidewalk_server_fqdn.
 
     Each entry is a dict with: pano_id, width, height, lat, lng, camera_heading, camera_pitch, source, has_labels.
 
@@ -146,8 +154,6 @@ def fetch_pano_ids_from_webserver():
     --all-panos / has_labels split happens in select_image_panos() - the depth phase wants the whole corpus, so
     filtering here would hide unlabelled panos from it.
     """
-    unique_ids = set()
-    pano_info = []
     # requests with retries and a timeout, like everything else in the repo. The raw http.client this replaced
     # had no timeout (a hung server stalled the nightly run indefinitely), no status check (a 500 or a proxy
     # error page surfaced as an unexplained JSONDecodeError), and never closed the connection (#51).
@@ -170,17 +176,8 @@ def fetch_pano_ids_from_webserver():
         response.raise_for_status()
         jsondata = response.json()
 
-    for value in jsondata:
-        pano_id = value["pano_id"]
-        if pano_id in unique_ids:
-            continue
-        if pano_id and pano_id != 'tutorial':
-            unique_ids.add(pano_id)
-            pano_info.append(value)
-        else:
-            print("Pano ID is an empty string or is for tutorial")
-    assert len(unique_ids) == len(pano_info)
-    return pano_info
+    # The JSON should carry string ids already; normalising here makes that structural (#46).
+    return _normalize_pano_records(jsondata)
 
 
 def select_image_panos(pano_infos, include_all_panos):
@@ -200,97 +197,135 @@ def select_image_panos(pano_infos, include_all_panos):
 
 def filter_supported_sources(pano_infos):
     """
-    Drop panos we can't download in this run, with a one-time warning per reason.
+    Drop panos we can't download in this run, preserving the server's ordering, with a one-time warning per
+    reason.
 
     Supported sources: gsv, mapillary (mapillary requires MAPILLARY_ACCESS_TOKEN). Filtered-out panos are NOT written to
     pano_id_log.csv, so a later run with the token / updated code can still pick them up.
+
+    Order-preserving on purpose (#40): the old implementation regrouped the list by source as a side effect
+    of bucketing for the warnings, which put every GSV pano ahead of every Mapillary one - on a city whose
+    GSV backlog exceeds --max-runtime, Mapillary then made zero progress, indefinitely and invisibly. A
+    filter has no business reordering its input; download_panorama_images shuffles what it actually attempts,
+    which is where starvation has to be prevented. The counts below exist only for the warnings.
     """
-    by_source = {}
+    source_counts = {}
     for p in pano_infos:
-        by_source.setdefault(p.get('source'), []).append(p)
+        source = p.get('source')
+        source_counts[source] = source_counts.get(source, 0) + 1
 
-    kept = list(by_source.pop('gsv', []))
-
-    mapillary_panos = by_source.pop('mapillary', [])
-    if mapillary_panos:
+    # Mapillary gets its own warning naming the missing token, so it is never also reported as an
+    # unsupported source - hence 'known' rather than reusing 'supported' in the loop below.
+    known = {'gsv', 'mapillary'}
+    supported = {'gsv'}
+    if source_counts.get('mapillary'):
         if mapillary.is_token_set():
-            kept.extend(mapillary_panos)
+            supported.add('mapillary')
         else:
             print("WARNING: %d Mapillary panos skipped — set %s to download them"
-                  % (len(mapillary_panos), mapillary.TOKEN_ENV_VAR))
+                  % (source_counts['mapillary'], mapillary.TOKEN_ENV_VAR))
 
-    for source, panos in by_source.items():
-        print("WARNING: %d panos with unsupported source %r skipped" % (len(panos), source))
+    for source, count in source_counts.items():
+        if source not in known:
+            print("WARNING: %d panos with unsupported source %r skipped" % (count, source))
 
-    return kept
+    return [p for p in pano_infos if p.get('source') in supported]
 
 
 def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None):
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
-    # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
+    # The attempted-pano ledger, in 'storage' alongside the pano results (see progress_check for semantics).
     csv_pano_log_path = os.path.join(storage_path, "pano_id_log.csv")
-    columns = ['pano_id', 'downloaded']
-    if not exists(csv_pano_log_path):
-        df_pano_id_log = pd.DataFrame(columns=columns)
-        df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
+    ledger_existed = exists(csv_pano_log_path)
+    if ledger_existed:
+        df_id_set, prior_total, prior_success, prior_fail = progress_check(csv_pano_log_path)
     else:
-        df_pano_id_log = pd.read_csv(csv_pano_log_path)
-    processed_ids = set(df_pano_id_log['pano_id'])
-
-    df_id_set, prior_total, prior_success, prior_fail = progress_check(csv_pano_log_path)
+        df_id_set, prior_total, prior_success, prior_fail = set(), 0, 0, 0
     # Seed counters from the log so "skipped" in the progress line includes panos already
     # downloaded on previous runs (same semantics as the original code).
     skipped_count = prior_success
     fail_count = prior_fail
     total_completed = prior_total
+    # Partition before attempting anything, then shuffle - the depth phase's pattern (gsv.download_depth_maps).
+    # Iteration order is otherwise the server's, and since #41 a transiently-failing pano is never ledgered, so
+    # it keeps its place at the head of that order forever: a cluster of panos that fail every night would be
+    # re-attempted first every night, spending --max-runtime before the loop ever reaches new work. Ledgering
+    # every attempt used to guarantee the frontier advanced; nothing does now, so the shuffle has to.
+    # This also covers the #40 fallback: if /adminapi/panos itself ever returns a source-clustered list,
+    # filter_supported_sources preserving that order no longer starves the sources behind the first cluster.
+    candidates = [p for p in pano_infos if p['pano_id'] not in df_id_set]
     # Denominator = previously logged + panos we'll attempt this run, so it can never be exceeded.
-    new_panos = sum(1 for p in pano_infos if p['pano_id'] not in df_id_set)
-    total_panos = prior_total + new_panos
+    total_panos = prior_total + len(candidates)
+    random.shuffle(candidates)
 
-    for pano_info in pano_infos:
-        pano_id = pano_info['pano_id']
-        if pano_id in df_id_set:
-            continue
-        if max_runtime_minutes is not None and run_start_monotonic is not None:
-            # time.monotonic, not the wall clock: an NTP step or DST transition must not stretch or shrink
-            # the budget (#51).
-            elapsed_minutes = (time.monotonic() - run_start_monotonic) / 60.0
-            if elapsed_minutes >= max_runtime_minutes:
-                print("IMAGEDOWNLOAD: Max runtime of %.1f minutes reached (%.1f elapsed). Stopping." % (max_runtime_minutes, elapsed_minutes))
-                break
-        start_time = time.time()
-        print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
-        try:
-            result_code = download_pano(storage_path, pano_info)
-            if result_code == DownloadResult.success:
-                success_count += 1
-            elif result_code == DownloadResult.fallback_success:
-                fallback_success_count += 1
-            elif result_code == DownloadResult.skipped:
-                skipped_count += 1
-            elif result_code == DownloadResult.failure:
+    # One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
+    # The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that,
+    # when the #46 dtype mismatch made it reachable, rewrote the ENTIRE file per pano with mode='w' - O(n^2)
+    # per run, and a crash mid-rewrite truncated the only image ledger in place.
+    with open(csv_pano_log_path, 'a', newline='') as ledger_file:
+        # lineterminator='\n': csv.writer's excel default is '\r\n', but every existing image ledger was
+        # written by pandas to_csv, whose default is os.linesep - '\n' on the Linux scraper boxes. Without
+        # this pin, appending to a years-old ledger would mix line endings in one file and hand ops greps a
+        # trailing '\r' on the downloaded column.
+        ledger = csv.writer(ledger_file, lineterminator='\n')
+        if not ledger_existed:
+            ledger.writerow(['pano_id', 'downloaded'])
+            ledger_file.flush()
+            # Group-writable like depth_log.csv: other lab users' runs append to the same store.
+            try:
+                os.chmod(csv_pano_log_path, 0o664)
+            except OSError:
+                # Lost the exists()/open() race to another user's run: their file, their modes. The ledger is
+                # already open and writable, so this must not take the phase down - the same call in both
+                # downloaders' shard-dir setup swallows it for the same reason.
+                pass
+
+        for pano_info in candidates:
+            pano_id = pano_info['pano_id']
+            # candidates is already filtered against the ledger; this still catches a duplicate id surviving
+            # intake, which would otherwise be downloaded and ledgered twice.
+            if pano_id in df_id_set:
+                continue
+            if max_runtime_minutes is not None and run_start_monotonic is not None:
+                # time.monotonic, not the wall clock: an NTP step or DST transition must not stretch or shrink
+                # the budget (#51).
+                elapsed_minutes = (time.monotonic() - run_start_monotonic) / 60.0
+                if elapsed_minutes >= max_runtime_minutes:
+                    print("IMAGEDOWNLOAD: Max runtime of %.1f minutes reached (%.1f elapsed). Stopping." % (max_runtime_minutes, elapsed_minutes))
+                    break
+            start_time = time.time()
+            print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
+            try:
+                result_code = download_pano(storage_path, pano_info)
+                if result_code == DownloadResult.success:
+                    success_count += 1
+                elif result_code == DownloadResult.fallback_success:
+                    fallback_success_count += 1
+                elif result_code == DownloadResult.skipped:
+                    skipped_count += 1
+                elif result_code == DownloadResult.failure:
+                    fail_count += 1
+                downloaded = 0 if result_code == DownloadResult.failure else 1
+
+            except Exception as e:
+                # Transient (network, storage, a bug): counted in THIS run's failures but NOT ledgered, so
+                # the pano is re-attempted next run - the depth ledger's semantics (#41). Only the
+                # downloader's own verdict (DownloadResult.failure above: the source has nothing for this
+                # pano) is permanent and writes the terminal 0-row.
                 fail_count += 1
-            downloaded = 0 if result_code == DownloadResult.failure else 1
+                downloaded = None
+                logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
+            total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
-        except Exception as e:
-            fail_count += 1
-            downloaded = 0
-            logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
-        total_completed = success_count + fallback_success_count + fail_count + skipped_count
+            if downloaded is not None:
+                ledger.writerow([pano_id, downloaded])
+                ledger_file.flush()
+                df_id_set.add(pano_id)
 
-        if pano_id not in processed_ids:
-            df_data_append = pd.DataFrame([[pano_id, downloaded]], columns=columns)
-            df_data_append.to_csv(csv_pano_log_path, mode='a', header=False, index=False)
-            processed_ids.add(pano_id)
-        else:
-            df_pano_id_log = pd.read_csv(csv_pano_log_path)
-            df_pano_id_log.loc[df_pano_id_log['pano_id'] == pano_id, 'downloaded'] = downloaded
-            df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
-
-        print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
-              % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
-        print("--- %s seconds ---" % (time.time() - start_time))
+            print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
+                  % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
+            print("--- %s seconds ---" % (time.time() - start_time))
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -309,8 +344,8 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
 LOG_CSV_FIELD_COUNT = 18
 
 
-def write_log_csv_row(fields):
-    """Append one run's row to log.csv, blank-padded to the full 18 columns.
+def write_log_csv_row(storage_location, fields):
+    """Append one run's row to <storage_location>/log.csv, blank-padded to the full 18 columns.
 
     Blank means the phase never finished - visibly missing data, not a fake zero. If the append itself fails
     (the classic cause: the sshfs store went away mid-run), the joined row is printed to stderr before the
@@ -328,8 +363,8 @@ def write_log_csv_row(fields):
         raise
 
 
-def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, max_runtime_minutes=None,
-                                max_depth_requests=None, min_depth_runtime=0.0):
+def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_infos, skip_depth,
+                                max_runtime_minutes=None, max_depth_requests=None, min_depth_runtime=0.0):
     """Run the image and depth phases and append this run's row to log.csv.
 
     Fields are accumulated as each phase completes and the row is written once, in a finally, padded to the
@@ -337,6 +372,7 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
     completed phase's counts (a failure in the depth phase must not discard what the image phase downloaded),
     while the phases that never finished stay visibly blank rather than turning into fake zeros (#49).
 
+    @param storage_location Root of the pano store (log.csv and the ledgers live here).
     @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
     @param depth_pano_infos Every supported pano; the depth phase filters this to source == 'gsv' itself.
     @param min_depth_runtime Minutes of max_runtime_minutes reserved for the depth phase (see the flag's help).
@@ -411,43 +447,96 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
 
         fields.append(int(round((depth_end_time - start_time).total_seconds() / 60.0)))
     finally:
-        write_log_csv_row(fields)
+        write_log_csv_row(storage_location, fields)
 
 
-# Access Project Sidewalk API to get Pano IDs for city
-print("Fetching pano-ids")
+def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_panos=False, skip_depth=False,
+        max_runtime_minutes=None, min_depth_runtime=0.0, max_depth_requests=None):
+    """Fetch the pano list, narrow it, and run the scrape - the whole job, minus process-level setup.
 
-try:
-    if pano_metadata_csv is not None:
-        pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
-    else:
-        pano_infos = fetch_pano_ids_from_webserver()
-    pano_infos = filter_supported_sources(pano_infos)
-    image_pano_infos = select_image_panos(pano_infos, all_panos)
-except BaseException:
-    # A crash before the scrape starts - a webserver outage being the single most likely nightly failure - must
-    # still leave both kinds of evidence (#49): the traceback in scrape.log, and a blank-padded log.csv row
-    # whose real timestamp shows a run started and produced nothing.
-    logging.exception("Run crashed before the scrape started")
-    write_log_csv_row([str(datetime.now())])
-    raise
+    main() owns argv parsing, directory creation, logging, and signal handling; this seam takes plain
+    arguments (defaults mirror the flags') so tests can drive the real fetch -> filter -> phase orchestration
+    in-process (#52.1).
+    """
+    # Access Project Sidewalk API to get Pano IDs for city
+    print("Fetching pano-ids")
 
-# Uncomment this to test on a smaller subset of the pano_info.
-# import random
-# n = 3
-# if len(pano_infos) > n:
-#     pano_infos = random.sample(pano_infos, n)
+    try:
+        if pano_metadata_csv is not None:
+            pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
+        else:
+            pano_infos = fetch_pano_ids_from_webserver(sidewalk_server_fqdn)
+        pano_infos = filter_supported_sources(pano_infos)
+        image_pano_infos = select_image_panos(pano_infos, all_panos)
+    except BaseException:
+        # A crash before the scrape starts - a webserver outage being the single most likely nightly failure -
+        # must still leave both kinds of evidence (#49): the traceback in scrape.log, and a blank-padded
+        # log.csv row whose real timestamp shows a run started and produced nothing.
+        logging.exception("Run crashed before the scrape started")
+        write_log_csv_row(storage_location, [str(datetime.now())])
+        raise
 
-print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth"
-      % (len(pano_infos), len(image_pano_infos), sum(1 for p in pano_infos if p.get('source') == 'gsv')))
+    # Uncomment this to test on a smaller subset of the pano_info.
+    # import random
+    # n = 3
+    # if len(pano_infos) > n:
+    #     pano_infos = random.sample(pano_infos, n)
 
-# Use pano_id list and associated info to gather panos from respective APIs
-print("Fetching Panoramas")
-try:
-    run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes=max_runtime_minutes,
-                                max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime)
-except BaseException:
-    # run_scraper_and_log_results's own finally has already written the evidence row; this puts the traceback -
-    # otherwise stderr-only, the exact channel that dies with the container - into scrape.log too (#49).
-    logging.exception("Run failed")
-    raise
+    print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth"
+          % (len(pano_infos), len(image_pano_infos), sum(1 for p in pano_infos if p.get('source') == 'gsv')))
+
+    # Use pano_id list and associated info to gather panos from respective APIs
+    print("Fetching Panoramas")
+    try:
+        run_scraper_and_log_results(storage_location, image_pano_infos, pano_infos, skip_depth,
+                                    max_runtime_minutes=max_runtime_minutes,
+                                    max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime)
+    except BaseException:
+        # run_scraper_and_log_results's own finally has already written the evidence row; this puts the
+        # traceback - otherwise stderr-only, the exact channel that dies with the container - into scrape.log
+        # too (#49).
+        logging.exception("Run failed")
+        raise
+
+
+def main(argv=None):
+    """Process-level setup, then run(): everything a `python3 DownloadRunner.py ...` invocation does.
+
+    Exceptions propagate (the interpreter prints the traceback and exits 1) and argparse errors exit 2,
+    exactly as the pre-#52 module-scope script behaved.
+    """
+    args = build_parser().parse_args(argv)
+
+    if args.attempt_depth:
+        print("WARNING: --attempt-depth is deprecated and ignored; depth download is now on by default "
+              "(use --skip-depth to disable).")
+
+    # min_depth_runtime > 0 implies the operator typed the flag (the default is 0), so tell them when the
+    # combination they ran it in means it cannot do anything.
+    if args.min_depth_runtime > 0 and (args.max_runtime is None or args.skip_depth):
+        print("WARNING: --min-depth-runtime has no effect %s; no time will be reserved for the depth phase."
+              % ("with --skip-depth" if args.skip_depth else "without --max-runtime"))
+
+    # exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
+    os.makedirs(args.s, exist_ok=True)
+
+    # scrape.log lives on the pano store next to log.csv, NOT the CWD: in Docker the CWD is /app inside the
+    # container, so a relative path would discard the log - and every per-pano failure detail - when the
+    # container exits (#49). Configured once here at startup so every part of the run logs to the same file -
+    # including a crash in the pano-list fetch, which happens before any phase's own code gets a chance to run.
+    configure_logging(os.path.join(args.s, 'scrape.log'))
+
+    # docker stop sends SIGTERM, which CPython by default dies from without running finally blocks - taking the
+    # log.csv evidence row with it (#49). Translate it into a SystemExit carrying the conventional 128+15 code,
+    # so cleanup runs and the exit still reads as a signal death.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+
+    print("Starting run with pano list fetched from %s and destination path %s" % (args.d, args.s))
+
+    run(sidewalk_server_fqdn=args.d, storage_location=args.s, pano_metadata_csv=args.c,
+        all_panos=args.all_panos, skip_depth=args.skip_depth, max_runtime_minutes=args.max_runtime,
+        min_depth_runtime=args.min_depth_runtime, max_depth_requests=args.max_depth_requests)
+
+
+if __name__ == '__main__':
+    main()

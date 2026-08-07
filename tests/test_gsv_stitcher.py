@@ -420,32 +420,11 @@ class TestRejectMostlyBlackStitch:
         gsv._reject_mostly_black_stitch(canvas, 'panoZ', zoom=5)
 
 
-class TestSavePanoImage:
-    def test_atomic_success(self, tmp_path):
-        out = str(tmp_path / 'pano.jpg')
-
-        gsv._save_pano_image(Image.new('RGB', (32, 16), RED), out)
-
-        assert os.path.isfile(out)
-        assert not os.path.exists(out + '.part')
-        if os.name == 'posix':
-            assert os.stat(out).st_mode & 0o777 == 0o664
-
-    def test_crash_leaves_no_final_file_and_no_part(self, tmp_path, monkeypatch):
-        """The pre-#44 code saved straight to the final name, and the skip-if-exists check treats any file
-        as done - a crash mid-save left a truncated JPEG that was never re-attempted."""
-        out = str(tmp_path / 'pano.jpg')
-
-        def boom(src, dst):
-            raise OSError(28, 'No space left on device')
-
-        monkeypatch.setattr(gsv.os, 'replace', boom)
-
-        with pytest.raises(OSError):
-            gsv._save_pano_image(Image.new('RGB', (32, 16), RED), out)
-
-        assert not os.path.exists(out)
-        assert not os.path.exists(out + '.part')
+# The stitched JPEG is written through common.atomic_output_path, the same helper the depth artifacts and
+# the Mapillary downloader use. Its contract - rename on success, remove the .part on any BaseException
+# including SIGTERM's SystemExit, 0o664 on the result - is covered by tests/test_image_downloaders.py's
+# TestAtomicOutputPath. What is pinned here instead is the pano-level consequence: a pano that fails to
+# stitch leaves neither a .jpg nor a .part behind (see the end-to-end failure tests below).
 
 
 # --- download_single_pano end to end (probes and tile fan-out stubbed) ---------------------------------------

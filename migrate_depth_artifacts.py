@@ -9,6 +9,10 @@ offline. This script scans a storage root for <pano_id[:2]>/<pano_id>.depth.npz 
 artifact's depth array in x, stamps format_version=2, and leaves v2+ artifacts byte-for-byte untouched -
 so it is idempotent and safe to run (and re-run) on any store.
 
+This script implements exactly the v1 -> v2 transform and nothing newer: v2 artifacts are deliberately NOT
+upgraded to v3 (#56), because the plane fields v3 adds were never stored pre-v3 and can only come from a
+re-fetch - delete the artifact and its depth_log.csv row to trigger one.
+
 Usage:
     python3 migrate_depth_artifacts.py <storage_path> [--dry-run]
 """
@@ -41,8 +45,8 @@ def _find_depth_artifacts(storage_path):
 def _needs_migration(path):
     """True for a pre-v2 artifact: no 'format_version' field, or one below 2.
 
-    This script implements exactly the v1 -> v2 transform (the x-flip), so the threshold is a literal 2: a
-    hypothetical future format would need its own migration, not a re-run of this one.
+    This script implements exactly the v1 -> v2 transform (the x-flip), so the threshold is a literal 2:
+    v3 (#56) added fields that were never stored before it, so no offline migration to v3 can exist.
     """
     with np.load(path) as d:
         return 'format_version' not in d.files or int(d['format_version']) < 2
@@ -113,6 +117,13 @@ def main():
     print("Scanned %d depth artifact(s): %d %s, %d already v2, %d failed."
           % (summary.scanned, summary.migrated,
              'would be migrated' if args.dry_run else 'migrated', summary.skipped, summary.failed))
+    if summary.migrated:
+        # The output of this script is v2, which the scraper no longer writes. Saying so here saves the next
+        # person the puzzle of a "migrated" store that still lacks the plane fields (#56).
+        print("NOTE: this produces format v2. The scraper now writes v3, which adds Google's plane list "
+              "(camera height, ground tilt) - data that was never stored pre-v3 and cannot be recovered "
+              "offline. To bring a pano up to v3, delete its .depth.npz AND its depth_log.csv row, which "
+              "makes the next run re-fetch it.")
     return 1 if summary.failed else 0
 
 

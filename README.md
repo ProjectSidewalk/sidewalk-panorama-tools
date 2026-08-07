@@ -86,6 +86,53 @@ python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbu
 
 **Note** We have noticed some error in the y-position of labels on the panorama. We believe that this either comes from a bug in the GSV API, or it may be there there is some metadata that Google is not providing us. The errors are relatively small and in the y-direction. As of Apr 2023 we are working on an alternative cropper that attempts to correct for these errors, but it is in development. The version here should work pretty well for now though!
 
+## Log analyzer
+
+`log_analyzer/analyze.py` monitors the nightly scrape across every city. It pulls each city's `log.csv` off the pano store over SFTP and flags the ones that look broken. Nothing is downloaded by the scraper itself — this is an ops tool you run from a workstation or a cron box, not something the Docker image needs.
+
+It needs only `pandas` (already in `requirements.txt`) plus the `sftp` client binary (`openssh-client`).
+
+Connection settings are read from the environment, or the matching flag. Host and base path are required and have no defaults — a wrong default would silently analyze the wrong store:
+
+| Variable | Flag | |
+|---|---|---|
+| `PS_SFTP_HOST` | `--host` | **required** — host, or an `~/.ssh/config` `Host` alias |
+| `PS_SFTP_BASE` | `--base` | **required** — remote directory holding the per-city folders |
+| `PS_SFTP_USER` | `--user` | optional — omit when the ssh config supplies it |
+| `PS_SFTP_PORT` | `--port` | optional — omit for 22 |
+| `PS_SFTP_KEY`  | `--key`  | optional — omit to let ssh choose (ssh config / agent) |
+
+```bash
+export PS_SFTP_HOST=... PS_SFTP_BASE=... PS_SFTP_USER=... PS_SFTP_PORT=... PS_SFTP_KEY=~/.ssh/...
+
+python3 log_analyzer/analyze.py                    # download all city logs, then analyze
+python3 log_analyzer/analyze.py --no-download      # re-analyze the local cache
+python3 log_analyzer/analyze.py --city seattle-wa  # one city
+python3 log_analyzer/analyze.py --stale-days 5     # custom staleness threshold
+```
+
+Setting up an `~/.ssh/config` `Host` alias is the tidiest option: with the user, port, and key declared there, only `PS_SFTP_HOST` and `PS_SFTP_BASE` are needed.
+
+Exit status is `1` when any city has a CRITICAL issue, so cron's mail-on-failure does the alerting. Downloaded logs are cached in `log_analyzer/logs/` (gitignored).
+
+`log_analyzer/cities.csv` maps `city_id` → display name; each `city_id` must match that city's folder name on the pano store exactly. Add a row when a new city is deployed.
+
+**Checks:**
+
+| Level | Condition |
+|-------|-----------|
+| 🔴 CRITICAL | Log download failed, or the file is missing/empty/unparseable |
+| 🔴 CRITICAL | Last log entry is more than `--stale-days` days old (default 3) |
+| 🟡 WARNING | `image_fail` growing by ≥20/day (7-day average) — new panos failing |
+| 🟡 WARNING | Zero new images for 30 consecutive days, after a period that had some (regression) |
+| 🟡 WARNING | A recent run took >3× the historical median runtime |
+| 🟡 WARNING | ≥3 of the last 7 runs ended early (blank columns) |
+| 🔵 INFO | Multiple runs logged on the same calendar day |
+
+A healthy mature city looks like: `image_success` small or zero most days, stable `image_fail`, `image_skip` ≈ `image_total`. The column layout the analyzer parses is the 18-field table under [Ops notes](#ops-notes); blank fields are read as missing data, never as `0`, so a run that crashed can't be mistaken for a quiet one. `log.csv` is written without a header — the header row in production files is added by hand during city setup — so the analyzer accepts files with or without one.
+
+The analyzer uses `sftp -b -` (batch mode via stdin) rather than `scp` because the store runs a restricted SFTP subsystem that doesn't speak the SCP wire protocol; newer `scp` clients default to SFTP-over-SSH and fail with `mtime.sec not present`.
+
 ## Definitions of variables found in APIs
 
 ### Downloader: /adminapi/panos
@@ -146,10 +193,9 @@ Note that the numbers in the `label_type_id` column correspond to these label ty
 
 * `CropRunner.py` - implement multi core usage when creating crops. Currently runs on a single core, most modern machines
   have more than one core so would give a speed up for cropping 10's of thousands of images and objects.
-* Add logic to `progress_check()` function so that it can register if there is a network failure and does not log the pano id as visited and failed.
 
 ## Depth Maps
-`DownloadRunner.py` downloads a depth map for every GSV pano by default, using the [streetlevel](https://github.com/sk-zk/streetlevel) library to fetch and decode Google's photometa response (pass `--skip-depth` to turn this off). Not every pano has depth data — third-party and some older panos don't — so the phase saves it where available and records the outcome either way.
+`DownloadRunner.py` downloads a depth map for every GSV pano by default, using the [streetlevel](https://github.com/sk-zk/streetlevel) library to fetch Google's photometa response (pass `--skip-depth` to turn this off). The depth payload itself is decoded in-repo: every streetlevel release through 0.12.11 misreads a header byte, which makes its parser crash on the ~1% of panos whose zenith is a modeled surface (tunnels, overpass soffits) — see [sk-zk/streetlevel#45](https://github.com/sk-zk/streetlevel/pull/45); once that fix ships, the bypass can be revisited. Not every pano has depth data — third-party and some older panos don't — so the phase saves it where available and records the outcome either way.
 
 Artifacts and bookkeeping, relative to the storage root:
 
@@ -158,8 +204,11 @@ Artifacts and bookkeeping, relative to the storage root:
   import numpy as np
   d = np.load("aB/aBcDeF....depth.npz")
   d["depth"]           # float32 (height, width) array, typically 256x512; distance from camera in meters; -1 = no plane (sky, or unmodeled)
+  d["plane_indices"]   # uint8 (height, width): per-pixel index into the plane list below; 0 = no plane (exactly where depth is -1, checked on write)
+  d["planes_n"]        # float32 (P, 3): plane normals, verbatim from Google's payload (pano-local frame; see below)
+  d["planes_d"]        # float32 (P,): plane offsets; a plane is {p : p·n = d}, so its perpendicular camera distance is |d| / ||n||
   d["heading"]         # camera heading in radians (NaN if Google omitted it); likewise d["pitch"], d["roll"]
-  d["format_version"]  # 2; absent in artifacts written before the mirror fix below
+  d["format_version"]  # 3; version 2 lacked the three plane fields; absent means pre-mirror-fix (see below)
   ```
 
   The array shares the JPEG's orientation: column 0 of `d["depth"]` is the leftmost column of the pano image. (streetlevel's decoder delivers the payload x-mirrored relative to the imagery; we flip it back on write, and contract tests pin the decoder's end-to-end output orientation — both the ray-direction formula and the write order — so an upstream change fails CI instead of silently re-mirroring new artifacts; see [#58](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/58). **An artifact with no `format_version` field predates that fix and is horizontally flipped — see the migration note below.**) To sample the depth under a label position stored in the database:
@@ -168,6 +217,15 @@ Artifacts and bookkeeping, relative to the storage root:
   col = int(pano_x / pano_width * d["depth"].shape[1]) % d["depth"].shape[1]
   row = min(int(pano_y / pano_height * d["depth"].shape[0]), d["depth"].shape[0] - 1)
   meters = d["depth"][row, col]
+  ```
+
+  The plane fields ([#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)) are the raw material for per-pano **camera height** and **ground tilt**: Google's depth is plane-based, and `depth` is derived from the planes via `depth[r, c] == |planes_d[i] / (v(r, c) · planes_n[i])|` for `i = plane_indices[r, c] > 0`, where `v(r, c)` is the unit ray at `θ = (h−r−0.5)/h·π`, `φ = (w−c−0.5)/w·2π + π/2`. That identity is CI-tested and is the operational definition of the normals' frame — `plane_indices` shares `depth`'s row/column order, and the normals are untouched by the mirror fix below. The writer also refuses to emit an artifact whose `plane_indices == 0` mask doesn't match its `depth == -1` mask, so the correspondence above holds by construction rather than by assumption.
+
+  `downloaders/gsv.py` ships the reference derivations, `ground_plane_from_artifact(d)` and `camera_height_from_artifact(d)` (its `|d| / ||n||`, sign-insensitive). The ground plane is picked as the near-horizontal plane that most of the pano's *below-horizon* pixels land on — rows from `(h+1)//2` on, which are exactly those with `θ < π/2` (plain `h//2` for the even heights every real raster has). Both halves of that rule matter: ranking on verticality alone lets a few pixels of an overpass soffit or tunnel ceiling — flatter than any real cambered road — outrank tens of thousands of pixels of actual road, and the returned "camera height" then silently becomes the height of the ceiling. When no plane below the horizon qualifies, the helpers return `None` (or your `default`) rather than a confident wrong answer:
+
+  ```python
+  from downloaders.gsv import camera_height_from_artifact
+  height_m = camera_height_from_artifact(d, default=2.5)  # per-pano camera height above the modeled ground
   ```
 
   (Truncation, not `round()`: each depth pixel covers a *range* of pano columns, and flooring picks the pixel containing the position; rounding would pick the pixel whose edge is nearest — a systematic half-pixel shift.) The payload is angular (~0.7°/pixel; the horizon at θ = π/2 falls midway between the two middle rows, not on a single row), so this scaling works for any pano resolution. Note the frame caveat: `pano_x` and the pano raster are both *heading-centred* (column 0 sits at compass bearing `pano_yaw − 180°`, the vehicle's forward direction at image centre), but the legacy pre-evolution-179 `sv_image_x` is *north-referenced* (`sv_image_x / 13312 × 360` is a true compass bearing). Mixing the legacy value with the raster or this array displaces a label by up to half a panorama — and by nothing at all on a pano that happens to face south, so a one-example sanity check can pass on the wrong convention.
@@ -179,6 +237,8 @@ Artifacts and bookkeeping, relative to the storage root:
 python3 migrate_depth_artifacts.py /path/to/storage --dry-run   # count pre-v2 artifacts, change nothing
 python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them in place
 ```
+
+There is **no offline migration from v2 to v3**: the plane fields v3 adds were never stored by the v2 writer, so they can only come from a re-fetch. A v2 artifact (only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56) dev/test runs produced any — no production store ever ran the depth phase) reaches v3 by deleting the artifact *and* its `depth_log.csv` row, which makes the next run re-request it. The plane fields cost roughly 10–30 KB per pano on top of v2's 50–200 KB.
 
 The depth phase runs after the image phase, and the two share one `--max-runtime` budget — that flag bounds the whole run to its daily cron slot, and the slot doesn't care which phase spends the clock. Because images run first, a big image backlog (a mapathon influx — which is also exactly when many new panos want depth) could starve the backfill night after night. `--min-depth-runtime` (default 0, i.e. off; the production crontab should pass 60) counters that by reserving the tail of the budget for depth whenever `depth_log.csv` shows unresolved work: the image phase then stops *starting* new panos at `max-runtime − min-depth-runtime`. Three consequences worth knowing:
 
@@ -202,7 +262,10 @@ The phase is serial — one metadata request in flight at a time, unlike the ima
 * Unresolved panos are shuffled each run. Iteration order is otherwise stable, so a cluster of panos that fail every time would monopolise `--max-depth-requests` run after run and the backfill would never reach anything behind it.
 * **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs will show large failure numbers that are entirely normal. The success/failure/unavailable split is printed to stdout and `scrape.log` (which lives next to `log.csv` under the storage root); `log.csv` keeps its 18-column positional shape, so there was no room for a separate column.
 * Storage or ledger write failures (a full or unmounted store) are treated as transient per-pano failures and retried next run — the phase deliberately never lets them escape. Even if a run does crash between phases, `log.csv` still gets a single full-width row: fields are accumulated in memory and written once in a `finally`, with completed phases' counts kept and never-finished phases left blank (not fake zeros).
-* **The `log.csv` columns.** Each run appends one row of 18 positional comma-separated fields (no header), parsed by our `scraper-log-analyzer` tooling. Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata phase, a stub since Google killed that endpoint in 2022 — kept so the column positions never shift:
+* **`pano_id_log.csv` — the image phase's resume ledger** (`pano_id,downloaded`, mirroring `depth_log.csv`'s semantics). A row means the pano is *resolved* and is never re-attempted: `1` = image on disk (or a prior success), `0` = the source has nothing for this pano (no imagery at any zoom, unknowable dimensions) — a permanent verdict. Transient failures — network blips, a failed tile, a full store — leave **no row** and retry automatically on the next run. Deleting `0` rows (or the whole file) remains the manual force-retry lever; existing `.jpg`s are simply re-registered as skipped.
+* **Unattempted panos are shuffled each run**, for the same reason depth shuffles. Because a transient failure leaves no ledger row, it keeps its place in the server's ordering, so a stable iteration order would re-attempt the same failing head block first every night and spend `--max-runtime` before reaching new work. Shuffling also means a source-clustered `/adminapi/panos` response can't starve whichever source sorts last.
+* **Images are written through a `.part` file and renamed into place.** An existing `.jpg` *is* the resume marker, so a download killed mid-write would otherwise leave a truncated file that every later run reports as a completed success. A stray `*.jpg.part` on the store is debris from a killed run and is safe to delete; the next run rewrites it.
+* **The `log.csv` columns.** Each run appends one row of 18 positional comma-separated fields (no header), parsed by the [log analyzer](#log-analyzer). Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata phase, a stub since Google killed that endpoint in 2022 — kept so the column positions never shift:
 
   | # | field | notes |
   |---|-------|-------|
@@ -214,7 +277,7 @@ The phase is serial — one metadata request in flight at a time, unlike the ima
   | 6 | metadata phase duration | effectively `0` (stub) |
   | 7 | image successes | |
   | 8 | image fallback successes | downloaded, but at a fallback resolution |
-  | 9 | image failures | includes prior runs' failed panos, seeded from `pano_id_log.csv` |
+  | 9 | image failures | includes prior runs' permanent failures, seeded from `pano_id_log.csv`; a transient failure is not ledgered, so it is counted again if it fails again next run |
   | 10 | image skipped | includes panos already downloaded on previous runs, seeded likewise |
   | 11 | image total processed | sum of fields 7–10 |
   | 12 | image phase duration | |
@@ -238,7 +301,7 @@ The depth map is Google's plane-based encoding decoded to a per-pixel distance g
 * **Building geometry drifts between captures** (facades from re-captures of the same street differ by a couple of meters), so don't treat facade distances as survey-grade.
 
 ## Tests
-A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract that our log-analyzer tooling parses, and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need only the packages in `requirements.txt` plus `pytest`:
+A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract shared by the writer and the [log analyzer](#log-analyzer), and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need only the packages in `requirements.txt` plus `pytest`:
 
 ```bash
 pip3 install -r requirements.txt -r requirements-dev.txt

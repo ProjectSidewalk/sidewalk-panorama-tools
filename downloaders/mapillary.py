@@ -12,7 +12,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .common import DownloadResult
+from .common import DownloadResult, atomic_output_path
 
 GRAPH_API_BASE = 'https://graph.mapillary.com'
 TOKEN_ENV_VAR = 'MAPILLARY_ACCESS_TOKEN'
@@ -49,9 +49,11 @@ def download_single_pano(storage_path, pano_info):
 
     token = os.environ.get(TOKEN_ENV_VAR)
     if not token:
-        # The orchestrator filters Mapillary panos out when the token is unset, so this shouldn't be reached.
-        logging.error("Mapillary token not set (%s); cannot download %s", TOKEN_ENV_VAR, pano_id)
-        return DownloadResult.failure
+        # A property of the RUN, not of this pano, so it raises rather than returning failure (#41):
+        # filter_supported_sources drops Mapillary panos when the token is unset so this shouldn't be
+        # reached, but if it ever is, ledgering would blacklist the city's whole corpus over a missing
+        # environment variable.
+        raise RuntimeError("%s is not set; cannot download Mapillary pano %s" % (TOKEN_ENV_VAR, pano_id))
 
     # Context-managed so the per-pano connection pool is released deterministically, not at GC (#51).
     with _session() as session:
@@ -60,30 +62,38 @@ def download_single_pano(storage_path, pano_info):
             params={'fields': 'thumb_original_url', 'access_token': token},
             timeout=30,
         )
-        if meta_resp.status_code != 200:
-            logging.error("Mapillary metadata request for %s failed: %s %s",
-                          pano_id, meta_resp.status_code, meta_resp.text[:200])
+        if meta_resp.status_code == 404:
+            # The Graph API doesn't know this id: a permanent property of the pano, so it ledgers (#41).
+            logging.error("Mapillary has no image %s (404)", pano_id)
             return DownloadResult.failure
+        # Anything else non-200 is a condition of the RUN, not of this pano - 401/403 is an expired or
+        # revoked token, and 429/5xx have already exhausted the retry adapter above. Raising retries the
+        # pano next run; returning failure would ledger it permanently, so one night with a bad token
+        # would blacklist every Mapillary pano in the city (#41).
+        meta_resp.raise_for_status()
 
         try:
             image_url = meta_resp.json().get('thumb_original_url')
         except ValueError:
+            # A proxy error page or a body truncated mid-flight - transient, so let it propagate (#41).
             logging.error("Mapillary metadata response for %s was not valid JSON", pano_id)
-            return DownloadResult.failure
+            raise
 
         if not image_url:
+            # Mapillary knows the image but publishes no original-resolution rendition: permanent.
             logging.error("Mapillary metadata for %s missing thumb_original_url", pano_id)
             return DownloadResult.failure
 
         image_resp = session.get(image_url, stream=True, timeout=120)
-        if image_resp.status_code != 200:
-            logging.error("Mapillary image download for %s failed: %s",
-                          pano_id, image_resp.status_code)
-            return DownloadResult.failure
+        # The signed URL is short-lived, so a non-200 here is a stale URL or a CDN hiccup, never a property
+        # of the pano - the metadata request above already proved the imagery exists (#41).
+        image_resp.raise_for_status()
 
-        with open(out_image_name, 'wb') as f:
-            for chunk in image_resp.iter_content(chunk_size=1 << 16):
-                if chunk:
-                    f.write(chunk)
-    os.chmod(out_image_name, 0o664)
+        # .part + rename: iter_content can die mid-stream (reset connection, full store), and a truncated
+        # .jpg left at the final path is reported as a completed download by every later run.
+        with atomic_output_path(out_image_name) as tmp_path:
+            with open(tmp_path, 'wb') as f:
+                for chunk in image_resp.iter_content(chunk_size=1 << 16):
+                    if chunk:
+                        f.write(chunk)
     return DownloadResult.success
