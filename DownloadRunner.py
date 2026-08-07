@@ -442,11 +442,6 @@ def main(argv=None):
         print("WARNING: --min-depth-runtime has no effect %s; no time will be reserved for the depth phase."
               % ("with --skip-depth" if args.skip_depth else "without --max-runtime"))
 
-    print(args.d)
-    print(args.s)
-    print(args.c)
-    print(args.all_panos)
-
     # exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
     os.makedirs(args.s, exist_ok=True)
 
