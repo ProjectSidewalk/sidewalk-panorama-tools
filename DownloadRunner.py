@@ -4,7 +4,10 @@ import argparse
 import http.client
 import json
 import logging
+import logging.handlers
 import os
+import signal
+import sys
 import time
 from datetime import datetime
 from os.path import exists
@@ -46,11 +49,40 @@ print(all_panos)
 if not os.path.exists(storage_location):
     os.makedirs(storage_location)
 
+
+def configure_logging(log_path):
+    """Set up run-wide logging to log_path (scrape.log on the pano store).
+
+    Rotation (10 MB x 3) bounds growth now that the file persists across runs instead of dying with the
+    container; each DEBUG record is a synchronous write over sshfs, which is also why urllib3's per-request
+    chatter is capped at WARNING. If the log file itself can't be opened, fall back to stderr with one loud
+    warning rather than killing the scrape: the log is evidence, not cargo.
+    """
+    try:
+        handler = logging.handlers.RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
+        fallback_error = None
+    except OSError as e:
+        handler = logging.StreamHandler()
+        fallback_error = e
+    handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+    if fallback_error is not None:
+        logging.warning("Could not open %s (%s); logging to stderr for this run", log_path, fallback_error)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+
 # scrape.log lives on the pano store next to log.csv, NOT the CWD: in Docker the CWD is /app inside the
 # container, so a relative path would discard the log - and every per-pano failure detail - when the container
-# exits (#49). Configured once here, before any phase, because logging.basicConfig silently no-ops on the
-# second call: the depth phase's records must not depend on the image phase having set logging up.
-logging.basicConfig(filename=os.path.join(storage_location, 'scrape.log'), level=logging.DEBUG)
+# exits (#49). Configured once here at startup so every part of the run logs to the same file - including a
+# crash in the pano-list fetch below, which happens before any phase's own code gets a chance to run.
+configure_logging(os.path.join(storage_location, 'scrape.log'))
+
+# docker stop sends SIGTERM, which CPython by default dies from without running finally blocks - taking the
+# log.csv evidence row with it (#49). Translate it into a SystemExit carrying the conventional 128+15 code, so
+# cleanup runs and the exit still reads as a signal death.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
@@ -230,8 +262,27 @@ def download_panorama_images(storage_path, pano_infos, run_start_time=None, max_
 
 
 # Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration. Positional, parsed by
-# our log-analyzer tooling.
+# our log-analyzer tooling. The full column table lives in README.md's "Ops notes".
 LOG_CSV_FIELD_COUNT = 18
+
+
+def write_log_csv_row(fields):
+    """Append one run's row to log.csv, blank-padded to the full 18 columns.
+
+    Blank means the phase never finished - visibly missing data, not a fake zero. If the append itself fails
+    (the classic cause: the sshfs store went away mid-run), the joined row is printed to stderr before the
+    exception escapes, so this run's counts survive somewhere cron can mail.
+    """
+    assert len(fields) <= LOG_CSV_FIELD_COUNT, \
+        "log.csv row has %d fields, more than the %d the analyzer parses: %r" \
+        % (len(fields), LOG_CSV_FIELD_COUNT, fields)
+    row = ",".join(str(f) for f in fields + [''] * (LOG_CSV_FIELD_COUNT - len(fields)))
+    try:
+        with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+            log.write("\n" + row)
+    except BaseException:
+        print("Failed to append this run's row to log.csv; it was: %s" % row, file=sys.stderr)
+        raise
 
 
 def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, max_runtime_minutes=None,
@@ -279,21 +330,26 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
 
         fields.append(int(round((depth_end_time - start_time).total_seconds() / 60.0)))
     finally:
-        fields += [''] * (LOG_CSV_FIELD_COUNT - len(fields))
-        with open(os.path.join(storage_location, "log.csv"), 'a') as log:
-            log.write("\n" + ",".join(str(f) for f in fields))
+        write_log_csv_row(fields)
 
 
 # Access Project Sidewalk API to get Pano IDs for city
 print("Fetching pano-ids")
 
-if pano_metadata_csv is not None:
-    pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
-else:
-    pano_infos = fetch_pano_ids_from_webserver()
-
-pano_infos = filter_supported_sources(pano_infos)
-image_pano_infos = select_image_panos(pano_infos, all_panos)
+try:
+    if pano_metadata_csv is not None:
+        pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
+    else:
+        pano_infos = fetch_pano_ids_from_webserver()
+    pano_infos = filter_supported_sources(pano_infos)
+    image_pano_infos = select_image_panos(pano_infos, all_panos)
+except BaseException:
+    # A crash before the scrape starts - a webserver outage being the single most likely nightly failure - must
+    # still leave both kinds of evidence (#49): the traceback in scrape.log, and a blank-padded log.csv row
+    # whose real timestamp shows a run started and produced nothing.
+    logging.exception("Run crashed before the scrape started")
+    write_log_csv_row([str(datetime.now())])
+    raise
 
 # Uncomment this to test on a smaller subset of the pano_info.
 # import random
@@ -306,4 +362,10 @@ print("Panos: %d supported, %d eligible for image download, %d GSV panos eligibl
 
 # Use pano_id list and associated info to gather panos from respective APIs
 print("Fetching Panoramas")
-run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes, max_depth_requests)
+try:
+    run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes, max_depth_requests)
+except BaseException:
+    # run_scraper_and_log_results's own finally has already written the evidence row; this puts the traceback -
+    # otherwise stderr-only, the exact channel that dies with the container - into scrape.log too (#49).
+    logging.exception("Run failed")
+    raise
