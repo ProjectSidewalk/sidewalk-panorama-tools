@@ -1,6 +1,7 @@
 """Tests for gsv.download_depth_maps: ledger semantics, error taxonomy, budgets, and artifact output."""
 
 import csv
+import logging
 import os
 import sys
 from datetime import datetime, timedelta
@@ -37,6 +38,10 @@ def read_ledger(storage):
 
 def artifact_path(storage, pano_id):
     return os.path.join(storage, pano_id[:2], pano_id + gsv.DEPTH_ARTIFACT_SUFFIX)
+
+
+def full_disk(*args, **kwargs):
+    raise OSError(28, 'No space left on device')
 
 
 def test_success_saves_artifact_and_ledgers(tmp_path, fake_streetview):
@@ -200,11 +205,7 @@ def test_storage_failure_is_transient_not_fatal(tmp_path, fake_streetview, monke
     """
     storage = str(tmp_path)
     fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
-
-    def boom(*args, **kwargs):
-        raise OSError(28, 'No space left on device')
-
-    monkeypatch.setattr(gsv, '_write_depth_artifact', boom)
+    monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
 
     assert gsv.download_depth_maps(storage, pano_infos('abcdef')) == (0, 1, 0, 1)
     # Not ledgered, so the pano retries once there's space again.
@@ -243,13 +244,16 @@ def test_unreadable_ledger_skips_the_phase_without_re_requesting_everything(tmp_
     assert calls == []
 
 
-def test_unwritable_ledger_skips_the_phase_without_crashing(tmp_path, fake_streetview, monkeypatch):
+def test_unwritable_ledger_skips_the_phase_without_crashing(tmp_path, fake_streetview, monkeypatch, capsys):
     """A store that's full or read-only at phase start must not take the run down with it either."""
     storage = str(tmp_path)
     monkeypatch.setattr(gsv.csv, 'writer', lambda *args, **kwargs: _FullDiskWriter())
 
     # Writing the ledger header is the first thing the phase does on a fresh store.
     assert gsv.download_depth_maps(storage, pano_infos('aaaaaa')) == (0, 0, 0, 0)
+    # Carries the WARNING token so an ops grep for storage trouble matches this at-start message the same as
+    # the mid-run ones - a store unmounted before the run is likelier than one filling during it.
+    assert 'WARNING' in capsys.readouterr().out
 
 
 def test_circuit_breaker_stops_the_phase(tmp_path, fake_streetview, monkeypatch):
@@ -324,6 +328,78 @@ def test_block_stop_still_blames_google(tmp_path, fake_streetview, capsys):
     out = capsys.readouterr().out
     assert 'WARNING' in out
     assert 'Google stopped answering' in out
+
+
+def test_failures_then_runtime_expiry_still_warn_on_stdout(tmp_path, fake_streetview, monkeypatch, capsys,
+                                                           caplog):
+    """Depth runs last and shares --max-runtime, so a typical depth window is minutes: the store fills, a few
+    panos fail, and the clock runs out long before the breaker's threshold. That must not read as a clean
+    budget stop (#60 review, IMPORTANT 2)."""
+    storage = str(tmp_path)
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+    monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+
+    start = datetime.now()
+    minutes = iter(range(0, 1000, 2))
+
+    class TickingClock:
+        """Each budget check sees two more minutes elapsed: three failures land before the budget trips."""
+        @staticmethod
+        def now():
+            return start + timedelta(minutes=next(minutes))
+
+    monkeypatch.setattr(gsv, 'datetime', TickingClock)
+
+    with caplog.at_level(logging.DEBUG):
+        gsv.download_depth_maps(storage, many_pano_infos(50), run_start_time=start, max_runtime_minutes=5)
+
+    out = capsys.readouterr().out
+    assert 'Max runtime' in out
+    assert 'WARNING' in out
+    assert 'No space left on device' in out
+    assert 'stop_reason=max-runtime' in caplog.text
+
+
+def test_failures_then_request_budget_still_warn_on_stdout(tmp_path, fake_streetview, monkeypatch, capsys,
+                                                           caplog):
+    """Same shape as the runtime budget: failures followed by a max_requests stop must still warn."""
+    storage = str(tmp_path)
+
+    def find(pano_id, **kwargs):
+        raise requests.ConnectionError('network down')
+
+    fake_streetview.find_panorama_by_id = find
+
+    with caplog.at_level(logging.DEBUG):
+        gsv.download_depth_maps(storage, many_pano_infos(50), max_requests=3)
+
+    out = capsys.readouterr().out
+    assert 'Max depth requests' in out
+    assert 'WARNING' in out
+    assert 'network down' in out
+    assert 'stop_reason=max-requests' in caplog.text
+
+
+def test_self_heal_ledger_failures_are_not_silent(tmp_path, fake_streetview, monkeypatch, capsys):
+    """Panos whose artifacts exist but whose ledger write fails used to produce zero stdout at all - a
+    completely full store looked like a healthy, fully-backfilled city (#60 review, IMPORTANT 3)."""
+    storage = str(tmp_path)
+    with open(os.path.join(storage, gsv.DEPTH_LOG_FILENAME), 'w', newline='') as f:
+        f.write('pano_id,status\n')
+    infos = many_pano_infos(40)
+    for info in infos:
+        path = artifact_path(storage, info['pano_id'])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(b'placeholder')
+    monkeypatch.setattr(gsv.csv, 'writer', lambda *args, **kwargs: _FullDiskWriter())
+
+    result = gsv.download_depth_maps(storage, infos)
+
+    out = capsys.readouterr().out
+    assert result == (0, 0, 40, 40)
+    assert 'WARNING' in out
+    assert 'No space left on device' in out
 
 
 @pytest.mark.parametrize('error', [
