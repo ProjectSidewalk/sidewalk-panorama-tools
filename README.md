@@ -86,6 +86,53 @@ python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbu
 
 **Note** We have noticed some error in the y-position of labels on the panorama. We believe that this either comes from a bug in the GSV API, or it may be there there is some metadata that Google is not providing us. The errors are relatively small and in the y-direction. As of Apr 2023 we are working on an alternative cropper that attempts to correct for these errors, but it is in development. The version here should work pretty well for now though!
 
+## Log analyzer
+
+`log_analyzer/analyze.py` monitors the nightly scrape across every city. It pulls each city's `log.csv` off the pano store over SFTP and flags the ones that look broken. Nothing is downloaded by the scraper itself — this is an ops tool you run from a workstation or a cron box, not something the Docker image needs.
+
+It needs only `pandas` (already in `requirements.txt`) plus the `sftp` client binary (`openssh-client`).
+
+Connection settings are read from the environment, or the matching flag. Host and base path are required and have no defaults — a wrong default would silently analyze the wrong store:
+
+| Variable | Flag | |
+|---|---|---|
+| `PS_SFTP_HOST` | `--host` | **required** — host, or an `~/.ssh/config` `Host` alias |
+| `PS_SFTP_BASE` | `--base` | **required** — remote directory holding the per-city folders |
+| `PS_SFTP_USER` | `--user` | optional — omit when the ssh config supplies it |
+| `PS_SFTP_PORT` | `--port` | optional — omit for 22 |
+| `PS_SFTP_KEY`  | `--key`  | optional — omit to let ssh choose (ssh config / agent) |
+
+```bash
+export PS_SFTP_HOST=... PS_SFTP_BASE=... PS_SFTP_USER=... PS_SFTP_PORT=... PS_SFTP_KEY=~/.ssh/...
+
+python3 log_analyzer/analyze.py                    # download all city logs, then analyze
+python3 log_analyzer/analyze.py --no-download      # re-analyze the local cache
+python3 log_analyzer/analyze.py --city seattle-wa  # one city
+python3 log_analyzer/analyze.py --stale-days 5     # custom staleness threshold
+```
+
+Setting up an `~/.ssh/config` `Host` alias is the tidiest option: with the user, port, and key declared there, only `PS_SFTP_HOST` and `PS_SFTP_BASE` are needed.
+
+Exit status is `1` when any city has a CRITICAL issue, so cron's mail-on-failure does the alerting. Downloaded logs are cached in `log_analyzer/logs/` (gitignored).
+
+`log_analyzer/cities.csv` maps `city_id` → display name; each `city_id` must match that city's folder name on the pano store exactly. Add a row when a new city is deployed.
+
+**Checks:**
+
+| Level | Condition |
+|-------|-----------|
+| 🔴 CRITICAL | Log download failed, or the file is missing/empty/unparseable |
+| 🔴 CRITICAL | Last log entry is more than `--stale-days` days old (default 3) |
+| 🟡 WARNING | `image_fail` growing by ≥20/day (7-day average) — new panos failing |
+| 🟡 WARNING | Zero new images for 30 consecutive days, after a period that had some (regression) |
+| 🟡 WARNING | A recent run took >3× the historical median runtime |
+| 🟡 WARNING | ≥3 of the last 7 runs ended early (blank columns) |
+| 🔵 INFO | Multiple runs logged on the same calendar day |
+
+A healthy mature city looks like: `image_success` small or zero most days, stable `image_fail`, `image_skip` ≈ `image_total`. The column layout the analyzer parses is the 18-field table under [Ops notes](#ops-notes); blank fields are read as missing data, never as `0`, so a run that crashed can't be mistaken for a quiet one. `log.csv` is written without a header — the header row in production files is added by hand during city setup — so the analyzer accepts files with or without one.
+
+The analyzer uses `sftp -b -` (batch mode via stdin) rather than `scp` because the store runs a restricted SFTP subsystem that doesn't speak the SCP wire protocol; newer `scp` clients default to SFTP-over-SSH and fail with `mtime.sec not present`.
+
 ## Definitions of variables found in APIs
 
 ### Downloader: /adminapi/panos
@@ -202,7 +249,7 @@ The phase is serial — one metadata request in flight at a time, unlike the ima
 * Unresolved panos are shuffled each run. Iteration order is otherwise stable, so a cluster of panos that fail every time would monopolise `--max-depth-requests` run after run and the backfill would never reach anything behind it.
 * **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs will show large failure numbers that are entirely normal. The success/failure/unavailable split is printed to stdout and `scrape.log` (which lives next to `log.csv` under the storage root); `log.csv` keeps its 18-column positional shape, so there was no room for a separate column.
 * Storage or ledger write failures (a full or unmounted store) are treated as transient per-pano failures and retried next run — the phase deliberately never lets them escape. Even if a run does crash between phases, `log.csv` still gets a single full-width row: fields are accumulated in memory and written once in a `finally`, with completed phases' counts kept and never-finished phases left blank (not fake zeros).
-* **The `log.csv` columns.** Each run appends one row of 18 positional comma-separated fields (no header), parsed by our `scraper-log-analyzer` tooling. Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata phase, a stub since Google killed that endpoint in 2022 — kept so the column positions never shift:
+* **The `log.csv` columns.** Each run appends one row of 18 positional comma-separated fields (no header), parsed by the [log analyzer](#log-analyzer). Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata phase, a stub since Google killed that endpoint in 2022 — kept so the column positions never shift:
 
   | # | field | notes |
   |---|-------|-------|
@@ -238,7 +285,7 @@ The depth map is Google's plane-based encoding decoded to a per-pixel distance g
 * **Building geometry drifts between captures** (facades from re-captures of the same street differ by a couple of meters), so don't treat facade distances as survey-grade.
 
 ## Tests
-A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract that our log-analyzer tooling parses, and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need only the packages in `requirements.txt` plus `pytest`:
+A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract shared by the writer and the [log analyzer](#log-analyzer), and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need only the packages in `requirements.txt` plus `pytest`:
 
 ```bash
 pip3 install -r requirements.txt -r requirements-dev.txt
