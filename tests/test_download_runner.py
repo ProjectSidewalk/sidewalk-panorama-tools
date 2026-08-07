@@ -1,18 +1,17 @@
-"""Tests for DownloadRunner.py: subprocess runs of the whole script, plus in-process calls via a fixture.
+"""Tests for DownloadRunner.py: subprocess runs of the whole script, plus in-process calls.
 
 Subprocess tests: the unsupported-source pano CSV filters every pano out before any phase runs, so those runs
 exercise argument parsing, phase orchestration, and log.csv writing with no network I/O. The gsv-source CSVs
 feed the budget tests: those runs stub the per-pano download (via a driver script for subprocess runs) and cap
 the depth phase at 0 requests, so they count what the image phase actually downloads — still no network I/O.
 
-In-process tests: DownloadRunner is a script whose whole flow runs at import time, so importing it with a
-controlled argv — after replacing downloaders.download_pano, which it binds by `from downloaders import ...` —
-drives the real CSV → filter → phase call sites network-free and leaves the module in hand for calling
-download_panorama_images directly.
+In-process tests: since #52.1 the module imports inertly (argv, filesystem, logging, and signal setup all live
+in main()), so tests import it normally and either call main() with a controlled argv — after replacing
+DownloadRunner.download_pano, bound at its import by `from downloaders import ...` — or call the phase
+functions directly with plain arguments.
 """
 
 import ast
-import importlib.util
 import json
 import logging
 import logging.handlers
@@ -23,6 +22,7 @@ import sys
 import time
 
 import downloaders
+import DownloadRunner
 
 import pytest
 
@@ -243,7 +243,9 @@ def _fake_download_pano(storage_path, pano_info):
 
 downloaders.download_pano = _fake_download_pano
 sys.argv = ['DownloadRunner.py'] + sys.argv[1:]
-runpy.run_path(%(runner)r)
+# run_name='__main__' so the script's `if __name__ == '__main__'` guard fires - this driver exists to
+# exercise true script-style execution.
+runpy.run_path(%(runner)r, run_name='__main__')
 ''' % {'repo_root': REPO_ROOT, 'runner': RUNNER}
 
 
@@ -363,9 +365,9 @@ def test_all_panos_widens_the_image_phase_only(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _isolate_process_state():
-    """Importing DownloadRunner configures process-wide state (root logger handlers, urllib3's level, the
-    SIGTERM handler); snapshot and restore it around every test so the in-process imports below can't leak
-    into each other or into the rest of the suite."""
+    """Calling DownloadRunner.main() (or configure_logging directly) mutates process-wide state - root logger
+    handlers, urllib3's level, the SIGTERM handler; snapshot and restore it around every test so the
+    in-process calls below can't leak into each other or into the rest of the suite."""
     root = logging.getLogger()
     prior_handlers = list(root.handlers)
     prior_level = root.level
@@ -399,25 +401,22 @@ def recording_download_pano(calls):
     return fake_download_pano
 
 
-def load_runner(monkeypatch, tmp_path, csv_rows, *extra_args):
-    """Import DownloadRunner.py in-process and return (module, storage path, per-pano call log).
+def call_main(monkeypatch, tmp_path, csv_rows, *extra_args):
+    """Run DownloadRunner.main() in-process and return (storage path, per-pano call log).
 
-    downloaders.download_pano is replaced with a recording stub BEFORE the import so DownloadRunner's
-    `from downloaders import download_pano` binds the stub; the import-time run then exercises the real
-    run_scraper_and_log_results call site with zero network I/O.
+    DownloadRunner.download_pano - the name its image loop calls, bound at its import by
+    `from downloaders import ...` - is replaced with a recording stub first, so the real
+    fetch -> filter -> run_scraper_and_log_results orchestration runs with zero network I/O.
     """
     csv_path = tmp_path / 'panos.csv'
     csv_path.write_text(CSV_HEADER + csv_rows)
     storage = tmp_path / 'storage'
     calls = []
-    monkeypatch.setattr(downloaders, 'download_pano', recording_download_pano(calls))
-    monkeypatch.setattr(sys, 'argv', ['DownloadRunner.py', 'sidewalk-test.invalid', str(storage),
-                                      '-c', str(csv_path), '--skip-depth', *extra_args])
+    monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
     monkeypatch.chdir(tmp_path)  # keep any stray relative paths inside this test's tmp dir
-    spec = importlib.util.spec_from_file_location('download_runner_under_test', RUNNER)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module, storage, calls
+    DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path), '--skip-depth',
+                         *extra_args])
+    return storage, calls
 
 
 def gsv_pano_infos():
@@ -425,15 +424,14 @@ def gsv_pano_infos():
 
 
 def test_exhausted_budget_stops_download_panorama_images_before_the_first_pano(monkeypatch, tmp_path):
-    runner, _, _ = load_runner(monkeypatch, tmp_path, '')  # empty CSV: the import-time run is a no-op
     image_storage = tmp_path / 'image_storage'
     image_storage.mkdir()
     calls = []
-    monkeypatch.setattr(runner, 'download_pano', recording_download_pano(calls))
+    monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
 
-    result = runner.download_panorama_images(str(image_storage), gsv_pano_infos(),
-                                             run_start_monotonic=time.monotonic() - 600,
-                                             max_runtime_minutes=5.0)
+    result = DownloadRunner.download_panorama_images(str(image_storage), gsv_pano_infos(),
+                                                     run_start_monotonic=time.monotonic() - 600,
+                                                     max_runtime_minutes=5.0)
 
     assert calls == [], "an exhausted budget must break the loop before any download"
     assert result == (0, 0, 0, 0, 0)
@@ -441,15 +439,14 @@ def test_exhausted_budget_stops_download_panorama_images_before_the_first_pano(m
 
 def test_no_budget_lets_download_panorama_images_process_every_pano(monkeypatch, tmp_path):
     """max_runtime_minutes=None means unlimited, however stale the start time is."""
-    runner, _, _ = load_runner(monkeypatch, tmp_path, '')
     image_storage = tmp_path / 'image_storage'
     image_storage.mkdir()
     calls = []
-    monkeypatch.setattr(runner, 'download_pano', recording_download_pano(calls))
+    monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
 
-    result = runner.download_panorama_images(str(image_storage), gsv_pano_infos(),
-                                             run_start_monotonic=time.monotonic() - 600,
-                                             max_runtime_minutes=None)
+    result = DownloadRunner.download_panorama_images(str(image_storage), gsv_pano_infos(),
+                                                     run_start_monotonic=time.monotonic() - 600,
+                                                     max_runtime_minutes=None)
 
     assert calls == GSV_PANO_IDS
     assert result == (3, 0, 0, 0, 3)
@@ -461,7 +458,7 @@ def test_max_runtime_flag_reaches_the_image_download_loop(monkeypatch, tmp_path,
     This drives the real call site in run_scraper_and_log_results: a conflict resolution that drops
     max_runtime_minutes there (e.g. passes None) downloads all three panos and fails here.
     """
-    _, storage, calls = load_runner(monkeypatch, tmp_path, GSV_CSV_ROWS, '--max-runtime', '0')
+    storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--max-runtime', '0')
 
     assert calls == []
     assert 'IMAGEDOWNLOAD: Max runtime' in capsys.readouterr().out
@@ -470,7 +467,7 @@ def test_max_runtime_flag_reaches_the_image_download_loop(monkeypatch, tmp_path,
 
 
 def test_without_max_runtime_every_supported_pano_is_downloaded(monkeypatch, tmp_path):
-    _, storage, calls = load_runner(monkeypatch, tmp_path, GSV_CSV_ROWS)
+    storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
 
     assert calls == GSV_PANO_IDS
     with open(storage / 'pano_id_log.csv') as f:
@@ -491,27 +488,12 @@ def test_broken_scrape_log_falls_back_to_stderr_and_the_run_survives(tmp_path):
 
 
 # ---------------------------------------------------------------------------------------------------------
-# In-process tests. DownloadRunner is a script - argparse and the whole run execute at import - so the
-# fixture points argv at the all-filtered pano CSV, making the import itself a harmless network-free
-# mini-run, then hands the module over for direct calls with monkeypatched collaborators.
+# In-process tests. Since #52.1 the module imports inertly, so these call the extracted functions directly
+# with plain arguments; _isolate_process_state (autouse) undoes the process-wide state that calling main()
+# or configure_logging() configures.
 # ---------------------------------------------------------------------------------------------------------
 
-@pytest.fixture
-def download_runner(tmp_path, monkeypatch, _isolate_process_state):
-    """Import DownloadRunner in-process; _isolate_process_state undoes the process-wide state the import
-    configures (root logger, urllib3 level, SIGTERM) after the test."""
-    monkeypatch.setattr(sys, 'argv',
-                        ['DownloadRunner.py', 'sidewalk-test.invalid', str(tmp_path / 'import_storage'),
-                         '-c', write_pano_csv(tmp_path), '--skip-depth'])
-    sys.modules.pop('DownloadRunner', None)
-    try:
-        import DownloadRunner
-        yield DownloadRunner
-    finally:
-        sys.modules.pop('DownloadRunner', None)
-
-
-def test_depth_crash_keeps_the_image_phases_real_counts(download_runner, tmp_path, monkeypatch):
+def test_depth_crash_keeps_the_image_phases_real_counts(tmp_path, monkeypatch):
     """misaugstad's review concern on #49: a depth-phase crash must not discard what the image phase downloaded.
 
     The subprocess crash tests can't cover this - their filtered-out panos make every completed count 0, which
@@ -519,16 +501,15 @@ def test_depth_crash_keeps_the_image_phases_real_counts(download_runner, tmp_pat
     """
     storage = tmp_path / 'crash_storage'
     storage.mkdir()
-    monkeypatch.setattr(download_runner, 'storage_location', str(storage))
-    monkeypatch.setattr(download_runner, 'download_panorama_images', lambda *a, **k: (3, 1, 2, 4, 10))
+    monkeypatch.setattr(DownloadRunner, 'download_panorama_images', lambda *a, **k: (3, 1, 2, 4, 10))
 
     def depth_boom(*args, **kwargs):
         raise RuntimeError('depth phase exploded')
-    monkeypatch.setattr(download_runner.gsv, 'download_depth_maps', depth_boom)
+    monkeypatch.setattr(DownloadRunner.gsv, 'download_depth_maps', depth_boom)
 
     panos = [{'pano_id': 'testPanoIdAAAAAAAAAAAA', 'source': 'gsv'}]
     with pytest.raises(RuntimeError, match='depth phase exploded'):
-        download_runner.run_scraper_and_log_results(panos, panos, skip_depth=False)
+        DownloadRunner.run_scraper_and_log_results(str(storage), panos, panos, skip_depth=False)
 
     fields = last_log_fields(storage)
     assert len(fields) == 18
@@ -537,22 +518,23 @@ def test_depth_crash_keeps_the_image_phases_real_counts(download_runner, tmp_pat
     assert fields[12:] == [''] * 6  # depth and total never finished - blank, not fabricated
 
 
-def test_an_overwide_log_row_errors_instead_of_silently_widening(download_runner):
+def test_an_overwide_log_row_errors_instead_of_silently_widening(tmp_path):
     """Blank-padding computes 18 - len(fields); a future 19th field must fail loudly, not no-op the padding."""
     with pytest.raises(AssertionError):
-        download_runner.write_log_csv_row(['x'] * 19)
+        DownloadRunner.write_log_csv_row(str(tmp_path), ['x'] * 19)
 
 
-def test_log_row_write_failure_dumps_the_row_to_stderr(download_runner, tmp_path, monkeypatch, capsys):
+def test_log_row_write_failure_dumps_the_row_to_stderr(tmp_path, capsys):
     """If appending to log.csv itself fails (unmounted store), the counts must survive somewhere cron can mail."""
-    monkeypatch.setattr(download_runner, 'storage_location', str(tmp_path / 'gone' / 'unmounted'))
     with pytest.raises(OSError):
-        download_runner.write_log_csv_row(['2026-08-06 01:00:00', 1, 2])
+        DownloadRunner.write_log_csv_row(str(tmp_path / 'gone' / 'unmounted'), ['2026-08-06 01:00:00', 1, 2])
     assert '2026-08-06 01:00:00,1,2' in capsys.readouterr().err
 
 
-def test_urllib3_is_quieted_and_scrape_log_rotates(download_runner):
+def test_urllib3_is_quieted_and_scrape_log_rotates(tmp_path):
     """DEBUG-level urllib3 chatter means one synchronous sshfs write per HTTP request and unbounded growth."""
+    DownloadRunner.configure_logging(str(tmp_path / 'scrape.log'))
+
     assert logging.getLogger('urllib3').getEffectiveLevel() == logging.WARNING
     rotating = [h for h in logging.getLogger().handlers
                 if isinstance(h, logging.handlers.RotatingFileHandler)]
@@ -561,10 +543,18 @@ def test_urllib3_is_quieted_and_scrape_log_rotates(download_runner):
     assert rotating[0].backupCount == 3
 
 
-def test_sigterm_is_translated_to_systemexit_so_the_evidence_row_still_lands(download_runner):
-    """docker stop sends SIGTERM; CPython's default dies without running finally blocks, losing the row (#49)."""
+def test_sigterm_is_translated_to_systemexit_so_the_evidence_row_still_lands(tmp_path, monkeypatch):
+    """docker stop sends SIGTERM; CPython's default dies without running finally blocks, losing the row (#49).
+
+    The handler is installed by main() - not by importing the module (test_import_is_side_effect_free pins
+    the other side of that seam) - so run a harmless all-filtered mini-scrape to get it installed.
+    """
+    monkeypatch.chdir(tmp_path)
+    DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', write_pano_csv(tmp_path),
+                         '--skip-depth'])
+
     handler = signal.getsignal(signal.SIGTERM)
-    assert callable(handler), "DownloadRunner must install a SIGTERM handler"
+    assert callable(handler), "DownloadRunner.main() must install a SIGTERM handler"
     with pytest.raises(SystemExit) as excinfo:
         handler(signal.SIGTERM, None)
     assert excinfo.value.code == 143  # the conventional 128+15, what a signal death reports anyway

@@ -34,45 +34,19 @@ def _reservation_minutes(value):
     return minutes
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
-parser.add_argument('s', help='storage_path - location to store scraped panos')
-parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
-parser.add_argument('--all-panos', action='store_true', help='Download images for all panos that users visited, even if no labels were added on them. Does not affect depth, which always covers every pano.')
-parser.add_argument('--skip-depth', action='store_true', help='Skip downloading GSV depth maps (downloaded by default via the streetlevel library).')
-parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
-parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
-parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
-# Deprecated no-op, kept for one release so existing invocations don't crash argparse.
-parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
-args = parser.parse_args()
-
-sidewalk_server_fqdn = args.d
-storage_location = args.s
-pano_metadata_csv = args.c
-all_panos = args.all_panos
-skip_depth = args.skip_depth
-max_runtime_minutes = args.max_runtime
-min_depth_runtime = args.min_depth_runtime
-max_depth_requests = args.max_depth_requests
-
-if args.attempt_depth:
-    print("WARNING: --attempt-depth is deprecated and ignored; depth download is now on by default "
-          "(use --skip-depth to disable).")
-
-# min_depth_runtime > 0 implies the operator typed the flag (the default is 0), so tell them when the
-# combination they ran it in means it cannot do anything.
-if min_depth_runtime > 0 and (max_runtime_minutes is None or skip_depth):
-    print("WARNING: --min-depth-runtime has no effect %s; no time will be reserved for the depth phase."
-          % ("with --skip-depth" if skip_depth else "without --max-runtime"))
-
-print(sidewalk_server_fqdn)
-print(storage_location)
-print(pano_metadata_csv)
-print(all_panos)
-
-# exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
-os.makedirs(storage_location, exist_ok=True)
+def build_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
+    parser.add_argument('s', help='storage_path - location to store scraped panos')
+    parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
+    parser.add_argument('--all-panos', action='store_true', help='Download images for all panos that users visited, even if no labels were added on them. Does not affect depth, which always covers every pano.')
+    parser.add_argument('--skip-depth', action='store_true', help='Skip downloading GSV depth maps (downloaded by default via the streetlevel library).')
+    parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
+    parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
+    parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
+    # Deprecated no-op, kept for one release so existing invocations don't crash argparse.
+    parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
+    return parser
 
 
 def configure_logging(log_path):
@@ -96,20 +70,6 @@ def configure_logging(log_path):
     if fallback_error is not None:
         logging.warning("Could not open %s (%s); logging to stderr for this run", log_path, fallback_error)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
-
-
-# scrape.log lives on the pano store next to log.csv, NOT the CWD: in Docker the CWD is /app inside the
-# container, so a relative path would discard the log - and every per-pano failure detail - when the container
-# exits (#49). Configured once here at startup so every part of the run logs to the same file - including a
-# crash in the pano-list fetch below, which happens before any phase's own code gets a chance to run.
-configure_logging(os.path.join(storage_location, 'scrape.log'))
-
-# docker stop sends SIGTERM, which CPython by default dies from without running finally blocks - taking the
-# log.csv evidence row with it (#49). Translate it into a SystemExit carrying the conventional 128+15 code, so
-# cleanup runs and the exit still reads as a signal death.
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-
-print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
 
 def progress_check(csv_pano_log_path):
@@ -136,9 +96,9 @@ def fetch_pano_ids_csv(metadata_csv_path):
     return df_meta
 
 
-def fetch_pano_ids_from_webserver():
+def fetch_pano_ids_from_webserver(sidewalk_server_fqdn):
     """
-    Fetch pano metadata from /adminapi/panos.
+    Fetch pano metadata from /adminapi/panos on sidewalk_server_fqdn.
 
     Each entry is a dict with: pano_id, width, height, lat, lng, camera_heading, camera_pitch, source, has_labels.
 
@@ -309,8 +269,8 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
 LOG_CSV_FIELD_COUNT = 18
 
 
-def write_log_csv_row(fields):
-    """Append one run's row to log.csv, blank-padded to the full 18 columns.
+def write_log_csv_row(storage_location, fields):
+    """Append one run's row to <storage_location>/log.csv, blank-padded to the full 18 columns.
 
     Blank means the phase never finished - visibly missing data, not a fake zero. If the append itself fails
     (the classic cause: the sshfs store went away mid-run), the joined row is printed to stderr before the
@@ -328,8 +288,8 @@ def write_log_csv_row(fields):
         raise
 
 
-def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, max_runtime_minutes=None,
-                                max_depth_requests=None, min_depth_runtime=0.0):
+def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_infos, skip_depth,
+                                max_runtime_minutes=None, max_depth_requests=None, min_depth_runtime=0.0):
     """Run the image and depth phases and append this run's row to log.csv.
 
     Fields are accumulated as each phase completes and the row is written once, in a finally, padded to the
@@ -337,6 +297,7 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
     completed phase's counts (a failure in the depth phase must not discard what the image phase downloaded),
     while the phases that never finished stay visibly blank rather than turning into fake zeros (#49).
 
+    @param storage_location Root of the pano store (log.csv and the ledgers live here).
     @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
     @param depth_pano_infos Every supported pano; the depth phase filters this to source == 'gsv' itself.
     @param min_depth_runtime Minutes of max_runtime_minutes reserved for the depth phase (see the flag's help).
@@ -411,43 +372,101 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
 
         fields.append(int(round((depth_end_time - start_time).total_seconds() / 60.0)))
     finally:
-        write_log_csv_row(fields)
+        write_log_csv_row(storage_location, fields)
 
 
-# Access Project Sidewalk API to get Pano IDs for city
-print("Fetching pano-ids")
+def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_panos=False, skip_depth=False,
+        max_runtime_minutes=None, min_depth_runtime=0.0, max_depth_requests=None):
+    """Fetch the pano list, narrow it, and run the scrape - the whole job, minus process-level setup.
 
-try:
-    if pano_metadata_csv is not None:
-        pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
-    else:
-        pano_infos = fetch_pano_ids_from_webserver()
-    pano_infos = filter_supported_sources(pano_infos)
-    image_pano_infos = select_image_panos(pano_infos, all_panos)
-except BaseException:
-    # A crash before the scrape starts - a webserver outage being the single most likely nightly failure - must
-    # still leave both kinds of evidence (#49): the traceback in scrape.log, and a blank-padded log.csv row
-    # whose real timestamp shows a run started and produced nothing.
-    logging.exception("Run crashed before the scrape started")
-    write_log_csv_row([str(datetime.now())])
-    raise
+    main() owns argv parsing, directory creation, logging, and signal handling; this seam takes plain
+    arguments (defaults mirror the flags') so tests can drive the real fetch -> filter -> phase orchestration
+    in-process (#52.1).
+    """
+    # Access Project Sidewalk API to get Pano IDs for city
+    print("Fetching pano-ids")
 
-# Uncomment this to test on a smaller subset of the pano_info.
-# import random
-# n = 3
-# if len(pano_infos) > n:
-#     pano_infos = random.sample(pano_infos, n)
+    try:
+        if pano_metadata_csv is not None:
+            pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
+        else:
+            pano_infos = fetch_pano_ids_from_webserver(sidewalk_server_fqdn)
+        pano_infos = filter_supported_sources(pano_infos)
+        image_pano_infos = select_image_panos(pano_infos, all_panos)
+    except BaseException:
+        # A crash before the scrape starts - a webserver outage being the single most likely nightly failure -
+        # must still leave both kinds of evidence (#49): the traceback in scrape.log, and a blank-padded
+        # log.csv row whose real timestamp shows a run started and produced nothing.
+        logging.exception("Run crashed before the scrape started")
+        write_log_csv_row(storage_location, [str(datetime.now())])
+        raise
 
-print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth"
-      % (len(pano_infos), len(image_pano_infos), sum(1 for p in pano_infos if p.get('source') == 'gsv')))
+    # Uncomment this to test on a smaller subset of the pano_info.
+    # import random
+    # n = 3
+    # if len(pano_infos) > n:
+    #     pano_infos = random.sample(pano_infos, n)
 
-# Use pano_id list and associated info to gather panos from respective APIs
-print("Fetching Panoramas")
-try:
-    run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes=max_runtime_minutes,
-                                max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime)
-except BaseException:
-    # run_scraper_and_log_results's own finally has already written the evidence row; this puts the traceback -
-    # otherwise stderr-only, the exact channel that dies with the container - into scrape.log too (#49).
-    logging.exception("Run failed")
-    raise
+    print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth"
+          % (len(pano_infos), len(image_pano_infos), sum(1 for p in pano_infos if p.get('source') == 'gsv')))
+
+    # Use pano_id list and associated info to gather panos from respective APIs
+    print("Fetching Panoramas")
+    try:
+        run_scraper_and_log_results(storage_location, image_pano_infos, pano_infos, skip_depth,
+                                    max_runtime_minutes=max_runtime_minutes,
+                                    max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime)
+    except BaseException:
+        # run_scraper_and_log_results's own finally has already written the evidence row; this puts the
+        # traceback - otherwise stderr-only, the exact channel that dies with the container - into scrape.log
+        # too (#49).
+        logging.exception("Run failed")
+        raise
+
+
+def main(argv=None):
+    """Process-level setup, then run(): everything a `python3 DownloadRunner.py ...` invocation does.
+
+    Exceptions propagate (the interpreter prints the traceback and exits 1) and argparse errors exit 2,
+    exactly as the pre-#52 module-scope script behaved.
+    """
+    args = build_parser().parse_args(argv)
+
+    if args.attempt_depth:
+        print("WARNING: --attempt-depth is deprecated and ignored; depth download is now on by default "
+              "(use --skip-depth to disable).")
+
+    # min_depth_runtime > 0 implies the operator typed the flag (the default is 0), so tell them when the
+    # combination they ran it in means it cannot do anything.
+    if args.min_depth_runtime > 0 and (args.max_runtime is None or args.skip_depth):
+        print("WARNING: --min-depth-runtime has no effect %s; no time will be reserved for the depth phase."
+              % ("with --skip-depth" if args.skip_depth else "without --max-runtime"))
+
+    print(args.d)
+    print(args.s)
+    print(args.c)
+    print(args.all_panos)
+
+    # exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
+    os.makedirs(args.s, exist_ok=True)
+
+    # scrape.log lives on the pano store next to log.csv, NOT the CWD: in Docker the CWD is /app inside the
+    # container, so a relative path would discard the log - and every per-pano failure detail - when the
+    # container exits (#49). Configured once here at startup so every part of the run logs to the same file -
+    # including a crash in the pano-list fetch, which happens before any phase's own code gets a chance to run.
+    configure_logging(os.path.join(args.s, 'scrape.log'))
+
+    # docker stop sends SIGTERM, which CPython by default dies from without running finally blocks - taking the
+    # log.csv evidence row with it (#49). Translate it into a SystemExit carrying the conventional 128+15 code,
+    # so cleanup runs and the exit still reads as a signal death.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+
+    print("Starting run with pano list fetched from %s and destination path %s" % (args.d, args.s))
+
+    run(sidewalk_server_fqdn=args.d, storage_location=args.s, pano_metadata_csv=args.c,
+        all_panos=args.all_panos, skip_depth=args.skip_depth, max_runtime_minutes=args.max_runtime,
+        min_depth_runtime=args.min_depth_runtime, max_depth_requests=args.max_depth_requests)
+
+
+if __name__ == '__main__':
+    main()
