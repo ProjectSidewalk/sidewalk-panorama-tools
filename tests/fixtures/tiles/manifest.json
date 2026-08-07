@@ -1,0 +1,121 @@
+{
+ "pano": "Svz6_7CwyijJ6RgjWROnCw",
+ "old_pano": "cFou_FaIrbvqN0kcS5QuxA",
+ "z4_cell": [
+  4,
+  5
+ ],
+ "tiles": {
+  "z5_full_8_10.jpg": {
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 8,
+   "y": 10,
+   "body_size": [
+    512,
+    512
+   ],
+   "bytes": 14822
+  },
+  "z5_degraded_8_11.jpg": {
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 8,
+   "y": 11,
+   "body_size": [
+    256,
+    256
+   ],
+   "bytes": 5808
+  },
+  "z5_full_9_10.jpg": {
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 9,
+   "y": 10,
+   "body_size": [
+    512,
+    512
+   ],
+   "bytes": 11451
+  },
+  "z5_degraded_9_11.jpg": {
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 9,
+   "y": 11,
+   "body_size": [
+    256,
+    256
+   ],
+   "bytes": 4207
+  },
+  "z4_cover_4_5.jpg": {
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 4,
+   "x": 4,
+   "y": 5,
+   "body_size": [
+    512,
+    512
+   ],
+   "bytes": 17371,
+   "note": "covers the same pano region as the four zoom-5 tiles above; cbk zoom 4 is 8192 wide, so it is also the half-scale ground truth for a degraded zoom-5 body"
+  },
+  "z3_edge_bottom.jpg": {
+   "pano": "cFou_FaIrbvqN0kcS5QuxA",
+   "zoom": 3,
+   "x": 6,
+   "y": 3,
+   "body_size": [
+    512,
+    512
+   ],
+   "bytes": 6488,
+   "note": "bottom-right tile of a 3328x1664 zoom-3 image; 383 of its 512 rows are black padding, so Google pads short edge tiles rather than returning a true-size body"
+  },
+  "z3_blank_out_of_range.jpg": {
+   "pano": "cFou_FaIrbvqN0kcS5QuxA",
+   "zoom": 3,
+   "x": 20,
+   "y": 0,
+   "body_size": [
+    512,
+    512
+   ],
+   "bytes": 1184,
+   "note": "x=20 is far past the 7-column zoom-3 grid; Google still answers 200 OK with a valid, all-black image/jpeg - which is why an out-of-range grid cannot be detected tile by tile"
+  }
+ },
+ "captured_utc": "2026-08-07T17:42:45Z",
+ "degraded_body_is_the_same_cell_at_half_scale": {
+  "8_10": {
+   "body": [
+    512,
+    512
+   ],
+   "vs_z4_quadrant_mean_abs_diff": 1.99
+  },
+  "8_11": {
+   "body": [
+    256,
+    256
+   ],
+   "vs_z4_quadrant_mean_abs_diff": 0.0
+  },
+  "9_10": {
+   "body": [
+    512,
+    512
+   ],
+   "vs_z4_quadrant_mean_abs_diff": 1.77
+  },
+  "9_11": {
+   "body": [
+    256,
+    256
+   ],
+   "vs_z4_quadrant_mean_abs_diff": 0.0
+  }
+ }
+}

@@ -1,7 +1,10 @@
 # Google Street View panorama downloader.
 #
-# Stitches 512x512 tiles from Google's undocumented CBK endpoint into a single equirectangular JPEG, and fetches
-# depth maps from Google's photometa endpoint via the streetlevel library (see download_depth_maps).
+# Stitches tiles from Google's undocumented CBK endpoint into a single equirectangular JPEG, and fetches depth
+# maps from Google's photometa endpoint via the streetlevel library (see download_depth_maps).
+#
+# CBK nominally serves 512x512 tiles, but answers some requests with a half-size 256x256 body instead, choosing
+# per request - so one pano's fan-out gets a mix. See _stitch_cell_size and tests/test_gsv_tile_contract.py.
 
 import asyncio
 import collections
@@ -82,9 +85,23 @@ TILE_SIZE = 512
 _CBK_BASE_URL = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4'
 
 # Tile failures worth retrying. aiohttp.web.HTTPServerError used to head this tuple, but it is a SERVER-side
-# response class that client code never raises (#52 item 3) - importing aiohttp.web for it was pure cost.
-_TILE_RETRY_ERRORS = (aiohttp.ClientError, aiohttp.ClientResponseError, aiohttp.ServerConnectionError,
-                      aiohttp.ServerDisconnectedError, aiohttp.ClientHttpProxyError)
+# response class that client code never raises (#52 item 3) - importing aiohttp.web for it was pure cost. The
+# rest of the old tuple was redundant: ClientResponseError, ServerConnectionError, ServerDisconnectedError and
+# ClientHttpProxyError all derive from ClientError. asyncio.TimeoutError does NOT, though, so a plain request
+# timeout used to get zero retries - and now that one failed tile fails the whole pano, that costs a download.
+_TILE_RETRY_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError)
+
+# A stitched frame with more black than this is not imagery, it is a grid bug. Nothing below the stitch can
+# see one: an out-of-range tile is answered 200 OK with a valid ALL-BLACK image/jpeg (pinned on real bytes in
+# tests/test_gsv_tile_contract.py), so a wrong grid looks exactly like a successful download tile by tile.
+# Calibration: the repo's real 13312x6656 samples/sample_pano.jpg is 0.0% exactly-black, while the failure
+# modes are 75% (#44's zoom-3-in-a-full-canvas, and a degraded body pasted without scaling) to 100% (every
+# requested tile out of range). Exact zeros only, so genuinely dark night imagery is not caught by this.
+STITCH_MAX_BLACK_FRACTION = 0.5
+
+
+class StitchedPanoMostlyBlackError(Exception):
+    """The stitch produced a frame that is mostly black - a tile-grid fault, not imagery."""
 
 
 def _pano_max_zoom(width):
@@ -92,7 +109,13 @@ def _pano_max_zoom(width):
 
     At zoom z a pano is at most 2**z x 2**(z-1) tiles of 512px, so the max zoom is the smallest z whose tile
     budget covers the reported width: 16384 -> 5, 13312 -> 5, 3328 (an old zoom-3-native pano) -> 3.
+    Cross-checked against Google's own per-zoom image_sizes for 13 live panos spanning 2007-2025 in
+    tests/test_gsv_stitcher.py's OBSERVED_PHOTOMETA, including the four- and five-level panos that make the
+    inference load-bearing.
     """
+    if width is None or width <= 0:
+        # math.log2 would raise a bare "math domain error" that says nothing about which pano died.
+        raise ValueError('pano width must be positive to infer a zoom level, got %r' % (width,))
     return max(0, int(math.ceil(math.log2(width / float(TILE_SIZE)))))
 
 
@@ -162,32 +185,115 @@ def _partition_tile_results(tiles, results):
     """
     ok, failed = [], []
     for (x, y, _url), result in zip(tiles, results):
-        if isinstance(result, BaseException):
+        if isinstance(result, Exception):
             failed.append(((x, y), result))
+        elif isinstance(result, BaseException):
+            # Not Exception: a CancelledError captured here and re-raised from download_single_pano would
+            # sail past download_panorama_images' `except Exception` and abort the whole run rather than
+            # one pano. Let it be what it is.
+            raise result
         else:
             ok.append(result)
     return ok, failed
 
 
+def _tile_body_size(data):
+    """The tile body's pixel dimensions, read from the JPEG header without decoding the image."""
+    with Image.open(BytesIO(data)) as tile_image:
+        return tile_image.size
+
+
+def _stitch_cell_size(tile_results):
+    """The pixel size each grid cell occupies in the stitch: the largest body this fan-out returned.
+
+    cbk answers the same zoom-5 grid position with either a full 512x512 body or a load-shed 256x256 one,
+    picking per request, so a single pano's fan-out routinely gets a MIX of the two (captured as real bytes
+    in tests/fixtures/tiles/, pinned by tests/test_gsv_tile_contract.py). A degraded body is the same grid
+    cell rendered at half scale - proven there against the zoom-4 tile covering the same region - so the
+    cells still tile the pano; they just arrive at different scales and have to be brought to a common one.
+
+    Taking the largest keeps the best imagery the fan-out actually got. When every body is degraded the cell
+    is simply smaller, so the canvas is a quarter of the size and one final LANCZOS pass does the upscaling,
+    instead of 512 per-tile ones.
+    """
+    if not tile_results:
+        return (TILE_SIZE, TILE_SIZE)
+    sizes = [_tile_body_size(data) for _x, _y, data in tile_results]
+    return (max(s[0] for s in sizes), max(s[1] for s in sizes))
+
+
+def _undersized_tile_count(tile_results):
+    """How many bodies came back below the NOMINAL tile size - i.e. how much of this pano is load-shed.
+
+    Measured against TILE_SIZE rather than against _stitch_cell_size: when every body in a fan-out is
+    degraded the cell size is itself 256, so nothing would look undersized relative to its neighbours even
+    though the whole pano arrived at half resolution. Degraded means "smaller than what cbk serves when it
+    is healthy", which is a fixed 512.
+    """
+    return sum(1 for _x, _y, data in tile_results
+               if min(_tile_body_size(data)) < TILE_SIZE)
+
+
 def _stitch_tiles(tile_results, zoom_dims, final_dims):
     """Paste tiles into a zoom-native canvas, crop to the zoom's true size, and scale to the reported dims.
 
-    Tiles are pasted at their grid offsets WITHOUT resizing: Google normally pads edge tiles to 512, but if
-    a variant ever returns a true-size edge tile, resizing would stretch the edge geometry while a plain
-    paste stays correct either way. The final resize is what the pre-#44 code's `if zoom == 3` no-op resize
-    was reaching for: downstream consumers (label pixel coords, depth-map alignment) assume the JPEG is at
-    the server-reported dimensions, so a zoom-3 download is upscaled rather than saved at native size.
+    Every body is brought to the cell size (see _stitch_cell_size) before pasting. That is what the pre-#44
+    `img.resize((512, 512))` was for, though nothing said so: cbk hands back half-size bodies for some grid
+    positions, and pasting one at the full grid pitch leaves three quarters of its cell black - saved as
+    success, exactly the corruption #44 is about. Google never returns a true-size short edge body, so an
+    undersized body always means the load-shed rendering: a real bottom-edge tile arrives as a full 512 body
+    black-padded below (tests/fixtures/tiles/z3_edge_bottom.jpg), and the crop below is what removes that
+    padding.
+
+    The final resize is what the pre-#44 code's `if zoom == 3` no-op resize was reaching for: downstream
+    consumers (label pixel coords, depth-map alignment) assume the JPEG is at the server-reported
+    dimensions, so a zoom-3 download is upscaled rather than saved at native size.
     """
+    cell_w, cell_h = _stitch_cell_size(tile_results)
     tiles_x = int(math.ceil(zoom_dims[0] / float(TILE_SIZE)))
     tiles_y = int(math.ceil(zoom_dims[1] / float(TILE_SIZE)))
-    canvas = Image.new('RGB', (tiles_x * TILE_SIZE, tiles_y * TILE_SIZE))
+    canvas = Image.new('RGB', (tiles_x * cell_w, tiles_y * cell_h))
     for x, y, data in tile_results:
         with Image.open(BytesIO(data)) as tile_image:
-            canvas.paste(tile_image, (TILE_SIZE * x, TILE_SIZE * y))
-    image = canvas.crop((0, 0, zoom_dims[0], zoom_dims[1]))
+            body = (tile_image if tile_image.size == (cell_w, cell_h)
+                    else tile_image.resize((cell_w, cell_h), Image.LANCZOS))
+            canvas.paste(body, (cell_w * x, cell_h * y))
+    # zoom_dims is in nominal 512-grid pixels; the canvas is in cell pixels, so scale the crop to match.
+    crop_w = int(round(zoom_dims[0] * cell_w / float(TILE_SIZE)))
+    crop_h = int(round(zoom_dims[1] * cell_h / float(TILE_SIZE)))
+    image = canvas.crop((0, 0, crop_w, crop_h))
     if image.size != tuple(final_dims):
         image = image.resize(final_dims, Image.LANCZOS)
     return image
+
+
+def _black_fraction(image):
+    """Exact fraction of black pixels in the frame, via the luma histogram.
+
+    Counted over every pixel rather than a downsampled probe, and by histogram rather than a numpy array so
+    it stays a C-level pass with no second copy of a 16384x8192 frame. Both alternatives to an exact count
+    are wrong in a way that matters here: an averaging downscale blends a black region into its neighbours
+    and reports "slightly dark" for a frame that is three-quarters missing, while a NEAREST probe aliases on
+    exactly the sort of regular black/imagery pattern a tiling bug produces.
+    """
+    luma = image.convert('L')
+    return luma.histogram()[0] / float(luma.width * luma.height)
+
+
+def _reject_mostly_black_stitch(image, pano_id, zoom):
+    """Refuse to save a stitch that is mostly black - the one place a tile-grid fault is visible.
+
+    Raised, not returned as failure: like a failed tile, this must not be ledgered downloaded=1 (the skip
+    check treats any saved file as done forever), and raising keeps it transient so a fixed grid or a
+    recovered endpoint re-attempts the pano instead of blacklisting it.
+    """
+    black = _black_fraction(image)
+    if black > STITCH_MAX_BLACK_FRACTION:
+        logging.error("IMAGEDOWNLOAD: pano %s: stitched frame at zoom %s is %.0f%% black (limit %.0f%%); "
+                      "refusing to save - the tile grid or the tile responses are wrong, not the imagery",
+                      pano_id, zoom, 100 * black, 100 * STITCH_MAX_BLACK_FRACTION)
+        raise StitchedPanoMostlyBlackError(
+            'pano %s: stitched frame at zoom %s is %.0f%% black' % (pano_id, zoom, 100 * black))
 
 
 def _save_pano_image(image, out_image_name):
@@ -308,7 +414,17 @@ def download_single_pano(storage_path, pano_info):
                       pano_id, len(failed), len(tiles), x, y, first_error)
         raise first_error
 
+    degraded = _undersized_tile_count(ok)
+    if degraded:
+        # Not a failure: a load-shed body is the same cell at half scale, so the stitch is still correct and
+        # full-frame - just softer than it should be. Worth saying out loud, because it is invisible in the
+        # saved JPEG (which is at the reported dims either way) and it means the store is quietly
+        # accumulating half-resolution panos while Google is shedding load.
+        logging.warning("IMAGEDOWNLOAD: pano %s: %d/%d tiles came back degraded (below the nominal %dpx "
+                        "tile); stitching at reduced resolution", pano_id, degraded, len(ok), TILE_SIZE)
+
     image = _stitch_tiles(ok, _dims_at_zoom(final_image_width, final_image_height, zoom), final_im_dimension)
+    _reject_mostly_black_stitch(image, pano_id, zoom)
     _save_pano_image(image, out_image_name)
     return DownloadResult.success
 
