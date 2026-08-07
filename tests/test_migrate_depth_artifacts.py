@@ -36,8 +36,14 @@ def write_v1(storage, pano_id='abcdef', depth=None):
 
 
 def write_v2(storage, pano_id='abcdef'):
-    gsv._write_depth_artifact(storage, pano_id, make_pano(V1_DEPTH.astype(np.float64), heading=0.5))
-    return os.path.join(storage, pano_id[:2], pano_id + gsv.DEPTH_ARTIFACT_SUFFIX)
+    """Write an artifact exactly as the v2 (post-#58, pre-#56) code did: JPEG column order, format_version=2,
+    no plane fields. Hand-rolled rather than written via the current writer, so this fixture stays the
+    historical v2 format no matter how the live format evolves."""
+    path = v1_path(storage, pano_id)
+    with open(path, 'wb') as f:
+        np.savez_compressed(f, depth=V1_DEPTH[:, ::-1], heading=0.5, pitch=float('nan'), roll=1.5,
+                            format_version=2)
+    return path
 
 
 def read_bytes(path):
@@ -56,7 +62,10 @@ def test_v1_artifact_is_flipped_and_stamped(tmp_path):
         # The literal JPEG column order, not an expression restating the implementation.
         np.testing.assert_allclose(d['depth'], [[100.0, 2.0], [200.0, 3.0]])
         assert d['depth'].dtype == np.float32
-        assert int(d['format_version']) == gsv.DEPTH_ARTIFACT_FORMAT_VERSION
+        # A literal 2, NOT the current format version: this script implements exactly the v1 -> v2 x-flip.
+        # It can never mint a v3 artifact - the plane fields v3 adds (#56) were not stored pre-v3, so they
+        # can only come from a re-fetch.
+        assert int(d['format_version']) == 2
         # The orientation scalars ride along unchanged.
         assert float(d['heading']) == pytest.approx(0.5)
         assert np.isnan(float(d['pitch']))
@@ -66,8 +75,24 @@ def test_v1_artifact_is_flipped_and_stamped(tmp_path):
 
 
 def test_v2_artifact_is_untouched_byte_for_byte(tmp_path):
+    """v2 artifacts are skipped - deliberately NOT upgraded to v3: the plane data v3 adds was never stored,
+    so a v2 store can only reach v3 by deleting the artifacts (and their depth_log.csv rows) and re-fetching."""
     storage = str(tmp_path)
     path = write_v2(storage)
+    before = read_bytes(path)
+
+    summary = migrate_depth_artifacts.migrate_store(storage)
+
+    assert (summary.scanned, summary.migrated, summary.skipped, summary.failed) == (1, 0, 1, 0)
+    assert read_bytes(path) == before
+
+
+def test_current_version_artifact_is_untouched_byte_for_byte(tmp_path):
+    """Whatever the live writer produces today must also be left alone."""
+    storage = str(tmp_path)
+    pano = make_pano(V1_DEPTH.astype(np.float64), heading=0.5)
+    gsv._write_depth_artifact(storage, 'ghijkl', pano, pano.planes)
+    path = os.path.join(storage, 'gh', 'ghijkl' + gsv.DEPTH_ARTIFACT_SUFFIX)
     before = read_bytes(path)
 
     summary = migrate_depth_artifacts.migrate_store(storage)

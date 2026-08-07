@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -59,6 +60,12 @@ def test_success_saves_artifact_and_ledgers(tmp_path, fake_streetview):
         # Stored in the JPEG's column order, i.e. streetlevel's array flipped in x (see #58).
         np.testing.assert_allclose(d['depth'], [[4.5, -1.0], [10.0, 3.25]])
         assert float(d['heading']) == pytest.approx(1.25)
+        # v3: the plane list rides along (#56) - indices in payload order (index 0 exactly where the
+        # stored depth is -1), normals and offsets verbatim. Version pinned as a literal.
+        np.testing.assert_array_equal(d['plane_indices'], [[1, 0], [1, 1]])
+        assert d['planes_n'].shape == (2, 3)
+        np.testing.assert_allclose(d['planes_d'], [0.0, 2.5])
+        assert int(d['format_version']) == 3
     assert read_ledger(storage) == [['pano_id', 'status'], ['abcdef', 'saved']]
     # No leftover temp file from the atomic write.
     assert not os.path.exists(path + '.part')
@@ -126,6 +133,33 @@ def test_non_2d_depth_payload_ledgers_unavailable_and_never_retries(tmp_path, fa
     # Resolved, so a later run must skip it without a new request.
     assert gsv.download_depth_maps(storage, pano_infos('abcdef')) == (0, 0, 1, 1)
     assert calls == ['abcdef']
+
+
+@pytest.mark.parametrize('planes', [
+    None,
+    SimpleNamespace(indices=np.zeros((9, 9), dtype=np.uint8),
+                    normals=np.zeros((1, 3), dtype=np.float32), distances=np.zeros(1, dtype=np.float32)),
+], ids=['missing', 'shape-mismatch'])
+def test_depth_present_but_planes_missing_is_transient(tmp_path, fake_streetview, planes):
+    """A depth raster with no matching plane data can only mean the payload path or wire format drifted
+    upstream. Depth exists, so 'unavailable' would be a lie - the pano must count as a transient failure,
+    stay unledgered, and retry next run (#56)."""
+    storage = str(tmp_path)
+    calls = []
+
+    def find(pano_id, **kwargs):
+        calls.append(pano_id)
+        return make_pano(default_depth_array(), planes=planes)
+
+    fake_streetview.find_panorama_by_id = find
+
+    assert gsv.download_depth_maps(storage, pano_infos('abcdef')) == (0, 1, 0, 1)
+    assert read_ledger(storage) == [['pano_id', 'status']]
+    assert not os.path.isfile(artifact_path(storage, 'abcdef'))
+
+    # Not ledgered, so a later run tries again.
+    assert gsv.download_depth_maps(storage, pano_infos('abcdef')) == (0, 1, 0, 1)
+    assert calls == ['abcdef', 'abcdef']
 
 
 @pytest.mark.parametrize('error', [requests.ConnectionError('boom'), ValueError('not json'), RuntimeError('bug')])

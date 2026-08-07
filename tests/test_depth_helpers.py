@@ -1,14 +1,21 @@
-"""Tests for the depth-phase helpers: ledger reader, artifact writer, and HTTP session hardening."""
+"""Tests for the depth-phase helpers: ledger reader, payload decode, artifact writer, ground-plane
+derivation, and HTTP session hardening."""
 
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import requests
 from requests.adapters import HTTPAdapter
 
-from conftest import make_pano, posix_only
+from conftest import encode_depth_payload, make_pano, posix_only
 from downloaders import gsv
+
+
+def write_artifact(storage, pano_id, pano):
+    """Call the writer the way the phase does: with the planes bundle that arrived alongside the pano."""
+    gsv._write_depth_artifact(storage, pano_id, pano, pano.planes)
 
 
 class TestLoadDepthLog:
@@ -26,12 +33,78 @@ class TestLoadDepthLog:
         assert gsv._load_depth_log(str(path)) == {'aaaaaa'}
 
 
+class TestDecodeDepthPlanes:
+    """gsv._decode_depth_planes: the in-repo decode of Google's depth payload into the plane data
+    streetlevel's parser computes with and then discards (#56). Pure bytes-in/arrays-out - no streetlevel."""
+
+    PLANES = [{'n': [0.0, 0.0, 0.0], 'd': 0.0},           # index 0 = "no plane", never dereferenced
+              {'n': [0.5, 0.25, -1.5], 'd': 2.75},
+              {'n': [1.0, -2.0, 0.5], 'd': -4.5}]
+
+    def test_decodes_header_indices_and_planes(self):
+        payload = encode_depth_payload(self.PLANES, [0, 1, 2, 2, 1, 0], width=3, height=2)
+
+        planes = gsv._decode_depth_planes(payload)
+
+        assert planes.indices.dtype == np.uint8
+        np.testing.assert_array_equal(planes.indices, [[0, 1, 2], [2, 1, 0]])
+        assert planes.normals.dtype == np.float32
+        np.testing.assert_allclose(planes.normals, [p['n'] for p in self.PLANES], rtol=1e-6)
+        assert planes.distances.dtype == np.float32
+        np.testing.assert_allclose(planes.distances, [p['d'] for p in self.PLANES], rtol=1e-6)
+
+    def test_offset_is_read_as_uint8_even_when_the_first_index_is_nonzero(self):
+        """The wire format's offset is a uint8 at byte 7. streetlevel 0.12.10 misreads it as a uint16
+        spanning bytes 7-8, which only parses correctly when the first index byte happens to be 0 - real
+        payloads don't guarantee that, so our decode must not inherit the misreading."""
+        payload = encode_depth_payload(self.PLANES[:2], [1, 0, 1, 0], width=2, height=2)
+
+        planes = gsv._decode_depth_planes(payload)
+
+        np.testing.assert_array_equal(planes.indices, [[1, 0], [1, 0]])
+        np.testing.assert_allclose(planes.distances, [0.0, 2.75], rtol=1e-6)
+
+    def test_unpadded_base64_is_tolerated(self):
+        """Google serves the payload without base64 padding; streetlevel re-pads before decoding, and so
+        must we."""
+        payload = encode_depth_payload(self.PLANES, [0, 1, 2, 2, 1, 0], width=3, height=2)
+        stripped = payload.rstrip('=')
+
+        np.testing.assert_array_equal(gsv._decode_depth_planes(stripped).indices, [[0, 1, 2], [2, 1, 0]])
+
+    def test_truncated_payload_raises(self):
+        """A payload cut mid-plane-list must raise, not silently return short arrays that would then be
+        stored as a plausible-looking artifact."""
+        import base64
+        payload = encode_depth_payload(self.PLANES, [0, 1, 2, 2, 1, 0], width=3, height=2)
+        raw = base64.urlsafe_b64decode(payload)
+
+        truncated = base64.urlsafe_b64encode(raw[:-4]).decode()
+
+        with pytest.raises(ValueError):
+            gsv._decode_depth_planes(truncated)
+
+    def test_header_shorter_than_eight_bytes_raises(self):
+        import base64
+        with pytest.raises(ValueError):
+            gsv._decode_depth_planes(base64.urlsafe_b64encode(b'\x08\x00\x00').decode())
+
+    def test_empty_plane_list_yields_empty_arrays(self):
+        payload = encode_depth_payload([], [0, 0], width=2, height=1)
+
+        planes = gsv._decode_depth_planes(payload)
+
+        np.testing.assert_array_equal(planes.indices, [[0, 0]])
+        assert planes.normals.shape == (0, 3)
+        assert planes.distances.shape == (0,)
+
+
 class TestWriteDepthArtifact:
     def test_roundtrip_and_atomicity(self, tmp_path):
         storage = str(tmp_path)
         depth = np.array([[1.0, -1.0], [2.5, 3.5]], dtype=np.float64)
 
-        gsv._write_depth_artifact(storage, 'abcdef', make_pano(depth, heading=0.5, pitch=None, roll=1.5))
+        write_artifact(storage, 'abcdef', make_pano(depth, heading=0.5, pitch=None, roll=1.5))
 
         path = os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)
         assert os.path.isfile(path)
@@ -49,7 +122,7 @@ class TestWriteDepthArtifact:
     @posix_only
     def test_shard_dir_created_with_group_perms(self, tmp_path):
         storage = str(tmp_path)
-        gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
+        write_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
         mode = os.stat(os.path.join(storage, 'ab')).st_mode
         assert mode & 0o2777 == 0o2775
 
@@ -62,7 +135,7 @@ class TestWriteDepthArtifact:
         # Asymmetric in x so a mirror can't be missed: streetlevel's column order is [near, far].
         streetlevel_data = np.array([[2.0, 100.0], [3.0, 200.0]], dtype=np.float64)
 
-        gsv._write_depth_artifact(storage, 'abcdef', make_pano(streetlevel_data))
+        write_artifact(storage, 'abcdef', make_pano(streetlevel_data))
 
         path = os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)
         with np.load(path) as d:
@@ -71,12 +144,13 @@ class TestWriteDepthArtifact:
 
     def test_stamps_format_version(self, tmp_path):
         """Artifacts written before the #58 un-mirroring carry no version field; consumers use its presence to
-        tell a corrected artifact from a mirrored one."""
+        tell a corrected artifact from a mirrored one, and the value to tell plane-carrying v3 artifacts (#56)
+        from v2 ones. Pinned as a literal: asserting against the constant would pass trivially after any bump."""
         storage = str(tmp_path)
-        gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 2))))
+        write_artifact(storage, 'abcdef', make_pano(np.zeros((1, 2))))
         path = os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)
         with np.load(path) as d:
-            assert int(d['format_version']) == gsv.DEPTH_ARTIFACT_FORMAT_VERSION
+            assert int(d['format_version']) == 3 == gsv.DEPTH_ARTIFACT_FORMAT_VERSION
 
     def test_losing_the_shard_dir_race_is_not_an_error(self, tmp_path, monkeypatch):
         """Two processes (or the image and depth phases) can create the same shard dir concurrently; losing
@@ -95,7 +169,7 @@ class TestWriteDepthArtifact:
 
         monkeypatch.setattr(gsv.os.path, 'isdir', racy_isdir)
 
-        gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
+        write_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
 
         # The one-shot False must have been consumed by the guard at the shard dir — if any isdir call ever
         # interposes, this test would otherwise degrade into a passing no-op.
@@ -128,7 +202,7 @@ class TestWriteDepthArtifact:
         monkeypatch.setattr(gsv.os.path, 'isdir', racy_isdir)
         monkeypatch.setattr(gsv.os, 'chmod', other_users_dir_chmod)
 
-        gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
+        write_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
 
         assert guard_called == [shard_dir]
         assert os.path.isfile(os.path.join(shard_dir, 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX))
@@ -143,8 +217,146 @@ class TestWriteDepthArtifact:
         monkeypatch.setattr(gsv.np, 'savez_compressed', boom)
 
         with pytest.raises(OSError):
-            gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((2, 2))))
+            write_artifact(storage, 'abcdef', make_pano(np.zeros((2, 2))))
         assert os.listdir(os.path.join(storage, 'ab')) == []
+
+    def test_v3_stores_planes(self, tmp_path):
+        """v3 artifacts carry Google's plane list verbatim - per-pixel indices, normals, and offsets - which
+        v2 discarded (#56). A consumer can reconstruct camera height and ground tilt from these."""
+        storage = str(tmp_path)
+        depth = np.array([[-1.0, 4.5], [3.25, 10.0]])  # streetlevel (x-mirrored) order
+        planes = SimpleNamespace(indices=np.array([[1, 0], [2, 1]], dtype=np.uint8),  # payload order
+                                 normals=np.array([[0.0, 0.0, 0.0], [0.1, -0.2, -0.97], [0.7, 0.7, 0.0]]),
+                                 distances=np.array([0.0, 2.6, -8.0]))
+
+        gsv._write_depth_artifact(storage, 'abcdef', make_pano(depth, planes=planes), planes)
+
+        with np.load(os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)) as d:
+            assert d['plane_indices'].dtype == np.uint8
+            np.testing.assert_array_equal(d['plane_indices'], [[1, 0], [2, 1]])
+            assert d['planes_n'].dtype == np.float32
+            np.testing.assert_allclose(d['planes_n'], planes.normals, rtol=1e-6)
+            assert d['planes_d'].dtype == np.float32
+            np.testing.assert_allclose(d['planes_d'], planes.distances, rtol=1e-6)
+
+    def test_plane_indices_align_with_the_unmirrored_depth(self, tmp_path):
+        """The depth raster is stored x-flipped (streetlevel order -> JPEG order, #58), but plane indices
+        come from the raw payload, whose column order already IS the JPEG order - so they are stored
+        verbatim, no flip. Asymmetric fixture: flipping the indices too (the tempting 'consistency' bug)
+        breaks the invariant that index 0 sits exactly where the stored depth is -1."""
+        storage = str(tmp_path)
+        depth = np.array([[-1.0, 6.0, 7.0]])              # streetlevel order: no-plane pixel on the LEFT
+        indices = np.array([[1, 1, 0]], dtype=np.uint8)   # payload order: no-plane pixel on the RIGHT
+        planes = SimpleNamespace(indices=indices, normals=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+                                 distances=np.array([0.0, 2.5]))
+
+        gsv._write_depth_artifact(storage, 'abcdef', make_pano(depth, planes=planes), planes)
+
+        with np.load(os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)) as d:
+            np.testing.assert_array_equal(d['plane_indices'], [[1, 1, 0]])
+            np.testing.assert_array_equal(d['plane_indices'] == 0, d['depth'] == -1)
+
+    def test_planes_reconstruct_the_stored_depth(self, tmp_path):
+        """The operational definition of the stored frame: depth[r, c] == |d_i / (v(r, c) . n_i)| for
+        i = plane_indices[r, c] > 0, with v(r, c) the unit ray for theta = (h-r-0.5)/h*pi and
+        phi = (w-c-0.5)/w*2pi + pi/2. Same mirror fixture as tests/test_streetlevel_api.py: the magnitudes
+        encode the ray azimuth, so this fails if any stored field is flipped or the formula drifts."""
+        storage = str(tmp_path)
+        # streetlevel hands the decode back x-mirrored; payload/JPEG order is its flip (#58).
+        streetlevel_depth = np.array([[-1.0, 1.0, 3.0, -1.0]])
+        planes = SimpleNamespace(indices=np.array([[0, 1, 1, 0]], dtype=np.uint8),
+                                 normals=np.array([[0.0, 0.0, 0.0], [2.0, 1.0, 0.0]]),
+                                 distances=np.array([0.0, 1.5 * np.sqrt(2)]))
+
+        gsv._write_depth_artifact(storage, 'abcdef', make_pano(streetlevel_depth, planes=planes), planes)
+
+        with np.load(os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)) as d:
+            depth, indices = d['depth'], d['plane_indices']
+            normals, distances = d['planes_n'], d['planes_d']
+        h, w = depth.shape
+        reconstructed = np.full((h, w), -1.0)
+        for r in range(h):
+            theta = (h - r - 0.5) / h * np.pi
+            for c in range(w):
+                if indices[r, c] == 0:
+                    continue
+                phi = (w - c - 0.5) / w * 2 * np.pi + np.pi / 2
+                ray = (np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta))
+                reconstructed[r, c] = abs(distances[indices[r, c]] / np.dot(ray, normals[indices[r, c]]))
+        np.testing.assert_allclose(reconstructed, depth, rtol=1e-5)
+
+    @pytest.mark.parametrize('bad_planes', [
+        None,
+        SimpleNamespace(indices=np.zeros((5, 5), dtype=np.uint8),
+                        normals=np.zeros((1, 3), dtype=np.float32), distances=np.zeros(1, dtype=np.float32)),
+    ], ids=['missing', 'shape-mismatch'])
+    def test_missing_or_mismatched_planes_refuse_to_write(self, tmp_path, bad_planes):
+        """An artifact without matching plane fields would be a malformed v3: refuse before the .part file
+        is even opened, so nothing lands on the store."""
+        storage = str(tmp_path)
+
+        with pytest.raises(ValueError):
+            gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((2, 2)), planes=bad_planes),
+                                      bad_planes)
+
+        assert not os.path.exists(os.path.join(storage, 'ab'))
+
+
+class TestGroundPlane:
+    """ground_plane_from_artifact / camera_height_from_artifact: the derivation the artifact deliberately
+    does NOT bake in - the plane list is stored verbatim so the ground heuristic stays fixable in code,
+    unlike a scalar frozen into millions of .npz files."""
+
+    def artifact(self, indices, normals, distances):
+        return {'plane_indices': np.asarray(indices, dtype=np.uint8),
+                'planes_n': np.asarray(normals, dtype=np.float32),
+                'planes_d': np.asarray(distances, dtype=np.float32)}
+
+    def test_most_vertical_referenced_plane_wins(self):
+        artifact = self.artifact([[1, 2]],
+                                 [[0.0, 0.0, 0.0], [0.1, 0.0, -0.99], [1.0, 0.0, -1.0]],
+                                 [0.0, 2.5, 4.0])
+
+        normal, distance, index = gsv.ground_plane_from_artifact(artifact)
+
+        assert index == 1
+        length = np.linalg.norm([0.1, 0.0, -0.99])
+        assert distance == pytest.approx(2.5 / length)
+        np.testing.assert_allclose(normal, np.array([0.1, 0.0, -0.99]) / length, rtol=1e-6)
+
+    def test_sentinel_horizontal_and_unreferenced_planes_are_never_chosen(self):
+        # Plane 0 is the no-plane sentinel (vertical normal, but excluded); plane 1 is referenced but
+        # horizontal (a facade); plane 2 is perfectly vertical but no pixel references it.
+        artifact = self.artifact([[0, 1]],
+                                 [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                                 [9.0, 3.0, 2.5])
+
+        assert gsv.ground_plane_from_artifact(artifact) is None
+
+    def test_below_threshold_returns_none_and_threshold_is_tunable(self):
+        # Normal (2, 0, 1): verticality 1/sqrt(5) ~ 0.45, under the default 0.7 floor.
+        artifact = self.artifact([[1]], [[0.0, 0.0, 0.0], [2.0, 0.0, 1.0]], [0.0, 3.0])
+
+        assert gsv.ground_plane_from_artifact(artifact) is None
+        assert gsv.ground_plane_from_artifact(artifact, min_vertical=0.4)[2] == 1
+
+    def test_out_of_range_index_is_ignored(self):
+        artifact = self.artifact([[3, 1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5])
+
+        assert gsv.ground_plane_from_artifact(artifact)[2] == 1
+
+    def test_camera_height_is_offset_over_norm(self):
+        # Non-unit normal and negative d: height is |d| / ||n||. Sign-insensitive on purpose - the up/down
+        # sign convention of Google's frame is not something these helpers should have an opinion about.
+        artifact = self.artifact([[1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]], [0.0, -5.0])
+
+        assert gsv.camera_height_from_artifact(artifact) == pytest.approx(2.5)
+
+    def test_camera_height_default_when_no_ground(self):
+        artifact = self.artifact([[1]], [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], [0.0, 3.0])
+
+        assert gsv.camera_height_from_artifact(artifact) is None
+        assert gsv.camera_height_from_artifact(artifact, default=2.4) == 2.4
 
 
 class TestNormalizeProxies:

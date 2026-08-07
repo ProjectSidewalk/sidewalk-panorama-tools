@@ -5,7 +5,9 @@ streetlevel itself is never exercised: tests install a stub module so the suite 
 streetlevel's heavy dependency tree.
 """
 
+import base64
 import os
+import struct
 import sys
 import types
 from types import SimpleNamespace
@@ -24,7 +26,13 @@ posix_only = pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes / b
 
 @pytest.fixture
 def fake_streetview(monkeypatch):
-    """Install a stub streetlevel.streetview module and return it for per-test find_panorama_by_id stubbing."""
+    """Install a stub streetlevel.streetview module and return it for per-test find_panorama_by_id stubbing.
+
+    Production code reaches streetlevel through the gsv._fetch_pano_with_depth_planes seam (one photometa
+    request -> (pano, planes), #56), so the fixture also adapts that seam onto the stub: tests keep authoring
+    the familiar find_panorama_by_id, and the adapter reads the planes bundle off the pano object (make_pano
+    attaches one consistent with its depth array).
+    """
     streetview = types.ModuleType('streetlevel.streetview')
 
     def _unstubbed(*args, **kwargs):
@@ -35,15 +43,60 @@ def fake_streetview(monkeypatch):
     streetlevel.streetview = streetview
     monkeypatch.setitem(sys.modules, 'streetlevel', streetlevel)
     monkeypatch.setitem(sys.modules, 'streetlevel.streetview', streetview)
+
+    from downloaders import gsv
+
+    def _seam_adapter(pano_id, session):
+        pano = streetview.find_panorama_by_id(pano_id, download_depth=True, session=session)
+        return pano, (getattr(pano, 'planes', None) if pano is not None else None)
+
+    monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes', _seam_adapter, raising=False)
     return streetview
 
 
-def make_pano(depth_array=None, heading=1.25, pitch=0.02, roll=-0.01):
-    """Build an object shaped like streetlevel's StreetViewPanorama for the attributes the code reads."""
+def make_pano(depth_array=None, heading=1.25, pitch=0.02, roll=-0.01, planes='auto'):
+    """Build an object shaped like streetlevel's StreetViewPanorama for the attributes the code reads.
+
+    planes: the DepthPlanes-shaped bundle the fetch seam returns alongside the pano. 'auto' derives one
+    consistent with depth_array (see default_planes); None means the payload carried no plane data.
+    """
     depth = None if depth_array is None else SimpleNamespace(data=depth_array)
-    return SimpleNamespace(depth=depth, heading=heading, pitch=pitch, roll=roll)
+    if isinstance(planes, str) and planes == 'auto':
+        planes = None if depth_array is None else default_planes(depth_array)
+    return SimpleNamespace(depth=depth, heading=heading, pitch=pitch, roll=roll, planes=planes)
 
 
 def default_depth_array():
     """A small depth grid with ground distances and a -1 sky pixel, in streetlevel's float64 dtype."""
     return np.array([[-1.0, 4.5], [3.25, 10.0]], dtype=np.float64)
+
+
+def default_planes(depth_array):
+    """A plane bundle consistent with depth_array: index 0 (no plane) exactly where depth is -1, plane 1 - a
+    ground-like plane - everywhere else.
+
+    depth_array is in streetlevel's (x-mirrored) order; plane indices come from the raw payload, whose column
+    order is the x-flip of that (#58), so the indices here are flipped to payload order to keep the
+    invariant (plane_indices == 0) == (stored depth == -1) that the artifact writer preserves.
+    """
+    flipped = np.asarray(depth_array)[..., ::-1]
+    return SimpleNamespace(indices=np.where(flipped == -1, 0, 1).astype(np.uint8),
+                           normals=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, -1.0]], dtype=np.float32),
+                           distances=np.array([0.0, 2.5], dtype=np.float32))
+
+
+def encode_depth_payload(planes, indices, width, height):
+    """Encode a synthetic GSV depth payload from the documented wire layout.
+
+    Layout: uint8 header_size=8 | uint16 number_of_planes | uint16 width | uint16 height | uint8 offset=8,
+    then width*height uint8 per-pixel plane indices, then 4 float32 (nx, ny, nz, d) per plane, all
+    little-endian, urlsafe-base64 encoded. NB streetlevel 0.12.10 reads the offset as a uint16 spanning
+    bytes 7-8, so a payload fed to ITS parser needs indices[0] == 0 for the offset to parse as 8 under both
+    that reading and the true wire format's (see tests/test_streetlevel_api.py).
+
+    @param planes  [{'n': [nx, ny, nz], 'd': d}, ...] including the never-dereferenced index-0 entry.
+    @param indices Flat iterable of width*height per-pixel plane indices, payload order.
+    """
+    header = struct.pack('<BHHHB', 8, len(planes), width, height, 8)
+    plane_bytes = b''.join(struct.pack('<ffff', *p['n'], p['d']) for p in planes)
+    return base64.urlsafe_b64encode(header + bytes(indices) + plane_bytes).decode()
