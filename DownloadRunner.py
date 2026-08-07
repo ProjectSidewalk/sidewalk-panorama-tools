@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import math
 import os
+import random
 import signal
 import sys
 import time
@@ -76,9 +77,9 @@ def configure_logging(log_path):
 def progress_check(csv_pano_log_path):
     """Read the image ledger once: every ledgered pano id, plus the prior counters seeded into this run's.
 
-    A row means "attempted": downloaded == 1 counts as a prior success (skipped this run), 0 as a prior
-    failure; either way the pano is never re-attempted (README: resume semantics).
-    NB: This will not check if the failure was due to internet connection being unavailable etc. so use with caution.
+    A row means "resolved": downloaded == 1 counts as a prior success (skipped this run), 0 as a permanent
+    failure (the source has nothing for this pano); either way the pano is never re-attempted. Transient
+    failures are not ledgered at all (#41), so they are absent here and retry next run.
 
     Row-tolerant on the gsv._load_depth_log model: a line torn by a crash mid-append (or a float minted by
     the old rewrite path) is skipped, so a damaged ledger degrades to re-attempting a few panos instead of a
@@ -196,29 +197,39 @@ def select_image_panos(pano_infos, include_all_panos):
 
 def filter_supported_sources(pano_infos):
     """
-    Drop panos we can't download in this run, with a one-time warning per reason.
+    Drop panos we can't download in this run, preserving the server's ordering, with a one-time warning per
+    reason.
 
     Supported sources: gsv, mapillary (mapillary requires MAPILLARY_ACCESS_TOKEN). Filtered-out panos are NOT written to
     pano_id_log.csv, so a later run with the token / updated code can still pick them up.
+
+    Order-preserving on purpose (#40): the old implementation regrouped the list by source as a side effect
+    of bucketing for the warnings, which put every GSV pano ahead of every Mapillary one - on a city whose
+    GSV backlog exceeds --max-runtime, Mapillary then made zero progress, indefinitely and invisibly. A
+    filter has no business reordering its input; download_panorama_images shuffles what it actually attempts,
+    which is where starvation has to be prevented. The counts below exist only for the warnings.
     """
-    by_source = {}
+    source_counts = {}
     for p in pano_infos:
-        by_source.setdefault(p.get('source'), []).append(p)
+        source = p.get('source')
+        source_counts[source] = source_counts.get(source, 0) + 1
 
-    kept = list(by_source.pop('gsv', []))
-
-    mapillary_panos = by_source.pop('mapillary', [])
-    if mapillary_panos:
+    # Mapillary gets its own warning naming the missing token, so it is never also reported as an
+    # unsupported source - hence 'known' rather than reusing 'supported' in the loop below.
+    known = {'gsv', 'mapillary'}
+    supported = {'gsv'}
+    if source_counts.get('mapillary'):
         if mapillary.is_token_set():
-            kept.extend(mapillary_panos)
+            supported.add('mapillary')
         else:
             print("WARNING: %d Mapillary panos skipped — set %s to download them"
-                  % (len(mapillary_panos), mapillary.TOKEN_ENV_VAR))
+                  % (source_counts['mapillary'], mapillary.TOKEN_ENV_VAR))
 
-    for source, panos in by_source.items():
-        print("WARNING: %d panos with unsupported source %r skipped" % (len(panos), source))
+    for source, count in source_counts.items():
+        if source not in known:
+            print("WARNING: %d panos with unsupported source %r skipped" % (count, source))
 
-    return kept
+    return [p for p in pano_infos if p.get('source') in supported]
 
 
 def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None):
@@ -236,9 +247,17 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     skipped_count = prior_success
     fail_count = prior_fail
     total_completed = prior_total
+    # Partition before attempting anything, then shuffle - the depth phase's pattern (gsv.download_depth_maps).
+    # Iteration order is otherwise the server's, and since #41 a transiently-failing pano is never ledgered, so
+    # it keeps its place at the head of that order forever: a cluster of panos that fail every night would be
+    # re-attempted first every night, spending --max-runtime before the loop ever reaches new work. Ledgering
+    # every attempt used to guarantee the frontier advanced; nothing does now, so the shuffle has to.
+    # This also covers the #40 fallback: if /adminapi/panos itself ever returns a source-clustered list,
+    # filter_supported_sources preserving that order no longer starves the sources behind the first cluster.
+    candidates = [p for p in pano_infos if p['pano_id'] not in df_id_set]
     # Denominator = previously logged + panos we'll attempt this run, so it can never be exceeded.
-    new_panos = sum(1 for p in pano_infos if p['pano_id'] not in df_id_set)
-    total_panos = prior_total + new_panos
+    total_panos = prior_total + len(candidates)
+    random.shuffle(candidates)
 
     # One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
     # The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that,
@@ -262,8 +281,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 # downloaders' shard-dir setup swallows it for the same reason.
                 pass
 
-        for pano_info in pano_infos:
+        for pano_info in candidates:
             pano_id = pano_info['pano_id']
+            # candidates is already filtered against the ledger; this still catches a duplicate id surviving
+            # intake, which would otherwise be downloaded and ledgered twice.
             if pano_id in df_id_set:
                 continue
             if max_runtime_minutes is not None and run_start_monotonic is not None:
@@ -288,14 +309,19 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 downloaded = 0 if result_code == DownloadResult.failure else 1
 
             except Exception as e:
+                # Transient (network, storage, a bug): counted in THIS run's failures but NOT ledgered, so
+                # the pano is re-attempted next run - the depth ledger's semantics (#41). Only the
+                # downloader's own verdict (DownloadResult.failure above: the source has nothing for this
+                # pano) is permanent and writes the terminal 0-row.
                 fail_count += 1
-                downloaded = 0
+                downloaded = None
                 logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
             total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
-            ledger.writerow([pano_id, downloaded])
-            ledger_file.flush()
-            df_id_set.add(pano_id)
+            if downloaded is not None:
+                ledger.writerow([pano_id, downloaded])
+                ledger_file.flush()
+                df_id_set.add(pano_id)
 
             print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
                   % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))

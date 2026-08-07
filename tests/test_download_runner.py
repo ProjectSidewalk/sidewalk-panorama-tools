@@ -452,7 +452,9 @@ def test_no_budget_lets_download_panorama_images_process_every_pano(monkeypatch,
                                                      run_start_monotonic=time.monotonic() - 600,
                                                      max_runtime_minutes=None)
 
-    assert calls == GSV_PANO_IDS
+    # Set comparison: the loop shuffles what it attempts, so only coverage is deterministic (see
+    # TestFailedPanosDoNotMonopoliseTheQueue for why).
+    assert sorted(calls) == sorted(GSV_PANO_IDS)
     assert result == (3, 0, 0, 0, 3)
 
 
@@ -473,9 +475,12 @@ def test_max_runtime_flag_reaches_the_image_download_loop(monkeypatch, tmp_path,
 def test_without_max_runtime_every_supported_pano_is_downloaded(monkeypatch, tmp_path):
     storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
 
-    assert calls == GSV_PANO_IDS
+    assert sorted(calls) == sorted(GSV_PANO_IDS)
     with open(storage / 'pano_id_log.csv') as f:
-        assert f.read().strip().splitlines() == ['pano_id,downloaded'] + ['%s,1' % p for p in GSV_PANO_IDS]
+        lines = f.read().strip().splitlines()
+    # The ledger is written in attempt order, which the loop shuffles; the header's position is not.
+    assert lines[0] == 'pano_id,downloaded'
+    assert sorted(lines[1:]) == sorted('%s,1' % p for p in GSV_PANO_IDS)
 
 
 def test_broken_scrape_log_falls_back_to_stderr_and_the_run_survives(tmp_path):
@@ -630,6 +635,209 @@ def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
     assert fields[1:] == [''] * 17  # no phase ran - all blank, not fake zeros
 
 
+# --- Retry semantics and source ordering (#41, #40) -----------------------------------------------------------
+
+
+def failing_download_pano(calls, error):
+    def fake_download_pano(storage_path, pano_info):
+        calls.append(pano_info['pano_id'])
+        raise error
+    return fake_download_pano
+
+
+class TestRetrySemantics:
+    """#41: transient failures (exceptions) must not be ledgered - the depth ledger's semantics - while
+    permanent verdicts (DownloadResult.failure: the source has nothing for this pano) stay terminal."""
+
+    def test_transient_failure_is_not_ledgered_and_retries_next_run(self, monkeypatch, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        attempts = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano',
+                            failing_download_pano(attempts, requests.ConnectionError('mid-download blip')))
+
+        result = DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert result == (0, 0, 1, 0, 1), "the failure still counts in THIS run's totals"
+        with open(storage / 'pano_id_log.csv') as f:
+            assert f.read().strip() == 'pano_id,downloaded', "a transient failure must leave no ledger row"
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert attempts == [GSV_PANO_IDS[0], GSV_PANO_IDS[0]], "the next run must re-attempt it"
+        with open(storage / 'pano_id_log.csv') as f:
+            assert f.read().strip().splitlines()[1:] == ['%s,1' % GSV_PANO_IDS[0]]
+
+    def test_permanent_failure_writes_zero_row_and_is_never_reattempted(self, monkeypatch, tmp_path):
+        """DownloadResult.failure is the downloader's verdict on the PANO itself (no imagery at either zoom,
+        undeterminable dims) - permanent, ledgered, terminal, exactly as today. This pin keeps the transient
+        carve-out from widening."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        attempts = []
+
+        def no_imagery(storage_path, pano_info):
+            attempts.append(pano_info['pano_id'])
+            return downloaders.DownloadResult.failure
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', no_imagery)
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        with open(storage / 'pano_id_log.csv') as f:
+            assert f.read().strip().splitlines()[1:] == ['%s,0' % GSV_PANO_IDS[0]]
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert attempts == [GSV_PANO_IDS[0]], "a ledgered 0-row is terminal"
+
+    def test_preexisting_downloaded_zero_rows_stay_terminal(self, monkeypatch, tmp_path):
+        """THE back-compat constraint: production stores hold years of downloaded=0 rows (permanent
+        no-imagery mixed with old transient failures). Nothing may make that backlog retryable - it would
+        be re-attempted against --max-runtime on every nightly run, fleet-wide. Deleting the 0-rows stays
+        the manual force-retry lever."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').write_text('pano_id,downloaded\n%s,0\n' % GSV_PANO_IDS[0])
+        attempts = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
+
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert attempts == []
+
+
+class TestSourceOrdering:
+    """#40: grouping by source put every GSV pano ahead of every Mapillary one, so a city whose GSV backlog
+    exceeds --max-runtime starved Mapillary indefinitely - zero progress, and invisibly, since unattempted
+    panos leave no ledger trace."""
+
+    def mixed_panos(self):
+        return [{'pano_id': 'gsvPanoIdAAAAAAAAAAAAA', 'source': 'gsv'},
+                {'pano_id': '111111111111111', 'source': 'mapillary'},
+                {'pano_id': 'gsvPanoIdBBBBBBBBBBBBB', 'source': 'gsv'},
+                {'pano_id': '222222222222222', 'source': 'mapillary'}]
+
+    def test_filter_preserves_server_order(self, monkeypatch):
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token')
+        panos = self.mixed_panos() + [{'pano_id': 'testPanoIdOtherAAAAAAA', 'source': 'bing'}]
+
+        kept = DownloadRunner.filter_supported_sources(panos)
+
+        assert kept == self.mixed_panos()
+
+    def test_filter_without_token_still_drops_mapillary_with_one_warning(self, monkeypatch, capsys):
+        monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
+
+        kept = DownloadRunner.filter_supported_sources(self.mixed_panos())
+
+        assert [p['pano_id'] for p in kept] == ['gsvPanoIdAAAAAAAAAAAAA', 'gsvPanoIdBBBBBBBBBBBBB']
+        out = capsys.readouterr().out
+        assert out.count('WARNING') == 1
+        assert '2 Mapillary panos skipped' in out
+
+    def test_unsupported_source_warning_still_prints_a_count(self, monkeypatch, capsys):
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token')
+        panos = self.mixed_panos() + [{'pano_id': 'testPanoIdOtherAAAAAAA', 'source': 'bing'},
+                                      {'pano_id': 'testPanoIdOtherBBBBBBB', 'source': 'bing'}]
+
+        DownloadRunner.filter_supported_sources(panos)
+
+        assert "2 panos with unsupported source 'bing' skipped" in capsys.readouterr().out
+
+    def test_budget_exhaustion_does_not_starve_mapillary(self, monkeypatch, tmp_path):
+        """End to end with a fake monotonic clock: 4 interleaved panos, one simulated minute each, and a
+        1.5-minute budget that admits exactly 2 attempts - one of them must be Mapillary. Pre-#40 the
+        grouped list attempted [gsv, gsv] and Mapillary made zero progress.
+
+        The download loop's shuffle is neutralised here so what's under test is the FILTER's ordering, which
+        is what #40 is about; the shuffle has its own tests in TestFailedPanosDoNotMonopoliseTheQueue.
+        """
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token')
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        clock = [0.0]
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+        attempted = []
+
+        def minute_per_pano(storage_path, pano_info):
+            attempted.append((pano_info['pano_id'], pano_info['source']))
+            clock[0] += 60.0
+            return downloaders.DownloadResult.success
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', minute_per_pano)
+
+        panos = DownloadRunner.filter_supported_sources(self.mixed_panos())
+        DownloadRunner.download_panorama_images(str(storage), panos, run_start_monotonic=0.0,
+                                               max_runtime_minutes=1.5)
+
+        assert len(attempted) == 2
+        assert 'mapillary' in {source for _, source in attempted}, \
+            "an interleaved corpus must make Mapillary progress under a budget"
+
+
+class TestFailedPanosDoNotMonopoliseTheQueue:
+    """Ledgering every attempt used to guarantee the frontier advanced. Since #41 a transient failure leaves
+    no row, so it keeps its place in the server's ordering forever - and a stable iteration order would
+    re-attempt the same failing head block first every night, spending --max-runtime before reaching new
+    work. That is #40's starvation bug through a different door, so the loop shuffles what it attempts (the
+    depth phase's fix, gsv.download_depth_maps)."""
+
+    def test_only_unledgered_candidates_are_shuffled(self, monkeypatch, tmp_path):
+        """The shuffle must see exactly the panos this run could attempt - not the ledgered ones, which
+        would put the cost of shuffling on a fully-backfilled multi-million-pano corpus."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').write_text('pano_id,downloaded\n%s,1\n' % GSV_PANO_IDS[0])
+        shuffled = []
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: shuffled.append(list(seq)))
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano([]))
+
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos())
+
+        assert len(shuffled) == 1
+        assert [p['pano_id'] for p in shuffled[0]] == GSV_PANO_IDS[1:]
+
+    def test_an_always_failing_head_block_cannot_stall_the_backlog(self, monkeypatch, tmp_path):
+        """Three panos that always fail transiently sit ahead of five healthy ones, and --max-runtime admits
+        three attempts a night. Without the shuffle the same three are retried first every run and the
+        healthy five are never reached - verified: four runs, zero progress. A rotating stand-in for
+        random.shuffle keeps this deterministic; any order-varying shuffle has the same effect."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        panos = ([{'pano_id': 'BAD%019d' % i, 'source': 'gsv'} for i in range(3)]
+                 + [{'pano_id': 'OK%020d' % i, 'source': 'gsv'} for i in range(5)])
+        run = [0]
+
+        def rotate(seq):
+            seq[:] = seq[run[0] % len(seq):] + seq[:run[0] % len(seq)]
+
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', rotate)
+        clock = [0.0]
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+
+        def minute_per_pano(storage_path, pano_info):
+            clock[0] += 60.0
+            if pano_info['pano_id'].startswith('BAD'):
+                raise requests.ConnectionError('transient blip')
+            return downloaders.DownloadResult.success
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', minute_per_pano)
+
+        for run[0] in range(6):
+            clock[0] = 0.0
+            DownloadRunner.download_panorama_images(str(storage), panos, run_start_monotonic=0.0,
+                                                    max_runtime_minutes=3.0)
+
+        ledgered, _, _, _ = DownloadRunner.progress_check(str(storage / 'pano_id_log.csv'))
+        assert len([p for p in ledgered if p.startswith('OK')]) == 5, \
+            "every healthy pano must eventually be reached past a permanently failing head block"
+        assert not [p for p in ledgered if p.startswith('BAD')], \
+            "the failing panos still must not be ledgered - they stay retryable (#41)"
+
+
 # --- Numeric pano ids and ledger hygiene (#46, #55) -----------------------------------------------------------
 
 NUMERIC_PANO_IDS = ['123456789012345', '987654321098765']
@@ -694,7 +902,7 @@ class TestNumericPanoIds:
         pin here is the boundary type itself."""
         _, calls = call_main(monkeypatch, tmp_path, NUMERIC_CSV_ROWS)
 
-        assert calls == NUMERIC_PANO_IDS
+        assert sorted(calls) == sorted(NUMERIC_PANO_IDS)
         assert all(isinstance(pano_id, str) for pano_id in calls)
 
     def test_numeric_id_ledger_round_trip_skips_on_second_run(self, monkeypatch, tmp_path):
@@ -729,7 +937,7 @@ class TestLedgerHygiene:
 
         result = DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos())
 
-        assert calls == GSV_PANO_IDS[1:], "the intact row skips; the torn rows are not fatal"
+        assert sorted(calls) == GSV_PANO_IDS[1:], "the intact row skips; the torn rows are not fatal"
         assert result == (2, 0, 0, 1, 3)
 
     @posix_only
@@ -756,7 +964,7 @@ class TestLedgerHygiene:
 
         result = DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos())
 
-        assert calls == GSV_PANO_IDS
+        assert sorted(calls) == sorted(GSV_PANO_IDS)
         assert result == (3, 0, 0, 0, 3)
 
     def test_ledger_rows_are_lf_terminated_like_the_pandas_writer_they_replace(self, monkeypatch, tmp_path):

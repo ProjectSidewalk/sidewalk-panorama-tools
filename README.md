@@ -193,7 +193,6 @@ Note that the numbers in the `label_type_id` column correspond to these label ty
 
 * `CropRunner.py` - implement multi core usage when creating crops. Currently runs on a single core, most modern machines
   have more than one core so would give a speed up for cropping 10's of thousands of images and objects.
-* Add logic to `progress_check()` function so that it can register if there is a network failure and does not log the pano id as visited and failed.
 
 ## Depth Maps
 `DownloadRunner.py` downloads a depth map for every GSV pano by default, using the [streetlevel](https://github.com/sk-zk/streetlevel) library to fetch Google's photometa response (pass `--skip-depth` to turn this off). The depth payload itself is decoded in-repo: every streetlevel release through 0.12.11 misreads a header byte, which makes its parser crash on the ~1% of panos whose zenith is a modeled surface (tunnels, overpass soffits) — see [sk-zk/streetlevel#45](https://github.com/sk-zk/streetlevel/pull/45); once that fix ships, the bypass can be revisited. Not every pano has depth data — third-party and some older panos don't — so the phase saves it where available and records the outcome either way.
@@ -263,6 +262,9 @@ The phase is serial — one metadata request in flight at a time, unlike the ima
 * Unresolved panos are shuffled each run. Iteration order is otherwise stable, so a cluster of panos that fail every time would monopolise `--max-depth-requests` run after run and the backfill would never reach anything behind it.
 * **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs will show large failure numbers that are entirely normal. The success/failure/unavailable split is printed to stdout and `scrape.log` (which lives next to `log.csv` under the storage root); `log.csv` keeps its 18-column positional shape, so there was no room for a separate column.
 * Storage or ledger write failures (a full or unmounted store) are treated as transient per-pano failures and retried next run — the phase deliberately never lets them escape. Even if a run does crash between phases, `log.csv` still gets a single full-width row: fields are accumulated in memory and written once in a `finally`, with completed phases' counts kept and never-finished phases left blank (not fake zeros).
+* **`pano_id_log.csv` — the image phase's resume ledger** (`pano_id,downloaded`, mirroring `depth_log.csv`'s semantics). A row means the pano is *resolved* and is never re-attempted: `1` = image on disk (or a prior success), `0` = the source has nothing for this pano (no imagery at any zoom, unknowable dimensions) — a permanent verdict. Transient failures — network blips, a failed tile, a full store — leave **no row** and retry automatically on the next run. Deleting `0` rows (or the whole file) remains the manual force-retry lever; existing `.jpg`s are simply re-registered as skipped.
+* **Unattempted panos are shuffled each run**, for the same reason depth shuffles. Because a transient failure leaves no ledger row, it keeps its place in the server's ordering, so a stable iteration order would re-attempt the same failing head block first every night and spend `--max-runtime` before reaching new work. Shuffling also means a source-clustered `/adminapi/panos` response can't starve whichever source sorts last.
+* **Images are written through a `.part` file and renamed into place.** An existing `.jpg` *is* the resume marker, so a download killed mid-write would otherwise leave a truncated file that every later run reports as a completed success. A stray `*.jpg.part` on the store is debris from a killed run and is safe to delete; the next run rewrites it.
 * **The `log.csv` columns.** Each run appends one row of 18 positional comma-separated fields (no header), parsed by the [log analyzer](#log-analyzer). Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata phase, a stub since Google killed that endpoint in 2022 — kept so the column positions never shift:
 
   | # | field | notes |
@@ -275,7 +277,7 @@ The phase is serial — one metadata request in flight at a time, unlike the ima
   | 6 | metadata phase duration | effectively `0` (stub) |
   | 7 | image successes | |
   | 8 | image fallback successes | downloaded, but at a fallback resolution |
-  | 9 | image failures | includes prior runs' failed panos, seeded from `pano_id_log.csv` |
+  | 9 | image failures | includes prior runs' permanent failures, seeded from `pano_id_log.csv`; a transient failure is not ledgered, so it is counted again if it fails again next run |
   | 10 | image skipped | includes panos already downloaded on previous runs, seeded likewise |
   | 11 | image total processed | sum of fields 7–10 |
   | 12 | image phase duration | |
