@@ -110,6 +110,75 @@ class TestNormalizeProxies:
         assert gsv._normalize_proxies({}) == {}
 
 
+class TestGetResponseProxyContract:
+    """What actually reaches requests' proxy selection on the _get_response path (#51 review).
+
+    TestNormalizeProxies pins the helper; these pin the contract. A capturing session records the proxies
+    kwarg _get_response passes, and that value is then run through the same machinery Session.request applies
+    to it — merge_environment_settings (env fallback + merge_setting against the session defaults), then the
+    adapter's select_proxy — so the assertions hold exactly where requests decides proxy vs direct.
+    """
+
+    GSV_HTTPS_URL = 'https://maps.google.com/cbk?output=tile'
+
+    def _capture(self, monkeypatch, config):
+        monkeypatch.setattr(gsv, '_proxies', gsv._normalize_proxies(config))
+        captured = {}
+
+        class CapturingSession:
+            def get(self, url, **kwargs):
+                captured.update(kwargs)
+                return requests.Response()
+
+        return captured, CapturingSession()
+
+    def _selected_proxy(self, monkeypatch, config, url=GSV_HTTPS_URL, env_proxies=None):
+        # Environment reads go through get_environ_proxies; pinning it keeps the box's real env (and, on
+        # Windows, registry) proxy settings out of the test while every merge step stays requests' own code.
+        monkeypatch.setattr(requests.sessions, 'get_environ_proxies',
+                            lambda url, no_proxy=None: dict(env_proxies or {}))
+        captured, session = self._capture(monkeypatch, config)
+        gsv._get_response(url, session)
+        with requests.Session() as merging_session:
+            merged = merging_session.merge_environment_settings(url, captured['proxies'],
+                                                                None, None, None)['proxies']
+        return requests.utils.select_proxy(url, merged)
+
+    def test_placeholder_config_reaches_selection_as_no_proxy(self, monkeypatch):
+        assert self._selected_proxy(monkeypatch, {'http': 'http://', 'https': 'http://'}) is None
+
+    def test_configured_proxy_is_selected_for_the_gsv_url(self, monkeypatch):
+        proxy = 'http://proxy.example:8080'
+        assert self._selected_proxy(monkeypatch, {'http': proxy, 'https': proxy}) == proxy
+
+    def test_mixed_config_goes_direct_for_https_but_proxied_for_http(self, monkeypatch):
+        # The config test_real_proxy_survives_a_placeholder_on_the_other_key blesses: the https placeholder
+        # means unset, so an https request goes direct (matching the _depth_session path's semantics)...
+        config = {'http': 'http://proxy.example:8080', 'https': 'http://'}
+        assert self._selected_proxy(monkeypatch, config) is None
+        # ...while a plain-http request uses the configured proxy.
+        assert self._selected_proxy(monkeypatch, config,
+                                    url='http://maps.google.com/cbk') == 'http://proxy.example:8080'
+
+    def test_placeholders_do_not_smother_environment_proxies(self, monkeypatch):
+        """Placeholder == unset must hold all the way down: with only placeholders configured, an env proxy
+        applies, exactly as on the _depth_session path. Passing the raw Nones through blocked
+        merge_environment_settings' setdefault, silently disabling env proxies (#51 review)."""
+        assert self._selected_proxy(monkeypatch, {'http': 'http://', 'https': 'http://'},
+                                    env_proxies={'https': 'http://envproxy.example:3128'}) \
+               == 'http://envproxy.example:3128'
+
+    def test_passes_a_filtered_copy_not_the_module_global(self, monkeypatch):
+        captured, session = self._capture(monkeypatch, {'http': 'http://proxy.example:8080', 'https': None})
+        gsv._get_response(self.GSV_HTTPS_URL, session)
+        # Placeholder keys are absent, not None: merge_setting would drop the Nones anyway, but a None value
+        # blocks the env fallback and is one requests version away from meaning something else.
+        assert captured['proxies'] == {'http': 'http://proxy.example:8080'}
+        # requests setdefaults env proxies into this dict in place; the module global must be immune.
+        captured['proxies']['no'] = 'example.org'
+        assert gsv._proxies == {'http': 'http://proxy.example:8080', 'https': None}
+
+
 class TestTimeoutHTTPAdapter:
     @pytest.fixture
     def captured_send(self, monkeypatch):

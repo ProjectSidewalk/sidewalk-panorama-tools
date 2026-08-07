@@ -66,7 +66,11 @@ def _request_session():
 
 
 def _get_response(url, session, stream=False):
-    response = session.get(url, headers=_random_header(), proxies=_proxies, stream=stream)
+    # A filtered copy, not the module global (matching _depth_session's semantics): a normalized-away
+    # placeholder must reach requests as absent — a None value blocks the env-proxy fallback — and requests
+    # setdefaults env proxies into this dict in place, which must not corrupt _proxies for later calls (#51).
+    response = session.get(url, headers=_random_header(), proxies={k: v for k, v in _proxies.items() if v},
+                           stream=stream)
     if not stream:
         return response
     return response.raw
