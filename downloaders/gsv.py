@@ -123,9 +123,12 @@ def _pano_max_zoom(width):
     tests/test_gsv_stitcher.py's OBSERVED_PHOTOMETA, including the four- and five-level panos that make the
     inference load-bearing.
     """
-    if width is None or width <= 0:
-        # math.log2 would raise a bare "math domain error" that says nothing about which pano died.
-        raise ValueError('pano width must be positive to infer a zoom level, got %r' % (width,))
+    # Left to itself this arithmetic fails three different unhelpful ways: math.log2 raises a bare "math
+    # domain error" on <= 0, and math.ceil raises "cannot convert float NaN to integer" / OverflowError on a
+    # non-finite width - none of which name the pano. isfinite first, because NaN <= 0 is False.
+    if width is None or not math.isfinite(width) or width <= 0:
+        raise ValueError('pano width must be a positive finite number to infer a zoom level, got %r'
+                         % (width,))
     return max(0, int(math.ceil(math.log2(width / float(TILE_SIZE)))))
 
 

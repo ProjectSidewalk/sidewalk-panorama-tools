@@ -70,11 +70,13 @@ class TestGridArithmetic:
         assert len(gsv._generate_tile_urls('p', 16384, 8192, 5)) == 32 * 16
         assert len(gsv._generate_tile_urls('p', 13312, 6656, 5)) == 26 * 13
 
-    @pytest.mark.parametrize('width', [0, -1, None])
+    @pytest.mark.parametrize('width', [0, -1, None, float('nan'), float('inf'), float('-inf')])
     def test_pano_max_zoom_rejects_a_nonsense_width_by_name(self, width):
-        """Reported dims are validated for None upstream but not for 0. math.log2 does raise a ValueError
-        on its own, so what this pins is the message: 'math domain error' in scrape.log says nothing about
-        which pano died or why, and that log line is the only thing an operator gets."""
+        """Reported dims are validated for None upstream but not for these. Left alone the arithmetic fails
+        three different unhelpful ways - 'math domain error' from log2 on <= 0, 'cannot convert float NaN to
+        integer' and OverflowError from ceil on non-finite input - and none of them name the pano, which is
+        all an operator gets from scrape.log. NaN is the one that needs isfinite: NaN <= 0 is False, so it
+        walks straight past a bounds check. (Raised by Copilot on #68.)"""
         with pytest.raises(ValueError, match='width'):
             gsv._pano_max_zoom(width)
 
