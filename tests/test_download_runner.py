@@ -12,7 +12,6 @@ functions directly with plain arguments.
 """
 
 import ast
-import json
 import logging
 import logging.handlers
 import os
@@ -20,6 +19,8 @@ import signal
 import subprocess
 import sys
 import time
+
+import requests
 
 import downloaders
 import DownloadRunner
@@ -626,46 +627,9 @@ def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
     assert fields[1:] == [''] * 17  # no phase ran - all blank, not fake zeros
 
 
-# Runs DownloadRunner.py (via runpy — argparse at module scope rules out an import) with Session.get stubbed
-# to capture the HTTP config the pano-list fetch actually uses, reported as JSON on the last stdout line.
-# No network I/O: the stub raises SystemExit before anything touches a socket.
-FETCH_CONFIG_PROBE = '''\
-import json
-import os
-import runpy
-import sys
-
-import requests
-
-runner, storage = sys.argv[1], sys.argv[2]
-# Running a script directly puts its directory on sys.path; runpy does not, so add it for `import downloaders`.
-sys.path.insert(0, os.path.dirname(os.path.abspath(runner)))
-captured = {}
-
-
-def capturing_get(self, url, **kwargs):
-    retries = {}
-    for scheme in ('https', 'http'):
-        retry = self.get_adapter(scheme + '://example.com').max_retries
-        retries[scheme] = {'total': retry.total, 'connect': retry.connect, 'read': retry.read}
-    timeout = kwargs.get('timeout')
-    captured.update(url=url, timeout=list(timeout) if isinstance(timeout, tuple) else timeout,
-                    trust_env=self.trust_env, retries=retries)
-    raise SystemExit(0)
-
-
-requests.Session.get = capturing_get
-sys.argv = ['DownloadRunner.py', 'sidewalk-test.invalid', storage]
-try:
-    runpy.run_path(runner, run_name='__main__')
-except SystemExit:
-    pass
-print(json.dumps(captured))
-'''
-
-
-def test_pano_list_fetch_session_configuration(tmp_path):
-    """Pin the pano-list fetch's HTTP config (#51 review).
+def test_pano_list_fetch_session_configuration(monkeypatch):
+    """Pin the pano-list fetch's HTTP config (#51 review), in-process at the #52.1 seam - the fqdn is now a
+    parameter, so no subprocess/runpy probe is needed.
 
     - timeout (30, 600): the read timeout applies per socket op INCLUDING the wait for the status line, and
       /adminapi/panos plausibly buffers the whole JSON server-side before its first byte on the largest
@@ -676,16 +640,26 @@ def test_pano_list_fetch_session_configuration(tmp_path):
       overrides) on a fleet cron whose environment we don't control.
     - The retry adapter is mounted on http:// as well, so a redirect hop can't silently lose the policy.
     """
-    probe = tmp_path / 'fetch_config_probe.py'
-    probe.write_text(FETCH_CONFIG_PROBE)
-    result = subprocess.run(
-        [sys.executable, str(probe), RUNNER, str(tmp_path / 'storage')],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=120)
-    assert result.returncode == 0, result.stderr
-    captured = json.loads(result.stdout.strip().splitlines()[-1])
+    captured = {}
+
+    class _ProbeStop(Exception):
+        """Raised by the stub before anything touches a socket."""
+
+    def capturing_get(self, url, **kwargs):
+        retries = {}
+        for scheme in ('https', 'http'):
+            retry = self.get_adapter(scheme + '://example.com').max_retries
+            retries[scheme] = {'total': retry.total, 'connect': retry.connect, 'read': retry.read}
+        captured.update(url=url, timeout=kwargs.get('timeout'), trust_env=self.trust_env, retries=retries)
+        raise _ProbeStop()
+
+    monkeypatch.setattr(requests.Session, 'get', capturing_get)
+
+    with pytest.raises(_ProbeStop):
+        DownloadRunner.fetch_pano_ids_from_webserver('sidewalk-test.invalid')
 
     assert captured['url'] == 'https://sidewalk-test.invalid/adminapi/panos'
-    assert captured['timeout'] == [30, 600]
+    assert captured['timeout'] == (30, 600)
     assert captured['trust_env'] is False
     for scheme in ('https', 'http'):
         retry = captured['retries'][scheme]
