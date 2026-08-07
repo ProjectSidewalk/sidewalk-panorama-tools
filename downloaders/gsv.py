@@ -325,8 +325,9 @@ def _write_depth_artifact(storage_path, pano_id, pano):
     (compute_depth_map writes the value for payload column x to output column w-1-x), so pano.depth.data is
     horizontally flipped relative to the imagery and is flipped back here on write (#58). A consumer can
     therefore index it with a stored pano_x/pano_y scaled by width/height, no mirror correction needed.
-    tests/test_streetlevel_api.py pins the upstream mirror so a streetlevel change fails CI rather than
-    silently re-mirroring new artifacts.
+    tests/test_streetlevel_api.py pins the decode's end-to-end column order - the ray-direction formula and
+    the write index jointly, either of which flipping alone would change the orientation - so a streetlevel
+    change fails CI rather than silently re-mirroring new artifacts.
     """
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
