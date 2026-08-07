@@ -1,16 +1,21 @@
 """Subprocess tests for DownloadRunner.py.
 
-The pano CSV rows all use an unsupported source, so every pano is filtered out before any phase runs — the
-script exercises its full argument parsing, phase orchestration, and log.csv writing without any network I/O.
+Two pano CSVs are used. The unsupported-source CSV filters every pano out before any phase runs, so those
+tests exercise argument parsing, phase orchestration, and log.csv writing with no network I/O. The gsv-source
+CSV feeds the budget tests: those runs stub the per-pano download via a driver script (and cap the depth phase
+at 0 requests), so they count what the image phase actually downloads — still with no network I/O.
 """
 
+import logging
 import os
 import subprocess
 import sys
+from datetime import datetime
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER = os.path.join(REPO_ROOT, 'DownloadRunner.py')
 CSV_HEADER = 'pano_id,width,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
+GSV_PANO_IDS = ['testPanoIdGsvAAAAAAAAA', 'testPanoIdGsvBBBBBBBBB']
 
 
 def write_pano_csv(tmp_path):
@@ -107,6 +112,146 @@ class TestDepthBudgetFloor:
         storage, result = run_downloader(tmp_path)
         assert result.returncode == 0, result.stderr
         assert 'reserved for depth' not in result.stdout
+
+
+def write_gsv_csv(tmp_path):
+    """Two labelled GSV panos — a supported source, so they reach the image phase's budget guard."""
+    csv_path = tmp_path / 'gsv_panos.csv'
+    csv_path.write_text(CSV_HEADER
+                        + '%s,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % GSV_PANO_IDS[0]
+                        + '%s,16384,8192,47.7,-122.4,90.0,0.0,gsv,True\n' % GSV_PANO_IDS[1])
+    return str(csv_path)
+
+
+FAKE_NETWORK_DRIVER = '''\
+"""Test-only driver: run the real DownloadRunner.py with the per-pano image download stubbed.
+
+Records each pano "downloaded" to $FAKE_DOWNLOAD_LOG instead of touching the network, then executes
+DownloadRunner.py itself (argparse, phase orchestration, budget arithmetic, log.csv) unmodified via runpy.
+"""
+import os
+import runpy
+import sys
+
+sys.path.insert(0, %(repo_root)r)
+
+import downloaders
+from downloaders import DownloadResult
+
+
+def _fake_download_pano(storage_path, pano_info):
+    with open(os.environ['FAKE_DOWNLOAD_LOG'], 'a') as f:
+        f.write(pano_info['pano_id'] + '\\n')
+    return DownloadResult.success
+
+
+downloaders.download_pano = _fake_download_pano
+sys.argv = ['DownloadRunner.py'] + sys.argv[1:]
+runpy.run_path(%(runner)r)
+''' % {'repo_root': REPO_ROOT, 'runner': RUNNER}
+
+
+def run_downloader_with_fake_network(tmp_path, *extra_args):
+    """Drive the real DownloadRunner.py against the gsv-source CSV, counting image downloads.
+
+    The unsupported-source CSV never reaches the budget guard (every pano is filtered out before the image
+    loop), which is how announcement-only tests could pass while the budget split itself was mutated away.
+    These runs use supported panos with download_pano stubbed by FAKE_NETWORK_DRIVER, and --max-depth-requests 0
+    so the depth phase issues no requests either — the download counts reflect the real budget arithmetic, with
+    zero network I/O.
+    """
+    driver = tmp_path / 'fake_network_driver.py'
+    driver.write_text(FAKE_NETWORK_DRIVER)
+    downloads_log = tmp_path / 'downloads.txt'
+    downloads_log.write_text('')
+    storage = tmp_path / 'storage'
+    env = dict(os.environ, FAKE_DOWNLOAD_LOG=str(downloads_log))
+    result = subprocess.run(
+        [sys.executable, str(driver), 'sidewalk-test.invalid', str(storage), '-c', write_gsv_csv(tmp_path),
+         '--max-depth-requests', '0', *extra_args],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env)
+    downloaded = downloads_log.read_text().split()
+    return storage, result, downloaded
+
+
+class TestImageBudgetBehaviour:
+    """What the image phase actually downloads under a --min-depth-runtime reservation (#43).
+
+    The review demonstrated that pinning only the budget announcement lets feature-deleting mutations pass the
+    whole suite; these tests assert on the downloads themselves.
+    """
+
+    def test_reservation_that_consumes_the_budget_downloads_no_images(self, tmp_path):
+        storage, result, downloaded = run_downloader_with_fake_network(
+            tmp_path, '--max-runtime', '5', '--min-depth-runtime', '5')
+        assert result.returncode == 0, result.stderr
+        assert downloaded == []
+
+    def test_zero_reservation_downloads_every_pano(self, tmp_path):
+        storage, result, downloaded = run_downloader_with_fake_network(
+            tmp_path, '--max-runtime', '5', '--min-depth-runtime', '0')
+        assert result.returncode == 0, result.stderr
+        assert sorted(downloaded) == sorted(GSV_PANO_IDS)
+
+
+def import_download_runner(tmp_path, monkeypatch):
+    """Import DownloadRunner as a module so download_panorama_images can be unit-tested directly.
+
+    The script has no main() — argparse and a full run execute at import — so argv is pointed at the
+    network-free unsupported-source CSV with --skip-depth first, and the module cache is cleared so every test
+    imports (and therefore runs) afresh.
+    """
+    monkeypatch.setattr(sys, 'argv',
+                        ['DownloadRunner.py', 'sidewalk-test.invalid', str(tmp_path / 'import_storage'),
+                         '-c', write_pano_csv(tmp_path), '--skip-depth'])
+    monkeypatch.chdir(tmp_path)  # the import-time run and the calls below write scrape.log to cwd
+    if not logging.getLogger().handlers:
+        # Keep download_panorama_images' logging.basicConfig from opening scrape.log for the whole session,
+        # which would pin the tmp dir on Windows.
+        logging.getLogger().addHandler(logging.NullHandler())
+    sys.modules.pop('DownloadRunner', None)
+    import DownloadRunner
+    return DownloadRunner
+
+
+class TestDownloadPanoramaImagesBudget:
+    """Direct tests of the image phase's budget guard — the review found it had no unit tests at all."""
+
+    def stub_downloads(self, runner, monkeypatch):
+        calls = []
+
+        def fake_download_pano(storage_path, pano_info):
+            calls.append(pano_info['pano_id'])
+            return runner.DownloadResult.success
+
+        monkeypatch.setattr(runner, 'download_pano', fake_download_pano)
+        return calls
+
+    def test_zero_budget_downloads_nothing(self, tmp_path, monkeypatch):
+        runner = import_download_runner(tmp_path, monkeypatch)
+        calls = self.stub_downloads(runner, monkeypatch)
+        storage = tmp_path / 'direct_storage'
+        storage.mkdir()
+        panos = [{'pano_id': p, 'source': 'gsv'} for p in GSV_PANO_IDS]
+
+        result = runner.download_panorama_images(str(storage), panos, run_start_time=datetime.now(),
+                                                 max_runtime_minutes=0.0)
+
+        assert calls == []
+        assert result == (0, 0, 0, 0, 0)
+
+    def test_no_budget_downloads_every_pano(self, tmp_path, monkeypatch):
+        runner = import_download_runner(tmp_path, monkeypatch)
+        calls = self.stub_downloads(runner, monkeypatch)
+        storage = tmp_path / 'direct_storage'
+        storage.mkdir()
+        panos = [{'pano_id': p, 'source': 'gsv'} for p in GSV_PANO_IDS]
+
+        result = runner.download_panorama_images(str(storage), panos, run_start_time=datetime.now(),
+                                                 max_runtime_minutes=None)
+
+        assert sorted(calls) == sorted(GSV_PANO_IDS)
+        assert result == (2, 0, 0, 0, 2)
 
 
 def write_mixed_label_csv(tmp_path):
