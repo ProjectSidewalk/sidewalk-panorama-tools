@@ -71,7 +71,41 @@ class TestWriteDepthArtifact:
 
         gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
 
+        # The one-shot False must have been consumed by the guard at the shard dir — if any isdir call ever
+        # interposes, this test would otherwise degrade into a passing no-op.
+        assert guard_called == [os.path.join(storage, 'ab')]
         assert os.path.isfile(os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX))
+
+    def test_losing_the_race_to_another_users_dir_is_not_an_error(self, tmp_path, monkeypatch):
+        """The cross-user variant of the shard-dir race: the winner owns the dir, so the loser's chmod raises
+        PermissionError. exist_ok already absorbed the makedirs collision; the chmod must not turn the same
+        race into a failed pano (#51 review)."""
+        storage = str(tmp_path)
+        shard_dir = os.path.join(storage, 'ab')
+        os.makedirs(shard_dir)
+        real_isdir, guard_called = os.path.isdir, []
+
+        def racy_isdir(path):
+            if not guard_called:
+                guard_called.append(path)
+                return False
+            return real_isdir(path)
+
+        real_chmod = os.chmod
+
+        def other_users_dir_chmod(path, mode, **kwargs):
+            # Only the shard dir belongs to the other user; the .part file chmod must keep working.
+            if os.path.normpath(path) == os.path.normpath(shard_dir):
+                raise PermissionError(1, 'Operation not permitted', path)
+            return real_chmod(path, mode, **kwargs)
+
+        monkeypatch.setattr(gsv.os.path, 'isdir', racy_isdir)
+        monkeypatch.setattr(gsv.os, 'chmod', other_users_dir_chmod)
+
+        gsv._write_depth_artifact(storage, 'abcdef', make_pano(np.zeros((1, 1))))
+
+        assert guard_called == [shard_dir]
+        assert os.path.isfile(os.path.join(shard_dir, 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX))
 
     def test_part_file_is_cleaned_up_when_the_write_fails(self, tmp_path, monkeypatch):
         """Nothing else ever sweeps .part files, so a failed write must not leave one on the store."""

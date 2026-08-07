@@ -38,7 +38,10 @@ def download_single_pano(storage_path, pano_info):
     if not os.path.isdir(destination_dir):
         # exist_ok: concurrent runs race on shard dirs.
         os.makedirs(destination_dir, exist_ok=True)
-        os.chmod(destination_dir, 0o775 | stat.S_ISGID)
+        try:
+            os.chmod(destination_dir, 0o775 | stat.S_ISGID)
+        except PermissionError:
+            pass  # lost the race to another user's process; their dir, their modes — must not fail the pano
 
     out_image_name = os.path.join(destination_dir, pano_id + ".jpg")
     if os.path.isfile(out_image_name):
