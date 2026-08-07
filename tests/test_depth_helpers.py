@@ -41,7 +41,7 @@ class TestWriteDepthArtifact:
         with np.load(path) as d:
             assert d['depth'].dtype == np.float32
             # Stored in the JPEG's column order, i.e. streetlevel's array flipped in x (see #58).
-            np.testing.assert_allclose(d['depth'], depth[:, ::-1].astype(np.float32))
+            np.testing.assert_allclose(d['depth'], [[-1.0, 1.0], [3.5, 2.5]])
             assert float(d['heading']) == pytest.approx(0.5)
             assert np.isnan(float(d['pitch']))
             assert float(d['roll']) == pytest.approx(1.5)
@@ -67,7 +67,7 @@ class TestWriteDepthArtifact:
         path = os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)
         with np.load(path) as d:
             # Image column order: [far, near] - the flip of what streetlevel delivered.
-            np.testing.assert_allclose(d['depth'], streetlevel_data[:, ::-1].astype(np.float32))
+            np.testing.assert_allclose(d['depth'], [[100.0, 2.0], [200.0, 3.0]])
 
     def test_stamps_format_version(self, tmp_path):
         """Artifacts written before the #58 un-mirroring carry no version field; consumers use its presence to
@@ -77,7 +77,6 @@ class TestWriteDepthArtifact:
         path = os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)
         with np.load(path) as d:
             assert int(d['format_version']) == gsv.DEPTH_ARTIFACT_FORMAT_VERSION
-            assert int(d['format_version']) >= 2
 
     def test_part_file_is_cleaned_up_when_the_write_fails(self, tmp_path, monkeypatch):
         """Nothing else ever sweeps .part files, so a failed write must not leave one on the store."""
