@@ -133,6 +133,13 @@ def fetch_pano_ids_csv(metadata_csv_path):
     pin here and the normalisation are needed.
     """
     df_meta = pd.read_csv(metadata_csv_path, dtype={'pano_id': str})
+    # Fail loudly on a header typo. -c exists for hand-made CSVs, and _normalize_pano_records would
+    # otherwise read every row's missing id as blank and filter the whole file out - a run that downloads
+    # nothing, prints one 'empty string or tutorial' line per row, and exits 0. pd.read_csv ignores dtype
+    # keys for absent columns, so the pin above doesn't catch this either.
+    if 'pano_id' not in df_meta.columns:
+        raise ValueError("%s has no 'pano_id' column; found %r"
+                         % (metadata_csv_path, list(df_meta.columns)))
     return _normalize_pano_records(df_meta.to_dict('records'))
 
 
@@ -238,12 +245,22 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # when the #46 dtype mismatch made it reachable, rewrote the ENTIRE file per pano with mode='w' - O(n^2)
     # per run, and a crash mid-rewrite truncated the only image ledger in place.
     with open(csv_pano_log_path, 'a', newline='') as ledger_file:
-        ledger = csv.writer(ledger_file)
+        # lineterminator='\n': csv.writer's excel default is '\r\n', but every existing image ledger was
+        # written by pandas to_csv, whose default is os.linesep - '\n' on the Linux scraper boxes. Without
+        # this pin, appending to a years-old ledger would mix line endings in one file and hand ops greps a
+        # trailing '\r' on the downloaded column.
+        ledger = csv.writer(ledger_file, lineterminator='\n')
         if not ledger_existed:
             ledger.writerow(['pano_id', 'downloaded'])
             ledger_file.flush()
             # Group-writable like depth_log.csv: other lab users' runs append to the same store.
-            os.chmod(csv_pano_log_path, 0o664)
+            try:
+                os.chmod(csv_pano_log_path, 0o664)
+            except OSError:
+                # Lost the exists()/open() race to another user's run: their file, their modes. The ledger is
+                # already open and writable, so this must not take the phase down - the same call in both
+                # downloaders' shard-dir setup swallows it for the same reason.
+                pass
 
         for pano_info in pano_infos:
             pano_id = pano_info['pano_id']

@@ -664,6 +664,16 @@ class TestNumericPanoIds:
 
         assert [record['pano_id'] for record in records] == ['testPanoIdRealAAAAAAAA']
 
+    def test_metadata_csv_without_a_pano_id_column_fails_loudly(self, tmp_path):
+        """drop_duplicates(subset=['pano_id']) used to raise KeyError on a header typo. Normalising by
+        .get('pano_id') would instead read every row as blank and filter the file away - a run that
+        downloads nothing and exits 0. -c exists for hand-made CSVs, so this has to stay loud."""
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text('panoid,source\ntestPanoIdRealAAAAAAAA,gsv\n')
+
+        with pytest.raises(ValueError, match='no .pano_id. column'):
+            DownloadRunner.fetch_pano_ids_csv(str(csv_path))
+
     def test_normalize_pano_records_coerces_filters_and_dedupes(self):
         records = [{'pano_id': 123, 'source': 'mapillary'},
                    {'pano_id': 'abc', 'source': 'gsv'},
@@ -729,6 +739,36 @@ class TestLedgerHygiene:
         storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
 
         assert os.stat(storage / 'pano_id_log.csv').st_mode & 0o777 == 0o664
+
+    def test_a_failed_chmod_does_not_take_the_phase_down(self, monkeypatch, tmp_path):
+        """Losing the exists()/open() race to another user's run means chmod'ing a file we don't own. The
+        ledger is open and writable either way, so a PermissionError there must not end the image phase -
+        the same reasoning both downloaders apply to their shard-dir chmod."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        def denied(*args, **kwargs):
+            raise PermissionError(1, 'Operation not permitted')
+
+        monkeypatch.setattr(DownloadRunner.os, 'chmod', denied)
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+
+        result = DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos())
+
+        assert calls == GSV_PANO_IDS
+        assert result == (3, 0, 0, 0, 3)
+
+    def test_ledger_rows_are_lf_terminated_like_the_pandas_writer_they_replace(self, monkeypatch, tmp_path):
+        """Every existing image ledger was written by pandas to_csv, whose lineterminator defaults to
+        os.linesep - '\\n' on the Linux scraper boxes. csv.writer's excel default is '\\r\\n', which would mix
+        line endings inside one long-lived production file and put a trailing '\\r' on the downloaded column
+        for anything grepping it."""
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        raw = (storage / 'pano_id_log.csv').read_bytes()
+        assert b'\r' not in raw
+        assert raw.startswith(b'pano_id,downloaded\n')
 
 
 def test_pano_list_fetch_session_configuration(monkeypatch):
