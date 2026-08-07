@@ -564,6 +564,35 @@ def test_persistent_failures_cannot_starve_the_request_budget(tmp_path, fake_str
     assert len(attempted) > 5
 
 
+class TestCountUnresolvedDepth:
+    """count_unresolved_depth backs DownloadRunner's decision to reserve image time for depth at all: a
+    reservation with nothing unresolved would burn image throughput for a phase that returns in milliseconds."""
+
+    def test_counts_everything_with_no_ledger(self, tmp_path):
+        assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa', 'bbbbbb')) == 2
+
+    def test_resolved_panos_do_not_count(self, tmp_path):
+        with open(os.path.join(str(tmp_path), gsv.DEPTH_LOG_FILENAME), 'w', newline='') as f:
+            f.write('pano_id,status\naaaaaa,saved\nbbbbbb,unavailable\n')
+        assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa', 'bbbbbb', 'cccccc')) == 1
+
+    def test_malformed_ledger_rows_count_as_unresolved(self, tmp_path):
+        # Same tolerance as _load_depth_log: a crash-truncated row means the pano will be re-requested, so it
+        # is real depth work and must count toward the backlog.
+        with open(os.path.join(str(tmp_path), gsv.DEPTH_LOG_FILENAME), 'w', newline='') as f:
+            f.write('pano_id,status\nbbbbbb,saved\naaaaaa\n')
+        assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa', 'bbbbbb')) == 1
+
+    def test_unreadable_ledger_counts_as_no_backlog(self, tmp_path, monkeypatch):
+        """When the ledger can't be read, download_depth_maps sits the run out — nothing to reserve for."""
+
+        def boom(path):
+            raise OSError(5, 'Input/output error')
+
+        monkeypatch.setattr(gsv, '_load_depth_log', boom)
+        assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa')) == 0
+
+
 def test_missing_streetlevel_returns_zeros(tmp_path, monkeypatch):
     storage = str(tmp_path)
     # None in sys.modules makes `from streetlevel import streetview` raise ImportError.

@@ -3,6 +3,7 @@
 import argparse
 import logging
 import logging.handlers
+import math
 import os
 import signal
 import sys
@@ -18,6 +19,21 @@ from urllib3.util.retry import Retry
 from downloaders import DownloadResult, download_pano, gsv, mapillary
 
 
+def _reservation_minutes(value):
+    """argparse type= for --min-depth-runtime: a finite, non-negative float.
+
+    Without this, a negative value or nan silently made no reservation and inf silently zeroed the image
+    phase — a misconfiguration should fail the run at parse time, not misbehave quietly for months.
+    """
+    try:
+        minutes = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid float value: %r" % (value,))
+    if math.isnan(minutes) or math.isinf(minutes) or minutes < 0:
+        raise argparse.ArgumentTypeError("must be a finite, non-negative number of minutes: %r" % (value,))
+    return minutes
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
 parser.add_argument('s', help='storage_path - location to store scraped panos')
@@ -25,6 +41,7 @@ parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of 
 parser.add_argument('--all-panos', action='store_true', help='Download images for all panos that users visited, even if no labels were added on them. Does not affect depth, which always covers every pano.')
 parser.add_argument('--skip-depth', action='store_true', help='Skip downloading GSV depth maps (downloaded by default via the streetlevel library).')
 parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
+parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
 parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
 # Deprecated no-op, kept for one release so existing invocations don't crash argparse.
 parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
@@ -36,11 +53,18 @@ pano_metadata_csv = args.c
 all_panos = args.all_panos
 skip_depth = args.skip_depth
 max_runtime_minutes = args.max_runtime
+min_depth_runtime = args.min_depth_runtime
 max_depth_requests = args.max_depth_requests
 
 if args.attempt_depth:
     print("WARNING: --attempt-depth is deprecated and ignored; depth download is now on by default "
           "(use --skip-depth to disable).")
+
+# min_depth_runtime > 0 implies the operator typed the flag (the default is 0), so tell them when the
+# combination they ran it in means it cannot do anything.
+if min_depth_runtime > 0 and (max_runtime_minutes is None or skip_depth):
+    print("WARNING: --min-depth-runtime has no effect %s; no time will be reserved for the depth phase."
+          % ("with --skip-depth" if skip_depth else "without --max-runtime"))
 
 print(sidewalk_server_fqdn)
 print(storage_location)
@@ -305,7 +329,7 @@ def write_log_csv_row(fields):
 
 
 def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, max_runtime_minutes=None,
-                                max_depth_requests=None):
+                                max_depth_requests=None, min_depth_runtime=0.0):
     """Run the image and depth phases and append this run's row to log.csv.
 
     Fields are accumulated as each phase completes and the row is written once, in a finally, padded to the
@@ -315,10 +339,40 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
 
     @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
     @param depth_pano_infos Every supported pano; the depth phase filters this to source == 'gsv' itself.
+    @param min_depth_runtime Minutes of max_runtime_minutes reserved for the depth phase (see the flag's help).
     """
     start_time = datetime.now()
     # Wall-clock datetimes feed the log; the runtime budget gets a monotonic reference instead (#51).
     run_start_monotonic = time.monotonic()
+
+    # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
+    # split below needs it too.
+    gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
+
+    # Both phases share --max-runtime (it exists to keep the run inside its daily cron slot, per #38, and that
+    # constraint doesn't care which phase spends the clock), but the image phase must leave the reserved tail so
+    # an image backlog — a mapathon is the canonical case — can't starve the depth backfill night after night
+    # (#43). The reservation is only taken when the depth ledger shows unresolved work: once a city is fully
+    # backfilled the depth phase returns in milliseconds, and reserving for it would burn image throughput for
+    # nothing. Depth still ends at the total, so slack from a light image night rolls to depth rather than being
+    # lost. No reservation when depth is skipped: the image phase keeps the whole window.
+    image_max_runtime = max_runtime_minutes
+    if max_runtime_minutes is not None and not skip_depth and min_depth_runtime > 0:
+        depth_backlog = gsv.count_unresolved_depth(storage_location, gsv_panos)
+        if depth_backlog:
+            image_max_runtime = max(0.0, max_runtime_minutes - min_depth_runtime)
+            print("Budget: %.1f min total; image phase capped at %.1f min (%.1f min reserved for depth; "
+                  "backlog: %d panos)"
+                  % (max_runtime_minutes, image_max_runtime, min_depth_runtime, depth_backlog))
+            if image_max_runtime == 0.0 and max_runtime_minutes > 0:
+                # Loud on stdout because cron mails it: without this, a zero-image night reads like ordinary
+                # budget exhaustion and a misconfigured fleet would silently stop downloading images.
+                print("WARNING: --min-depth-runtime (%g) >= --max-runtime (%g); NO images will be downloaded "
+                      "this run" % (min_depth_runtime, max_runtime_minutes))
+        else:
+            print("Budget: no unresolved depth work; image phase gets the full %.1f min"
+                  % (max_runtime_minutes,))
+
     fields = [str(start_time)]
     try:
         # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below),
@@ -330,23 +384,23 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
         xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
         fields += [xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration]
 
-        # Keyword args on the budget parameters: #63 rewrites this same line, and a positional merge resolution
-        # would silently slot a datetime into the monotonic parameter — keywords make that collision loud.
+        # The budget arguments are passed by keyword deliberately: several changes have rewritten these call
+        # sites, and a positional resolution can put a datetime where a monotonic float belongs — a TypeError
+        # that only fires when --max-runtime is set, i.e. in the nightly cron and never in the suite.
         im_res = download_panorama_images(storage_location, image_pano_infos,
                                           run_start_monotonic=run_start_monotonic,
-                                          max_runtime_minutes=max_runtime_minutes)
+                                          max_runtime_minutes=image_max_runtime)
         im_end_time = datetime.now()
         im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
         fields += [im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration]
 
-        # Depth maps are GSV-only. This phase runs after the image phase sharing the same --max-runtime budget,
-        # so on catch-up days images (the primary artifact) win the whole window. It iterates the full pano
-        # list — not the pano_id_log.csv-gated image loop, and not narrowed by --all-panos — which is what
+        # The depth phase runs after the image phase and ends at the shared --max-runtime, so it gets the
+        # reserved tail (when one was taken) plus whatever slack the image phase left. It iterates the full
+        # pano list — not the pano_id_log.csv-gated image loop, and not narrowed by --all-panos — which is what
         # backfills depth for panos downloaded in earlier runs and for panos nobody has labelled.
         if skip_depth:
             depth_res = (0, 0, 0, 0)
         else:
-            gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
             depth_res = gsv.download_depth_maps(storage_location, gsv_panos,
                                                 run_start_monotonic=run_start_monotonic,
                                                 max_runtime_minutes=max_runtime_minutes,
@@ -390,7 +444,8 @@ print("Panos: %d supported, %d eligible for image download, %d GSV panos eligibl
 # Use pano_id list and associated info to gather panos from respective APIs
 print("Fetching Panoramas")
 try:
-    run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes, max_depth_requests)
+    run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes=max_runtime_minutes,
+                                max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime)
 except BaseException:
     # run_scraper_and_log_results's own finally has already written the evidence row; this puts the traceback -
     # otherwise stderr-only, the exact channel that dies with the container - into scrape.log too (#49).

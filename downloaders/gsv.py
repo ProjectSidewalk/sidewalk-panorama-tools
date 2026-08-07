@@ -338,6 +338,29 @@ def _load_depth_log(depth_log_path):
     return resolved
 
 
+def count_unresolved_depth(storage_path, pano_infos):
+    """Count panos whose depth outcome is not yet recorded in the depth ledger.
+
+    A cheap local read of depth_log.csv (see _load_depth_log) — no network. DownloadRunner uses it to decide
+    whether --min-depth-runtime should reserve image time at all: with nothing unresolved the depth phase
+    returns in milliseconds, so a reservation would just burn image throughput.
+
+    A pano whose artifact exists but whose ledger row is missing (only possible after manual ledger surgery)
+    counts as unresolved even though the phase will self-heal it without a request; that inaccuracy is not
+    worth a directory walk here. An unreadable ledger counts as no backlog: download_depth_maps sits the run
+    out in that state, so there is nothing to reserve for.
+
+    @param storage_path Root of the pano store (depth_log.csv lives here).
+    @param pano_infos   Pano dicts (needs 'pano_id'); callers pre-filter to source == 'gsv'.
+    @return             Number of panos with no 'saved'/'unavailable' ledger row.
+    """
+    try:
+        resolved = _load_depth_log(os.path.join(storage_path, DEPTH_LOG_FILENAME))
+    except OSError:
+        return 0
+    return sum(1 for p in pano_infos if p['pano_id'] not in resolved)
+
+
 def _write_depth_artifact(storage_path, pano_id, pano):
     """Atomically write <pano_id[:2]>/<pano_id>.depth.npz for a streetlevel pano with depth data.
 

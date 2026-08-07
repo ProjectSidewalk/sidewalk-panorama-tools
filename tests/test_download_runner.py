@@ -1,8 +1,9 @@
 """Tests for DownloadRunner.py: subprocess runs of the whole script, plus in-process calls via a fixture.
 
-Subprocess tests: the pano CSV rows all use an unsupported source, so every pano is filtered out before any
-phase runs — the script exercises its full argument parsing, phase orchestration, and log.csv writing without
-any network I/O.
+Subprocess tests: the unsupported-source pano CSV filters every pano out before any phase runs, so those runs
+exercise argument parsing, phase orchestration, and log.csv writing with no network I/O. The gsv-source CSVs
+feed the budget tests: those runs stub the per-pano download (via a driver script for subprocess runs) and cap
+the depth phase at 0 requests, so they count what the image phase actually downloads — still no network I/O.
 
 In-process tests: DownloadRunner is a script whose whole flow runs at import time, so importing it with a
 controlled argv — after replacing downloaders.download_pano, which it binds by `from downloaders import ...` —
@@ -28,6 +29,8 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER = os.path.join(REPO_ROOT, 'DownloadRunner.py')
 CSV_HEADER = 'pano_id,width,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
+# The subprocess budget tests' corpus; distinct from GSV_PANO_IDS below, which feeds the in-process ones.
+GSV_BUDGET_PANO_IDS = ['testPanoIdGsvAAAAAAAAA', 'testPanoIdGsvBBBBBBBBB']
 
 
 def write_pano_csv(tmp_path):
@@ -140,6 +143,187 @@ def test_max_depth_requests_flag_is_accepted(tmp_path):
     storage, result = run_downloader(tmp_path, '--max-depth-requests', '10')
     assert result.returncode == 0, result.stderr
     assert len(last_log_fields(storage)) == 18
+
+
+class TestDepthBudgetMessages:
+    """stdout messages for the --min-depth-runtime budget split (cron mails stdout, so these lines are the
+    operator's only signal). What the split actually *does* is pinned in TestImageBudgetBehaviour below —
+    these runs use the unsupported-source CSV, so both phases see empty pano lists.
+    """
+
+    def test_default_makes_no_reservation(self, tmp_path):
+        # The fleet plans to drastically lower --max-runtime; a default reservation would silently zero the
+        # image phase on every city whose slot is at or under it. Reserving is opt-in.
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120')
+        assert result.returncode == 0, result.stderr
+        assert 'reserved for depth' not in result.stdout
+        assert 'NO images' not in result.stdout
+
+    def test_no_backlog_means_no_reservation(self, tmp_path):
+        # No gsv panos in this CSV, so the depth ledger has no unresolved work to reserve for.
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45')
+        assert result.returncode == 0, result.stderr
+        assert 'no unresolved depth work' in result.stdout
+        assert 'reserved for depth' not in result.stdout
+
+    def test_zero_reservation_is_silent(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '0')
+        assert result.returncode == 0, result.stderr
+        assert 'reserved for depth' not in result.stdout
+
+    def test_skip_depth_gives_images_the_whole_budget(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--skip-depth')
+        assert result.returncode == 0, result.stderr
+        assert 'reserved for depth' not in result.stdout
+
+    def test_no_max_runtime_means_no_reservation(self, tmp_path):
+        storage, result = run_downloader(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert 'reserved for depth' not in result.stdout
+
+
+class TestMinDepthRuntimeValidation:
+    """--min-depth-runtime inputs that would otherwise silently no-op or zero the image phase (#43 review):
+    -5 and nan silently made no reservation, inf silently zeroed the image phase. Reject them at parse time,
+    and tell an operator who typed the flag in a combination where it cannot apply."""
+
+    @pytest.mark.parametrize('bad', ['-5', 'nan', 'inf', '-inf', 'abc'])
+    def test_rejects_negative_nan_and_inf(self, tmp_path, bad):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', bad)
+        assert result.returncode == 2
+        assert '--min-depth-runtime' in result.stderr
+
+    def test_warns_when_given_without_max_runtime(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--min-depth-runtime', '45')
+        assert result.returncode == 0, result.stderr
+        assert 'WARNING: --min-depth-runtime has no effect without --max-runtime' in result.stdout
+
+    def test_warns_when_given_with_skip_depth(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45',
+                                         '--skip-depth')
+        assert result.returncode == 0, result.stderr
+        assert 'WARNING: --min-depth-runtime has no effect with --skip-depth' in result.stdout
+
+    def test_effective_combination_does_not_warn(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45')
+        assert result.returncode == 0, result.stderr
+        assert 'has no effect' not in result.stdout
+
+
+def write_gsv_csv(tmp_path):
+    """Two labelled GSV panos — a supported source, so they reach the image phase's budget guard."""
+    csv_path = tmp_path / 'gsv_panos.csv'
+    csv_path.write_text(CSV_HEADER
+                        + '%s,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % GSV_BUDGET_PANO_IDS[0]
+                        + '%s,16384,8192,47.7,-122.4,90.0,0.0,gsv,True\n' % GSV_BUDGET_PANO_IDS[1])
+    return str(csv_path)
+
+
+FAKE_NETWORK_DRIVER = '''\
+"""Test-only driver: run the real DownloadRunner.py with the per-pano image download stubbed.
+
+Records each pano "downloaded" to $FAKE_DOWNLOAD_LOG instead of touching the network, then executes
+DownloadRunner.py itself (argparse, phase orchestration, budget arithmetic, log.csv) unmodified via runpy.
+"""
+import os
+import runpy
+import sys
+
+sys.path.insert(0, %(repo_root)r)
+
+import downloaders
+from downloaders import DownloadResult
+
+
+def _fake_download_pano(storage_path, pano_info):
+    with open(os.environ['FAKE_DOWNLOAD_LOG'], 'a') as f:
+        f.write(pano_info['pano_id'] + '\\n')
+    return DownloadResult.success
+
+
+downloaders.download_pano = _fake_download_pano
+sys.argv = ['DownloadRunner.py'] + sys.argv[1:]
+runpy.run_path(%(runner)r)
+''' % {'repo_root': REPO_ROOT, 'runner': RUNNER}
+
+
+def run_downloader_with_fake_network(tmp_path, *extra_args):
+    """Drive the real DownloadRunner.py against the gsv-source CSV, counting image downloads.
+
+    The unsupported-source CSV never reaches the budget guard (every pano is filtered out before the image
+    loop), which is how announcement-only tests could pass while the budget split itself was mutated away.
+    These runs use supported panos with download_pano stubbed by FAKE_NETWORK_DRIVER, and --max-depth-requests 0
+    so the depth phase issues no requests either — the download counts reflect the real budget arithmetic, with
+    zero network I/O.
+    """
+    driver = tmp_path / 'fake_network_driver.py'
+    driver.write_text(FAKE_NETWORK_DRIVER)
+    downloads_log = tmp_path / 'downloads.txt'
+    downloads_log.write_text('')
+    storage = tmp_path / 'storage'
+    env = dict(os.environ, FAKE_DOWNLOAD_LOG=str(downloads_log))
+    result = subprocess.run(
+        [sys.executable, str(driver), 'sidewalk-test.invalid', str(storage), '-c', write_gsv_csv(tmp_path),
+         '--max-depth-requests', '0', *extra_args],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env)
+    downloaded = downloads_log.read_text().split()
+    return storage, result, downloaded
+
+
+class TestImageBudgetBehaviour:
+    """What the image phase actually downloads under a --min-depth-runtime reservation (#43).
+
+    The review demonstrated that pinning only the budget announcement lets feature-deleting mutations pass the
+    whole suite; these tests assert on the downloads themselves.
+    """
+
+    def test_reservation_that_consumes_the_budget_downloads_no_images(self, tmp_path):
+        storage, result, downloaded = run_downloader_with_fake_network(
+            tmp_path, '--max-runtime', '5', '--min-depth-runtime', '5')
+        assert result.returncode == 0, result.stderr
+        assert downloaded == []
+        # A zero-image run must be unmistakable in cron mail, not read like ordinary budget exhaustion.
+        assert ('WARNING: --min-depth-runtime (5) >= --max-runtime (5); NO images will be downloaded this run'
+                in result.stdout)
+
+    def test_zero_reservation_downloads_every_pano(self, tmp_path):
+        storage, result, downloaded = run_downloader_with_fake_network(
+            tmp_path, '--max-runtime', '5', '--min-depth-runtime', '0')
+        assert result.returncode == 0, result.stderr
+        assert sorted(downloaded) == sorted(GSV_BUDGET_PANO_IDS)
+
+    def test_default_reserves_nothing(self, tmp_path):
+        # Same run as above but with --min-depth-runtime left at its default, which must be 0: the fleet plans
+        # to drastically lower --max-runtime, and a default reservation would zero the image phase fleet-wide.
+        storage, result, downloaded = run_downloader_with_fake_network(tmp_path, '--max-runtime', '5')
+        assert result.returncode == 0, result.stderr
+        assert sorted(downloaded) == sorted(GSV_BUDGET_PANO_IDS)
+
+    def test_fully_resolved_depth_ledger_frees_the_whole_budget_for_images(self, tmp_path):
+        # The reservation exists to protect a depth *backlog*. Once every pano is resolved in the ledger the
+        # depth phase returns in milliseconds, so reserving would burn image throughput for nothing — the image
+        # phase must get the full budget even with --min-depth-runtime set.
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'depth_log.csv').write_text(
+            'pano_id,status\n%s,saved\n%s,unavailable\n' % (GSV_BUDGET_PANO_IDS[0], GSV_BUDGET_PANO_IDS[1]))
+
+        storage, result, downloaded = run_downloader_with_fake_network(
+            tmp_path, '--max-runtime', '5', '--min-depth-runtime', '5')
+
+        assert result.returncode == 0, result.stderr
+        assert sorted(downloaded) == sorted(GSV_BUDGET_PANO_IDS)
+        assert 'no unresolved depth work' in result.stdout
+        assert 'NO images' not in result.stdout
+
+    def test_backlog_applies_the_reservation_and_announces_it(self, tmp_path):
+        # Nothing in the ledger, so both gsv panos are a depth backlog: the reservation must be taken.
+        storage, result, downloaded = run_downloader_with_fake_network(
+            tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45')
+        assert result.returncode == 0, result.stderr
+        # The image phase still has 75 minutes — plenty for two stubbed panos.
+        assert sorted(downloaded) == sorted(GSV_BUDGET_PANO_IDS)
+        assert 'image phase capped at 75.0 min' in result.stdout
 
 
 def write_mixed_label_csv(tmp_path):
