@@ -1,0 +1,665 @@
+{
+ "captured_utc": "2026-08-07T18:56:00Z",
+ "legend": "1 = every tile in the row came back 256x256, 2 = every tile 512x512, ? = mixed",
+ "note": "Full zoom-5 grid sweeps. With fover the half-res rows form two polar bands; without it the band is gone. Row index runs top (y=0) to bottom.",
+ "bands": {
+  "Seattle 2022": {
+   "pano_id": "Svz6_7CwyijJ6RgjWROnCw",
+   "grid": [
+    32,
+    16
+   ],
+   "row_map": "?111122222211111",
+   "degraded_tiles": 318,
+   "total_tiles": 512,
+   "rows": [
+    {
+     "y": 0,
+     "sizes": {
+      "(256, 256)": 30,
+      "None": 2
+     }
+    },
+    {
+     "y": 1,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 2,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 3,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 4,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 5,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 6,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 7,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 8,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 9,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 10,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 11,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 12,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 13,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 14,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 15,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    }
+   ]
+  },
+  "NYC 2024": {
+   "pano_id": "ywskIOsAFskiKHt5fwIUWA",
+   "grid": [
+    32,
+    16
+   ],
+   "row_map": "1111122222211111",
+   "degraded_tiles": 320,
+   "total_tiles": 512,
+   "rows": [
+    {
+     "y": 0,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 1,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 2,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 3,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 4,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 5,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 6,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 7,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 8,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 9,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 10,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 11,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 12,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 13,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 14,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    },
+    {
+     "y": 15,
+     "sizes": {
+      "(256, 256)": 32
+     }
+    }
+   ]
+  },
+  "Sydney 2014": {
+   "pano_id": "cFou_FaIrbvqN0kcS5QuxA",
+   "grid": [
+    26,
+    13
+   ],
+   "row_map": "1111222221111",
+   "degraded_tiles": 208,
+   "total_tiles": 338,
+   "rows": [
+    {
+     "y": 0,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 1,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 2,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 3,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 4,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 5,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 6,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 7,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 8,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 9,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 10,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 11,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 12,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    }
+   ]
+  },
+  "Tokyo 2018": {
+   "pano_id": "XlVh96-Z9lAI5tKrU2O4Yg",
+   "grid": [
+    26,
+    13
+   ],
+   "row_map": "1111222221111",
+   "degraded_tiles": 208,
+   "total_tiles": 338,
+   "rows": [
+    {
+     "y": 0,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 1,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 2,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 3,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 4,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 5,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 6,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 7,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 8,
+     "sizes": {
+      "(512, 512)": 26
+     }
+    },
+    {
+     "y": 9,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 10,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 11,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    },
+    {
+     "y": 12,
+     "sizes": {
+      "(256, 256)": 26
+     }
+    }
+   ]
+  },
+  "Seattle 2022 (no fover)": {
+   "pano_id": "Svz6_7CwyijJ6RgjWROnCw",
+   "grid": [
+    32,
+    16
+   ],
+   "row_map": "2222222222222222",
+   "degraded_tiles": 0,
+   "total_tiles": 512,
+   "rows": [
+    {
+     "y": 0,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 1,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 2,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 3,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 4,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 5,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 6,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 7,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 8,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 9,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 10,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 11,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 12,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 13,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 14,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    },
+    {
+     "y": 15,
+     "sizes": {
+      "(512, 512)": 32
+     }
+    }
+   ]
+  }
+ },
+ "halving_cost_by_row": {
+  "metric": "mean |pixel - (halve then double with LANCZOS)| on the luma of a full 512 body; how much real detail halving that row would destroy",
+  "why": "fover halved exactly the polar rows. Equirectangular oversamples the poles, so those rows carry the least real detail per pixel - the optimisation is well targeted, which bounds how much the existing store actually lost (#73).",
+  "measured_utc": "2026-08-07T19:02:55Z",
+  "panos": {
+   "Seattle 2022": {
+    "pano_id": "Svz6_7CwyijJ6RgjWROnCw",
+    "columns_sampled": [
+     2,
+     8,
+     14,
+     20,
+     26
+    ],
+    "per_row": {
+     "0": {
+      "cost": 0.1384,
+      "zone": "polar_fover_halved_this"
+     },
+     "1": {
+      "cost": 0.1708,
+      "zone": "polar_fover_halved_this"
+     },
+     "2": {
+      "cost": 0.0665,
+      "zone": "polar_fover_halved_this"
+     },
+     "3": {
+      "cost": 0.0761,
+      "zone": "polar_fover_halved_this"
+     },
+     "4": {
+      "cost": 0.1563,
+      "zone": "polar_fover_halved_this"
+     },
+     "5": {
+      "cost": 0.5093,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "6": {
+      "cost": 0.8294,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "7": {
+      "cost": 2.4365,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "8": {
+      "cost": 1.2381,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "9": {
+      "cost": 1.533,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "10": {
+      "cost": 1.3795,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "11": {
+      "cost": 0.5722,
+      "zone": "polar_fover_halved_this"
+     },
+     "12": {
+      "cost": 0.5095,
+      "zone": "polar_fover_halved_this"
+     },
+     "13": {
+      "cost": 0.1245,
+      "zone": "polar_fover_halved_this"
+     },
+     "14": {
+      "cost": 0.0015,
+      "zone": "polar_fover_halved_this"
+     },
+     "15": {
+      "cost": 0.0702,
+      "zone": "polar_fover_halved_this"
+     }
+    },
+    "mean_polar_cost": 0.1886,
+    "mean_horizon_cost": 1.321,
+    "horizon_is_x_more_costly_to_halve": 7.0
+   },
+   "Sydney 2014": {
+    "pano_id": "cFou_FaIrbvqN0kcS5QuxA",
+    "columns_sampled": [
+     2,
+     8,
+     14,
+     20,
+     26
+    ],
+    "per_row": {
+     "0": {
+      "cost": 0.12,
+      "zone": "polar_fover_halved_this"
+     },
+     "1": {
+      "cost": 0.1826,
+      "zone": "polar_fover_halved_this"
+     },
+     "2": {
+      "cost": 0.1879,
+      "zone": "polar_fover_halved_this"
+     },
+     "3": {
+      "cost": 0.2179,
+      "zone": "polar_fover_halved_this"
+     },
+     "4": {
+      "cost": 0.4058,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "5": {
+      "cost": 0.9791,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "6": {
+      "cost": 1.0037,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "7": {
+      "cost": 1.0323,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "8": {
+      "cost": 0.9185,
+      "zone": "horizon_band_fover_left_alone"
+     },
+     "9": {
+      "cost": 0.6641,
+      "zone": "polar_fover_halved_this"
+     },
+     "10": {
+      "cost": 0.5352,
+      "zone": "polar_fover_halved_this"
+     },
+     "11": {
+      "cost": 0.281,
+      "zone": "polar_fover_halved_this"
+     },
+     "12": {
+      "cost": 0.2025,
+      "zone": "polar_fover_halved_this"
+     }
+    },
+    "mean_polar_cost": 0.2989,
+    "mean_horizon_cost": 0.8679,
+    "horizon_is_x_more_costly_to_halve": 2.9
+   }
+  }
+ }
+}

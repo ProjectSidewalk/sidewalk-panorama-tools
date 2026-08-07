@@ -85,6 +85,30 @@
    ],
    "bytes": 1184,
    "note": "x=20 is far past the 7-column zoom-3 grid; Google still answers 200 OK with a valid, all-black image/jpeg - which is why an out-of-range grid cannot be detected tile by tile"
+  },
+  "z5_fover2_4_2.jpg": {
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 4,
+   "y": 2,
+   "body_size": [
+    256,
+    256
+   ],
+   "bytes": 1901,
+   "note": "same grid position, one URL parameter apart. y=2 is inside the polar band that fover halves; z5_nofover is byte-identical to what streetviewpixels-pa serves (#73)"
+  },
+  "z5_nofover_4_2.jpg": {
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 4,
+   "y": 2,
+   "body_size": [
+    512,
+    512
+   ],
+   "bytes": 2863,
+   "note": "same grid position, one URL parameter apart. y=2 is inside the polar band that fover halves; z5_nofover is byte-identical to what streetviewpixels-pa serves (#73)"
   }
  },
  "captured_utc": "2026-08-07T17:42:45Z",
@@ -117,5 +141,9 @@
    ],
    "vs_z4_quadrant_mean_abs_diff": 0.0
   }
+ },
+ "fover": {
+  "finding": "fover=1/2/3 makes CBK serve the polar rows of a zoom-5 grid at 256x256; fover=0 or omitting it does not; onerr is innocent. Isolated by misaugstad on #73.",
+  "dropped_from_cbk_url": "2026-08-07"
  }
 }

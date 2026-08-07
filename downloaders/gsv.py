@@ -3,8 +3,8 @@
 # Stitches tiles from Google's undocumented CBK endpoint into a single equirectangular JPEG, and fetches depth
 # maps from Google's photometa endpoint via the streetlevel library (see download_depth_maps).
 #
-# CBK nominally serves 512x512 tiles, but answers some requests with a half-size 256x256 body instead, choosing
-# per request - so one pano's fan-out gets a mix. See _stitch_cell_size and tests/test_gsv_tile_contract.py.
+# Do not add viewer parameters to the CBK URL without checking what they do to the tile bodies: `fover`, copied
+# from the Street View viewer, made CBK serve the polar rows of zoom 5 at half size (#73). See _CBK_BASE_URL.
 
 import asyncio
 import collections
@@ -82,7 +82,15 @@ def _get_response(url, session, stream=False):
 
 TILE_SIZE = 512
 
-_CBK_BASE_URL = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&fover=2&onerr=3&renderer=spherical&v=4'
+# NO `fover` - it is a viewer bandwidth optimisation, and sending any of fover=1/2/3 makes CBK serve the polar
+# rows of a zoom-5 grid as 256x256 bodies instead of 512x512, costing half the linear resolution over 62.5% of
+# the frame (#73). We inherited fover=2 by copying the Street View viewer's URL wholesale. Dropped 2026-08-07,
+# after misaugstad isolated the parameter. `onerr=3` was checked at the same time and is innocent.
+#
+# With fover gone, CBK's tile bodies are byte-identical to streetviewpixels-pa's, so there is nothing to
+# recover by switching endpoints (#74 is now a cleanup, not a resolution fix). Anything added here should be
+# checked the same way: tests/test_gsv_tile_contract.py pins the parameter and the band it used to produce.
+_CBK_BASE_URL = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&onerr=3&renderer=spherical&v=4'
 
 # Tile failures worth retrying. aiohttp.web.HTTPServerError used to head this tuple, but it is a SERVER-side
 # response class that client code never raises (#52 item 3) - importing aiohttp.web for it was pure cost. The
@@ -206,15 +214,17 @@ def _tile_body_size(data):
 def _stitch_cell_size(tile_results):
     """The pixel size each grid cell occupies in the stitch: the largest body this fan-out returned.
 
-    cbk answers the same zoom-5 grid position with either a full 512x512 body or a load-shed 256x256 one,
-    picking per request, so a single pano's fan-out routinely gets a MIX of the two (captured as real bytes
-    in tests/fixtures/tiles/, pinned by tests/test_gsv_tile_contract.py). A degraded body is the same grid
-    cell rendered at half scale - proven there against the zoom-4 tile covering the same region - so the
-    cells still tile the pano; they just arrive at different scales and have to be brought to a common one.
+    Defence in depth rather than a live requirement, since dropping `fover` from _CBK_BASE_URL removed the
+    only known cause of undersized bodies. It stays because the failure it prevents is silent and expensive:
+    with fover, CBK returned 256x256 bodies for the polar rows of every zoom-5 grid, and pasting one of those
+    at the full grid pitch leaves three quarters of its cell black in a pano that is still saved as success.
+    A half-size body is the same grid cell rendered at half scale (proven against the zoom-4 tile covering
+    the same region in tests/test_gsv_tile_contract.py), so cells still tile the pano and only need bringing
+    to a common scale.
 
-    Taking the largest keeps the best imagery the fan-out actually got. When every body is degraded the cell
-    is simply smaller, so the canvas is a quarter of the size and one final LANCZOS pass does the upscaling,
-    instead of 512 per-tile ones.
+    Taking the largest keeps the best imagery the fan-out actually got. If every body were undersized the
+    cell would simply be smaller, so the canvas is a quarter of the size and one final LANCZOS pass does the
+    upscaling instead of 512 per-tile ones.
     """
     if not tile_results:
         return (TILE_SIZE, TILE_SIZE)
@@ -223,12 +233,15 @@ def _stitch_cell_size(tile_results):
 
 
 def _undersized_tile_count(tile_results):
-    """How many bodies came back below the NOMINAL tile size - i.e. how much of this pano is load-shed.
+    """How many bodies came back below the NOMINAL tile size - i.e. how much of this pano is half-resolution.
 
-    Measured against TILE_SIZE rather than against _stitch_cell_size: when every body in a fan-out is
-    degraded the cell size is itself 256, so nothing would look undersized relative to its neighbours even
-    though the whole pano arrived at half resolution. Degraded means "smaller than what cbk serves when it
-    is healthy", which is a fixed 512.
+    Measured against TILE_SIZE rather than against _stitch_cell_size: if every body in a fan-out were
+    undersized the cell size would itself be 256, so nothing would look undersized relative to its
+    neighbours even though the whole pano arrived at half resolution. Undersized means "smaller than what
+    CBK serves", which is a fixed 512.
+
+    Expected to be 0 on every pano now that `fover` is gone. It is kept as the tripwire for that: if this
+    ever fires, some request parameter has started costing us resolution again (#73).
     """
     return sum(1 for _x, _y, data in tile_results
                if min(_tile_body_size(data)) < TILE_SIZE)
@@ -238,12 +251,12 @@ def _stitch_tiles(tile_results, zoom_dims, final_dims):
     """Paste tiles into a zoom-native canvas, crop to the zoom's true size, and scale to the reported dims.
 
     Every body is brought to the cell size (see _stitch_cell_size) before pasting. That is what the pre-#44
-    `img.resize((512, 512))` was for, though nothing said so: cbk hands back half-size bodies for some grid
-    positions, and pasting one at the full grid pitch leaves three quarters of its cell black - saved as
-    success, exactly the corruption #44 is about. Google never returns a true-size short edge body, so an
-    undersized body always means the load-shed rendering: a real bottom-edge tile arrives as a full 512 body
-    black-padded below (tests/fixtures/tiles/z3_edge_bottom.jpg), and the crop below is what removes that
-    padding.
+    `img.resize((512, 512))` was quietly doing: while the URL still carried `fover`, CBK returned half-size
+    bodies for the polar rows of zoom 5, and pasting one at the full grid pitch leaves three quarters of its
+    cell black - saved as success, exactly the corruption #44 is about. Google never returns a true-size
+    short edge body, so an undersized body is never a legitimately narrow edge tile: a real bottom-edge tile
+    arrives as a full 512 body black-padded below (tests/fixtures/tiles/z3_edge_bottom.jpg), and the crop
+    below is what removes that padding.
 
     The final resize is what the pre-#44 code's `if zoom == 3` no-op resize was reaching for: downstream
     consumers (label pixel coords, depth-map alignment) assume the JPEG is at the server-reported
@@ -416,12 +429,13 @@ def download_single_pano(storage_path, pano_info):
 
     degraded = _undersized_tile_count(ok)
     if degraded:
-        # Not a failure: a load-shed body is the same cell at half scale, so the stitch is still correct and
-        # full-frame - just softer than it should be. Worth saying out loud, because it is invisible in the
-        # saved JPEG (which is at the reported dims either way) and it means the store is quietly
-        # accumulating half-resolution panos while Google is shedding load.
-        logging.warning("IMAGEDOWNLOAD: pano %s: %d/%d tiles came back degraded (below the nominal %dpx "
-                        "tile); stitching at reduced resolution", pano_id, degraded, len(ok), TILE_SIZE)
+        # Should never fire now that `fover` is gone (#73). Not a failure if it does: a half-size body is
+        # the same cell at half scale, so the stitch is still correct and full-frame, just softer. But it
+        # means some request parameter has started costing us resolution again, and that is invisible in the
+        # saved JPEG - which is at the reported dims either way.
+        logging.warning("IMAGEDOWNLOAD: pano %s: %d/%d tiles came back below the nominal %dpx tile; "
+                        "stitching at reduced resolution - check the CBK request parameters (#73)",
+                        pano_id, degraded, len(ok), TILE_SIZE)
 
     image = _stitch_tiles(ok, _dims_at_zoom(final_image_width, final_image_height, zoom), final_im_dimension)
     _reject_mostly_black_stitch(image, pano_id, zoom)

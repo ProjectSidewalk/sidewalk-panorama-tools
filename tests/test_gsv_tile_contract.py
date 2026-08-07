@@ -1,27 +1,35 @@
 """Pins what Google's CBK tile endpoint actually does, using real tile bytes captured from it.
 
-Everything here runs against committed fixtures in fixtures/tiles/ (62 KB of real cbk responses, see
-manifest.json for pano ids, grid positions and capture date), so the suite stays network-free. The point is
-to hold the endpoint's real behaviour in the repo, because two of these behaviours are load-bearing for
-downloaders.gsv and neither is documented anywhere:
+Everything here runs against committed fixtures in fixtures/tiles/ (74 KB of real CBK responses; see
+manifest.json for pano ids, grid positions and capture dates, and fover_band_map.json for the full-grid
+sweeps), so the suite stays network-free. Opt-in live re-checks are at the bottom. The point is to hold the
+endpoint's real behaviour in the repo, because none of it is documented and we have already argued about it
+once:
 
-  1. cbk answers the SAME zoom-5 grid position with either a 512x512 body or a load-shed 256x256 body.
-     Which positions come back degraded varies over hours and is sticky for a while, so a single pano's
-     512-tile fan-out routinely receives a MIX of both. The fixture block is exactly that: a real 2x2
-     zoom-5 neighbourhood captured in one pass, two tiles at 512 and two at 256.
+  1. THE `fover` PARAMETER COSTS HALF THE RESOLUTION. While the CBK URL carried `fover=2` - inherited by
+     copying the Street View viewer's URL - CBK returned 256x256 bodies instead of 512x512 for the POLAR
+     ROWS of every zoom-5 grid, in a fixed band: full resolution within ~34 degrees of the horizon, half
+     resolution above and below. On a 32x16 grid that is rows 0-4 and 11-15, i.e. 320 of 512 tiles.
 
-     A degraded body is the same grid cell rendered at half scale - proven here against the zoom-4 tile
-     covering the same region, which matches it to the pixel. So the correct placement is to scale every
-     body up to the stitch's cell size, which is what the pre-#44 `img.resize((512, 512))` was doing and
-     why removing it produced a 75%-black pano (see test_gsv_stitcher's mixed-body tests).
+     It is a deterministic property of the request, not of load, time or position (#73). Any of
+     fover=1/2/3 triggers it; fover=0 or omitting it does not; `onerr` is innocent. With `fover` gone, CBK
+     returns bodies BYTE-IDENTICAL to streetviewpixels-pa's - which is why #74 is a cleanup rather than a
+     resolution fix.
+
+     Credit where due: misaugstad isolated the parameter and the band on #73. The original diagnosis in
+     that issue - "per-request load shedding, sticky per position, drifting over hours" - was wrong; every
+     observation behind it was the fixed band seen through scattered sampling.
 
   2. Out-of-range tiles are answered 200 OK with a valid, ALL-BLACK image/jpeg, and short edge tiles are
      padded to a full 512 body rather than returned at their true size. Together those mean a wrong tile
      grid cannot be detected tile by tile - only by looking at the stitched result, which is what
      _reject_mostly_black_stitch is for.
 
-Re-capture with scratch/build_fixtures2.py-style probing if Google's behaviour ever needs re-checking; the
-manifest records what each file was when captured.
+  3. A half-size body is the same grid cell rendered at half scale - proven against the zoom-4 tile covering
+     the same region, which matches it to the pixel. That is why bringing every body to the stitch's cell
+     size is the correct repair, and why the pre-#44 `img.resize((512, 512))` was load-bearing without
+     saying so. downloaders.gsv still does this, as defence in depth: no live cause remains, but the failure
+     it prevents is a silently 75%-black pano saved as success.
 """
 
 import json
@@ -50,6 +58,167 @@ def fixture_image(name):
 def manifest():
     with open(os.path.join(FIXTURES, 'manifest.json')) as f:
         return json.load(f)
+
+
+@pytest.fixture(scope='module')
+def band_map():
+    """Full zoom-5 grid sweeps of four panos, with fover=2 and (for one) without. 1 = every tile in the row
+    came back 256x256, 2 = every tile 512x512."""
+    with open(os.path.join(FIXTURES, 'fover_band_map.json')) as f:
+        return json.load(f)['bands']
+
+
+class TestFoverIsNotInTheRequest:
+    """The regression guard that matters most: `fover` cost us half the resolution of 62.5% of every zoom-5
+    pano for as long as it was in the URL, and it looks utterly innocuous sitting among the other viewer
+    parameters. Anyone re-adding it - or adding another viewer parameter without checking - trips this."""
+
+    def test_the_base_url_does_not_send_fover(self):
+        assert 'fover' not in gsv._CBK_BASE_URL, (
+            'fover makes CBK serve the polar rows of zoom 5 at 256x256 instead of 512x512, costing half the '
+            'linear resolution over 62.5% of the frame (#73). It is not a harmless viewer parameter.')
+
+    def test_generated_tile_urls_do_not_send_fover(self):
+        for _x, _y, url in gsv._generate_tile_urls('panoA', 16384, 8192, 5)[:8]:
+            assert 'fover' not in url
+
+    def test_the_probe_urls_do_not_send_fover_either(self):
+        """download_single_pano builds its zoom probes off the same constant, so they inherit whatever it
+        carries. Pinning the constant covers both, but only while they share it."""
+        assert 'fover' not in gsv._CBK_BASE_URL
+        assert gsv._CBK_BASE_URL.startswith('https://maps.google.com/cbk?')
+
+    def test_onerr_is_still_sent(self):
+        """`onerr=3` was checked at the same time and is innocent - it is what makes an out-of-range tile
+        come back as a black JPEG rather than an error, which the zoom probe depends on. Don't drop it while
+        cleaning up."""
+        assert 'onerr=3' in gsv._CBK_BASE_URL
+
+
+class TestTheFoverBandOnRealBytes:
+    """Same pano, same grid position, one parameter apart - captured in one pass."""
+
+    def test_fover_body_is_half_size_and_the_plain_request_is_not(self):
+        assert fixture_image('z5_fover2_4_2.jpg').size == (256, 256)
+        assert fixture_image('z5_nofover_4_2.jpg').size == (512, 512)
+
+    def test_both_bodies_are_the_same_imagery(self):
+        """So the parameter costs resolution and nothing else - it is not a different crop, a different
+        rendering, or a stale cache entry. That is what makes upscaling the correct repair."""
+        small = fixture_image('z5_fover2_4_2.jpg').resize((512, 512), Image.LANCZOS)
+        full = fixture_image('z5_nofover_4_2.jpg')
+        diff = np.abs(np.asarray(small, float) - np.asarray(full, float)).mean()
+        assert diff < 3.0, 'the fover body is not the same cell as the plain one (mean|diff|=%.2f)' % diff
+
+    def test_the_fover_body_has_a_quarter_of_the_pixels(self):
+        """Discrimination for the test above: "same imagery" must not be read as "interchangeable". The
+        parameter really does cost pixels, whatever it costs in perceived detail."""
+        small, full = fixture_image('z5_fover2_4_2.jpg'), fixture_image('z5_nofover_4_2.jpg')
+        assert small.size[0] * small.size[1] * 4 == full.size[0] * full.size[1]
+
+
+class TestWhatTheLostResolutionWasActuallyWorth:
+    """Measured, because it is the crux of the #73 re-download decision and the intuitive answer is wrong.
+
+    `fover` halved precisely the polar rows, and equirectangular projection oversamples the poles - so those
+    rows carry the least real detail per pixel in the whole frame. Halving them destroys far less than
+    halving the horizon would. Recorded per row in fover_band_map.json's halving_cost_by_row: the metric is
+    how much a full 512 body changes when halved and re-expanded, i.e. the real detail that a half-size body
+    at that row would have cost us.
+
+    This is why the recovered resolution is worth having going forward but does not by itself justify
+    re-downloading the store - and why a naive sharpness comparison between a fover body and a plain one
+    shows almost nothing (LANCZOS ringing on the upscale can even out-score the genuine tile)."""
+
+    @pytest.fixture(scope='class')
+    @classmethod
+    def costs(cls):
+        with open(os.path.join(FIXTURES, 'fover_band_map.json')) as f:
+            return json.load(f)['halving_cost_by_row']['panos']
+
+    @pytest.mark.parametrize('label', ['Seattle 2022', 'Sydney 2014'])
+    def test_halving_the_horizon_would_cost_much_more_than_halving_the_poles(self, costs, label):
+        entry = costs[label]
+        assert entry['mean_horizon_cost'] > 2.0 * entry['mean_polar_cost'], (
+            '%s: the polar rows are no longer the cheap ones to halve, which would change the #73 '
+            'conclusion' % label)
+
+    @pytest.mark.parametrize('label', ['Seattle 2022', 'Sydney 2014'])
+    def test_fover_halved_only_rows_in_the_cheap_zone(self, costs, label):
+        """The optimisation is well targeted: every row it halved is a polar row, and it left the whole
+        horizon band alone. If that were not true the store would be in worse shape than #73 concluded."""
+        entry = costs[label]
+        halved = [int(y) for y, v in entry['per_row'].items() if v['zone'].startswith('polar')]
+        kept = [int(y) for y, v in entry['per_row'].items() if v['zone'].startswith('horizon')]
+        assert halved and kept
+        assert max(entry['per_row'][str(y)]['cost'] for y in halved) \
+            < max(entry['per_row'][str(y)]['cost'] for y in kept), label
+
+    def test_the_zones_agree_with_the_swept_band_map(self, costs, band_map):
+        """Ties this measurement to the band sweep, so the two cannot drift apart: the rows labelled polar
+        here must be exactly the rows that came back 256 there."""
+        for label in ('Sydney 2014',):
+            swept = band_map[label]['row_map']
+            for y, entry in costs[label]['per_row'].items():
+                degraded = swept[int(y)] == '1'
+                assert degraded == entry['zone'].startswith('polar'), \
+                    '%s row %s: band map and cost table disagree' % (label, y)
+
+
+class TestTheBandStructure:
+    """Pinned from full-grid sweeps, not samples. The band is why the original #73 diagnosis went wrong:
+    32 scattered positions hit it without revealing it."""
+
+    @pytest.mark.parametrize('label,expected_rows,expected_degraded,total', [
+        ('Seattle 2022', '?111122222211111', 318, 512),
+        ('NYC 2024', '1111122222211111', 320, 512),
+        ('Sydney 2014', '1111222221111', 208, 338),
+        ('Tokyo 2018', '1111222221111', 208, 338),
+    ])
+    def test_swept_row_map(self, band_map, label, expected_rows, expected_degraded, total):
+        entry = band_map[label]
+        assert entry['row_map'] == expected_rows
+        assert entry['degraded_tiles'] == expected_degraded
+        assert entry['total_tiles'] == total
+
+    def test_the_degraded_rows_are_the_polar_caps_not_scattered_positions(self, band_map):
+        """Every half-res row is at the top or the bottom; the full-res rows are one contiguous band around
+        the horizon. A per-position or per-request effect could not produce this."""
+        for label in ('NYC 2024', 'Sydney 2014', 'Tokyo 2018'):
+            row_map = band_map[label]['row_map']
+            full = [i for i, c in enumerate(row_map) if c == '2']
+            assert full, label
+            assert full == list(range(full[0], full[-1] + 1)), '%s: full-res rows are not contiguous' % label
+            assert full[0] > 0 and full[-1] < len(row_map) - 1, '%s: band is not bounded by poles' % label
+
+    def test_the_band_is_centred_on_the_horizon(self, band_map):
+        """Which is what makes the lost detail cheap: equirectangular already oversamples the poles."""
+        for label in ('NYC 2024', 'Sydney 2014', 'Tokyo 2018'):
+            row_map = band_map[label]['row_map']
+            full = [i for i, c in enumerate(row_map) if c == '2']
+            centre = (len(row_map) - 1) / 2.0
+            band_centre = (full[0] + full[-1]) / 2.0
+            assert abs(band_centre - centre) <= 0.5, '%s: band is not centred on the horizon' % label
+
+    def test_the_measured_counts_match_the_row_structure(self, band_map):
+        """Ties the two together: the 320/512 and 208/338 figures in #73 are exactly the row bands, which is
+        what showed the original 'roughly 60% of positions, randomly' reading was wrong."""
+        for label in ('NYC 2024', 'Sydney 2014', 'Tokyo 2018'):
+            entry = band_map[label]
+            cols, _rows = entry['grid']
+            half_rows = entry['row_map'].count('1')
+            assert entry['degraded_tiles'] == half_rows * cols, label
+
+    def test_without_fover_the_band_is_gone_entirely(self, band_map):
+        """The other half of the causal claim, swept over a full 512-tile grid rather than probed."""
+        entry = band_map['Seattle 2022 (no fover)']
+        assert entry['row_map'] == '2' * 16
+        assert entry['degraded_tiles'] == 0
+        assert entry['total_tiles'] == 512
+
+    def test_the_two_sweeps_are_the_same_pano(self, band_map):
+        """Otherwise the before/after comparison would prove nothing."""
+        assert band_map['Seattle 2022 (no fover)']['pano_id'] == band_map['Seattle 2022']['pano_id']
 
 
 # The captured 2x2 zoom-5 neighbourhood, and the zoom-4 tile covering the same pano region.
@@ -170,26 +339,107 @@ LIVE_PANOS = [('Seattle 2022', 'Svz6_7CwyijJ6RgjWROnCw', 16384, 8192),
               ('DC 2007 (four zoom levels)', 'TEKYJ5O1xd0OZ_YqF0lFRA', 3328, 1664)]
 
 
+def _live_tile(session, pano, zoom, x, y, extra=''):
+    url = '%s%s&zoom=%d&x=%d&y=%d&panoid=%s' % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano)
+    return session.get(url, headers=gsv._random_header(), timeout=30).content
+
+
 @live_only
-def test_live_cbk_still_mixes_body_sizes_in_one_fanout():
-    """Re-checks the premise of this whole module against the live endpoint. If this ever starts failing
-    because every body is 512, the mixed-size handling is merely unnecessary, not wrong - do not remove it
-    on one clean run; the endpoint went a full 30 minutes serving nothing but 256 bodies during the #68
-    review, then flipped back."""
+def test_live_our_url_returns_full_size_bodies_at_the_polar_rows():
+    """The headline regression, live: the rows that `fover` used to halve must come back 512. Probes the
+    URL production actually sends, so it also fails if a viewer parameter creeps back in."""
     import requests
-    from collections import Counter
+
+    pano = LIVE_PANOS[0][1]        # 32x16 grid; rows 0-4 and 11-15 were the half-res band
+    session = requests.Session()
+    sizes = {y: Image.open(BytesIO(_live_tile(session, pano, 5, 4, y))).size
+             for y in (0, 2, 4, 8, 11, 13, 15)}
+
+    assert set(sizes.values()) == {(512, 512)}, 'polar rows are half-size again: %s' % sizes
+
+
+@live_only
+def test_live_fover_is_still_the_cause_and_onerr_is_still_innocent():
+    """Pins the causal claim itself rather than just the outcome, so if Google ever changes what `fover`
+    does we find out deliberately instead of inferring it from a resolution drop. Row 2 is inside the band,
+    row 8 outside it."""
+    import requests
 
     pano = LIVE_PANOS[0][1]
     session = requests.Session()
-    sizes = Counter()
-    for x in range(24):
-        url = '%s&zoom=5&x=%d&y=8&panoid=%s' % (gsv._CBK_BASE_URL, x, pano)
-        body = session.get(url, headers=gsv._random_header(), timeout=30).content
-        sizes[Image.open(BytesIO(body)).size] += 1
 
-    assert sum(sizes.values()) == 24
-    assert set(sizes) <= {(512, 512), (256, 256)}, 'a body size we have never seen before: %s' % dict(sizes)
-    print('\nlive zoom-5 body sizes over 24 tiles: %s' % dict(sizes))
+    def sizes(extra):
+        return [Image.open(BytesIO(_live_tile(session, pano, 5, 4, y, extra))).size for y in (2, 8)]
+
+    banded, unbanded = [(256, 256), (512, 512)], [(512, 512), (512, 512)]
+    assert sizes('&fover=2') == banded, 'fover=2 no longer halves the polar rows'
+    assert sizes('&fover=1') == banded
+    assert sizes('&fover=3') == banded
+    assert sizes('&fover=0') == unbanded, 'fover=0 should be equivalent to omitting it'
+    assert sizes('') == unbanded
+    assert sizes('&onerr=1') == unbanded, 'onerr is not the trigger'
+
+
+@live_only
+def test_live_cbk_without_fover_is_byte_identical_to_the_modern_endpoint():
+    """Why #74 is a cleanup and not a resolution recovery. If this ever stops holding, the endpoint question
+    is live again and #74 should be re-read."""
+    import hashlib
+
+    import requests
+
+    pano = LIVE_PANOS[0][1]
+    session = requests.Session()
+    modern = ('https://streetviewpixels-pa.googleapis.com/v1/tile?cb_client=maps_sv.tactile'
+              '&panoid=%s&x=%d&y=%d&zoom=5')
+    for y in (0, 2, 11, 15):
+        ours = _live_tile(session, pano, 5, 4, y)
+        theirs = session.get(modern % (pano, 4, y), headers=gsv._random_header(), timeout=30).content
+        assert hashlib.md5(ours).hexdigest() == hashlib.md5(theirs).hexdigest(), \
+            'row %d: CBK and streetviewpixels-pa have diverged' % y
+
+
+@live_only
+def test_live_dropping_fover_changed_nothing_else():
+    """The side-effect check. The zoom probe and _reject_mostly_black_stitch both depend on out-of-range and
+    dead-pano requests answering with a black JPEG rather than an error."""
+    import requests
+
+    pano = LIVE_PANOS[0][1]
+    session = requests.Session()
+
+    def describe(zoom, x, y, target=None):
+        body = _live_tile(session, target or pano, zoom, x, y)
+        image = Image.open(BytesIO(body))
+        return image.size, image.convert('L').getextrema() == (0, 0)
+
+    assert describe(5, 32, 8) == ((512, 512), True), 'out-of-range x is no longer a black 512 tile'
+    assert describe(5, 4, 16) == ((512, 512), True), 'out-of-range y is no longer a black 512 tile'
+    assert describe(3, 0, 0) == ((512, 512), False), 'the zoom-3 probe tile changed'
+    assert describe(5, 0, 0, target='_qVKgG3dGOoClMQI6QgVRg') == ((512, 512), True), \
+        'a retired pano no longer answers with a black tile'
+
+
+@live_only
+def test_live_full_download_has_no_undersized_tiles(tmp_path, monkeypatch):
+    """End to end, on the production path: a real pano download must now report zero undersized bodies.
+    Before the fover fix this was 320 of 512."""
+    seen = {}
+    real = gsv._undersized_tile_count
+
+    def counting(tile_results):
+        seen['undersized'] = real(tile_results)
+        seen['total'] = len(tile_results)
+        return seen['undersized']
+
+    monkeypatch.setattr(gsv, '_undersized_tile_count', counting)
+    label, pano_id, width, height = LIVE_PANOS[0]
+    Image.MAX_IMAGE_PIXELS = None
+
+    gsv.download_single_pano(str(tmp_path), {'pano_id': pano_id, 'width': width, 'height': height})
+
+    assert seen['total'] == 512
+    assert seen['undersized'] == 0, '%d of %d tiles came back half-size' % (seen['undersized'], seen['total'])
 
 
 @live_only
