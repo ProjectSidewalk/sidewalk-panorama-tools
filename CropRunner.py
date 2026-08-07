@@ -216,8 +216,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
         # Extract the crop.
         if os.path.exists(pano_img_path):
             destination_folder = os.path.join(destination_dir, str(label_type))
-            if not os.path.isdir(destination_folder):
-                os.makedirs(destination_folder, exist_ok=True)
+            os.makedirs(destination_folder, exist_ok=True)
 
             crop_destination = os.path.join(destination_dir, str(label_type), str(label_id) + ".jpg")
 

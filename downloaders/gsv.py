@@ -38,6 +38,7 @@ except ImportError:
 
 from .common import DownloadResult
 
+
 def _normalize_proxies(raw):
     """Normalize the proxy dict from config.py, treating placeholder values as unset - per key.
 

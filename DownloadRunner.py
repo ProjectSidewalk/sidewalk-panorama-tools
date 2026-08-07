@@ -44,8 +44,8 @@ print(storage_location)
 print(pano_metadata_csv)
 print(all_panos)
 
-if not os.path.exists(storage_location):
-    os.makedirs(storage_location)
+# exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
+os.makedirs(storage_location, exist_ok=True)
 
 print("Starting run with pano list fetched from %s and destination path %s" % (sidewalk_server_fqdn, storage_location))
 
