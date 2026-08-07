@@ -12,7 +12,6 @@ import os
 import random
 import stat
 import time
-from datetime import datetime
 from io import BytesIO
 
 import aiohttp
@@ -40,11 +39,19 @@ except ImportError:
 
 from .common import DownloadResult
 
-# Normalize proxy config: treat the sentinel placeholders in config.py as unset.
-_proxies = dict(proxies)
-if _proxies.get('http') == 'http://' or _proxies.get('https') == 'https://':
-    _proxies['http'] = None
-    _proxies['https'] = None
+
+def _normalize_proxies(raw):
+    """Normalize the proxy dict from config.py, treating placeholder values as unset - per key.
+
+    config.py ships bare-scheme placeholders ('http://' for both keys), and handing one of those to requests
+    as a proxy URL breaks every request through it. Normalizing per key means setting a real proxy for one
+    scheme doesn't leak the other key's placeholder through (#51).
+    """
+    return {scheme: (url if url not in (None, '', 'http://', 'https://') else None)
+            for scheme, url in raw.items()}
+
+
+_proxies = _normalize_proxies(proxies)
 
 
 def _random_header():
@@ -61,7 +68,11 @@ def _request_session():
 
 
 def _get_response(url, session, stream=False):
-    response = session.get(url, headers=_random_header(), proxies=_proxies, stream=stream)
+    # A filtered copy, not the module global (matching _depth_session's semantics): a normalized-away
+    # placeholder must reach requests as absent — a None value blocks the env-proxy fallback — and requests
+    # setdefaults env proxies into this dict in place, which must not corrupt _proxies for later calls (#51).
+    response = session.get(url, headers=_random_header(), proxies={k: v for k, v in _proxies.items() if v},
+                           stream=stream)
     if not stream:
         return response
     return response.raw
@@ -75,8 +86,12 @@ def download_single_pano(storage_path, pano_info):
 
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
-        os.makedirs(destination_dir)
-        os.chmod(destination_dir, 0o775 | stat.S_ISGID)
+        # exist_ok: concurrent city runs (and the depth phase) race on shard dirs.
+        os.makedirs(destination_dir, exist_ok=True)
+        try:
+            os.chmod(destination_dir, 0o775 | stat.S_ISGID)
+        except PermissionError:
+            pass  # lost the race to another user's process; their dir, their modes — must not fail the pano
 
     filename = pano_id + ".jpg"
     out_image_name = os.path.join(destination_dir, filename)
@@ -89,62 +104,63 @@ def download_single_pano(storage_path, pano_info):
     final_image_height = int(pano_dims[1]) if pano_dims[1] is not None else None
     zoom = None
 
-    session = _request_session()
+    # Session scoped to the zoom/dimension probes below; the tile fan-out uses its own aiohttp session. This
+    # runs once per pano, so leaving it unclosed would pile up connection pools until GC (#51).
+    with _request_session() as session:
+        # Check XML metadata for image width/height max zoom if its downloaded.
+        xml_metadata_path = os.path.join(destination_dir, pano_id + ".xml")
+        if os.path.isfile(xml_metadata_path):
+            print(xml_metadata_path)
+            with open(xml_metadata_path, 'rb') as pano_xml:
+                try:
+                    tree = ET.parse(pano_xml)
+                    root = tree.getroot()
 
-    # Check XML metadata for image width/height max zoom if its downloaded.
-    xml_metadata_path = os.path.join(destination_dir, pano_id + ".xml")
-    if os.path.isfile(xml_metadata_path):
-        print(xml_metadata_path)
-        with open(xml_metadata_path, 'rb') as pano_xml:
-            try:
-                tree = ET.parse(pano_xml)
-                root = tree.getroot()
+                    # Get the number of zoom levels.
+                    for child in root:
+                        if child.tag == 'data_properties':
+                            zoom = int(child.attrib['num_zoom_levels'])
+                            if final_image_width is None:
+                                final_image_width = int(child.attrib['width'])
+                            if final_image_height is None:
+                                final_image_height = int(child.attrib['height'])
 
-                # Get the number of zoom levels.
-                for child in root:
-                    if child.tag == 'data_properties':
-                        zoom = int(child.attrib['num_zoom_levels'])
-                        if final_image_width is None:
-                            final_image_width = int(child.attrib['width'])
-                        if final_image_height is None:
-                            final_image_height = int(child.attrib['height'])
+                    # If there is no zoom in the XML, then we skip this and try some zoom levels below.
+                    if zoom is not None:
+                        # Check if the image exists (occasionally we will have XML but no JPG).
+                        test_url = f'{base_url}&zoom={zoom}&x=0&y=0&panoid={pano_id}'
+                        test_request = _get_response(test_url, session, stream=True)
+                        test_tile = Image.open(test_request)
+                        if test_tile.convert("L").getextrema() == (0, 0):
+                            return DownloadResult.failure
+                except Exception:
+                    pass
 
-                # If there is no zoom in the XML, then we skip this and try some zoom levels below.
-                if zoom is not None:
-                    # Check if the image exists (occasionally we will have XML but no JPG).
-                    test_url = f'{base_url}&zoom={zoom}&x=0&y=0&panoid={pano_id}'
-                    test_request = _get_response(test_url, session, stream=True)
-                    test_tile = Image.open(test_request)
-                    if test_tile.convert("L").getextrema() == (0, 0):
-                        return DownloadResult.failure
-            except Exception:
-                pass
-
-    # If we did not find image width/height from API or XML, then set download to failure.
-    if final_image_width is None or final_image_height is None:
-        return DownloadResult.failure
-
-    # If we did not find a zoom level in the XML above, then try a couple zoom level options here.
-    if zoom is None:
-        url_zoom_3 = f'{base_url}&zoom=3&x=0&y=0&panoid={pano_id}'
-        url_zoom_5 = f'{base_url}&zoom=5&x=0&y=0&panoid={pano_id}'
-
-        req_zoom_3 = _get_response(url_zoom_3, session, stream=True)
-        im_zoom_3 = Image.open(req_zoom_3)
-        req_zoom_5 = _get_response(url_zoom_5, session, stream=True)
-        im_zoom_5 = Image.open(req_zoom_5)
-
-        # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a transparent image. This
-        # means we need to set the zoom level to 3. Google also returns a transparent image if there is no imagery.
-        # So check at both zoom levels. How to check:
-        # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-        if im_zoom_5.convert("L").getextrema() != (0, 0):
-            zoom = 5
-        elif im_zoom_3.convert("L").getextrema() != (0, 0):
-            zoom = 3
-        else:
-            # Can't determine zoom.
+        # If we did not find image width/height from API or XML, then set download to failure.
+        if final_image_width is None or final_image_height is None:
             return DownloadResult.failure
+
+        # If we did not find a zoom level in the XML above, then try a couple zoom level options here.
+        if zoom is None:
+            url_zoom_3 = f'{base_url}&zoom=3&x=0&y=0&panoid={pano_id}'
+            url_zoom_5 = f'{base_url}&zoom=5&x=0&y=0&panoid={pano_id}'
+
+            req_zoom_3 = _get_response(url_zoom_3, session, stream=True)
+            im_zoom_3 = Image.open(req_zoom_3)
+            req_zoom_5 = _get_response(url_zoom_5, session, stream=True)
+            im_zoom_5 = Image.open(req_zoom_5)
+
+            # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a transparent
+            # image. This means we need to set the zoom level to 3. Google also returns a transparent image if
+            # there is no imagery. So check at both zoom levels. How to check:
+            # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
+            if im_zoom_5.convert("L").getextrema() != (0, 0):
+                zoom = 5
+            elif im_zoom_3.convert("L").getextrema() != (0, 0):
+                zoom = 3
+            else:
+                # Can't determine zoom.
+                return DownloadResult.failure
 
     final_im_dimension = (final_image_width, final_image_height)
 
@@ -160,7 +176,7 @@ def download_single_pano(storage_path, pano_info):
                                          aiohttp.ServerConnectionError, aiohttp.ServerDisconnectedError,
                                          aiohttp.ClientHttpProxyError), max_tries=10)
     async def download_single_gsv(session, url):
-        async with session.get(url[1], proxy=_proxies["http"], headers=_random_header()) as response:
+        async with session.get(url[1], proxy=_proxies.get("http"), headers=_random_header()) as response:
             head_content = response.headers['Content-Type']
             # Ensures content type is an image.
             if head_content[0:10] != "image/jpeg":
@@ -339,8 +355,12 @@ def _write_depth_artifact(storage_path, pano_id, pano):
     """
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
-        os.makedirs(destination_dir)
-        os.chmod(destination_dir, 0o775 | stat.S_ISGID)
+        # exist_ok: concurrent city runs (and the image phase) race on shard dirs.
+        os.makedirs(destination_dir, exist_ok=True)
+        try:
+            os.chmod(destination_dir, 0o775 | stat.S_ISGID)
+        except PermissionError:
+            pass  # lost the race to another user's process; their dir, their modes — must not fail the pano
 
     final_path = os.path.join(destination_dir, pano_id + DEPTH_ARTIFACT_SUFFIX)
     tmp_path = final_path + '.part'
@@ -368,7 +388,8 @@ def _write_depth_artifact(storage_path, pano_id, pano):
         raise
 
 
-def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runtime_minutes=None, max_requests=None):
+def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
+                        max_requests=None):
     """Fetch GSV depth maps via the streetlevel library for every pano in pano_infos.
 
     Callers pre-filter to source == 'gsv'. Depth rides Google's photometa response, so this costs one metadata
@@ -390,8 +411,10 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
     @param storage_path        Root of the pano store (shard dirs + depth_log.csv live here).
     @param pano_infos          Pano dicts (needs 'pano_id'); typically the full /adminapi/panos list, which is
                                what backfills panos downloaded before this feature existed.
-    @param run_start_time      Shared run start used for the max_runtime_minutes budget.
-    @param max_runtime_minutes Stop starting new requests once this much wall time has elapsed since run start.
+    @param run_start_monotonic Shared run start, a time.monotonic() value, used for the max_runtime_minutes
+                               budget. Monotonic, not the wall clock: an NTP step or DST transition must not
+                               stretch or shrink the budget (#51).
+    @param max_runtime_minutes Stop starting new requests once this much time has elapsed since run start.
     @param max_requests        Stop after this many HTTP attempts this run (manual backfill throttle).
     @return                    (success_count, fail_count, skipped_count, total_completed).
     """
@@ -438,7 +461,6 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
     # re-attempted forever and never make progress.
     random.shuffle(candidates)
 
-    session = _depth_session()
     try:
         depth_log = open(depth_log_path, 'a', newline='')
         ledger = csv.writer(depth_log)
@@ -455,7 +477,9 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
         print("DEPTHDOWNLOAD: WARNING - cannot write the depth ledger (%s). Skipping the depth phase." % (e))
         return 0, 0, skipped_count, skipped_count
 
-    with depth_log:
+    # Created after the ledger so an early return can't leak it; the with closes both (#51).
+    session = _depth_session()
+    with depth_log, session:
 
         def record(pano_id, status):
             ledger.writerow([pano_id, status])
@@ -481,8 +505,8 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 skipped_count += 1
                 continue
 
-            if max_runtime_minutes is not None and run_start_time is not None:
-                elapsed_minutes = (datetime.now() - run_start_time).total_seconds() / 60.0
+            if max_runtime_minutes is not None and run_start_monotonic is not None:
+                elapsed_minutes = (time.monotonic() - run_start_monotonic) / 60.0
                 if elapsed_minutes >= max_runtime_minutes:
                     stop_reason = DEPTH_STOP_MAX_RUNTIME
                     print("DEPTHDOWNLOAD: Max runtime of %.1f minutes reached (%.1f elapsed). Stopping."

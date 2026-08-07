@@ -10,14 +10,16 @@ drives the real CSV → filter → phase call sites network-free and leaves the 
 download_panorama_images directly.
 """
 
+import ast
 import importlib.util
+import json
 import logging
 import logging.handlers
 import os
 import signal
 import subprocess
 import sys
-from datetime import datetime, timedelta
+import time
 
 import downloaders
 
@@ -246,7 +248,7 @@ def test_exhausted_budget_stops_download_panorama_images_before_the_first_pano(m
     monkeypatch.setattr(runner, 'download_pano', recording_download_pano(calls))
 
     result = runner.download_panorama_images(str(image_storage), gsv_pano_infos(),
-                                             run_start_time=datetime.now() - timedelta(minutes=10),
+                                             run_start_monotonic=time.monotonic() - 600,
                                              max_runtime_minutes=5.0)
 
     assert calls == [], "an exhausted budget must break the loop before any download"
@@ -262,7 +264,7 @@ def test_no_budget_lets_download_panorama_images_process_every_pano(monkeypatch,
     monkeypatch.setattr(runner, 'download_pano', recording_download_pano(calls))
 
     result = runner.download_panorama_images(str(image_storage), gsv_pano_infos(),
-                                             run_start_time=datetime.now() - timedelta(minutes=10),
+                                             run_start_monotonic=time.monotonic() - 600,
                                              max_runtime_minutes=None)
 
     assert calls == GSV_PANO_IDS
@@ -382,3 +384,93 @@ def test_sigterm_is_translated_to_systemexit_so_the_evidence_row_still_lands(dow
     with pytest.raises(SystemExit) as excinfo:
         handler(signal.SIGTERM, None)
     assert excinfo.value.code == 143  # the conventional 128+15, what a signal death reports anyway
+
+
+# Runs DownloadRunner.py (via runpy — argparse at module scope rules out an import) with Session.get stubbed
+# to capture the HTTP config the pano-list fetch actually uses, reported as JSON on the last stdout line.
+# No network I/O: the stub raises SystemExit before anything touches a socket.
+FETCH_CONFIG_PROBE = '''\
+import json
+import os
+import runpy
+import sys
+
+import requests
+
+runner, storage = sys.argv[1], sys.argv[2]
+# Running a script directly puts its directory on sys.path; runpy does not, so add it for `import downloaders`.
+sys.path.insert(0, os.path.dirname(os.path.abspath(runner)))
+captured = {}
+
+
+def capturing_get(self, url, **kwargs):
+    retries = {}
+    for scheme in ('https', 'http'):
+        retry = self.get_adapter(scheme + '://example.com').max_retries
+        retries[scheme] = {'total': retry.total, 'connect': retry.connect, 'read': retry.read}
+    timeout = kwargs.get('timeout')
+    captured.update(url=url, timeout=list(timeout) if isinstance(timeout, tuple) else timeout,
+                    trust_env=self.trust_env, retries=retries)
+    raise SystemExit(0)
+
+
+requests.Session.get = capturing_get
+sys.argv = ['DownloadRunner.py', 'sidewalk-test.invalid', storage]
+try:
+    runpy.run_path(runner, run_name='__main__')
+except SystemExit:
+    pass
+print(json.dumps(captured))
+'''
+
+
+def test_pano_list_fetch_session_configuration(tmp_path):
+    """Pin the pano-list fetch's HTTP config (#51 review).
+
+    - timeout (30, 600): the read timeout applies per socket op INCLUDING the wait for the status line, and
+      /adminapi/panos plausibly buffers the whole JSON server-side before its first byte on the largest
+      cities — a tight read timeout would kill exactly the fetch it is meant to protect.
+    - Retry read=0: a time-to-first-byte/read timeout must fail once, not hammer the admin endpoint six
+      times; connect failures keep retrying.
+    - trust_env off: parity with the http.client path this replaced (no env-proxy routing, no env CA
+      overrides) on a fleet cron whose environment we don't control.
+    - The retry adapter is mounted on http:// as well, so a redirect hop can't silently lose the policy.
+    """
+    probe = tmp_path / 'fetch_config_probe.py'
+    probe.write_text(FETCH_CONFIG_PROBE)
+    result = subprocess.run(
+        [sys.executable, str(probe), RUNNER, str(tmp_path / 'storage')],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    captured = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert captured['url'] == 'https://sidewalk-test.invalid/adminapi/panos'
+    assert captured['timeout'] == [30, 600]
+    assert captured['trust_env'] is False
+    for scheme in ('https', 'http'):
+        retry = captured['retries'][scheme]
+        assert retry['total'] == 5, scheme
+        assert retry['connect'] == 5, scheme
+        assert retry['read'] == 0, scheme
+
+
+def test_runtime_budget_arguments_are_passed_by_keyword():
+    """#62 and #63 rewrite the same budget-threading call sites. Keywords turn that known merge collision
+    into a loud conflict/NameError instead of silently slotting a datetime into the monotonic slot, where it
+    only detonates when --max-runtime is set — i.e. in the nightly cron, never in this suite (#51 review)."""
+    with open(RUNNER, encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+
+    budget_calls = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, 'id', None) or getattr(node.func, 'attr', None)
+            if name in ('download_panorama_images', 'download_depth_maps'):
+                budget_calls[name] = node
+    assert sorted(budget_calls) == ['download_depth_maps', 'download_panorama_images']
+
+    for name, call in budget_calls.items():
+        assert len(call.args) == 2, '%s: only storage and the pano list may be positional' % name
+        keywords = {kw.arg for kw in call.keywords}
+        assert 'run_start_monotonic' in keywords, name
+        assert 'max_runtime_minutes' in keywords, name
