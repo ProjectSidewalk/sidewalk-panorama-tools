@@ -1,6 +1,7 @@
 # !/usr/bin/python3
 
 import argparse
+import csv
 import logging
 import logging.handlers
 import math
@@ -73,27 +74,73 @@ def configure_logging(log_path):
 
 
 def progress_check(csv_pano_log_path):
-    """
-    Checks download status via a csv: log as skipped if downloaded == 1, failure if download == 0.
-    This speeds things up instead of trying to re-download broken links or images.
+    """Read the image ledger once: every ledgered pano id, plus the prior counters seeded into this run's.
+
+    A row means "attempted": downloaded == 1 counts as a prior success (skipped this run), 0 as a prior
+    failure; either way the pano is never re-attempted (README: resume semantics).
     NB: This will not check if the failure was due to internet connection being unavailable etc. so use with caution.
+
+    Row-tolerant on the gsv._load_depth_log model: a line torn by a crash mid-append (or a float minted by
+    the old rewrite path) is skipped, so a damaged ledger degrades to re-attempting a few panos instead of a
+    ParserError that crashes every future run (#55). Reads with csv, not pandas, so the id type can never
+    depend on what the ids happen to look like (#46).
     """
-    df_pano_id_check = pd.read_csv(csv_pano_log_path, dtype={'pano_id': str})
-    df_id_set = set(df_pano_id_check['pano_id'])
-    total_processed = len(df_pano_id_check.index)
-    total_success = df_pano_id_check['downloaded'].sum()
-    total_failed = total_processed - total_success
-    return df_id_set, total_processed, total_success, total_failed
+    ledgered_ids, total_processed, total_success = set(), 0, 0
+    with open(csv_pano_log_path, newline='') as f:
+        for row in csv.reader(f):
+            if len(row) != 2 or row[0] == 'pano_id' or row[1] not in ('0', '1'):
+                continue
+            ledgered_ids.add(row[0])
+            total_processed += 1
+            total_success += row[1] == '1'
+    return ledgered_ids, total_processed, total_success, total_processed - total_success
+
+
+def _normalize_pano_records(records):
+    """Coerce pano_id to str at the intake boundary, drop empty/'tutorial' rows, dedupe keeping the first.
+
+    Numeric (Mapillary) ids otherwise arrive as ints and crash every pano_id[:2] shard slice, and set
+    membership against the ledger's string ids silently misses (#46). Centralised so the CSV and webserver
+    paths cannot drift - the CSV path also gains the tutorial/empty filter the webserver path always had.
+    """
+    unique_ids = set()
+    kept = []
+    for record in records:
+        raw = record.get('pano_id')
+        # A blank CSV cell arrives as float nan, which str() would keep as the id 'nan'.
+        if raw is None or (isinstance(raw, float) and math.isnan(raw)):
+            pano_id = ''
+        else:
+            pano_id = str(raw)
+        if pano_id in unique_ids:
+            continue
+        if not pano_id or pano_id == 'tutorial':
+            print("Pano ID is an empty string or is for tutorial")
+            continue
+        record['pano_id'] = pano_id
+        unique_ids.add(pano_id)
+        kept.append(record)
+    return kept
 
 
 def fetch_pano_ids_csv(metadata_csv_path):
     """
     Loads pano metadata from a CSV file (downloaded from the server). Dedupes on pano_id.
     Expected to include the same columns as /adminapi/panos, notably `source`.
+
+    pano_id is dtype-pinned to str: an all-numeric (Mapillary) column otherwise infers int64 (#46), and one
+    with a single blank cell would infer float64 - whose str() would mint ids like '1.23e+14' - so both the
+    pin here and the normalisation are needed.
     """
-    df_meta = pd.read_csv(metadata_csv_path)
-    df_meta = df_meta.drop_duplicates(subset=['pano_id']).to_dict('records')
-    return df_meta
+    df_meta = pd.read_csv(metadata_csv_path, dtype={'pano_id': str})
+    # Fail loudly on a header typo. -c exists for hand-made CSVs, and _normalize_pano_records would
+    # otherwise read every row's missing id as blank and filter the whole file out - a run that downloads
+    # nothing, prints one 'empty string or tutorial' line per row, and exits 0. pd.read_csv ignores dtype
+    # keys for absent columns, so the pin above doesn't catch this either.
+    if 'pano_id' not in df_meta.columns:
+        raise ValueError("%s has no 'pano_id' column; found %r"
+                         % (metadata_csv_path, list(df_meta.columns)))
+    return _normalize_pano_records(df_meta.to_dict('records'))
 
 
 def fetch_pano_ids_from_webserver(sidewalk_server_fqdn):
@@ -106,8 +153,6 @@ def fetch_pano_ids_from_webserver(sidewalk_server_fqdn):
     --all-panos / has_labels split happens in select_image_panos() - the depth phase wants the whole corpus, so
     filtering here would hide unlabelled panos from it.
     """
-    unique_ids = set()
-    pano_info = []
     # requests with retries and a timeout, like everything else in the repo. The raw http.client this replaced
     # had no timeout (a hung server stalled the nightly run indefinitely), no status check (a 500 or a proxy
     # error page surfaced as an unexplained JSONDecodeError), and never closed the connection (#51).
@@ -130,17 +175,8 @@ def fetch_pano_ids_from_webserver(sidewalk_server_fqdn):
         response.raise_for_status()
         jsondata = response.json()
 
-    for value in jsondata:
-        pano_id = value["pano_id"]
-        if pano_id in unique_ids:
-            continue
-        if pano_id and pano_id != 'tutorial':
-            unique_ids.add(pano_id)
-            pano_info.append(value)
-        else:
-            print("Pano ID is an empty string or is for tutorial")
-    assert len(unique_ids) == len(pano_info)
-    return pano_info
+    # The JSON should carry string ids already; normalising here makes that structural (#46).
+    return _normalize_pano_records(jsondata)
 
 
 def select_image_panos(pano_infos, include_all_panos):
@@ -188,17 +224,13 @@ def filter_supported_sources(pano_infos):
 def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None):
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
-    # csv log file for pano_id failures, place in 'storage' folder (alongside pano results)
+    # The attempted-pano ledger, in 'storage' alongside the pano results (see progress_check for semantics).
     csv_pano_log_path = os.path.join(storage_path, "pano_id_log.csv")
-    columns = ['pano_id', 'downloaded']
-    if not exists(csv_pano_log_path):
-        df_pano_id_log = pd.DataFrame(columns=columns)
-        df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
+    ledger_existed = exists(csv_pano_log_path)
+    if ledger_existed:
+        df_id_set, prior_total, prior_success, prior_fail = progress_check(csv_pano_log_path)
     else:
-        df_pano_id_log = pd.read_csv(csv_pano_log_path)
-    processed_ids = set(df_pano_id_log['pano_id'])
-
-    df_id_set, prior_total, prior_success, prior_fail = progress_check(csv_pano_log_path)
+        df_id_set, prior_total, prior_success, prior_fail = set(), 0, 0, 0
     # Seed counters from the log so "skipped" in the progress line includes panos already
     # downloaded on previous runs (same semantics as the original code).
     skipped_count = prior_success
@@ -208,49 +240,66 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     new_panos = sum(1 for p in pano_infos if p['pano_id'] not in df_id_set)
     total_panos = prior_total + new_panos
 
-    for pano_info in pano_infos:
-        pano_id = pano_info['pano_id']
-        if pano_id in df_id_set:
-            continue
-        if max_runtime_minutes is not None and run_start_monotonic is not None:
-            # time.monotonic, not the wall clock: an NTP step or DST transition must not stretch or shrink
-            # the budget (#51).
-            elapsed_minutes = (time.monotonic() - run_start_monotonic) / 60.0
-            if elapsed_minutes >= max_runtime_minutes:
-                print("IMAGEDOWNLOAD: Max runtime of %.1f minutes reached (%.1f elapsed). Stopping." % (max_runtime_minutes, elapsed_minutes))
-                break
-        start_time = time.time()
-        print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
-        try:
-            result_code = download_pano(storage_path, pano_info)
-            if result_code == DownloadResult.success:
-                success_count += 1
-            elif result_code == DownloadResult.fallback_success:
-                fallback_success_count += 1
-            elif result_code == DownloadResult.skipped:
-                skipped_count += 1
-            elif result_code == DownloadResult.failure:
+    # One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
+    # The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that,
+    # when the #46 dtype mismatch made it reachable, rewrote the ENTIRE file per pano with mode='w' - O(n^2)
+    # per run, and a crash mid-rewrite truncated the only image ledger in place.
+    with open(csv_pano_log_path, 'a', newline='') as ledger_file:
+        # lineterminator='\n': csv.writer's excel default is '\r\n', but every existing image ledger was
+        # written by pandas to_csv, whose default is os.linesep - '\n' on the Linux scraper boxes. Without
+        # this pin, appending to a years-old ledger would mix line endings in one file and hand ops greps a
+        # trailing '\r' on the downloaded column.
+        ledger = csv.writer(ledger_file, lineterminator='\n')
+        if not ledger_existed:
+            ledger.writerow(['pano_id', 'downloaded'])
+            ledger_file.flush()
+            # Group-writable like depth_log.csv: other lab users' runs append to the same store.
+            try:
+                os.chmod(csv_pano_log_path, 0o664)
+            except OSError:
+                # Lost the exists()/open() race to another user's run: their file, their modes. The ledger is
+                # already open and writable, so this must not take the phase down - the same call in both
+                # downloaders' shard-dir setup swallows it for the same reason.
+                pass
+
+        for pano_info in pano_infos:
+            pano_id = pano_info['pano_id']
+            if pano_id in df_id_set:
+                continue
+            if max_runtime_minutes is not None and run_start_monotonic is not None:
+                # time.monotonic, not the wall clock: an NTP step or DST transition must not stretch or shrink
+                # the budget (#51).
+                elapsed_minutes = (time.monotonic() - run_start_monotonic) / 60.0
+                if elapsed_minutes >= max_runtime_minutes:
+                    print("IMAGEDOWNLOAD: Max runtime of %.1f minutes reached (%.1f elapsed). Stopping." % (max_runtime_minutes, elapsed_minutes))
+                    break
+            start_time = time.time()
+            print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
+            try:
+                result_code = download_pano(storage_path, pano_info)
+                if result_code == DownloadResult.success:
+                    success_count += 1
+                elif result_code == DownloadResult.fallback_success:
+                    fallback_success_count += 1
+                elif result_code == DownloadResult.skipped:
+                    skipped_count += 1
+                elif result_code == DownloadResult.failure:
+                    fail_count += 1
+                downloaded = 0 if result_code == DownloadResult.failure else 1
+
+            except Exception as e:
                 fail_count += 1
-            downloaded = 0 if result_code == DownloadResult.failure else 1
+                downloaded = 0
+                logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
+            total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
-        except Exception as e:
-            fail_count += 1
-            downloaded = 0
-            logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
-        total_completed = success_count + fallback_success_count + fail_count + skipped_count
+            ledger.writerow([pano_id, downloaded])
+            ledger_file.flush()
+            df_id_set.add(pano_id)
 
-        if pano_id not in processed_ids:
-            df_data_append = pd.DataFrame([[pano_id, downloaded]], columns=columns)
-            df_data_append.to_csv(csv_pano_log_path, mode='a', header=False, index=False)
-            processed_ids.add(pano_id)
-        else:
-            df_pano_id_log = pd.read_csv(csv_pano_log_path)
-            df_pano_id_log.loc[df_pano_id_log['pano_id'] == pano_id, 'downloaded'] = downloaded
-            df_pano_id_log.to_csv(csv_pano_log_path, mode='w', header=True, index=False)
-
-        print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
-              % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
-        print("--- %s seconds ---" % (time.time() - start_time))
+            print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
+                  % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
+            print("--- %s seconds ---" % (time.time() - start_time))
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",

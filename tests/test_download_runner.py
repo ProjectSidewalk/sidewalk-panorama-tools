@@ -27,6 +27,8 @@ import DownloadRunner
 
 import pytest
 
+from conftest import posix_only
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER = os.path.join(REPO_ROOT, 'DownloadRunner.py')
 CSV_HEADER = 'pano_id,width,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
@@ -73,9 +75,10 @@ def test_crash_mid_run_still_writes_a_full_width_log_row(tmp_path):
     """
     storage = tmp_path / 'storage'
     storage.mkdir()
-    # A pano_id_log.csv without the expected columns crashes the image phase on its first read - after the
-    # xml-stub fields are known, before any image or depth fields exist.
-    (storage / 'pano_id_log.csv').write_text('wrong,columns\n1,2\n')
+    # A directory where pano_id_log.csv belongs crashes the image phase on its first ledger open - after the
+    # xml-stub fields are known, before any image or depth fields exist. (A malformed ledger no longer
+    # crashes: the row-tolerant reader skips bad lines, see test_damaged_ledger_rows_are_skipped_not_fatal.)
+    (storage / 'pano_id_log.csv').mkdir()
 
     _, result = run_downloader(tmp_path)
 
@@ -625,6 +628,147 @@ def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
     assert len(fields) == 18
     assert fields[0] != ''  # a real timestamp: evidence the run started
     assert fields[1:] == [''] * 17  # no phase ran - all blank, not fake zeros
+
+
+# --- Numeric pano ids and ledger hygiene (#46, #55) -----------------------------------------------------------
+
+NUMERIC_PANO_IDS = ['123456789012345', '987654321098765']
+NUMERIC_CSV_ROWS = ''.join('%s,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % p for p in NUMERIC_PANO_IDS)
+
+
+class TestNumericPanoIds:
+    """#46: all-digit (Mapillary-style) pano ids. pandas infers int64 for an all-numeric column, so without a
+    dtype pin the ids arrive as ints - crashing every pano_id[:2] shard slice - and the ledger's two reads
+    (one dtype=str, one not) disagree on membership, so the whole corpus is re-attempted every run while the
+    ledger file is fully rewritten once per pano (#55's real-world trigger). source=gsv on purpose: the dtype
+    path is identical for every source, and gsv avoids Mapillary token plumbing."""
+
+    def test_fetch_pano_ids_csv_returns_string_ids(self, tmp_path):
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + NUMERIC_CSV_ROWS)
+
+        records = DownloadRunner.fetch_pano_ids_csv(str(csv_path))
+
+        assert [record['pano_id'] for record in records] == NUMERIC_PANO_IDS
+        assert all(isinstance(record['pano_id'], str) for record in records)
+
+    def test_fetch_pano_ids_csv_drops_tutorial_and_empty_rows(self, tmp_path):
+        """Parity with the webserver path's filter - hand-made CSVs are exactly where junk rows appear."""
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER
+                            + 'tutorial,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n'
+                            + ',16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n'
+                            + 'testPanoIdRealAAAAAAAA,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n')
+
+        records = DownloadRunner.fetch_pano_ids_csv(str(csv_path))
+
+        assert [record['pano_id'] for record in records] == ['testPanoIdRealAAAAAAAA']
+
+    def test_metadata_csv_without_a_pano_id_column_fails_loudly(self, tmp_path):
+        """drop_duplicates(subset=['pano_id']) used to raise KeyError on a header typo. Normalising by
+        .get('pano_id') would instead read every row as blank and filter the file away - a run that
+        downloads nothing and exits 0. -c exists for hand-made CSVs, so this has to stay loud."""
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text('panoid,source\ntestPanoIdRealAAAAAAAA,gsv\n')
+
+        with pytest.raises(ValueError, match='no .pano_id. column'):
+            DownloadRunner.fetch_pano_ids_csv(str(csv_path))
+
+    def test_normalize_pano_records_coerces_filters_and_dedupes(self):
+        records = [{'pano_id': 123, 'source': 'mapillary'},
+                   {'pano_id': 'abc', 'source': 'gsv'},
+                   {'pano_id': '123', 'source': 'mapillary'},   # duplicate once coerced
+                   {'pano_id': 'tutorial'},
+                   {'pano_id': ''},
+                   {'pano_id': None},
+                   {'pano_id': float('nan')}]
+
+        kept = DownloadRunner._normalize_pano_records(records)
+
+        assert [record['pano_id'] for record in kept] == ['123', 'abc']
+        assert all(isinstance(record['pano_id'], str) for record in kept)
+
+    def test_numeric_ids_reach_the_downloader_as_strings(self, monkeypatch, tmp_path):
+        """The network-free stand-in for the production crash: the shard slice pano_id[:2] in every
+        downloader raises TypeError on an int. The recording stub replaces the code that would slice, so the
+        pin here is the boundary type itself."""
+        _, calls = call_main(monkeypatch, tmp_path, NUMERIC_CSV_ROWS)
+
+        assert calls == NUMERIC_PANO_IDS
+        assert all(isinstance(pano_id, str) for pano_id in calls)
+
+    def test_numeric_id_ledger_round_trip_skips_on_second_run(self, monkeypatch, tmp_path):
+        """The core #46 discriminator: a second run over the same numeric-ID corpus must skip every ledgered
+        pano and leave the ledger file byte-for-byte alone. Pre-fix, the str-set/int mismatch re-attempted
+        every pano AND took the whole-file rewrite branch - O(n) per pano, and a truncate-in-place of the
+        only image ledger (#55)."""
+        storage, _ = call_main(monkeypatch, tmp_path, NUMERIC_CSV_ROWS)
+        ledger_path = storage / 'pano_id_log.csv'
+        ledger_before = ledger_path.read_bytes()
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+
+        DownloadRunner.download_panorama_images(
+            str(storage), DownloadRunner.fetch_pano_ids_csv(str(tmp_path / 'panos.csv')))
+
+        assert calls == [], "the second run must skip every ledgered pano"
+        assert ledger_path.read_bytes() == ledger_before
+
+
+class TestLedgerHygiene:
+    def test_damaged_ledger_rows_are_skipped_not_fatal(self, monkeypatch, tmp_path):
+        """A ledger line torn by a crash mid-append (or stray garbage) must degrade to re-attempting that
+        pano - the depth ledger's semantics (gsv._load_depth_log) - not crash every future run with a
+        ParserError (#55)."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').write_text(
+            'pano_id,downloaded\n%s,1\ntrunc\na,b,c\n' % GSV_PANO_IDS[0])
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+
+        result = DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos())
+
+        assert calls == GSV_PANO_IDS[1:], "the intact row skips; the torn rows are not fatal"
+        assert result == (2, 0, 0, 1, 3)
+
+    @posix_only
+    def test_ledger_is_created_group_writable(self, monkeypatch, tmp_path):
+        """The depth ledger is chmod'd 0o664 on creation so other lab users can append on the shared store;
+        the image ledger must match (#55)."""
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        assert os.stat(storage / 'pano_id_log.csv').st_mode & 0o777 == 0o664
+
+    def test_a_failed_chmod_does_not_take_the_phase_down(self, monkeypatch, tmp_path):
+        """Losing the exists()/open() race to another user's run means chmod'ing a file we don't own. The
+        ledger is open and writable either way, so a PermissionError there must not end the image phase -
+        the same reasoning both downloaders apply to their shard-dir chmod."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        def denied(*args, **kwargs):
+            raise PermissionError(1, 'Operation not permitted')
+
+        monkeypatch.setattr(DownloadRunner.os, 'chmod', denied)
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+
+        result = DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos())
+
+        assert calls == GSV_PANO_IDS
+        assert result == (3, 0, 0, 0, 3)
+
+    def test_ledger_rows_are_lf_terminated_like_the_pandas_writer_they_replace(self, monkeypatch, tmp_path):
+        """Every existing image ledger was written by pandas to_csv, whose lineterminator defaults to
+        os.linesep - '\\n' on the Linux scraper boxes. csv.writer's excel default is '\\r\\n', which would mix
+        line endings inside one long-lived production file and put a trailing '\\r' on the downloaded column
+        for anything grepping it."""
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        raw = (storage / 'pano_id_log.csv').read_bytes()
+        assert b'\r' not in raw
+        assert raw.startswith(b'pano_id,downloaded\n')
 
 
 def test_pano_list_fetch_session_configuration(monkeypatch):
