@@ -4,6 +4,7 @@ The pano CSV rows all use an unsupported source, so every pano is filtered out b
 script exercises its full argument parsing, phase orchestration, and log.csv writing without any network I/O.
 """
 
+import ast
 import json
 import os
 import subprocess
@@ -171,3 +172,25 @@ def test_pano_list_fetch_session_configuration(tmp_path):
         assert retry['total'] == 5, scheme
         assert retry['connect'] == 5, scheme
         assert retry['read'] == 0, scheme
+
+
+def test_runtime_budget_arguments_are_passed_by_keyword():
+    """#62 and #63 rewrite the same budget-threading call sites. Keywords turn that known merge collision
+    into a loud conflict/NameError instead of silently slotting a datetime into the monotonic slot, where it
+    only detonates when --max-runtime is set — i.e. in the nightly cron, never in this suite (#51 review)."""
+    with open(RUNNER, encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+
+    budget_calls = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, 'id', None) or getattr(node.func, 'attr', None)
+            if name in ('download_panorama_images', 'download_depth_maps'):
+                budget_calls[name] = node
+    assert sorted(budget_calls) == ['download_depth_maps', 'download_panorama_images']
+
+    for name, call in budget_calls.items():
+        assert len(call.args) == 2, '%s: only storage and the pano list may be positional' % name
+        keywords = {kw.arg for kw in call.keywords}
+        assert 'run_start_monotonic' in keywords, name
+        assert 'max_runtime_minutes' in keywords, name
