@@ -94,7 +94,7 @@ class TestDecodeDepthPlanes:
         """Every field after byte 0 is read at a fixed position, so a payload announcing a different header
         size is a wire format this decode does not know - it must refuse rather than mis-parse it into
         plausible-looking arrays that would then be written to millions of artifacts."""
-        import base64, struct
+        import base64
         raw = bytearray(base64.urlsafe_b64decode(
             encode_depth_payload(self.PLANES[:2], [0, 0], width=2, height=1)))
         raw[0] = 12  # header_size
@@ -467,7 +467,7 @@ class TestGroundPlane:
         horizon look upward, so nothing there can be what the camera is standing over. Returning None lets
         the caller apply its own default instead of inheriting a confidently wrong height."""
         indices = np.zeros((4, 2), dtype=np.uint8)
-        indices[0:2, :] = 1              # top half only
+        indices[0:2, :] = 1              # the above-horizon rows only
 
         artifact = self.artifact(indices, [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 5.4])
 
@@ -475,28 +475,30 @@ class TestGroundPlane:
         assert gsv.camera_height_from_artifact(artifact, default=2.5) == 2.5
 
     def test_the_horizon_split_follows_the_frame_definition(self):
-        """Rows from h//2 on are exactly those whose rays satisfy theta < pi/2 under the decode's formula,
-        theta = (h-r-0.5)/h*pi - i.e. that point below the horizon. Pinned against the formula rather than
-        against the expression in the implementation, so a 'tidy-up' to h//2 - 1 or (h+1)//2 is caught."""
-        h = 8
-        below = [r for r in range(h) if (h - r - 0.5) / h * np.pi < np.pi / 2]
-        assert below == list(range(h // 2, h))
+        """The candidate rows are exactly those whose rays satisfy theta < pi/2 under the decode's formula,
+        theta = (h-r-0.5)/h*pi - i.e. that point strictly below the horizon. That is rows (h+1)//2 on: the
+        same as h//2 for even heights, but one more for odd heights, whose middle row sits exactly ON the
+        horizon and belongs to neither half. Pinned against the formula for both parities, so a 'tidy-up'
+        to a plain h//2 (wrong for odd) or h//2 + 1 (wrong for even) is caught."""
+        for h in (8, 7):
+            below = [r for r in range(h) if (h - r - 0.5) / h * np.pi < np.pi / 2]
+            assert below == list(range((h + 1) // 2, h)), h
 
-        # A plane referenced only by the last row ABOVE the split must not qualify...
-        indices = np.zeros((h, 2), dtype=np.uint8)
-        indices[h // 2 - 1, :] = 1
-        assert gsv.ground_plane_from_artifact(
-            self.artifact(indices, [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5])) is None
-        # ...while the first row below it must.
-        indices = np.zeros((h, 2), dtype=np.uint8)
-        indices[h // 2, :] = 1
-        assert gsv.ground_plane_from_artifact(
-            self.artifact(indices, [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5]))[2] == 1
+            # A plane referenced only by the last row at or above the split must not qualify...
+            indices = np.zeros((h, 2), dtype=np.uint8)
+            indices[(h + 1) // 2 - 1, :] = 1
+            assert gsv.ground_plane_from_artifact(
+                self.artifact(indices, [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5])) is None, h
+            # ...while the first row below it must.
+            indices = np.zeros((h, 2), dtype=np.uint8)
+            indices[(h + 1) // 2, :] = 1
+            assert gsv.ground_plane_from_artifact(
+                self.artifact(indices, [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5]))[2] == 1, h
 
     def test_better_supported_plane_wins_over_a_more_vertical_one(self):
         """Support is the primary key: a road split across two planes should resolve to the one most of the
         downward pixels actually land on, even if the other is geometrically flatter."""
-        indices = np.array([[1, 2, 2, 2]], dtype=np.uint8)
+        indices = np.array([[0, 0, 0, 0], [1, 2, 2, 2]], dtype=np.uint8)
         artifact = self.artifact(indices,
                                  [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.02, 0.0, 1.0]],
                                  [0.0, 9.9, 2.6])
@@ -512,7 +514,7 @@ class TestGroundPlane:
         |d| / ||n|| divide by that length, so it must be skipped rather than crashing the depth phase with a
         ZeroDivisionError."""
         # Plane 1 is degenerate; plane 2 is a perfectly good ground plane behind it.
-        artifact = self.artifact([[1, 2]],
+        artifact = self.artifact([[0, 0], [1, 2]],
                                  [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
                                  [0.0, 3.0, 2.5])
 
@@ -520,7 +522,7 @@ class TestGroundPlane:
         assert gsv.camera_height_from_artifact(artifact) == pytest.approx(2.5)
 
         # And with the degenerate plane as the only candidate, no ground rather than an exception.
-        only_degenerate = self.artifact([[1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], [0.0, 3.0])
+        only_degenerate = self.artifact([[0], [1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], [0.0, 3.0])
         assert gsv.ground_plane_from_artifact(only_degenerate) is None
 
     def test_non_raster_indices_are_rejected(self):
@@ -533,7 +535,7 @@ class TestGroundPlane:
     def test_verticality_breaks_a_support_tie(self):
         """With equal support the more vertical plane wins - the original rule, kept as the tie-break so the
         ranking stays total and deterministic. Also pins the returned normal and distance."""
-        artifact = self.artifact([[1, 2]],
+        artifact = self.artifact([[0, 0], [1, 2]],
                                  [[0.0, 0.0, 0.0], [0.1, 0.0, -0.99], [1.0, 0.0, -1.0]],
                                  [0.0, 2.5, 4.0])
 
@@ -547,7 +549,7 @@ class TestGroundPlane:
     def test_sentinel_horizontal_and_unreferenced_planes_are_never_chosen(self):
         # Plane 0 is the no-plane sentinel (vertical normal, but excluded); plane 1 is referenced but
         # horizontal (a facade); plane 2 is perfectly vertical but no pixel references it.
-        artifact = self.artifact([[0, 1]],
+        artifact = self.artifact([[0, 0], [0, 1]],
                                  [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
                                  [9.0, 3.0, 2.5])
 
@@ -555,25 +557,25 @@ class TestGroundPlane:
 
     def test_below_threshold_returns_none_and_threshold_is_tunable(self):
         # Normal (2, 0, 1): verticality 1/sqrt(5) ~ 0.45, under the default 0.7 floor.
-        artifact = self.artifact([[1]], [[0.0, 0.0, 0.0], [2.0, 0.0, 1.0]], [0.0, 3.0])
+        artifact = self.artifact([[0], [1]], [[0.0, 0.0, 0.0], [2.0, 0.0, 1.0]], [0.0, 3.0])
 
         assert gsv.ground_plane_from_artifact(artifact) is None
         assert gsv.ground_plane_from_artifact(artifact, min_vertical=0.4)[2] == 1
 
     def test_out_of_range_index_is_ignored(self):
-        artifact = self.artifact([[3, 1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5])
+        artifact = self.artifact([[0, 0], [3, 1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 2.5])
 
         assert gsv.ground_plane_from_artifact(artifact)[2] == 1
 
     def test_camera_height_is_offset_over_norm(self):
         # Non-unit normal and negative d: height is |d| / ||n||. Sign-insensitive on purpose - the up/down
         # sign convention of Google's frame is not something these helpers should have an opinion about.
-        artifact = self.artifact([[1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]], [0.0, -5.0])
+        artifact = self.artifact([[0], [1]], [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]], [0.0, -5.0])
 
         assert gsv.camera_height_from_artifact(artifact) == pytest.approx(2.5)
 
     def test_camera_height_default_when_no_ground(self):
-        artifact = self.artifact([[1]], [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], [0.0, 3.0])
+        artifact = self.artifact([[0], [1]], [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], [0.0, 3.0])
 
         assert gsv.camera_height_from_artifact(artifact) is None
         assert gsv.camera_height_from_artifact(artifact, default=2.4) == 2.4

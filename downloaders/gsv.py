@@ -651,14 +651,16 @@ def ground_plane_from_artifact(artifact, min_vertical=0.7):
     fixable in code instead of frozen into millions of .npz files. Sign-insensitive throughout - the up/down
     sign convention of Google's pano-local frame is not relied on.
 
-    Candidates are drawn only from the bottom half of the raster, and are ranked by how many of those pixels
-    reference them (ties broken by verticality, then by lowest index for determinism). Both rules matter.
-    Ranking on verticality alone lets a handful of pixels of some *overhead* surface - an overpass soffit, a
-    tunnel ceiling, an awning, a sign gantry, all of which are more perfectly horizontal than a real cambered
-    road - outrank the tens of thousands of pixels of actual road, and camera_height_from_artifact then
-    silently returns the height of the ceiling. Restricting to the bottom half is not a fudge factor: rows
-    from h//2 on are exactly those whose rays satisfy theta < pi/2, i.e. that point below the horizon, under
-    the same ray formula the stored frame is defined by (see _write_depth_artifact).
+    Candidates are drawn only from the below-horizon rows of the raster, and are ranked by how many of those
+    pixels reference them (ties broken by verticality, then by lowest index for determinism). Both rules
+    matter. Ranking on verticality alone lets a handful of pixels of some *overhead* surface - an overpass
+    soffit, a tunnel ceiling, an awning, a sign gantry, all of which are more perfectly horizontal than a
+    real cambered road - outrank the tens of thousands of pixels of actual road, and
+    camera_height_from_artifact then silently returns the height of the ceiling. The split is not a fudge
+    factor: rows from (h+1)//2 on are exactly those whose rays satisfy theta < pi/2, i.e. that point
+    strictly below the horizon, under the same ray formula the stored frame is defined by (see
+    _write_depth_artifact). For even heights - every real raster - that is plain h//2; the +1 matters only
+    for odd heights, whose middle row sits exactly ON the horizon and belongs to neither half.
 
     @param artifact     An open numpy.load(...) NpzFile, or any mapping with 'plane_indices', 'planes_n',
                         'planes_d' (see _write_depth_artifact for the fields).
@@ -675,7 +677,7 @@ def ground_plane_from_artifact(artifact, min_vertical=0.7):
     distances = np.asarray(artifact['planes_d'], dtype=np.float64)
     # One pass gives both the referenced set and the pixel counts, and beats np.unique over ~65k values.
     # minlength keeps every plane addressable below even when no pixel references the tail of the list.
-    support = np.bincount(indices[indices.shape[0] // 2:].ravel(), minlength=len(normals))
+    support = np.bincount(indices[(indices.shape[0] + 1) // 2:].ravel(), minlength=len(normals))
     best = None
     # Index 0 is the no-plane sentinel, so the scan starts at 1; stopping at len(normals) drops out-of-range
     # indices, which would mean a malformed artifact. support is at least that long, by minlength above.
