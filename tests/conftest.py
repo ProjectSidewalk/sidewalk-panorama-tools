@@ -50,7 +50,7 @@ def fake_streetview(monkeypatch):
         pano = streetview.find_panorama_by_id(pano_id, download_depth=True, session=session)
         return pano, (getattr(pano, 'planes', None) if pano is not None else None)
 
-    monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes', _seam_adapter, raising=False)
+    monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes', _seam_adapter)
     return streetview
 
 
