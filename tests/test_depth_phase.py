@@ -299,17 +299,16 @@ def test_breaker_trip_on_storage_failures_reports_the_actual_cause(tmp_path, fak
     storage = str(tmp_path)
     monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 3)
     fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
-
-    def full_disk(*args, **kwargs):
-        raise OSError(28, 'No space left on device')
-
     monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
 
     gsv.download_depth_maps(storage, many_pano_infos(50))
 
     out = capsys.readouterr().out
     assert 'WARNING' in out
-    assert '3 consecutive failures' in out
+    # The parenthesized per-class breakdown is unique to the end-of-phase WARNING - the bare
+    # '3 consecutive failures' substring is already printed in-loop by the breaker trip, so asserting it
+    # wouldn't pin the summary at all.
+    assert '3 consecutive failures (3 storage)' in out
     assert 'No space left on device' in out
     assert 'Google stopped answering' not in out
 
@@ -328,6 +327,30 @@ def test_block_stop_still_blames_google(tmp_path, fake_streetview, capsys):
     out = capsys.readouterr().out
     assert 'WARNING' in out
     assert 'Google stopped answering' in out
+
+
+def test_breaker_warning_breaks_a_mixed_streak_down_by_class(tmp_path, fake_streetview, monkeypatch, capsys):
+    """2x ENOSPC then 1x ConnectionError: the error that trips the breaker is the minority class, so naming
+    only the last error would send the reader to the network while the disk is full. The WARNING must carry
+    per-class counts over the streak (#60 review, IMPORTANT 1)."""
+    storage = str(tmp_path)
+    monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 3)
+    calls = []
+
+    def find(pano_id, **kwargs):
+        calls.append(pano_id)
+        if len(calls) >= 3:
+            raise requests.ConnectionError('HTTPSConnectionPool: Max retries exceeded')
+        return make_pano(default_depth_array())
+
+    fake_streetview.find_panorama_by_id = find
+    monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+
+    gsv.download_depth_maps(storage, many_pano_infos(50))
+
+    out = capsys.readouterr().out
+    assert '3 consecutive failures (2 storage, 1 network)' in out
+    assert 'Max retries exceeded' in out
 
 
 def test_failures_then_runtime_expiry_still_warn_on_stdout(tmp_path, fake_streetview, monkeypatch, capsys,

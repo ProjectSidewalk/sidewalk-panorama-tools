@@ -4,6 +4,7 @@
 # depth maps from Google's photometa endpoint via the streetlevel library (see download_depth_maps).
 
 import asyncio
+import collections
 import csv
 import logging
 import math
@@ -393,9 +394,13 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
     consecutive_failures = 0
     # Why the phase stopped early, if it did - one of the DEPTH_STOP_* constants, or None if the phase worked
     # through its whole list. The breaker is fed by storage failures as well as network ones, so the cause of a
-    # trip is whatever last_error says, not necessarily Google.
+    # trip is whatever streak_classes and last_error say, not necessarily Google.
     stop_reason = None
     last_error = None
+    # Per-class counts (storage/network/unexpected) over the CURRENT failure streak. Reset wherever
+    # consecutive_failures resets, so a breaker trip can name its dominant cause even when the last error is
+    # the minority class.
+    streak_classes = collections.Counter()
 
     depth_log_path = os.path.join(storage_path, DEPTH_LOG_FILENAME)
     log_existed = os.path.isfile(depth_log_path)
@@ -493,6 +498,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                     success_count += 1
                 # Either outcome proves we're still talking to Google, so the breaker resets.
                 consecutive_failures = 0
+                streak_classes.clear()
             except (DepthBlockedError, requests.exceptions.RetryError) as e:
                 # Google is refusing us: an interstitial, or a 429/5xx that survived every retry. That's a verdict
                 # on the endpoint, not on this pano, so stop rather than spend the rest of the budget on a wall.
@@ -509,6 +515,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # NB: requests.RequestException subclasses OSError, so it must be caught above the OSError arm.
                 fail_count += 1
                 consecutive_failures += 1
+                streak_classes['network'] += 1
                 last_error = e
                 logging.error("DEPTHDOWNLOAD: Failed to fetch depth for pano %s due to error %s", pano_id, str(e))
             except OSError as e:
@@ -518,6 +525,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # line where the analyzer expects 18.
                 fail_count += 1
                 consecutive_failures += 1
+                streak_classes['storage'] += 1
                 last_error = e
                 logging.error("DEPTHDOWNLOAD: Could not store depth for pano %s: %s", pano_id, str(e))
             except Exception as e:
@@ -525,6 +533,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # transient; worst case a permanently-bad pano costs one request per run.
                 fail_count += 1
                 consecutive_failures += 1
+                streak_classes['unexpected'] += 1
                 last_error = e
                 logging.exception("DEPTHDOWNLOAD: Unexpected error fetching depth for pano %s: %s", pano_id, str(e))
 
@@ -554,10 +563,13 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
               "next run." % (last_error))
     elif stop_reason == DEPTH_STOP_CONSECUTIVE_FAILURES:
         # The breaker counts storage failures (ENOSPC/EIO on the sshfs mount) as well as network ones, so don't
-        # attribute the trip to Google: name the last error and let it point at the sick system.
-        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early after %d consecutive failures. Last error: "
-              "%s. No panos were lost (unresolved panos are retried next run); check whether the cause is the "
-              "store (full/unmounted) or the network before the next run." % (consecutive_failures, last_error))
+        # attribute the trip to Google: break the streak down by class so the dominant cause stays visible even
+        # when the last error is the minority class.
+        breakdown = ', '.join('%d %s' % (count, cls) for cls, count in streak_classes.most_common())
+        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early after %d consecutive failures (%s). Last "
+              "error: %s. No panos were lost (unresolved panos are retried next run); check whether the cause "
+              "is the store (full/unmounted) or the network before the next run."
+              % (consecutive_failures, breakdown, last_error))
     elif last_error is not None:
         # No breaker tripped, but something did fail: a budget may have stopped the run first (a shared
         # --max-runtime window is often minutes, far fewer than the breaker needs to see a streak), or the
