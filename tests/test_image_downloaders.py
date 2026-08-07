@@ -219,8 +219,14 @@ class TestGsvAtomicSave:
         tile = jpeg_bytes(120)
         monkeypatch.setattr(downloaders.gsv, '_get_response',
                             lambda url, session, stream=False: io.BytesIO(tile))
-        monkeypatch.setattr(downloaders.gsv.asyncio, 'run',
-                            lambda coro: (coro.close(), [['0 0', tile]])[1])
+
+        # The fan-out hands back (x, y, jpeg_bytes) per tile, one entry per requested grid position
+        # (#44/#45 replaced the old ['<x> <y>', bytes] pairs). Stubbing _download_tiles rather than
+        # asyncio.run keeps this at the module's own seam.
+        async def fake_download_tiles(tiles):
+            return [(x, y, tile) for x, y, _url in tiles]
+
+        monkeypatch.setattr(downloaders.gsv, '_download_tiles', fake_download_tiles)
 
     def test_a_healthy_pano_is_written(self, tmp_path, stitchable):
         assert downloaders.gsv.download_single_pano(str(tmp_path), GSV_PANO) == DownloadResult.success

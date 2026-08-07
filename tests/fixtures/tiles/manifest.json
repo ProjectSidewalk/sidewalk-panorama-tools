@@ -1,0 +1,119 @@
+{
+ "pano": "Svz6_7CwyijJ6RgjWROnCw",
+ "old_pano": "cFou_FaIrbvqN0kcS5QuxA",
+ "z4_cell": [
+  4,
+  5
+ ],
+ "tiles": {
+  "z5_fover2_4_2.jpg": {
+   "bytes": 1901,
+   "body_size": [
+    256,
+    256
+   ],
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 4,
+   "y": 2,
+   "note": "same grid position, one URL parameter apart; y=2 is inside the polar band fover halves (#73)"
+  },
+  "z5_nofover_4_2.jpg": {
+   "bytes": 2863,
+   "body_size": [
+    512,
+    512
+   ],
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 4,
+   "y": 2,
+   "note": "same grid position, one URL parameter apart; y=2 is inside the polar band fover halves (#73)"
+  },
+  "z5_full_8_10.jpg": {
+   "bytes": 14822,
+   "body_size": [
+    512,
+    512
+   ],
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 8,
+   "y": 10
+  },
+  "z5_full_9_10.jpg": {
+   "bytes": 11451,
+   "body_size": [
+    512,
+    512
+   ],
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 9,
+   "y": 10
+  },
+  "z5_degraded_8_11.jpg": {
+   "bytes": 5808,
+   "body_size": [
+    256,
+    256
+   ],
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 8,
+   "y": 11
+  },
+  "z5_degraded_9_11.jpg": {
+   "bytes": 4207,
+   "body_size": [
+    256,
+    256
+   ],
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 5,
+   "x": 9,
+   "y": 11
+  },
+  "z4_cover_4_5.jpg": {
+   "bytes": 17371,
+   "body_size": [
+    512,
+    512
+   ],
+   "pano": "Svz6_7CwyijJ6RgjWROnCw",
+   "zoom": 4,
+   "x": 4,
+   "y": 5,
+   "note": "covers the same region as the four zoom-5 tiles above; CBK zoom 4 is 8192 wide, so it is also the half-scale ground truth"
+  },
+  "z3_edge_bottom.jpg": {
+   "bytes": 6488,
+   "body_size": [
+    512,
+    512
+   ],
+   "pano": "cFou_FaIrbvqN0kcS5QuxA",
+   "zoom": 3,
+   "x": 6,
+   "y": 3,
+   "note": "bottom-right tile of a 3328x1664 zoom-3 image; 383 of its 512 rows are black padding, so Google pads short edge tiles rather than returning a true-size body"
+  },
+  "z3_blank_out_of_range.jpg": {
+   "bytes": 1184,
+   "body_size": [
+    512,
+    512
+   ],
+   "pano": "cFou_FaIrbvqN0kcS5QuxA",
+   "zoom": 3,
+   "x": 20,
+   "y": 0,
+   "note": "x=20 is far past the 7-column zoom-3 grid; Google still answers 200 OK with a valid, all-black image/jpeg - which is why an out-of-range grid cannot be detected tile by tile"
+  }
+ },
+ "captured_utc": "2026-08-07T19:21:38Z",
+ "fover": {
+  "finding": "fover=1/2/3 makes CBK serve the polar rows of a zoom-5 grid at 256x256; fover=0 or omitting it does not; onerr is innocent. Isolated by misaugstad on #73.",
+  "dropped_from_cbk_url": "2026-08-07"
+ }
+}

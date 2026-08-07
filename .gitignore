@@ -11,3 +11,6 @@ crop.log.bak.txt
 cropsbak
 # Logs the analyzer pulls off the pano store - a local cache, re-downloadable on every run.
 log_analyzer/logs/
+
+# raw cvMetadata dumps (~100 MB per city); regenerate with reports/scripts/pano_y_histogram.py
+reports/scripts/.cache/
