@@ -570,6 +570,72 @@ def test_sigterm_is_translated_to_systemexit_so_the_evidence_row_still_lands(dow
     assert excinfo.value.code == 143  # the conventional 128+15, what a signal death reports anyway
 
 
+# ---------------------------------------------------------------------------------------------------------
+# The #52 seams: importing the module is inert; argv handling lives in main(); the fetch-and-scrape
+# orchestration lives in run(), callable with plain arguments.
+# ---------------------------------------------------------------------------------------------------------
+
+def _fresh_import(monkeypatch, argv):
+    """Import DownloadRunner from scratch under a controlled argv and return the module."""
+    monkeypatch.setattr(sys, 'argv', argv)
+    monkeypatch.delitem(sys.modules, 'DownloadRunner', raising=False)
+    import DownloadRunner as module
+    return module
+
+
+def test_import_is_side_effect_free(tmp_path, monkeypatch):
+    """Importing DownloadRunner must not read argv, touch the filesystem, or mutate process-wide state -
+    all of that belongs to main() (#52.1). On the pre-#52 script this fails at the import itself: argparse
+    runs at module scope, sees pytest's argv, and exits 2."""
+    monkeypatch.chdir(tmp_path)
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+    urllib3_before = logging.getLogger('urllib3').level
+    sigterm_before = signal.getsignal(signal.SIGTERM)
+
+    _fresh_import(monkeypatch, ['pytest'])
+
+    assert list(root.handlers) == handlers_before, "import must not add root-logger handlers"
+    assert logging.getLogger('urllib3').level == urllib3_before
+    assert signal.getsignal(signal.SIGTERM) is sigterm_before, "import must not install signal handlers"
+    assert list(tmp_path.iterdir()) == [], "import must not create directories or log files"
+
+
+def test_main_with_bad_argv_exits_2(tmp_path, monkeypatch):
+    """argparse's error contract survives the main() extraction, exercised in-process."""
+    monkeypatch.chdir(tmp_path)
+    module = _fresh_import(monkeypatch, ['pytest'])
+
+    for argv in ([], ['host-only']):
+        with pytest.raises(SystemExit) as excinfo:
+            module.main(argv)
+        assert excinfo.value.code == 2
+
+
+def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
+    """The #49 evidence path at the new run() seam: a pano-list fetch crash must leave a blank-padded
+    18-field log.csv row whose real timestamp shows a run started and produced nothing. In-process and
+    deterministic - unlike the subprocess variant, which relies on .invalid DNS failing through the whole
+    retry stack."""
+    monkeypatch.chdir(tmp_path)
+    module = _fresh_import(monkeypatch, ['pytest'])
+    storage = tmp_path / 'storage'
+    storage.mkdir()
+
+    def fetch_boom(sidewalk_server_fqdn):
+        raise RuntimeError('webserver down')
+
+    monkeypatch.setattr(module, 'fetch_pano_ids_from_webserver', fetch_boom)
+
+    with pytest.raises(RuntimeError, match='webserver down'):
+        module.run('sidewalk-test.invalid', str(storage))
+
+    fields = last_log_fields(storage)
+    assert len(fields) == 18
+    assert fields[0] != ''  # a real timestamp: evidence the run started
+    assert fields[1:] == [''] * 17  # no phase ran - all blank, not fake zeros
+
+
 # Runs DownloadRunner.py (via runpy — argparse at module scope rules out an import) with Session.get stubbed
 # to capture the HTTP config the pano-list fetch actually uses, reported as JSON on the last stdout line.
 # No network I/O: the stub raises SystemExit before anything touches a socket.
