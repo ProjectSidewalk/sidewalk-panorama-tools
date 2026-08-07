@@ -40,6 +40,48 @@ def run_entrypoint(tmp_path):
     return run
 
 
+@pytest.fixture
+def run_entrypoint_sshfs(tmp_path):
+    """Run the 3-arg (sshfs-mounted) entrypoint path — the production invocation — with sshfs, umount, and
+    python3 all stubbed on PATH."""
+    stub_dir = tmp_path / 'bin'
+    stub_dir.mkdir()
+    capture_file = tmp_path / 'python3-args.txt'
+    sshfs_file = tmp_path / 'sshfs-args.txt'
+    (stub_dir / 'python3').write_text('#!/bin/bash\necho "$@" > "$CAPTURE_FILE"\n')
+    (stub_dir / 'sshfs').write_text('#!/bin/bash\necho "$@" > "$SSHFS_FILE"\n')
+    (stub_dir / 'umount').write_text('#!/bin/bash\nexit 0\n')
+    for stub in ('python3', 'sshfs', 'umount'):
+        (stub_dir / stub).chmod(0o755)
+
+    def run(*args):
+        env = dict(os.environ,
+                   PATH=f"{stub_dir}:{os.environ['PATH']}",
+                   CAPTURE_FILE=str(capture_file),
+                   SSHFS_FILE=str(sshfs_file))
+        result = subprocess.run(['bash', ENTRYPOINT, *args],
+                                cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=30)
+        forwarded = capture_file.read_text().split() if capture_file.exists() else None
+        mounted = sshfs_file.read_text().split() if sshfs_file.exists() else None
+        return result, forwarded, mounted
+
+    return run
+
+
+def test_sshfs_path_forwards_the_budget_flags(run_entrypoint_sshfs):
+    """The sshfs invocation is the one production runs; a flag parsed but dropped only from that line would
+    pass every 1-arg test here and still silently disable the feature fleet-wide (it has happened before —
+    see the entrypoint's own comment)."""
+    result, forwarded, mounted = run_entrypoint_sshfs(
+        'sidewalk-test.invalid', 'user@host.invalid:/remote/path', '2222',
+        '--max-runtime', '5', '--min-depth-runtime', '45')
+    assert result.returncode == 0
+    assert mounted is not None and 'user@host.invalid:/remote/path' in mounted
+    assert forwarded[:3] == ['DownloadRunner.py', 'sidewalk-test.invalid', '/tmp/download_dest']
+    assert forwarded[forwarded.index('--max-runtime') + 1] == '5'
+    assert forwarded[forwarded.index('--min-depth-runtime') + 1] == '45'
+
+
 def test_forwards_all_optional_flags(run_entrypoint):
     result, forwarded = run_entrypoint('sidewalk-test.invalid', '--all-panos', '--max-runtime', '5',
                                        '--max-depth-requests', '100')
