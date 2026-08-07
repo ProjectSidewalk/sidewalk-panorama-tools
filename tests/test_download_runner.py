@@ -12,6 +12,8 @@ import subprocess
 import sys
 from datetime import datetime
 
+import pytest
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER = os.path.join(REPO_ROOT, 'DownloadRunner.py')
 CSV_HEADER = 'pano_id,width,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
@@ -109,6 +111,34 @@ class TestDepthBudgetMessages:
         storage, result = run_downloader(tmp_path)
         assert result.returncode == 0, result.stderr
         assert 'reserved for depth' not in result.stdout
+
+
+class TestMinDepthRuntimeValidation:
+    """--min-depth-runtime inputs that would otherwise silently no-op or zero the image phase (#43 review):
+    -5 and nan silently made no reservation, inf silently zeroed the image phase. Reject them at parse time,
+    and tell an operator who typed the flag in a combination where it cannot apply."""
+
+    @pytest.mark.parametrize('bad', ['-5', 'nan', 'inf', '-inf', 'abc'])
+    def test_rejects_negative_nan_and_inf(self, tmp_path, bad):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', bad)
+        assert result.returncode == 2
+        assert '--min-depth-runtime' in result.stderr
+
+    def test_warns_when_given_without_max_runtime(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--min-depth-runtime', '45')
+        assert result.returncode == 0, result.stderr
+        assert 'WARNING: --min-depth-runtime has no effect without --max-runtime' in result.stdout
+
+    def test_warns_when_given_with_skip_depth(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45',
+                                         '--skip-depth')
+        assert result.returncode == 0, result.stderr
+        assert 'WARNING: --min-depth-runtime has no effect with --skip-depth' in result.stdout
+
+    def test_effective_combination_does_not_warn(self, tmp_path):
+        storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45')
+        assert result.returncode == 0, result.stderr
+        assert 'has no effect' not in result.stdout
 
 
 def write_gsv_csv(tmp_path):

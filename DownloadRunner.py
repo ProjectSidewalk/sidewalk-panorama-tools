@@ -4,6 +4,7 @@ import argparse
 import http.client
 import json
 import logging
+import math
 import os
 import time
 from datetime import datetime
@@ -14,6 +15,21 @@ import pandas as pd
 from downloaders import DownloadResult, download_pano, gsv, mapillary
 
 
+def _reservation_minutes(value):
+    """argparse type= for --min-depth-runtime: a finite, non-negative float.
+
+    Without this, a negative value or nan silently made no reservation and inf silently zeroed the image
+    phase — a misconfiguration should fail the run at parse time, not misbehave quietly for months.
+    """
+    try:
+        minutes = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid float value: %r" % (value,))
+    if math.isnan(minutes) or math.isinf(minutes) or minutes < 0:
+        raise argparse.ArgumentTypeError("must be a finite, non-negative number of minutes: %r" % (value,))
+    return minutes
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
 parser.add_argument('s', help='storage_path - location to store scraped panos')
@@ -21,7 +37,7 @@ parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of 
 parser.add_argument('--all-panos', action='store_true', help='Download images for all panos that users visited, even if no labels were added on them. Does not affect depth, which always covers every pano.')
 parser.add_argument('--skip-depth', action='store_true', help='Skip downloading GSV depth maps (downloaded by default via the streetlevel library).')
 parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
-parser.add_argument('--min-depth-runtime', type=float, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
+parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
 parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
 # Deprecated no-op, kept for one release so existing invocations don't crash argparse.
 parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
@@ -39,6 +55,12 @@ max_depth_requests = args.max_depth_requests
 if args.attempt_depth:
     print("WARNING: --attempt-depth is deprecated and ignored; depth download is now on by default "
           "(use --skip-depth to disable).")
+
+# min_depth_runtime > 0 implies the operator typed the flag (the default is 0), so tell them when the
+# combination they ran it in means it cannot do anything.
+if min_depth_runtime > 0 and (max_runtime_minutes is None or skip_depth):
+    print("WARNING: --min-depth-runtime has no effect %s; no time will be reserved for the depth phase."
+          % ("with --skip-depth" if skip_depth else "without --max-runtime"))
 
 print(sidewalk_server_fqdn)
 print(storage_location)
