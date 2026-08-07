@@ -158,8 +158,11 @@ Artifacts and bookkeeping, relative to the storage root:
   import numpy as np
   d = np.load("aB/aBcDeF....depth.npz")
   d["depth"]           # float32 (height, width) array, typically 256x512; distance from camera in meters; -1 = no plane (sky, or unmodeled)
+  d["plane_indices"]   # uint8 (height, width): per-pixel index into the plane list below; 0 = no plane (exactly where depth is -1)
+  d["planes_n"]        # float32 (P, 3): plane normals, verbatim from Google's payload (pano-local frame; see below)
+  d["planes_d"]        # float32 (P,): plane offsets; a plane is {p : p·n = d}, so its perpendicular camera distance is |d| / ||n||
   d["heading"]         # camera heading in radians (NaN if Google omitted it); likewise d["pitch"], d["roll"]
-  d["format_version"]  # 2; absent in artifacts written before the mirror fix below
+  d["format_version"]  # 3; version 2 lacked the three plane fields; absent means pre-mirror-fix (see below)
   ```
 
   The array shares the JPEG's orientation: column 0 of `d["depth"]` is the leftmost column of the pano image. (streetlevel's decoder delivers the payload x-mirrored relative to the imagery; we flip it back on write, and contract tests pin the decoder's end-to-end output orientation — both the ray-direction formula and the write order — so an upstream change fails CI instead of silently re-mirroring new artifacts; see [#58](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/58). **An artifact with no `format_version` field predates that fix and is horizontally flipped — see the migration note below.**) To sample the depth under a label position stored in the database:
@@ -168,6 +171,13 @@ Artifacts and bookkeeping, relative to the storage root:
   col = int(pano_x / pano_width * d["depth"].shape[1]) % d["depth"].shape[1]
   row = min(int(pano_y / pano_height * d["depth"].shape[0]), d["depth"].shape[0] - 1)
   meters = d["depth"][row, col]
+  ```
+
+  The plane fields ([#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)) are the raw material for per-pano **camera height** and **ground tilt**: Google's depth is plane-based, and `depth` is derived from the planes via `depth[r, c] == |planes_d[i] / (v(r, c) · planes_n[i])|` for `i = plane_indices[r, c] > 0`, where `v(r, c)` is the unit ray at `θ = (h−r−0.5)/h·π`, `φ = (w−c−0.5)/w·2π + π/2`. That identity is CI-tested and is the operational definition of the normals' frame — `plane_indices` shares `depth`'s row/column order, and the normals are untouched by the mirror fix below. `downloaders/gsv.py` ships the reference derivations, `ground_plane_from_artifact(d)` (the most-vertical plane some pixel actually references) and `camera_height_from_artifact(d)` (its `|d| / ||n||`, sign-insensitive):
+
+  ```python
+  from downloaders.gsv import camera_height_from_artifact
+  height_m = camera_height_from_artifact(d, default=2.5)  # per-pano camera height above the modeled ground
   ```
 
   (Truncation, not `round()`: each depth pixel covers a *range* of pano columns, and flooring picks the pixel containing the position; rounding would pick the pixel whose edge is nearest — a systematic half-pixel shift.) The payload is angular (~0.7°/pixel; the horizon at θ = π/2 falls midway between the two middle rows, not on a single row), so this scaling works for any pano resolution. Note the frame caveat: `pano_x` and the pano raster are both *heading-centred* (column 0 sits at compass bearing `pano_yaw − 180°`, the vehicle's forward direction at image centre), but the legacy pre-evolution-179 `sv_image_x` is *north-referenced* (`sv_image_x / 13312 × 360` is a true compass bearing). Mixing the legacy value with the raster or this array displaces a label by up to half a panorama — and by nothing at all on a pano that happens to face south, so a one-example sanity check can pass on the wrong convention.
@@ -179,6 +189,8 @@ Artifacts and bookkeeping, relative to the storage root:
 python3 migrate_depth_artifacts.py /path/to/storage --dry-run   # count pre-v2 artifacts, change nothing
 python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them in place
 ```
+
+There is **no offline migration from v2 to v3**: the plane fields v3 adds were never stored by the v2 writer, so they can only come from a re-fetch. A v2 artifact (only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56) dev/test runs produced any — no production store ever ran the depth phase) reaches v3 by deleting the artifact *and* its `depth_log.csv` row, which makes the next run re-request it. The plane fields cost roughly 10–30 KB per pano on top of v2's 50–200 KB.
 
 The depth phase runs after the image phase, and the two share one `--max-runtime` budget — that flag bounds the whole run to its daily cron slot, and the slot doesn't care which phase spends the clock. Because images run first, a big image backlog (a mapathon influx — which is also exactly when many new panos want depth) could starve the backfill night after night. `--min-depth-runtime` (default 0, i.e. off; the production crontab should pass 60) counters that by reserving the tail of the budget for depth whenever `depth_log.csv` shows unresolved work: the image phase then stops *starting* new panos at `max-runtime − min-depth-runtime`. Three consequences worth knowing:
 
