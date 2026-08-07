@@ -129,6 +129,21 @@ class TestDecodeDepthPlanes:
         assert planes.normals.shape == (0, 3)
         assert planes.distances.shape == (0,)
 
+    def test_out_of_range_plane_index_raises(self):
+        """An index pointing past the declared plane list would make the raster computation read a plane
+        that does not exist. streetlevel fails the same payload with a bare IndexError deep in its decode;
+        ours must refuse it at the boundary with the malformed-payload error class."""
+        payload = encode_depth_payload(self.PLANES[:2], [0, 2], width=2, height=1)
+
+        with pytest.raises(gsv.DepthPayloadError, match='out of range'):
+            gsv._decode_depth_planes(payload)
+
+    def test_zero_area_raster_raises(self):
+        """A payload declaring a zero-width or zero-height raster is not a depth map; every consumer of the
+        (h, w) shape downstream would degrade in its own way, so reject it once, here."""
+        with pytest.raises(gsv.DepthPayloadError):
+            gsv._decode_depth_planes(encode_depth_payload(self.PLANES[:2], [], width=0, height=1))
+
 
 class TestWriteDepthArtifact:
     def test_roundtrip_and_atomicity(self, tmp_path):
@@ -369,6 +384,51 @@ class TestWriteDepthArtifact:
         with np.load(os.path.join(storage, 'ab', 'abcdef' + gsv.DEPTH_ARTIFACT_SUFFIX)) as d:
             np.testing.assert_allclose(d['depth'], [[5.0, -1.0]])
             np.testing.assert_array_equal(d['plane_indices'], [[1, 0]])
+
+
+class TestComputeDepthRaster:
+    """gsv._compute_depth_raster: the per-pixel distance raster derived from our own decoded planes -
+    replacing streetlevel's compute_depth_map in the seam, whose parser dies on any payload with a modelled
+    zenith (the uint16 offset misread, unfixed through 0.12.11; see test_streetlevel_api)."""
+
+    def test_reconstructs_the_mirror_fixture_in_payload_order(self):
+        """Same numbers as the streetlevel mirror pin: payload indices [0, 1, 1, 0] against the azimuth-
+        encoding plane decode to [-1, 3.0, 1.0, -1] in PAYLOAD order (no x-mirror - the mirror is
+        streetlevel's output convention, not the wire's)."""
+        planes = gsv.DepthPlanes(np.array([[0, 1, 1, 0]], dtype=np.uint8),
+                                 np.array([[0.0, 0.0, 0.0], [2.0, 1.0, 0.0]], dtype=np.float32),
+                                 np.array([0.0, 1.5 * np.sqrt(2)], dtype=np.float32))
+
+        raster = gsv._compute_depth_raster(planes)
+
+        assert raster.dtype == np.float32
+        np.testing.assert_allclose(raster, [[-1.0, 3.0, 1.0, -1.0]], rtol=1e-5)
+
+    def test_no_planes_yields_all_no_plane(self):
+        planes = gsv.DepthPlanes(np.zeros((2, 3), dtype=np.uint8),
+                                 np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.float32))
+
+        raster = gsv._compute_depth_raster(planes)
+
+        assert raster.shape == (2, 3)
+        assert (raster == gsv.DEPTH_NO_PLANE).all()
+
+    def test_matches_streetlevels_own_decode(self):
+        """Parity with upstream on a payload upstream CAN read (first index byte 0): our raster must equal
+        streetlevel's mirrored output flipped back, so swapping the raster source changes nothing about the
+        artifacts written for the ~99% of panos both decoders handle."""
+        streetlevel_depth = pytest.importorskip('streetlevel.streetview.depth',
+                                                reason='parity check needs the real streetlevel')
+        from conftest import encode_depth_payload
+        planes_wire = [{'n': [0.0, 0.0, 0.0], 'd': 0.0}, {'n': [0.4, -1.1, 0.6], 'd': 3.7},
+                       {'n': [0.0, 0.2, 1.0], 'd': 2.4}]
+        indices = [0, 1, 2, 2, 1, 0, 1, 2]
+        payload = encode_depth_payload(planes_wire, indices, width=4, height=2)
+
+        ours = gsv._compute_depth_raster(gsv._decode_depth_planes(payload))
+        theirs = np.asarray(streetlevel_depth.parse(payload).data)
+
+        np.testing.assert_allclose(ours, theirs[:, ::-1], rtol=1e-5)
 
 
 class TestGroundPlane:

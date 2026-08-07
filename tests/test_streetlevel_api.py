@@ -192,6 +192,49 @@ def test_fetch_seam_returns_none_pair_when_the_pano_is_gone(monkeypatch):
     assert gsv._fetch_pano_with_depth_planes('testPanoIdAbCdEfGhIj_-', object()) == (None, None)
 
 
+def test_fetch_seam_survives_a_modelled_zenith(monkeypatch):
+    """A payload whose FIRST index byte is nonzero - a modelled zenith: tunnels, overpass soffits, parking
+    structures, a bit under 1% of panos - is exactly the class streetlevel's parser dies on (its uint16
+    misread of the offset byte, see test_streetlevel_still_misreads_the_depth_offset, unfixed through
+    0.12.11 with the fix pending in sk-zk/streetlevel#45). Since the seam computes the raster from our own
+    decode instead of routing through streetlevel's, those panos must now resolve rather than re-request
+    forever."""
+    # Payload indices [1, 1, 0, 0]: the first byte is the nonzero one that breaks streetlevel's offset read.
+    payload = encode_depth_payload(MIRROR_PLANES, [1, 1, 0, 0], MIRROR_HEADER['width'],
+                                   MIRROR_HEADER['height'])
+    pano_id = 'testPanoIdAbCdEfGhIj_-'
+    msg = [
+        [1],
+        [None, pano_id],
+        [None, None, None, [[[[256, 512]]], [512, 512]]],
+        [], [],
+        [[None,
+          [[None, None, 37.774, -122.419], [12.5], [180.0, 90.0, 0.0]],
+          None, [], None,
+          [None, [None, None, payload]]]],
+        [],
+    ]
+    monkeypatch.setattr(api, 'find_panorama_by_id', lambda *args, **kwargs: [None, [msg]])
+
+    pano, planes = gsv._fetch_pano_with_depth_planes(pano_id, object())
+
+    # Payload-order raster for these indices is [0.75, 3.0, -1, -1] (same plane, two azimuths - see the
+    # MIRROR fixture); the seam hands the raster back in streetlevel's x-mirrored order, which is what
+    # _write_depth_artifact's #58 un-mirror (and all its CI pins) expect.
+    np.testing.assert_allclose(np.ravel(pano.depth.data), [-1.0, -1.0, 3.0, 0.75], rtol=1e-5)
+    np.testing.assert_array_equal(planes.indices, np.array([[1, 1, 0, 0]], dtype=np.uint8))
+
+
+def test_fetch_seam_raises_on_an_unrecognized_envelope(monkeypatch):
+    """A response that is not the photometa envelope at all - an error JSON from a proxy, a quota page that
+    happened to parse - must raise (transient, retried), NEVER read as "pano gone": misfiling it as
+    (None, None) would ledger 'unavailable' and permanently write off a pano Google still serves."""
+    monkeypatch.setattr(api, 'find_panorama_by_id', lambda *args, **kwargs: {'error': 'quota exceeded'})
+
+    with pytest.raises(gsv.DepthPayloadError):
+        gsv._fetch_pano_with_depth_planes('testPanoIdAbCdEfGhIj_-', object())
+
+
 def test_depth_map_still_exposes_data():
     # _write_depth_artifact reads pano.depth.data. Tolerate DepthMap becoming a plain class so this catches a
     # rename rather than a refactor.
