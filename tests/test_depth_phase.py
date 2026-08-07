@@ -450,6 +450,39 @@ def test_self_heal_ledger_failures_are_not_silent(tmp_path, fake_streetview, mon
     assert 'No space left on device' in out
 
 
+def test_storage_failures_skip_the_retreat_sleeps(tmp_path, fake_streetview, monkeypatch):
+    """The retreat schedule waits for a network blip or rate limit to clear, but a full disk cannot clear
+    itself: a storage streak must march straight to the breaker instead of burning up to 7.5 minutes of a
+    shared --max-runtime window (#60 review, finding 7)."""
+    storage = str(tmp_path)
+    monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 4)
+    monkeypatch.setattr(gsv, 'DEPTH_RETREAT_SCHEDULE', {2: 30})
+    sleeps = []
+    monkeypatch.setattr(gsv.time, 'sleep', lambda seconds: sleeps.append(seconds))
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+    monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+
+    assert gsv.download_depth_maps(storage, many_pano_infos(10)) == (0, 4, 0, 4)
+    assert sleeps == []
+
+
+def test_network_failures_keep_the_retreat_sleeps(tmp_path, fake_streetview, monkeypatch):
+    """The counterpart guard: a network streak still gets the escalating back-off before the breaker."""
+    storage = str(tmp_path)
+    monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 4)
+    monkeypatch.setattr(gsv, 'DEPTH_RETREAT_SCHEDULE', {2: 30})
+    sleeps = []
+    monkeypatch.setattr(gsv.time, 'sleep', lambda seconds: sleeps.append(seconds))
+
+    def find(pano_id, **kwargs):
+        raise requests.ConnectionError('network down')
+
+    fake_streetview.find_panorama_by_id = find
+
+    assert gsv.download_depth_maps(storage, many_pano_infos(10)) == (0, 4, 0, 4)
+    assert sleeps == [30]
+
+
 @pytest.mark.parametrize('error', [
     gsv.DepthBlockedError('redirected to https://www.google.com/sorry/index'),
     requests.exceptions.RetryError('too many 429s'),

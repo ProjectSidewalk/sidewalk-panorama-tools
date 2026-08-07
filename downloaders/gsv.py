@@ -207,7 +207,7 @@ DEPTH_ARTIFACT_SUFFIX = '.depth.npz'
 DEPTH_MAX_CONSECUTIVE_FAILURES = 25
 
 # consecutive-failure count -> seconds to sleep before carrying on. Gives a blip a chance to clear before we spend
-# the breaker, without pounding while we wait.
+# the breaker, without pounding while we wait. Storage failures skip the retreat: a full disk cannot clear itself.
 DEPTH_RETREAT_SCHEDULE = {5: 30, 10: 120, 15: 300}
 
 # Values for download_depth_maps' stop_reason - constants so the set sites and the end-of-phase compare sites
@@ -397,10 +397,11 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
     # trip is whatever streak_classes and last_error say, not necessarily Google.
     stop_reason = None
     last_error = None
-    # Per-class counts (storage/network/unexpected) over the CURRENT failure streak. Reset wherever
-    # consecutive_failures resets, so a breaker trip can name its dominant cause even when the last error is
-    # the minority class.
+    # Per-class counts (storage/network/unexpected) over the CURRENT failure streak, plus the class of the most
+    # recent failure. Reset wherever consecutive_failures resets, so a breaker trip can name its dominant cause
+    # even when the last error is the minority class.
     streak_classes = collections.Counter()
+    failure_class = None
 
     depth_log_path = os.path.join(storage_path, DEPTH_LOG_FILENAME)
     log_existed = os.path.isfile(depth_log_path)
@@ -515,7 +516,8 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # NB: requests.RequestException subclasses OSError, so it must be caught above the OSError arm.
                 fail_count += 1
                 consecutive_failures += 1
-                streak_classes['network'] += 1
+                failure_class = 'network'
+                streak_classes[failure_class] += 1
                 last_error = e
                 logging.error("DEPTHDOWNLOAD: Failed to fetch depth for pano %s due to error %s", pano_id, str(e))
             except OSError as e:
@@ -525,7 +527,8 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # line where the analyzer expects 18.
                 fail_count += 1
                 consecutive_failures += 1
-                streak_classes['storage'] += 1
+                failure_class = 'storage'
+                streak_classes[failure_class] += 1
                 last_error = e
                 logging.error("DEPTHDOWNLOAD: Could not store depth for pano %s: %s", pano_id, str(e))
             except Exception as e:
@@ -533,7 +536,8 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 # transient; worst case a permanently-bad pano costs one request per run.
                 fail_count += 1
                 consecutive_failures += 1
-                streak_classes['unexpected'] += 1
+                failure_class = 'unexpected'
+                streak_classes[failure_class] += 1
                 last_error = e
                 logging.exception("DEPTHDOWNLOAD: Unexpected error fetching depth for pano %s: %s", pano_id, str(e))
 
@@ -548,7 +552,10 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
                 print("DEPTHDOWNLOAD: %d consecutive failures. Stopping the depth phase."
                       % (consecutive_failures))
                 break
-            retreat_seconds = DEPTH_RETREAT_SCHEDULE.get(consecutive_failures)
+            # The retreat exists to give a network blip or rate limit time to clear. A full or unmounted store
+            # cannot clear itself, so storage failures skip the wait (they still count toward the breaker, which
+            # then trips fast) instead of burning up to 7.5 minutes of a shared --max-runtime window.
+            retreat_seconds = None if failure_class == 'storage' else DEPTH_RETREAT_SCHEDULE.get(consecutive_failures)
             if retreat_seconds:
                 print("DEPTHDOWNLOAD: %d consecutive failures, backing off for %ds before continuing."
                       % (consecutive_failures, retreat_seconds))
