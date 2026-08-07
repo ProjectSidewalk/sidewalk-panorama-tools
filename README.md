@@ -27,8 +27,15 @@ Optional flags (accepted both by `DownloadRunner.py` and, appended after the pos
 * `--all-panos` — download *images* for panos that users visited but never labeled. This does not affect depth, which always covers every pano (see [Depth Maps](#depth-maps)).
 * `--skip-depth` — skip the GSV depth-map phase (on by default; see [Depth Maps](#depth-maps)).
 * `--max-runtime MINUTES` — stop starting new downloads/requests after this much wall time (the daily cron uses this; it exists to keep a run inside its daily slot, see [#38](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/38)).
-* `--min-depth-runtime MINUTES` — reserve the last MINUTES of `--max-runtime` for the depth phase (default 60). The image phase stops early enough to leave depth this slice, so an image backlog can't starve the depth backfill; depth still runs until `--max-runtime`, so it also gets any slack images leave. Ignored without `--max-runtime` or with `--skip-depth`; pass 0 to let images use the whole budget.
+* `--min-depth-runtime MINUTES` — reserve the last MINUTES of `--max-runtime` for the depth phase when there is unresolved depth work, so an image backlog can't starve the depth backfill (see [Depth Maps](#depth-maps) for the exact semantics). Default 0 (no reservation); **the recommended production crontab value is `--min-depth-runtime 60`**. Ignored without `--max-runtime` or with `--skip-depth`. Beware: if the reservation meets or exceeds `--max-runtime`, the run downloads **no images** (it prints a loud `WARNING`).
 * `--max-depth-requests N` — stop the depth phase after N metadata requests (useful to throttle the initial backfill).
+
+For the nightly production crontab, append `--max-runtime` sized to the cron slot plus the recommended depth reservation, e.g.:
+```
+docker run --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined \
+  projectsidewalk/scraper:v6 <project-sidewalk-url> <user@host:/remote/path> <port> \
+  --max-runtime 360 --min-depth-runtime 60
+```
 
 Additional settings can be configured for `DownloadRunner.py` in the configuration file `config.py`. 
 * `thread_count` - the number of threads you wish to run in parallel. As this uses asyncio and is an I/O task, the higher the count the faster the operation, but you will need to test what the upper limit is for your own device and network connection.
@@ -155,7 +162,13 @@ Artifacts and bookkeeping, relative to the storage root:
   ```
 * `depth_log.csv` — an append-only ledger (`pano_id,status`) of resolved outcomes: `saved` (artifact written) or `unavailable` (pano gone from Google, or no depth payload). Ledgered panos are never re-requested; transient network failures are *not* ledgered, so they retry on the next run. The artifacts on disk are the ground truth — deleting the ledger is safe and just makes the next run re-check everything (existing artifacts are re-registered without re-downloading).
 
-The depth phase runs after the image phase, and the two share one `--max-runtime` budget — that flag bounds the whole run to its daily cron slot, and the slot doesn't care which phase spends the clock. Within it, `--min-depth-runtime` (default 60) reserves the tail of the budget for depth: the image phase must stop at `max-runtime − min-depth-runtime`, so a big image backlog (a mapathon influx — which is also exactly when many new panos want depth) cannot starve the backfill night after night. On light nights images finish early and depth gets the slack too. Use `--max-depth-requests` to cap the phase's request volume during backfill.
+The depth phase runs after the image phase, and the two share one `--max-runtime` budget — that flag bounds the whole run to its daily cron slot, and the slot doesn't care which phase spends the clock. Because images run first, a big image backlog (a mapathon influx — which is also exactly when many new panos want depth) could starve the backfill night after night. `--min-depth-runtime` (default 0, i.e. off; the production crontab should pass 60) counters that by reserving the tail of the budget for depth whenever `depth_log.csv` shows unresolved work: the image phase then stops *starting* new panos at `max-runtime − min-depth-runtime`. Three consequences worth knowing:
+
+* **It is a reservation, not a hard floor on depth wall time.** A pano already downloading when the image share runs out finishes anyway (eating into the reserved slice), and depth still ends at `--max-runtime` — on light nights images finish early and depth also gets the slack.
+* **It only applies while depth has work.** Once every GSV pano is resolved in `depth_log.csv`, no time is reserved and the image phase keeps the whole budget.
+* **A reservation at or above `--max-runtime` zeroes the image phase.** The run then downloads **no images** and prints `WARNING: --min-depth-runtime (X) >= --max-runtime (Y); NO images will be downloaded this run`, so a misconfigured crontab shows up in cron mail instead of looking like ordinary budget exhaustion.
+
+Use `--max-depth-requests` to cap the phase's request volume during backfill.
 
 ### Being a good citizen of Google's servers
 

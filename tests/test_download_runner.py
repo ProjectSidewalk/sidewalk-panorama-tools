@@ -74,34 +74,31 @@ def test_max_depth_requests_flag_is_accepted(tmp_path):
     assert len(last_log_fields(storage)) == 18
 
 
-class TestDepthBudgetFloor:
-    """--min-depth-runtime reserves the tail of --max-runtime for the depth phase (#43).
-
-    Without a reservation, the images-first shared budget lets an image backlog (a mapathon is the #38
-    scenario) starve the depth backfill night after night - exactly when the most new panos arrive. All runs
-    here use the unsupported-source CSV, so both phases see empty pano lists and nothing touches the network;
-    the assertions read the budget-split line the run prints for cron mail.
+class TestDepthBudgetMessages:
+    """stdout messages for the --min-depth-runtime budget split (cron mails stdout, so these lines are the
+    operator's only signal). What the split actually *does* is pinned in TestImageBudgetBehaviour below —
+    these runs use the unsupported-source CSV, so both phases see empty pano lists.
     """
 
-    def test_default_reserves_an_hour_for_depth(self, tmp_path):
+    def test_default_makes_no_reservation(self, tmp_path):
+        # The fleet plans to drastically lower --max-runtime; a default reservation would silently zero the
+        # image phase on every city whose slot is at or under it. Reserving is opt-in.
         storage, result = run_downloader(tmp_path, '--max-runtime', '120')
         assert result.returncode == 0, result.stderr
-        assert 'image phase capped at 60.0 min (60.0 reserved for depth)' in result.stdout
+        assert 'reserved for depth' not in result.stdout
+        assert 'NO images' not in result.stdout
 
-    def test_flag_sets_the_reservation(self, tmp_path):
+    def test_no_backlog_means_no_reservation(self, tmp_path):
+        # No gsv panos in this CSV, so the depth ledger has no unresolved work to reserve for.
         storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45')
         assert result.returncode == 0, result.stderr
-        assert 'image phase capped at 75.0 min (45.0 reserved for depth)' in result.stdout
+        assert 'no unresolved depth work' in result.stdout
+        assert 'reserved for depth' not in result.stdout
 
-    def test_zero_floor_restores_the_old_behaviour(self, tmp_path):
+    def test_zero_reservation_is_silent(self, tmp_path):
         storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--min-depth-runtime', '0')
         assert result.returncode == 0, result.stderr
         assert 'reserved for depth' not in result.stdout
-
-    def test_floor_larger_than_total_clamps_image_budget_to_zero(self, tmp_path):
-        storage, result = run_downloader(tmp_path, '--max-runtime', '30')
-        assert result.returncode == 0, result.stderr
-        assert 'image phase capped at 0.0 min (60.0 reserved for depth)' in result.stdout
 
     def test_skip_depth_gives_images_the_whole_budget(self, tmp_path):
         storage, result = run_downloader(tmp_path, '--max-runtime', '120', '--skip-depth')
@@ -186,12 +183,48 @@ class TestImageBudgetBehaviour:
             tmp_path, '--max-runtime', '5', '--min-depth-runtime', '5')
         assert result.returncode == 0, result.stderr
         assert downloaded == []
+        # A zero-image run must be unmistakable in cron mail, not read like ordinary budget exhaustion.
+        assert ('WARNING: --min-depth-runtime (5) >= --max-runtime (5); NO images will be downloaded this run'
+                in result.stdout)
 
     def test_zero_reservation_downloads_every_pano(self, tmp_path):
         storage, result, downloaded = run_downloader_with_fake_network(
             tmp_path, '--max-runtime', '5', '--min-depth-runtime', '0')
         assert result.returncode == 0, result.stderr
         assert sorted(downloaded) == sorted(GSV_PANO_IDS)
+
+    def test_default_reserves_nothing(self, tmp_path):
+        # Same run as above but with --min-depth-runtime left at its default, which must be 0: the fleet plans
+        # to drastically lower --max-runtime, and a default reservation would zero the image phase fleet-wide.
+        storage, result, downloaded = run_downloader_with_fake_network(tmp_path, '--max-runtime', '5')
+        assert result.returncode == 0, result.stderr
+        assert sorted(downloaded) == sorted(GSV_PANO_IDS)
+
+    def test_fully_resolved_depth_ledger_frees_the_whole_budget_for_images(self, tmp_path):
+        # The reservation exists to protect a depth *backlog*. Once every pano is resolved in the ledger the
+        # depth phase returns in milliseconds, so reserving would burn image throughput for nothing — the image
+        # phase must get the full budget even with --min-depth-runtime set.
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'depth_log.csv').write_text(
+            'pano_id,status\n%s,saved\n%s,unavailable\n' % (GSV_PANO_IDS[0], GSV_PANO_IDS[1]))
+
+        storage, result, downloaded = run_downloader_with_fake_network(
+            tmp_path, '--max-runtime', '5', '--min-depth-runtime', '5')
+
+        assert result.returncode == 0, result.stderr
+        assert sorted(downloaded) == sorted(GSV_PANO_IDS)
+        assert 'no unresolved depth work' in result.stdout
+        assert 'NO images' not in result.stdout
+
+    def test_backlog_applies_the_reservation_and_announces_it(self, tmp_path):
+        # Nothing in the ledger, so both gsv panos are a depth backlog: the reservation must be taken.
+        storage, result, downloaded = run_downloader_with_fake_network(
+            tmp_path, '--max-runtime', '120', '--min-depth-runtime', '45')
+        assert result.returncode == 0, result.stderr
+        # The image phase still has 75 minutes — plenty for two stubbed panos.
+        assert sorted(downloaded) == sorted(GSV_PANO_IDS)
+        assert 'image phase capped at 75.0 min' in result.stdout
 
 
 def import_download_runner(tmp_path, monkeypatch):
