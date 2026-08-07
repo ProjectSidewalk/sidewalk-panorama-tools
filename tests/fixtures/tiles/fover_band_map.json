@@ -1,5 +1,5 @@
 {
- "captured_utc": "2026-08-07T18:56:00Z",
+ "captured_utc": "2026-08-07T19:21:52Z",
  "legend": "1 = every tile in the row came back 256x256, 2 = every tile 512x512, ? = mixed",
  "note": "Full zoom-5 grid sweeps. With fover the half-res rows form two polar bands; without it the band is gone. Row index runs top (y=0) to bottom.",
  "bands": {
@@ -9,15 +9,14 @@
     32,
     16
    ],
-   "row_map": "?111122222211111",
-   "degraded_tiles": 318,
+   "row_map": "1111122222211111",
+   "degraded_tiles": 320,
    "total_tiles": 512,
    "rows": [
     {
      "y": 0,
      "sizes": {
-      "(256, 256)": 30,
-      "None": 2
+      "(256, 256)": 32
      }
     },
     {
@@ -512,7 +511,7 @@
  "halving_cost_by_row": {
   "metric": "mean |pixel - (halve then double with LANCZOS)| on the luma of a full 512 body; how much real detail halving that row would destroy",
   "why": "fover halved exactly the polar rows. Equirectangular oversamples the poles, so those rows carry the least real detail per pixel - the optimisation is well targeted, which bounds how much the existing store actually lost (#73).",
-  "measured_utc": "2026-08-07T19:02:55Z",
+  "measured_utc": "2026-08-07T19:21:52Z",
   "panos": {
    "Seattle 2022": {
     "pano_id": "Svz6_7CwyijJ6RgjWROnCw",

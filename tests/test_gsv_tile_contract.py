@@ -169,8 +169,10 @@ class TestTheBandStructure:
     """Pinned from full-grid sweeps, not samples. The band is why the original #73 diagnosis went wrong:
     32 scattered positions hit it without revealing it."""
 
+    ALL = ['Seattle 2022', 'NYC 2024', 'Sydney 2014', 'Tokyo 2018']
+
     @pytest.mark.parametrize('label,expected_rows,expected_degraded,total', [
-        ('Seattle 2022', '?111122222211111', 318, 512),
+        ('Seattle 2022', '1111122222211111', 320, 512),
         ('NYC 2024', '1111122222211111', 320, 512),
         ('Sydney 2014', '1111222221111', 208, 338),
         ('Tokyo 2018', '1111222221111', 208, 338),
@@ -181,10 +183,17 @@ class TestTheBandStructure:
         assert entry['degraded_tiles'] == expected_degraded
         assert entry['total_tiles'] == total
 
+    @pytest.mark.parametrize('label', ALL)
+    def test_no_row_is_mixed(self, band_map, label):
+        """Every row is uniformly one size or the other. A '?' means capture.py hit a tile it could not
+        fetch after retries, not that the band is fuzzy - re-capture rather than relaxing this."""
+        assert '?' not in band_map[label]['row_map'], (
+            '%s has a mixed row; re-run tests/fixtures/tiles/capture.py' % label)
+
     def test_the_degraded_rows_are_the_polar_caps_not_scattered_positions(self, band_map):
         """Every half-res row is at the top or the bottom; the full-res rows are one contiguous band around
         the horizon. A per-position or per-request effect could not produce this."""
-        for label in ('NYC 2024', 'Sydney 2014', 'Tokyo 2018'):
+        for label in self.ALL:
             row_map = band_map[label]['row_map']
             full = [i for i, c in enumerate(row_map) if c == '2']
             assert full, label
@@ -193,7 +202,7 @@ class TestTheBandStructure:
 
     def test_the_band_is_centred_on_the_horizon(self, band_map):
         """Which is what makes the lost detail cheap: equirectangular already oversamples the poles."""
-        for label in ('NYC 2024', 'Sydney 2014', 'Tokyo 2018'):
+        for label in self.ALL:
             row_map = band_map[label]['row_map']
             full = [i for i, c in enumerate(row_map) if c == '2']
             centre = (len(row_map) - 1) / 2.0
@@ -203,7 +212,7 @@ class TestTheBandStructure:
     def test_the_measured_counts_match_the_row_structure(self, band_map):
         """Ties the two together: the 320/512 and 208/338 figures in #73 are exactly the row bands, which is
         what showed the original 'roughly 60% of positions, randomly' reading was wrong."""
-        for label in ('NYC 2024', 'Sydney 2014', 'Tokyo 2018'):
+        for label in self.ALL:
             entry = band_map[label]
             cols, _rows = entry['grid']
             half_rows = entry['row_map'].count('1')
@@ -339,9 +348,25 @@ LIVE_PANOS = [('Seattle 2022', 'Svz6_7CwyijJ6RgjWROnCw', 16384, 8192),
               ('DC 2007 (four zoom levels)', 'TEKYJ5O1xd0OZ_YqF0lFRA', 3328, 1664)]
 
 
+def _live_get(session, url, tries=5):
+    """Retry until the response decodes. CBK intermittently answers with a non-image body; production rides
+    that out with backoff (_TILE_RETRY_ERRORS), so a live check that fails on the first dropped response is
+    testing the network, not the endpoint's behaviour."""
+    import time
+
+    for attempt in range(tries):
+        body = session.get(url, headers=gsv._random_header(), timeout=30).content
+        try:
+            Image.open(BytesIO(body)).size
+            return body
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    raise AssertionError('no decodable response after %d tries: %s' % (tries, url))
+
+
 def _live_tile(session, pano, zoom, x, y, extra=''):
-    url = '%s%s&zoom=%d&x=%d&y=%d&panoid=%s' % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano)
-    return session.get(url, headers=gsv._random_header(), timeout=30).content
+    return _live_get(session, '%s%s&zoom=%d&x=%d&y=%d&panoid=%s'
+                     % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano))
 
 
 @live_only
@@ -394,7 +419,7 @@ def test_live_cbk_without_fover_is_byte_identical_to_the_modern_endpoint():
               '&panoid=%s&x=%d&y=%d&zoom=5')
     for y in (0, 2, 11, 15):
         ours = _live_tile(session, pano, 5, 4, y)
-        theirs = session.get(modern % (pano, 4, y), headers=gsv._random_header(), timeout=30).content
+        theirs = _live_get(session, modern % (pano, 4, y))
         assert hashlib.md5(ours).hexdigest() == hashlib.md5(theirs).hexdigest(), \
             'row %d: CBK and streetviewpixels-pa have diverged' % y
 
