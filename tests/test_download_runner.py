@@ -630,6 +630,144 @@ def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
     assert fields[1:] == [''] * 17  # no phase ran - all blank, not fake zeros
 
 
+# --- Retry semantics and source ordering (#41, #40) -----------------------------------------------------------
+
+
+def failing_download_pano(calls, error):
+    def fake_download_pano(storage_path, pano_info):
+        calls.append(pano_info['pano_id'])
+        raise error
+    return fake_download_pano
+
+
+class TestRetrySemantics:
+    """#41: transient failures (exceptions) must not be ledgered - the depth ledger's semantics - while
+    permanent verdicts (DownloadResult.failure: the source has nothing for this pano) stay terminal."""
+
+    def test_transient_failure_is_not_ledgered_and_retries_next_run(self, monkeypatch, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        attempts = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano',
+                            failing_download_pano(attempts, requests.ConnectionError('mid-download blip')))
+
+        result = DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert result == (0, 0, 1, 0, 1), "the failure still counts in THIS run's totals"
+        with open(storage / 'pano_id_log.csv') as f:
+            assert f.read().strip() == 'pano_id,downloaded', "a transient failure must leave no ledger row"
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert attempts == [GSV_PANO_IDS[0], GSV_PANO_IDS[0]], "the next run must re-attempt it"
+        with open(storage / 'pano_id_log.csv') as f:
+            assert f.read().strip().splitlines()[1:] == ['%s,1' % GSV_PANO_IDS[0]]
+
+    def test_permanent_failure_writes_zero_row_and_is_never_reattempted(self, monkeypatch, tmp_path):
+        """DownloadResult.failure is the downloader's verdict on the PANO itself (no imagery at either zoom,
+        undeterminable dims) - permanent, ledgered, terminal, exactly as today. This pin keeps the transient
+        carve-out from widening."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        attempts = []
+
+        def no_imagery(storage_path, pano_info):
+            attempts.append(pano_info['pano_id'])
+            return downloaders.DownloadResult.failure
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', no_imagery)
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        with open(storage / 'pano_id_log.csv') as f:
+            assert f.read().strip().splitlines()[1:] == ['%s,0' % GSV_PANO_IDS[0]]
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert attempts == [GSV_PANO_IDS[0]], "a ledgered 0-row is terminal"
+
+    def test_preexisting_downloaded_zero_rows_stay_terminal(self, monkeypatch, tmp_path):
+        """THE back-compat constraint: production stores hold years of downloaded=0 rows (permanent
+        no-imagery mixed with old transient failures). Nothing may make that backlog retryable - it would
+        be re-attempted against --max-runtime on every nightly run, fleet-wide. Deleting the 0-rows stays
+        the manual force-retry lever."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').write_text('pano_id,downloaded\n%s,0\n' % GSV_PANO_IDS[0])
+        attempts = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
+
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert attempts == []
+
+
+class TestSourceOrdering:
+    """#40: grouping by source put every GSV pano ahead of every Mapillary one, so a city whose GSV backlog
+    exceeds --max-runtime starved Mapillary indefinitely - zero progress, and invisibly, since unattempted
+    panos leave no ledger trace."""
+
+    def mixed_panos(self):
+        return [{'pano_id': 'gsvPanoIdAAAAAAAAAAAAA', 'source': 'gsv'},
+                {'pano_id': '111111111111111', 'source': 'mapillary'},
+                {'pano_id': 'gsvPanoIdBBBBBBBBBBBBB', 'source': 'gsv'},
+                {'pano_id': '222222222222222', 'source': 'mapillary'}]
+
+    def test_filter_preserves_server_order(self, monkeypatch):
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token')
+        panos = self.mixed_panos() + [{'pano_id': 'testPanoIdOtherAAAAAAA', 'source': 'bing'}]
+
+        kept = DownloadRunner.filter_supported_sources(panos)
+
+        assert kept == self.mixed_panos()
+
+    def test_filter_without_token_still_drops_mapillary_with_one_warning(self, monkeypatch, capsys):
+        monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
+
+        kept = DownloadRunner.filter_supported_sources(self.mixed_panos())
+
+        assert [p['pano_id'] for p in kept] == ['gsvPanoIdAAAAAAAAAAAAA', 'gsvPanoIdBBBBBBBBBBBBB']
+        out = capsys.readouterr().out
+        assert out.count('WARNING') == 1
+        assert '2 Mapillary panos skipped' in out
+
+    def test_unsupported_source_warning_still_prints_a_count(self, monkeypatch, capsys):
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token')
+        panos = self.mixed_panos() + [{'pano_id': 'testPanoIdOtherAAAAAAA', 'source': 'bing'},
+                                      {'pano_id': 'testPanoIdOtherBBBBBBB', 'source': 'bing'}]
+
+        DownloadRunner.filter_supported_sources(panos)
+
+        assert "2 panos with unsupported source 'bing' skipped" in capsys.readouterr().out
+
+    def test_budget_exhaustion_does_not_starve_mapillary(self, monkeypatch, tmp_path):
+        """End to end with a fake monotonic clock: 4 interleaved panos, one simulated minute each, and a
+        1.5-minute budget that admits exactly 2 attempts - one of them must be Mapillary. Pre-#40 the
+        grouped list attempted [gsv, gsv] and Mapillary made zero progress."""
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token')
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        clock = [0.0]
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+        attempted = []
+
+        def minute_per_pano(storage_path, pano_info):
+            attempted.append((pano_info['pano_id'], pano_info['source']))
+            clock[0] += 60.0
+            return downloaders.DownloadResult.success
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', minute_per_pano)
+
+        panos = DownloadRunner.filter_supported_sources(self.mixed_panos())
+        DownloadRunner.download_panorama_images(str(storage), panos, run_start_monotonic=0.0,
+                                               max_runtime_minutes=1.5)
+
+        assert len(attempted) == 2
+        assert 'mapillary' in {source for _, source in attempted}, \
+            "an interleaved corpus must make Mapillary progress under a budget"
+
+
 # --- Numeric pano ids and ledger hygiene (#46, #55) -----------------------------------------------------------
 
 NUMERIC_PANO_IDS = ['123456789012345', '987654321098765']
