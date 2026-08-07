@@ -299,7 +299,11 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
         log.write(",%d,%d,%d,%d,%d" % (xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration))
 
-    im_res = download_panorama_images(storage_location, image_pano_infos, start_time, image_max_runtime)
+    # The budget arguments are passed by keyword deliberately: two other open PRs rewrite these same call
+    # sites, and a positional merge resolution can put a datetime where a float belongs — a TypeError that only
+    # fires when --max-runtime is set, i.e. in the nightly cron and never in the suite.
+    im_res = download_panorama_images(storage_location, image_pano_infos, run_start_time=start_time,
+                                      max_runtime_minutes=image_max_runtime)
     im_end_time = datetime.now()
     im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -312,8 +316,9 @@ def run_scraper_and_log_results(image_pano_infos, depth_pano_infos, skip_depth, 
     if skip_depth:
         depth_res = (0, 0, 0, 0)
     else:
-        depth_res = gsv.download_depth_maps(storage_location, gsv_panos, start_time, max_runtime_minutes,
-                                            max_depth_requests)
+        depth_res = gsv.download_depth_maps(storage_location, gsv_panos, run_start_time=start_time,
+                                            max_runtime_minutes=max_runtime_minutes,
+                                            max_requests=max_depth_requests)
     depth_end_time = datetime.now()
     depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
     with open(os.path.join(storage_location, "log.csv"), 'a') as log:
@@ -346,5 +351,5 @@ print("Panos: %d supported, %d eligible for image download, %d GSV panos eligibl
 
 # Use pano_id list and associated info to gather panos from respective APIs
 print("Fetching Panoramas")
-run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes, max_depth_requests,
-                            min_depth_runtime)
+run_scraper_and_log_results(image_pano_infos, pano_infos, skip_depth, max_runtime_minutes=max_runtime_minutes,
+                            max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime)
