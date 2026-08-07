@@ -224,8 +224,8 @@ def test_resolved_panos_are_counted_even_when_the_budget_is_exhausted(tmp_path, 
 def test_storage_failure_is_transient_not_fatal(tmp_path, fake_streetview, monkeypatch):
     """A failed artifact write must not escape.
 
-    DownloadRunner writes the depth and total-duration columns after this returns, so an escaping OSError left a
-    12-field line in log.csv where scraper-log-analyzer expects 18 - and killed the run.
+    An escaping OSError would fail the whole run and forfeit the rest of the phase's budget over one pano's
+    storage hiccup. (log.csv itself is safe either way - DownloadRunner pads the row to 18 fields in a finally.)
     """
     storage = str(tmp_path)
     fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())

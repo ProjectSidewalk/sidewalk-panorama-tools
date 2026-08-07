@@ -186,8 +186,32 @@ The phase is serial — one metadata request in flight at a time, unlike the ima
 
 * **Depth ignores `--all-panos`.** The image phase only downloads labeled panos unless you pass that flag, but depth always covers every GSV pano the server knows about — including ones nobody has labeled, and ones whose image download failed or was never attempted. It costs one metadata request per pano either way, and the goal is depth for the whole corpus. As a result the depth phase's pano count is normally larger than the image phase's; both are printed at startup.
 * Unresolved panos are shuffled each run. Iteration order is otherwise stable, so a cluster of panos that fail every time would monopolise `--max-depth-requests` run after run and the backfill would never reach anything behind it.
-* **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs will show large failure numbers that are entirely normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; `log.csv` keeps its 18-column positional shape, so there was no room for a separate column.
-* Storage or ledger write failures (a full or unmounted store) are treated as transient per-pano failures and retried next run. They must never escape the phase: `DownloadRunner.py` writes the depth and total-duration columns *after* it returns, so a crash here would leave a 12-field `log.csv` line where the analyzer expects 18.
+* **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs will show large failure numbers that are entirely normal. The success/failure/unavailable split is printed to stdout and `scrape.log` (which lives next to `log.csv` under the storage root); `log.csv` keeps its 18-column positional shape, so there was no room for a separate column.
+* Storage or ledger write failures (a full or unmounted store) are treated as transient per-pano failures and retried next run — the phase deliberately never lets them escape. Even if a run does crash between phases, `log.csv` still gets a single full-width row: fields are accumulated in memory and written once in a `finally`, with completed phases' counts kept and never-finished phases left blank (not fake zeros).
+* **The `log.csv` columns.** Each run appends one row of 18 positional comma-separated fields (no header), parsed by our `scraper-log-analyzer` tooling. Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata phase, a stub since Google killed that endpoint in 2022 — kept so the column positions never shift:
+
+  | # | field | notes |
+  |---|-------|-------|
+  | 1 | run start timestamp | `str(datetime.now())`, e.g. `2026-08-06 01:00:00.123456` |
+  | 2 | metadata successes | always `0` (stub) |
+  | 3 | metadata failures | always `0` (stub) |
+  | 4 | metadata skipped | count of image-eligible panos (stub) |
+  | 5 | metadata total processed | count of image-eligible panos (stub) |
+  | 6 | metadata phase duration | effectively `0` (stub) |
+  | 7 | image successes | |
+  | 8 | image fallback successes | downloaded, but at a fallback resolution |
+  | 9 | image failures | includes prior runs' failed panos, seeded from `pano_id_log.csv` |
+  | 10 | image skipped | includes panos already downloaded on previous runs, seeded likewise |
+  | 11 | image total processed | sum of fields 7–10 |
+  | 12 | image phase duration | |
+  | 13 | depth successes | |
+  | 14 | depth failures | includes permanent `unavailable` outcomes — see the bullet above |
+  | 15 | depth skipped | panos already resolved in `depth_log.csv` |
+  | 16 | depth total processed | sum of fields 13–15 |
+  | 17 | depth phase duration | |
+  | 18 | total run duration | |
+
+* **Blank fields mark a crashed or stopped run.** A run that crashes (or is `docker stop`ped) still appends a full 18-field row: every phase that completed keeps its real counts, and every field from the first unfinished phase onward is blank — visibly missing data, never a fabricated `0`. A row that is only a timestamp means the run died before scraping started (most likely the pano-list fetch against the webserver failed). Blanks are new as of #49 — historical rows are all-integer — so readers must treat them as missing data (`pandas.read_csv` surfaces them as `NaN`, turning those columns `float64`) rather than feeding them to `int()`.
 
 ### What the depth product is (and isn't)
 

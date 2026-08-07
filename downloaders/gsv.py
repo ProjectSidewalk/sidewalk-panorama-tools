@@ -539,8 +539,9 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
             except OSError as e:
                 # Storage-side failure writing the artifact or the ledger - ENOSPC/EIO on the sshfs mount is the
                 # realistic one, given this feature adds terabytes. Also transient and also not ledgered. Caught
-                # deliberately: escaping here would abort the run part-way through log.csv and leave a 12-field
-                # line where the analyzer expects 18.
+                # deliberately: escaping would fail the whole run and forfeit the rest of the phase's budget over
+                # one pano's storage hiccup. (log.csv itself is safe either way - DownloadRunner now pads the row
+                # to 18 fields in a finally.)
                 fail_count += 1
                 consecutive_failures += 1
                 failure_class = 'storage'
