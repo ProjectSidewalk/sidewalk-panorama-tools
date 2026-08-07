@@ -135,6 +135,46 @@ only **1.0–1.5×**, and LANCZOS ringing on the upscale can make it score *high
 This has the same root cause as finding 5 — there is little real detail in the polar caps to detect the
 absence of. So the store cannot be audited by image analysis, but for the same reason it matters less.
 
+### 7. Almost no labels are in the affected band
+
+The open question was whether the panoramas already in the store need re-downloading. It turns out to be
+answerable directly and cheaply: `/adminapi/labels/cvMetadata` is public (no auth — it is the endpoint
+`CropRunner` already uses for any deployed city), so the label distribution can be measured rather than
+sampled or argued about.
+
+![Label distribution against the bands](figures/2026-08-07-pano-y-histogram.png)
+
+Every label from two cities, binned by `pano_y` against the measured band edges — y ∈ [2560, 5632) is the
+full-resolution band for 16384×8192, y ∈ [2048, 4608) for 13312×6656:
+
+| city | labels | in a half-res band | panoramas | panoramas to re-fetch |
+|---|---|---|---|---|
+| Seattle | 259,485 | 9,399 (**3.62%**) | 105,181 | 7,914 (**7.52%**) |
+| Columbus | 40,951 | 789 (**1.93%**) | 14,800 | 670 (**4.53%**) |
+
+* **96–98% of labels sit entirely inside the full-resolution band.** Seattle is the worse of the two.
+* Of the labels that do fall in the band, **84–88% are within one tile row (512 px) of its edge**, so their
+  crops extend up into full-resolution imagery for most of their height.
+* The **top** band is empty in practice: two labels across both cities, both with `pano_y = -720`, i.e. bad
+  data rather than overhead features. Sidewalk labels are ground features, so only the bottom band matters.
+* Note this counts a label as affected when its *centre* falls in a band, which **overstates** the effect —
+  a crop is centred on the label and reaches upward into the full-resolution band.
+
+A data-quality note that also resolves the "old `pano_y` convention" caveat raised on #73: 1,756 Seattle
+records have negative `pano_y` and no `pano_width`/`pano_height` at all. They are third-party photospheres
+(base64-style panorama ids) which never went through the CBK tile path. They are excluded, not misbinned.
+
+**This reframes the decision.** The choice was posed as "accept, or re-download the store". It is really
+"accept, or re-fetch ~7.5% of labelled panoramas" — and that work-list needs no detector, because affected
+*labels* are identifiable by geometry even though affected *panoramas* are not identifiable by image
+analysis (finding 6). For Seattle that is 7,914 panoramas: a bounded, one-time job.
+
+**Recommendation: don't re-download on quality grounds.** The affected labels are few, mostly marginal, and
+concentrated in the near field where crops are largest — the degradation is anti-correlated with need. The
+one argument that might still carry a targeted pass is imagery retirement rather than quality: Google
+retires panoramas (two 2018/2019 Seattle ids in `samples/metadata-seattle.csv` already return blank at every
+zoom), so for some of those 7,914 the real choice is half-resolution now or nothing later.
+
 ## Wrong turns
 
 Worth recording, because the reasoning is more repeatable than the bug.
@@ -192,6 +232,8 @@ bare "math domain error" naming no panorama.
 | A real black-padded edge tile and a real out-of-range blank | `tests/fixtures/tiles/z3_edge_bottom.jpg`, `z3_blank_out_of_range.jpg` |
 | Provenance for every fixture | `tests/fixtures/tiles/manifest.json` |
 | Regenerate all of the above | `python tests/fixtures/tiles/capture.py` |
+| Label histogram against the bands (finding 7) | `reports/data/2026-08-07-pano-y-histogram.json` |
+| Regenerate that | `python reports/scripts/pano_y_histogram.py` |
 | Assertions over the data | `tests/test_gsv_tile_contract.py` |
 | Stitcher behaviour | `tests/test_gsv_stitcher.py` |
 
@@ -211,11 +253,12 @@ imagery.
 
 ## Open questions
 
-* **Whether to re-download the store** (#73). Findings 5 and 6 point toward "no", and @misaugstad's crop
-  geometry analysis agrees: 22 of 25 sampled labels fall entirely inside the full-resolution band, and the
-  three that spill are the closest labels, which get the largest crops. The remaining check is a `pano_y`
-  histogram over a full `cvMetadata` pull — specifically the tail below y = 5632 for 16384×8192 panoramas.
-  Nothing in the code depends on this.
+* **Whether to re-download the store** (#73). ~~Open~~ — measured in finding 7 and now a judgement call
+  rather than a missing fact. 96–98% of labels are entirely in the full-resolution band, the affected ones
+  are mostly within one tile row of its edge, and a targeted re-fetch would be ~7.5% of labelled panoramas
+  rather than the whole store. Findings 5, 6 and @misaugstad's crop geometry all point the same way. My
+  recommendation is not to re-download on quality grounds; the open part is whether imagery retirement
+  justifies a targeted pass anyway. Nothing in the code depends on it either way.
 * **Whether the trigger is "zoom index 5" or "any level wider than ~8192"**. The two make identical
   predictions for every panorama Project Sidewalk holds, and the only live panorama found with a max zoom of
   4 no longer serves through CBK. Unresolved, and operationally irrelevant.

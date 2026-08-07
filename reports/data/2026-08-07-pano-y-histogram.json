@@ -1,0 +1,100 @@
+{
+ "question": "Do the panoramas already in the store need re-downloading after the fover fix (#73)?",
+ "method": "Every label from /adminapi/labels/cvMetadata, binned by pano_y against the measured full-resolution band. A label is counted as affected if its CENTRE falls in a half-res band, which overstates the effect - crops extend upward into the full-resolution band.",
+ "band_edges_px": {
+  "8192": [
+   2560,
+   5632
+  ],
+  "6656": [
+   2048,
+   4608
+  ]
+ },
+ "band_source": "tests/fixtures/tiles/fover_band_map.json (full-grid sweeps)",
+ "caveat": "Records with no pano_width/pano_height are skipped: they are third-party photospheres (base64-style ids) that never went through the CBK tile path.",
+ "cities": [
+  {
+   "city": "sidewalk-seattle.cs.washington.edu",
+   "label_records": 261958,
+   "labels_binned": 259485,
+   "skipped_no_pano_dimensions": 1761,
+   "pano_shapes": {
+    "16384x8192": 246365,
+    "13312x6656": 13120,
+    "3328x1664": 679,
+    "3840x1920": 12,
+    "5376x2688": 9,
+    "7200x3600": 6,
+    "5660x2830": 3,
+    "6720x3360": 3
+   },
+   "zones": {
+    "full resolution": 250084,
+    "bottom band (half-res)": 9399,
+    "unswept geometry": 712,
+    "top band (half-res)": 2
+   },
+   "pct_full_resolution": 96.38,
+   "pct_bottom_band": 3.62,
+   "distinct_panos": 105181,
+   "panos_with_bottom_band_label": 7914,
+   "pct_panos_to_refetch": 7.52,
+   "bottom_band_rows_past_edge": {
+    "0": 7925,
+    "1": 1374,
+    "2": 99,
+    "3": 1
+   },
+   "pct_bottom_band_within_one_tile_row_of_the_edge": 84.3,
+   "bottom_band_by_label_type": {
+    "1": 3697,
+    "2": 1965,
+    "7": 1781,
+    "4": 1214,
+    "9": 382,
+    "3": 321,
+    "5": 27,
+    "6": 9,
+    "10": 3
+   }
+  },
+  {
+   "city": "sidewalk-columbus.cs.washington.edu",
+   "label_records": 41186,
+   "labels_binned": 40951,
+   "skipped_no_pano_dimensions": 109,
+   "pano_shapes": {
+    "16384x8192": 35585,
+    "13312x6656": 5366,
+    "3328x1664": 125,
+    "10240x5120": 1
+   },
+   "zones": {
+    "full resolution": 40162,
+    "bottom band (half-res)": 789,
+    "unswept geometry": 126
+   },
+   "pct_full_resolution": 98.07,
+   "pct_bottom_band": 1.93,
+   "distinct_panos": 14800,
+   "panos_with_bottom_band_label": 670,
+   "pct_panos_to_refetch": 4.53,
+   "bottom_band_rows_past_edge": {
+    "0": 698,
+    "1": 84,
+    "2": 7
+   },
+   "pct_bottom_band_within_one_tile_row_of_the_edge": 88.5,
+   "bottom_band_by_label_type": {
+    "1": 472,
+    "4": 135,
+    "2": 57,
+    "7": 52,
+    "9": 42,
+    "3": 30,
+    "5": 1
+   }
+  }
+ ]
+}

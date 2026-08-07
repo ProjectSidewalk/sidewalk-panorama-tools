@@ -9,3 +9,6 @@ venv
 crop.log.bak.txt
 .idea
 cropsbak
+
+# raw cvMetadata dumps (~100 MB per city); regenerate with reports/scripts/pano_y_histogram.py
+reports/scripts/.cache/

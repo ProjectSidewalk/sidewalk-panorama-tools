@@ -42,6 +42,7 @@ from PIL import Image
 
 from downloaders import gsv
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
 
 
@@ -228,6 +229,45 @@ class TestTheBandStructure:
     def test_the_two_sweeps_are_the_same_pano(self, band_map):
         """Otherwise the before/after comparison would prove nothing."""
         assert band_map['Seattle 2022 (no fover)']['pano_id'] == band_map['Seattle 2022']['pano_id']
+
+
+class TestTheLabelAnalysisUsesTheMeasuredBand:
+    """The #73 re-download decision rests on a label histogram (reports/scripts/pano_y_histogram.py) binned
+    against these band edges. That analysis and this sweep are two files that must agree: if the band is ever
+    re-captured and moves, the histogram's conclusion goes stale silently. Fail here instead."""
+
+    @pytest.fixture(scope='class')
+    @classmethod
+    def analysis(cls):
+        with open(os.path.join(REPO_ROOT, 'reports', 'data',
+                               '2026-08-07-pano-y-histogram.json')) as f:
+            return json.load(f)
+
+    @pytest.mark.parametrize('label,height', [('Seattle 2022', 8192), ('Sydney 2014', 6656)])
+    def test_band_edges_match_the_swept_row_map(self, analysis, band_map, label, height):
+        row_map = band_map[label]['row_map']
+        full = [i for i, c in enumerate(row_map) if c == '2']
+        swept = [full[0] * 512, (full[-1] + 1) * 512]
+
+        assert analysis['band_edges_px'][str(height)] == swept, (
+            '%s: the label histogram bins against %s but the sweep says the full-resolution band is %s; '
+            're-run reports/scripts/pano_y_histogram.py'
+            % (label, analysis['band_edges_px'][str(height)], swept))
+
+    def test_the_analysis_covers_both_pano_geometries_that_can_degrade(self, analysis):
+        """Only zoom-5 panos degrade, i.e. the 16384x8192 and 13312x6656 shapes. If a third geometry ever
+        joins them the histogram has to learn about it, or those labels quietly fall into 'unswept'."""
+        assert set(analysis['band_edges_px']) == {'8192', '6656'}
+
+    def test_the_recorded_conclusion_is_the_one_the_report_cites(self, analysis):
+        """Guards the specific numbers #73 and the report were decided on, so a re-run that moves them is
+        noticed rather than silently replacing the basis of a closed decision."""
+        by_city = {c['city'].split('.')[0]: c for c in analysis['cities']}
+        seattle = by_city['sidewalk-seattle']
+        assert seattle['labels_binned'] > 250000
+        assert seattle['pct_full_resolution'] > 95.0
+        assert seattle['pct_panos_to_refetch'] < 10.0
+        assert seattle['pct_bottom_band_within_one_tile_row_of_the_edge'] > 80.0
 
 
 # The captured 2x2 zoom-5 neighbourhood, and the zoom-4 tile covering the same pano region.
