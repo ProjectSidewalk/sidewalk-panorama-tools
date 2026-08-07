@@ -327,6 +327,31 @@ def test_block_stop_still_blames_google(tmp_path, fake_streetview, capsys):
     out = capsys.readouterr().out
     assert 'WARNING' in out
     assert 'Google stopped answering' in out
+    # Pin the new detail on the WARNING line itself - the in-loop stop print always interpolated the error, so
+    # asserting over the whole stdout would pass against pre-#60 code unmodified - and pin that a block is
+    # never dressed up as a breaker trip.
+    warning = next(line for line in out.splitlines() if 'WARNING' in line)
+    assert 'redirected to' in warning
+    assert 'consecutive failures' not in out
+
+
+def test_blocked_warning_leads_with_the_action_and_truncates_the_url(tmp_path, fake_streetview, capsys):
+    """Google's interstitial redirects carry 600+ character URLs. The WARNING must put the actionable sentence
+    first and cap the error detail, or the one message that used to be readable drowns in urlencoding."""
+    storage = str(tmp_path)
+    long_url = 'https://www.google.com/sorry/index?continue=' + 'x' * 600
+
+    def find(pano_id, **kwargs):
+        raise gsv.DepthBlockedError('redirected to %s' % long_url)
+
+    fake_streetview.find_panorama_by_id = find
+
+    gsv.download_depth_maps(storage, many_pano_infos(5))
+
+    out = capsys.readouterr().out
+    warning = next(line for line in out.splitlines() if 'WARNING' in line)
+    assert warning.index('check for a rate limit') < warning.index('redirected to')
+    assert 'x' * 300 not in warning
 
 
 def test_breaker_warning_breaks_a_mixed_streak_down_by_class(tmp_path, fake_streetview, monkeypatch, capsys):

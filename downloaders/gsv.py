@@ -558,9 +558,11 @@ def download_depth_maps(storage_path, pano_infos, run_start_time=None, max_runti
     # Loud on stdout because cron mails it: a phase that stopped early means nothing is progressing, and the
     # per-pano detail is buried in scrape.log.
     if stop_reason == DEPTH_STOP_BLOCKED:
-        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early because Google stopped answering (%s). No "
-              "panos were lost (unresolved panos are retried next run), but check for a rate limit before the "
-              "next run." % (last_error))
+        # Actionable sentence first - the error detail ends in Google's redirect URL, which can run 600+
+        # characters, so it rides at the tail and is truncated.
+        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early because Google stopped answering. No panos "
+              "were lost (unresolved panos are retried next run), but check for a rate limit before the next "
+              "run. Last error: %s" % (str(last_error)[:200],))
     elif stop_reason == DEPTH_STOP_CONSECUTIVE_FAILURES:
         # The breaker counts storage failures (ENOSPC/EIO on the sshfs mount) as well as network ones, so don't
         # attribute the trip to Google: break the streak down by class so the dominant cause stays visible even
