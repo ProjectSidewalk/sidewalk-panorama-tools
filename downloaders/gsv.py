@@ -39,7 +39,7 @@ try:
 except ImportError:
     from xml.etree import ElementTree as ET
 
-from .common import DownloadResult
+from .common import DownloadResult, atomic_output_path
 
 
 def _normalize_proxies(raw):
@@ -211,8 +211,10 @@ def download_single_pano(storage_path, pano_info):
 
     if zoom == 3:
         blank_image = blank_image.resize(final_im_dimension, Image.LANCZOS)
-    blank_image.save(out_image_name, 'jpeg')
-    os.chmod(out_image_name, 0o664)
+    # Written via .part and renamed: a crash inside save() (a full store is the usual one) would otherwise
+    # leave a truncated .jpg that the next run's exists() check reports as a completed download.
+    with atomic_output_path(out_image_name) as tmp_path:
+        blank_image.save(tmp_path, 'jpeg')
     return DownloadResult.success
 
 
@@ -614,12 +616,13 @@ def _write_depth_artifact(storage_path, pano_id, pano, planes):
             pass  # lost the race to another user's process; their dir, their modes — must not fail the pano
 
     final_path = os.path.join(destination_dir, pano_id + DEPTH_ARTIFACT_SUFFIX)
-    tmp_path = final_path + '.part'
 
     def scalar(value):
         return float(value) if value is not None else float('nan')
 
-    try:
+    # .part + rename so a crash can never leave a truncated .npz that would be treated as done forever; the
+    # image downloaders now share the same helper.
+    with atomic_output_path(final_path) as tmp_path:
         # savez_compressed needs an open file object: given a path without a .npz extension it silently appends
         # one, which would write to the wrong filename.
         with open(tmp_path, 'wb') as f:
@@ -629,17 +632,6 @@ def _write_depth_artifact(storage_path, pano_id, pano, planes):
                                 planes_d=np.asarray(planes.distances, dtype=np.float32).reshape(-1),
                                 heading=scalar(pano.heading), pitch=scalar(pano.pitch),
                                 roll=scalar(pano.roll), format_version=DEPTH_ARTIFACT_FORMAT_VERSION)
-        os.chmod(tmp_path, 0o664)
-        # Atomic rename so a crash can never leave a truncated .npz that would be treated as done forever.
-        os.replace(tmp_path, final_path)
-    except BaseException:
-        # A half-written .part would otherwise accumulate on the store forever - nothing else ever cleans it up,
-        # and the retry next run writes to the same name.
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-        raise
 
 
 def ground_plane_from_artifact(artifact, min_vertical=0.7):

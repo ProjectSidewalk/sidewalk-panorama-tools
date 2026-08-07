@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import math
 import os
+import random
 import signal
 import sys
 import time
@@ -204,14 +205,18 @@ def filter_supported_sources(pano_infos):
 
     Order-preserving on purpose (#40): the old implementation regrouped the list by source as a side effect
     of bucketing for the warnings, which put every GSV pano ahead of every Mapillary one - on a city whose
-    GSV backlog exceeds --max-runtime, Mapillary then made zero progress, indefinitely and invisibly. The
-    counts below exist only for the warnings.
+    GSV backlog exceeds --max-runtime, Mapillary then made zero progress, indefinitely and invisibly. A
+    filter has no business reordering its input; download_panorama_images shuffles what it actually attempts,
+    which is where starvation has to be prevented. The counts below exist only for the warnings.
     """
     source_counts = {}
     for p in pano_infos:
         source = p.get('source')
         source_counts[source] = source_counts.get(source, 0) + 1
 
+    # Mapillary gets its own warning naming the missing token, so it is never also reported as an
+    # unsupported source - hence 'known' rather than reusing 'supported' in the loop below.
+    known = {'gsv', 'mapillary'}
     supported = {'gsv'}
     if source_counts.get('mapillary'):
         if mapillary.is_token_set():
@@ -221,7 +226,7 @@ def filter_supported_sources(pano_infos):
                   % (source_counts['mapillary'], mapillary.TOKEN_ENV_VAR))
 
     for source, count in source_counts.items():
-        if source not in supported and source != 'mapillary':
+        if source not in known:
             print("WARNING: %d panos with unsupported source %r skipped" % (count, source))
 
     return [p for p in pano_infos if p.get('source') in supported]
@@ -242,9 +247,17 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     skipped_count = prior_success
     fail_count = prior_fail
     total_completed = prior_total
+    # Partition before attempting anything, then shuffle - the depth phase's pattern (gsv.download_depth_maps).
+    # Iteration order is otherwise the server's, and since #41 a transiently-failing pano is never ledgered, so
+    # it keeps its place at the head of that order forever: a cluster of panos that fail every night would be
+    # re-attempted first every night, spending --max-runtime before the loop ever reaches new work. Ledgering
+    # every attempt used to guarantee the frontier advanced; nothing does now, so the shuffle has to.
+    # This also covers the #40 fallback: if /adminapi/panos itself ever returns a source-clustered list,
+    # filter_supported_sources preserving that order no longer starves the sources behind the first cluster.
+    candidates = [p for p in pano_infos if p['pano_id'] not in df_id_set]
     # Denominator = previously logged + panos we'll attempt this run, so it can never be exceeded.
-    new_panos = sum(1 for p in pano_infos if p['pano_id'] not in df_id_set)
-    total_panos = prior_total + new_panos
+    total_panos = prior_total + len(candidates)
+    random.shuffle(candidates)
 
     # One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
     # The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that,
@@ -268,8 +281,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 # downloaders' shard-dir setup swallows it for the same reason.
                 pass
 
-        for pano_info in pano_infos:
+        for pano_info in candidates:
             pano_id = pano_info['pano_id']
+            # candidates is already filtered against the ledger; this still catches a duplicate id surviving
+            # intake, which would otherwise be downloaded and ledgered twice.
             if pano_id in df_id_set:
                 continue
             if max_runtime_minutes is not None and run_start_monotonic is not None:
