@@ -90,10 +90,21 @@ def fetch_pano_ids_from_webserver():
     # had no timeout (a hung server stalled the nightly run indefinitely), no status check (a 500 or a proxy
     # error page surfaced as an unexplained JSONDecodeError), and never closed the connection (#51).
     with requests.Session() as session:
-        retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
-        session.mount('https://', HTTPAdapter(max_retries=retry))
-        # (connect, read) timeouts; read applies per socket op, so a huge-but-flowing pano list won't trip it.
-        response = session.get('https://%s/adminapi/panos' % (sidewalk_server_fqdn), timeout=(30, 120))
+        # Parity with the http.client path this replaced: no env-proxy routing, no env CA overrides. Session
+        # would otherwise newly honour HTTP(S)_PROXY / NO_PROXY / REQUESTS_CA_BUNDLE on the scraper boxes.
+        session.trust_env = False
+        # read=0: if the read timeout below ever does trip, retrying is just hammering the admin endpoint
+        # with the same slow query five more times — fail once instead. Connect failures still retry.
+        retry = Retry(total=5, connect=5, read=0, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+        adapter = HTTPAdapter(max_retries=retry)
+        # Both schemes, so a redirect hop to http:// can't silently fall back to the retry-less default adapter.
+        session.mount('https://', adapter)
+        session.mount('http://', adapter)
+        # (connect, read) timeouts. The read half is generous because it applies per socket op INCLUDING the
+        # wait for the status line, and /adminapi/panos most likely buffers the whole JSON server-side before
+        # sending its first byte — on a multi-million-pano city that can take minutes, and it's exactly the
+        # fetch this timeout exists to protect.
+        response = session.get('https://%s/adminapi/panos' % (sidewalk_server_fqdn), timeout=(30, 600))
         response.raise_for_status()
         jsondata = response.json()
 

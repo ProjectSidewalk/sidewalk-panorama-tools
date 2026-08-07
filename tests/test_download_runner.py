@@ -4,6 +4,7 @@ The pano CSV rows all use an unsupported source, so every pano is filtered out b
 script exercises its full argument parsing, phase orchestration, and log.csv writing without any network I/O.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -102,3 +103,71 @@ def test_depth_covers_unlabeled_panos_that_the_image_phase_skips(tmp_path):
 def test_all_panos_widens_the_image_phase_only(tmp_path):
     stdout = run_selection_only(tmp_path, '--all-panos')
     assert 'Panos: 2 supported, 2 eligible for image download, 2 GSV panos eligible for depth' in stdout
+
+
+# Runs DownloadRunner.py (via runpy — argparse at module scope rules out an import) with Session.get stubbed
+# to capture the HTTP config the pano-list fetch actually uses, reported as JSON on the last stdout line.
+# No network I/O: the stub raises SystemExit before anything touches a socket.
+FETCH_CONFIG_PROBE = '''\
+import json
+import os
+import runpy
+import sys
+
+import requests
+
+runner, storage = sys.argv[1], sys.argv[2]
+# Running a script directly puts its directory on sys.path; runpy does not, so add it for `import downloaders`.
+sys.path.insert(0, os.path.dirname(os.path.abspath(runner)))
+captured = {}
+
+
+def capturing_get(self, url, **kwargs):
+    retries = {}
+    for scheme in ('https', 'http'):
+        retry = self.get_adapter(scheme + '://example.com').max_retries
+        retries[scheme] = {'total': retry.total, 'connect': retry.connect, 'read': retry.read}
+    timeout = kwargs.get('timeout')
+    captured.update(url=url, timeout=list(timeout) if isinstance(timeout, tuple) else timeout,
+                    trust_env=self.trust_env, retries=retries)
+    raise SystemExit(0)
+
+
+requests.Session.get = capturing_get
+sys.argv = ['DownloadRunner.py', 'sidewalk-test.invalid', storage]
+try:
+    runpy.run_path(runner, run_name='__main__')
+except SystemExit:
+    pass
+print(json.dumps(captured))
+'''
+
+
+def test_pano_list_fetch_session_configuration(tmp_path):
+    """Pin the pano-list fetch's HTTP config (#51 review).
+
+    - timeout (30, 600): the read timeout applies per socket op INCLUDING the wait for the status line, and
+      /adminapi/panos plausibly buffers the whole JSON server-side before its first byte on the largest
+      cities — a tight read timeout would kill exactly the fetch it is meant to protect.
+    - Retry read=0: a time-to-first-byte/read timeout must fail once, not hammer the admin endpoint six
+      times; connect failures keep retrying.
+    - trust_env off: parity with the http.client path this replaced (no env-proxy routing, no env CA
+      overrides) on a fleet cron whose environment we don't control.
+    - The retry adapter is mounted on http:// as well, so a redirect hop can't silently lose the policy.
+    """
+    probe = tmp_path / 'fetch_config_probe.py'
+    probe.write_text(FETCH_CONFIG_PROBE)
+    result = subprocess.run(
+        [sys.executable, str(probe), RUNNER, str(tmp_path / 'storage')],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    captured = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert captured['url'] == 'https://sidewalk-test.invalid/adminapi/panos'
+    assert captured['timeout'] == [30, 600]
+    assert captured['trust_env'] is False
+    for scheme in ('https', 'http'):
+        retry = captured['retries'][scheme]
+        assert retry['total'] == 5, scheme
+        assert retry['connect'] == 5, scheme
+        assert retry['read'] == 0, scheme
