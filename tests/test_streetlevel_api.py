@@ -5,10 +5,10 @@ a renamed parameter or a moved attribute anywhere in the >=0.12.11,<0.13 range w
 only surface on the scraper box. These tests import the real library instead, so CI (which installs
 requirements.txt) catches the drift.
 
-Since #56, production calls streetlevel's api + parse halves directly (gsv._fetch_pano_with_depth_planes:
-one photometa request yields both the parsed pano and the raw plane payload that the high-level
-find_panorama_by_id throws away), so the surface pinned here is api.find_panorama_by_id, the photometa
-response shape, parse.parse_panorama_id_response, and the depth decode's column order.
+Since #56, production uses only streetlevel's api half (gsv._fetch_pano_with_depth_planes fetches the raw
+photometa response and parses the fields it needs in-repo - the parse half's unguarded depth decode dies on
+~1% of panos, see test_streetlevel_still_misreads_the_depth_offset), so the surface pinned here is
+api.find_panorama_by_id, the photometa response shape, and the depth decode's column order.
 
 Skipped when streetlevel isn't installed -- its pyfrpc dependency needs a compiler, so a dev box without one can
 still run the rest of the suite.
@@ -24,7 +24,6 @@ panorama = pytest.importorskip('streetlevel.streetview.panorama',
                                reason='streetlevel not installed (pyfrpc needs a compiler); CI installs it')
 streetview = pytest.importorskip('streetlevel.streetview')
 api = pytest.importorskip('streetlevel.streetview.api')
-parse = pytest.importorskip('streetlevel.streetview.parse')
 
 from conftest import encode_depth_payload  # noqa: E402
 from downloaders import gsv  # noqa: E402
@@ -113,14 +112,16 @@ def test_streetlevel_still_misreads_the_depth_offset():
     - the latest release and the floor of our pin, whose depth.py is byte-identical to 0.12.10's - so the
     pin does NOT fix it, whatever a version number might suggest.
 
-    Consequence, and why we tolerate it: the misread only matters when the first index byte is non-zero, and
-    payload row 0 is the zenith (theta ~ pi), which is sky (index 0) on essentially every real pano. Where it
-    isn't - under a tunnel, an overpass soffit, a parking structure - streetlevel's own parser RAISES rather
-    than returning a raster that would silently disagree with our plane indices, so no bad artifact can be
-    written; that pano just never resolves (transient, retried every run, never ledgered).
+    Consequence: none for the depth path anymore - the raster is computed in-repo from our own decode
+    (gsv._compute_depth_raster), precisely because routing through streetlevel's parser made every pano with
+    a modelled zenith (nonzero first index byte: tunnels, soffits, parking structures) raise on every
+    attempt and re-request forever. The misread now only constrains the payload FIXTURES: the two mirror
+    pins above feed streetlevel's parser directly, so their indices[0] must stay 0.
 
-    If this test fails, upstream fixed the read: drop the indices[0] == 0 constraint from the payload
-    fixtures, and update the notes in gsv._decode_depth_planes and conftest.encode_depth_payload.
+    If this test fails, upstream fixed the read (sk-zk/streetlevel#45): bump the pin past the fixed release,
+    drop the indices[0] == 0 constraint from the fixtures, update the notes in gsv._decode_depth_planes,
+    gsv._fetch_pano_with_depth_planes, and conftest.encode_depth_payload - and revisit whether the seam's
+    parse bypass is still wanted (it becomes unnecessary rather than wrong; see the #56 discussion).
     """
     from streetlevel.streetview import depth
 
@@ -140,11 +141,11 @@ def test_streetlevel_still_misreads_the_depth_offset():
 
 def test_fetch_seam_extracts_pano_and_planes_from_the_raw_response(monkeypatch):
     """The whole-seam contract, network-free: api.find_panorama_by_id is stubbed to return a synthetic
-    photometa response with the depth payload embedded at the documented msg path, and the REAL
-    parse.parse_panorama_id_response runs on it. Pins, in one test: the arguments the seam passes to the api
-    half, the response-code and payload paths in the msg, that one request yields both the parsed pano and
-    the plane bundle, and that the decoded planes match what was embedded. If streetlevel moves any of it,
-    this fails in CI instead of on the scraper box.
+    photometa response with the depth payload embedded at the documented msg path. Pins, in one test: the
+    arguments the seam passes to the api half, the response-code, orientation, and payload paths in the msg
+    (including the degrees->radians and 90-pitch conversions streetlevel applied), that one request yields
+    both the pano fields and the plane bundle, and that the raster computed from our decode matches the
+    mirror fixture. If the api half moves, this fails in CI instead of on the scraper box.
     """
     payload = encode_depth_payload(MIRROR_PLANES, MIRROR_INDICES, MIRROR_HEADER['width'],
                                    MIRROR_HEADER['height'])
@@ -174,9 +175,9 @@ def test_fetch_seam_extracts_pano_and_planes_from_the_raw_response(monkeypatch):
     pano, planes = gsv._fetch_pano_with_depth_planes(pano_id, sentinel_session)
 
     assert captured == {'panoid': pano_id, 'download_depth': True, 'session': sentinel_session}
-    assert pano.id == pano_id
-    assert pano.lat == pytest.approx(37.774)
-    assert pano.heading == pytest.approx(np.pi)
+    assert pano.heading == pytest.approx(np.pi)          # 180 degrees
+    assert pano.pitch == pytest.approx(0.0)              # stored as 90 - raw, raw is 90
+    assert pano.roll == pytest.approx(0.0)
     assert pano.depth.data.shape == (MIRROR_HEADER['height'], MIRROR_HEADER['width'])
     np.testing.assert_allclose(np.ravel(pano.depth.data), MIRROR_EXPECTED, rtol=1e-5)
     np.testing.assert_array_equal(planes.indices,
@@ -218,10 +219,11 @@ def test_fetch_seam_survives_a_modelled_zenith(monkeypatch):
 
     pano, planes = gsv._fetch_pano_with_depth_planes(pano_id, object())
 
-    # Payload-order raster for these indices is [0.75, 3.0, -1, -1] (same plane, two azimuths - see the
-    # MIRROR fixture); the seam hands the raster back in streetlevel's x-mirrored order, which is what
-    # _write_depth_artifact's #58 un-mirror (and all its CI pins) expect.
-    np.testing.assert_allclose(np.ravel(pano.depth.data), [-1.0, -1.0, 3.0, 0.75], rtol=1e-5)
+    # Payload-order raster for these indices is [1.0, 3.0, -1, -1] (the same plane hit from two azimuths -
+    # payload cols 0 and 2 share |v . n|, see the MIRROR fixture); the seam hands the raster back in
+    # streetlevel's x-mirrored order, which is what _write_depth_artifact's #58 un-mirror (and all its CI
+    # pins) expect.
+    np.testing.assert_allclose(np.ravel(pano.depth.data), [-1.0, -1.0, 3.0, 1.0], rtol=1e-5)
     np.testing.assert_array_equal(planes.indices, np.array([[1, 1, 0, 0]], dtype=np.uint8))
 
 
