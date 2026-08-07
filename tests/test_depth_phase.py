@@ -56,7 +56,8 @@ def test_success_saves_artifact_and_ledgers(tmp_path, fake_streetview):
     with np.load(path) as d:
         assert d['depth'].dtype == np.float32
         assert d['depth'].shape == (2, 2)
-        np.testing.assert_allclose(d['depth'], default_depth_array().astype(np.float32))
+        # Stored in the JPEG's column order, i.e. streetlevel's array flipped in x (see #58).
+        np.testing.assert_allclose(d['depth'], [[4.5, -1.0], [10.0, 3.25]])
         assert float(d['heading']) == pytest.approx(1.25)
     assert read_ledger(storage) == [['pano_id', 'status'], ['abcdef', 'saved']]
     # No leftover temp file from the atomic write.
@@ -102,6 +103,29 @@ def test_no_depth_payload_ledgers_unavailable(tmp_path, fake_streetview):
 
     assert gsv.download_depth_maps(storage, pano_infos('abcdef')) == (0, 1, 0, 1)
     assert read_ledger(storage) == [['pano_id', 'status'], ['abcdef', 'unavailable']]
+
+
+def test_non_2d_depth_payload_ledgers_unavailable_and_never_retries(tmp_path, fake_streetview):
+    """A depth payload that isn't an (h, w) grid is unusable, and that's a property of the pano, not of the
+    network. It must take the same path as no-depth - ledgered 'unavailable' - rather than raise inside the
+    artifact write's [:, ::-1], where the catch-all would count it transient and re-request it every run
+    forever."""
+    storage = str(tmp_path)
+    calls = []
+
+    def find(pano_id, **kwargs):
+        calls.append(pano_id)
+        return make_pano(np.array([1.0, 2.0]))  # 1-D: no column axis to unmirror
+
+    fake_streetview.find_panorama_by_id = find
+
+    assert gsv.download_depth_maps(storage, pano_infos('abcdef')) == (0, 1, 0, 1)
+    assert read_ledger(storage) == [['pano_id', 'status'], ['abcdef', 'unavailable']]
+    assert not os.path.isfile(artifact_path(storage, 'abcdef'))
+
+    # Resolved, so a later run must skip it without a new request.
+    assert gsv.download_depth_maps(storage, pano_infos('abcdef')) == (0, 0, 1, 1)
+    assert calls == ['abcdef']
 
 
 @pytest.mark.parametrize('error', [requests.ConnectionError('boom'), ValueError('not json'), RuntimeError('bug')])

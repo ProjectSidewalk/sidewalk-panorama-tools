@@ -149,10 +149,28 @@ Artifacts and bookkeeping, relative to the storage root:
   ```python
   import numpy as np
   d = np.load("aB/aBcDeF....depth.npz")
-  d["depth"]    # float32 (height, width) array, typically 256x512; distance from camera in meters; -1 = sky/infinitely far
-  d["heading"]  # camera heading in radians (NaN if Google omitted it); likewise d["pitch"], d["roll"]
+  d["depth"]           # float32 (height, width) array, typically 256x512; distance from camera in meters; -1 = no plane (sky, or unmodeled)
+  d["heading"]         # camera heading in radians (NaN if Google omitted it); likewise d["pitch"], d["roll"]
+  d["format_version"]  # 2; absent in artifacts written before the mirror fix below
   ```
+
+  The array shares the JPEG's orientation: column 0 of `d["depth"]` is the leftmost column of the pano image. (streetlevel's decoder delivers the payload x-mirrored relative to the imagery; we flip it back on write, and contract tests pin the decoder's end-to-end output orientation — both the ray-direction formula and the write order — so an upstream change fails CI instead of silently re-mirroring new artifacts; see [#58](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/58). **An artifact with no `format_version` field predates that fix and is horizontally flipped — see the migration note below.**) To sample the depth under a label position stored in the database:
+
+  ```python
+  col = int(pano_x / pano_width * d["depth"].shape[1]) % d["depth"].shape[1]
+  row = min(int(pano_y / pano_height * d["depth"].shape[0]), d["depth"].shape[0] - 1)
+  meters = d["depth"][row, col]
+  ```
+
+  (Truncation, not `round()`: each depth pixel covers a *range* of pano columns, and flooring picks the pixel containing the position; rounding would pick the pixel whose edge is nearest — a systematic half-pixel shift.) The payload is angular (~0.7°/pixel; the horizon at θ = π/2 falls midway between the two middle rows, not on a single row), so this scaling works for any pano resolution. Note the frame caveat: `pano_x` and the pano raster are both *heading-centred* (column 0 sits at compass bearing `pano_yaw − 180°`, the vehicle's forward direction at image centre), but the legacy pre-evolution-179 `sv_image_x` is *north-referenced* (`sv_image_x / 13312 × 360` is a true compass bearing). Mixing the legacy value with the raster or this array displaces a label by up to half a panorama — and by nothing at all on a pano that happens to face south, so a one-example sanity check can pass on the wrong convention.
 * `depth_log.csv` — an append-only ledger (`pano_id,status`) of resolved outcomes: `saved` (artifact written) or `unavailable` (pano gone from Google, or no depth payload). Ledgered panos are never re-requested; transient network failures are *not* ledgered, so they retry on the next run. The artifacts on disk are the ground truth — deleting the ledger is safe and just makes the next run re-check everything (existing artifacts are re-registered without re-downloading).
+
+**Migrating a pre-v2 store.** Any store scraped before the [#58](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/58) fix holds x-mirrored artifacts, and the scraper will never correct them on its own — existing artifacts are never re-fetched or rewritten. `migrate_depth_artifacts.py` detects and fixes them offline: it scans a storage root, flips every artifact whose `format_version` is missing or below 2, and stamps it, leaving v2 artifacts byte-for-byte untouched (idempotent, so re-running on a healthy store is a no-op):
+
+```bash
+python3 migrate_depth_artifacts.py /path/to/storage --dry-run   # count pre-v2 artifacts, change nothing
+python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them in place
+```
 
 The depth phase runs after the image phase and shares its `--max-runtime` budget, so on a fresh city (or the first runs after this feature) images download first and depth backfills incrementally across daily runs. Use `--max-depth-requests` to cap the phase's request volume during backfill.
 
@@ -171,7 +189,15 @@ The phase is serial — one metadata request in flight at a time, unlike the ima
 * **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs will show large failure numbers that are entirely normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; `log.csv` keeps its 18-column positional shape, so there was no room for a separate column.
 * Storage or ledger write failures (a full or unmounted store) are treated as transient per-pano failures and retried next run. They must never escape the phase: `DownloadRunner.py` writes the depth and total-duration columns *after* it returns, so a crash here would leave a 12-field `log.csv` line where the analyzer expects 18.
 
-The depth map is Google's plane-based encoding decoded to a per-pixel distance grid; note that it appears to be synthesized from elevation data and building footprints rather than measured directly, so treat it as approximate near fine structures.
+### What the depth product is (and isn't)
+
+The depth map is Google's plane-based encoding decoded to a per-pixel distance grid — and it is **not a measurement of the scene**. Analysis of 409 payloads ([label-latlng-estimation#9](https://github.com/ProjectSidewalk/label-latlng-estimation/issues/9)) shows a constructed model of terrain plus extruded building footprints: >99% of pixels lie on near-flat or near-vertical surfaces, with none of the intermediate slopes (car roofs, tree canopy, pitched roofs) a real reconstruction would have. Consequences for anything built on it:
+
+* **Vehicles, people, and vegetation are absent.** A ray aimed at a parked car passes through it and returns the ground behind — a distance *overestimate* that can't be detected from the depth alone, only from imagery.
+* **Under a label, depth is close to plain trigonometry** — ~91% of ground pixels fall within 1 m of `camera_height / tan(depression)`. The payload's added value is terrain relief and rays that hit a facade.
+* **Curb ramps sit ~0.15 m above the modeled road surface**, so rays overshoot them by roughly 0.5 m at typical label distances. That's a bias, not noise.
+* **`-1` means "no plane"** — sky *and* anything unmodeled. It is not "very far away".
+* **Building geometry drifts between captures** (facades from re-captures of the same street differ by a couple of meters), so don't treat facade distances as survey-grade.
 
 ## Tests
 A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract that our log-analyzer tooling parses, and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need only the packages in `requirements.txt` plus `pytest`:
