@@ -4,6 +4,7 @@
 # depth maps from Google's photometa endpoint via the streetlevel library (see download_depth_maps).
 
 import asyncio
+import base64
 import collections
 import csv
 import logging
@@ -11,6 +12,7 @@ import math
 import os
 import random
 import stat
+import struct
 import time
 from io import BytesIO
 
@@ -219,7 +221,15 @@ DEPTH_ARTIFACT_SUFFIX = '.depth.npz'
 
 # Stamped into every artifact so consumers can tell formats apart. Artifacts with no format_version field
 # predate v2 and store streetlevel's raw column order, which is x-mirrored relative to the pano JPEG (#58).
-DEPTH_ARTIFACT_FORMAT_VERSION = 2
+# v3 adds Google's plane list - per-pixel plane indices plus plane normals and offsets - which the v2 decode
+# threw away (#56). A v2 artifact cannot be upgraded offline (the planes were never stored): delete it and its
+# depth_log.csv row to trigger a re-fetch.
+DEPTH_ARTIFACT_FORMAT_VERSION = 3
+
+# The value a depth pixel carries when Google modelled no plane there (sky, or anything else it skipped) -
+# streetlevel's depth.INFINITELY_FAR. Reconstructed depths are |d / (v . n)|, so they are never negative and
+# the sentinel is unambiguous.
+DEPTH_NO_PLANE = -1.0
 
 # Consecutive transient failures after which the depth phase gives up for this run. Without a breaker, a run that
 # hits a wall (rate limit, captcha, DNS outage) spends its whole --max-runtime budget re-hitting it, then does the
@@ -243,6 +253,17 @@ _BLOCK_URL_MARKERS = ('/sorry/', 'consent.google.com')
 
 class DepthBlockedError(Exception):
     """Google answered a photometa request with a rate-limit or captcha/consent interstitial instead of data."""
+
+
+class DepthPayloadError(RuntimeError):
+    """Google's depth payload - or the v3 artifact about to be derived from it - is malformed.
+
+    A RuntimeError subclass on purpose, and deliberately NOT a ValueError: download_depth_maps classes
+    ValueError as 'network' (streetlevel surfaces a non-JSON response as JSONDecodeError, a ValueError
+    subclass), and a payload this scraper decoded and then rejected is a data fault, not a network one.
+    RuntimeError lands in the 'unexpected' arm instead - still transient and still unledgered, so the pano
+    retries next run, but the end-of-phase breakdown names the right cause.
+    """
 
 
 def _raise_if_blocked(response, *args, **kwargs):
@@ -361,21 +382,228 @@ def count_unresolved_depth(storage_path, pano_infos):
     return sum(1 for p in pano_infos if p['pano_id'] not in resolved)
 
 
-def _write_depth_artifact(storage_path, pano_id, pano):
+# Google's plane data for one pano, as decoded from the raw photometa depth payload (#56): 'indices' is a
+# uint8 (h, w) array of per-pixel indices into the plane list (0 = no plane), in PAYLOAD column order - which
+# is the pano JPEG's order (see _write_depth_artifact); 'normals' is float32 (P, 3) and 'distances' float32
+# (P,), both verbatim wire values. A plane is {p : p . n = d}, so its perpendicular distance from the camera
+# is |d| / ||n|| - for the ground plane, that is the camera height.
+DepthPlanes = collections.namedtuple('DepthPlanes', ['indices', 'normals', 'distances'])
+
+
+# The header every depth payload opens with, little-endian and unpadded:
+# uint8 header_size | uint16 number_of_planes | uint16 width | uint16 height | uint8 offset.
+_DEPTH_HEADER = struct.Struct('<BHHHB')
+
+
+def _decode_depth_planes(b64_payload):
+    """Decode Google's depth payload into the plane data streetlevel's parser computes with and discards.
+
+    streetlevel's compute_depth_map collapses the planes into one scalar per pixel and never exposes them, so
+    capturing camera height and ground tilt (#56) means decoding the payload ourselves. Wire layout (see
+    _DEPTH_HEADER, and tests/test_streetlevel_api.py for the end-to-end pin): the 8-byte header, then
+    width*height uint8 per-pixel plane indices at `offset`, then 4 float32 (nx, ny, nz, d) per plane.
+
+    NB the offset is a true uint8 at byte 7. streetlevel reads it as a uint16 spanning bytes 7-8, and that is
+    STILL true in 0.12.11 - the latest release and the floor of our pin - whose depth.py is byte-for-byte
+    identical to 0.12.10's, so the pin does not fix it (pinned by test_streetlevel_api's
+    test_streetlevel_still_misreads_the_depth_offset, which also says what to simplify when upstream's fix,
+    sk-zk/streetlevel#45, ships). The misread parses correctly only when the first index byte is 0 - true on
+    most panos, whose zenith is sky, but false wherever Google models the surface overhead. That is why the
+    depth path no longer routes through streetlevel's parser at all: see _fetch_pano_with_depth_planes.
+
+    @return DepthPlanes.
+    @raise  DepthPayloadError on a truncated or malformed payload, rather than silently returning short
+            arrays that would then be stored as a plausible-looking artifact.
+    """
+    padded = b64_payload + '=' * ((4 - len(b64_payload) % 4) % 4)
+    raw = base64.urlsafe_b64decode(padded)
+    if len(raw) < _DEPTH_HEADER.size:
+        raise DepthPayloadError("depth payload header truncated: %d bytes" % (len(raw),))
+    header_size, number_of_planes, width, height, offset = _DEPTH_HEADER.unpack_from(raw, 0)
+    # Every field after byte 0 sits at a fixed position, so a payload announcing a different header size is a
+    # wire format this decode does not know and would mis-parse silently rather than reject. Likewise an
+    # offset pointing back into the header, which would hand back header bytes dressed up as plane indices.
+    if header_size != _DEPTH_HEADER.size or offset < _DEPTH_HEADER.size:
+        raise DepthPayloadError("unexpected depth payload header: header_size=%d, offset=%d (expected %d and "
+                                ">= %d)" % (header_size, offset, _DEPTH_HEADER.size, _DEPTH_HEADER.size))
+    if width == 0 or height == 0:
+        raise DepthPayloadError("depth payload declares a zero-area raster: %dx%d" % (width, height))
+    indices_end = offset + width * height
+    planes_end = indices_end + number_of_planes * 16
+    if len(raw) < planes_end:
+        raise DepthPayloadError("depth payload truncated: %d bytes, need %d" % (len(raw), planes_end))
+    indices = np.frombuffer(raw, dtype=np.uint8, count=width * height, offset=offset)
+    max_index = int(indices.max())
+    if max_index and max_index >= number_of_planes:
+        # _compute_depth_raster gathers planes by these indices; an index past the declared list must be
+        # refused here, not surface as a bare IndexError mid-computation (which is how streetlevel fails
+        # the same payload).
+        raise DepthPayloadError("plane index %d out of range: payload declares %d plane(s)"
+                                % (max_index, number_of_planes))
+    planes = np.frombuffer(raw, dtype='<f4', count=number_of_planes * 4, offset=indices_end)
+    planes = planes.reshape(number_of_planes, 4)
+    return DepthPlanes(indices.reshape(height, width).copy(), planes[:, :3].astype(np.float32),
+                       planes[:, 3].astype(np.float32))
+
+
+def _compute_depth_raster(planes):
+    """The per-pixel distance raster derived from the plane data, in PAYLOAD (= stored JPEG) column order.
+
+    The same geometry as streetlevel's compute_depth_map - t = |d_i / (v(r, c) . n_i)| for the referenced
+    plane, DEPTH_NO_PLANE where the index is 0 - vectorized, and WITHOUT the x-mirror streetlevel applies on
+    output (the mirror is its output convention, not the wire's). This is the reconstruction identity the
+    artifact documents, running forward. Parity with upstream's decode is pinned by
+    tests/test_depth_helpers.py's TestComputeDepthRaster, so swapping the raster source changed nothing for
+    the panos both decoders handle. Near the horizon the ground plane runs almost parallel to the ray and
+    distances legitimately grow huge - exactly as upstream's decode produces.
+    """
+    indices = planes.indices
+    height, width = indices.shape
+    theta = (height - np.arange(height) - 0.5) / height * np.pi
+    phi = (width - np.arange(width) - 0.5) / width * 2.0 * np.pi + np.pi / 2.0
+    if len(planes.normals) == 0:
+        return np.full((height, width), DEPTH_NO_PLANE, dtype=np.float32)
+    rays = np.empty((height, width, 3))
+    rays[..., 0] = np.sin(theta)[:, None] * np.cos(phi)[None, :]
+    rays[..., 1] = np.sin(theta)[:, None] * np.sin(phi)[None, :]
+    rays[..., 2] = np.broadcast_to(np.cos(theta)[:, None], (height, width))
+    index_grid = indices.astype(np.intp)  # bounds-checked in _decode_depth_planes
+    normals = np.asarray(planes.normals, dtype=np.float64)[index_grid]
+    offsets = np.asarray(planes.distances, dtype=np.float64)[index_grid]
+    # A ray exactly perpendicular to its plane's normal is measure-zero in real payloads; inf beats crashing
+    # the pano over it (streetlevel would raise ZeroDivisionError there).
+    with np.errstate(divide='ignore', invalid='ignore'):
+        raster = np.abs(offsets / np.einsum('hwc,hwc->hw', rays, normals))
+    return np.where(index_grid == 0, DEPTH_NO_PLANE, raster).astype(np.float32)
+
+
+def _msg_path(value, *path):
+    """Walk one nested-list path of a photometa msg, returning None when any hop is missing.
+
+    The same tolerance rules as streetlevel's try_get (IndexError/KeyError/TypeError -> None), for the
+    handful of fields the depth path reads now that it no longer routes through streetlevel's parser.
+    """
+    for key in path:
+        try:
+            value = value[key]
+        except (IndexError, KeyError, TypeError):
+            return None
+    return value
+
+
+# What the depth path needs from a photometa response: the raster (None when the pano carries no depth
+# payload) and the three orientation scalars, shaped like the streetlevel object it replaced so
+# _write_depth_artifact and the tests' make_pano are indifferent to the source.
+_DepthRaster = collections.namedtuple('_DepthRaster', ['data'])
+_PanoOrientation = collections.namedtuple('_PanoOrientation', ['depth', 'heading', 'pitch', 'roll'])
+
+
+def _fetch_pano_with_depth_planes(pano_id, session):
+    """One photometa request -> (pano-shaped namespace | None, DepthPlanes | None).
+
+    Only streetlevel's api half (the protobuf-URL builder + fetch) is used; the response is parsed here.
+    The session - and with it the timeout adapter, retry policy, and block-detection hook - passes through
+    exactly as streetlevel's own find_panorama_by_id would pass it, so the request on the wire is identical
+    and the one-request-per-pano budget is unchanged. The msg paths and the api half's signature are pinned
+    by tests/test_streetlevel_api.py.
+
+    WHY the parse half is bypassed, and when to revisit: parse_panorama_id_response calls streetlevel's
+    depth decoder unguarded, and every release through 0.12.11 misreads the payload's uint8 offset byte as
+    a uint16 (test_streetlevel_still_misreads_the_depth_offset). Any pano whose first index byte is nonzero
+    - a modelled zenith: tunnels, overpass soffits, parking structures; a bit under 1% of panos in a large
+    sample - therefore raises inside streetlevel on every attempt, is classed transient, and re-requests
+    forever without ever resolving. The fix is upstream but unmerged (sk-zk/streetlevel#45); once it ships
+    in a release and the pin moves past it, this bypass becomes unnecessary rather than wrong - either
+    simplify back to parse_panorama_id_response, or keep it as the first step of dropping the dependency
+    (see the #56 discussion).
+    """
+    # Imported lazily: download_depth_maps' availability probe has already run, and tests reach this seam
+    # through an adapter, so the real submodule only loads when a real request is about to happen.
+    from streetlevel.streetview import api
+
+    response = api.find_panorama_by_id(pano_id, download_depth=True, locale='en', session=session)
+    response_code = _msg_path(response, 1, 0, 0, 0)
+    if response_code is None:
+        # Not the photometa envelope at all - an error JSON, a quota page that happened to parse. Transient:
+        # returning (None, None) instead would ledger 'unavailable' and permanently write off a pano Google
+        # may still be serving.
+        raise DepthPayloadError("unrecognized photometa response for pano %s" % (pano_id,))
+    # 1 = OK, 3 = also OK; 2 = not found (streetlevel's reading of the same field).
+    if response_code not in (1, 3):
+        return None, None
+    msg = response[1][0]
+    # Orientation scalars, with streetlevel's conversions: degrees -> radians, and pitch stored as 90 - raw.
+    heading = _msg_path(msg, 5, 0, 1, 2, 0)
+    pitch = _msg_path(msg, 5, 0, 1, 2, 1)
+    roll = _msg_path(msg, 5, 0, 1, 2, 2)
+    orientation = _PanoOrientation(
+        depth=None,
+        heading=math.radians(heading) if heading is not None else None,
+        pitch=math.radians(90 - pitch) if pitch is not None else None,
+        roll=math.radians(roll) if roll is not None else None)
+    payload = _msg_path(msg, 5, 0, 5, 1, 2)
+    if not payload:
+        return orientation, None
+    planes = _decode_depth_planes(payload)
+    # The raster is handed back in streetlevel's x-mirrored column order deliberately: _write_depth_artifact
+    # un-mirrors on write (#58) and every CI pin on the stored orientation is written against that contract,
+    # so the seam keeps the shape its predecessor produced and the two flips cancel. Collapse them if the
+    # writer contract is ever revisited.
+    raster = _compute_depth_raster(planes)[:, ::-1]
+    return orientation._replace(depth=_DepthRaster(raster)), planes
+
+
+def _write_depth_artifact(storage_path, pano_id, pano, planes):
     """Atomically write <pano_id[:2]>/<pano_id>.depth.npz for a streetlevel pano with depth data.
 
-    Contents: 'depth' = float32 (height, width) array of meters with -1 meaning no plane (sky, or anything
-    Google didn't model), 'heading'/'pitch'/'roll' scalars in radians (NaN if absent) so the artifact is
-    self-contained for pixel<->world alignment, and 'format_version' (see DEPTH_ARTIFACT_FORMAT_VERSION).
+    Contents (format v3, see DEPTH_ARTIFACT_FORMAT_VERSION):
+      'depth'          float32 (h, w) meters; -1 = no plane (sky, or anything Google didn't model)
+      'plane_indices'  uint8 (h, w) per-pixel index into the plane list; 0 = no plane
+      'planes_n'       float32 (P, 3) plane normals, verbatim wire values (#56)
+      'planes_d'       float32 (P,) plane offsets, verbatim; a plane is {p : p . n = d}, so its perpendicular
+                       distance from the camera is |d| / ||n|| (the ground plane's is the camera height -
+                       see ground_plane_from_artifact / camera_height_from_artifact)
+      'heading'/'pitch'/'roll'  scalars in radians (NaN if absent)
+      'format_version' int
 
-    The stored array shares the pano JPEG's column order: streetlevel's decoder x-mirrors the payload
+    The stored raster shares the pano JPEG's column order: streetlevel's decoder x-mirrors the payload
     (compute_depth_map writes the value for payload column x to output column w-1-x), so pano.depth.data is
-    horizontally flipped relative to the imagery and is flipped back here on write (#58). A consumer can
-    therefore index it with a stored pano_x/pano_y scaled by width/height, no mirror correction needed.
+    horizontally flipped relative to the imagery and is flipped back here on write (#58). plane_indices comes
+    from the raw payload, whose column order already IS the JPEG's, so it is stored verbatim - and the plane
+    normals live in the pano-local frame of the decode's ray formula, untouched by any raster relabeling.
+    The operational definition of that frame, tying every stored field together (pinned by
+    tests/test_depth_helpers.py):
+
+        depth[r, c] == |planes_d[i] / (v(r, c) . planes_n[i])|   for i = plane_indices[r, c] > 0,
+        v(r, c) = unit ray at theta = (h-r-0.5)/h*pi, phi = (w-c-0.5)/w*2pi + pi/2
+
     tests/test_streetlevel_api.py pins the decode's end-to-end column order - the ray-direction formula and
     the write index jointly, either of which flipping alone would change the orientation - so a streetlevel
     change fails CI rather than silently re-mirroring new artifacts.
+
+    @raise DepthPayloadError if the plane data is missing, the wrong shape, or disagrees with the raster.
     """
+    if planes is None:
+        raise DepthPayloadError("pano %s has a depth raster but no plane data; refusing to write a malformed "
+                                "v3 artifact" % (pano_id,))
+    stored_depth = np.asarray(pano.depth.data)[:, ::-1].astype(np.float32)
+    if tuple(planes.indices.shape) != stored_depth.shape:
+        raise DepthPayloadError("pano %s plane indices shape %r does not match depth shape %r"
+                                % (pano_id, tuple(planes.indices.shape), stored_depth.shape))
+    # The one invariant the README promises consumers - index 0 sits exactly where the raster says -1 -
+    # enforced instead of assumed. Both now come from our own decode, so this is no longer a cross-parser
+    # check; what it still guards, for one pass over ~130k pixels, is the flip plumbing between the seam and
+    # this writer (payload order -> mirrored -> un-mirrored) and any raster/index divergence a future edit
+    # introduces. This backfill is one-shot and cannot be redone offline, so a broken invariant must stop
+    # the pano, not quietly produce millions of artifacts whose documented reconstruction identity does not
+    # hold.
+    if not np.array_equal(planes.indices == 0, stored_depth == DEPTH_NO_PLANE):
+        raise DepthPayloadError("pano %s plane indices disagree with the depth raster: %d pixel(s) where "
+                                "exactly one of (index == 0, depth == %g) holds"
+                                % (pano_id, int(np.count_nonzero((planes.indices == 0)
+                                                                 != (stored_depth == DEPTH_NO_PLANE))),
+                                   DEPTH_NO_PLANE))
+
     destination_dir = os.path.join(storage_path, pano_id[:2])
     if not os.path.isdir(destination_dir):
         # exist_ok: concurrent city runs (and the image phase) race on shard dirs.
@@ -395,7 +623,10 @@ def _write_depth_artifact(storage_path, pano_id, pano):
         # savez_compressed needs an open file object: given a path without a .npz extension it silently appends
         # one, which would write to the wrong filename.
         with open(tmp_path, 'wb') as f:
-            np.savez_compressed(f, depth=pano.depth.data[:, ::-1].astype(np.float32),
+            np.savez_compressed(f, depth=stored_depth,
+                                plane_indices=np.asarray(planes.indices, dtype=np.uint8),
+                                planes_n=np.asarray(planes.normals, dtype=np.float32).reshape(-1, 3),
+                                planes_d=np.asarray(planes.distances, dtype=np.float32).reshape(-1),
                                 heading=scalar(pano.heading), pitch=scalar(pano.pitch),
                                 roll=scalar(pano.roll), format_version=DEPTH_ARTIFACT_FORMAT_VERSION)
         os.chmod(tmp_path, 0o664)
@@ -409,6 +640,72 @@ def _write_depth_artifact(storage_path, pano_id, pano):
         except OSError:
             pass
         raise
+
+
+def ground_plane_from_artifact(artifact, min_vertical=0.7):
+    """Pick the ground plane out of a v3 depth artifact: the near-horizontal plane that most of the pano's
+    downward-looking pixels actually land on.
+
+    Deliberately a helper rather than a field baked into the artifact: the artifact stores Google's plane
+    list verbatim, so this heuristic (which plane is "ground" on a tilted street, a bridge, a plaza?) stays
+    fixable in code instead of frozen into millions of .npz files. Sign-insensitive throughout - the up/down
+    sign convention of Google's pano-local frame is not relied on.
+
+    Candidates are drawn only from the below-horizon rows of the raster, and are ranked by how many of those
+    pixels reference them (ties broken by verticality, then by lowest index for determinism). Both rules
+    matter. Ranking on verticality alone lets a handful of pixels of some *overhead* surface - an overpass
+    soffit, a tunnel ceiling, an awning, a sign gantry, all of which are more perfectly horizontal than a
+    real cambered road - outrank the tens of thousands of pixels of actual road, and
+    camera_height_from_artifact then silently returns the height of the ceiling. The split is not a fudge
+    factor: rows from (h+1)//2 on are exactly those whose rays satisfy theta < pi/2, i.e. that point
+    strictly below the horizon, under the same ray formula the stored frame is defined by (see
+    _write_depth_artifact). For even heights - every real raster - that is plain h//2; the +1 matters only
+    for odd heights, whose middle row sits exactly ON the horizon and belongs to neither half.
+
+    @param artifact     An open numpy.load(...) NpzFile, or any mapping with 'plane_indices', 'planes_n',
+                        'planes_d' (see _write_depth_artifact for the fields).
+    @param min_vertical Minimum |n_z| / ||n|| for a plane to count as ground at all.
+    @return             (unit_normal float32 (3,), distance_m, plane_index) for the winning plane - the
+                        distance is the camera height when the plane really is the ground - or None if no
+                        plane below the horizon is vertical enough. No fallback to the top half: a wrong
+                        camera height is worse than an absent one, which the caller can default.
+    """
+    indices = np.asarray(artifact['plane_indices'])
+    if indices.ndim != 2:
+        raise ValueError("plane_indices must be the (h, w) raster, got shape %r" % (indices.shape,))
+    normals = np.asarray(artifact['planes_n'], dtype=np.float64)
+    distances = np.asarray(artifact['planes_d'], dtype=np.float64)
+    # One pass gives both the referenced set and the pixel counts, and beats np.unique over ~65k values.
+    # minlength keeps every plane addressable below even when no pixel references the tail of the list.
+    support = np.bincount(indices[(indices.shape[0] + 1) // 2:].ravel(), minlength=len(normals))
+    best = None
+    # Index 0 is the no-plane sentinel, so the scan starts at 1; stopping at len(normals) drops out-of-range
+    # indices, which would mean a malformed artifact. support is at least that long, by minlength above.
+    for index in range(1, len(normals)):
+        count = int(support[index])
+        if count == 0:
+            continue
+        length = float(np.linalg.norm(normals[index]))
+        if length == 0.0:
+            continue
+        verticality = abs(float(normals[index][2])) / length
+        if verticality < min_vertical:
+            continue
+        if best is None or (count, verticality) > best[0]:
+            best = ((count, verticality), int(index), length)
+    if best is None:
+        return None
+    _, index, length = best
+    return (normals[index] / length).astype(np.float32), float(abs(distances[index]) / length), index
+
+
+def camera_height_from_artifact(artifact, default=None):
+    """Camera height in meters from a v3 depth artifact: |d| / ||n|| of the ground plane (#56).
+
+    @return The height, or `default` when no plane qualifies as ground (see ground_plane_from_artifact).
+    """
+    ground = ground_plane_from_artifact(artifact)
+    return default if ground is None else ground[1]
 
 
 def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
@@ -442,7 +739,9 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
     @return                    (success_count, fail_count, skipped_count, total_completed).
     """
     try:
-        from streetlevel import streetview
+        # Availability probe only - the fetch seam (_fetch_pano_with_depth_planes) imports the submodules it
+        # needs lazily, per request.
+        from streetlevel import streetview  # noqa: F401
     except ImportError as e:
         logging.error("DEPTHDOWNLOAD: streetlevel is not installed (%s); skipping depth phase", str(e))
         return 0, 0, 0, 0
@@ -546,7 +845,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
             print("DEPTHDOWNLOAD: Processing pano %s " % (pano_id))
             request_count += 1
             try:
-                pano = streetview.find_panorama_by_id(pano_id, download_depth=True, session=session)
+                pano, planes = _fetch_pano_with_depth_planes(pano_id, session)
                 if pano is None or pano.depth is None or pano.depth.data is None \
                         or np.ndim(pano.depth.data) != 2:
                     # Pano deleted/id rotated, no depth payload, or a payload that isn't the (h, w) grid
@@ -556,8 +855,16 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
                     record(pano_id, 'unavailable')
                     unavailable_count += 1
                     fail_count += 1
+                elif planes is None:
+                    # A depth raster with no plane data can only mean the payload path or wire format drifted
+                    # upstream (the contract tests exist to catch that first). Depth exists, so 'unavailable'
+                    # would be a lie. DepthPayloadError is a RuntimeError, so it lands in the 'unexpected'
+                    # arm below - transient, not ledgered, retried next run. The remaining malformed-v3
+                    # cases (shape mismatch, indices disagreeing with the raster) raise the same type from
+                    # _write_depth_artifact, which is where the comparison the checks need is computed.
+                    raise DepthPayloadError("depth payload present but no plane data for pano %s" % (pano_id,))
                 else:
-                    _write_depth_artifact(storage_path, pano_id, pano)
+                    _write_depth_artifact(storage_path, pano_id, pano, planes)
                     record(pano_id, 'saved')
                     success_count += 1
                 # Either outcome proves we're still talking to Google, so the breaker resets.
