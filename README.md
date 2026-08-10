@@ -69,22 +69,40 @@ Panos with any other `source` value are skipped with a warning.
 
 Usage:
 ```python
-python CropRunner.py [-h] (-d [D] | -f [F]) [-s S] [-c C]
+python CropRunner.py [-h] (-d D | -f F) [-s S] [-o O] [--mark-label]
 ```
 * To fetch label metadata from webserver or a file, use respectively (mutually exclusive, required):
   * ``-d <project-sidewalk-url>``
-  * ``-f <path-to-label-metadata-file>``
+  * ``-f <path-to-label-metadata-file>`` (`.csv` or `.json`)
 * ``-s <path-to-panoramas-dir>`` (optional). Specify if using a different directory containing panoramas. Panoramas are used to crop the labels.
-* ``-o <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored.
+* ``-o <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored. `crop.log` is written here too.
+* ``--mark-label`` (optional, debugging aid). Draws a dot at the label position in every crop. Off by default — the crops are ML training data, and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.
+
+Crops are square, centered on the label, sized by an estimated camera-to-label distance, and written to `<crop-dir>/<label_type_id>/<label_id>.jpg`. Crop windows wrap across the equirectangular seam (the left and right image edges are the same place in the world) and shift to stay inside the image at the top and bottom, so a crop never contains synthetic black padding. In a six-city census of 438,410 labels, 1.52% cross the seam; before this was fixed every one of those crops carried a black bar.
+
+A shifted crop still contains its label, but not at the center. Those are counted separately in the run summary (`shifted_vertically`) and logged with their offset, so a consumer that assumes centering can see how many it got. In the same census only two labels needed a shift, and both were corrupt rows (see below).
+
+Two preflights reject a label rather than produce a quietly wrong crop:
+
+* **Pano dimensions.** If the label metadata carries pano dimensions that disagree with the image on disk, the label is skipped with a warning. This is a **store-integrity** check: the metadata describes the pano as it is served now, the image was stitched to whatever the API reported when it was downloaded, so a disagreement means the store is stale (or, on the Mapillary path, that `thumb_original_url` served a different size than was recorded). It does **not** detect a label whose `pano_x`/`pano_y` went stale under a pano that was re-served at a new resolution — those dimensions are a per-pano value and get refreshed along with the pano, so such a row looks perfectly consistent. Separating those needs the click→pano replay, tracked in [#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54).
+* **Label position.** A `pano_y` outside the image is skipped, because there is no way to recover it: the poles are not adjacent, so clamping produces clean imagery of a place the label is not in. `pano_x` is deliberately *not* checked — column 0 and column `pano_width` are the same place in the world, so any value is read correctly by the seam wrap, and labels storing `pano_x == pano_width` exactly do exist and crop fine.
+
+The metadata dimensions are read from `pano_width`/`pano_height`, or from `width`/`height` for the older CSV export shape (`samples/metadata-seattle.csv`). Those latter names are generic, so if you supply your own CSV where `width`/`height` mean something else — a canvas or bounding box — every row will be skipped as a dimension mismatch. The skip is loud and counted, so this shows up as a number rather than as bad crops.
+
+**Re-running does not regenerate existing crops.** A crop already on disk is the resume marker and is never re-cut, so a store cropped before the seam fix keeps its black-padded crops, and one cropped before crop sizes became deterministic holds a mix of (for example) 503- and 504-px crops for the same predicted size. Delete the crops you want re-cut.
 
 As an example:
 ```python
 python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbus/panos/ -o /sidewalk/columbus/crops/
 ```
 
+The run writes a rotating `crop.log` into the crop directory, prints a per-outcome summary, and **exits 1 if any label errored** (a corrupt pano, a malformed metadata row, a failed write) so a cron wrapper can alert. The three skip outcomes are *not* errors and do not affect the exit code: a label waiting on a pano that hasn't been downloaded yet (the pano store is scraped independently and legitimately lags the label list), and the two preflight rejections above. Those are metadata the run declined to trust, not work it got wrong. Errors are retried on the next run.
+
+**Note** Crops produced before the `--mark-label` flag existed all carry a burned-in dark-red dot at the label position: marking used to be a `MARK_LABEL = True` constant at the top of the file and was on for every run. If you are reusing an older crop set for training, that dot sits directly over the feature of interest and is exactly what a model will learn instead of the feature. Re-crop rather than reuse.
+
 **Note** You will likely want to filter out labels where `disagree_count > agree_count`. These are based on human-provided validations from other Project Sidewalk users. This is not written in the code by default. There is also an option for a filter that is even more strict. This of course has the tradeoff of using less data, so this depends on the the needs of your project: more data vs more accurate data. To do this, you would query the `/v2/access/attributesWithLabels` API endpoint for the city you're looking at. Then you would only include labels where the `label_id` is also present in the attributesWithLabels API. This is a more aggressive filter that removes labels from some users that we suspect are providing low quality data based on some heuristics.
 
-**Note** We have noticed some error in the y-position of labels on the panorama. We believe that this either comes from a bug in the GSV API, or it may be there there is some metadata that Google is not providing us. The errors are relatively small and in the y-direction. As of Apr 2023 we are working on an alternative cropper that attempts to correct for these errors, but it is in development. The version here should work pretty well for now though!
+**Note** We have noticed some error in the y-position of labels on the panorama (first observed Apr 2023). The candidate root cause is now diagnosed — the click→pano mapping corrects for camera heading but not for per-pano camera tilt, see [SidewalkWebpage#4784](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4784) — and [#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54) tracks measuring the effect at crop level in this repo, with a correction to follow if the measurement confirms it. (An earlier note here referred to an "alternative cropper" in development; that effort was abandoned and #54 supersedes it.)
 
 ## Log analyzer
 

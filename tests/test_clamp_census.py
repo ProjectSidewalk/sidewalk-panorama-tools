@@ -84,6 +84,39 @@ class TestCommittedFindings:
         assert rd['6656']['crop_ratio_vs_6656_p50'] == pytest.approx(1.0)
 
 
+class TestCrossCensusReconciliation:
+    """Two committed censuses measure nearly the same thing over nearly the same corpus and report
+    different numbers (0 truncations here, 2 vertical shifts in the #77 crop-geometry census). That
+    is exactly the kind of pair that gets re-argued months later, so the reconciliation is pinned
+    rather than left to a paragraph."""
+
+    @staticmethod
+    def _load(name):
+        import json
+        with open(os.path.join(REPO_ROOT, 'reports', 'data', name)) as f:
+            return json.load(f)
+
+    def test_the_two_corpora_differ_by_exactly_the_corrupt_rows(self):
+        """This census filters the 2 negative-pano_y rows; the geometry census keeps them."""
+        clamp = self._load('2026-08-09-clamp-census.json')
+        geo = self._load('2026-08-10-crop-geometry-census.json')
+        shift = geo['geometry']['vertical_shift']
+        geo_n = round(shift['n'] / (shift['pct'] / 100))
+        assert clamp['overall']['n'] == 436348
+        assert geo_n == clamp['overall']['n'] + 2
+
+    def test_every_vertical_shift_is_a_corrupt_negative_y_row(self):
+        """The whole reconciliation: the geometry census's shift population is precisely the rows
+        this census drops, so among sound labels the exposure really is zero."""
+        geo = self._load('2026-08-10-crop-geometry-census.json')
+        shifting = [r for r in geo['outside_frame_rows'] if r.get('shifts')]
+        assert geo['geometry']['vertical_shift']['n'] == len(shifting) == 2
+        assert {r['label_id'] for r in shifting} == {231546, 233419}
+        for r in shifting:
+            assert r['pano_y'] < 0, r
+            assert r['axis'] == 'y' and r['recoverable'] is False
+
+
 class TestClampAndTruncationOnsets:
     """The analytic boundaries the report now leans on instead of a raw count."""
 

@@ -69,6 +69,20 @@ census), **7/7** (photometa), **7/7** (click-noise), **7/7** (era replay) — 34
 One of those mutants is the reason the click-noise sensitivity analysis is now pinned on pair
 *counts* and not only on σ — see the next section.
 
+## One more, found by merging master
+
+Merging #77 put two censuses of nearly the same thing side by side, and they disagreed: the
+crop-geometry census reports **2** labels needing a vertical shift, the clamp census reports **0**
+truncations. Neither is wrong. The geometry census runs over 436,350 labels — the clamp census's
+436,348 plus the two corrupt negative-`pano_y` rows that `load_city` drops — and those two rows are
+its *entire* vertical-shift population: Seattle `231546` (`pano_y = -720`) and `233419` (`-355`),
+the same pair the era replay study named by id. `2 / 0.00045834765669760516% = 436,350` exactly.
+
+Together they say more than either does alone: among sound labels the vertical-shift exposure is
+exactly zero, and every label that would ever have needed one is a row #77 now rejects outright.
+Noted in the clamp census and pinned in `TestCrossCensusReconciliation`, because a bare "0 vs 2"
+across two committed artifacts is precisely the thing that gets re-litigated in six months.
+
 ## Wrong turns (mine, this time)
 
 * **"`validated_only` being bit-identical to `overall` is a bug."** It is not. `d_el` is a difference

@@ -55,6 +55,17 @@ The far clamp would need a label sighted *above* the horizon by 81°, which no c
 hence "structurally unreachable" rather than "rare". Bottom truncation needs 53–74°, a ~30° margin
 over the corpus p99.
 
+**Reconciled against the #77 crop-geometry census.** That census
+([2026-08-10](2026-08-10-crop-geometry-review.md)) reports **2** labels needing a vertical shift
+where this one reports **0**, which looks like a contradiction and is not. It runs over 436,350
+labels — this census's 436,348 plus the two corrupt negative-`pano_y` rows that
+[`load_city`](scripts/clamp_census.py) drops — and those two rows *are* its entire vertical-shift
+population (Seattle `231546` at `pano_y = -720` and `233419` at `-355`, the same pair the
+[era replay study](2026-08-09-era-replay-study.md) named). Read together the statement is stronger
+than either alone: **among sound labels the vertical-shift exposure is exactly zero, and every label
+that would have needed one is a row #77 now rejects outright.** Pinned in
+`tests/test_clamp_census.py::TestCrossCensusReconciliation`.
+
 > **Correction, 2026-08-10 (pre-merge review).** The truncation row previously read "0.000% (9
 > labels corpus-wide)" and the footer below quoted the same 9. The committed JSON has
 > `truncated_bottom_pct: 0.0` exactly, and zero in every `by_city` and `by_label_type` cell — 9

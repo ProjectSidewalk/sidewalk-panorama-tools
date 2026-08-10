@@ -12,6 +12,12 @@ These exist because conclusions about external behaviour — Google's endpoints,
 calibrated against real data — get re-argued months later when nobody can reproduce the original
 measurement. An issue thread is not replicable and does not fail CI when it stops being true.
 
+**Where artifacts live:** everything a report rests on goes in **GitHub or the `projectsidewalk`
+Hugging Face org — never personal cloud storage** (Drive/Dropbox/shared links). Those feel accessible
+in the moment but don't survive people moving on, and experiments have had to be re-run because of it.
+Data too large to commit here goes to a HF dataset, referenced by exact revision from the report; the
+repo keeps the manifest and the script that regenerates or re-downloads it.
+
 ## What a report should carry
 
 * **The question**, and why it mattered at the time.
@@ -48,4 +54,5 @@ A report is the narrative; the tests and fixtures are the enforcement. Neither r
 | 2026-08-09 | [Clamp census](2026-08-09-clamp-census.md) | Deployed crop sizing on 436k labels: 19% hit the 1500px clamp, edge truncation is exactly zero (and structurally unreachable), and the pixel-linear distance term inflates crops ≥1.2× on the 90% of labels served at 8192px height — the case for a resolution-independent #32 formula. |
 | 2026-08-09 | [Photometa census](2026-08-09-photometa-census.md) | 1,360 labeled panos sampled live: 47.9% still served (33% legacy → 60% post-179), 0% dims drift among survivors, depth 100%, and the #54 tilt prior — \|pitch\| p90 2.6°, \|roll\| p90 2.2°, tilt-term sd 1.56°. |
 | 2026-08-09 | [Crop priors + pre-registration](2026-08-09-crop-priors-prereg.md) | **Report 1.** Synthesizes the Phase 1 desk studies into binding pre-registered endpoints, decision rules, corpus spec, annotation protocol, and power for Studies 1–3. Registration is the merge; amendments append-only after that (§7 lists the pre-merge revisions). |
+| 2026-08-10 | [Crop geometry: what the seam fix reaches, and what the preflights beside it can see](2026-08-10-crop-geometry-review.md) | Seam wrap reaches 1.52% of labels; pano dims are a per-pano join, so the dims preflight guards the store and not the label's frame; out-of-frame `pano_y` now rejected instead of clamped. Issue #47; PR #77. |
 | 2026-08-10 | [Pre-merge review of the crop priors](2026-08-10-crop-priors-review.md) | Review of PR #79 before registering Report 1: six defects fixed (a 2× error in Study 2's acceptance band, a report/data mismatch, an unstated tilt-regression n, a gate looser than its own assumption, an unprovisioned robustness column, and 4,916 bare `NaN` tokens in a committed artifact), plus the untested aggregation layer that produced every committed number. |
