@@ -35,7 +35,7 @@ pip3 install -r requirements.txt
 python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-depth] \
     [--max-runtime MINUTES] [--min-depth-runtime MINUTES] [--max-depth-requests N]
 
-# Cropper
+# Cropper (exits 1 if any label errored; missing/untrusted panos alone are not an error)
 python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) [-s <pano-dir>] [-o <crop-dir>] [--mark-label]
 
 # Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see README's "Log analyzer")
@@ -56,7 +56,7 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 
 ## Architecture
 
-`DownloadRunner.py` and `CropRunner.py` both follow the #52.1 shape: side-effect-free import, `build_parser()` / `configure_logging()` / `run()` / `main(argv=None)` seams, and a `__main__` guard — tests drive them in-process. Per-source download logic lives in the `downloaders/` package.
+`DownloadRunner.py` (#52) and `CropRunner.py` (#48) both follow the same extracted #52.1 shape: `build_parser()` / `configure_logging()` / `run(...)` / `main(argv=None)` behind an `if __name__ == '__main__'` guard, so **importing either has no side effects** and tests can drive the real flow in-process. (`tests/test_log_analyzer.py` still lifts `LOG_CSV_FIELD_COUNT` out of `DownloadRunner.py` with `ast`, but that is now just avoiding the import cost, not a workaround for a module-scope `parse_args`.) Per-source download logic lives in the `downloaders/` package, which is also safe to import.
 
 **DownloadRunner.py** — orchestrates a nightly run: fetch the pano list, download images, download depth, write one `log.csv` row.
 1. Fetches the pano list from `/adminapi/panos` (or a CSV via `-c`), using a `requests` session with retries and explicit timeouts. Drops empty ids and `'tutorial'`. `filter_supported_sources()` keeps `gsv` and (when `MAPILLARY_ACCESS_TOKEN` is set) `mapillary`; filtered-out panos are deliberately **not** written to `pano_id_log.csv` so a later run can still pick them up.
@@ -71,10 +71,12 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 - `mapillary.py` resolves `thumb_original_url` via the Graph API and downloads it. Requires `MAPILLARY_ACCESS_TOKEN`.
 
 **CropRunner.py** — extracts per-label crops from downloaded panos.
-1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake dtype-pins `pano_id` to `str` and guards required columns (the #46 bug class).
-2. Groups labels by pano so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded once, then cuts a square window per label via `compute_crop_box()`: integer `CropBox(left, top, size, shifted)` centered at `(pano_x, pano_y)`, **x wraps at the equirectangular seam, y clamps by shifting** — no crop ever contains synthetic black (#47). Crop size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]` (replacement tracked in #32/#54).
+1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake additionally dtype-pins `pano_id` to `str` (the #46 bug class) and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
+2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 16384×8192 pano is ~250 MB decoded. Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, size, shifted)` centered at `(pano_x, pano_y)` where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]` (replacement tracked in #32/#54).
 3. Two preflights skip a label rather than emit a quietly wrong crop: a metadata/image **dims mismatch** (`dims_mismatch`) and a `pano_y` **outside the image** (`out_of_frame`).
-4. Writes atomically to `<crop-dir>/<label_type_id>/<label_id>.jpg`; existing crops are the resume marker (`skipped_existing`) and are **never re-cut**, so a store cropped before #47 keeps its black-padded crops. Failures are per-label: counted, logged to `crop.log` (rotating, in the crop dir), and retried next run. `--mark-label` (default off) draws a dot at the label position in the crop — debugging only, since marked crops are poison as training data.
+4. Writes to `<crop-dir>/<label_type_id>/<label_id>.jpg` through `atomic_output_path`. Existing crops are the resume marker (`skipped_existing`) and are **never re-cut**, so a store cropped before #47 keeps its black-padded crops — delete them to pick the fix up. Rotating `crop.log` lands next to the crops, not the CWD.
+5. `--mark-label` draws a dot at the label position **inside the crop**, never on the shared pano, and follows the label through both transforms. It is **off by default**: it was a `MARK_LABEL = True` module constant until #48, so every crop this tool produced before then has a (128, 0, 0) dot burned over the feature of interest.
+6. **Nothing in the crop loop is fatal.** The counts reconcile on every path including re-runs — `success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total` (`shifted_vertically` annotates a success, so it is deliberately *not* in that sum). A corrupt pano, malformed row, or failed write is one counted, logged error and retries next run. `main()` exits 1 if `errors` is nonzero — **not** on `missing_pano`/`dims_mismatch`/`out_of_frame`, which are metadata the run refused to trust rather than work it got wrong.
 
 **log_analyzer/analyze.py** — ops monitoring for the nightly scrape; shares no code with the runners.
 1. Reads `log_analyzer/cities.csv`, pulls each city's `log.csv` off the pano store with `sftp -b -` (the store's restricted SFTP subsystem doesn't speak the SCP wire protocol), and caches it in the gitignored `log_analyzer/logs/`. Connection settings come from `PS_SFTP_*` env vars or matching flags — host and base path are required with no defaults, since a wrong default would silently analyze the wrong store.
@@ -103,6 +105,17 @@ Everything lives under the storage root, with two-char pano-id prefix sharding:
 ## Config
 
 `config.py` holds `thread_count` (image-phase tile fan-out, default 8), a rotating `headers_list` (randomly picked per request), `proxies` (set to the `http://`/`https://` sentinels to disable), and `depth_min_request_interval` (seconds between depth metadata requests; 0 disables — leave it there unless a canary run shows Google pushing back, since the backfill is a multi-month job).
+
+## Artifact storage (standing rule)
+
+Every research and engineering artifact — datasets, annotations, measurement files, figures,
+scripts, model outputs — lives in **GitHub (this repo or a sibling org repo) or the
+`projectsidewalk` Hugging Face org, nothing else**. Personal cloud storage (Google Drive,
+Dropbox, ad-hoc shared links) is easy to reach for in the moment but doesn't survive people
+moving on: links rot, accounts close, and experiments have had to be re-run because artifacts
+that felt accessible at the time were no longer findable later. Version-controlled, org-owned
+homes are the only storage that outlives any one person's involvement. The bar: a fresh clone
+plus the referenced HF dataset must reproduce every number in `reports/`.
 
 ## Things that are easy to get wrong
 
@@ -136,7 +149,7 @@ See README.md for the full field glossary for `/adminapi/panos` and `/adminapi/l
 
 ## Other directories
 
-- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, and the Docker entrypoint's flag forwarding. `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
+- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the Docker entrypoint's flag forwarding, and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
 - `log_analyzer/` — the log analyzer plus `cities.csv`; `log_analyzer/logs/` is a gitignored local cache.
 - `flag_panos/` — one-off web tool (HTML/JS) from the 2022 depth-endpoint outage. Not wired into the Python scripts; keep unless asked.
 - `samples/` — reference CSV/JSON/XML and a sample pano+crop used for manual testing and as examples for the `-c`/`-f` flags.

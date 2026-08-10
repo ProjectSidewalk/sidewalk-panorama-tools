@@ -14,6 +14,7 @@ import csv
 import json
 import logging
 import os
+import subprocess
 import sys
 
 import pytest
@@ -23,6 +24,8 @@ from PIL import Image
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+
+RUNNER = os.path.join(REPO_ROOT, 'CropRunner.py')
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +79,32 @@ def put_pano(store_dir, pano_id, size=PANO_SIZE, color=(255, 255, 255), square_a
 
 def crop_path(out_dir, label_type_id, label_id):
     return os.path.join(str(out_dir), str(label_type_id), str(label_id) + '.jpg')
+
+
+# The disjoint outcome buckets, in one place so a newly added one cannot quietly fall out of the
+# invariant — which is exactly how it went stale when dims_mismatch arrived. shifted_vertically is
+# deliberately absent: it annotates a success (the crop was written, just de-centred), so counting it
+# as its own bucket would double-count.
+DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch',
+                     'out_of_frame', 'errors')
+
+
+def reconciles(counts):
+    """The #48 item-3 invariant: every input label lands in exactly one outcome bucket."""
+    return sum(counts[k] for k in DISJOINT_OUTCOMES) == counts['total']
+
+
+def truncate_pano(store_dir, pano_id, size=PANO_SIZE):
+    """Write a JPEG with a valid header and half its body — the production corruption mode.
+
+    Distinct from garbage bytes: this opens fine (Image.open only reads the header) and blows up later
+    inside crop()/load(), so it exercises the per-label handler rather than the per-pano one.
+    """
+    path = put_pano(store_dir, pano_id, size=size)
+    data = open(path, 'rb').read()
+    with open(path, 'wb') as f:
+        f.write(data[:len(data) // 2])
+    return path
 
 
 @pytest.fixture
@@ -193,13 +222,17 @@ class TestMetadataIntake:
         """The #46 intake bug, in its discriminating form: an all-numeric pano_id column with one blank
         cell infers float64 without a dtype pin, minting ids like '1234567890.0' whose shard paths quietly
         miss every real pano. The good row must still crop and the blank-id row must count as an error,
-        not walk off to a 'na/nan.jpg' path."""
+        not walk off to a 'na/nan.jpg' path — asserted on the counts, because 'the crop exists' alone
+        would also pass with the blank row silently filed as a missing pano."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, '1234567890')
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row(pano_id='1234567890', label_id=1),
                                     label_row(pano_id='', label_id=2)])
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
+        labels = crop_runner.fetch_label_ids_csv(str(csv_file))
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts == {'total': 2, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 1}
         assert os.path.exists(crop_path(out, 1, 1))
 
     def test_csv_missing_required_column_fails_loudly(self, crop_runner, tmp_path):
@@ -379,9 +412,7 @@ class TestBulkExtractCrops:
         ]
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
 
-        disjoint = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch',
-                    'out_of_frame', 'errors')
-        assert sum(counts[k] for k in disjoint) == counts['total'] == 7
+        assert sum(counts[k] for k in DISJOINT_OUTCOMES) == counts['total'] == 7
         assert counts == {'total': 7, 'success': 2, 'skipped_existing': 1, 'missing_pano': 1,
                           'dims_mismatch': 1, 'out_of_frame': 1, 'shifted_vertically': 1,
                           'errors': 1}
@@ -472,6 +503,140 @@ class TestBulkExtractCrops:
         assert r + g + b < 150            # the landmark: near-black
         assert sum(corner) > 600          # away from it: near-white
 
+    def test_a_whole_failed_pano_is_counted_per_label(self, crop_runner, tmp_path):
+        """The grouping refactor moved accounting from per-row to per-pano, so both whole-pano outcomes
+        now add len(labels). Every other test here puts exactly one label on the failing pano, which
+        cannot tell `+= len(labels)` from `+= 1`; this one can, and it is the reconciliation invariant
+        (#48 item 3) that would break."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'goodpano0001')
+        shard = store / 'ba'
+        shard.mkdir(parents=True, exist_ok=True)
+        (shard / 'badpano00001.jpg').write_bytes(b'this is not a jpeg')
+        labels = ([label_row(pano_id='gonepano0001', label_id=i) for i in (1, 2, 3)]
+                  + [label_row(pano_id='badpano00001', label_id=i) for i in (4, 5)]
+                  + [label_row(pano_id='goodpano0001', label_id=6)])
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts == {'total': 6, 'success': 1, 'skipped_existing': 0, 'missing_pano': 3,
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 2}
+        assert reconciles(counts)
+
+    def test_a_truncated_pano_is_one_error_per_label(self, crop_runner, tmp_path, caplog):
+        """The corruption #48 actually describes: a JPEG whose header is intact and whose body is cut
+        short. Image.open succeeds on it (it only reads the header), so this fails in crop()/load() and
+        is caught by the per-label handler — a different branch from the garbage-bytes case above, which
+        never reaches it."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        truncate_pano(store, 'cutpano00001')
+        put_pano(store, 'goodpano0001')
+        labels = [label_row(pano_id='cutpano00001', label_id=1),
+                  label_row(pano_id='cutpano00001', label_id=2),
+                  label_row(pano_id='goodpano0001', label_id=3)]
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts == {'total': 3, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 2}
+        assert 'Failed to crop label' in caplog.text
+        # A failed crop must leave nothing behind: the crop file is the resume marker, so a stub here
+        # would be read as done on the next run.
+        assert not os.path.exists(crop_path(out, 1, 1))
+
+    def test_a_non_finite_coordinate_is_a_row_error_not_a_crop_error(self, crop_runner, tmp_path, caplog):
+        """Discrimination for the isfinite guard: without it a NaN coordinate still lands in `errors`,
+        just via a crop failure instead, so the counts alone cannot tell the two apart. The
+        classification is what matters — a row that never had a usable position is bad metadata, not a
+        bad pano, and the operator reads the log to tell those apart."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops([label_row(label_id=1, pano_y=float('nan'))],
+                                                    str(store), str(out))
+        assert counts['errors'] == 1
+        assert 'Skipping malformed label row' in caplog.text
+        assert 'Failed to crop label' not in caplog.text
+
+    def test_a_blank_pano_id_string_is_an_error(self, crop_runner, tmp_path):
+        """A JSON payload can carry '' (or a padded id) where the CSV intake would carry NaN. It must be
+        a counted error, not a missing pano: '' shards to the store root and would be reported forever
+        as an image we are still waiting on."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        store.mkdir(parents=True)
+        counts = crop_runner.bulk_extract_crops(
+            [label_row(pano_id='', label_id=1), label_row(pano_id='   ', label_id=2)], str(store), str(out))
+        assert counts == {'total': 2, 'success': 0, 'skipped_existing': 0, 'missing_pano': 0,
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 2}
+
+    def test_an_unusable_output_directory_is_one_error_not_a_dead_run(self, crop_runner, tmp_path):
+        """os.makedirs sat outside the try, so an OSError on the output side — a full store, a read-only
+        mount, an sshfs drop, the conditions atomic_output_path itself cites — raised straight out of
+        bulk_extract_crops. That is #48 item 4 again on the write side: the remaining labels never ran
+        and the counts dict never came back."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        out.mkdir(parents=True)
+        (out / '1').write_text('a FILE where the label-type DIR should go')
+        labels = [label_row(label_id=1, label_type_id=1), label_row(label_id=2, label_type_id=2)]
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts == {'total': 2, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 1}
+        assert os.path.exists(crop_path(out, 2, 2))
+
+    def test_the_label_type_directory_is_made_once_per_type(self, crop_runner, tmp_path, monkeypatch):
+        """exist_ok=True still costs a stat, and the loop ran it per label. Over sshfs that is a network
+        round trip for each of a city's ~400k labels."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        out.mkdir(parents=True)  # so os.makedirs never recurses to create the parent and inflate the count
+        made = []
+        real_makedirs = os.makedirs
+
+        def counting_makedirs(path, *args, **kwargs):
+            made.append(path)
+            return real_makedirs(path, *args, **kwargs)
+
+        monkeypatch.setattr(crop_runner.os, 'makedirs', counting_makedirs)
+        labels = [label_row(label_id=1, label_type_id=1, pano_x=140),
+                  label_row(label_id=2, label_type_id=1, pano_x=180),
+                  label_row(label_id=3, label_type_id=2, pano_x=220)]
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['success'] == 3
+        assert made == [str(out / '1'), str(out / '2')]  # one per label type, not one per label
+
+    def test_the_shared_pano_is_closed_when_its_labels_are_done(self, crop_runner, tmp_path, monkeypatch):
+        """The other half of decode-once: holding one ~250 MB decoded pano is the point, holding every
+        pano in a city is a leak. Nothing pinned the close, so `with pano:` could be dropped silently."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        put_pano(store, 'otherpano001')
+        opened, closed = [], []
+        real_open, real_close = Image.open, Image.Image.close
+
+        def recording_open(fp, *args, **kwargs):
+            img = real_open(fp, *args, **kwargs)
+            opened.append(img)
+            return img
+
+        def recording_close(self):
+            closed.append(self)
+            return real_close(self)
+
+        monkeypatch.setattr(crop_runner.Image, 'open', recording_open)
+        monkeypatch.setattr(Image.Image, 'close', recording_close)
+        crop_runner.bulk_extract_crops([label_row(pano_id='testpano0001', label_id=1),
+                                        label_row(pano_id='otherpano001', label_id=2)], str(store), str(out))
+        assert len(opened) == 2
+        assert all(any(c is img for c in closed) for img in opened)
+
+    def test_bulk_extract_does_not_mutate_the_pil_global(self, crop_runner, tmp_path, monkeypatch):
+        """The decompression-bomb ceiling is process-level policy and belongs in main(). This module is
+        importable now — that is the whole point of #52.1 — so a library caller's PIL globals are not
+        ours to rewrite as a side effect of extracting some crops."""
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
+        assert Image.MAX_IMAGE_PIXELS == 89478485
+
 
 class TestMarkLabel:
 
@@ -554,13 +719,51 @@ class TestMain:
 
     def test_decompression_bomb_ceiling_covers_modern_panos(self, crop_runner, tmp_path, monkeypatch):
         """A 16384x8192 pano is 134 MP — over Pillow's 89 MP default DecompressionBombWarning threshold.
-        The store is our own output, so the run must raise the ceiling rather than warn per pano (or
-        silently hard-fail at 2x the threshold)."""
+        The store is our own output, so a run must raise the ceiling rather than warn per pano (or
+        silently hard-fail at 2x the threshold). Driven through main(), which is where process-level
+        policy belongs; see test_bulk_extract_does_not_mutate_the_pil_global for the other half."""
         monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row()])
+        crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)])
         assert Image.MAX_IMAGE_PIXELS is None or Image.MAX_IMAGE_PIXELS >= 16384 * 8192
+
+    def test_errored_labels_make_the_exit_code_nonzero(self, crop_runner, tmp_path):
+        """A run that cropped nothing at all exited 0, so nothing downstream of cron could tell it from
+        a clean one. `errors` is the signal: it only ever counts things that should not have happened."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        truncate_pano(store, 'cutpano00001')
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row(pano_id='cutpano00001')])
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
+
+    def test_missing_panos_alone_still_exit_zero(self, crop_runner, tmp_path):
+        """Discrimination for the test above, and the reason the exit code keys on `errors` rather than
+        on 'did every label produce a crop': the pano store is scraped separately and legitimately lags
+        the label list, so labels waiting on an undownloaded pano are the normal state of a fresh city,
+        not a failure. Note dims_mismatch and out_of_frame (#47) are deliberately in the same camp: they
+        are metadata the run refused to trust, not work it got wrong."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        store.mkdir(parents=True)
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row(pano_id='gonepano0001')])
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
+
+    def test_running_as_a_script_crops(self, crop_runner, tmp_path):
+        """`python3 CropRunner.py ...` end to end, in a real subprocess. Every other test here calls
+        main(argv) in-process, which never executes the __main__ guard itself — so a typo in that one
+        line would ship green (test_download_runner drives the real script through runpy for the same
+        reason). No network: -f plus a synthetic store."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row()])
+        proc = subprocess.run([sys.executable, RUNNER, '-f', str(csv_file), '-s', str(store),
+                               '-o', str(out)], capture_output=True, text=True, timeout=300)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert os.path.exists(crop_path(out, 1, 1))
 
 
 # ---------------------------------------------------------------------------
