@@ -190,12 +190,15 @@ class TestMetadataIntake:
         assert os.path.exists(crop_path(out, 1, 1))
 
     def test_csv_pano_ids_stay_strings(self, crop_runner, tmp_path):
-        """An all-numeric pano_id column otherwise infers int64 and pano_id[:2] raises TypeError — the
-        exact #46 intake bug DownloadRunner already fixed with a dtype pin."""
+        """The #46 intake bug, in its discriminating form: an all-numeric pano_id column with one blank
+        cell infers float64 without a dtype pin, minting ids like '1234567890.0' whose shard paths quietly
+        miss every real pano. The good row must still crop and the blank-id row must count as an error,
+        not walk off to a 'na/nan.jpg' path."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, '1234567890')
         csv_file = tmp_path / 'labels.csv'
-        write_labels_csv(csv_file, [label_row(pano_id='1234567890')])
+        write_labels_csv(csv_file, [label_row(pano_id='1234567890', label_id=1),
+                                    label_row(pano_id='', label_id=2)])
         assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
         assert os.path.exists(crop_path(out, 1, 1))
 
@@ -375,11 +378,12 @@ class TestBulkExtractCrops:
         labels = [{'pano_id': 'testpano0001', 'label_id': 1},           # no coordinates at all
                   label_row(label_id=2, pano_x='not-a-number'),
                   label_row(label_id=3, pano_x=float('nan')),
-                  label_row(label_id=4)]
+                  label_row(label_id=4, pano_id=float('nan')),          # a blank CSV cell arrives as nan
+                  label_row(label_id=5)]
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
-        assert counts['errors'] == 3
+        assert counts['errors'] == 4
         assert counts['success'] == 1
-        assert os.path.exists(crop_path(out, 1, 4))
+        assert os.path.exists(crop_path(out, 1, 5))
 
     def test_crops_are_written_atomically(self, crop_runner, tmp_path, monkeypatch):
         """A crash mid-save must not leave a truncated .jpg that the next run's exists() check treats as
