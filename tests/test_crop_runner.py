@@ -344,7 +344,8 @@ class TestBulkExtractCrops:
                   label_row(label_id=2, pano_x=250),
                   label_row(label_id=3, pano_id='gonepano0001')]
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
-        assert counts == {'total': 3, 'success': 2, 'skipped_existing': 0, 'missing_pano': 1, 'errors': 0}
+        assert counts == {'total': 3, 'success': 2, 'skipped_existing': 0, 'missing_pano': 1,
+                          'dims_mismatch': 0, 'errors': 0}
 
     def test_rerun_skips_existing_and_still_reconciles(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
@@ -352,7 +353,8 @@ class TestBulkExtractCrops:
         labels = [label_row(label_id=1, pano_x=150), label_row(label_id=2, pano_x=250)]
         crop_runner.bulk_extract_crops(labels, str(store), str(out))
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
-        assert counts == {'total': 2, 'success': 0, 'skipped_existing': 2, 'missing_pano': 0, 'errors': 0}
+        assert counts == {'total': 2, 'success': 0, 'skipped_existing': 2, 'missing_pano': 0,
+                          'dims_mismatch': 0, 'errors': 0}
 
     def test_a_corrupt_pano_does_not_kill_the_run(self, crop_runner, tmp_path, caplog):
         """Pre-fix: nothing wrapped make_single_crop, so one truncated JPEG raised out of
@@ -529,3 +531,221 @@ class TestMain:
         put_pano(store, 'testpano0001')
         crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
         assert Image.MAX_IMAGE_PIXELS is None or Image.MAX_IMAGE_PIXELS >= 16384 * 8192
+
+
+# ---------------------------------------------------------------------------
+# Crop geometry (#47): the seam wraps, the poles clamp, nothing is ever black
+# ---------------------------------------------------------------------------
+
+def put_striped_pano(store_dir, pano_id, size=PANO_SIZE):
+    """A white pano with a saturated red block on its left edge (x < 32) and a saturated blue block on
+    its right edge (x >= width-32): on an equirectangular pano those two blocks are adjacent in the
+    world, which is what makes seam behaviour visible after JPEG compression."""
+    shard = os.path.join(str(store_dir), pano_id[:2])
+    os.makedirs(shard, exist_ok=True)
+    img = Image.new('RGB', size, (255, 255, 255))
+    w, h = size
+    for x in range(0, 32):
+        for y in range(h):
+            img.putpixel((x, y), (255, 0, 0))
+    for x in range(w - 32, w):
+        for y in range(h):
+            img.putpixel((x, y), (0, 0, 255))
+    path = os.path.join(shard, pano_id + '.jpg')
+    img.save(path, quality=95)
+    return path
+
+
+def darkest_pixel_sum(crop):
+    """min over pixels of r+g+b — 0 for pure zero-padding, high for any real imagery here."""
+    import numpy as np
+    arr = np.asarray(crop.convert('RGB'), dtype=int)
+    return int(arr.sum(axis=2).min())
+
+
+class TestComputeCropBox:
+    """The pure geometry: integer window, x wraps at the seam, y clamps by shifting, size capped."""
+
+    def test_interior_label_is_centred(self, crop_runner):
+        left, top, size = crop_runner.compute_crop_box(300, 128, 248.33, 512, 256)
+        assert (left, top, size) == (300 - 124, 128 - 124, 248)
+
+    def test_x_wraps_at_the_seam(self, crop_runner):
+        """x=0 and x=width are the same place in the world; the window must reach across, not stop."""
+        left, top, size = crop_runner.compute_crop_box(0, 128, 248.33, 512, 256)
+        assert (left, top, size) == ((0 - 124) % 512, 4, 248)
+
+    def test_top_clamps_by_shifting(self, crop_runner):
+        """The poles are NOT adjacent, so y shifts to stay inside rather than wrapping or padding."""
+        left, top, size = crop_runner.compute_crop_box(300, 8, 248.33, 512, 256)
+        assert top == 0
+        assert size == 248
+
+    def test_bottom_clamps_by_shifting(self, crop_runner):
+        left, top, size = crop_runner.compute_crop_box(300, 250, 200.0, 512, 256)
+        assert top == 256 - 200
+
+    def test_size_caps_at_the_pano(self, crop_runner):
+        """predict_crop_size can return up to 1500; a window can never exceed the image it's cut from."""
+        left, top, size = crop_runner.compute_crop_box(300, 250, 1500, 512, 256)
+        assert size == 256
+        assert top == 0
+
+    def test_box_is_integral_and_deterministic(self, crop_runner):
+        """Pillow's float-box crop banker's-rounds each edge independently, so the same predicted size
+        yielded 503- or 504-px crops depending on the centre's parity. Integers end that."""
+        for x in (100, 100.5, 101, 250.25):
+            left, top, size = crop_runner.compute_crop_box(x, 128, 503.21, 2048, 1024)
+            assert isinstance(left, int) and isinstance(top, int) and isinstance(size, int)
+            assert size == 503
+
+
+class TestSeamCrops:
+
+    def test_seam_crop_wraps_instead_of_black_padding(self, crop_runner, tmp_path):
+        """The #47 discriminator. A label at x=0: the crop's left half must come from the pano's RIGHT
+        edge (blue), its right half from the left edge (red), with no synthetic black anywhere.
+        Pre-fix Pillow zero-filled the out-of-range half; a clamp-only fix would show no blue."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_striped_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_x=0)], str(store), str(out))
+        assert counts['success'] == 1
+        with Image.open(crop_path(out, 1, 1)) as crop:
+            w, h = crop.size
+            assert (w, h) == (248, 248)
+            just_left_of_centre = crop.getpixel((w // 2 - 10, h // 2))
+            just_right_of_centre = crop.getpixel((w // 2 + 10, h // 2))
+            no_black = darkest_pixel_sum(crop)
+        r, g, b = just_left_of_centre
+        assert b > 150 and r < 120          # imagery from the pano's right edge, wrapped in
+        r, g, b = just_right_of_centre
+        assert r > 150 and b < 120          # imagery from the pano's left edge
+        assert no_black > 60                # zero-padding would be exactly 0
+
+    def test_far_seam_crop_wraps_too(self, crop_runner, tmp_path):
+        """Same property approached from x = width-1."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_striped_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_x=511)], str(store), str(out))
+        assert counts['success'] == 1
+        with Image.open(crop_path(out, 1, 1)) as crop:
+            w, h = crop.size
+            left_px = crop.getpixel((w // 2 - 10, h // 2))
+            right_px = crop.getpixel((w // 2 + 10, h // 2))
+            no_black = darkest_pixel_sum(crop)
+        assert left_px[2] > 150 and left_px[0] < 120     # blue: the right-edge block itself
+        assert right_px[0] > 150 and right_px[2] < 120   # red: wrapped around to the left edge
+        assert no_black > 60
+
+    @pytest.mark.parametrize('pano_x, pano_y', [
+        (0, 128),      # left seam
+        (511, 128),    # right seam
+        (300, 8),      # near the top edge
+        (300, 250),    # near the bottom edge
+        (0, 0),        # corner: seam wrap and top clamp together
+        (511, 255),    # corner: seam wrap and bottom clamp together
+    ])
+    def test_no_crop_ever_contains_synthetic_black(self, crop_runner, tmp_path, pano_x, pano_y):
+        """The general #47 property on an all-white pano: whatever the label position, the crop is real
+        imagery edge to edge."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_x=pano_x, pano_y=pano_y)],
+                                                str(store), str(out))
+        assert counts['success'] == 1
+        with Image.open(crop_path(out, 1, 1)) as crop:
+            assert darkest_pixel_sum(crop) > 600  # plain white everywhere; padding would be 0
+
+
+class TestEdgeClampBehaviour:
+
+    def test_label_near_top_stays_at_its_true_position(self, crop_runner, tmp_path):
+        """When the window shifts to stay inside, the label is deliberately no longer centred — the
+        landmark must sit at its true (shifted) position in the crop, not be dragged to the centre."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001', square_at=(300, 8))
+        crop_runner.bulk_extract_crops([label_row(pano_x=300, pano_y=8)], str(store), str(out))
+        with Image.open(crop_path(out, 1, 1)) as crop:
+            w, h = crop.size
+            at_label = crop.getpixel((w // 2, 8))       # top=0, so crop row == pano row
+            at_centre = crop.getpixel((w // 2, h // 2))
+        assert sum(at_label) < 150       # the landmark, at its true position
+        assert sum(at_centre) > 600      # the centre is plain imagery, not the landmark
+
+    def test_mark_follows_the_label_not_the_crop_centre(self, crop_runner, tmp_path):
+        """--mark-label must annotate the label's true position; under an edge shift that is not the
+        crop centre."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row(pano_x=300, pano_y=8)], str(store), str(out),
+                                       mark_label=True)
+        with Image.open(crop_path(out, 1, 1)) as crop:
+            w, h = crop.size
+            at_label = crop.getpixel((w // 2, 8))
+            at_centre = crop.getpixel((w // 2, h // 2))
+        assert sum(at_label) < 600       # the dot
+        assert sum(at_centre) > 600      # not at the centre
+
+    def test_mark_lands_at_the_centre_of_a_seam_crop(self, crop_runner, tmp_path):
+        """x wrapping keeps the label horizontally centred, so the dot belongs at the centre there —
+        discrimination that the mark's x is computed modulo the seam, not clamped."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row(pano_x=0, pano_y=128)], str(store), str(out),
+                                       mark_label=True)
+        with Image.open(crop_path(out, 1, 1)) as crop:
+            w, h = crop.size
+            assert sum(crop.getpixel((w // 2, h // 2))) < 600
+
+
+class TestDimsReconciliation:
+    """Stored pano_x/pano_y are pixels in the metadata's pano_width x pano_height frame. If the image
+    on disk has different dimensions, every crop from it is silently mis-centred (the Mapillary path
+    saves whatever thumb_original_url serves; GSV re-serves old ids at new resolutions). Metadata dims,
+    when present, must be reconciled against the file — a loud skip, not silent poison."""
+
+    def test_mismatched_dims_are_a_loud_skip(self, crop_runner, tmp_path, caplog):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')  # 512x256 on disk
+        row = label_row()
+        row.update(pano_width=1024, pano_height=512)
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops([row], str(store), str(out))
+        assert counts['dims_mismatch'] == 1
+        assert counts['success'] == 0
+        assert not os.path.exists(crop_path(out, 1, 1))
+        assert '1024' in caplog.text and '512' in caplog.text
+
+    def test_matching_dims_proceed(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        row = label_row()
+        row.update(pano_width=512, pano_height=256)
+        counts = crop_runner.bulk_extract_crops([row], str(store), str(out))
+        assert counts['success'] == 1
+        assert counts['dims_mismatch'] == 0
+
+    def test_old_csv_width_height_keys_are_honoured(self, crop_runner, tmp_path):
+        """metadata-seattle.csv calls the same fields width/height."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        row = label_row()
+        row.update(width=1024, height=512)
+        counts = crop_runner.bulk_extract_crops([row], str(store), str(out))
+        assert counts['dims_mismatch'] == 1
+
+    def test_rows_without_dims_metadata_proceed(self, crop_runner, tmp_path):
+        """labeldata.csv carries no pano dims; absence of the metadata is not a mismatch."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
+        assert counts['success'] == 1
+
+    def test_nan_dims_metadata_proceeds(self, crop_runner, tmp_path):
+        """cvMetadata serves null dims for third-party photospheres; a NaN is absent, not mismatched."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        row = label_row()
+        row.update(pano_width=float('nan'), pano_height=float('nan'))
+        counts = crop_runner.bulk_extract_crops([row], str(store), str(out))
+        assert counts['success'] == 1
