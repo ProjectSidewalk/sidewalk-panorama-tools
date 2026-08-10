@@ -14,6 +14,7 @@ are the seams, and `python3 CropRunner.py ...` behaviour lives under the __main_
 """
 
 import argparse
+import collections
 import json
 import logging
 import logging.handlers
@@ -37,6 +38,10 @@ _MAX_PANO_PIXELS = 16384 * 8192
 
 # What the crop loop actually reads off every label row; both intakes guarantee these.
 REQUIRED_LABEL_COLUMNS = ('pano_id', 'pano_x', 'pano_y', 'label_type_id', 'label_id')
+
+# The crop window compute_crop_box resolves. `shifted` rides along rather than being recomputed by
+# callers: it is derived from the same rounding that produced `top`, so the two cannot drift apart.
+CropBox = collections.namedtuple('CropBox', ['left', 'top', 'size', 'shifted'])
 
 
 def build_parser():
@@ -236,18 +241,29 @@ def compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height):
     no crop ever contains synthetic black, at the price of the label sitting off-centre vertically when
     it is within crop_size/2 of the top or bottom edge.
 
-    size is round(crop_size) capped at both pano dimensions - predict_crop_size can say 1500 but a window
+    size is round(crop_size) capped at BOTH pano dimensions - predict_crop_size can say 1500 but a window
     can never exceed the image it is cut from. (Production panos are 2:1 with height >= 1664, so only
-    sub-crop-size synthetic images actually hit the cap.) Integers throughout: Pillow's float-box crop
+    sub-crop-size synthetic images actually hit the cap.) The width half of that cap is load-bearing, not
+    symmetry: a window wider than the pano makes extract_crop's second segment read past the far edge,
+    where Pillow zero-fills - the #47 black, back again. Integers throughout: Pillow's float-box crop
     banker's-rounds each edge independently, which made output dimensions vary with the centre's parity.
 
-    :return: (left, top, size) - integers, 0 <= left < pano_width, 0 <= top <= pano_height - size.
+    Callers must not re-derive `shifted` from pano_y: it is reported here, off the same rounding that
+    produced `top`, so a second copy cannot drift out of step with the geometry it describes.
+
+    This function does not validate pano_y. An out-of-frame y clamps to a pole and yields a window the
+    label is not inside - bulk_extract_crops rejects those rows before they reach here. pano_x needs no
+    such check: column 0 and column pano_width are the same place in the world, so the modulo below is
+    the correct reading of any finite x.
+
+    :return: CropBox(left, top, size, shifted) - integers, 0 <= left < pano_width,
+             0 <= top <= pano_height - size, and shifted True when the window moved to stay inside.
     """
     size = min(int(round(crop_size)), pano_width, pano_height)
     left = int(round(pano_x - size / 2)) % pano_width
-    top = int(round(pano_y - size / 2))
-    top = max(0, min(top, pano_height - size))
-    return left, top, size
+    ideal_top = int(round(pano_y - size / 2))
+    top = max(0, min(ideal_top, pano_height - size))
+    return CropBox(left, top, size, top != ideal_top)
 
 
 def extract_crop(pano, left, top, size):
@@ -277,7 +293,8 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     :param pano_y: y-pixel of label on the GSV image
     :param output_filename: name of file for saving
     :param draw_mark: if a dot should be drawn at the label position in the crop
-    :return: none
+    :return: the CropBox that was cut, so the caller can count a de-centred (shifted) crop without
+             recomputing the geometry.
     """
     close_after = False
     if not hasattr(pano, 'crop'):
@@ -287,10 +304,8 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
         pano_width, pano_height = pano.size
 
         crop_size = predict_crop_size(pano_y, pano_height)
-        left, top, size = compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height)
-        if top != int(round(pano_y - size / 2)):
-            logging.debug("Crop for (%s, %s) shifted vertically to stay inside the pano (top=%d)",
-                          pano_x, pano_y, top)
+        box = compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height)
+        left, top, size = box.left, box.top, box.size
         cropped_square = extract_crop(pano, left, top, size)
 
         if draw_mark:
@@ -309,6 +324,7 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
         # downloaders/. format= is explicit because the temp path ends in .part, not .jpg.
         with atomic_output_path(output_filename) as tmp_path:
             cropped_square.save(tmp_path, format='JPEG')
+        return box
     finally:
         if close_after:
             pano.close()
@@ -323,14 +339,26 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     the resume marker: existing ones are counted as skipped_existing and everything failed here is simply
     re-attempted on the next run.
 
-    :return: counts dict; success + skipped_existing + missing_pano + errors == total, including on re-runs.
+    NOTE for re-runs on an existing store: a crop already on disk is never re-cut, so a store cropped
+    before the #47 seam fix keeps its black-padded crops. Delete them to pick the fix up.
+
+    :return: counts dict. The disjoint outcomes reconcile, including on re-runs:
+
+                 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors
+                     == total
+
+             shifted_vertically is NOT one of them - it annotates a success whose window had to move to
+             stay inside the pano, so the crop exists but the label is off-centre in it. Adding a bucket
+             here without adding it to that sum is exactly how the invariant went stale before;
+             tests/test_crop_runner.py asserts the sum from the dict rather than from this docstring.
     """
     # Our own store's biggest panos (134 MP) are over Pillow's default bomb threshold; see _MAX_PANO_PIXELS.
     if Image.MAX_IMAGE_PIXELS is not None and Image.MAX_IMAGE_PIXELS < _MAX_PANO_PIXELS:
         Image.MAX_IMAGE_PIXELS = _MAX_PANO_PIXELS
 
     counts = {'total': len(labels_to_crop), 'success': 0, 'skipped_existing': 0,
-              'missing_pano': 0, 'dims_mismatch': 0, 'errors': 0}
+              'missing_pano': 0, 'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
+              'errors': 0}
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
@@ -381,16 +409,38 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 processed += 1
                 print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
 
-                # Stored pano_x/pano_y are pixels in the metadata's frame; applied to an image with
-                # different dimensions they mis-centre every crop silently (the Mapillary path saves
-                # whatever thumb_original_url serves, and GSV re-serves old ids at new resolutions).
-                # Loud skip, never silent poison.
+                # Store integrity: the metadata's pano dims describe the CURRENT pano, and the image on
+                # disk was stitched to whatever /adminapi/panos reported when it was downloaded. A
+                # disagreement means the store is stale relative to the metadata (or, on the Mapillary
+                # path, that thumb_original_url served something other than the recorded size) - so the
+                # stored pixel coordinates would land in the wrong frame. Loud skip, never silent poison.
+                #
+                # This does NOT catch a label whose pano_x/pano_y went stale under a pano that was
+                # re-served at a new resolution: the dims field is a per-pano join and gets refreshed
+                # along with the pano, so such a row presents perfectly consistent dims. Measured over
+                # 438,410 labels / 172,790 panos, no pano carries two frames - see
+                # reports/2026-08-10-crop-geometry-review.md. Separating those rows needs the POV replay,
+                # not a dims comparison (#54).
                 if meta_dims is not None and meta_dims != pano.size:
                     counts['dims_mismatch'] += 1
                     logging.warning(
                         "Label %d on pano %s: metadata says %dx%d but the stored image is %dx%d; "
                         "skipping rather than mis-centring the crop",
                         label_id, pano_id, meta_dims[0], meta_dims[1], pano.size[0], pano.size[1])
+                    continue
+
+                # A pano_y outside the image cannot be recovered: the poles are not adjacent, so
+                # compute_crop_box clamps to one, and the result is clean imagery of a place the label is
+                # not in - a quieter failure than the black bar it replaced, and one --mark-label cannot
+                # even reveal (the dot lands off-crop). pano_x gets no such check on purpose: column 0 and
+                # column width are the same place in the world, so any finite x is read correctly by the
+                # seam modulo, and rows storing pano_x == pano_width crop fine.
+                if not 0 <= pano_y < pano.size[1]:
+                    counts['out_of_frame'] += 1
+                    logging.warning(
+                        "Label %d on pano %s: pano_y %s is outside the %dx%d image; skipping rather "
+                        "than clamping it to a pole", label_id, pano_id, pano_y,
+                        pano.size[0], pano.size[1])
                     continue
 
                 destination_folder = os.path.join(destination_dir, str(label_type))
@@ -401,19 +451,33 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     counts['skipped_existing'] += 1
                     continue
                 try:
-                    make_single_crop(pano, pano_x, pano_y, crop_destination, draw_mark=mark_label)
+                    box = make_single_crop(pano, pano_x, pano_y, crop_destination,
+                                           draw_mark=mark_label)
                 except Exception as e:
                     counts['errors'] += 1
                     logging.warning("Failed to crop label %d on pano %s: %s", label_id, pano_id, e)
                     continue
                 counts['success'] += 1
+                if box.shifted:
+                    # The crop is real imagery containing the label, but the label is not at its
+                    # centre. Counted rather than merely logged: a consumer that assumes centring
+                    # needs a number, and #54 wants it as a per-label covariate.
+                    counts['shifted_vertically'] += 1
+                    logging.info("Label %d on pano %s: window shifted to stay inside the pano "
+                                 "(top=%d), so the label sits %d px from the crop's centre",
+                                 label_id, pano_id, box.top,
+                                 abs(int(pano_y - box.top - box.size / 2)))
                 logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
 
     print("Finished.")
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
-          "%d skipped on a metadata/image dimension mismatch, %d errors, of %d labels total."
+          "%d skipped on a metadata/image dimension mismatch, %d skipped for a label position outside "
+          "the image, %d errors, of %d labels total."
           % (counts['success'], counts['skipped_existing'], counts['missing_pano'],
-             counts['dims_mismatch'], counts['errors'], counts['total']))
+             counts['dims_mismatch'], counts['out_of_frame'], counts['errors'], counts['total']))
+    if counts['shifted_vertically']:
+        print("%d of those crops were shifted to stay inside the pano, so their label is not at the "
+              "crop's centre." % counts['shifted_vertically'])
     return counts
 
 

@@ -869,7 +869,7 @@ class TestCoordinateBounds:
         assert counts['success'] == 2
         assert counts['out_of_frame'] == 0
         with Image.open(crop_path(out, 1, 1)) as a, Image.open(crop_path(out, 1, 2)) as b:
-            assert list(a.convert('RGB').getdata()) == list(b.convert('RGB').getdata())
+            assert a.convert('RGB').tobytes() == b.convert('RGB').tobytes()
 
     def test_negative_x_is_not_rejected_either(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'

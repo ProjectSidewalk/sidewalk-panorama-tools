@@ -1,15 +1,18 @@
 """Tests for reports/scripts/crop_geometry_census.py — the #47 crop-geometry census.
 
-The census replicates CropRunner's geometry vectorized (importing CropRunner is safe post-#52.1,
-but the census must run over 438k rows, so it needs the array form). Both replicas are pinned
-against the REAL functions, ast-extracted from CropRunner.py source — if the deployed geometry
-ever changes, the census fails here rather than silently measuring a stale formula.
+The census replicates CropRunner's geometry vectorized — it has to run over 438k rows, so it needs
+the array form. Both replicas are pinned against the REAL functions here, so if the deployed
+geometry ever changes the census fails in CI rather than silently measuring a stale formula.
+
+CropRunner is imported directly rather than ast-extracted (the older reports/scripts tests predate
+#52.1 and had no choice): the import is side-effect-free now, and test_crop_runner.py pins that.
+ast extraction would in any case no longer work here, since compute_crop_box returns a
+module-level CropBox that a lifted function body cannot see.
 
 The committed-findings class pins the conclusions the PR #77 review and the follow-up fixes rest
 on, offline, from reports/data/2026-08-10-crop-geometry-census.json.
 """
 
-import ast
 import json
 import os
 import sys
@@ -24,26 +27,17 @@ for p in (REPO_ROOT, SCRIPTS):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import CropRunner  # noqa: E402
 import crop_geometry_census as cgc  # noqa: E402
 
 CENSUS_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-crop-geometry-census.json')
-
-
-def _real(name):
-    """Extract one pure function from CropRunner.py by source, without importing the module."""
-    with open(os.path.join(REPO_ROOT, 'CropRunner.py')) as f:
-        tree = ast.parse(f.read())
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    ns = {}
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), 'CropRunner.py', 'exec'), ns)
-    return ns[name]
 
 
 class TestReplicaFidelity:
     """The census is only as good as its replicas matching the deployed code."""
 
     def test_predict_crop_size_replica_matches(self):
-        real = _real('predict_crop_size')
+        real = CropRunner.predict_crop_size
         for h in (1664.0, 3328.0, 6656.0, 8192.0):
             ys = np.linspace(-800, h + 200, 97)
             mine = cgc.predict_crop_size(ys, np.full_like(ys, h))
@@ -53,15 +47,17 @@ class TestReplicaFidelity:
     def test_compute_crop_box_replica_matches(self):
         """Including the banker's rounding: np.round and Python's round are both half-to-even, and
         the census's seam/shift rates would drift by a pixel at odd crop sizes if they weren't."""
-        real = _real('compute_crop_box')
+        real = CropRunner.compute_crop_box
         rng = np.random.default_rng(0)
         for w, h in ((16384, 8192), (13312, 6656), (3328, 1664), (512, 256), (200, 600)):
             xs = np.concatenate([rng.uniform(-50, w + 50, 200), [0, w, w - 1, w / 2]])
             ys = np.concatenate([rng.uniform(-800, h + 800, 200), [0, h, h - 1, h / 2]])
             sizes = np.concatenate([rng.uniform(1, 1600, 200), [50, 503, 1500, h + 10]])
             mine = cgc.compute_crop_box(xs, ys, sizes, w, h)
-            for i, (x, y, s) in enumerate(zip(xs, ys, sizes)):
-                assert tuple(int(v[i]) for v in mine) == real(x, y, s, w, h), (w, h, x, y, s)
+            for i, (x, y, sz) in enumerate(zip(xs, ys, sizes)):
+                box = real(x, y, sz, w, h)
+                mine_i = tuple(int(v[i]) for v in mine)
+                assert mine_i == (box.left, box.top, box.size), (w, h, x, y, sz)
 
 
 class TestGeometryFlags:
@@ -106,13 +102,11 @@ class TestGeometryFlags:
 
     def test_x_at_the_seam_boundary_still_centres_the_label(self):
         """Why x is exempt from the bounds check, asserted rather than argued."""
-        real = _real('compute_crop_box')
-        real_size = _real('predict_crop_size')(5010, 8192)
-        at_width = real(16384, 5010, real_size, 16384, 8192)
-        at_zero = real(0, 5010, real_size, 16384, 8192)
+        size = CropRunner.predict_crop_size(5010, 8192)
+        at_width = CropRunner.compute_crop_box(16384, 5010, size, 16384, 8192)
+        at_zero = CropRunner.compute_crop_box(0, 5010, size, 16384, 8192)
         assert at_width == at_zero
-        left, _, size = at_width
-        assert abs((16384 - left) % 16384 - size / 2) <= 1
+        assert abs((16384 - at_width.left) % 16384 - at_width.size / 2) <= 1
 
     def test_dims_are_per_pano_detects_a_planted_split(self):
         """Discrimination: the corpus answer is 0, so the check must be able to return non-zero."""
