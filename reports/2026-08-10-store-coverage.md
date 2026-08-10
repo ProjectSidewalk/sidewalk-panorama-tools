@@ -131,11 +131,22 @@ dims-mismatch exclusion is a material filter rather than a formality.
 * **Why the six absent panos are absent** (five Seattle legacy, one cdmx mid) is unknown — scrape
   failures, a pre-store era, or a purge. At 0.8% of the dead set it does not move the corpus, and
   the ids are committed so it can be chased later.
-* **The store's frame vs the *click-time* frame** is a third comparison nobody has made. This
-  report compares store against `gsv_data`-now; the era study shows click-time frames also differ.
-  Study 1 anchors on stored pano pixels scaled by the label's own recorded dims, so the crop
-  geometry needs the store-vs-recorded comparison — which is what the 4.6% is — but a full
-  three-way reconciliation is Phase 2 work.
+* **There is a third frame, and this report does not measure it — but the era study already did.**
+  Placing a stored label on a store JPEG means scaling `pano_y × (store_height / recorded_height)`,
+  which is only valid if `recorded_height` is the **click-time** height. The 4.6% above compares
+  store against `gsv_data`-*now*, so it cannot see the case where a label was clicked at 6656,
+  Google later re-served at 8192, `gsv_data` refreshed, and we happened to scrape late: store equals
+  recorded, the preflight passes, and the coordinate is still scaled by 1.0 when it needed 1.23.
+
+  That case is nevertheless bounded, because the `pano_y` replay is a direct test of it —
+  `pano_y = h/2 − round((h/2)·(pitch/90))` consumes `pano_height`, so an exact replay proves the
+  recorded height is the height that produced the stored pixel. Corpus-wide that is
+  **433,866 / 436,350 = 99.43% exact**: 2,454 misses inside the bug window (5.01%), 28 post-fix
+  (0.065%), and 2 pre-179 (the corrupt rows). Inside the bug window a y-miss is ambiguous between
+  the corrupt canvas/POV record — the dominant explanation — and a genuine frame change; the era
+  study's frame-change slice puts the latter at ~3% of those misses, i.e. of order **70 labels,
+  ~0.016% of the corpus**. Disentangling the two inside the window is the only part still open, and
+  §3's exclusions already drop the labels it would touch.
 
 ## Where everything lives
 

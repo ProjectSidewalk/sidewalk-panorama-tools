@@ -155,8 +155,11 @@ From the six-city rawLabels fetch of 2026-08-09 (era study provenance):
   JPEG*, not against `gsv_data`, and measured at **≈ 4.6%** of panos by the
   [store-coverage study](2026-08-10-store-coverage.md), so this is a material filter and not a
   formality (this is the #77 preflight; the photometa census's 0.0% figure compared a different
-  pair — see §1 note ¹); labels with `disagree_count > agree_count` are *included* but flagged
-  (consumer pipelines don't filter them — measure, don't sanitize).
+  pair — see §1 note ¹); **`pano_y` replay mismatch**, which is the separate and sharper check that
+  the recorded frame is the *click-time* frame rather than a later refresh (the store-vs-recorded
+  test above cannot see that case) — exact for 99.43% of the corpus, so this drops ~0.6%,
+  concentrated in the bug window; labels with `disagree_count > agree_count` are *included* but
+  flagged (consumer pipelines don't filter them — measure, don't sanitize).
 * **Reweighting**: all corpus-level claims reweight strata back to the label population
   (clamp-census depression×type distribution); per-stratum claims stated as such.
 * **Pixels: one source, the lab backup store** —
