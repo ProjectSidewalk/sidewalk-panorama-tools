@@ -107,17 +107,33 @@ def _tilt_stats(alive):
 
 
 def summarize(records):
+    """Census accounting. Two conventions worth stating because both could silently mislead:
+
+    - `alive_pct` is the share with found == True, and a request that *errored* is recorded as
+      not-found, so it counts against alive. That is the conservative direction (a pano we could
+      not reach is not a pano we can study), but it means alive_pct is a floor; `errors` /
+      `errors_pct` size the ambiguity, and at 3/1360 it is 0.2%.
+    - Panos whose rawLabels row carried no stored dims cannot be compared against the served dims.
+      They must be excluded rather than compared, because `NaN != x` is True in pandas and would
+      book every one of them as drift.
+    """
     alive = records[records['found'] & records['served_width'].notna()]
-    drift = alive[(alive['served_width'] != alive['stored_width'])
-                  | (alive['served_height'] != alive['stored_height'])]
+    comparable = alive[alive['stored_width'].notna() & alive['stored_height'].notna()]
+    drift = comparable[(comparable['served_width'] != comparable['stored_width'])
+                       | (comparable['served_height'] != comparable['stored_height'])]
+    n_errors = int(records['error'].notna().sum()) if 'error' in records else 0
     out = {
         'n_sampled': int(len(records)),
         'alive_pct': float(100 * records['found'].mean()),
-        'dims_drift_pct_of_alive': float(100 * len(drift) / len(alive)) if len(alive) else None,
+        'dims_comparable': int(len(comparable)),
+        'dims_unknown_stored': int(len(alive) - len(comparable)),
+        'dims_drift_pct_of_alive':
+            float(100 * len(drift) / len(comparable)) if len(comparable) else None,
         'depth_available_pct_of_alive':
             float(100 * alive['has_depth'].fillna(False).mean()) if len(alive) else None,
         'tilt': _tilt_stats(alive),
-        'errors': int(records['error'].notna().sum()) if 'error' in records else 0,
+        'errors': n_errors,
+        'errors_pct': float(100 * n_errors / len(records)) if len(records) else None,
     }
     out['by_era'] = {era: {'n': int(len(g)), 'alive_pct': float(100 * g['found'].mean())}
                      for era, g in records.groupby('era')}
@@ -126,15 +142,36 @@ def summarize(records):
     return out
 
 
+def json_records(df):
+    """`df.to_dict(orient='records')` with every NaN replaced by a real None.
+
+    The obvious `df.where(df.notna(), None)` does NOT do this: on a float64 (or int) column pandas
+    coerces the None straight back to NaN, and `json.dump` then writes the bare token `NaN`, which
+    is not valid JSON. Python's own decoder accepts it, so the file round-trips locally and fails
+    for jq, JavaScript, and most other readers — the 2026-08-09 census shipped 4,916 of them before
+    review caught it. Casting to object dtype first is what actually holds; `allow_nan=False` on
+    every dump below is the belt to this braces.
+    """
+    return df.astype(object).where(df.notna(), None).to_dict(orient='records')
+
+
+def write_json(result, path):
+    """One writer for the census: non-standard float tokens refused rather than emitted, and LF
+    newlines so a committed artifact is byte-identical whichever platform regenerated it."""
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(result, f, indent=1, allow_nan=False)
+
+
 def resummarize(json_path):
     """Recompute the summary from the per-pano records embedded in an existing census JSON —
-    offline, so a summarizer fix regenerates committed numbers without a refetch."""
+    offline, so a summarizer fix regenerates committed numbers without a refetch. Also re-scrubs
+    the records, so running it over a file written by the pre-fix writer repairs the NaN tokens."""
     with open(json_path) as f:
         result = json.load(f)
     records = pd.DataFrame(result['records'])
     result['summary'] = summarize(records)
-    with open(json_path, 'w') as f:
-        json.dump(result, f, indent=1)
+    result['records'] = json_records(records)
+    write_json(result, json_path)
     return result
 
 
@@ -177,7 +214,7 @@ def main():
     result = {'source': 'streetlevel photometa (find_panorama_by_id, download_depth=True)',
               'rawlabels_fetched': args.fetched, 'seed': SEED,
               'summary': summarize(records),
-              'records': records.where(pd.notna(records), None).to_dict(orient='records')}
+              'records': json_records(records)}
 
     s = result['summary']
     print(f"alive {s['alive_pct']:.1f}%  dims-drift {s['dims_drift_pct_of_alive']:.1f}%  "
@@ -189,8 +226,7 @@ def main():
     print('alive by era:', {k: round(v['alive_pct'], 1) for k, v in s['by_era'].items()})
 
     if args.write:
-        with open(args.write, 'w') as f:
-            json.dump(result, f, indent=1)
+        write_json(result, args.write)
         print(f'wrote {args.write}')
 
 

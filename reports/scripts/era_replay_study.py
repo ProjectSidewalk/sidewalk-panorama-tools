@@ -208,6 +208,13 @@ def study_city(path):
         'post179_bug_window': window_split(df),
         'post179_monthly': monthly_series(df),
         'drift_signature_pre179': drift_decomposition(df[df['era'] != 'post179']),
+        # The same dispositive test on the post-fix rows. Post-fix x still misses 1-6% of the time
+        # while y is ~100% exact, which the report attributes to gsv_data camera_heading refresh --
+        # an attribution that was originally argued from the pre-179 decomposition alone. Added
+        # 2026-08-10 in review; the committed 2026-08-09 summary predates it and does not carry the
+        # key, so consumers must treat it as optional until the next fetch.
+        'drift_signature_post_fix': drift_decomposition(
+            df[(df['era'] == 'post179') & (df['time_created'] >= BUG_WINDOW_END)]),
     }
 
 
@@ -240,7 +247,7 @@ def main():
 
     if args.write:
         with open(args.write, 'w') as f:
-            json.dump(summary, f, indent=1, default=str)
+            json.dump(summary, f, indent=1, default=str, allow_nan=False)
         print(f'wrote {args.write}')
 
 

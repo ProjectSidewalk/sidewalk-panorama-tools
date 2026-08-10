@@ -141,12 +141,199 @@ class TestDriftDecomposition:
         assert ers.drift_decomposition(df)['n_panos'] == 0
 
 
+class TestMonthlySeries:
+    """The series behind the report's figure — the evidence that dates the fix to a single day.
+    No test called it before 2026-08-10."""
+
+    @staticmethod
+    def _frame(rows):
+        return pd.DataFrame([
+            {'era': era, 'time_created': pd.Timestamp(t, tz='UTC'),
+             'replayable_x': True, 'replayable_y': True, 'exact_x': ex, 'exact_y': ey}
+            for era, t, ex, ey in rows])
+
+    def test_it_buckets_by_month_and_reports_percentages(self):
+        """The x and y rates must differ within a month, or a swapped column reads as correct —
+        which is exactly the mutant that survived the first version of this test."""
+        s = ers.monthly_series(self._frame([
+            ('post179', '2024-09-03', False, False),
+            ('post179', '2024-09-14', False, True),
+            ('post179', '2024-09-21', True, True),
+            ('post179', '2024-09-28', True, True),
+            ('post179', '2024-10-02', False, True),
+            ('post179', '2024-10-19', True, True),
+        ]))
+        assert sorted(s) == ['2024-09', '2024-10']
+        assert s['2024-09'] == {'n': 4, 'exact_x_pct': 50.0, 'exact_y_pct': 75.0}
+        assert s['2024-10'] == {'n': 2, 'exact_x_pct': 50.0, 'exact_y_pct': 100.0}
+
+    def test_it_covers_only_post179_rows(self):
+        """legacy/mid rows must not leak into a post-179 client-behaviour series."""
+        s = ers.monthly_series(self._frame([
+            ('legacy', '2019-05-02', False, False),
+            ('mid', '2022-05-02', False, False),
+            ('post179', '2024-10-02', True, True),
+        ]))
+        assert list(s) == ['2024-10']
+
+    def test_an_unreplayable_month_reports_none_not_zero(self):
+        """A month with no replayable rows has no rate; reporting 0% would read as total failure."""
+        df = self._frame([('post179', '2025-02-01', False, False)])
+        df['replayable_x'] = df['replayable_y'] = False
+        s = ers.monthly_series(df)
+        assert s['2025-02'] == {'n': 1, 'exact_x_pct': None, 'exact_y_pct': None}
+
+
+class TestPostFixDriftSignature:
+
+    def test_the_decomposition_runs_on_post_fix_rows(self):
+        """The report attributes residual post-fix x misses to camera_heading drift; that claim
+        was previously argued only from the pre-179 decomposition. study_city now runs the same
+        test on the population the claim is about."""
+        rows = []
+        for pano, delta in (('a', 2.0), ('b', -1.5)):
+            for k, t in enumerate(('2025-01-01', '2025-02-01')):
+                rows.append({'pano_id': pano, 'era': 'post179',
+                             'time_created': pd.Timestamp(t, tz='UTC'),
+                             'exact_x': False, 'dx_deg': delta + 0.001 * (1 if k else -1)})
+        post_fix = pd.DataFrame(rows)
+        out = ers.drift_decomposition(post_fix)
+        assert out['n_panos'] == 2 and out['n_labels'] == 4
+        assert out['median_within_pano_sigma_deg'] < 0.01
+        assert out['across_pano_sigma_deg'] > 1.0
+
+    def test_in_window_rows_are_excluded_from_the_post_fix_slice(self):
+        """The slice study_city passes is post-179 AND on/after BUG_WINDOW_END; an in-window row
+        must not contaminate it."""
+        assert ers.BUG_WINDOW_END == pd.Timestamp('2024-09-26', tz='UTC')
+        df = pd.DataFrame({
+            'era': ['post179'] * 2,
+            'time_created': pd.to_datetime(['2024-09-25', '2024-09-26'], utc=True),
+        })
+        sliced = df[(df['era'] == 'post179') & (df['time_created'] >= ers.BUG_WINDOW_END)]
+        assert len(sliced) == 1
+
+
+class TestStudyCity:
+    """The per-city assembler that produced every committed number, previously uncalled by tests."""
+
+    @staticmethod
+    def _csv(tmp_path, rows):
+        """Write a rawLabels-shaped CSV with only the columns the loader reads."""
+        cols = rl.STUDY_COLUMNS
+        df = pd.DataFrame(rows)
+        for c in cols:
+            if c not in df:
+                df[c] = np.nan
+        df[cols].to_csv(tmp_path / 'city.csv', index=False)
+        return str(tmp_path / 'city.csv')
+
+    def _rows(self):
+        """Three self-consistent post-fix rows plus one legacy row, built by the forward math so
+        the replay must be exact, and one row with no pano dims so the missing-counters move."""
+        base = TestReplayFrame._forward_frame()
+        rows = []
+        for i in range(4):
+            ts = ['2019-05-01', '2025-01-01', '2025-01-02', '2025-02-01'][i]
+            rows.append({
+                'label_id': i, 'user_id': f'u{i}', 'pano_id': base['pano_id'][i],
+                'label_type': 'CurbRamp',
+                'time_created': int(pd.Timestamp(ts, tz='UTC').value // 10 ** 6),
+                'heading': base['heading'][i], 'pitch': base['pitch'][i], 'zoom': base['zoom'][i],
+                'canvas_x': base['canvas_x'][i], 'canvas_y': base['canvas_y'][i],
+                'canvas_width': 720.0, 'canvas_height': 480.0,
+                'pano_x': base['pano_x'][i], 'pano_y': base['pano_y'][i],
+                'pano_width': 8192.0, 'pano_height': 4096.0,
+                'camera_heading': 100.0, 'camera_pitch': 0.0,
+            })
+        rows.append(dict(rows[-1], label_id=99, pano_id='p9', pano_width=np.nan,
+                         pano_height=np.nan))
+        return rows
+
+    def test_it_assembles_every_section(self, tmp_path):
+        out = ers.study_city(self._csv(tmp_path, self._rows()))
+        assert set(out) >= {'n_labels', 'date_range', 'era_counts', 'missing', 'fixed_frame_rows',
+                            'nonstandard_canvas_rows', 'eras', 'post179_bug_window',
+                            'post179_monthly', 'drift_signature_pre179', 'drift_signature_post_fix'}
+        assert out['n_labels'] == 5
+        assert out['date_range'] == ['2019-05-01', '2025-02-01']
+        assert out['era_counts'] == {'post179': 4, 'legacy': 1}
+
+    def test_self_consistent_rows_replay_exactly(self, tmp_path):
+        out = ers.study_city(self._csv(tmp_path, self._rows()))
+        assert out['eras']['post179']['exact_y_pct'] == pytest.approx(100.0)
+        assert out['eras']['legacy']['exact_x_pct'] == pytest.approx(100.0)
+        assert out['post179_bug_window']['post_fix']['exact_x_pct'] == pytest.approx(100.0)
+
+    def test_a_row_without_dims_is_counted_missing_and_not_replayed(self, tmp_path):
+        """Blank must stay blank: the row is excluded from the replay base, not scored as a miss.
+        This is the accounting that reconciles 438,410 corpus labels to 436,348 censused."""
+        out = ers.study_city(self._csv(tmp_path, self._rows()))
+        assert out['missing']['pano_dims'] == 1
+        assert out['eras']['post179']['n'] == 4
+        assert out['eras']['post179']['replayable_y'] == 3
+
+    def test_the_canvas_and_fixed_frame_counters(self, tmp_path):
+        rows = self._rows()
+        rows[0]['canvas_width'] = 1024.0
+        rows[1]['pano_width'], rows[1]['pano_height'] = 13312.0, 6656.0
+        out = ers.study_city(self._csv(tmp_path, rows))
+        assert out['nonstandard_canvas_rows'] == 1  # only the 1024-wide row; missing pano dims
+        assert out['fixed_frame_rows']['n'] == 1    # do not make a canvas nonstandard
+        assert out['fixed_frame_rows']['by_era'] == {'post179': 1}
+
+    def test_it_separates_pre179_drift_from_post_fix_drift(self, tmp_path):
+        """Three panos with the same +2 deg camera_heading drift, one per window. Each drift key
+        must see only its own population, and the in-window pano must land in neither — that is
+        the whole point of adding the post-fix decomposition alongside the pre-179 one."""
+        base = TestReplayFrame._forward_frame()
+        rows = []
+        windows = (('pre', '2019-05-01'), ('inw', '2024-01-15'), ('pf', '2025-03-01'))
+        for w, (pano, ts) in enumerate(windows):
+            for j in range(2):
+                i = w * 2 + j
+                rows.append({
+                    'label_id': i, 'user_id': 'u', 'pano_id': pano, 'label_type': 'CurbRamp',
+                    'time_created': int(pd.Timestamp(ts, tz='UTC').value // 10 ** 6) + j,
+                    'heading': base['heading'][i], 'pitch': base['pitch'][i],
+                    'zoom': base['zoom'][i], 'canvas_x': base['canvas_x'][i],
+                    'canvas_y': base['canvas_y'][i], 'canvas_width': 720.0,
+                    'canvas_height': 480.0, 'pano_x': base['pano_x'][i],
+                    'pano_y': base['pano_y'][i], 'pano_width': 8192.0, 'pano_height': 4096.0,
+                    'camera_heading': 102.0, 'camera_pitch': 0.0,  # served 2 deg off production
+                })
+        out = ers.study_city(self._csv(tmp_path, rows))
+
+        assert out['drift_signature_pre179']['n_panos'] == 1
+        assert out['drift_signature_pre179']['n_labels'] == 2
+        assert out['drift_signature_post_fix']['n_panos'] == 1
+        assert out['drift_signature_post_fix']['n_labels'] == 2
+        # Both recover the constant-within-pano signature. The bound is one pano-x pixel expressed
+        # in degrees (360/8192 = 0.0439) — stored pano_x is an integer, so two labels sharing one
+        # true drift can still round to neighbouring columns. That rounding floor is exactly what
+        # the study means by "within-pano sigma at rounding-noise level".
+        one_pixel_deg = 360.0 / 8192
+        for key in ('drift_signature_pre179', 'drift_signature_post_fix'):
+            assert out[key]['median_within_pano_sigma_deg'] <= one_pixel_deg, key
+        # y is untouched by camera_heading in every window
+        assert out['eras']['post179']['exact_y_pct'] == pytest.approx(100.0)
+
+    def test_a_missing_canvas_width_counts_as_nonstandard(self):
+        """Documented behaviour, not an accident: a NaN canvas fails the == 720 test, so it lands
+        in nonstandard_canvas_rows. Production has zero such rows, so this only ever matters if a
+        future export starts omitting the column."""
+        df = ers.replay_frame(TestReplayFrame._forward_frame())
+        df.loc[0, 'canvas_width'] = np.nan
+        assert int((~((df['canvas_width'] == 720.0) & (df['canvas_height'] == 480.0))).sum()) == 1
+
+
 class TestCommittedFindings:
     """The study's conclusions, pinned against the committed summary JSON (offline; reruns of the
     analysis on a fresh fetch may shift decimals, but these properties are the findings)."""
 
     @pytest.fixture(scope='class')
-    def summary(self):
+    @classmethod
+    def summary(cls):
         import json
         path = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-09-era-replay-summary.json')
         with open(path) as f:

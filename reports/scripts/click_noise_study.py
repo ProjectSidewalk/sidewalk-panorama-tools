@@ -44,6 +44,12 @@ RADIUS_SWEEP = (0.75, 1.0, 1.5, 2.0)
 
 # Depression of the cluster below the horizon, in bands chosen where the distance blend changes
 # character: nearly-horizon (< 5 deg, far field), mid, steep (> 15 deg, near field).
+#
+# These start at 0, so a cluster sitting ABOVE the horizon (negative depression - a pedestrian
+# signal high on a pole, say) falls outside all three and is silently absent from the band table
+# while still counting in `overall`. The 2026-08-09 corpus has none: the band counts sum exactly to
+# the 13,359 overall pairs, and tests/test_click_noise_study.py asserts that sum so a future run
+# that does have them fails loudly instead of quietly under-reporting.
 DEPRESSION_BANDS = ((0.0, 5.0), (5.0, 15.0), (15.0, 90.0))
 
 
@@ -199,7 +205,7 @@ def main():
 
     if args.write:
         with open(args.write, 'w') as f:
-            json.dump(result, f, indent=1)
+            json.dump(result, f, indent=1, allow_nan=False)
         print(f'wrote {args.write}')
 
 

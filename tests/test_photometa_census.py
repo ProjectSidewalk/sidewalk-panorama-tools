@@ -94,13 +94,123 @@ class TestRecordExtraction:
         assert r['has_depth'] is False and r['capture_date'] is None
 
 
+class TestJsonWriting:
+    """The 2026-08-09 census shipped 4,916 bare `NaN` tokens: valid to Python, invalid JSON to
+    everyone else. These pin the scrub and the writer that now refuse it."""
+
+    @staticmethod
+    def frame_with_gaps():
+        return pd.DataFrame([
+            {'pano_id': 'p1', 'served_width': 16384.0, 'pitch_deg': 1.0, 'error': None},
+            {'pano_id': 'p2', 'served_width': None, 'pitch_deg': None, 'error': 'ValueError: x'},
+        ])
+
+    def test_the_naive_pandas_scrub_does_not_work(self):
+        """Discrimination for the fix: this is the line the census used to ship, and it produces
+        NaN, not None, on a float column. If pandas ever changes this, the fix can be simplified —
+        but silently keeping the old line must never pass."""
+        df = self.frame_with_gaps()
+        naive = df.where(pd.notna(df), None).to_dict(orient='records')
+        assert naive[1]['served_width'] != naive[1]['served_width'], 'expected NaN, got a real None'
+
+    def test_json_records_produces_real_nones(self):
+        recs = pc.json_records(self.frame_with_gaps())
+        assert recs[1]['served_width'] is None
+        assert recs[1]['pitch_deg'] is None
+        assert recs[0]['error'] is None
+        assert recs[0]['served_width'] == 16384.0
+        assert recs[1]['error'] == 'ValueError: x'
+
+    def test_json_records_output_is_strict_json(self):
+        import json
+        text = json.dumps({'records': pc.json_records(self.frame_with_gaps())}, allow_nan=False)
+        assert 'NaN' not in text
+
+    def test_write_json_refuses_a_nan_rather_than_emitting_it(self, tmp_path):
+        import json
+        target = tmp_path / 'out.json'
+        with pytest.raises(ValueError):
+            pc.write_json({'x': float('nan')}, str(target))
+        pc.write_json({'x': None}, str(target))
+        assert json.loads(target.read_text(encoding='utf-8')) == {'x': None}
+
+    def test_write_json_uses_lf_newlines(self, tmp_path):
+        """A committed artifact must not change wholesale depending on who regenerated it."""
+        target = tmp_path / 'out.json'
+        pc.write_json({'a': 1, 'b': [1, 2]}, str(target))
+        assert b'\r\n' not in target.read_bytes()
+
+
+class TestResummarize:
+    """The offline regeneration path — how the roll-wrap fix reached the committed numbers without
+    a refetch, and now also how a NaN-token file gets repaired. Previously untested."""
+
+    @staticmethod
+    def census_file(tmp_path, records, summary=None):
+        import json
+        p = tmp_path / 'census.json'
+        p.write_text(json.dumps({'source': 's', 'seed': 1,
+                                 'summary': summary or {'stale': True},
+                                 'records': records}), encoding='utf-8')
+        return p
+
+    def records(self):
+        return [
+            {'pano_id': 'p1', 'city': 'a', 'era': 'mid', 'stored_width': 16384.0,
+             'stored_height': 8192.0, 'found': True, 'served_width': 16384, 'served_height': 8192,
+             'pitch_deg': 359.9, 'roll_deg': 0.5, 'has_depth': True, 'capture_date': '2020-01'},
+            {'pano_id': 'p2', 'city': 'a', 'era': 'mid', 'stored_width': 16384.0,
+             'stored_height': 8192.0, 'found': False, 'served_width': None, 'served_height': None,
+             'pitch_deg': None, 'roll_deg': None, 'has_depth': None, 'capture_date': None},
+        ]
+
+    def test_it_recomputes_the_summary_from_the_embedded_records(self, tmp_path):
+        p = self.census_file(tmp_path, self.records())
+        out = pc.resummarize(str(p))
+        assert 'stale' not in out['summary']
+        assert out['summary']['n_sampled'] == 2
+        assert out['summary']['alive_pct'] == pytest.approx(50.0)
+        # 359.9 must come back wrapped, which is the bug this path was built to fix
+        assert out['summary']['tilt']['abs_pitch_p50_deg'] == pytest.approx(0.1, abs=0.01)
+
+    def test_it_writes_the_new_summary_back_to_disk(self, tmp_path):
+        import json
+        p = self.census_file(tmp_path, self.records())
+        pc.resummarize(str(p))
+        assert json.loads(p.read_text(encoding='utf-8'))['summary']['n_sampled'] == 2
+
+    def test_it_leaves_the_records_intact(self, tmp_path):
+        """resummarize must never be a data-losing operation — the records are the raw measurement
+        and the whole reason the same sample can be re-fetched later to measure decay."""
+        p = self.census_file(tmp_path, self.records())
+        out = pc.resummarize(str(p))
+        assert [r['pano_id'] for r in out['records']] == ['p1', 'p2']
+        assert out['records'][0]['pitch_deg'] == 359.9
+
+    def test_it_repairs_a_file_written_with_bare_nan_tokens(self, tmp_path):
+        """Running the fixed code over a pre-fix artifact is what repaired the committed census."""
+        import json
+        p = tmp_path / 'census.json'
+        p.write_text(json.dumps({'summary': {}, 'records': [
+            {'pano_id': 'p1', 'city': 'a', 'era': 'mid', 'stored_width': 1.0, 'stored_height': 1.0,
+             'found': True, 'served_width': 1, 'served_height': 1, 'pitch_deg': 0.1,
+             'roll_deg': 0.1, 'has_depth': True, 'capture_date': None, 'error': float('nan')}]}),
+            encoding='utf-8')
+        assert 'NaN' in p.read_text(encoding='utf-8')
+        pc.resummarize(str(p))
+        text = p.read_text(encoding='utf-8')
+        assert 'NaN' not in text
+        assert json.loads(text)['records'][0]['error'] is None
+
+
 class TestCommittedFindings:
     """The census conclusions, pinned against the committed JSON (offline). A re-fetch will
     drift these slowly (panos keep dying); the pins hold the summarize() output over the
     committed records, which is deterministic."""
 
     @pytest.fixture(scope='class')
-    def summary(self):
+    @classmethod
+    def summary(cls):
         import json
         path = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-09-photometa-census.json')
         with open(path) as f:
@@ -146,6 +256,40 @@ class TestSummarize:
         assert s['tilt']['abs_pitch_p50_deg'] == pytest.approx(1.5)
         assert s['by_era']['legacy']['alive_pct'] == pytest.approx(100.0)
         assert s['by_era']['post179']['alive_pct'] == pytest.approx(0.0)
+        assert s['dims_comparable'] == 2 and s['dims_unknown_stored'] == 0
+
+    def test_a_pano_with_no_stored_dims_is_not_counted_as_drift(self):
+        """`NaN != x` is True in pandas, so an uncomparable pano would book as drift and inflate
+        the rate. Both rows below serve exactly what a known stored frame would be; only one has
+        a stored frame recorded, so the answer must be 0% drift over 1 comparable pano."""
+        recs = pd.DataFrame([
+            {'pano_id': 'p1', 'city': 'a', 'era': 'mid', 'stored_width': 16384.0,
+             'stored_height': 8192.0, 'found': True, 'served_width': 16384, 'served_height': 8192,
+             'pitch_deg': 0.5, 'roll_deg': 0.5, 'has_depth': True, 'capture_date': None},
+            {'pano_id': 'p2', 'city': 'a', 'era': 'mid', 'stored_width': np.nan,
+             'stored_height': np.nan, 'found': True, 'served_width': 16384, 'served_height': 8192,
+             'pitch_deg': 0.5, 'roll_deg': 0.5, 'has_depth': True, 'capture_date': None},
+        ])
+        s = pc.summarize(recs)
+        assert s['dims_comparable'] == 1
+        assert s['dims_unknown_stored'] == 1
+        assert s['dims_drift_pct_of_alive'] == pytest.approx(0.0)
+
+    def test_errors_count_against_alive_and_are_sized_separately(self):
+        """alive_pct is a floor: an errored request reads as not-found. errors_pct is how much
+        room that leaves."""
+        recs = pd.DataFrame([
+            {'pano_id': 'p1', 'city': 'a', 'era': 'mid', 'stored_width': 1.0, 'stored_height': 1.0,
+             'found': True, 'served_width': 1, 'served_height': 1, 'pitch_deg': 0.1,
+             'roll_deg': 0.1, 'has_depth': True, 'capture_date': None, 'error': None},
+            {'pano_id': 'p2', 'city': 'a', 'era': 'mid', 'stored_width': 1.0, 'stored_height': 1.0,
+             'found': False, 'served_width': None, 'served_height': None, 'pitch_deg': None,
+             'roll_deg': None, 'has_depth': None, 'capture_date': None, 'error': 'ValueError: x'},
+        ])
+        s = pc.summarize(recs)
+        assert s['alive_pct'] == pytest.approx(50.0)
+        assert s['errors'] == 1
+        assert s['errors_pct'] == pytest.approx(50.0)
 
     def test_wrapped_angles_read_as_small_tilts(self):
         """Google serves roll in [0, 360); a roll of 359.9 deg is a -0.1 deg tilt, and the

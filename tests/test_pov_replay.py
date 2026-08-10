@@ -51,13 +51,21 @@ class TestPovInversion:
 
     def test_pano_mapping_round_trip(self):
         """The full replay of a centre click at heading 123.4, pitch -10.5, camera_heading 100 on an
-        8192x4096 pano — values verified against the module at port time; a heading-centred raster
-        puts the camera_heading at the centre column."""
+        8192x4096 pano; a heading-centred raster puts the camera_heading at the centre column.
+
+        Both expected values are re-derived independently below rather than copied out of the
+        module, so this is a pin on the geometry and not on itself. The port's *external* validation
+        is the era replay study: the same math reproduces stored pano_y for 100% of legacy/mid rows
+        and stored pano_x for 98.8-99.9% of legacy rows across 438k production labels — evidence no
+        unit test can supply.
+        """
         pov_heading, pov_pitch = pov_replay.pov_if_centered(360, 240, 123.4, -10.5, 1)
         pano_x, pano_y = pov_replay.pano_xy_from_pov(pov_heading, pov_pitch, 100.0, 8192, 4096)
         assert (int(pano_x), int(pano_y)) == (4628, 2287)
-        # 23.4 deg clockwise of the centre column: 4096 + round(8192 * 23.4 / 360) = 4628.
+        # x: 23.4 deg clockwise of the centre column -> 4096 + round(8192 * 23.4 / 360) = 4628.
         assert int(pano_x) == 4096 + round(8192 * 23.4 / 360)
+        # y: elevation -10.5 deg on a linear 90-deg half-frame -> 2048 + round(2048 * 10.5 / 90).
+        assert int(pano_y) == 2048 + round(2048 * 10.5 / 90)
 
     def test_depression_from_pano_y_inverts_the_y_mapping(self):
         """pano_y -> depression is the exact inverse of the linear elevation mapping, up to the

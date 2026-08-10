@@ -57,14 +57,28 @@ Face-validity checks, by type (radius 1.5°):
 | SurfaceProblem | 674 | 0.548° | 0.507° |
 | NoCurbRamp | 1,945 | 0.660° | 0.530° |
 | Crosswalk | 277 | **0.616°** | 0.438° |
+| NoSidewalk | 173 | **0.706°** | 0.425° |
 
-Pedestrian signals — small, compact, unambiguous targets — have the tightest azimuth by 2×;
-crosswalks — elongated along the road — the loosest. The estimator is measuring object geometry's
-effect on placement, i.e. the right phenomenon. Depression bands move σ_el only mildly
+Pedestrian signals — small, compact, unambiguous targets — have the tightest azimuth by 2×. The
+loosest three (NoSidewalk 0.706°, NoCurbRamp 0.660°, Crosswalk 0.616°) are exactly the classes with
+no compact object to centre on: two mark an *absence* along a stretch of street, and the third is
+elongated along the road. σ_el does not order the same way, which is the point — azimuth spread
+tracks how extended the target is horizontally. The estimator is measuring object geometry's effect
+on placement, i.e. the right phenomenon. Depression bands move σ_el only mildly
 (0.44°/0.48°/0.55° for <5°/5–15°/>15° below horizon; the far-field band has only 75 pairs — far
-objects rarely get duplicate-labeled). Restricting to validated-correct labels (≥ 2 votes,
-agree > disagree; 3,813 pairs) leaves σ essentially unchanged — the estimate is not carried by
-labels validators would have culled.
+objects rarely get duplicate-labeled; the three bands account for all 13,359 pairs, i.e. no cluster
+in this corpus sits above the horizon). Restricting to validated-correct labels (≥ 2 votes,
+agree > disagree; 3,813 pairs) leaves σ_el **bit-identical** at 0.5068° and σ_az within 1%
+— the estimate is not carried by labels validators would have culled.
+
+That bit-identity is real rather than a copy-paste, and worth spelling out because it looks like
+one. `d_el` is a difference of integer pano rows, so on the 8192-tall panos that carry 90% of the
+corpus it is quantised to 180/8192 = **0.0220° per pixel**. Both medians land on the same atom —
+exactly **22 px** — so the robust σ, which is a scaled median, is identical to the last bit. The
+practical consequence is that σ_el is only resolvable to about ±0.022°, well inside the spread the
+radius sweep already shows. `tests/test_click_noise_study.py` asserts the pixel-atom property
+directly, and pins the validated-only *pair counts* as well, since two equal σ values on their own
+cannot distinguish this from the sensitivity analysis having been run on the wrong frame.
 
 ## What this means downstream
 
@@ -74,11 +88,19 @@ labels validators would have culled.
   individually at that scale — only distributions can.
 * **Power for the pre-registration** (per-axis, mean-bias test, α = .05 two-sided, 80% power):
   with σ = 0.5°, detecting a δ = 0.25° mean bias needs **n ≈ 32** per stratum; δ = 0.5° needs
-  **n ≈ 8**. The planned ~50-per-stratum gold set is comfortably powered for threshold-scale
-  placement bias; exact arithmetic goes in the pre-registration.
+  **n ≈ 8**. The [pre-registration](2026-08-09-crop-priors-prereg.md) §5 is the binding version and
+  works from σ_diff (label ⊕ gold), which lands at n = 44 for δ = 0.25° against ≈ 160 labels per
+  depression band — comfortably powered for threshold-scale bias.
 * **This σ is between-user**, so it includes per-user systematic convention differences (base vs
   centre of a ramp). It is an upper bound on within-user click jitter and exactly the right
   number for "how well does one stored label localize its object."
+* **Pairs are not independent observations.** A cluster with *k* distinct users contributes
+  *k*(*k*−1)/2 pairs, so an object that attracted many labels — typically an ambiguous one — carries
+  quadratically more weight in the median. Mild here (13,359 pairs over 9,916 clusters, 1.35 each),
+  and σ is a median rather than a mean, so the effect is small and in the conservative direction.
+  But it means **n_pairs is not an effective sample size**: no confidence interval is quoted on σ
+  for that reason, and none should be derived from 13,359. A one-pair-per-cluster sensitivity would
+  settle the residual, and is cheap to add on the next run.
 * **Caveat for Phase 2 sampling**: duplicate-labeled objects are not a random sample — they favor
   well-audited streets and conspicuous objects. Fine for a noise floor; do not reuse the cluster
   population as a study corpus without reweighting (the methodology review's population-reweighting

@@ -1,7 +1,7 @@
 # Era replay: stored pano_x/y is click-time truth — and the post-179 client had an 18-month record bug
 
 **2026-08-09** · Phase 1 desk study for the cropper work package (issues #54, #32) · feeds
-[Report 1's](2026-08-09-cropper-consumer-requirements.md) pre-registration
+[Report 1's pre-registration](2026-08-09-crop-priors-prereg.md)
 
 > **Reproduce offline from committed bytes:**
 > ```bash
@@ -92,6 +92,16 @@ tuple* going stale before submission; current clients write a fully self-consist
 signature is dispositive and now extends to three cities the sibling repo never measured: among
 pre-179 x-miss rows, the implied camera-heading delta has **median within-pano σ ≤ 0.012°**
 (rounding noise) against across-pano σ of 0.12–0.73°. Metadata drift, not projection error.
+
+> **Scope of that evidence (noted 2026-08-10 in review).** The decomposition above is computed over
+> **pre-179** rows only, so extending it to the post-fix x misses is an inference, not a measurement:
+> the mechanism is identical (both consume `camera_heading`, and post-fix `pano_y` — which consumes
+> no camera metadata — is ≥ 99.9% exact in every city, which is hard to reconcile with a projection
+> error), but the population that the claim is about has not itself been decomposed.
+> `study_city` now emits `drift_signature_post_fix` alongside `drift_signature_pre179`; the committed
+> 2026-08-09 summary predates that key and is not being re-fetched, since a fresh rawLabels pull
+> would re-date every number in this report. Treat the post-fix attribution as well-supported but
+> unconfirmed until the next fetch fills the key in.
 
 ## Which side is the truth?
 

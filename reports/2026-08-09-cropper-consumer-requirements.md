@@ -71,7 +71,8 @@ mis-centering **only** corrupts supervision, never framing.
 Conversion chain (verified against #113's table): 1° of pano-frame error = 22.76 px on the 8192×4096
 stitch = 17.9–21.1 render px = **2.24–2.64 heatmap px = 0.19–0.22 σ** (σ = 12). Hence:
 
-- **1 σ of target displacement ≈ 5.1° ≈ 116 px of pano-y on the 4096-tall stitch.**
+- **1 σ of target displacement ≈ 4.6–5.4° ≈ 104–122 px of pano-y on the 4096-tall stitch** (the
+  range is the on-axis/off-axis span of the line above; quote the range, not a midpoint).
 - The measured defect, 1–3° of rig tilt, puts the target "0.2–0.6 σ off the object" (#113) —
   sub-σ: it degrades supervision rather than destroying it.
 - A useful internal yardstick: the pipeline already carries a deterministic systematic of the same
@@ -80,8 +81,8 @@ stitch = 17.9–21.1 render px = **2.24–2.64 heatmap px = 0.19–0.22 σ** (σ
   2.6 heatmap px ≈ **0.22 σ at the strip's right edge**. RampNet has been training through a ~0.2 σ
   x-bias without visible failure — corroborating "degrade rather than destroy", and setting the
   noise floor a canonical cropper should stay well under.
-- **Derived requirement: label-point placement accurate to ≤ 0.5° in the pano frame (≈ 11.6 px
-  pano-y at 4096-tall, 0.27% of pano height) keeps displacement ≤ 0.1 σ.**
+- **Derived requirement: label-point placement accurate to ≤ 0.5° in the pano frame (11.4 px
+  pano-y at 4096-tall, 0.28% of pano height) keeps displacement ≤ 0.11 σ.**
 
 ### What a switch requires
 
@@ -229,15 +230,15 @@ layout. Divergences it must reconcile: pitch convention (label-centered vs `phi=
 | Size rule | Constant (strip) | 11.9 m physical footprint via DA2 depth at label pixel | Constant 640 px | Same as validator |
 | Label-centered? | **No** — label projected into fixed strip | Yes (horizontal exact; vertical via crop) | Yes | Yes (render and crop) |
 | Mis-centering failure | Supervision target moves off object; crop looks fine | Depth read at wrong pixel (size collapses/explodes), then off-center | Object drifts to edge / out | Same as validator |
-| Hard tolerance | 1° = 0.19–0.22 σ; 1 σ ≈ 5.1° ≈ 116 px pano-y (4096-tall) | Upward < atan(2.5/d): 7.1° @20 m, 3.6° @40 m; depth-on-object < 6.3% of crop side | Containment < 2.7–4.9° (16384 pano, 10–20 m) | As validator |
+| Hard tolerance | 1° = 0.19–0.22 σ; 1 σ ≈ 4.6–5.4° ≈ 104–122 px pano-y (4096-tall) | Upward < atan(2.5/d): 7.1° @20 m, 3.6° @40 m; depth-on-object < 6.3% of crop side | Containment < 2.7–4.9° (16384 pano, 10–20 m) | As validator |
 | Cost of the 1–3° `pano_y` defect | 0.2–0.6 σ target displacement (#113's subject) | Minor near; up to ~full depth budget at 40–60 m | Negligible | As validator |
 
 ## Decision thresholds for the work package
 
 **(i) Acceptable mis-centering.** The binding consumer is RampNet's supervision, not containment:
 
-- **Target: label-point placement error ≤ 0.5° in the pano frame** (≈ 11.6 px pano-y on a 4096-tall
-  stitch; 0.27% of pano height). Keeps RampNet's heatmap-target displacement ≤ 0.1 σ — below its
+- **Target: label-point placement error ≤ 0.5° in the pano frame** (11.4 px pano-y on a 4096-tall
+  stitch; 0.28% of pano height). Keeps RampNet's heatmap-target displacement ≤ 0.11 σ — below its
   existing ~0.2 σ internal noise floor — and an order of magnitude inside every other consumer's
   budget.
 - Consumer ceilings for reference, as fraction of crop side: RampNet ~1% (0.2 σ ↔ ~1°); validator
@@ -247,11 +248,37 @@ layout. Divergences it must reconcile: pitch convention (label-centered vs `phi=
 
 **(ii) Required containment margin.** Not binding once (i) is met — ≤ 0.5° centering error plus ~1°
 margin per side guarantees containment for every consumer. What actually sets crop size is
-**context**, and the consumers converge on: object ≈ 10–15% of crop side, i.e. **margin per side ≈
-3–4.5× the object's half-extent** (validator: 12.6% by construction ≈ 5.2 m margin for a 1.5 m ramp;
-RampNet strip: a 20 m ramp ≈ 11% of strip width; tagger at typical range: 15–31%). A canonical API
-should expose margin as a multiple of object extent (or a physical footprint in metres) rather than
-absolute pixels — the tagger's fixed 640 px, whose object fraction swings 15–61%, is the anti-pattern.
+**context**, and the consumers converge on **object ≈ 10–15% of crop side**: validator 12.6% by
+construction (≈ 5.2 m margin per side for a 1.5 m ramp in an 11.9 m footprint); RampNet strip, a ramp
+at 20 m ≈ 11% of strip width; tagger at typical range 15–31%.
+
+Stated as a multiple, that is **crop ratio R = 6.7–10×**, where
+
+> **R = crop side ÷ object extent = crop half-side ÷ object half-extent.**
+
+Use R and nothing else. It is a ratio of like quantities, so it is invariant to whether both terms are
+full extents or both are half-extents — which is exactly the confusion that has to be designed out
+here. The margin-based restatements are *not* interchangeable with it:
+
+| quantity | formula | at object = 10–15% of crop side |
+|---|---|---|
+| **crop ratio R** (use this) | `1/φ` | **6.7 – 10** |
+| margin per side ÷ object half-extent | `R − 1` | 5.7 – 9.0 |
+| margin per side ÷ object full extent | `(R − 1)/2` | 2.8 – 4.5 |
+
+(φ = object extent ÷ crop side. Anchor check: the validator's `R = (11.9/2)/(1.5/2) = 7.9`, inside
+6.7–10.) A canonical API should expose size as R (or as a physical footprint in metres) rather than
+absolute pixels — the tagger's fixed 640 px, whose object fraction swings 15–61% (R = 1.6–6.7), is the
+anti-pattern.
+
+> **Correction, 2026-08-10 (pre-merge review).** This paragraph originally read "margin per side ≈
+> 3–4.5× the object's half-extent" as an *i.e.* on the 10–15% range. That is the bottom row of the
+> table above — margin over the object's **full** extent — mislabelled as half-extent, and the
+> pre-registration then carried `[3, 4.5]` into Study 2's primary endpoint under a third definition
+> (`crop half-side / object half-extent`), where the correct band is `[6.7, 10]`. The validator, the
+> consumer that anchors the convention, scored *outside* the registered band. Corrected here and in
+> the pre-registration before registration; the arithmetic is now pinned in
+> `tests/test_margin_convention.py`.
 
 **Cross-cutting requirements**: one fetch-and-stitch implementation at a declared resolution and
 declared gravity frame; image-projection and point-projection guaranteed to share one camera model;
@@ -265,9 +292,10 @@ in production.
 - The **#54 placement study** pre-registers its "material mis-centering" threshold from (i): the
   correction ships if the confirmed residual exceeds 0.5° in the pano frame for a material fraction
   of labels (exact fraction set in the pre-registration alongside the power analysis).
-- The **#32 sizing study** scores candidates at margin policies drawn from (ii) (object 10–15% of
-  crop side), stratified by distance band — with the validator's asymmetric far-field depth budget
-  as the reason the placement fix and the sizing rework must be evaluated jointly.
+- The **#32 sizing study** scores candidates at the sizing policy drawn from (ii) — object 10–15% of
+  crop side, i.e. **crop ratio R ∈ [6.7, 10]** — stratified by distance band, with the validator's
+  asymmetric far-field depth budget as the reason the placement fix and the sizing rework must be
+  evaluated jointly.
 - The **flat-vs-perspective design study** starts from the fact that three of four consumers already
   render perspective crops from the same three copied functions — the question it answers is
   implementation cost and migration, not whether perspective is wanted.

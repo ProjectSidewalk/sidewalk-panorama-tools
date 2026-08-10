@@ -80,12 +80,6 @@ def pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom,
     return np.degrees(np.arctan2(x, y)), np.degrees(np.arcsin(z / r))
 
 
-def wrap_deg(a):
-    """Wrap degrees to (-180, 180]."""
-    a = np.asarray(a, float)
-    return np.where(a > 180, a - 360, np.where(a <= -180, a + 360, a))
-
-
 def exact_depression_deg(canvas_x, canvas_y, heading, pitch, zoom,
                          canvas_width=CANVAS_W, canvas_height=CANVAS_H):
     """The click's depression angle below the horizon (positive down): -pov_pitch."""
@@ -101,6 +95,11 @@ def pano_xy_from_pov(pov_heading, pov_pitch, camera_heading, pano_width, pano_he
     sits at bearing camera_heading - 180. The y mapping is linear in elevation - which is exactly
     correct for a gravity-aligned equirectangular image; what it lacks is any rig pitch/roll term,
     which is the #54 question.
+
+    One tie-break differs from the JS by construction: np.round is half-to-even, Math.round is
+    half-up, so a value landing exactly on .5 can differ by one pixel. The era replay study measures
+    the practical consequence at zero - pano_y replays exactly for 100% of legacy/mid rows across
+    438k labels - but "bit-for-bit" is a claim about that measurement, not about the tie rule.
     """
     pano_width = np.asarray(pano_width, float)
     pano_height = np.asarray(pano_height, float)
@@ -111,23 +110,11 @@ def pano_xy_from_pov(pov_heading, pov_pitch, camera_heading, pano_width, pano_he
     return pano_x.astype(int), pano_y.astype(int)
 
 
-def replay_pano_xy(df):
-    """Recompute pano_x/pano_y from a cvMetadata frame the way the front end / evolution 179 did.
-
-    Needs columns: canvas_x, canvas_y, heading, pitch, zoom, camera_heading, pano_width, pano_height,
-    and (optionally) canvas_width/canvas_height. Returns (replay_pano_x, replay_pano_y) as int arrays.
-    Rows produced by the post-2021 client or by evolution 179's recompute match the stored values
-    bit-for-bit when the stored camera metadata still matches what produced them; a mismatch that is
-    constant within a pano is camera_heading drift, not projection error (x only - pano_y has no free
-    camera input and must always match).
-    """
-    canvas_w = df['canvas_width'] if 'canvas_width' in df else CANVAS_W
-    canvas_h = df['canvas_height'] if 'canvas_height' in df else CANVAS_H
-    pov_heading, pov_pitch = pov_if_centered(df['canvas_x'], df['canvas_y'],
-                                             df['heading'], df['pitch'], df['zoom'],
-                                             canvas_w, canvas_h)
-    return pano_xy_from_pov(pov_heading, pov_pitch, df['camera_heading'],
-                            df['pano_width'], df['pano_height'])
+# There is deliberately no frame-level `replay_pano_xy(df)` helper here. It existed, was never
+# called, and duplicated era_replay_study.replay_frame() minus that function's NaN masking - two
+# implementations of one projection that had to be kept in step, with the untested one being the
+# more permissive. Use era_replay_study.replay_frame(); it returns the residuals and replayability
+# masks as well. (Removed 2026-08-10 in review, along with an unused wrap_deg.)
 
 
 def depression_from_pano_y(pano_y, pano_height):

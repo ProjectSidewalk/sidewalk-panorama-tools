@@ -38,6 +38,16 @@ import pov_replay  # noqa: E402
 import rawlabels  # noqa: E402
 
 
+# The deployed formula's constants, named once so the replica and the analytic onsets below are
+# visibly the same formula rather than three transcriptions of it. Values pinned against the real
+# CropRunner source (ast-extracted) in tests/test_clamp_census.py.
+DIST_INTERCEPT_M = 19.80546390
+DIST_PER_PIXEL_M = 0.01523952
+CROP_SCALE = 8725.6
+CROP_EXPONENT = -1.192
+CLAMP_HI_PX, CLAMP_LO_PX = 1500.0, 50.0
+
+
 def predict_crop_size(pano_y, pano_height):
     """Vectorized replica of CropRunner.predict_crop_size (pinned in tests/test_clamp_census.py).
 
@@ -45,12 +55,53 @@ def predict_crop_size(pano_y, pano_height):
     px, clamped to [50, 1500]; distance == 0 forces 1500.
     """
     old_pano_y = np.asarray(pano_height, float) / 2 - np.asarray(pano_y, float)
-    distance = np.maximum(0.0, 19.80546390 + 0.01523952 * old_pano_y)
+    distance = np.maximum(0.0, DIST_INTERCEPT_M + DIST_PER_PIXEL_M * old_pano_y)
     with np.errstate(divide='ignore'):
-        crop = np.where(distance > 0, 8725.6 * np.power(np.where(distance > 0, distance, 1.0),
-                                                        -1.192), 1500.0)
-    crop = np.where(distance == 0, 1500.0, crop)
-    return np.clip(crop, 50.0, 1500.0)
+        crop = np.where(distance > 0,
+                        CROP_SCALE * np.power(np.where(distance > 0, distance, 1.0), CROP_EXPONENT),
+                        CLAMP_HI_PX)
+    crop = np.where(distance == 0, CLAMP_HI_PX, crop)
+    return np.clip(crop, CLAMP_LO_PX, CLAMP_HI_PX)
+
+
+def clamp_onset_depression_deg(pano_height, crop_px=CLAMP_HI_PX):
+    """Depression (deg below horizon) at which the deployed formula first reaches `crop_px`.
+
+    Closed form, and the mechanism behind the census's resolution finding: the distance term is
+    linear in PIXELS from the horizon row, so the clamp onset scales as 1/pano_height. A label at
+    24 deg is clamped on an 8192-tall pano (onset 22.2 deg) and unclamped on a 6656-tall one
+    (onset 27.4 deg) — the identical geometry, two different framings, and the clamp is where the
+    crop stops responding to distance at all.
+
+    A negative result means the onset sits ABOVE the horizon, i.e. the clamp is unreachable on real
+    geometry — which is why the 50 px far clamp never fires (onset -81 deg at height 8192).
+    """
+    distance_at_crop = (crop_px / CROP_SCALE) ** (1.0 / CROP_EXPONENT)
+    return ((DIST_INTERCEPT_M - distance_at_crop) * 180.0
+            / (DIST_PER_PIXEL_M * np.asarray(pano_height, float)))
+
+
+def bottom_truncation_onset_depression_deg(pano_height, tol_deg=1e-6):
+    """Shallowest depression whose wanted crop runs off the bottom edge, or None if none does.
+
+    `y + crop(y)/2 - pano_height` is strictly increasing in y (deeper depression -> shorter
+    distance -> larger crop), so a bisection is exact to tolerance. Quantifies the headroom behind
+    the census's zero truncation count: the onset is 53-82 deg at the corpus's pano heights against
+    a corpus p99 depression of 43.5 deg, so zero is a structural result, not a lucky sample.
+    """
+    h = float(pano_height)
+    overflow = lambda dep: (h / 2 + dep / 90 * (h / 2)
+                            + float(predict_crop_size(np.array([h / 2 + dep / 90 * (h / 2)]),
+                                                      np.array([h]))[0]) / 2 - h)
+    if overflow(90.0) <= 0:
+        return None
+    lo, hi = 0.0, 90.0
+    if overflow(lo) > 0:
+        return 0.0
+    while hi - lo > tol_deg:
+        mid = (lo + hi) / 2
+        lo, hi = (lo, mid) if overflow(mid) > 0 else (mid, hi)
+    return hi
 
 
 def add_census_columns(df):
@@ -144,7 +195,7 @@ def main():
 
     if args.write:
         with open(args.write, 'w') as f:
-            json.dump(result, f, indent=1)
+            json.dump(result, f, indent=1, allow_nan=False)
         print(f'wrote {args.write}')
 
 

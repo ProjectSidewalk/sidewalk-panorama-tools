@@ -90,11 +90,110 @@ class TestPairs:
         assert pairs['d_az'].iloc[0] == pytest.approx(0.0, abs=0.02)
 
 
+def write_rawlabels_csv(path, rows):
+    """A rawLabels-shaped CSV carrying only what the loader reads; unset columns stay blank."""
+    import rawlabels as rl
+    df = pd.DataFrame(rows)
+    for c in rl.STUDY_COLUMNS:
+        if c not in df:
+            df[c] = np.nan
+    df[rl.STUDY_COLUMNS].to_csv(path, index=False)
+    return str(path)
+
+
+def label_row(i, az, el, user, pano='p1', width=8192.0, height=4096.0, agree=2, disagree=0):
+    return {'label_id': i, 'user_id': user, 'pano_id': pano, 'label_type': 'CurbRamp',
+            'time_created': int(pd.Timestamp('2024-01-01', tz='UTC').value // 10 ** 6) + i,
+            'agree_count': agree, 'disagree_count': disagree, 'unsure_count': 0,
+            'pano_x': az / 360.0 * width, 'pano_y': height / 2 - el / 90.0 * (height / 2),
+            'pano_width': width, 'pano_height': height}
+
+
+class TestLoadCity:
+    """The row filter behind the study's "2 corrupt negative-y rows" claim. Previously uncalled."""
+
+    def test_it_keeps_sound_rows_and_drops_unusable_geometry(self, tmp_path):
+        rows = [
+            label_row(1, 100.0, -10.0, 'u1'),                       # keep
+            label_row(2, 100.1, -10.0, 'u2'),                       # keep
+            dict(label_row(3, 100.0, -10.0, 'u3'), pano_y=-720.0),  # negative y (the real corruption)
+            dict(label_row(4, 100.0, -10.0, 'u4'), pano_y=5000.0),  # y past the frame bottom
+            dict(label_row(5, 100.0, -10.0, 'u5'), pano_width=0.0),  # non-positive dims
+            dict(label_row(6, 100.0, -10.0, 'u6'), pano_height=np.nan),
+            dict(label_row(7, 100.0, -10.0, 'u7'), pano_x=np.nan),
+        ]
+        kept = cns.load_city(write_rawlabels_csv(tmp_path / 'c.csv', rows))
+        assert sorted(kept['label_id']) == [1, 2]
+
+    def test_the_frame_edges_are_inclusive_at_the_top(self, tmp_path):
+        """pano_y == 0 is the top row and is legitimate; only negative y is corruption."""
+        rows = [dict(label_row(1, 100.0, 0.0, 'u1'), pano_y=0.0)]
+        assert len(cns.load_city(write_rawlabels_csv(tmp_path / 'c.csv', rows))) == 1
+
+
+class TestStudyEndToEnd:
+    """The orchestrator that produced the committed summary. It had no test until 2026-08-10, so
+    a mistake here would have been blessed by the committed-findings pins rather than caught."""
+
+    @pytest.fixture
+    def csv_dir(self, tmp_path):
+        d = tmp_path / 'raw'
+        d.mkdir()
+        rows, i = [], 0
+        # 30 two-user duplicate clusters, all validated-correct.
+        for k in range(30):
+            az, el = 20 + k * 10, -20.0
+            rows += [label_row(i := i + 1, az, el, 'u1', pano=f'p{k}'),
+                     label_row(i := i + 1, az + 0.2, el - 0.2, 'u2', pano=f'p{k}')]
+        # 10 more clusters that are NOT validated-correct (disagree wins): these must be present in
+        # `overall` and absent from `validated_only`. Put them in a different depression band so
+        # the band split is discriminating too (el -8 -> depression 8 deg -> the 5-15 band).
+        for k in range(30, 40):
+            az, el = 20 + (k - 30) * 10, -8.0
+            rows += [label_row(i := i + 1, az, el, 'u1', pano=f'p{k}', agree=0, disagree=3),
+                     label_row(i := i + 1, az + 0.2, el - 0.2, 'u2', pano=f'p{k}', agree=0,
+                               disagree=3)]
+        write_rawlabels_csv(d / 'atown.csv', rows)
+        return str(d)
+
+    def test_it_reports_every_section(self, csv_dir):
+        out = cns.study(csv_dir)
+        assert out['n_labels'] == 80
+        assert out['primary_radius_deg'] == cns.PRIMARY_RADIUS_DEG
+        assert out['overall']['n_pairs'] == 40
+        assert set(out['radius_sweep']) == {f'{r:g}' for r in cns.RADIUS_SWEEP}
+        assert set(out['by_depression_band']) == {'0-5deg', '5-15deg', '15-90deg'}
+
+    def test_pairs_land_in_the_right_depression_band(self, csv_dir):
+        """30 clusters at 20 deg depression, 10 at 8 deg — and the bands must total the overall
+        count, which is what proves nothing fell outside them."""
+        bands = cns.study(csv_dir)['by_depression_band']
+        assert bands['0-5deg']['n_pairs'] == 0
+        assert bands['5-15deg']['n_pairs'] == 10
+        assert bands['15-90deg']['n_pairs'] == 30
+        assert sum(b['n_pairs'] for b in bands.values()) == 40
+
+    def test_validated_only_is_computed_on_the_validated_subset(self, csv_dir):
+        """The discrimination the committed-findings pin lacked: if `study` accidentally fed the
+        full frame to the validated-only branch, sigma alone could not tell (see the note on the
+        committed run, where the two medians land on the same pixel atom) — but the pair count can.
+        Here 30 of 40 clusters are validated-correct."""
+        out = cns.study(csv_dir)
+        assert out['validated_only']['n_pairs'] == 30
+        assert out['validated_only']['n_pairs'] < out['overall']['n_pairs']
+
+    def test_the_radius_sweep_is_monotone_in_pair_count(self, csv_dir):
+        out = cns.study(csv_dir)
+        counts = [out['radius_sweep'][f'{r:g}']['n_pairs'] for r in sorted(cns.RADIUS_SWEEP)]
+        assert counts == sorted(counts)
+
+
 class TestCommittedFindings:
     """The study's conclusions, pinned against the committed summary JSON (offline)."""
 
     @pytest.fixture(scope='class')
-    def summary(self):
+    @classmethod
+    def summary(cls):
         import json
         path = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-09-click-noise-summary.json')
         with open(path) as f:
@@ -122,9 +221,29 @@ class TestCommittedFindings:
 
     def test_validation_does_not_deflate_sigma(self, summary):
         """Restricting to validated-correct labels moves sigma_el < 15%: the estimate measures
-        placement noise, not a misplacement tail that validators would have culled."""
+        placement noise, not a misplacement tail that validators would have culled.
+
+        On the committed run the two sigma_el values are *bit-identical*, which is real and not a
+        copy-paste: d_el is quantised to 180/8192 = 0.0220 deg per pixel, and both medians land on
+        the same 22-pixel atom. Because a `rel=0.15` check cannot distinguish that from the
+        validated-only branch having been fed the wrong frame, the pair counts are asserted too."""
         assert summary['validated_only']['sigma_el_deg'] == pytest.approx(
             summary['overall']['sigma_el_deg'], rel=0.15)
+        assert summary['validated_only']['n_pairs'] < summary['overall']['n_pairs']
+        assert summary['validated_only']['n_clusters'] < summary['overall']['n_clusters']
+
+    def test_the_median_lands_on_a_whole_pixel_atom(self, summary):
+        """Why the two sigmas coincide, stated as an assertion rather than a footnote."""
+        median_abs_d_el = summary['overall']['sigma_el_deg'] / (1.4826 / 2 ** 0.5)
+        pixels = median_abs_d_el / (180.0 / 8192)
+        assert pixels == pytest.approx(round(pixels), abs=1e-6)
+
+    def test_the_depression_bands_account_for_every_pair(self, summary):
+        """The bands start at 0 deg, so any pair whose cluster sits ABOVE the horizon is silently
+        outside all three. The committed run has none (the sums match exactly); this assertion is
+        what turns a future silent drop into a failure."""
+        banded = sum(b['n_pairs'] for b in summary['by_depression_band'].values())
+        assert banded == summary['overall']['n_pairs']
 
 
 class TestSigmaRecovery:
