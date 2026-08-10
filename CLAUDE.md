@@ -35,8 +35,8 @@ pip3 install -r requirements.txt
 python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-depth] \
     [--max-runtime MINUTES] [--min-depth-runtime MINUTES] [--max-depth-requests N]
 
-# Cropper
-python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) [-s <pano-dir>] [-o <crop-dir>]
+# Cropper (exits 1 if any label errored; missing panos alone are not an error)
+python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) [-s <pano-dir>] [-o <crop-dir>] [--mark-label]
 
 # Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see README's "Log analyzer")
 python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days N]
@@ -56,7 +56,7 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 
 ## Architecture
 
-`DownloadRunner.py` and `CropRunner.py` are standalone scripts with **no `if __name__ == "__main__"` guard** — importing either runs its whole flow, which is why `tests/test_log_analyzer.py` reads `LOG_CSV_FIELD_COUNT` out of `DownloadRunner.py` with `ast` rather than importing it. Per-source download logic lives in the `downloaders/` package, which is safe to import.
+`DownloadRunner.py` (#52) and `CropRunner.py` (#48) both follow the same extracted shape: `build_parser()` / `configure_logging()` / `run(...)` / `main(argv=None)` behind an `if __name__ == '__main__'` guard, so **importing either has no side effects** and tests can drive the real flow in-process. (`tests/test_log_analyzer.py` still lifts `LOG_CSV_FIELD_COUNT` out of `DownloadRunner.py` with `ast`, but that is now just avoiding the import cost, not a workaround for a module-scope `parse_args`.) Per-source download logic lives in the `downloaders/` package, which is also safe to import.
 
 **DownloadRunner.py** — orchestrates a nightly run: fetch the pano list, download images, download depth, write one `log.csv` row.
 1. Fetches the pano list from `/adminapi/panos` (or a CSV via `-c`), using a `requests` session with retries and explicit timeouts. Drops empty ids and `'tutorial'`. `filter_supported_sources()` keeps `gsv` and (when `MAPILLARY_ACCESS_TOKEN` is set) `mapillary`; filtered-out panos are deliberately **not** written to `pano_id_log.csv` so a later run can still pick them up.
@@ -71,9 +71,11 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 - `mapillary.py` resolves `thumb_original_url` via the Graph API and downloads it. Requires `MAPILLARY_ACCESS_TOKEN`.
 
 **CropRunner.py** — extracts per-label crops from downloaded panos.
-1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`). CSV path dedupes on `label_id`.
-2. For each label, opens `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` and computes a square crop centered at `(pano_x, pano_y)`. Crop size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]`. Known improvements to make (zoom-aware distance estimation) are in the docstring.
-3. Writes to `<crop-dir>/<label_type_id>/<label_id>.jpg`. `MARK_LABEL = True` draws a dot at the label center inside the crop (a flag at the top of the file, not a CLI arg).
+1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`). Both intakes dedupe on `label_id`; the CSV intake additionally dtype-pins `pano_id` to `str` (the #46 bug class) and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
+2. Labels are **grouped by pano**, so each JPEG is decoded exactly once for all its labels — a 16384×8192 pano is ~250 MB decoded. For each label it computes a square crop centered at `(pano_x, pano_y)`; crop size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]`. Known improvements to make (zoom-aware distance estimation) are in the docstring.
+3. Writes to `<crop-dir>/<label_type_id>/<label_id>.jpg` through `atomic_output_path`, since the crop file is its own resume marker (an existing one is skipped). Rotating `crop.log` lands next to the crops, not the CWD.
+4. `--mark-label` draws a dot at the label center **inside the crop**, never on the shared pano. It is **off by default**: it was a `MARK_LABEL = True` module constant until #48, so every crop this tool produced before then has a (128, 0, 0) dot burned over the feature of interest.
+5. **Nothing in the crop loop is fatal.** `bulk_extract_crops` returns counts where `success + skipped_existing + missing_pano + errors == total` on every path including re-runs; a corrupt pano, malformed row, or failed write is one counted, logged error and retries next run. `main()` exits 1 if `errors` is nonzero — **not** on `missing_pano`, which is the normal state of a city whose scrape is still catching up.
 
 **log_analyzer/analyze.py** — ops monitoring for the nightly scrape; shares no code with the runners.
 1. Reads `log_analyzer/cities.csv`, pulls each city's `log.csv` off the pano store with `sftp -b -` (the store's restricted SFTP subsystem doesn't speak the SCP wire protocol), and caches it in the gitignored `log_analyzer/logs/`. Connection settings come from `PS_SFTP_*` env vars or matching flags — host and base path are required with no defaults, since a wrong default would silently analyze the wrong store.
@@ -143,7 +145,7 @@ See README.md for the full field glossary for `/adminapi/panos` and `/adminapi/l
 
 ## Other directories
 
-- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, and the Docker entrypoint's flag forwarding. `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
+- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the Docker entrypoint's flag forwarding, and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
 - `log_analyzer/` — the log analyzer plus `cities.csv`; `log_analyzer/logs/` is a gitignored local cache.
 - `flag_panos/` — one-off web tool (HTML/JS) from the 2022 depth-endpoint outage. Not wired into the Python scripts; keep unless asked.
 - `samples/` — reference CSV/JSON/XML and a sample pano+crop used for manual testing and as examples for the `-c`/`-f` flags.
