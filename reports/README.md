@@ -42,3 +42,4 @@ A report is the narrative; the tests and fixtures are the enforcement. Neither r
 | Date | Report | Outcome |
 |---|---|---|
 | 2026-08-07 | [CBK tile resolution and the `fover` parameter](2026-08-07-cbk-tile-resolution.md) | Dropped `fover`; recovered full zoom-5 resolution. Recommends against re-downloading the store. Issues #73, #74; PR #68. |
+| 2026-08-10 | [Crop geometry: what the seam fix reaches, and what the preflights beside it can see](2026-08-10-crop-geometry-review.md) | Seam wrap reaches 1.52% of labels; pano dims are a per-pano join, so the dims preflight guards the store and not the label's frame; out-of-frame `pano_y` now rejected instead of clamped. Issue #47; PR #77. |
