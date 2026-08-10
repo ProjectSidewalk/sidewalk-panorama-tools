@@ -335,9 +335,8 @@ class TestPredictCropSize:
 class TestBulkExtractCrops:
 
     def test_counts_reconcile(self, crop_runner, tmp_path):
-        """success + skipped_existing + missing_pano + errors must equal total. Pre-fix, already-existing
-        crops were counted nowhere, so no combination of the printed numbers summed to the input size
-        (#48 item 3)."""
+        """The disjoint outcomes must equal total. Pre-fix, already-existing crops were counted
+        nowhere, so no combination of the printed numbers summed to the input size (#48 item 3)."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         labels = [label_row(label_id=1, pano_x=150),
@@ -345,7 +344,8 @@ class TestBulkExtractCrops:
                   label_row(label_id=3, pano_id='gonepano0001')]
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 3, 'success': 2, 'skipped_existing': 0, 'missing_pano': 1,
-                          'dims_mismatch': 0, 'errors': 0}
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
+                          'errors': 0}
 
     def test_rerun_skips_existing_and_still_reconciles(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
@@ -354,7 +354,37 @@ class TestBulkExtractCrops:
         crop_runner.bulk_extract_crops(labels, str(store), str(out))
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 2, 'success': 0, 'skipped_existing': 2, 'missing_pano': 0,
-                          'dims_mismatch': 0, 'errors': 0}
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
+                          'errors': 0}
+
+    def test_every_outcome_is_accounted_for_exactly_once(self, crop_runner, tmp_path):
+        """One label per disjoint outcome, all in one run: the documented invariant is that they
+        sum to total. It went stale the moment dims_mismatch was added without being added to the
+        sum, so it is now asserted from the counts dict itself rather than trusted to a docstring.
+
+        shifted_vertically is deliberately NOT in the sum - it annotates a success (the crop was
+        written, just de-centred), so counting it as its own bucket would double-count."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')          # 512x256
+        crop_runner.bulk_extract_crops([label_row(label_id=1)], str(store), str(out))  # pre-exists
+
+        labels = [
+            label_row(label_id=1),                                    # skipped_existing
+            label_row(label_id=2, pano_x=250),                        # success
+            label_row(label_id=3, pano_id='gonepano0001'),            # missing_pano
+            dict(label_row(label_id=4), pano_width=1024, pano_height=512),   # dims_mismatch
+            label_row(label_id=5, pano_y=-720),                       # out_of_frame
+            label_row(label_id=6, pano_x='not-a-number'),             # errors
+            label_row(label_id=7, pano_y=8),                          # success, shifted
+        ]
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        disjoint = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch',
+                    'out_of_frame', 'errors')
+        assert sum(counts[k] for k in disjoint) == counts['total'] == 7
+        assert counts == {'total': 7, 'success': 2, 'skipped_existing': 1, 'missing_pano': 1,
+                          'dims_mismatch': 1, 'out_of_frame': 1, 'shifted_vertically': 1,
+                          'errors': 1}
 
     def test_a_corrupt_pano_does_not_kill_the_run(self, crop_runner, tmp_path, caplog):
         """Pre-fix: nothing wrapped make_single_crop, so one truncated JPEG raised out of
@@ -567,37 +597,65 @@ class TestComputeCropBox:
     """The pure geometry: integer window, x wraps at the seam, y clamps by shifting, size capped."""
 
     def test_interior_label_is_centred(self, crop_runner):
-        left, top, size = crop_runner.compute_crop_box(300, 128, 248.33, 512, 256)
-        assert (left, top, size) == (300 - 124, 128 - 124, 248)
+        box = crop_runner.compute_crop_box(300, 128, 248.33, 512, 256)
+        assert (box.left, box.top, box.size) == (300 - 124, 128 - 124, 248)
+        assert box.shifted is False
 
     def test_x_wraps_at_the_seam(self, crop_runner):
         """x=0 and x=width are the same place in the world; the window must reach across, not stop."""
-        left, top, size = crop_runner.compute_crop_box(0, 128, 248.33, 512, 256)
-        assert (left, top, size) == ((0 - 124) % 512, 4, 248)
+        box = crop_runner.compute_crop_box(0, 128, 248.33, 512, 256)
+        assert (box.left, box.top, box.size) == ((0 - 124) % 512, 4, 248)
 
     def test_top_clamps_by_shifting(self, crop_runner):
         """The poles are NOT adjacent, so y shifts to stay inside rather than wrapping or padding."""
-        left, top, size = crop_runner.compute_crop_box(300, 8, 248.33, 512, 256)
-        assert top == 0
-        assert size == 248
+        box = crop_runner.compute_crop_box(300, 8, 248.33, 512, 256)
+        assert box.top == 0
+        assert box.size == 248
 
     def test_bottom_clamps_by_shifting(self, crop_runner):
-        left, top, size = crop_runner.compute_crop_box(300, 250, 200.0, 512, 256)
-        assert top == 256 - 200
+        box = crop_runner.compute_crop_box(300, 250, 200.0, 512, 256)
+        assert box.top == 256 - 200
 
     def test_size_caps_at_the_pano(self, crop_runner):
         """predict_crop_size can return up to 1500; a window can never exceed the image it's cut from."""
-        left, top, size = crop_runner.compute_crop_box(300, 250, 1500, 512, 256)
-        assert size == 256
-        assert top == 0
+        box = crop_runner.compute_crop_box(300, 250, 1500, 512, 256)
+        assert box.size == 256
+        assert box.top == 0
+
+    def test_size_caps_at_the_narrow_axis_of_a_portrait_pano(self, crop_runner):
+        """The cap is min(size, width, height), and the WIDTH half is load-bearing, not decoration:
+        drop it and a window wider than the pano makes extract_crop's second segment read past the
+        far edge, where Pillow zero-fills - reintroducing #47's black exactly where the fix claims
+        to have removed it. Every other pano in this file is landscape or square, so nothing else
+        discriminates the width term."""
+        box = crop_runner.compute_crop_box(100, 300, 400, 200, 600)
+        assert box.size == 200
+        assert 0 <= box.left < 200
+        assert 0 <= box.top <= 600 - box.size
+
+    def test_box_reports_whether_it_shifted(self, crop_runner):
+        """The shift is reported by the geometry itself rather than re-derived by the caller: a
+        second copy of round(pano_y - size / 2) elsewhere is free to drift out of step with this
+        one, and a de-centred crop that quietly stops being announced is exactly the class of
+        silence this PR exists to remove."""
+        assert crop_runner.compute_crop_box(300, 128, 248.33, 512, 256).shifted is False
+        assert crop_runner.compute_crop_box(300, 8, 248.33, 512, 256).shifted is True
+        assert crop_runner.compute_crop_box(300, 250, 200.0, 512, 256).shifted is True
 
     def test_box_is_integral_and_deterministic(self, crop_runner):
         """Pillow's float-box crop banker's-rounds each edge independently, so the same predicted size
-        yielded 503- or 504-px crops depending on the centre's parity. Integers end that."""
-        for x in (100, 100.5, 101, 250.25):
-            left, top, size = crop_runner.compute_crop_box(x, 128, 503.21, 2048, 1024)
-            assert isinstance(left, int) and isinstance(top, int) and isinstance(size, int)
-            assert size == 503
+        yielded 503- or 504-px crops depending on the centre's parity. Integers end that.
+
+        `left` is pinned too, not just `size`: this is the only case exercising a fractional centre,
+        so without it a truncating int(...) in place of int(round(...)) would move every such window
+        a pixel with nothing to notice. Expected values are round-half-to-even on pano_x - 251.5,
+        matching Python's round()."""
+        for x, raw_left in ((100, -152), (100.5, -151), (101, -150), (250.25, -1)):
+            box = crop_runner.compute_crop_box(x, 128, 503.21, 2048, 1024)
+            assert isinstance(box.left, int) and isinstance(box.top, int)
+            assert isinstance(box.size, int)
+            assert box.size == 503
+            assert box.left == raw_left % 2048
 
 
 class TestSeamCrops:
@@ -749,3 +807,105 @@ class TestDimsReconciliation:
         row.update(pano_width=float('nan'), pano_height=float('nan'))
         counts = crop_runner.bulk_extract_crops([row], str(store), str(out))
         assert counts['success'] == 1
+
+
+class TestCoordinateBounds:
+    """Stored pano_x/pano_y must land inside the frame they are expressed in — but only y can be
+    checked, and that asymmetry is the whole point.
+
+    x needs no check and must not get one: column 0 and column pano_width are the same place in the
+    world, so the seam modulo is the CORRECT reading of any finite x. Two CDMX labels in the census
+    corpus store pano_x == pano_width exactly and crop perfectly.
+
+    y has no such escape. The poles are not adjacent, so an out-of-frame y is clamped to a pole and
+    the crop becomes clean imagery of a place the label is not in — worse than the black bar it
+    replaced, because nothing downstream can see it. The census found exactly two such rows in
+    438,410 labels, and both are the corrupt negative-pano_y rows a consumer is told to exclude.
+    """
+
+    # The two production rows, from reports/data/2026-08-10-crop-geometry-census.json.
+    PRODUCTION_OUT_OF_FRAME = [(231546, 845, -720, 13312, 6656),
+                               (233419, 12327, -355, 16384, 8192)]
+
+    def test_label_above_the_top_edge_is_a_loud_skip(self, crop_runner, tmp_path, caplog):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops([label_row(pano_y=-720)], str(store), str(out))
+        assert counts['out_of_frame'] == 1
+        assert counts['success'] == 0
+        assert not os.path.exists(crop_path(out, 1, 1))
+        assert '-720' in caplog.text
+
+    def test_label_below_the_bottom_edge_is_a_loud_skip(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_y=300)], str(store), str(out))
+        assert counts['out_of_frame'] == 1
+
+    def test_pano_y_equal_to_the_height_is_out_of_frame(self, crop_runner, tmp_path):
+        """Row indices run [0, height); pano_y == height is one row past the last one."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_y=256)], str(store), str(out))
+        assert counts['out_of_frame'] == 1
+
+    def test_the_last_real_row_is_still_in_frame(self, crop_runner, tmp_path):
+        """Discrimination for the test above: the check must be < height, not <= height - 1 - k."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_y=255)], str(store), str(out))
+        assert counts['success'] == 1
+        assert counts['out_of_frame'] == 0
+
+    def test_x_at_the_seam_boundary_is_not_rejected(self, crop_runner, tmp_path):
+        """The discriminator against an over-broad bounds check. pano_x == pano_width is the same
+        world column as pano_x == 0, so it must crop — and produce the identical crop."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_striped_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops(
+            [label_row(label_id=1, pano_x=0), label_row(label_id=2, pano_x=512)],
+            str(store), str(out))
+        assert counts['success'] == 2
+        assert counts['out_of_frame'] == 0
+        with Image.open(crop_path(out, 1, 1)) as a, Image.open(crop_path(out, 1, 2)) as b:
+            assert list(a.convert('RGB').getdata()) == list(b.convert('RGB').getdata())
+
+    def test_negative_x_is_not_rejected_either(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_x=-3)], str(store), str(out))
+        assert counts['success'] == 1
+        assert counts['out_of_frame'] == 0
+
+    @pytest.mark.parametrize('label_id, pano_x, pano_y, pano_width, pano_height',
+                             PRODUCTION_OUT_OF_FRAME)
+    def test_the_production_rows_would_be_skipped(self, crop_runner, label_id, pano_x, pano_y,
+                                                 pano_width, pano_height):
+        """The two real rows, at their real pano dimensions. Pre-check they clamped to a pole and
+        produced a clean crop of the wrong place; the geometry still would, which is why the
+        rejection has to happen before the crop, not inside it."""
+        size = crop_runner.predict_crop_size(pano_y, pano_height)
+        box = crop_runner.compute_crop_box(pano_x, pano_y, size, pano_width, pano_height)
+        assert box.shifted is True
+        assert not 0 <= pano_y - box.top < box.size   # the label is not inside its own crop
+        assert not 0 <= pano_y < pano_height          # ... because the row is out of frame
+
+    def test_a_shifted_crop_is_counted_but_still_succeeds(self, crop_runner, tmp_path):
+        """A label legitimately close to a pole is de-centred, not rejected: the crop is real
+        imagery containing the label. It is counted so the de-centring is visible to a consumer
+        (it is a covariate for the #54 placement work), and counted as an annotation on the
+        success rather than as its own bucket."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_y=8)], str(store), str(out))
+        assert counts['success'] == 1
+        assert counts['shifted_vertically'] == 1
+        assert counts['out_of_frame'] == 0
+
+    def test_an_interior_crop_is_not_counted_as_shifted(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
+        assert counts['success'] == 1
+        assert counts['shifted_vertically'] == 0
