@@ -103,6 +103,17 @@ Everything lives under the storage root, with two-char pano-id prefix sharding:
 
 `config.py` holds `thread_count` (image-phase tile fan-out, default 8), a rotating `headers_list` (randomly picked per request), `proxies` (set to the `http://`/`https://` sentinels to disable), and `depth_min_request_interval` (seconds between depth metadata requests; 0 disables — leave it there unless a canary run shows Google pushing back, since the backfill is a multi-month job).
 
+## Artifact storage (standing rule)
+
+Every research and engineering artifact — datasets, annotations, measurement files, figures,
+scripts, model outputs — lives in **GitHub (this repo or a sibling org repo) or the
+`projectsidewalk` Hugging Face org, nothing else**. Personal cloud storage (Google Drive,
+Dropbox, ad-hoc shared links) is easy to reach for in the moment but doesn't survive people
+moving on: links rot, accounts close, and experiments have had to be re-run because artifacts
+that felt accessible at the time were no longer findable later. Version-controlled, org-owned
+homes are the only storage that outlives any one person's involvement. The bar: a fresh clone
+plus the referenced HF dataset must reproduce every number in `reports/`.
+
 ## Things that are easy to get wrong
 
 - **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in README's "Ops notes"; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
