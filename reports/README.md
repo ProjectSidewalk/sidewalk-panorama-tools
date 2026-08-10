@@ -43,3 +43,4 @@ A report is the narrative; the tests and fixtures are the enforcement. Neither r
 |---|---|---|
 | 2026-08-07 | [CBK tile resolution and the `fover` parameter](2026-08-07-cbk-tile-resolution.md) | Dropped `fover`; recovered full zoom-5 resolution. Recommends against re-downloading the store. Issues #73, #74; PR #68. |
 | 2026-08-09 | [Cropper consumer requirements](2026-08-09-cropper-consumer-requirements.md) | Requirements survey of RampNet 2.0 / validator-ai / tagger-ai / sidewalk-ai-api; sets the pre-registered thresholds for the #54/#32 studies (placement ≤ 0.5°, margin 3–4.5× object half-extent). |
+| 2026-08-09 | [Era replay study](2026-08-09-era-replay-study.md) | 438k labels, 6 cities: stored pano_x/y is click-time truth in every era; found + bounded an 18-month client record bug (evo 179 → 7.20.7); pano_x-only drift signature extended to 3 new cities; hands #54/#32 their era/window covariates. |
