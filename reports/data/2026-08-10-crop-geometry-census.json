@@ -1,0 +1,308 @@
+{
+ "source": "/v3/api/rawLabels?filetype=csv",
+ "fetched": "2026-08-09",
+ "corpus": {
+  "cities": [
+   "amsterdam",
+   "cdmx",
+   "columbus-oh",
+   "newberg-or",
+   "oradell-nj",
+   "seattle-wa"
+  ],
+  "labels": 438410,
+  "labels_without_a_frame": 2060
+ },
+ "dims_are_per_pano": {
+  "panos": 172790,
+  "panos_with_multiple_dims": 0,
+  "panos_labelled_over_4y_apart": 196,
+  "labels_on_those_panos": 1644,
+  "of_those_with_multiple_dims": 0,
+  "dims_buckets": {
+   "16384x8192": {
+    "n": 392793,
+    "first_label": "2019-03-04",
+    "last_label": "2026-07-31"
+   },
+   "13312x6656": {
+    "n": 42491,
+    "first_label": "2019-01-30",
+    "last_label": "2026-07-15"
+   },
+   "3328x1664": {
+    "n": 1029,
+    "first_label": "2019-02-01",
+    "last_label": "2026-07-15"
+   },
+   "3840x1920": {
+    "n": 13,
+    "first_label": "2020-05-06",
+    "last_label": "2025-07-09"
+   },
+   "5376x2688": {
+    "n": 11,
+    "first_label": "2019-05-07",
+    "last_label": "2022-03-03"
+   },
+   "7200x3600": {
+    "n": 6,
+    "first_label": "2020-12-06",
+    "last_label": "2020-12-07"
+   },
+   "5660x2830": {
+    "n": 3,
+    "first_label": "2021-05-14",
+    "last_label": "2021-05-14"
+   },
+   "6720x3360": {
+    "n": 3,
+    "first_label": "2026-02-09",
+    "last_label": "2026-02-09"
+   },
+   "10240x5120": {
+    "n": 1,
+    "first_label": "2020-01-10",
+    "last_label": "2020-01-10"
+   }
+  }
+ },
+ "geometry": {
+  "n": 436350,
+  "seam_crossing": {
+   "n": 6634,
+   "pct": 1.5203391772659562
+  },
+  "vertical_shift": {
+   "n": 2,
+   "pct": 0.00045834765669760516
+  },
+  "size_capped_by_pano": {
+   "n": 0,
+   "pct": 0.0
+  },
+  "outside_frame": {
+   "x_benign_wraps": 2,
+   "y_unrecoverable": 2
+  },
+  "pano_y_over_height": {
+   "0": 0.34130859375,
+   "1": 0.5168357496995193,
+   "50": 0.58544921875,
+   "99": 0.741455078125,
+   "100": 0.8768310546875
+  }
+ },
+ "geometry_by_city": {
+  "amsterdam": {
+   "n": 30061,
+   "seam_crossing": {
+    "n": 1107,
+    "pct": 3.6825122251422107
+   },
+   "vertical_shift": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "size_capped_by_pano": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "outside_frame": {
+    "x_benign_wraps": 0,
+    "y_unrecoverable": 0
+   },
+   "pano_y_over_height": {
+    "0": 0.3626708984375,
+    "1": 0.5064208984375,
+    "50": 0.5972900390625,
+    "99": 0.7865478515625002,
+    "100": 0.849853515625
+   }
+  },
+  "cdmx": {
+   "n": 74179,
+   "seam_crossing": {
+    "n": 1306,
+    "pct": 1.7606061014572856
+   },
+   "vertical_shift": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "size_capped_by_pano": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "outside_frame": {
+    "x_benign_wraps": 2,
+    "y_unrecoverable": 0
+   },
+   "pano_y_over_height": {
+    "0": 0.34130859375,
+    "1": 0.5189208984375,
+    "50": 0.59716796875,
+    "99": 0.7445068359375,
+    "100": 0.8624267578125
+   }
+  },
+  "columbus-oh": {
+   "n": 41077,
+   "seam_crossing": {
+    "n": 310,
+    "pct": 0.7546802346812085
+   },
+   "vertical_shift": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "size_capped_by_pano": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "outside_frame": {
+    "x_benign_wraps": 0,
+    "y_unrecoverable": 0
+   },
+   "pano_y_over_height": {
+    "0": 0.447998046875,
+    "1": 0.5191447566105769,
+    "50": 0.5738525390625,
+    "99": 0.710693359375,
+    "100": 0.86669921875
+   }
+  },
+  "newberg-or": {
+   "n": 17245,
+   "seam_crossing": {
+    "n": 88,
+    "pct": 0.5102928385039142
+   },
+   "vertical_shift": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "size_capped_by_pano": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "outside_frame": {
+    "x_benign_wraps": 0,
+    "y_unrecoverable": 0
+   },
+   "pano_y_over_height": {
+    "0": 0.47250600961538464,
+    "1": 0.521484375,
+    "50": 0.5869891826923077,
+    "99": 0.7291165865384616,
+    "100": 0.8348388671875
+   }
+  },
+  "oradell-nj": {
+   "n": 13591,
+   "seam_crossing": {
+    "n": 93,
+    "pct": 0.6842763593554558
+   },
+   "vertical_shift": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "size_capped_by_pano": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "outside_frame": {
+    "x_benign_wraps": 0,
+    "y_unrecoverable": 0
+   },
+   "pano_y_over_height": {
+    "0": 0.355712890625,
+    "1": 0.51256103515625,
+    "50": 0.5743408203125,
+    "99": 0.6937255859375,
+    "100": 0.8177490234375
+   }
+  },
+  "seattle-wa": {
+   "n": 260197,
+   "seam_crossing": {
+    "n": 3730,
+    "pct": 1.4335292105596913
+   },
+   "vertical_shift": {
+    "n": 2,
+    "pct": 0.000768648370273293
+   },
+   "size_capped_by_pano": {
+    "n": 0,
+    "pct": 0.0
+   },
+   "outside_frame": {
+    "x_benign_wraps": 0,
+    "y_unrecoverable": 2
+   },
+   "pano_y_over_height": {
+    "0": 0.3477783203125,
+    "1": 0.5162353515625,
+    "50": 0.5841064453125,
+    "99": 0.7344970703125,
+    "100": 0.8768310546875
+   }
+  }
+ },
+ "outside_frame_rows": [
+  {
+   "city": "cdmx",
+   "label_id": 65875,
+   "pano_id": "Q4o7N16id-imHuCfxiEs9w",
+   "pano_x": 16384.0,
+   "pano_y": 5010.0,
+   "pano_width": 16384.0,
+   "pano_height": 8192.0,
+   "crop_size": 1057.0,
+   "axis": "x",
+   "recoverable": true,
+   "shifts": false
+  },
+  {
+   "city": "cdmx",
+   "label_id": 66643,
+   "pano_id": "03szWbmO_xySlWjbpf6Ylw",
+   "pano_x": 16384.0,
+   "pano_y": 6446.0,
+   "pano_width": 16384.0,
+   "pano_height": 8192.0,
+   "crop_size": 1500.0,
+   "axis": "x",
+   "recoverable": true,
+   "shifts": false
+  },
+  {
+   "city": "seattle-wa",
+   "label_id": 231546,
+   "pano_id": "FpOC08OPOIF0fVIanmDeqQ",
+   "pano_x": 845.0,
+   "pano_y": -720.0,
+   "pano_width": 13312.0,
+   "pano_height": 6656.0,
+   "crop_size": 50.0,
+   "axis": "y",
+   "recoverable": false,
+   "shifts": true
+  },
+  {
+   "city": "seattle-wa",
+   "label_id": 233419,
+   "pano_id": "bvNzurtDJHUuB4y45pHryA",
+   "pano_x": 12327.0,
+   "pano_y": -355.0,
+   "pano_width": 16384.0,
+   "pano_height": 8192.0,
+   "crop_size": 50.0,
+   "axis": "y",
+   "recoverable": false,
+   "shifts": true
+  }
+ ]
+}
