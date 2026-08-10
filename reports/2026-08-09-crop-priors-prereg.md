@@ -21,12 +21,14 @@ Each line is a committed report with committed data and CI-pinned findings:
 | Label depression distribution (weights for evaluation) | p10/p50/p90/p99 = 7.8°/15.4°/27.3°/43.5° | same |
 | Camera tilt prior (the #54 effect-size scale) | \|pitch\| p50/p90 = 0.63/2.60°, \|roll\| p50/p90 = 0.90/2.16° | [photometa census](data/2026-08-09-photometa-census.json) |
 | Pano survival + metadata drift | 47.9% of labeled panos alive (33.2% legacy → 60.0% post-179); 0.0% of alive serve different dims than stored¹; depth present for 100.0% | same |
+| Backup-store coverage (the Phase 2 pixel source) | 99.2% of dead-at-Google panos are on the makelab2 store (97.8% even for legacy); store JPEG disagrees with `gsv_data`'s frame for 4.6% | [store coverage](2026-08-10-store-coverage.md) |
 
-¹ That 0.0% compares **`gsv_data` against Google**, not our stored JPEG against Google. Store panos
-were stitched at whatever zoom worked at scrape time (zoom 5 preferred, 3 as fallback, then
-upscaled), so a store image can legitimately differ from both. #77's dims preflight guards the
-store-side case and is **not** retired by this row; §3's acquisition-time dims-mismatch exclusion is
-what applies to the study corpus.
+¹ That 0.0% compares **`gsv_data` against Google**, not our stored JPEG against either. Store panos
+hold whatever Google served at scrape time, so a store image can legitimately differ from both. The
+[store-coverage study](2026-08-10-store-coverage.md) measured that comparison directly and found
+the store's JPEG disagrees with `gsv_data`'s frame for **4.6%** of panos (61 of 62 in the direction
+`gsv_data` 16384×8192 → store 13312×6656). So #77's dims preflight is **not** retired by this row —
+it has a real hit rate — and §3's dims-mismatch exclusion is what applies to the study corpus.
 
 Working constraint carried from the era study: never re-derive geometry from current
 `camera_heading` for old labels (it drifts); everything below anchors on stored pano pixels.
@@ -148,27 +150,38 @@ From the six-city rawLabels fetch of 2026-08-09 (era study provenance):
   panos** must contribute exactly 2–3 study labels with pairwise bearing separation |ΔΔb| ≥ 60°,
   drawn preferentially from panos alive at Google (only those carry the photometa pitch/roll that
   endpoint 2 consumes). These panos count toward the 650, not on top of it.
-* **Exclusions, pre-specified**: tutorial panos; `pano_y` outside [0, height]; dims-mismatch at
-  acquisition time (stored vs acquired frame, the #77 preflight); labels with `disagree_count >
-  agree_count` are *included* but flagged (consumer pipelines don't filter them — measure, don't
-  sanitize).
+* **Exclusions, pre-specified**: tutorial panos; `pano_y` outside [0, height]; **dims mismatch
+  between the acquired image and the label's recorded frame** — compared against the *store's own
+  JPEG*, not against `gsv_data`, and measured at **≈ 4.6%** of panos by the
+  [store-coverage study](2026-08-10-store-coverage.md), so this is a material filter and not a
+  formality (this is the #77 preflight; the photometa census's 0.0% figure compared a different
+  pair — see §1 note ¹); labels with `disagree_count > agree_count` are *included* but flagged
+  (consumer pipelines don't filter them — measure, don't sanitize).
 * **Reweighting**: all corpus-level claims reweight strata back to the label population
   (clamp-census depression×type distribution); per-stratum claims stated as such.
-* **Pixels, two sources** (the photometa census measured 47.9% pano survival, 33% for legacy —
-  Google-only sourcing would gut the old strata and bias the corpus toward new imagery):
-  panos alive at Google are downloaded via the production `DownloadRunner` path into an isolated
-  store, over-drawing strata at ~1.7×/2.2×/3× (post-fix/mid/legacy) per the measured survival;
-  panos dead at Google are pulled from the **production pano store** (the log-analyzer's SFTP
-  path), which is now the only source of that imagery. Source is recorded per pano; panos absent
-  from both are logged as unreachable. Store manifest (pano ids + source + hashes) committed with
-  the Phase 2 commit.
+* **Pixels: one source, the lab backup store** —
+  `/m-makeabilitylab/makeabilitylab/sidewalk_panos/Panoramas` on makelab2, keyed
+  `<city>/<pano_id[:2]>/<pano_id>.jpg`. The [store-coverage study](2026-08-10-store-coverage.md)
+  measured it at **99.2% of the panos Google has dropped** and 99.6% of the census sample overall,
+  holding at **97.8% even in the legacy era** where Google survival is 33.2%. Every stratum takes
+  the same path, live or dead: no download, no per-era sourcing split.
+  * **Over-draw: a flat ~5% allowance**, not the era-graded ~1.7×/2.2×/3× this spec previously
+    carried. Those factors priced *Google* survival, which is no longer the binding constraint;
+    against a ~99% source the era grading disappears (97.8% → 100.0% across eras).
+  * Google is used only where the store misses. Source is recorded per pano; panos absent from
+    both are logged **unreachable** (six such in the census sample, ids committed). Store manifest
+    (pano ids + source + hashes) committed with the Phase 2 commit.
+  * **This changes imagery only.** Endpoint 2 still needs photometa `pitch`/`roll`, which exists
+    only for panos alive at Google, so its n and its survival selection are exactly as stated in
+    §5 — unchanged by store coverage.
 
 ## 4 · Annotation protocol (anti-anchoring, agreement-gated)
 
 * **Rendering**: annotator sees a viewport crop centred at the stored point **plus a uniform
   random jitter of ±40–80 px per axis** (seeded, logged); the stored point, any crop box, and
   any prior annotation are **never rendered**. Zoom permitted; the tile is served from the
-  isolated store, not Google.
+  Phase 2 corpus store (§3), never fetched live from Google — so an annotation can never be made
+  against different pixels than the analysis reads.
 * **Task**: per label — (a) mark the object's **canonical point** per the type rubric below;
   (b) drag a **tight bounding box**; (c) flag {object-absent, ambiguous, occluded}.
 * **Rubric (canonical points)**: CurbRamp/NoCurbRamp — centre of the ramp (or would-be ramp)
@@ -267,6 +280,17 @@ below 53° of depression against a corpus p99 of 43.5°).
   5. §5 — endpoint 2's n is ~310, not 650: `camera_roll` is absent from rawLabels entirely and
      photometa only answers for the 47.9% of panos still alive, which selects on era.
   6. §1, §6 — dims-drift and shifted-crop footnotes corrected against what was actually measured.
+* **2026-08-10 — §3 corpus sourcing, after the
+  [store-coverage study](2026-08-10-store-coverage.md).** Prompted by Mikey confirming the EC2
+  backup panos are synced to makelab2, which made the store measurable for the first time. §3 had
+  sized its sourcing plan against Google survival because that was the constraint Phase 1 had
+  measured; the store turns out to hold **99.2%** of the dead panos (97.8% for legacy), so it is
+  now the single pixel source for every stratum, the era-graded ~1.7×/2.2×/3× over-draw is replaced
+  by a flat ~5% allowance, and the `PS_SFTP_*` credential dependency is withdrawn. The same probe
+  measured the store's JPEG against `gsv_data`'s frame at **4.6% disagreement**, which turns §3's
+  dims-mismatch exclusion from a formality into a material filter and corrects the reading of §1's
+  0.0%-dims-drift row. Endpoint 2 is untouched: photometa pitch/roll still exists only for panos
+  alive at Google.
 
 ---
 

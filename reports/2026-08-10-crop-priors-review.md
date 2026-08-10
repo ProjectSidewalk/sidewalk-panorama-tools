@@ -83,6 +83,16 @@ exactly zero, and every label that would ever have needed one is a row #77 now r
 Noted in the clamp census and pinned in `TestCrossCensusReconciliation`, because a bare "0 vs 2"
 across two committed artifacts is precisely the thing that gets re-litigated in six months.
 
+## Follow-on: the caveat that became a measurement
+
+One nit in this review was that the photometa census's "0.0% dims drift" compares `gsv_data`
+against Google and never against our own JPEG, so it should not be read as retiring #77's preflight.
+That was written as a caveat because the store was not reachable. It is now: the
+[store-coverage study](2026-08-10-store-coverage.md) measured the store's JPEG against `gsv_data`'s
+frame at **4.6% disagreement**, and measured the store's coverage of dead-at-Google panos at
+**99.2%** — which rewrote §3's sourcing plan and retired the era-graded over-draw. Logged as the
+second pre-registration revision in §7.
+
 ## Wrong turns (mine, this time)
 
 * **"`validated_only` being bit-identical to `overall` is a bug."** It is not. `d_el` is a difference
