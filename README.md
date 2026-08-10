@@ -69,13 +69,16 @@ Panos with any other `source` value are skipped with a warning.
 
 Usage:
 ```python
-python CropRunner.py [-h] (-d [D] | -f [F]) [-s S] [-c C]
+python CropRunner.py [-h] (-d D | -f F) [-s S] [-o O] [--mark-label]
 ```
 * To fetch label metadata from webserver or a file, use respectively (mutually exclusive, required):
   * ``-d <project-sidewalk-url>``
-  * ``-f <path-to-label-metadata-file>``
+  * ``-f <path-to-label-metadata-file>`` (`.csv` or `.json`)
 * ``-s <path-to-panoramas-dir>`` (optional). Specify if using a different directory containing panoramas. Panoramas are used to crop the labels.
-* ``-o <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored.
+* ``-o <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored. `crop.log` is written here too.
+* ``--mark-label`` (optional, debugging aid). Draws a dot at the label position in every crop. Off by default — the crops are ML training data, and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.
+
+Crops are square, centered on the label, sized by an estimated camera-to-label distance, and written to `<crop-dir>/<label_type_id>/<label_id>.jpg`. Crop windows wrap across the equirectangular seam (the left and right image edges are the same place in the world) and shift to stay inside the image at the top and bottom, so a crop never contains synthetic black padding. If the label metadata carries pano dimensions that disagree with the image on disk, that label is skipped with a warning rather than producing a silently mis-centered crop.
 
 As an example:
 ```python
@@ -84,7 +87,7 @@ python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbu
 
 **Note** You will likely want to filter out labels where `disagree_count > agree_count`. These are based on human-provided validations from other Project Sidewalk users. This is not written in the code by default. There is also an option for a filter that is even more strict. This of course has the tradeoff of using less data, so this depends on the the needs of your project: more data vs more accurate data. To do this, you would query the `/v2/access/attributesWithLabels` API endpoint for the city you're looking at. Then you would only include labels where the `label_id` is also present in the attributesWithLabels API. This is a more aggressive filter that removes labels from some users that we suspect are providing low quality data based on some heuristics.
 
-**Note** We have noticed some error in the y-position of labels on the panorama. We believe that this either comes from a bug in the GSV API, or it may be there there is some metadata that Google is not providing us. The errors are relatively small and in the y-direction. As of Apr 2023 we are working on an alternative cropper that attempts to correct for these errors, but it is in development. The version here should work pretty well for now though!
+**Note** We have noticed some error in the y-position of labels on the panorama (first observed Apr 2023). The candidate root cause is now diagnosed — the click→pano mapping corrects for camera heading but not for per-pano camera tilt, see [SidewalkWebpage#4784](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4784) — and [#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54) tracks measuring the effect at crop level in this repo, with a correction to follow if the measurement confirms it. (An earlier note here referred to an "alternative cropper" in development; that effort was abandoned and #54 supersedes it.)
 
 ## Log analyzer
 

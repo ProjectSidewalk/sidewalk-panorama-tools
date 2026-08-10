@@ -164,6 +164,25 @@ def fetch_cvMetadata_from_server(server_fdqn):
     return json_to_list(jsondata)
 
 
+def _metadata_dims(row):
+    """The pano dimensions a label row claims, or None if it doesn't carry them.
+
+    cvMetadata calls them pano_width/pano_height (null for third-party photospheres, which pandas turns
+    into NaN); the old CSV export calls them width/height. Raises ValueError on non-numeric values so the
+    caller's malformed-row handling applies.
+    """
+    raw_width = row.get('pano_width')
+    raw_height = row.get('pano_height')
+    if raw_width is None or raw_height is None:
+        raw_width, raw_height = row.get('width'), row.get('height')
+    if raw_width is None or raw_height is None:
+        return None
+    width, height = float(raw_width), float(raw_height)
+    if not (math.isfinite(width) and math.isfinite(height) and width > 0 and height > 0):
+        return None
+    return int(width), int(height)
+
+
 def load_label_metadata(sidewalk_server_fdqn, label_metadata_file):
     """Dispatch to the right intake for -d / -f, with a clear error for an unrecognized -f extension
     (which used to fall through to a NameError, #48)."""
@@ -208,9 +227,48 @@ def predict_crop_size(pano_y, pano_height):
     return crop_size
 
 
+def compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height):
+    """Integer crop window for an equirectangular pano: x wraps at the seam, y clamps by shifting.
+
+    On an equirectangular pano, column 0 and column width are the same place in the world, so a window
+    near either edge reaches across the seam (#47) - extract_crop pastes the two segments. The poles are
+    NOT adjacent, so the window shifts vertically to stay inside rather than wrapping or zero-padding:
+    no crop ever contains synthetic black, at the price of the label sitting off-centre vertically when
+    it is within crop_size/2 of the top or bottom edge.
+
+    size is round(crop_size) capped at both pano dimensions - predict_crop_size can say 1500 but a window
+    can never exceed the image it is cut from. (Production panos are 2:1 with height >= 1664, so only
+    sub-crop-size synthetic images actually hit the cap.) Integers throughout: Pillow's float-box crop
+    banker's-rounds each edge independently, which made output dimensions vary with the centre's parity.
+
+    :return: (left, top, size) - integers, 0 <= left < pano_width, 0 <= top <= pano_height - size.
+    """
+    size = min(int(round(crop_size)), pano_width, pano_height)
+    left = int(round(pano_x - size / 2)) % pano_width
+    top = int(round(pano_y - size / 2))
+    top = max(0, min(top, pano_height - size))
+    return left, top, size
+
+
+def extract_crop(pano, left, top, size):
+    """Extract the (left, top, size) window from an equirectangular pano, pasting two segments when the
+    window crosses the seam."""
+    pano_width = pano.size[0]
+    if left + size <= pano_width:
+        return pano.crop((left, top, left + size, top + size))
+    out = Image.new(pano.mode, (size, size))
+    first_width = pano_width - left
+    out.paste(pano.crop((left, top, pano_width, top + size)), (0, 0))
+    out.paste(pano.crop((0, top, size - first_width, top + size)), (first_width, 0))
+    return out
+
+
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     """
     Makes a crop around the object of interest and saves it atomically.
+
+    Geometry per compute_crop_box: x wraps at the equirectangular seam, y clamps by shifting, so the
+    crop is real imagery edge to edge (#47).
 
     :param pano: an open PIL.Image, or a path to one. bulk_extract_crops opens each pano once and passes
                  the image (a 16384x8192 pano is ~250 MB decoded; re-opening per label decoded it once per
@@ -226,21 +284,24 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
         pano = Image.open(pano)
         close_after = True
     try:
-        pano_height = pano.size[1]
+        pano_width, pano_height = pano.size
 
         crop_size = predict_crop_size(pano_y, pano_height)
-        top_left_x = pano_x - crop_size / 2
-        top_left_y = pano_y - crop_size / 2
-        cropped_square = pano.crop((top_left_x, top_left_y, top_left_x + crop_size, top_left_y + crop_size))
+        left, top, size = compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height)
+        if top != int(round(pano_y - size / 2)):
+            logging.debug("Crop for (%s, %s) shifted vertically to stay inside the pano (top=%d)",
+                          pano_x, pano_y, top)
+        cropped_square = extract_crop(pano, left, top, size)
 
         if draw_mark:
             # Draw on the crop, never the source pano: the pano image is shared by every label on it, so a
-            # mark on the source would leak this label's dot into its neighbours' crops. Pillow rounds the
-            # crop box the same way round() does, hence the round() here to land on the true label pixel.
+            # mark on the source would leak this label's dot into its neighbours' crops. The label's x is
+            # recovered modulo the seam, and its y deliberately follows any vertical shift - the dot marks
+            # the label, not the crop centre.
             draw = ImageDraw.Draw(cropped_square)
             r = 10
-            centre_x = pano_x - round(top_left_x)
-            centre_y = pano_y - round(top_left_y)
+            centre_x = (pano_x - left) % pano_width
+            centre_y = pano_y - top
             draw.ellipse((centre_x - r, centre_y - r, centre_x + r, centre_y + r), fill=128)
 
         # The crop file is its own resume marker (bulk_extract_crops skips existing ones), so a mid-write
@@ -269,7 +330,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
         Image.MAX_IMAGE_PIXELS = _MAX_PANO_PIXELS
 
     counts = {'total': len(labels_to_crop), 'success': 0, 'skipped_existing': 0,
-              'missing_pano': 0, 'errors': 0}
+              'missing_pano': 0, 'dims_mismatch': 0, 'errors': 0}
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
@@ -288,11 +349,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             label_id = int(row['label_id'])
             if not (math.isfinite(pano_x) and math.isfinite(pano_y)):
                 raise ValueError("non-finite label position (%r, %r)" % (row['pano_x'], row['pano_y']))
+            meta_dims = _metadata_dims(row)
         except (KeyError, TypeError, ValueError) as e:
             counts['errors'] += 1
             logging.warning("Skipping malformed label row %r: %s", row, e)
             continue
-        labels_by_pano.setdefault(pano_id, []).append((pano_x, pano_y, label_type, label_id))
+        labels_by_pano.setdefault(pano_id, []).append((pano_x, pano_y, label_type, label_id, meta_dims))
 
     processed = counts['errors']
     for pano_id, labels in labels_by_pano.items():
@@ -315,9 +377,21 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             continue
 
         with pano:
-            for pano_x, pano_y, label_type, label_id in labels:
+            for pano_x, pano_y, label_type, label_id, meta_dims in labels:
                 processed += 1
                 print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
+
+                # Stored pano_x/pano_y are pixels in the metadata's frame; applied to an image with
+                # different dimensions they mis-centre every crop silently (the Mapillary path saves
+                # whatever thumb_original_url serves, and GSV re-serves old ids at new resolutions).
+                # Loud skip, never silent poison.
+                if meta_dims is not None and meta_dims != pano.size:
+                    counts['dims_mismatch'] += 1
+                    logging.warning(
+                        "Label %d on pano %s: metadata says %dx%d but the stored image is %dx%d; "
+                        "skipping rather than mis-centring the crop",
+                        label_id, pano_id, meta_dims[0], meta_dims[1], pano.size[0], pano.size[1])
+                    continue
 
                 destination_folder = os.path.join(destination_dir, str(label_type))
                 os.makedirs(destination_folder, exist_ok=True)
@@ -337,9 +411,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     print("Finished.")
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
-          "%d errors, of %d labels total."
+          "%d skipped on a metadata/image dimension mismatch, %d errors, of %d labels total."
           % (counts['success'], counts['skipped_existing'], counts['missing_pano'],
-             counts['errors'], counts['total']))
+             counts['dims_mismatch'], counts['errors'], counts['total']))
     return counts
 
 

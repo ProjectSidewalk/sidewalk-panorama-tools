@@ -36,7 +36,7 @@ python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-
     [--max-runtime MINUTES] [--min-depth-runtime MINUTES] [--max-depth-requests N]
 
 # Cropper
-python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) [-s <pano-dir>] [-o <crop-dir>]
+python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) [-s <pano-dir>] [-o <crop-dir>] [--mark-label]
 
 # Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see README's "Log analyzer")
 python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days N]
@@ -56,7 +56,7 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 
 ## Architecture
 
-`DownloadRunner.py` and `CropRunner.py` are standalone scripts with **no `if __name__ == "__main__"` guard** — importing either runs its whole flow, which is why `tests/test_log_analyzer.py` reads `LOG_CSV_FIELD_COUNT` out of `DownloadRunner.py` with `ast` rather than importing it. Per-source download logic lives in the `downloaders/` package, which is safe to import.
+`DownloadRunner.py` and `CropRunner.py` both follow the #52.1 shape: side-effect-free import, `build_parser()` / `configure_logging()` / `run()` / `main(argv=None)` seams, and a `__main__` guard — tests drive them in-process. Per-source download logic lives in the `downloaders/` package.
 
 **DownloadRunner.py** — orchestrates a nightly run: fetch the pano list, download images, download depth, write one `log.csv` row.
 1. Fetches the pano list from `/adminapi/panos` (or a CSV via `-c`), using a `requests` session with retries and explicit timeouts. Drops empty ids and `'tutorial'`. `filter_supported_sources()` keeps `gsv` and (when `MAPILLARY_ACCESS_TOKEN` is set) `mapillary`; filtered-out panos are deliberately **not** written to `pano_id_log.csv` so a later run can still pick them up.
@@ -71,9 +71,9 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 - `mapillary.py` resolves `thumb_original_url` via the Graph API and downloads it. Requires `MAPILLARY_ACCESS_TOKEN`.
 
 **CropRunner.py** — extracts per-label crops from downloaded panos.
-1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`). CSV path dedupes on `label_id`.
-2. For each label, opens `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` and computes a square crop centered at `(pano_x, pano_y)`. Crop size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]`. Known improvements to make (zoom-aware distance estimation) are in the docstring.
-3. Writes to `<crop-dir>/<label_type_id>/<label_id>.jpg`. `MARK_LABEL = True` draws a dot at the label center inside the crop (a flag at the top of the file, not a CLI arg).
+1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake dtype-pins `pano_id` to `str` and guards required columns (the #46 bug class).
+2. Groups labels by pano so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded once, then cuts a square window per label via `compute_crop_box()`: integer box centered at `(pano_x, pano_y)`, **x wraps at the equirectangular seam, y clamps by shifting** — no crop ever contains synthetic black (#47). Crop size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]` (replacement tracked in #32/#54). If the row's metadata pano dims disagree with the image on disk, the label is a counted `dims_mismatch` skip, never a silently mis-centered crop.
+3. Writes atomically to `<crop-dir>/<label_type_id>/<label_id>.jpg`; existing crops are the resume marker (`skipped_existing`). Failures are per-label: counted, logged to `crop.log` (rotating, in the crop dir), and retried next run. `--mark-label` (default off) draws a dot at the label position in the crop — debugging only, since marked crops are poison as training data.
 
 **log_analyzer/analyze.py** — ops monitoring for the nightly scrape; shares no code with the runners.
 1. Reads `log_analyzer/cities.csv`, pulls each city's `log.csv` off the pano store with `sftp -b -` (the store's restricted SFTP subsystem doesn't speak the SCP wire protocol), and caches it in the gitignored `log_analyzer/logs/`. Connection settings come from `PS_SFTP_*` env vars or matching flags — host and base path are required with no defaults, since a wrong default would silently analyze the wrong store.
@@ -110,7 +110,7 @@ Everything lives under the storage root, with two-char pano-id prefix sharding:
 - **Depth artifacts are un-mirrored on write.** `streetlevel`'s decoder x-mirrors the payload relative to the pano JPEG; `_write_depth_artifact` flips it back (#58), so a consumer can index the stored array with `pano_x`/`pano_y` scaled by width/height, no correction needed. `tests/test_streetlevel_api.py` pins the decode's end-to-end column order so a streetlevel change fails CI rather than silently re-mirroring new artifacts.
 - **Depth is not a measurement of the scene.** It's Google's plane-based model: vehicles, people, and vegetation are absent, `-1` means "no plane" (sky *or* anything unmodeled), and curb ramps sit ~0.15 m above the modeled road surface. See README's "What the depth product is (and isn't)" before building anything on it.
 - **Labels may have `disagree_count > agree_count`;** the cropper does **not** filter these by default. For stricter filtering, intersect `label_id` with `/v2/access/attributesWithLabels`.
-- **There is small but real Y-axis error in label positions** on the pano — suspected upstream GSV bug. A corrected cropper is in progress elsewhere.
+- **There is small but real Y-axis error in label positions** on the pano — diagnosed as uncorrected per-pano camera tilt in the click→pano mapping (SidewalkWebpage#4784); #54 tracks measuring it at crop level here, with a correction to follow if confirmed.
 
 ## Label Type IDs
 
