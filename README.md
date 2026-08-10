@@ -69,18 +69,23 @@ Panos with any other `source` value are skipped with a warning.
 
 Usage:
 ```python
-python CropRunner.py [-h] (-d [D] | -f [F]) [-s S] [-c C]
+python CropRunner.py [-h] (-d D | -f F) [-s S] [-o O] [--mark-label]
 ```
 * To fetch label metadata from webserver or a file, use respectively (mutually exclusive, required):
   * ``-d <project-sidewalk-url>``
-  * ``-f <path-to-label-metadata-file>``
+  * ``-f <path-to-label-metadata-file>`` — `.csv` or `.json`
 * ``-s <path-to-panoramas-dir>`` (optional). Specify if using a different directory containing panoramas. Panoramas are used to crop the labels.
 * ``-o <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored.
+* ``--mark-label`` (optional). Draw a dot at the label position inside each crop. **A debugging aid — leave it off for training data.**
 
 As an example:
 ```python
 python CropRunner.py -d sidewalk-columbus.cs.washington.edu -s /sidewalk/columbus/panos/ -o /sidewalk/columbus/crops/
 ```
+
+The run writes a rotating `crop.log` into the crop directory, prints a per-outcome summary, and **exits 1 if any label errored** (a corrupt pano, a malformed metadata row, a failed write) so a cron wrapper can alert. Labels waiting on a pano that hasn't been downloaded yet are reported separately and are *not* an error — the pano store is scraped independently and legitimately lags the label list. Every failure is retried on the next run, since the crop file is its own resume marker: existing crops are skipped.
+
+**Note** Crops produced before the `--mark-label` flag existed all carry a burned-in dark-red dot at the label position: marking used to be a `MARK_LABEL = True` constant at the top of the file and was on for every run. If you are reusing an older crop set for training, that dot sits directly over the feature of interest and is exactly what a model will learn instead of the feature. Re-crop rather than reuse.
 
 **Note** You will likely want to filter out labels where `disagree_count > agree_count`. These are based on human-provided validations from other Project Sidewalk users. This is not written in the code by default. There is also an option for a filter that is even more strict. This of course has the tradeoff of using less data, so this depends on the the needs of your project: more data vs more accurate data. To do this, you would query the `/v2/access/attributesWithLabels` API endpoint for the city you're looking at. Then you would only include labels where the `label_id` is also present in the attributesWithLabels API. This is a more aggressive filter that removes labels from some users that we suspect are providing low quality data based on some heuristics.
 

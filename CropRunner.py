@@ -35,8 +35,22 @@ from downloaders.common import atomic_output_path
 # trusted, but "no limit at all" would also swallow a genuinely corrupt header claiming absurd dimensions.
 _MAX_PANO_PIXELS = 16384 * 8192
 
-# What the crop loop actually reads off every label row; both intakes guarantee these.
+# What the crop loop actually reads off every label row. Only the CSV intake enforces them up front (a
+# header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake keeps
+# whatever the payload had, and bulk_extract_crops counts a row missing any of them as one bad label.
 REQUIRED_LABEL_COLUMNS = ('pano_id', 'pano_x', 'pano_y', 'label_type_id', 'label_id')
+
+
+def raise_decompression_bomb_ceiling():
+    """Let Pillow decode our own 134 MP panos without a DecompressionBombWarning on every one.
+
+    Process-level policy, so main() calls it and bulk_extract_crops does not: this rewrites a PIL global
+    that belongs to whoever imported us, and since #52.1 that can be another program. A library caller
+    who wants the ceiling calls this itself; one who doesn't gets a warning, not a failure (Pillow only
+    hard-fails above 2x the threshold, and 134 MP is under 2x the 89 MP default).
+    """
+    if Image.MAX_IMAGE_PIXELS is not None and Image.MAX_IMAGE_PIXELS < _MAX_PANO_PIXELS:
+        Image.MAX_IMAGE_PIXELS = _MAX_PANO_PIXELS
 
 
 def build_parser():
@@ -258,16 +272,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
     pano, malformed row, or failed write is counted as an error and logged; both leave the remaining labels
-    running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). Crops on disk are
-    the resume marker: existing ones are counted as skipped_existing and everything failed here is simply
-    re-attempted on the next run.
+    running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). That includes the
+    output side: a full store or a read-only mount is one counted error per label, not an exception out of
+    this function with the counts lost. Crops on disk are the resume marker: existing ones are counted as
+    skipped_existing and everything failed here is simply re-attempted on the next run.
 
     :return: counts dict; success + skipped_existing + missing_pano + errors == total, including on re-runs.
     """
-    # Our own store's biggest panos (134 MP) are over Pillow's default bomb threshold; see _MAX_PANO_PIXELS.
-    if Image.MAX_IMAGE_PIXELS is not None and Image.MAX_IMAGE_PIXELS < _MAX_PANO_PIXELS:
-        Image.MAX_IMAGE_PIXELS = _MAX_PANO_PIXELS
-
     counts = {'total': len(labels_to_crop), 'success': 0, 'skipped_existing': 0,
               'missing_pano': 0, 'errors': 0}
 
@@ -281,7 +292,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             # send down a 'na/nan.jpg' shard path - the _normalize_pano_records lesson.
             if raw_id is None or (isinstance(raw_id, float) and math.isnan(raw_id)):
                 raise ValueError("missing pano_id")
-            pano_id = str(raw_id)
+            # A JSON payload carries '' where a blank CSV cell carries nan; both are missing metadata, but
+            # '' shards to the store root, so unguarded it would be filed as a pano we are still waiting
+            # on rather than a bad row. Stripped because a hand-edited CSV can carry padding and no pano
+            # id in either source has ever contained whitespace.
+            pano_id = str(raw_id).strip()
+            if not pano_id:
+                raise ValueError("empty pano_id")
             pano_x = float(row['pano_x'])
             pano_y = float(row['pano_y'])
             label_type = int(row['label_type_id'])
@@ -295,6 +312,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
         labels_by_pano.setdefault(pano_id, []).append((pano_x, pano_y, label_type, label_id))
 
     processed = counts['errors']
+    made_dirs = set()
     for pano_id, labels in labels_by_pano.items():
         pano_img_path = os.path.join(path_to_gsv_scrapes, pano_id[:2], pano_id + ".jpg")
 
@@ -314,19 +332,29 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                             len(labels), pano_id, pano_img_path, e)
             continue
 
-        with pano:
+        # Not `with pano:` - Image.__exit__ has been a no-op since Pillow 11, so the `with` form silently
+        # stopped closing anything while requirements.txt still allows the older Pillow where it did.
+        # close() is what actually releases the decoded buffer, which is the whole cost decode-once
+        # accepts (~250 MB for a 16384x8192 pano).
+        try:
             for pano_x, pano_y, label_type, label_id in labels:
                 processed += 1
                 print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
 
                 destination_folder = os.path.join(destination_dir, str(label_type))
-                os.makedirs(destination_folder, exist_ok=True)
                 crop_destination = os.path.join(destination_folder, str(label_id) + ".jpg")
 
                 if os.path.exists(crop_destination):
                     counts['skipped_existing'] += 1
                     continue
                 try:
+                    # Once per label type, not per label: exist_ok still costs a stat, and over sshfs
+                    # that is a network round trip for each of a city's ~400k labels. Inside the try
+                    # because an OSError here - a full store, a read-only mount, an sshfs drop - must be
+                    # one counted error like any other write failure, not the end of the run (#48).
+                    if destination_folder not in made_dirs:
+                        os.makedirs(destination_folder, exist_ok=True)
+                        made_dirs.add(destination_folder)
                     make_single_crop(pano, pano_x, pano_y, crop_destination, draw_mark=mark_label)
                 except Exception as e:
                     counts['errors'] += 1
@@ -334,6 +362,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     continue
                 counts['success'] += 1
                 logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
+        finally:
+            pano.close()
 
     print("Finished.")
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
@@ -359,19 +389,28 @@ def main(argv=None):
 
     Exceptions propagate, argparse errors exit 2, and an unrecognized -f extension exits with a message -
     not the NameError it used to be.
+
+    :return: 0, or 1 if any label errored. Deliberately not keyed on "did every label produce a crop":
+             missing panos are the normal state of a city whose scrape is still catching up, while
+             `errors` only ever counts things that should not have happened - a corrupt pano, a
+             malformed row, a failed write - so it is the half worth waking someone for.
     """
     args = build_parser().parse_args(argv)
 
-    # exist_ok: re-runs and concurrent invocations race on the exists check.
+    # exist_ok: a re-run, or an operator pre-creating the dir, races on the exists check. Note this is not
+    # a claim that two CropRunners may share an output dir: crops are written through a fixed
+    # <label_id>.jpg.part, so concurrent runs over the same labels would fight over that temp path.
     os.makedirs(args.o, exist_ok=True)
 
     # crop.log lives next to the crops it describes, NOT the CWD (which under Docker/cron is wherever the
     # process happened to start and dies with it - the DownloadRunner #49 lesson).
     configure_logging(os.path.join(args.o, 'crop.log'))
 
-    run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
-        crop_destination_path=args.o, mark_label=args.mark_label)
-    return 0
+    raise_decompression_bomb_ceiling()
+
+    counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
+                 crop_destination_path=args.o, mark_label=args.mark_label)
+    return 1 if counts['errors'] else 0
 
 
 if __name__ == '__main__':
