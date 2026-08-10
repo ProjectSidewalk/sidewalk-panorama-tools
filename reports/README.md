@@ -12,6 +12,12 @@ These exist because conclusions about external behaviour — Google's endpoints,
 calibrated against real data — get re-argued months later when nobody can reproduce the original
 measurement. An issue thread is not replicable and does not fail CI when it stops being true.
 
+**Where artifacts live:** everything a report rests on goes in **GitHub or the `projectsidewalk`
+Hugging Face org — never personal cloud storage** (Drive/Dropbox/shared links). Those feel accessible
+in the moment but don't survive people moving on, and experiments have had to be re-run because of it.
+Data too large to commit here goes to a HF dataset, referenced by exact revision from the report; the
+repo keeps the manifest and the script that regenerates or re-downloads it.
+
 ## What a report should carry
 
 * **The question**, and why it mattered at the time.
