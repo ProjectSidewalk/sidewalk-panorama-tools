@@ -129,6 +129,28 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 - **`pano_x` is never bounds-checked and must not be.** Column 0 and column `pano_width` are the same place in the world, so the seam modulo reads any finite x correctly; production rows storing `pano_x == pano_width` exist and crop fine. `pano_y` *is* checked, because the poles are not adjacent and a clamp yields clean imagery of the wrong place.
 - **`bulk_extract_crops`' counts have one non-disjoint key.** `success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total`; `shifted_vertically` annotates a success instead of being its own bucket. Adding a bucket without adding it to that sum is how the invariant went stale before — a test asserts the sum from the dict, not from the docstring.
 
+## Desk studies under `reports/scripts/` — four conventions that keep being rediscovered
+
+These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11-mapillary-census.md`.
+
+- **Undefined is not zero, and `main()` must not format-spec it.** Analysis functions correctly return
+  `None` for a percentage with a zero denominator, a sample sd of one value, a correlation against a
+  constant series. `f"{None:.1f}"` then raises `TypeError` at the summary print — after all the compute
+  and before `--write`. Print through `studyfmt.fmt` and build artifact values with `studyfmt.num`;
+  there is one definition of each and no script may grow a local copy (a test asserts that). Writes use
+  `allow_nan=False`, so a NaN reaching the dict aborts the run on its last line.
+- **`rawlabels` pins `pano_id` to `str`, and must.** Mapillary image ids are all-numeric, so pandas
+  infers `int64` for any Mapillary city — the #46 bug class the two runners already pin against. A
+  merge between an int-keyed and a str-keyed frame matches nothing and reports zero coverage rather
+  than failing.
+- **Mapillary cities live in a separate cache directory.** Every study globs `*.csv` over a directory,
+  so a Mapillary city dropped into `.cache/rawlabels/` silently joins the six-city GSV corpus and moves
+  every committed artifact. `fetch_rawlabels.py` writes them to `.cache/rawlabels-mapillary/`.
+- **Committed-artifact tests do not test code.** Pinning a finding against `reports/data/*.json` proves
+  nothing about the function that produced it: the artifact was generated *by* the current code, so a
+  revert stays green. Every finding needs a synthetic code-level test beside its corpus pin. Three
+  mutation batteries in a row surfaced survivors of exactly this shape.
+
 ## Label Type IDs
 
 Used in both APIs and as the crop output subdirectory name. Note 8 is intentionally skipped.

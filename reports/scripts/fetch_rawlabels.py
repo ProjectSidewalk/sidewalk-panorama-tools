@@ -1,12 +1,16 @@
-"""Fetch the era-replay study corpus: /v3/api/rawLabels?filetype=csv for the six study cities,
-into the gitignored reports/scripts/.cache/rawlabels/. Skips files that already exist (delete one
-to re-fetch it). rawLabels is a moving target — labels accrue and gsv_data refreshes — so a fresh
-fetch will NOT reproduce the committed summary bit-for-bit; the committed
-reports/data/2026-08-09-era-replay-summary.json corresponds to the 2026-08-09 fetch.
+"""Fetch the desk-study corpora: /v3/api/rawLabels?filetype=csv, into the gitignored
+reports/scripts/.cache/. Skips files that already exist (delete one to re-fetch it). rawLabels is a
+moving target — labels accrue and gsv_data refreshes — so a fresh fetch will NOT reproduce a committed
+summary bit-for-bit; each committed artifact records the fetch date it corresponds to.
 
-The six cities: three whose deployments span the 2021-01-01 legacy boundary (seattle-wa, cdmx,
-newberg-or) and three that are mid/post-179-heavy (columbus-oh, amsterdam, oradell-nj), mixing
-large/small and US/non-US imagery.
+Two corpora, two directories:
+
+* **`.cache/rawlabels/` — the six GSV cities.** Three whose deployments span the 2021-01-01 legacy
+  boundary (seattle-wa, cdmx, newberg-or) and three that are mid/post-179-heavy (columbus-oh,
+  amsterdam, oradell-nj), mixing large/small and US/non-US imagery. This is the corpus the
+  pre-registration's §3 draws from.
+* **`.cache/rawlabels-mapillary/` — Mapillary-sourced deployments** (richmond). Separate because the
+  study scripts glob a directory, so mixing them would silently redefine "the six cities".
 
     python reports/scripts/fetch_rawlabels.py
 """
@@ -24,13 +28,23 @@ CITIES = {
     'oradell-nj': 'https://sidewalk-oradell.cs.washington.edu',
 }
 
-DEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache', 'rawlabels')
+# Mapillary-sourced deployments, cached to a SEPARATE directory. Not a stylistic choice: every study
+# script takes a directory and globs '*.csv' over it, so a Mapillary city dropped into the six-city
+# cache would silently join the GSV corpus and move every committed artifact. Keeping the corpora in
+# different directories is what keeps "the six cities" meaning the six cities.
+MAPILLARY_CITIES = {
+    'richmond': 'https://sidewalk-richmond.cs.washington.edu',
+}
+
+_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache')
+DEST = os.path.join(_CACHE, 'rawlabels')
+MAPILLARY_DEST = os.path.join(_CACHE, 'rawlabels-mapillary')
 
 
-def main():
-    os.makedirs(DEST, exist_ok=True)
-    for city, base in CITIES.items():
-        path = os.path.join(DEST, f'{city}.csv')
+def fetch(cities, dest):
+    os.makedirs(dest, exist_ok=True)
+    for city, base in cities.items():
+        path = os.path.join(dest, f'{city}.csv')
         if os.path.exists(path):
             print(f'{city}: cached ({os.path.getsize(path):,} bytes)')
             continue
@@ -46,6 +60,11 @@ def main():
             print(f'{city}: FAILED ({e})', file=sys.stderr)
             continue
         print(f'{city}: {os.path.getsize(path):,} bytes')
+
+
+def main():
+    fetch(CITIES, DEST)
+    fetch(MAPILLARY_CITIES, MAPILLARY_DEST)
 
 
 if __name__ == '__main__':
