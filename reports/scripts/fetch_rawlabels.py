@@ -12,9 +12,14 @@ homes of SidewalkWebpage#4842's two example labels (14955, 30652).
     python reports/scripts/fetch_rawlabels.py
 """
 
+import argparse
+import json
 import os
 import sys
 import urllib.request
+
+# Any deployment serves the full deployment roster; Seattle is just a stable place to ask.
+CITIES_API = 'https://sidewalk-sea.cs.washington.edu/v3/api/cities'
 
 CITIES = {
     'seattle-wa': 'https://sidewalk-sea.cs.washington.edu',
@@ -30,9 +35,26 @@ CITIES = {
 DEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache', 'rawlabels')
 
 
+def all_cities():
+    """Every deployment from the public cities API (55 at last count), keyed by its city_id —
+    the same ids the study-corpus dict uses. The record bug lived in the shared client, so the
+    all-cities sweep is how 'fix it everywhere' gets measured."""
+    with urllib.request.urlopen(CITIES_API, timeout=30) as r:
+        payload = json.load(r)
+    cities = payload if isinstance(payload, list) else payload['cities']
+    return {c['city_id']: c['url'] for c in cities}
+
+
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--all', action='store_true',
+                    help='fetch every deployment from the cities API instead of the six-city '
+                         'era-replay corpus + teaneck/chicago')
+    args = ap.parse_args()
+    cities = all_cities() if args.all else CITIES
+
     os.makedirs(DEST, exist_ok=True)
-    for city, base in CITIES.items():
+    for city, base in cities.items():
         path = os.path.join(DEST, f'{city}.csv')
         if os.path.exists(path):
             print(f'{city}: cached ({os.path.getsize(path):,} bytes)')

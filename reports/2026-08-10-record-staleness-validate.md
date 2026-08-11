@@ -13,7 +13,7 @@ per-label repair
 > ```
 > **Reproduce from the source** (rawLabels is a moving target; expect drifted decimals):
 > ```bash
-> python reports/scripts/fetch_rawlabels.py               # -> scripts/.cache/rawlabels/*.csv (8 cities)
+> python reports/scripts/fetch_rawlabels.py               # -> scripts/.cache/rawlabels/*.csv (8 cities; --all for every deployment)
 > python reports/scripts/record_staleness_study.py reports/scripts/.cache/rawlabels \
 >     --fetched <date> --write reports/data/<date>-record-staleness-summary.json \
 >     --repairs-dir reports/data
@@ -52,6 +52,10 @@ as `data/2026-08-10-repairs-*.csv.gz`, ready to become a SidewalkWebpage migrati
 result matters as much: **#4842's two example labels (Teaneck 14955, Chicago 30652) are both
 `exact`** — their records are self-consistent, so what their screenshots show is where the client
 recorded the click, not this bug.
+
+An all-deployment census (§7, added 2026-08-11) extends the pricing everywhere the client ran:
+**54 of 55 deployments measured, 261,937 in-window labels, 14.49% stale — and the repair holds at
+100.00% in all 23 affected cities**, making the table the staged rollout's "before" baseline.
 
 ## The question
 
@@ -274,6 +278,72 @@ era-mates and 10.10% of 30652's Chicago era-mates render ≥ 4 px off. Both labe
 (the Explore pitch floor) at zoom 1 — labels placed far below a shallow viewport are also where
 the deployed crop sizing and lat/lng estimates are weakest, a separate thread (#54).
 
+### 7. Every deployment (addendum, 2026-08-11)
+
+The eight-city corpus was a study sample, but the bug lived in the shared Explore client, so the
+repair's feasibility has to be priced everywhere the client ran. `fetch_rawlabels.py --all` pulls
+the deployment roster from the public cities API and fetches every deployment's rawLabels; the
+study then runs unchanged. **54 of 55 deployments responded** (`crowdstudy`, an internal study
+instance, did not). **23 have in-window exposure; the other 31 had no labeling activity in the
+window** (mostly launched after the 7.20.7 fix). Census totals: **261,937 in-window labels,
+37,954 stale records (14.49%)** — nearly double the eight-city corpus's 17.40%-of-111,910 in
+absolute terms — and the closed-form repair reproduces the stored `pano_x`/`pano_y` for
+**100.00% of misses in every one of the 23 cities**. "Fix it everywhere" is measured-feasible
+everywhere.
+
+| city | in-window | stale records | miss % | ≥ 4 px | ≥ 10 px | ≥ 30 px |
+|---|---|---|---|---|---|---|
+| chicago-il | 43,221 | 7,465 | 17.27% | 10.10% | 6.51% | 2.06% |
+| taipei | 46,272 | 6,334 | 13.69% | 4.92% | 2.02% | 0.88% |
+| teaneck-nj | 19,734 | 5,814 | **29.46%** | 16.98% | 6.79% | 2.43% |
+| seattle-wa | 41,354 | 5,349 | 12.93% | 4.84% | 3.24% | 1.65% |
+| new-taipei-tw | 18,164 | 2,498 | 13.75% | 4.25% | 1.61% | 0.59% |
+| st-louis-mo | 19,989 | 2,253 | 11.27% | 7.43% | **6.16%** | **4.48%** |
+| burnaby | 20,668 | 1,970 | 9.53% | 6.20% | 4.90% | 3.13% |
+| validation-study | 7,038 | 1,678 | 23.84% | 12.70% | 8.20% | 4.58% |
+| zurich | 8,933 | 1,518 | 16.99% | 3.32% | 2.32% | 1.67% |
+| keelung-tw | 7,166 | 837 | 11.68% | 3.81% | 1.73% | 0.75% |
+| cuenca | 14,950 | 637 | 4.26% | 2.45% | 1.94% | 1.30% |
+| columbus-oh | 5,256 | 504 | 9.59% | 3.81% | 3.03% | 2.40% |
+| walla-walla-wa | 2,049 | 305 | 14.89% | 6.10% | 2.20% | 0.73% |
+| pittsburgh-pa | 4,002 | 290 | 7.25% | 3.17% | 1.27% | 0.57% |
+| oradell-nj | 862 | 146 | 16.94% | 9.63% | 7.42% | 5.10% |
+| amsterdam | 678 | 144 | 21.24% | 7.37% | 5.90% | 3.54% |
+| la-ca | 283 | 88 | **31.10%** | 16.61% | 8.83% | 5.30% |
+| cdmx | 751 | 49 | 6.52% | 5.06% | 4.13% | 2.93% |
+| mendota-il | 103 | 39 | **37.86%** | 14.56% | 7.77% | 2.91% |
+| spgg | 310 | 26 | 8.39% | 6.77% | 6.13% | 5.16% |
+| auckland | 54 | 6 | 11.11% | 7.41% | 5.56% | 0.00% |
+| la-piedad-old | 46 | 3 | 6.52% | 6.52% | 6.52% | 6.52% |
+| newberg-or | 54 | 1 | 1.85% | 0.00% | 0.00% | 0.00% |
+
+Two rows worth flagging. **st-louis-mo** has the most severe visible tail of any large city
+(4.48% of in-window labels ≥ 30 px) — #2478's 2024 St. Louis "floating label" example almost
+certainly was this bug. **validation-study** — a research deployment — carries a 23.84% miss
+rate, which matters for anything built on that deployment's validation data. The 31
+zero-exposure cities: blackhawk-hills-il, chandigarh-india, cliffside-park-nj, clifton-nj,
+columbia-sc, danville-il, detroit-mi, fort-wayne-in, gainesville-fl, hackensack-nj, houston-tx,
+kaohsiung-tw, knox-oh, la-piedad, madison-wi, maywood-nj, niagara-falls-ny, paterson-nj,
+rancagua-chile, santiago-chile, sao-paulo-brazil, taichung-tw, tainan-tw, tucson-az,
+vancouver-wa, virden-il, waltham-ma, west-chester-pa, winterthur-infra3d, zurich-infra3d,
+richmond-va.
+
+This table is the staged rollout's **"before" baseline**: after the repair evolution reaches
+production, the same instrument re-runs against every deployment and the stale-records column
+must read ~0. Per-city numbers (classes, visibility tiers, repair-by-class, monthly series):
+[`data/2026-08-11-record-staleness-all-cities.json`](data/2026-08-11-record-staleness-all-cities.json).
+The run also generated per-label repaired-record CSVs for the 15 newly-measured affected cities;
+they are not committed (the eight-city `2026-08-10-repairs-*.csv.gz` remain the canonical repair
+artifact, and the production repair recomputes server-side anyway) — regenerate with:
+
+```bash
+python reports/scripts/fetch_rawlabels.py --all
+python reports/scripts/record_staleness_study.py reports/scripts/.cache/rawlabels \
+    --fetched <date> --write <out>.json --repairs-dir <dir>
+```
+
+`crowdstudy` stays an open row: re-measure it when it responds, before certifying the rollout.
+
 ## What this hands SidewalkWebpage
 
 1. **A ready repair migration.** The committed repair CSVs are exactly an
@@ -340,6 +410,7 @@ the deployed crop sizing and lat/lng estimates are weakest, a separate thread (#
 | Artifact | Path |
 |---|---|
 | Summary numbers (committed) | `reports/data/2026-08-10-record-staleness-summary.json` |
+| All-deployment census (committed) | `reports/data/2026-08-11-record-staleness-all-cities.json` (54 cities) |
 | Per-label repaired records (committed) | `reports/data/2026-08-10-repairs-<city>.csv.gz` (8 files, 19,472 rows) |
 | Analysis + cascade + repair solver | `reports/scripts/record_staleness_study.py` |
 | Corpus fetcher (now 8 cities; cache gitignored) | `reports/scripts/fetch_rawlabels.py` |
