@@ -4,9 +4,10 @@ to re-fetch it). rawLabels is a moving target — labels accrue and gsv_data ref
 fetch will NOT reproduce the committed summary bit-for-bit; the committed
 reports/data/2026-08-09-era-replay-summary.json corresponds to the 2026-08-09 fetch.
 
-The six cities: three whose deployments span the 2021-01-01 legacy boundary (seattle-wa, cdmx,
-newberg-or) and three that are mid/post-179-heavy (columbus-oh, amsterdam, oradell-nj), mixing
-large/small and US/non-US imagery.
+The six era-replay cities: three whose deployments span the 2021-01-01 legacy boundary (seattle-wa,
+cdmx, newberg-or) and three that are mid/post-179-heavy (columbus-oh, amsterdam, oradell-nj), mixing
+large/small and US/non-US imagery. The record-staleness study added teaneck-nj and chicago-il, the
+homes of SidewalkWebpage#4842's two example labels (14955, 30652).
 
     python reports/scripts/fetch_rawlabels.py
 """
@@ -22,6 +23,8 @@ CITIES = {
     'newberg-or': 'https://sidewalk-newberg.cs.washington.edu',
     'amsterdam': 'https://sidewalk-amsterdam.cs.washington.edu',
     'oradell-nj': 'https://sidewalk-oradell.cs.washington.edu',
+    'teaneck-nj': 'https://sidewalk-teaneck.cs.washington.edu',
+    'chicago-il': 'https://sidewalk-chicago.cs.washington.edu',
 }
 
 DEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache', 'rawlabels')
