@@ -1,5 +1,5 @@
-"""Tests for reports/scripts/record_staleness_study.py — the record-staleness study
-(reports/2026-08-10-record-staleness-validate.md).
+"""Tests for reports/scripts/off_target_markers_study.py — the off-target-markers study
+(reports/2026-08-10-off-target-markers-validate.md).
 
 Machinery: the classification cascade and the repair solver are pinned on synthetic frames where
 the corruption is injected by construction — a stale heading, a stale heading+pitch, doubled
@@ -8,7 +8,7 @@ known right answer, and repair is checked to both reproduce the stored pano_x/pa
 the injected truth.
 
 Findings (the report's headline numbers, asserted against the committed
-reports/data/2026-08-10-record-staleness-summary.json):
+reports/data/2026-08-10-off-target-markers-summary.json):
 - every city's in-window >= 10 px Validate-error share strictly exceeds its post-fix share, and the
   post-fix share is <= 0.25% everywhere (Teaneck 6.79% -> 0.00%, Chicago 6.51% -> 0.22%);
 - the last record miss in Teaneck, Chicago, and Seattle is the SAME day, 2024-09-25 — the 7.20.7
@@ -40,11 +40,11 @@ for p in (REPO_ROOT, SCRIPTS):
 import era_replay_study as ers  # noqa: E402
 import pov_replay  # noqa: E402
 import rawlabels as rl  # noqa: E402
-import record_staleness_study as rss  # noqa: E402
+import off_target_markers_study as rss  # noqa: E402
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        'fixtures', 'rawlabels_newberg_head.csv')
-SUMMARY = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-record-staleness-summary.json')
+SUMMARY = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-off-target-markers-summary.json')
 
 
 def _forward_frame(canvas_x, canvas_y, heading, pitch, zoom, camera_heading=100.0,
@@ -295,7 +295,7 @@ class TestFindings:
         assert all(set(p) == {'dx', 'dy', 'k'} for p in pts[:50])
 
 
-EXAMPLES = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-record-staleness-examples.json')
+EXAMPLES = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-off-target-markers-examples.json')
 
 
 @pytest.mark.skipif(not os.path.exists(EXAMPLES), reason='committed examples not present')

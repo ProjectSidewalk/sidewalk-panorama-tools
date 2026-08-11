@@ -1,4 +1,4 @@
-"""Visual examples for the record-staleness report: real pano imagery with three markers per label —
+"""Visual examples for the off-target-markers report: real pano imagery with three markers per label —
 where the stale record renders (what Validate shows), where pano_x/pano_y says the click was
 (the truth anchor), and where the repaired record renders (which must coincide with the truth).
 The disagreement between the first two IS the detection; the coincidence of the last two IS the fix.
@@ -6,11 +6,11 @@ The disagreement between the first two IS the detection; the coincidence of the 
 Exemplars are chosen deterministically from the committed repair CSVs (largest Validate-px error
 first, round-robin over miss classes and cities), skipping panos Google no longer serves (~half,
 per the photometa census) and seam-straddling layouts. Imagery is fetched live via streetlevel, so
-this stage needs the network; the annotated crops + reports/data/<date>-record-staleness-examples.json
+this stage needs the network; the annotated crops + reports/data/<date>-off-target-markers-examples.json
 are committed and replay offline in the report.
 
 Usage:
-    python reports/scripts/record_staleness_examples.py reports/scripts/.cache/rawlabels \\
+    python reports/scripts/off_target_markers_examples.py reports/scripts/.cache/rawlabels \\
         --fetched <date> [--per-class 3] [--max-examples 10]
 """
 
@@ -260,7 +260,7 @@ def main():
             **meta,
         })
 
-    out_json = os.path.join(REPORTS, 'data', f'{DATE}-record-staleness-examples.json')
+    out_json = os.path.join(REPORTS, 'data', f'{DATE}-off-target-markers-examples.json')
     with open(out_json, 'w') as f:
         json.dump({'fetched_imagery': args.fetched, 'stitch_zoom': STITCH_ZOOM,
                    'examples': examples}, f, indent=1, allow_nan=False)

@@ -18,8 +18,8 @@ Everything below is a pure function of rawLabels columns; no network. The replay
 era_replay_study.replay_frame (the verbatim production projection via pov_replay).
 
 Usage:
-    python reports/scripts/record_staleness_study.py reports/scripts/.cache/rawlabels \\
-        --fetched <date> --write reports/data/<date>-record-staleness-summary.json \\
+    python reports/scripts/off_target_markers_study.py reports/scripts/.cache/rawlabels \\
+        --fetched <date> --write reports/data/<date>-off-target-markers-summary.json \\
         --repairs-dir reports/data
 """
 

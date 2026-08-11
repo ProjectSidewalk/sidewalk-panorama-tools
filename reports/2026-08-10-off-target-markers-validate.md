@@ -1,4 +1,4 @@
-# The record is what Validate renders: pricing the staleness bug on screen, and repairing all of it
+# Off-target markers: the record is what Validate renders — pricing the bug on screen, and repairing all of it
 
 **2026-08-10** · successor to the [era replay](2026-08-09-era-replay-study.md) · evidence for
 [SidewalkWebpage#4842](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4842) (also
@@ -8,14 +8,14 @@ per-label repair
 
 > **Reproduce offline from committed bytes:**
 > ```bash
-> pytest tests/test_record_staleness_study.py             # machinery + the findings, pinned
-> python reports/scripts/record_staleness_figures.py      # -> figures/2026-08-10-record-staleness-*.png
+> pytest tests/test_off_target_markers_study.py             # machinery + the findings, pinned
+> python reports/scripts/off_target_markers_figures.py      # -> figures/2026-08-10-off-target-markers-*.png
 > ```
 > **Reproduce from the source** (rawLabels is a moving target; expect drifted decimals):
 > ```bash
 > python reports/scripts/fetch_rawlabels.py               # -> scripts/.cache/rawlabels/*.csv (8 cities; --all for every deployment)
-> python reports/scripts/record_staleness_study.py reports/scripts/.cache/rawlabels \
->     --fetched <date> --write reports/data/<date>-record-staleness-summary.json \
+> python reports/scripts/off_target_markers_study.py reports/scripts/.cache/rawlabels \
+>     --fetched <date> --write reports/data/<date>-off-target-markers-summary.json \
 >     --repairs-dir reports/data
 > ```
 
@@ -73,10 +73,10 @@ An all-deployment census (§7, added 2026-08-11) extends the pricing everywhere 
 **Corpus**: `/v3/api/rawLabels?filetype=csv` for eight cities, fetched 2026-08-10 — 625,826
 labels (seattle-wa 261,958 · chicago-il 164,060 · cdmx 74,263 · columbus-oh 41,186 · amsterdam
 30,061 · teaneck-nj 23,356 · newberg-or 17,351 · oradell-nj 13,591). `fetch_rawlabels.py` gained
-the two new cities; everything downstream is `scripts/record_staleness_study.py` on top of the
+the two new cities; everything downstream is `scripts/off_target_markers_study.py` on top of the
 era replay's machinery (`era_replay_study.replay_frame`, the verbatim production projection via
 `pov_replay.py`). Numbers live in
-[`data/2026-08-10-record-staleness-summary.json`](data/2026-08-10-record-staleness-summary.json).
+[`data/2026-08-10-off-target-markers-summary.json`](data/2026-08-10-off-target-markers-summary.json).
 
 **Classification cascade.** Each in-window label (2023-03-29 ≤ `time_created` < 2024-09-26,
 per `rawlabels.EVO179` / `era_replay_study.BUG_WINDOW_END`) takes the first explanation that
@@ -109,7 +109,7 @@ replay measured — against the 1–170° staleness being repaired.
 
 ### 1. The bug window, on screen
 
-![monthly share of labels ≥ 10 px off in Validate, eight city panels, window shaded](figures/2026-08-10-record-staleness-monthly.png)
+![monthly share of labels ≥ 10 px off in Validate, eight city panels, window shaded](figures/2026-08-10-off-target-markers-monthly.png)
 
 Per month: the share of post-179 labels whose record misses by ≥ 10 Validate px. Every city's
 series lives inside the shaded window and drops to ~0 after it — including the two new cities.
@@ -128,7 +128,7 @@ May 2024 peak is 72.97% of 37) because staleness rides individual sessions, not 
 | newberg-or | 54 | 1.85% | 0.00% | 0.00% | 0.00% | 450 | 0.00% |
 
 Chicago's 0.28% post-fix tail is the era replay's known `camera_heading`-refresh drift (its x
-misses continue at drift scale in every era), not record staleness; its `pano_y` post-fix is
+misses continue at drift scale in every era), not a stale record; its `pano_y` post-fix is
 ≥ 99.9% exact. **The user-error question in #4842 splits by era**: an in-window label that looks
 off has a 1-in-6 chance the *record* is what's off; a post-window label that looks off was
 recorded exactly where the client computed the click.
@@ -139,7 +139,7 @@ confirmed in two more cities at hour resolution.
 
 ### 2. What the misses are
 
-![stacked per-city decomposition of in-window misses](figures/2026-08-10-record-staleness-classes.png)
+![stacked per-city decomposition of in-window misses](figures/2026-08-10-off-target-markers-classes.png)
 
 Pooled over the eight cities (19,472 misses of 111,910 in-window labels):
 
@@ -164,7 +164,7 @@ drift scale — and on the batch fingerprint below, not on any per-label attribu
 
 ### 3. The staleness lives on the heading axis, and it moves in batches
 
-![dx vs dy residual scatter, in-window misses pooled](figures/2026-08-10-record-staleness-scatter.png)
+![dx vs dy residual scatter, in-window misses pooled](figures/2026-08-10-off-target-markers-scatter.png)
 
 The x_only cohort's implied heading shift: p50 0.11–0.37°, p90 1.16–1.87°, max 167–180° per big
 city. The mechanism fingerprint is the **same-POV batch group**: ≥ 2 miss labels sharing one
@@ -188,7 +188,7 @@ to 344.75° (the walk-away auto-rotate changes heading only, which is also why p
 
 ### 4. Severity, and the repair
 
-![CDF of Validate-px error by class, with repair outcome](figures/2026-08-10-record-staleness-severity.png)
+![CDF of Validate-px error by class, with repair outcome](figures/2026-08-10-off-target-markers-severity.png)
 
 Half the x_only cohort is sub-perceptible (< 2 px); the dpr2 and zoom_desync cohorts are almost
 entirely ≥ 30 px (a wrong zoom scales the whole offset by ~1.7×); multi_field spans the middle;
@@ -212,7 +212,7 @@ an issue or slide**: **blue circle** — the stored `pano_x/pano_y`, the click-t
 shown); **yellow square** — where the *repaired* record renders, which must sit inside the blue
 circle. The red-to-blue gap IS the detection; the yellow-on-blue coincidence IS the fix.
 Coordinates and records for every example:
-[`data/2026-08-10-record-staleness-examples.json`](data/2026-08-10-record-staleness-examples.json).
+[`data/2026-08-10-off-target-markers-examples.json`](data/2026-08-10-off-target-markers-examples.json).
 
 **Walkthrough — chicago-il label 65640, a CurbRamp, 736 px off.** The stored record says: viewport
 (183.53°, −23.42°) at zoom 3, click at canvas (81, 195). Replaying that record through the
@@ -260,7 +260,7 @@ The rest of the gallery, by class:
 
 Imagery fetched 2026-08-11 via streetlevel at stitch zoom 3; pano availability decides which
 exemplars are showable (~half of labeled panos are no longer served — see the photometa census).
-Regenerate with `python reports/scripts/record_staleness_examples.py` (network stage).
+Regenerate with `python reports/scripts/off_target_markers_examples.py` (network stage).
 
 ### 6. The #4842 examples are not the bug
 
@@ -331,14 +331,14 @@ richmond-va.
 This table is the staged rollout's **"before" baseline**: after the repair evolution reaches
 production, the same instrument re-runs against every deployment and the stale-records column
 must read ~0. Per-city numbers (classes, visibility tiers, repair-by-class, monthly series):
-[`data/2026-08-11-record-staleness-all-cities.json`](data/2026-08-11-record-staleness-all-cities.json).
+[`data/2026-08-11-off-target-markers-all-cities.json`](data/2026-08-11-off-target-markers-all-cities.json).
 The run also generated per-label repaired-record CSVs for the 15 newly-measured affected cities;
 they are not committed (the eight-city `2026-08-10-repairs-*.csv.gz` remain the canonical repair
 artifact, and the production repair recomputes server-side anyway) — regenerate with:
 
 ```bash
 python reports/scripts/fetch_rawlabels.py --all
-python reports/scripts/record_staleness_study.py reports/scripts/.cache/rawlabels \
+python reports/scripts/off_target_markers_study.py reports/scripts/.cache/rawlabels \
     --fetched <date> --write <out>.json --repairs-dir <dir>
 ```
 
@@ -409,14 +409,14 @@ python reports/scripts/record_staleness_study.py reports/scripts/.cache/rawlabel
 
 | Artifact | Path |
 |---|---|
-| Summary numbers (committed) | `reports/data/2026-08-10-record-staleness-summary.json` |
-| All-deployment census (committed) | `reports/data/2026-08-11-record-staleness-all-cities.json` (54 cities) |
+| Summary numbers (committed) | `reports/data/2026-08-10-off-target-markers-summary.json` |
+| All-deployment census (committed) | `reports/data/2026-08-11-off-target-markers-all-cities.json` (54 cities) |
 | Per-label repaired records (committed) | `reports/data/2026-08-10-repairs-<city>.csv.gz` (8 files, 19,472 rows) |
-| Analysis + cascade + repair solver | `reports/scripts/record_staleness_study.py` |
+| Analysis + cascade + repair solver | `reports/scripts/off_target_markers_study.py` |
 | Corpus fetcher (now 8 cities; cache gitignored) | `reports/scripts/fetch_rawlabels.py` |
-| Figures + their generator | `reports/figures/2026-08-10-record-staleness-*.png`, `reports/scripts/record_staleness_figures.py` |
-| Imagery examples (committed crops + metadata + generator) | `reports/figures/2026-08-10-example-*.jpg`, `reports/data/2026-08-10-record-staleness-examples.json`, `reports/scripts/record_staleness_examples.py` |
-| Machinery tests + findings pins | `tests/test_record_staleness_study.py` |
+| Figures + their generator | `reports/figures/2026-08-10-off-target-markers-*.png`, `reports/scripts/off_target_markers_figures.py` |
+| Imagery examples (committed crops + metadata + generator) | `reports/figures/2026-08-10-example-*.jpg`, `reports/data/2026-08-10-off-target-markers-examples.json`, `reports/scripts/off_target_markers_examples.py` |
+| Machinery tests + findings pins | `tests/test_off_target_markers_study.py` |
 | Inherited machinery | `reports/scripts/era_replay_study.py`, `reports/scripts/pov_replay.py`, `reports/scripts/rawlabels.py` |
 
 ---

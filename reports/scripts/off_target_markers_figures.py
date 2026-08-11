@@ -1,11 +1,11 @@
-"""Figures for the record-staleness study. Everything reads committed bytes (the summary JSON and
+"""Figures for the off-target-markers study. Everything reads committed bytes (the summary JSON and
 the per-city repair CSVs), so the figures regenerate offline:
 
-    python reports/scripts/record_staleness_figures.py
-        -> reports/figures/2026-08-10-record-staleness-monthly.png      (fig A)
-        -> reports/figures/2026-08-10-record-staleness-classes.png     (fig B)
-        -> reports/figures/2026-08-10-record-staleness-scatter.png     (fig C)
-        -> reports/figures/2026-08-10-record-staleness-severity.png    (fig D)
+    python reports/scripts/off_target_markers_figures.py
+        -> reports/figures/2026-08-10-off-target-markers-monthly.png      (fig A)
+        -> reports/figures/2026-08-10-off-target-markers-classes.png     (fig B)
+        -> reports/figures/2026-08-10-off-target-markers-scatter.png     (fig C)
+        -> reports/figures/2026-08-10-off-target-markers-severity.png    (fig D)
 
 Months with fewer than MIN_N labels are dropped from fig A: a 3-label month is sampling noise,
 not a client-behaviour signal.
@@ -26,7 +26,7 @@ import pandas as pd
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPORTS = os.path.dirname(HERE)
 DATE = '2026-08-10'
-SUMMARY = os.path.join(REPORTS, 'data', f'{DATE}-record-staleness-summary.json')
+SUMMARY = os.path.join(REPORTS, 'data', f'{DATE}-off-target-markers-summary.json')
 REPAIRS_GLOB = os.path.join(REPORTS, 'data', f'{DATE}-repairs-*.csv.gz')
 FIGDIR = os.path.join(REPORTS, 'figures')
 
@@ -88,7 +88,7 @@ def fig_monthly(summary):
             'pano_x/pano_y by ≥ 10 Validate-canvas px',
             f"(the record is what Validate renders). Months with <{MIN_N} labels dropped. "
             f"rawLabels fetched {summary['fetched']}."], 0.945)
-    _save(fig, f'{DATE}-record-staleness-monthly.png')
+    _save(fig, f'{DATE}-off-target-markers-monthly.png')
 
 
 def fig_classes(summary):
@@ -117,7 +117,7 @@ def fig_classes(summary):
            ['% of in-window (2023-03-29 → 2024-09-25) labels whose stored record does not '
             'reproduce pano_x/pano_y,',
             f"by first matching explanation. rawLabels fetched {summary['fetched']}."], 0.935)
-    _save(fig, f'{DATE}-record-staleness-classes.png')
+    _save(fig, f'{DATE}-off-target-markers-classes.png')
 
 
 def fig_scatter(summary):
@@ -149,7 +149,7 @@ def fig_scatter(summary):
             'axes clipped to ±12°). x_only rows sit on dy = 0 by construction — the point is how '
             'much of everything',
             f"else does too. rawLabels fetched {summary['fetched']}."], 0.93)
-    _save(fig, f'{DATE}-record-staleness-scatter.png')
+    _save(fig, f'{DATE}-off-target-markers-scatter.png')
 
 
 def fig_severity(summary):
@@ -189,7 +189,7 @@ def fig_severity(summary):
             'pooled, by class (small-angle',
             'center-of-canvas conversion at the stored zoom — floor estimates). '
             f"rawLabels fetched {summary['fetched']}."], 0.94)
-    _save(fig, f'{DATE}-record-staleness-severity.png')
+    _save(fig, f'{DATE}-off-target-markers-severity.png')
 
 
 def main():

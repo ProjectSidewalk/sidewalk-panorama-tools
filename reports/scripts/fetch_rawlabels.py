@@ -6,7 +6,7 @@ reports/data/2026-08-09-era-replay-summary.json corresponds to the 2026-08-09 fe
 
 The six era-replay cities: three whose deployments span the 2021-01-01 legacy boundary (seattle-wa,
 cdmx, newberg-or) and three that are mid/post-179-heavy (columbus-oh, amsterdam, oradell-nj), mixing
-large/small and US/non-US imagery. The record-staleness study added teaneck-nj and chicago-il, the
+large/small and US/non-US imagery. The off-target-markers study added teaneck-nj and chicago-il, the
 homes of SidewalkWebpage#4842's two example labels (14955, 30652).
 
     python reports/scripts/fetch_rawlabels.py
