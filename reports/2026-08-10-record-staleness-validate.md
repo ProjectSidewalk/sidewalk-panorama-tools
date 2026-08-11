@@ -198,7 +198,57 @@ Validate-px error, and the post-repair residual (`new_validate_px` ≤ 1 px thro
 headings inherit served-`camera_heading` drift (≤ ~0.7° typical) — two orders of magnitude below
 the staleness they remove.
 
-### 5. The #4842 examples are not the bug
+### 5. What it looks like on the imagery
+
+Twelve exemplars (three per miss class, seven cities, chosen deterministically by descending
+Validate-px error among panos Google still serves), each rendered on the real panorama with three
+markers: **blue circle** — the stored `pano_x/pano_y`, the click-time truth; **red-orange circle**
+— where the stale record actually renders the label (what a validator is shown); **yellow square**
+— where the *repaired* record renders, which must sit inside the blue circle. The red-to-blue gap
+IS the detection; the yellow-on-blue coincidence IS the fix. Coordinates and records for every
+example: [`data/2026-08-10-record-staleness-examples.json`](data/2026-08-10-record-staleness-examples.json).
+
+**Walkthrough — chicago-il label 65640, a CurbRamp, 736 px off.** The stored record says: viewport
+(183.53°, −23.42°) at zoom 3, click at canvas (81, 195). Replaying that record through the
+production projection lands at pano (7686, 5063). But the label's own stored `pano_x/pano_y` is
+**(6453, 4688)** — the record misses its own coordinate by 1,233 px of heading (−27.1°) and 375 px
+of elevation (+8.2°) on the 16384×8192 pano. At zoom 3's 27.7° field of view that is a **736-px
+error on the 720-px Validate canvas**: the marker renders in the middle of the street, a full
+screen away from the curb ramp. The repair re-solves the viewport as (155.93°, −15.01°) — same
+canvas, same zoom — and the record now reproduces (6453, 4688) exactly:
+
+![chicago-il 65640: stale marker mid-street (red), truth and repaired markers on the curb ramp (blue/yellow)](figures/2026-08-10-example-chicago-il-65640.jpg)
+
+The rest of the gallery, by class:
+
+*Pure heading staleness (`x_only`) — the marker slides along the horizon line:*
+
+![cdmx 60539, x_only, 39 px](figures/2026-08-10-example-cdmx-60539.jpg)
+![amsterdam 31159, x_only, 26 px](figures/2026-08-10-example-amsterdam-31159.jpg)
+![oradell-nj 14448, x_only, 21 px](figures/2026-08-10-example-oradell-nj-14448.jpg)
+
+*Several record fields stale at once (`multi_field`) — the largest visual errors in the corpus:*
+
+![seattle-wa 258955, multi_field, 715 px](figures/2026-08-10-example-seattle-wa-258955.jpg)
+![oradell-nj 14466, multi_field, 471 px](figures/2026-08-10-example-oradell-nj-14466.jpg)
+
+*Doubled canvas offsets (`dpr2`) — the error grows with distance from the canvas center:*
+
+![chicago-il 29549, dpr2, 151 px](figures/2026-08-10-example-chicago-il-29549.jpg)
+![amsterdam 31205, dpr2, 148 px](figures/2026-08-10-example-amsterdam-31205.jpg)
+![seattle-wa 271696, dpr2, 147 px](figures/2026-08-10-example-seattle-wa-271696.jpg)
+
+*Stored zoom is not the click's zoom (`zoom_desync`) — the whole offset scales by ~1.7×:*
+
+![oradell-nj 13531, zoom_desync, 176 px](figures/2026-08-10-example-oradell-nj-13531.jpg)
+![amsterdam 31227, zoom_desync, 148 px](figures/2026-08-10-example-amsterdam-31227.jpg)
+![columbus-oh 43902, zoom_desync, 143 px](figures/2026-08-10-example-columbus-oh-43902.jpg)
+
+Imagery fetched 2026-08-11 via streetlevel at stitch zoom 3; pano availability decides which
+exemplars are showable (~half of labeled panos are no longer served — see the photometa census).
+Regenerate with `python reports/scripts/record_staleness_examples.py` (network stage).
+
+### 6. The #4842 examples are not the bug
 
 | | teaneck-nj 14955 | chicago-il 30652 |
 |---|---|---|
@@ -284,6 +334,7 @@ the deployed crop sizing and lat/lng estimates are weakest, a separate thread (#
 | Analysis + cascade + repair solver | `reports/scripts/record_staleness_study.py` |
 | Corpus fetcher (now 8 cities; cache gitignored) | `reports/scripts/fetch_rawlabels.py` |
 | Figures + their generator | `reports/figures/2026-08-10-record-staleness-*.png`, `reports/scripts/record_staleness_figures.py` |
+| Imagery examples (committed crops + metadata + generator) | `reports/figures/2026-08-10-example-*.jpg`, `reports/data/2026-08-10-record-staleness-examples.json`, `reports/scripts/record_staleness_examples.py` |
 | Machinery tests + findings pins | `tests/test_record_staleness_study.py` |
 | Inherited machinery | `reports/scripts/era_replay_study.py`, `reports/scripts/pov_replay.py`, `reports/scripts/rawlabels.py` |
 

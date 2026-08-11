@@ -293,3 +293,37 @@ class TestFindings:
         pts = summary['scatter_sample']
         assert len(pts) > 1000
         assert all(set(p) == {'dx', 'dy', 'k'} for p in pts[:50])
+
+
+EXAMPLES = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-record-staleness-examples.json')
+
+
+@pytest.mark.skipif(not os.path.exists(EXAMPLES), reason='committed examples not present')
+class TestImageryExamples:
+    """The imagery-example gallery: every committed crop exists, spans the four miss classes, is
+    visibly off (>= 15 px), and shows the repair landing on the truth marker."""
+
+    @pytest.fixture(scope='class')
+    def examples(self):
+        with open(EXAMPLES) as f:
+            return json.load(f)['examples']
+
+    def test_the_gallery_is_ample_and_diverse(self, examples):
+        assert len(examples) == 12
+        by_class = {}
+        for e in examples:
+            by_class[e['klass']] = by_class.get(e['klass'], 0) + 1
+        assert by_class == {'x_only': 3, 'multi_field': 3, 'dpr2': 3, 'zoom_desync': 3}
+        assert all(e['old_validate_px'] >= 15 for e in examples)
+
+    def test_every_crop_is_committed(self, examples):
+        for e in examples:
+            assert os.path.exists(os.path.join(REPO_ROOT, 'reports', e['figure'])), e['figure']
+
+    def test_the_repair_lands_on_the_truth(self, examples):
+        """The yellow square must sit inside the blue circle: repaired render == stored pano_x/y
+        to within a stitched pixel."""
+        for e in examples:
+            dx = abs(e['repaired_xy'][0] - e['truth_xy'][0])
+            dy = abs(e['repaired_xy'][1] - e['truth_xy'][1])
+            assert dx <= 1.5 and dy <= 1.5, e['label_id']

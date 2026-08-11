@@ -1,0 +1,618 @@
+{
+ "fetched_imagery": "2026-08-11",
+ "stitch_zoom": 3,
+ "examples": [
+  {
+   "figure": "figures/2026-08-10-example-cdmx-60539.jpg",
+   "city": "cdmx",
+   "label_id": 60539,
+   "pano_id": "5YNPCBj1bMqMFtZArjxwHA",
+   "label_type": "NoSidewalk",
+   "klass": "x_only",
+   "old_validate_px": 39.1,
+   "old_record": {
+    "heading": 168.875,
+    "pitch": -35.0,
+    "zoom": 1.0,
+    "canvas_x": 417.0,
+    "canvas_y": 122.0
+   },
+   "new_record": {
+    "heading": 163.9971,
+    "pitch": -35.0,
+    "zoom": 1.0,
+    "canvas_x": 417.0,
+    "canvas_y": 122.0
+   },
+   "stored_pano_xy": [
+    4691.0,
+    4858.0
+   ],
+   "camera_heading": 249.8311767578125,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    1172.8,
+    1214.5
+   ],
+   "stale_xy": [
+    1228.2,
+    1214.5
+   ],
+   "repaired_xy": [
+    1172.8,
+    1214.5
+   ],
+   "crop_box": [
+    860,
+    987,
+    1540,
+    1441
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-amsterdam-31159.jpg",
+   "city": "amsterdam",
+   "label_id": 31159,
+   "pano_id": "fAMppIiHdAZUvVSLbwKQng",
+   "label_type": "Obstacle",
+   "klass": "x_only",
+   "old_validate_px": 25.6,
+   "old_record": {
+    "heading": 272.5,
+    "pitch": -35.0,
+    "zoom": 1.0,
+    "canvas_x": 330.0,
+    "canvas_y": 100.0
+   },
+   "new_record": {
+    "heading": 269.314,
+    "pitch": -35.0,
+    "zoom": 1.0,
+    "canvas_x": 330.0,
+    "canvas_y": 100.0
+   },
+   "stored_pano_xy": [
+    14719.0,
+    4724.0
+   ],
+   "camera_heading": 121.34795379638672,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    3679.8,
+    1181.0
+   ],
+   "stale_xy": [
+    3716.0,
+    1181.0
+   ],
+   "repaired_xy": [
+    3679.8,
+    1181.0
+   ],
+   "crop_box": [
+    3357,
+    954,
+    4037,
+    1407
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-oradell-nj-14448.jpg",
+   "city": "oradell-nj",
+   "label_id": 14448,
+   "pano_id": "Jclqw9xdakHnnc8LViu3kw",
+   "label_type": "Obstacle",
+   "klass": "x_only",
+   "old_validate_px": 21.0,
+   "old_record": {
+    "heading": 173.4375,
+    "pitch": -35.0,
+    "zoom": 1.0,
+    "canvas_x": 500.0,
+    "canvas_y": 173.0
+   },
+   "new_record": {
+    "heading": 176.0522,
+    "pitch": -35.0,
+    "zoom": 1.0,
+    "canvas_x": 500.0,
+    "canvas_y": 173.0
+   },
+   "stored_pano_xy": [
+    12273.0,
+    5134.0
+   ],
+   "camera_heading": 109.09422302246094,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    3068.2,
+    1283.5
+   ],
+   "stale_xy": [
+    3038.5,
+    1283.5
+   ],
+   "repaired_xy": [
+    3068.2,
+    1283.5
+   ],
+   "crop_box": [
+    2713,
+    1056,
+    3393,
+    1510
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-chicago-il-65640.jpg",
+   "city": "chicago-il",
+   "label_id": 65640,
+   "pano_id": "lar0wjZaDsLEFXIKNRBVVg",
+   "label_type": "CurbRamp",
+   "klass": "multi_field",
+   "old_validate_px": 736.5,
+   "old_record": {
+    "heading": 183.53125,
+    "pitch": -23.421875,
+    "zoom": 3.0,
+    "canvas_x": 81.0,
+    "canvas_y": 195.0
+   },
+   "new_record": {
+    "heading": 155.9336,
+    "pitch": -15.0063,
+    "zoom": 3.0,
+    "canvas_x": 81.0,
+    "canvas_y": 195.0
+   },
+   "stored_pano_xy": [
+    6453.0,
+    4688.0
+   ],
+   "camera_heading": 183.0481719970703,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    1613.2,
+    1172.0
+   ],
+   "stale_xy": [
+    1921.5,
+    1265.8
+   ],
+   "repaired_xy": [
+    1613.2,
+    1172.0
+   ],
+   "crop_box": [
+    1427,
+    992,
+    2107,
+    1445
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-seattle-wa-258955.jpg",
+   "city": "seattle-wa",
+   "label_id": 258955,
+   "pano_id": "jas9ACL-EavHwhffZJ7C_Q",
+   "label_type": "CurbRamp",
+   "klass": "multi_field",
+   "old_validate_px": 715.4,
+   "old_record": {
+    "heading": 344.5018005371094,
+    "pitch": -13.732142448425291,
+    "zoom": 2.0,
+    "canvas_x": 320.0,
+    "canvas_y": 121.0
+   },
+   "new_record": {
+    "heading": 292.097,
+    "pitch": -18.4563,
+    "zoom": 2.0,
+    "canvas_x": 320.0,
+    "canvas_y": 121.0
+   },
+   "stored_pano_xy": [
+    9100.0,
+    4509.0
+   ],
+   "camera_heading": 268.9682922363281,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    2275.0,
+    1127.2
+   ],
+   "stale_xy": [
+    2871.8,
+    1073.8
+   ],
+   "repaired_xy": [
+    2275.0,
+    1127.2
+   ],
+   "crop_box": [
+    1916,
+    662,
+    3229,
+    1538
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-oradell-nj-14466.jpg",
+   "city": "oradell-nj",
+   "label_id": 14466,
+   "pano_id": "WSo5r3GNk4uabjlCwV7T9g",
+   "label_type": "CurbRamp",
+   "klass": "multi_field",
+   "old_validate_px": 470.7,
+   "old_record": {
+    "heading": 205.0,
+    "pitch": -22.14285659790039,
+    "zoom": 1.0,
+    "canvas_x": 387.0,
+    "canvas_y": 119.0
+   },
+   "new_record": {
+    "heading": 262.8979,
+    "pitch": -31.1516,
+    "zoom": 1.0,
+    "canvas_x": 387.0,
+    "canvas_y": 119.0
+   },
+   "stored_pano_xy": [
+    2879.0,
+    4670.0
+   ],
+   "camera_heading": 23.790016174316406,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    719.8,
+    1167.5
+   ],
+   "stale_xy": [
+    60.0,
+    1065.2
+   ],
+   "repaired_xy": [
+    719.8,
+    1167.5
+   ],
+   "crop_box": [
+    0,
+    632,
+    1115,
+    1600
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-chicago-il-29549.jpg",
+   "city": "chicago-il",
+   "label_id": 29549,
+   "pano_id": "BbaWpTxpOlKWcM3ZzA9ymw",
+   "label_type": "NoSidewalk",
+   "klass": "dpr2",
+   "old_validate_px": 150.9,
+   "old_record": {
+    "heading": 97.03571319580078,
+    "pitch": -13.660714149475098,
+    "zoom": 1.0,
+    "canvas_x": 714.0,
+    "canvas_y": 265.0
+   },
+   "new_record": {
+    "heading": 97.0577,
+    "pitch": -13.6607,
+    "zoom": 1.0,
+    "canvas_x": 537.0,
+    "canvas_y": 252.5
+   },
+   "stored_pano_xy": [
+    1584.0,
+    4734.0
+   ],
+   "camera_heading": 269.1912841796875,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    396.0,
+    1183.5
+   ],
+   "stale_xy": [
+    609.2,
+    1166.2
+   ],
+   "repaired_xy": [
+    396.0,
+    1183.5
+   ],
+   "crop_box": [
+    162,
+    948,
+    842,
+    1401
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-amsterdam-31205.jpg",
+   "city": "amsterdam",
+   "label_id": 31205,
+   "pano_id": "vD7e5a5O7MElf0LfgVpoiw",
+   "label_type": "CurbRamp",
+   "klass": "dpr2",
+   "old_validate_px": 147.5,
+   "old_record": {
+    "heading": 338.875,
+    "pitch": -22.321428298950195,
+    "zoom": 1.0,
+    "canvas_x": 646.0,
+    "canvas_y": 287.0
+   },
+   "new_record": {
+    "heading": 338.897,
+    "pitch": -22.3214,
+    "zoom": 1.0,
+    "canvas_x": 503.0,
+    "canvas_y": 263.5
+   },
+   "stored_pano_xy": [
+    12022.0,
+    5193.0
+   ],
+   "camera_heading": 278.4648132324219,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    3005.5,
+    1298.2
+   ],
+   "stale_xy": [
+    3214.2,
+    1285.2
+   ],
+   "repaired_xy": [
+    3005.5,
+    1298.2
+   ],
+   "crop_box": [
+    2769,
+    1065,
+    3449,
+    1518
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-seattle-wa-271696.jpg",
+   "city": "seattle-wa",
+   "label_id": 271696,
+   "pano_id": "3B51hFMjQYBwabm9KwPP5Q",
+   "label_type": "SurfaceProblem",
+   "klass": "dpr2",
+   "old_validate_px": 147.4,
+   "old_record": {
+    "heading": 267.125,
+    "pitch": -17.116071701049805,
+    "zoom": 1.0,
+    "canvas_x": 609.0,
+    "canvas_y": 360.0
+   },
+   "new_record": {
+    "heading": 267.147,
+    "pitch": -17.1161,
+    "zoom": 1.0,
+    "canvas_x": 484.5,
+    "canvas_y": 300.0
+   },
+   "stored_pano_xy": [
+    655.0,
+    5235.0
+   ],
+   "camera_heading": 93.5442123413086,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    163.8,
+    1308.8
+   ],
+   "stale_xy": [
+    367.8,
+    1354.8
+   ],
+   "repaired_xy": [
+    163.8,
+    1308.8
+   ],
+   "crop_box": [
+    0,
+    1105,
+    605,
+    1558
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-oradell-nj-13531.jpg",
+   "city": "oradell-nj",
+   "label_id": 13531,
+   "pano_id": "In9uOW5hhm7U0ZwLCRUSbQ",
+   "label_type": "CurbRamp",
+   "klass": "zoom_desync",
+   "old_validate_px": 176.2,
+   "old_record": {
+    "heading": 79.625,
+    "pitch": -16.75,
+    "zoom": 3.0,
+    "canvas_x": 320.0,
+    "canvas_y": 200.0
+   },
+   "new_record": {
+    "heading": 79.625,
+    "pitch": -16.75,
+    "zoom": 1.0,
+    "canvas_x": 320.0,
+    "canvas_y": 200.0
+   },
+   "stored_pano_xy": [
+    14748.0,
+    4568.0
+   ],
+   "camera_heading": 289.188720703125,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    3687.0,
+    1142.0
+   ],
+   "stale_xy": [
+    3741.2,
+    1196.8
+   ],
+   "repaired_xy": [
+    3687.0,
+    1142.0
+   ],
+   "crop_box": [
+    3374,
+    942,
+    4054,
+    1396
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-amsterdam-31227.jpg",
+   "city": "amsterdam",
+   "label_id": 31227,
+   "pano_id": "cAEyO_RODfboYthcIVmwmw",
+   "label_type": "CurbRamp",
+   "klass": "zoom_desync",
+   "old_validate_px": 147.5,
+   "old_record": {
+    "heading": 190.57142639160156,
+    "pitch": -34.28571319580078,
+    "zoom": 1.0,
+    "canvas_x": 55.0,
+    "canvas_y": 138.0
+   },
+   "new_record": {
+    "heading": 190.5714,
+    "pitch": -34.3077,
+    "zoom": 1.999,
+    "canvas_x": 55.0,
+    "canvas_y": 138.0
+   },
+   "stored_pano_xy": [
+    11274.0,
+    5192.0
+   ],
+   "camera_heading": 97.83970642089844,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    2818.5,
+    1298.0
+   ],
+   "stale_xy": [
+    2641.5,
+    1186.5
+   ],
+   "repaired_xy": [
+    2818.5,
+    1298.0
+   ],
+   "crop_box": [
+    2390,
+    1015,
+    3070,
+    1468
+   ],
+   "stitch_width": 4096
+  },
+  {
+   "figure": "figures/2026-08-10-example-columbus-oh-43902.jpg",
+   "city": "columbus-oh",
+   "label_id": 43902,
+   "pano_id": "jhNXqrxvUt0alDdg7KL-lg",
+   "label_type": "NoSidewalk",
+   "klass": "zoom_desync",
+   "old_validate_px": 143.4,
+   "old_record": {
+    "heading": 92.46428680419922,
+    "pitch": -14.107142448425291,
+    "zoom": 1.0,
+    "canvas_x": 683.0,
+    "canvas_y": 199.0
+   },
+   "new_record": {
+    "heading": 92.4423,
+    "pitch": -14.1071,
+    "zoom": 1.999,
+    "canvas_x": 683.0,
+    "canvas_y": 199.0
+   },
+   "stored_pano_xy": [
+    1020.0,
+    4547.0
+   ],
+   "camera_heading": 274.5078125,
+   "pano_dims": [
+    16384.0,
+    8192.0
+   ],
+   "truth_xy": [
+    255.0,
+    1136.8
+   ],
+   "stale_xy": [
+    452.8,
+    1089.0
+   ],
+   "repaired_xy": [
+    255.0,
+    1136.8
+   ],
+   "crop_box": [
+    13,
+    886,
+    693,
+    1339
+   ],
+   "stitch_width": 4096
+  }
+ ]
+}
