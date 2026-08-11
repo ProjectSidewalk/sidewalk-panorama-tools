@@ -309,12 +309,14 @@ class TestImageryExamples:
             return json.load(f)['examples']
 
     def test_the_gallery_is_ample_and_diverse(self, examples):
-        assert len(examples) == 12
+        assert len(examples) == 20
         by_class = {}
         for e in examples:
             by_class[e['klass']] = by_class.get(e['klass'], 0) + 1
-        assert by_class == {'x_only': 3, 'multi_field': 3, 'dpr2': 3, 'zoom_desync': 3}
+        assert by_class == {'x_only': 5, 'multi_field': 5, 'dpr2': 5, 'zoom_desync': 5}
         assert all(e['old_validate_px'] >= 15 for e in examples)
+        assert len({e['city'] for e in examples}) >= 7
+        assert len({e['label_type'] for e in examples}) >= 4
 
     def test_every_crop_is_committed(self, examples):
         for e in examples:

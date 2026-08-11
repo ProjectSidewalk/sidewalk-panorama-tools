@@ -88,6 +88,72 @@ def pick_candidates(csv_dir, per_class, max_examples):
     return queue, allr
 
 
+def _font(size):
+    """Pillow's bundled font at a readable size, falling back to the tiny bitmap default."""
+    from PIL import ImageFont
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def add_caption_bar(crop, row):
+    """A self-contained legend under the crop, so every image stays interpretable when pasted
+    alone into an issue or slide: marker glyphs with their meanings, plus the label's identity
+    and how far off its record renders. Text is measured and wrapped so nothing clips on
+    narrow crops."""
+    pad = 12
+    title = (f"{row['city']} · label {int(row['label_id'])} ({row['label_type']}) · "
+             f"{row['klass']} · record renders {row['old_validate_px']:.0f} px off in Validate")
+    entries = [(STALE, 'ellipse', 'stale record (what Validate shows)'),
+               (TRUTH, 'ellipse', 'pano_x/y (click-time truth)'),
+               (REPAIRED, 'rect', 'after repair')]
+
+    probe = ImageDraw.Draw(crop)
+    avail = crop.width - 2 * pad
+
+    # Title font: shrink until the whole line fits.
+    title_size = 22
+    while title_size > 10 and probe.textlength(title, font=_font(title_size)) > avail:
+        title_size -= 1
+    title_f = _font(title_size)
+
+    # Legend entries: fixed readable size, wrapped onto as many rows as the width demands.
+    leg_f = _font(16)
+    r = 8
+    glyph_w = 2 * r + 8
+    rows, x = [[]], 0
+    for entry in entries:
+        w = glyph_w + probe.textlength(entry[2], font=leg_f) + 2 * pad
+        if x + w > avail and rows[-1]:
+            rows.append([])
+            x = 0
+        rows[-1].append(entry)
+        x += w
+
+    row_h = 30
+    bar_h = pad + (title_size + 8) + len(rows) * row_h + pad // 2
+    canvas = Image.new('RGB', (crop.width, crop.height + bar_h), (24, 24, 24))
+    canvas.paste(crop, (0, 0))
+    d = ImageDraw.Draw(canvas)
+    d.text((pad, crop.height + pad), title, fill=(255, 255, 255), font=title_f)
+
+    y = crop.height + pad + title_size + 8 + row_h // 2
+    for line in rows:
+        x = pad
+        for color, shape, text in line:
+            box = [x, y - r, x + 2 * r, y + r]
+            if shape == 'rect':
+                d.rectangle(box, outline=color, width=3)
+            else:
+                d.ellipse(box, outline=color, width=3)
+            x += glyph_w
+            d.text((x, y - 9), text, fill=(224, 224, 224), font=leg_f)
+            x += probe.textlength(text, font=leg_f) + 2 * pad
+        y += row_h
+    return canvas
+
+
 def render_example(row, img):
     """Annotated crop with the three markers; returns (PIL image, marker metadata dict)."""
     s = img.width / float(row['pano_width'])
@@ -136,7 +202,7 @@ def render_example(row, img):
     meta = {'truth_xy': [round(v, 1) for v in truth], 'stale_xy': [round(v, 1) for v in stale],
             'repaired_xy': [round(v, 1) for v in repaired],
             'crop_box': [x0, y0, x1, y1], 'stitch_width': img.width}
-    return crop, meta
+    return add_caption_bar(crop, row), meta
 
 
 def main():

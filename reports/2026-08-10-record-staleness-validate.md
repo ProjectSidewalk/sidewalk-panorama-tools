@@ -200,13 +200,15 @@ the staleness they remove.
 
 ### 5. What it looks like on the imagery
 
-Twelve exemplars (three per miss class, seven cities, chosen deterministically by descending
+Twenty exemplars (five per miss class, eight cities, chosen deterministically by descending
 Validate-px error among panos Google still serves), each rendered on the real panorama with three
-markers: **blue circle** — the stored `pano_x/pano_y`, the click-time truth; **red-orange circle**
-— where the stale record actually renders the label (what a validator is shown); **yellow square**
-— where the *repaired* record renders, which must sit inside the blue circle. The red-to-blue gap
-IS the detection; the yellow-on-blue coincidence IS the fix. Coordinates and records for every
-example: [`data/2026-08-10-record-staleness-examples.json`](data/2026-08-10-record-staleness-examples.json).
+markers and **a burned-in legend bar, so every image stays self-explanatory when pasted alone into
+an issue or slide**: **blue circle** — the stored `pano_x/pano_y`, the click-time truth;
+**red-orange circle** — where the stale record actually renders the label (what a validator is
+shown); **yellow square** — where the *repaired* record renders, which must sit inside the blue
+circle. The red-to-blue gap IS the detection; the yellow-on-blue coincidence IS the fix.
+Coordinates and records for every example:
+[`data/2026-08-10-record-staleness-examples.json`](data/2026-08-10-record-staleness-examples.json).
 
 **Walkthrough — chicago-il label 65640, a CurbRamp, 736 px off.** The stored record says: viewport
 (183.53°, −23.42°) at zoom 3, click at canvas (81, 195). Replaying that record through the
@@ -223,26 +225,34 @@ The rest of the gallery, by class:
 
 *Pure heading staleness (`x_only`) — the marker slides along the horizon line:*
 
-![cdmx 60539, x_only, 39 px](figures/2026-08-10-example-cdmx-60539.jpg)
-![amsterdam 31159, x_only, 26 px](figures/2026-08-10-example-amsterdam-31159.jpg)
-![oradell-nj 14448, x_only, 21 px](figures/2026-08-10-example-oradell-nj-14448.jpg)
+![cdmx 60539 (NoSidewalk), x_only, 39 px](figures/2026-08-10-example-cdmx-60539.jpg)
+![amsterdam 31159 (Obstacle), x_only, 26 px](figures/2026-08-10-example-amsterdam-31159.jpg)
+![columbus-oh 37946 (NoSidewalk), x_only, 25 px](figures/2026-08-10-example-columbus-oh-37946.jpg)
+![oradell-nj 14448 (Obstacle), x_only, 21 px](figures/2026-08-10-example-oradell-nj-14448.jpg)
+![cdmx 59958 (Obstacle), x_only, 18 px](figures/2026-08-10-example-cdmx-59958.jpg)
 
 *Several record fields stale at once (`multi_field`) — the largest visual errors in the corpus:*
 
-![seattle-wa 258955, multi_field, 715 px](figures/2026-08-10-example-seattle-wa-258955.jpg)
-![oradell-nj 14466, multi_field, 471 px](figures/2026-08-10-example-oradell-nj-14466.jpg)
+![seattle-wa 258955 (CurbRamp), multi_field, 715 px](figures/2026-08-10-example-seattle-wa-258955.jpg)
+![oradell-nj 14466 (CurbRamp), multi_field, 471 px](figures/2026-08-10-example-oradell-nj-14466.jpg)
+![columbus-oh 38997 (Signal), multi_field, 330 px](figures/2026-08-10-example-columbus-oh-38997.jpg)
+![cdmx 60536 (NoSidewalk), multi_field, 72 px](figures/2026-08-10-example-cdmx-60536.jpg)
 
 *Doubled canvas offsets (`dpr2`) — the error grows with distance from the canvas center:*
 
-![chicago-il 29549, dpr2, 151 px](figures/2026-08-10-example-chicago-il-29549.jpg)
-![amsterdam 31205, dpr2, 148 px](figures/2026-08-10-example-amsterdam-31205.jpg)
-![seattle-wa 271696, dpr2, 147 px](figures/2026-08-10-example-seattle-wa-271696.jpg)
+![chicago-il 29549 (NoSidewalk), dpr2, 151 px](figures/2026-08-10-example-chicago-il-29549.jpg)
+![chicago-il 29551 (NoSidewalk), dpr2, 149 px](figures/2026-08-10-example-chicago-il-29551.jpg)
+![amsterdam 31205 (CurbRamp), dpr2, 148 px](figures/2026-08-10-example-amsterdam-31205.jpg)
+![seattle-wa 271696 (SurfaceProblem), dpr2, 147 px](figures/2026-08-10-example-seattle-wa-271696.jpg)
+![amsterdam 31207 (Obstacle), dpr2, 133 px](figures/2026-08-10-example-amsterdam-31207.jpg)
 
 *Stored zoom is not the click's zoom (`zoom_desync`) — the whole offset scales by ~1.7×:*
 
-![oradell-nj 13531, zoom_desync, 176 px](figures/2026-08-10-example-oradell-nj-13531.jpg)
-![amsterdam 31227, zoom_desync, 148 px](figures/2026-08-10-example-amsterdam-31227.jpg)
-![columbus-oh 43902, zoom_desync, 143 px](figures/2026-08-10-example-columbus-oh-43902.jpg)
+![chicago-il 39209 (CurbRamp), zoom_desync, 624 px](figures/2026-08-10-example-chicago-il-39209.jpg)
+![teaneck-nj 10180 (CurbRamp), zoom_desync, 215 px](figures/2026-08-10-example-teaneck-nj-10180.jpg)
+![oradell-nj 13531 (CurbRamp), zoom_desync, 176 px](figures/2026-08-10-example-oradell-nj-13531.jpg)
+![amsterdam 31227 (CurbRamp), zoom_desync, 148 px](figures/2026-08-10-example-amsterdam-31227.jpg)
+![columbus-oh 43902 (NoSidewalk), zoom_desync, 143 px](figures/2026-08-10-example-columbus-oh-43902.jpg)
 
 Imagery fetched 2026-08-11 via streetlevel at stitch zoom 3; pano availability decides which
 exemplars are showable (~half of labeled panos are no longer served — see the photometa census).
