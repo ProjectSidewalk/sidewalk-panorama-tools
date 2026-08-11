@@ -59,18 +59,36 @@ def wrapped_dx(stored, replay, width):
     return np.where(d == -width / 2, width / 2, d)
 
 
-def replay_frame(df):
-    """Run the exact replay over a rawlabels frame; returns a copy with replay_x/replay_y, the
-    residuals (dx wrapped px / dx_deg, dy px / dy_deg), replayable_x/replayable_y masks, and
-    exact_x/exact_y flags. x and y are masked independently: a row without camera_heading still
-    checks pano_y, which consumes no camera metadata."""
-    out = df.copy()
+def frame_pov(df):
+    """The click's own POV for every row of a rawlabels frame: (pov_heading, pov_pitch) in degrees.
+
+    The single place that reads a frame's canvas dims and runs `pov_replay.pov_if_centered` over
+    them. Every study that needs the replayed POV goes through here rather than repeating the
+    per-row-vs-default canvas fallback — that fallback existed twice (here and in
+    offaxis_covariate.offaxis_offsets) and the two copies had to be kept in step by hand, with
+    nothing failing if they drifted. Unmasked: NaN in, NaN out; callers decide what a non-finite
+    POV means (see `replay_frame`'s ok_x/ok_y).
+    """
     cw = df['canvas_width'] if 'canvas_width' in df else pov_replay.CANVAS_W
     ch = df['canvas_height'] if 'canvas_height' in df else pov_replay.CANVAS_H
     pov_h, pov_p = pov_replay.pov_if_centered(
         df['canvas_x'], df['canvas_y'], df['heading'], df['pitch'], df['zoom'], cw, ch)
-    pov_h = np.asarray(pov_h, float)
-    pov_p = np.asarray(pov_p, float)
+    return np.asarray(pov_h, float), np.asarray(pov_p, float)
+
+
+def replay_frame(df):
+    """Run the exact replay over a rawlabels frame; returns a copy with pov_heading/pov_pitch,
+    replay_x/replay_y, the residuals (dx wrapped px / dx_deg, dy px / dy_deg),
+    replayable_x/replayable_y masks, and exact_x/exact_y flags. x and y are masked independently: a
+    row without camera_heading still checks pano_y, which consumes no camera metadata.
+
+    pov_heading/pov_pitch are carried out as columns so a downstream study needing the click's own
+    POV reads it instead of re-projecting: `offaxis_covariate.prepare` used to run the full gnomonic
+    projection a second time over the same 438k rows, and derived its covariate from one call while
+    eligibility came from the other.
+    """
+    out = df.copy()
+    pov_h, pov_p = frame_pov(df)
 
     w = np.asarray(df['pano_width'], float)
     h = np.asarray(df['pano_height'], float)
@@ -90,6 +108,8 @@ def replay_frame(df):
     dx = np.where(ok_x, wrapped_dx(stored_x, rx, safe(w, 8192.0)), np.nan)
     dy = np.where(ok_y, stored_y - ry, np.nan)
 
+    out['pov_heading'] = pov_h
+    out['pov_pitch'] = pov_p
     out['replay_x'] = np.where(ok_x, rx, np.nan)
     out['replay_y'] = np.where(ok_y, ry, np.nan)
     out['dx'] = dx

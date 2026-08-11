@@ -309,7 +309,8 @@ in hand, at zero annotation cost:
 stored `pano_y` exactly (98.96% of the corpus) — rather than on `exact` (both replay axes). The
 vertical offset is provably independent of viewport heading, so the `x_only` staleness class (58% of
 record misses, stale only in heading) is harmless here and excluding it would discard 13,485 eligible
-rows for no gain. This restriction also makes the covariates **invariant to #4842's pending repair
+rows — 3.1% of the eligible corpus — for no gain. (Two denominators, easily conflated: 58% is a share
+of the record *misses*, 3.1% a share of the eligible rows.) This restriction also makes the covariates **invariant to #4842's pending repair
 migration**, which rewrites heading for `x_only` rows and leaves pitch/zoom/canvas alone, while every
 class whose repair touches canvas or zoom already fails `exact_y`.
 

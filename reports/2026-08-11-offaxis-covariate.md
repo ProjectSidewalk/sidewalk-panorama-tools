@@ -15,7 +15,7 @@ Phase 2 annotation exists
 > **Reproduce from the source** (rawLabels is a moving target; the #4842 repair migration will
 > rewrite record fields when it lands):
 > ```bash
-> python reports/scripts/fetch_rawlabels.py         # -> scripts/.cache/rawlabels/*.csv
+> python reports/scripts/fetch_rawlabels.py         # -> reports/scripts/.cache/rawlabels/*.csv
 > python reports/scripts/offaxis_covariate.py reports/scripts/.cache/rawlabels \
 >     --fetched <date> --write reports/data/<date>-offaxis-covariate.json
 > ```
@@ -45,7 +45,8 @@ depression 0.319), holding at 93.5–96.4% in every era. It is therefore identif
 Study 1 already fits, and no new forced stratum is needed. The Explore viewport's **pitch floor of
 −35° is hard** (minimum observed pitch is exactly −35.0000) and carries **10.18% of eligible labels,
 rising to 49.2% of the >30° depression band**. Both #4842 examples sit at that floor, clicked
-**15.75°** and **23.47° above** the viewport centre — beyond the 5th percentile of every band.
+**15.75°** and **23.47° above** the viewport centre — chicago-il 30652 beyond the 5th percentile of
+every band, teaneck-nj 14955 beyond it in the >30° band only.
 
 ## The question
 
@@ -115,12 +116,15 @@ could be estimated from.
 | | sd overall | sd within band | surviving | corr. with depression |
 |---|---|---|---|---|
 | pooled (n = 433,866) | 8.34° | 7.93° | **95.08%** | 0.319 |
-| post-179 only (n = 89,837) | 8.86° | 8.28° | 93.46% | 0.384 |
 | legacy (n = 146,435) | 8.60° | — | 96.4% | — |
 | mid (n = 197,594) | 7.85° | — | 94.6% | — |
+| post-179 (n = 89,837) | 8.86° | 8.28° | 93.46% | 0.384 |
 
 The study corpus spans all three eras by design, so a covariate identified only post-179 would not
-serve the strata the pre-registration fits. It is identified in all of them.
+serve the strata the pre-registration fits. It is identified in all of them. The three era rows come
+from `by_era_identification`; the artifact used to carry the post-179 row a second time under
+`identification_post179`, byte-identical because it selected the same rows by the same predicate, and
+that key is gone.
 
 ### 2. Spread and floor exposure per Study 1 band
 
@@ -138,11 +142,20 @@ floor is registered as its own covariate rather than folded into depression.
 
 ### 3. What a canvas-pixel error is worth, in the units consumers use
 
-| zoom | fov | corpus share | 5 px | 20 px |
-|---|---|---|---|---|
-| 1 | 89.75° | 64.4% | **0.623°** | 2.493° |
-| 2 | 53.00° | 21.1% | 0.368° | 1.472° |
-| 3 | 27.68° | 14.5% | 0.192° | 0.769° |
+| zoom | fov | n | corpus share | 5 px | 20 px |
+|---|---|---|---|---|---|
+| 1 | 89.75° | 279,344 | 64.385% | **0.623°** | 2.493° |
+| 2 | 53.00° | 91,548 | 21.101% | 0.368° | 1.472° |
+| 3 | 27.68° | 62,694 | 14.450% | 0.192° | 0.769° |
+| *off-ladder* | 29.4–88.3° | 280 | 0.065% | — | — |
+
+The last row is the one an earlier draft left out. The viewer's zoom control has three stops, but
+stored `zoom` is a float and 280 eligible rows carry a **fractional** value strictly between them (49
+distinct values, e.g. 1.6818, 2.4689) from clients that interpolated it continuously. `get_3d_fov` is
+continuous, so those rows have a well-defined fov — what they lack is a rung. Without the row the
+three shares sum to 99.94% in a table that reads as a census, which is how a future re-fetch moving a
+real share of the corpus off-ladder would go unnoticed; the artifact now carries `zoom.other`, and a
+test asserts the four counts sum to the eligible total exactly.
 
 Against the consumer survey's **0.5° placement threshold**, a 5-px canvas-frame error is
 supra-threshold at zoom 1 — where two thirds of the corpus sits — and sub-threshold at zoom 3. That
@@ -156,11 +169,21 @@ while rig tilt and placement behaviour do not.
 | stored record | (298.25°, **−35°**, zoom 1) @ canvas (451, 142) | (320.5°, **−35°**, zoom 1) @ canvas (361, 83) |
 | viewport at pitch floor | yes | yes |
 | vertical off-axis | **−15.75°** (above centre) | **−23.47°** (above centre) |
+| radial off-axis | 20.30° | 23.47° |
+| beyond the p5 of band | >30° only | **all four** |
 
-Both are at the floor and both are clicked far off-axis — chicago-il 30652 sits beyond the 5th
-percentile of *every* band. This is not evidence for mechanism (iii); it is the reason the covariate
-is worth having. The labels that made the issue visible are drawn from the covariate's tail, not its
-middle, which is exactly where the three mechanisms diverge most.
+Neither specimen is in this study's six-city corpus, so both rows are computed from the records above
+rather than joined — the records, the computed offsets, and the band membership are committed in
+`reports/data/2026-08-11-offaxis-covariate.json` under `specimens` and pinned in
+`tests/test_offaxis_covariate.py`, so this table reproduces from the repo like every other number here.
+
+Both are at the floor and both are clicked far off-axis: chicago-il 30652 sits beyond the 5th
+percentile of *every* band, and teaneck-nj 14955 beyond the 5th percentile of the >30° band. (An
+earlier draft of this report claimed both were beyond p5 of every band. They are not — teaneck's
+−15.75° is inside p5 for the <5°, 5–15° and 15–30° bands, whose p5 runs −23.3 / −21.3 / −16.0°.)
+This is not evidence for mechanism (iii); it is the reason the covariate is worth having. The labels
+that made the issue visible are drawn from the covariate's tail, not its middle, which is exactly
+where the three mechanisms diverge most.
 
 ## What this changes
 
@@ -211,11 +234,79 @@ family under test into the gold standard, and Study 1 would measure zero by cons
   mutated code alike. It was a false kill, caught only because the test carried an explicit
   guard-the-guard assertion that the fixture discriminates the two estimators at all. The fixture now
   gives the bands different mean−median gaps.
-* **A guard that could not be tested because it could not fire.** `eligible` carried an
-  `isfinite(depression)` check that survived mutation; `exact_y` already requires finite `pano_y` and
-  a finite positive `pano_height`, which is exactly what makes depression finite. Removed rather than
-  given a test that would have asserted nothing. The band guard beside it is not redundant in the same
-  way and stays.
+* **A guard that could not be tested because it could not fire — and its twin, which survived the
+  same argument.** `eligible` carried an `isfinite(depression)` check that survived mutation;
+  `exact_y` already requires finite `pano_y` and a finite positive `pano_height`, which is exactly
+  what makes depression finite. Removed rather than given a test that would have asserted nothing.
+  The `isfinite(offaxis_v)` term two lines above it was left in, and it is unreachable by the *same*
+  reasoning: `offaxis_v = pitch − pov_pitch`, and a non-finite pitch propagates through `cos p₀` into
+  all three of x/y/z, so `pov_pitch` is non-finite too and `exact_y` is already false. Caught in
+  review (see below); the file was documenting two contradictory standards. Both are gone now, and
+  what is pinned instead is the observable consequence — a NaN-pitch row is ineligible — which is
+  what would actually break if `exact_y` were ever weakened. The band guard beside them is not
+  redundant in the same way and stays.
+* **Reducing a fraction and reading the reduced numerator as the sample size.** The review flagged
+  `by_label_type_pct` for publishing rates with no n, and read `Signal: 2.5316455696…%` as 2 labels of
+  79. It is 86 of 3,397 — the same fraction reduced. The finding stood for a different reason: the
+  same function runs per city, where `oradell-nj` `Other` is 0.0% from 12 labels and `newberg-or`
+  `Crosswalk` is 23.8% from 42, printed beside a 12.07% drawn from 148,796. The n is now published;
+  the pooled types are all in the thousands.
+
+## Pre-merge review (2026-08-11)
+
+Reviewed before merge, while the amendment was appended but PR #81 was still open. Fifteen findings,
+all fixed here; the amendment's registered content is unchanged — none of the defects touched a
+covariate definition, an eligibility rule, or a number the amendment leans on. The two that would have
+stopped a re-run, and the two report/data mismatches, are the ones worth reading:
+
+**Two crashes on the degenerate path, both at the ends of a run.** `main()` format-specced the `None`s
+that `identification()` returns for fewer than two eligible rows — its own pinned contract — so one
+thin city would abort a six-city run with a `TypeError` after every other city had been computed and
+before `--write` was reached. And `corr_with_depression` was unguarded against zero variance, where
+Pearson's *r* is undefined and pandas answers `NaN`: since `main()` writes with `allow_nan=False`, a
+single constant subgroup killed the write on the last line. That path was **already live in the
+suite** — `test_ineligible_rows_are_excluded_from_the_estimate` produced `corr=nan` and was the source
+of two `invalid value encountered in divide` warnings in a green run; the test only asserted `n == 50`.
+Both are now null-safe end to end, and `TestDegenerateInput` exercises the thin-group path deliberately
+rather than only the corpus.
+
+**Two numbers in shipped prose contradicted the data.** The module docstring justified the `exact_y`
+restriction by saying the alternative "would discard 58% of the eligible rows" — 58% is the `x_only`
+share of record *misses*, used correctly two lines above; the actual cost is **3.1%** (13,485 of
+433,866), which is what this report and the amendment both say. It overstated the cost of reversing the
+study's central methodological choice by 19×. And `deg_per_canvas_px` cited "70% of post-fix labels",
+a population the Wrong Turns section above records abandoning. `TestDocstringFigures` now checks both
+docstrings' figures against the committed artifact.
+
+**The zoom table was not the census it read as.** See §3: three hardcoded rungs, no residual, 280
+eligible rows at fractional zoom silently absent. This is the finding that changed a number rather
+than a description.
+
+**§4's specimen values reproduced from nothing.** Neither label is in the six-city corpus, so the two
+off-axis figures existed only in the prose — against this repo's own bar that a fresh clone reproduce
+every number in `reports/`. Their records now live in `SPECIMENS`, their offsets and band membership in
+the artifact under `specimens`, and both are pinned. Computing the band membership is also what caught
+the Summary claiming both specimens sat beyond the 5th percentile of every band when only one does.
+
+The rest, briefly: `by_label_type` publishes its *n* (per city a rate could be 0.0% from 12 labels);
+`_spread` reports a null sd for a one-row band instead of `0.0`; `identification_post179` is gone,
+having been byte-identical to `by_era_identification['post179']`; `offaxis_offsets` reads the POV
+columns `replay_frame` now publishes instead of re-running the gnomonic projection over all 438,410
+rows a second time; the local `CANVAS_W/CANVAS_H` copy is gone, so eligibility and the covariate cannot
+be computed against two different canvases; a vacuous `isfinite(offaxis_v)` term is removed (see Wrong
+Turns); an empty `--csv-dir` now names the directory instead of dying in `pd.concat`; and the index row
+in `reports/README.md` is back in date order.
+
+**Enforcement.** 103 tests in `tests/test_offaxis_covariate.py` (up from 48) and a new
+`tests/test_reports_index.py`; **18/18 mutants killed** on a battery that reverts each fix
+individually. Two mutants survived the first pass and both were the tests' fault, not the fixes':
+`floor_census`'s and `specimen_census`'s findings were pinned only against the committed artifact, so a
+code revert left them green — synthetic code-level tests were added. A third survivor,
+"`eligible` stops requiring a band", exposed a test that reimplemented the mask inline instead of
+calling `prepare`; it now uses the reachable boundary (a click on the pano's top row gives depression
+exactly −90°, which `pd.cut`'s open left edge rejects). `TestReportMatchesTheArtifact` compares this
+report's §1, §3 and §4 tables against the committed JSON cell by cell, which is the check that would
+have caught both mismatches above without a reviewer.
 
 ## Open questions
 
@@ -240,7 +331,8 @@ family under test into the gold standard, and Study 1 would measure zero by cons
 |---|---|
 | Summary numbers (committed) | `reports/data/2026-08-11-offaxis-covariate.json` |
 | Covariate + identification analysis | `reports/scripts/offaxis_covariate.py` |
-| Machinery tests + findings pins | `tests/test_offaxis_covariate.py` (48 tests; 13/13 mutants killed) |
+| Machinery tests + findings pins | `tests/test_offaxis_covariate.py` (103 tests; 13/13 study mutants, 18/18 review mutants killed) |
+| Report/index consistency | `tests/test_reports_index.py`, `TestReportMatchesTheArtifact` |
 | Inherited machinery | `reports/scripts/pov_replay.py`, `era_replay_study.py`, `rawlabels.py` |
 | The amendment this supports | `reports/2026-08-09-crop-priors-prereg.md` §7 |
 
