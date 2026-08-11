@@ -28,6 +28,10 @@ import collections
 import json
 import os
 import struct
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from studyfmt import fmt  # noqa: E402
 
 # Start-of-frame markers whose payload carries the image dimensions. DHT/DAC/RST/SOS are excluded;
 # 0xC4/0xC8/0xCC look like SOF numerically and are not.
@@ -180,13 +184,13 @@ def write_json(result, path):
         json.dump(result, f, indent=1, allow_nan=False)
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('store_root')
     ap.add_argument('--census', required=True, help='the committed photometa census JSON')
     ap.add_argument('--probed', required=True, help='date of this probe (the store changes)')
     ap.add_argument('--write', metavar='JSON')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     with open(args.census, encoding='utf-8') as f:
         census = json.load(f)
@@ -197,13 +201,17 @@ def main():
               'summary': summarize(records),
               'records': records}
 
+    # Every one of these percentages comes from _pct, which returns None on a zero denominator --
+    # reachable whenever a census sample happens to contain no dead-at-Google pano, or no pano whose
+    # JPEG header parsed alongside a recorded frame. This print runs after the live store probe, so a
+    # TypeError here discards the whole probe.
     s = result['summary']
-    print(f"sample {s['n_sampled']}  on store {s['overall']['on_store_pct']:.1f}%")
+    print(f"sample {s['n_sampled']}  on store {fmt(s['overall']['on_store_pct'], '.1f')}%")
     print(f"  dead at Google : {s['dead_at_google']['on_store']}/{s['dead_at_google']['n']} "
-          f"({s['dead_at_google']['on_store_pct']:.1f}%)")
+          f"({fmt(s['dead_at_google']['on_store_pct'], '.1f')}%)")
     print(f"  alive at Google: {s['alive_at_google']['on_store']}/{s['alive_at_google']['n']} "
-          f"({s['alive_at_google']['on_store_pct']:.1f}%)")
-    print(f"  frame vs gsv_data: {s['frame_vs_gsv_data']['match_pct']:.1f}% match, "
+          f"({fmt(s['alive_at_google']['on_store_pct'], '.1f')}%)")
+    print(f"  frame vs gsv_data: {fmt(s['frame_vs_gsv_data']['match_pct'], '.1f')}% match, "
           f"{s['frame_vs_gsv_data']['differ']} differ")
     print(f"  store dims: {s['store_dimensions']}")
 

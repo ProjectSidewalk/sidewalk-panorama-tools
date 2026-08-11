@@ -1,4 +1,4 @@
-"""Placement-noise measurement from co-located duplicate labels — zero annotation cost.
+"""Placement-noise measurement from co-located duplicate labels â€” zero annotation cost.
 
 When two users independently label the same physical object on the same pano, the angular spread
 between their stored points measures end-to-end placement noise (click precision + genuine
@@ -10,7 +10,7 @@ Method: within each (pano_id, label_type), cluster labels by great-circle-ish an
 (azimuth differences seam-wrapped and cos(elevation)-scaled); drop same-user repeats inside a
 cluster (double-submits are not independent placements); every cross-user pair contributes one
 per-axis difference. With iid per-axis noise sigma, a pair difference is N(0, 2*sigma^2), so the
-robust estimator is sigma = 1.4826 * median|d| / sqrt(2) — insensitive to the misplacement tail,
+robust estimator is sigma = 1.4826 * median|d| / sqrt(2) â€” insensitive to the misplacement tail,
 which is real but is a different phenomenon than click noise.
 
 Anchoring on stored pano_x/pano_y (not the canvas/POV record) is justified by the era replay
@@ -38,6 +38,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rawlabels  # noqa: E402
+from studyfmt import fmt  # noqa: E402
 
 PRIMARY_RADIUS_DEG = 1.5
 RADIUS_SWEEP = (0.75, 1.0, 1.5, 2.0)
@@ -182,26 +183,35 @@ def study(csv_dir):
     return out
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('csv_dir')
     ap.add_argument('--fetched', required=True)
     ap.add_argument('--write', metavar='JSON')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     result = {'source': '/v3/api/rawLabels?filetype=csv', 'fetched': args.fetched}
     result.update(study(args.csv_dir))
 
+    # sigma_* is None whenever a group has no cross-user pairs (sigma_from_pairs' documented
+    # contract), which is not exotic: a single-city corpus, or a deliberately crossed block where the
+    # two labellers picked different perspectives, reaches it immediately. Format-specing it directly
+    # made this script die on Richmond before printing anything.
     o = result['overall']
     print(f"pairs {o['n_pairs']} clusters {o['n_clusters']}  "
-          f"sigma_az {o['sigma_az_deg']:.3f} deg  sigma_el {o['sigma_el_deg']:.3f} deg")
+          f"sigma_az {fmt(o['sigma_az_deg'], '.3f')} deg  sigma_el {fmt(o['sigma_el_deg'], '.3f')} deg")
     for lt, s in sorted(result['by_label_type'].items()):
-        print(f"  {lt:22s} n={s['n_pairs']:6d}  az {s['sigma_az_deg']:.3f}  el {s['sigma_el_deg']:.3f}")
+        print(f"  {lt:22s} n={s['n_pairs']:6d}  az {fmt(s['sigma_az_deg'], '.3f')}  "
+              f"el {fmt(s['sigma_el_deg'], '.3f')}")
+    # These three printed the bare value, so they never raised -- but an empty band showed as the
+    # literal 'None' in a column of numbers. Same helper, same three decimals as every other sigma.
     for band, s in result['by_depression_band'].items():
-        print(f"  depression {band:9s} n={s['n_pairs']:6d}  az {s['sigma_az_deg']}  el {s['sigma_el_deg']}")
+        print(f"  depression {band:9s} n={s['n_pairs']:6d}  az {fmt(s['sigma_az_deg'], '.3f')}  "
+              f"el {fmt(s['sigma_el_deg'], '.3f')}")
     for r, s in result['radius_sweep'].items():
-        print(f"  radius {r:5s} sigma_el {s['sigma_el_deg']}")
-    print(f"  validated-only sigma_el {result['validated_only']['sigma_el_deg']}")
+        print(f"  radius {r:5s} n={s['n_pairs']:6d}  sigma_el {fmt(s['sigma_el_deg'], '.3f')}")
+    v = result['validated_only']
+    print(f"  validated-only n={v['n_pairs']:6d}  sigma_el {fmt(v['sigma_el_deg'], '.3f')}")
 
     if args.write:
         with open(args.write, 'w') as f:
