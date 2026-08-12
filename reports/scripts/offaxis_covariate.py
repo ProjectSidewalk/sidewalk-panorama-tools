@@ -79,23 +79,26 @@ BAND_LABELS = ['<5', '5-15', '15-30', '>30']
 # see zoom_conversions, which reports that tail instead of letting it fall out of the census.
 LADDER_ZOOMS = (1.0, 2.0, 3.0)
 
-# The #4842 specimens (both replay `exact`; see the record-staleness study). Neither label is in the six-city corpus, so these are transcribed from
-# their own deployments' rawLabels exports -- and the canvas dims are part of the record, not an
-# assumption. They used to be omitted, which silently took frame_pov's 720x480 fallback: a
-# load-bearing default, because the covariate scales with the frame. Verified 2026-08-12 against
-# the teaneck-nj and chicago-il exports, where both rows do read 720x480, so no published figure
-# moves -- but at DPR-2 (1440x960) teaneck's offset would be -25.58 deg rather than -15.75 deg,
-# which is past the <5 band's 5th percentile and would have overturned this report's own
-# correction that only chicago-il clears all four bands. An unverified default had no business
-# carrying that.
-SPECIMENS = {
-    'teaneck-nj 14955': {'heading': 298.25, 'pitch': -35.0, 'zoom': 1.0,
-                         'canvas_x': 451.0, 'canvas_y': 142.0,
-                         'canvas_width': 720.0, 'canvas_height': 480.0},
-    'chicago-il 30652': {'heading': 320.5, 'pitch': -35.0, 'zoom': 1.0,
-                         'canvas_x': 361.0, 'canvas_y': 83.0,
-                         'canvas_width': 720.0, 'canvas_height': 480.0},
-}
+# The #4842 specimens (both replay `exact`; see the record-staleness study). Neither label is in the
+# six-city corpus, so they are committed as their own two-row rawLabels export, copied verbatim from
+# the teaneck-nj and chicago-il exports.
+#
+# They were five hand-copied fields in a dict, which is a parallel path beside the machinery every
+# other label goes through: no replay check, no eligibility guard, no depression band of their own --
+# so the band membership §4 quotes had to be *inferred* by comparing the offset against other bands'
+# percentiles rather than assigned. The canvas dims were absent from that dict entirely, which
+# silently took frame_pov's 720x480 fallback: load-bearing, because the covariate scales with the
+# frame. Both rows do read 720x480, so no published figure moves -- but at DPR-2 (1440x960)
+# teaneck's offset would be -25.58 deg rather than -15.75 deg, past the <5 band's 5th percentile,
+# which would have overturned this report's own correction that only chicago-il clears all four
+# bands. A whole row cannot omit a field the way a transcription can.
+SPECIMEN_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data',
+                            '2026-08-11-offaxis-specimens.csv')
+
+# The fields of the stored record the report's §4 table prints. The rest of the row is real too --
+# it is a verbatim rawLabels row -- but these are the ones the projection consumes.
+RECORD_FIELDS = ('heading', 'pitch', 'zoom', 'canvas_x', 'canvas_y',
+                 'canvas_width', 'canvas_height')
 
 # The canvas frame is NOT redeclared here. pov_replay.CANVAS_W/CANVAS_H is the one definition, and
 # era_replay_study.frame_pov is the one place that applies it -- a local copy meant eligibility (from
@@ -429,25 +432,52 @@ def specimen_offaxis(record):
     return float(vertical[0])
 
 
-def specimen_census(by_band_result):
+def load_specimens(path=SPECIMEN_CSV):
+    """The #4842 specimen labels as rawLabels rows, through the same loader as any city.
+
+    `city` is not a rawLabels column -- it is the file the row came from, and here two rows come
+    from two deployments -- so it is read alongside rather than through `load_rawlabels`, whose
+    usecols would drop it.
+    """
+    df = rawlabels.load_rawlabels(path)
+    df['city'] = pd.read_csv(path, usecols=['city'])['city']
+    return df
+
+
+def specimen_census(by_band_result, specimens=None):
     """Where #4842's two example labels sit in the covariate's distribution.
 
-    Their off-axis values are computed from the records in `SPECIMENS`; `beyond_p5_bands` lists the
-    Study 1 bands whose 5th percentile the value falls below, which is the tail-membership claim the
-    report makes and which is worth computing rather than asserting -- the report first said both
-    specimens were beyond p5 of *every* band, and only one of them is.
+    They go through `prepare()` like every other label, so every guard applies to them: the replay
+    check that says the record reproduces its own stored coordinate, the eligibility rule, and a
+    depression band **assigned from the row** rather than inferred by comparing the offset against
+    other bands' percentiles. That inference was all a five-field dict could support.
+
+    `tail_bands` is still reported -- it is the claim §4 makes, and it is worth computing rather
+    than asserting: the report first said both specimens were beyond p5 of *every* band, and only
+    one of them is. `own_band_tail` is the sharper version now that a band can be assigned: is the
+    click in the tail of the distribution it actually belongs to?
     """
-    df = pd.DataFrame.from_dict(SPECIMENS, orient='index')
-    vertical, radial = offaxis_offsets(df)
+    prepared = prepare(load_specimens() if specimens is None else specimens)
     out = {}
-    for i, name in enumerate(df.index):
-        v = float(vertical[i])
-        out[name] = {
-            'record': dict(SPECIMENS[name]),
+    for _, row in prepared.iterrows():
+        v = float(row['offaxis_v'])
+        band = None if pd.isna(row['band']) else str(row['band'])
+        out[f"{row['city']} {int(row['label_id'])}"] = {
+            'record': {k: float(row[k]) for k in RECORD_FIELDS},
+            'label_type': str(row['label_type']),
             'offaxis_v_deg': num(v),
-            'offaxis_r_deg': num(radial[i]),
-            'at_pitch_floor': bool(at_pitch_floor([SPECIMENS[name]['pitch']])[0]),
+            'offaxis_r_deg': num(float(row['offaxis_r'])),
+            'at_pitch_floor': bool(row['at_floor']),
+            'depression_deg': num(float(row['depression'])),
+            'band': band,
+            # Both were reported as replaying `exact` in the record-staleness study; computed here
+            # rather than repeated, since a specimen that stopped replaying would be a different
+            # kind of example and nothing said so.
+            'exact_x': bool(row['exact_x']),
+            'exact_y': bool(row['exact_y']),
+            'eligible': bool(row['eligible']),
             'tail_bands': tail_bands(v, by_band_result),
+            'own_band_tail': band is not None and band in tail_bands(v, by_band_result),
         }
     return out
 
@@ -554,8 +584,11 @@ def main(argv=None):
     print(f"  exact_y keeps {p['eligibility']['kept_by_using_exact_y_only']:,} rows that "
           f"exact_x AND exact_y would have dropped")
     for name, s in result['specimens'].items():
-        print(f"  #4842 {name}: off-axis {fmt(s['offaxis_v_deg'], '.2f')} deg, in the tail of "
-              f"{', '.join(s['tail_bands']) or 'no band'}")
+        # The specimen's own band, printed first: it is assigned from the row now, where the only
+        # available statement used to be which *other* bands' tails the offset fell in.
+        print(f"  #4842 {name}: off-axis {fmt(s['offaxis_v_deg'], '.2f')} deg, band "
+              f"{s['band'] or 'n/a'} ({'in' if s['own_band_tail'] else 'not in'} its own tail), "
+              f"in the tail of {', '.join(s['tail_bands']) or 'no band'}")
 
     if args.write:
         with open(args.write, 'w', encoding='utf-8', newline='\n') as f:

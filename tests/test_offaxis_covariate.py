@@ -888,6 +888,35 @@ class TestReportMatchesTheArtifact:
         for s in doc['specimens'].values():
             assert f"{abs(s['offaxis_v_deg']):.2f}°" in text
 
+    def test_the_specimen_band_row_is_transcribed_from_the_artifact(self, text, doc):
+        """The row the assigned band made possible. Bands are written with an en dash in the report
+        and a hyphen in the artifact, which is exactly the kind of thing a transcription gets wrong,
+        so compare the digits."""
+        m = re.search(r'^\| depression, own band \| (.+?) \| (.+?) \|$', text, re.M)
+        assert m, '§4 must state each specimen\'s own band'
+        for i, name in enumerate(['teaneck-nj 14955', 'chicago-il 30652']):
+            s = doc['specimens'][name]
+            cell = m.group(i + 1).replace('–', '-').replace('*', '')
+            assert f"{s['depression_deg']:.2f}°" in cell, name
+            assert s['band'] in cell, (name, s['band'])
+
+    def test_the_own_band_tail_row_matches_the_artifact(self, text, doc):
+        m = re.search(r'^\| beyond the p5 of its own band \| (.+?) \| (.+?) \|$', text, re.M)
+        assert m, '§4 must state whether each specimen is in the tail of its OWN band'
+        for i, name in enumerate(['teaneck-nj 14955', 'chicago-il 30652']):
+            said_yes = 'yes' in m.group(i + 1)
+            assert said_yes == doc['specimens'][name]['own_band_tail'], name
+
+    def test_the_replay_row_matches_the_artifact(self, text, doc):
+        """A specimen that stopped replaying would be a different kind of example. The dict could
+        not have noticed; the row can, so the report says it."""
+        m = re.search(r'^\| replays exact / eligible \| (.+?) \| (.+?) \|$', text, re.M)
+        assert m, '§4 must state the replay and eligibility verdicts'
+        for i, name in enumerate(['teaneck-nj 14955', 'chicago-il 30652']):
+            s = doc['specimens'][name]
+            assert m.group(i + 1).count('yes') == int(s['exact_x'] and s['exact_y']) + int(
+                s['eligible']), name
+
     def test_the_identification_table_carries_each_era_once(self, text, pooled):
         rows = re.findall(r'^\| (pooled|legacy|mid|post-179) \(n = ([\d,]+)\) \|', text, re.M)
         labels = [r[0] for r in rows]
@@ -1058,19 +1087,26 @@ class TestTheZoomTableMatchesTheReport:
 
 
 class TestSpecimenCanvasIsRecordedNotAssumed:
-    """The specimens are hand-transcribed because neither label is in the six-city corpus. Their
-    canvas dims are part of that record: the covariate scales with the frame, so taking the
-    720x480 fallback made an unverified default load-bearing for a published correction."""
+    """The specimens are committed as their own two-row rawLabels export because neither label is in
+    the six-city corpus. Their canvas dims are part of that record: the covariate scales with the
+    frame, so taking the 720x480 fallback made an unverified default load-bearing for a published
+    correction. A whole row cannot omit a field the way a five-field transcription can."""
+
+    @staticmethod
+    def _record(name):
+        s = oc.specimen_census({b: {'offaxis_v_deg': None} for b in oc.BAND_LABELS})
+        return dict(s[name]['record'])
 
     def test_every_specimen_states_its_canvas(self):
-        for name, rec in oc.SPECIMENS.items():
-            assert 'canvas_width' in rec and 'canvas_height' in rec, name
+        for name, spec in oc.specimen_census(
+                {b: {'offaxis_v_deg': None} for b in oc.BAND_LABELS}).items():
+            rec = spec['record']
             assert rec['canvas_width'] > 0 and rec['canvas_height'] > 0, name
 
     def test_the_covariate_moves_with_the_canvas(self):
         """Why it has to be recorded: same click, different frame, materially different answer.
         At DPR-2 teaneck's -15.75 deg becomes -25.58 deg, past the <5 band's p5 of -23.25."""
-        rec = dict(oc.SPECIMENS['teaneck-nj 14955'])
+        rec = self._record('teaneck-nj 14955')
         base = oc.specimen_offaxis(rec)
         dpr2 = oc.specimen_offaxis({**rec, 'canvas_width': 1440.0, 'canvas_height': 960.0})
         assert base == pytest.approx(-15.75, abs=0.02)
@@ -1078,10 +1114,113 @@ class TestSpecimenCanvasIsRecordedNotAssumed:
 
     def test_the_recorded_canvas_is_what_the_report_publishes(self, pooled):
         """Guards against 'fixed' by changing the number instead of the record."""
-        assert oc.specimen_offaxis(oc.SPECIMENS['teaneck-nj 14955']) == pytest.approx(
+        assert oc.specimen_offaxis(self._record('teaneck-nj 14955')) == pytest.approx(
             -15.75, abs=0.02)
-        assert oc.specimen_offaxis(oc.SPECIMENS['chicago-il 30652']) == pytest.approx(
+        assert oc.specimen_offaxis(self._record('chicago-il 30652')) == pytest.approx(
             -23.47, abs=0.02)
+
+    def test_the_canvas_in_the_record_is_the_one_in_the_committed_export(self):
+        """The record is no longer transcribed, so this reads the file the census reads: a row's
+        canvas dims and the published record have to be the same bytes."""
+        rows = oc.load_specimens()
+        assert list(rows['canvas_width']) == [720.0, 720.0]
+        assert list(rows['canvas_height']) == [480.0, 480.0]
+        for name, spec in oc.specimen_census(
+                {b: {'offaxis_v_deg': None} for b in oc.BAND_LABELS}).items():
+            row = rows[rows['label_id'] == int(name.split()[-1])].iloc[0]
+            for field in oc.RECORD_FIELDS:
+                assert spec['record'][field] == pytest.approx(float(row[field])), (name, field)
+
+
+class TestSpecimensGoThroughThePipeline:
+    """They were five hand-copied fields in a dict — a parallel path beside the machinery every other
+    label goes through. No replay check, no eligibility guard, and no depression band of their own,
+    so §4's band claim had to be *inferred* by comparing the offset against other bands' percentiles.
+    The canvas dims were absent from that dict entirely, which is #81's finding 1: this is its root.
+    """
+
+    @pytest.fixture
+    def census(self):
+        p5 = {'<5': -23.2505, '5-15': -21.3206, '15-30': -15.9994, '>30': -3.8947}
+        return oc.specimen_census({b: {'offaxis_v_deg': {'p5': v}} for b, v in p5.items()})
+
+    def test_the_specimens_are_real_rawlabels_rows(self):
+        """Not a dict of five fields: a two-row export the ordinary loader reads, so `pano_id` is
+        dtype-pinned, `tags` parse, and the row carries everything a study asks of any label."""
+        rows = oc.load_specimens()
+        assert len(rows) == 2
+        assert set(rawlabels.STUDY_COLUMNS) <= set(rows.columns)
+        assert list(rows['city']) == ['teaneck-nj', 'chicago-il']
+        assert rows['pano_id'].map(type).eq(str).all()
+
+    def test_each_specimen_is_assigned_its_own_band(self, census):
+        """The finding, in one assertion. A band comes from the row's own depression now, where
+        before the only available statement was which *other* bands' tails the value fell in."""
+        assert census['teaneck-nj 14955']['band'] == '15-30'
+        assert census['chicago-il 30652']['band'] == '5-15'
+        assert census['teaneck-nj 14955']['depression_deg'] == pytest.approx(19.25, abs=0.01)
+        assert census['chicago-il 30652']['depression_deg'] == pytest.approx(11.52, abs=0.01)
+
+    def test_the_guards_every_other_label_gets_now_apply(self, census):
+        """Both replay exactly and both are eligible — which the record-staleness study asserted and
+        nothing here computed. A specimen that stopped replaying would be a different kind of
+        example, and the dict could not have noticed."""
+        for name, spec in census.items():
+            assert spec['exact_x'] and spec['exact_y'], name
+            assert spec['eligible'], name
+
+    def test_the_own_band_claim_is_sharper_than_the_cross_band_one(self, census):
+        """What the assigned band buys. teaneck's -15.75 deg clears the >30 band's p5 but sits just
+        inside its OWN band's (15-30, p5 -16.0); chicago's -23.47 deg is in the tail of every band
+        including its own. The cross-band list alone could not say either."""
+        teaneck, chicago = census['teaneck-nj 14955'], census['chicago-il 30652']
+        assert teaneck['tail_bands'] == ['>30'] and not teaneck['own_band_tail']
+        assert chicago['tail_bands'] == oc.BAND_LABELS and chicago['own_band_tail']
+
+    def test_the_published_offsets_are_unchanged_by_the_move(self):
+        """The whole point is that nothing moves: the same click, the same canvas, now read from a
+        row instead of a transcription."""
+        census = oc.specimen_census({b: {'offaxis_v_deg': None} for b in oc.BAND_LABELS})
+        assert census['teaneck-nj 14955']['offaxis_v_deg'] == pytest.approx(-15.7479, abs=1e-4)
+        assert census['chicago-il 30652']['offaxis_v_deg'] == pytest.approx(-23.4711, abs=1e-4)
+
+    def test_the_loader_reads_the_canvas_rather_than_assuming_it(self, tmp_path):
+        """Discrimination for the field whose absence started this. Both committed rows are 720x480,
+        so a loader that substituted that constant would look right on the file that exists — hand it
+        a row on a DPR-2 canvas and the value has to come back changed.
+        """
+        raw = pd.read_csv(oc.SPECIMEN_CSV)
+        raw.loc[0, ['canvas_width', 'canvas_height']] = [1440.0, 960.0]
+        path = tmp_path / 'specimens.csv'
+        raw.to_csv(path, index=False)
+        loaded = oc.load_specimens(str(path))
+        assert list(loaded['canvas_width'])[:1] == [1440.0]
+        assert list(loaded['canvas_height'])[:1] == [960.0]
+        moved = oc.specimen_census({b: {'offaxis_v_deg': None} for b in oc.BAND_LABELS},
+                                   specimens=loaded)['teaneck-nj 14955']
+        assert moved['offaxis_v_deg'] == pytest.approx(-25.58, abs=0.02), \
+            'the covariate scales with the frame, which is why the frame is in the record'
+
+    def test_a_specimen_whose_record_stopped_replaying_says_so(self):
+        """Discrimination for the replay verdict. Both real specimens do replay, so a hardcoded
+        `True` would satisfy every assertion above — move one stored pixel and it must not."""
+        broken = oc.load_specimens().iloc[:1].copy()
+        broken['pano_y'] = broken['pano_y'] + 25.0
+        spec = oc.specimen_census({b: {'offaxis_v_deg': None} for b in oc.BAND_LABELS},
+                                  specimens=broken)['teaneck-nj 14955']
+        assert not spec['exact_y'] and not spec['eligible']
+        assert spec['exact_x'], 'only the vertical half moved'
+
+    def test_a_specimen_export_can_be_swapped_in(self, tmp_path):
+        """`specimens` is a parameter, so the census is testable on a frame that is not the
+        committed one — and so a future #4842-shaped example is a new row, not a code edit."""
+        rows = oc.load_specimens()
+        one = rows.iloc[:1].copy()
+        one['canvas_y'] = 460.0
+        census = oc.specimen_census({b: {'offaxis_v_deg': {'p95': 5.0}} for b in oc.BAND_LABELS},
+                                    specimens=one)
+        assert list(census) == ['teaneck-nj 14955']
+        assert census['teaneck-nj 14955']['offaxis_v_deg'] > 0, 'clicked below the viewport centre'
 
 
 class TestCountsAreOverThePopulationTheyArePublishedAgainst:

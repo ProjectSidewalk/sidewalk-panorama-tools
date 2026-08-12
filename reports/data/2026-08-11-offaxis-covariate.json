@@ -1231,12 +1231,19 @@
     "canvas_width": 720.0,
     "canvas_height": 480.0
    },
+   "label_type": "SurfaceProblem",
    "offaxis_v_deg": -15.747913981930697,
    "offaxis_r_deg": 20.297831361163286,
    "at_pitch_floor": true,
+   "depression_deg": 19.248046875,
+   "band": "15-30",
+   "exact_x": true,
+   "exact_y": true,
+   "eligible": true,
    "tail_bands": [
     ">30"
-   ]
+   ],
+   "own_band_tail": false
   },
   "chicago-il 30652": {
    "record": {
@@ -1248,15 +1255,22 @@
     "canvas_width": 720.0,
     "canvas_height": 480.0
    },
+   "label_type": "CurbRamp",
    "offaxis_v_deg": -23.471118968661123,
    "offaxis_r_deg": 23.471505957864643,
    "at_pitch_floor": true,
+   "depression_deg": 11.520432692307692,
+   "band": "5-15",
+   "exact_x": true,
+   "exact_y": true,
+   "eligible": true,
    "tail_bands": [
     "<5",
     "5-15",
     "15-30",
     ">30"
-   ]
+   ],
+   "own_band_tail": true
   }
  }
 }
