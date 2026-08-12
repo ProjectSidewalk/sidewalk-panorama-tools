@@ -701,3 +701,39 @@ class TestReportMatchesTheArtifact:
             assert f"| {city} | {d['in_window']['n']:,} |" in report, city
             for key in ('pct_ge_4px', 'pct_ge_10px', 'pct_ge_30px'):
                 assert f'{v[key]:.2f}%' in report, f'{city} {key} = {v[key]}'
+
+
+class TestReplayResidualsIsNotTheMorePermissiveCopy:
+    """_replay_residuals is a hypothesis-testing variant of era_replay_study.replay_frame — it
+    substitutes alternative canvas/zoom inputs — so it cannot just call it. What it must not be is
+    the *more permissive* of the two, which is how a duplicated projection goes wrong: pov_replay
+    records deleting an earlier frame-level helper for exactly that reason.
+    """
+
+    def test_a_blank_pano_height_is_unreplayable_on_y(self):
+        """It used to fall through to a fabricated 4096-px frame and be classified against it.
+        Real rows carry this: 84 (cdmx), 106 (newberg), 109 (columbus) and 1,761 (seattle) rows
+        have a blank pano_width/height where the pano metadata never resolved."""
+        df = _forward_frame([300.0], [200.0], [150.0], [-15.0], [1.0])
+        df['pano_height'] = np.nan
+        adx, ady = rss._replay_residuals(df, df['canvas_x'], df['canvas_y'], df['zoom'])
+        assert np.isnan(ady[0])
+
+    def test_a_blank_pano_x_is_unreplayable_on_x(self):
+        df = _forward_frame([300.0], [200.0], [150.0], [-15.0], [1.0])
+        df['pano_x'] = np.nan
+        adx, ady = rss._replay_residuals(df, df['canvas_x'], df['canvas_y'], df['zoom'])
+        assert np.isnan(adx[0])
+
+    def test_it_agrees_with_replay_frame_on_what_is_replayable(self):
+        """The two must partition the same frame the same way, or the cascade classifies rows the
+        study's own replay considers unreplayable."""
+        df = _forward_frame([300.0, 400.0, 500.0, 600.0], [200.0, 210.0, 220.0, 230.0],
+                            [150.0] * 4, [-15.0] * 4, [1.0] * 4)
+        df.loc[0, 'pano_height'] = np.nan
+        df.loc[1, 'camera_heading'] = np.nan
+        df.loc[2, 'pano_x'] = np.nan
+        replayed = ers.replay_frame(df)
+        adx, ady = rss._replay_residuals(df, df['canvas_x'], df['canvas_y'], df['zoom'])
+        assert list(~np.isnan(adx)) == list(replayed['replayable_x'])
+        assert list(~np.isnan(ady)) == list(replayed['replayable_y'])

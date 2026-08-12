@@ -48,28 +48,50 @@ REPAIRED = (255, 214, 0)   # yellow square: where the repaired record renders
 MIN_EXAMPLE_PX = 15  # a visual example must be visibly off; sub-perceptible rows prove nothing
 
 
-def replay_px(heading, pitch, zoom, canvas_x, canvas_y, camera_heading, pano_w, pano_h):
-    """The record's rendered position in pano pixels (the exact production projection)."""
-    pov_h, pov_p = pov_replay.pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom)
+def replay_px(heading, pitch, zoom, canvas_x, canvas_y, camera_heading, pano_w, pano_h,
+              canvas_w, canvas_h):
+    """The record's rendered position in pano pixels (the exact production projection).
+
+    canvas_w/canvas_h are required, not defaulted. This used to omit them, so every marker was
+    projected through a hardcoded 720x480 while the study's own replay used each row's values --
+    and the entire visual argument of the gallery is that the yellow repaired marker lands inside
+    the blue truth circle. On a non-standard canvas the focal length, and therefore both offsets,
+    are computed against the wrong frame, so the red and yellow markers land where the label never
+    was. era_replay_study tracks nonstandard_canvas_rows precisely because this can be nonzero.
+    """
+    pov_h, pov_p = pov_replay.pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom,
+                                              canvas_w, canvas_h)
     px, py = pov_replay.pano_xy_from_pov(pov_h, pov_p, camera_heading, pano_w, pano_h)
     return float(px), float(py)
 
 
-def pick_candidates(csv_dir, per_class, max_examples):
+def pick_candidates(csv_dir, per_class):
     """Deterministic exemplar queue: per miss class (priority order), the largest old Validate-px
     rows across all cities, interleaved so no city dominates."""
     rows = []
+    repair_cities = []
     for path in sorted(glob.glob(REPAIRS_GLOB)):
         city = os.path.basename(path).replace(f'{DATE}-repairs-', '').replace('.csv.gz', '')
+        repair_cities.append(city)
         rep = pd.read_csv(gzip.open(path, 'rt'))
         raw_path = os.path.join(csv_dir, f'{city}.csv')
         if not os.path.exists(raw_path):
             continue
         raw = rawlabels.load_rawlabels(raw_path)
         merged = rep.merge(raw[['label_id', 'pano_id', 'label_type', 'pano_width', 'pano_height',
-                                'camera_heading', 'pano_x', 'pano_y']], on='label_id', how='inner')
+                                'camera_heading', 'pano_x', 'pano_y',
+                                'canvas_width', 'canvas_height']], on='label_id', how='inner')
         merged['city'] = city
         rows.append(merged)
+    if not rows:
+        # Named, rather than dying inside pd.concat with "No objects to concatenate". Easy to hit:
+        # the repairs are keyed to the eight study cities, so pointing --csv-dir at any other
+        # corpus directory silently matches nothing.
+        covered = ', '.join(sorted(repair_cities)) or '(no repair CSVs found at all)'
+        raise SystemExit(
+            f'no city matched between the repair CSVs and {csv_dir}.\n'
+            f'  repair CSVs cover: {covered}\n'
+            f'  point --csv-dir at the corpus those were built from.')
     allr = pd.concat(rows, ignore_index=True)
 
     queue = []
@@ -160,10 +182,12 @@ def render_example(row, img):
     truth = (float(row['pano_x']) * s, float(row['pano_y']) * s)
     stale = replay_px(row['old_heading'], row['old_pitch'], row['old_zoom'],
                       row['old_canvas_x'], row['old_canvas_y'],
-                      row['camera_heading'], row['pano_width'], row['pano_height'])
+                      row['camera_heading'], row['pano_width'], row['pano_height'],
+                      row['canvas_width'], row['canvas_height'])
     repaired = replay_px(row['new_heading'], row['new_pitch'], row['new_zoom'],
                          row['new_canvas_x'], row['new_canvas_y'],
-                         row['camera_heading'], row['pano_width'], row['pano_height'])
+                         row['camera_heading'], row['pano_width'], row['pano_height'],
+                         row['canvas_width'], row['canvas_height'])
     stale = (stale[0] * s, stale[1] * s)
     repaired = (repaired[0] * s, repaired[1] * s)
 
@@ -216,7 +240,7 @@ def main():
 
     from streetlevel import streetview  # deferred: import needs the exiv2 native lib
 
-    queue, _ = pick_candidates(args.csv_dir, args.per_class, args.max_examples)
+    queue, _ = pick_candidates(args.csv_dir, args.per_class)
     print(f'candidate queue: {len(queue)} rows')
 
     examples, per_class = [], {}

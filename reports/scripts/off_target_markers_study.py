@@ -99,13 +99,23 @@ def _replay_residuals(df, canvas_x, canvas_y, zoom):
     w = np.asarray(df['pano_width'], float)
     h = np.asarray(df['pano_height'], float)
     cam = np.asarray(df['camera_heading'], float)
-    ok = np.isfinite(pov_h) & np.isfinite(pov_p) & np.isfinite(cam) & np.isfinite(w) & (w > 0)
+    stored_x = np.asarray(df['pano_x'], float)
+    stored_y = np.asarray(df['pano_y'], float)
+    # The same replayability conditions era_replay_study.replay_frame applies, per axis. This is a
+    # hypothesis-testing variant of that projection (it substitutes alternative canvas/zoom inputs
+    # rather than replaying the row as stored), so it cannot simply call it -- but it must not be
+    # the more PERMISSIVE of the two, which is how a duplicated projection goes wrong. It used to
+    # omit the isfinite(h)/h>0/isfinite(stored) guards, so a row with a blank pano_height was
+    # silently classified against a fabricated 4096-px frame instead of being left unreplayable.
+    pov_ok = np.isfinite(pov_h) & np.isfinite(pov_p)
+    ok_x = pov_ok & np.isfinite(cam) & np.isfinite(w) & (w > 0) & np.isfinite(stored_x)
+    ok_y = pov_ok & np.isfinite(h) & (h > 0) & np.isfinite(stored_y)
     safe = lambda a, fill: np.where(np.isfinite(a), a, fill)
     rx, ry = pov_replay.pano_xy_from_pov(safe(pov_h, 0.0), safe(pov_p, 0.0),
                                          safe(cam, 0.0), safe(w, 8192.0), safe(h, 4096.0))
     adx = np.abs(era_replay_study.wrapped_dx(df['pano_x'], rx, safe(w, 8192.0)))
-    ady = np.abs(np.asarray(df['pano_y'], float) - ry)
-    return np.where(ok, adx, np.nan), np.where(ok, ady, np.nan)
+    ady = np.abs(stored_y - ry)
+    return np.where(ok_x, adx, np.nan), np.where(ok_y, ady, np.nan)
 
 
 def _implied_height(df):
