@@ -176,13 +176,20 @@ def deg_for_canvas_offset(offset_px, zoom, canvas_width=None):
     return np.degrees(np.arctan(np.asarray(offset_px, float) / focal_px))
 
 
-def prepare(df):
+def prepare(df, replayed=None):
     """Replay the frame, attach the covariates, and mark the eligible rows.
 
     Eligibility is `exact_y`: the stored record's vertical half reproduces stored pano_y exactly.
     See the module docstring for why this is the right restriction and not `exact_x & exact_y`.
+
+    `replayed` is for a caller that already holds `era_replay_study.replay_frame(df)` and would
+    otherwise pay for a second full gnomonic projection over the same rows — `mapillary_census.census`
+    wants both the replay residuals and these covariates, and was projecting twice per city. It is
+    copied rather than used in place, since this function adds columns and the caller's frame is
+    still its own. Passing a frame that is not this one's replay is the caller's error; nothing here
+    can check it, which is why it is a private-ish convenience and not the documented entry point.
     """
-    out = era_replay_study.replay_frame(df)
+    out = era_replay_study.replay_frame(df) if replayed is None else replayed.copy()
     vertical, radial = offaxis_offsets(out)
     out['offaxis_v'] = vertical
     out['offaxis_r'] = radial

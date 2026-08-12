@@ -126,13 +126,15 @@ def _histogram(keys):
     return dict(sorted(out.items()))
 
 
-def replay(df):
+def replay(df, replayed=None):
     """The census's central measurement: does the verbatim GSV projection reproduce stored pano_x/y?
 
     An exact replay is only possible if the front end ran this same projection with this same fov
     ladder, so a 100% rate settles both the eligibility rule and the fov question at once.
+
+    `replayed` is the frame `census()` already projected; see the note there.
     """
-    out = era_replay_study.replay_frame(df)
+    out = era_replay_study.replay_frame(df) if replayed is None else replayed
     n = int(len(out))
     misses_y = out.loc[out['replayable_y'] & ~out['exact_y'], 'dy'].abs()
     misses_x = out.loc[out['replayable_x'] & ~out['exact_x'], 'dx'].abs()
@@ -352,10 +354,13 @@ def referent_exclusion(df):
     }
 
 
-def geometry(df):
+def geometry(df, replayed=None):
     """Depression bands and off-axis spread, so the Mapillary corpus can be placed against §2.1's
-    strata and against the off-axis covariate's own distribution."""
-    prep = offaxis_covariate.prepare(df)
+    strata and against the off-axis covariate's own distribution.
+
+    `replayed` is the frame `census()` already projected; see the note there.
+    """
+    prep = offaxis_covariate.prepare(df, replayed=replayed)
     g = prep[prep['eligible']]
     return {
         'n_eligible': int(len(g)),
@@ -413,15 +418,23 @@ def pool_referent_exclusion(per_city):
 
 
 def census(df):
+    """Every measurement, over one frame.
+
+    The projection runs once. `replay` reports the residuals and `geometry` reads the covariates
+    `offaxis_covariate.prepare` derives from the same replay, and both used to call `replay_frame`
+    themselves -- which is the duplication `replay_frame`'s docstring says the `frame_pov` refactor
+    removed, reintroduced one module away by two callers each asking for its own copy.
+    """
+    replayed = era_replay_study.replay_frame(df)
     return {
         'imagery_source': imagery_source(df),
-        'replay': replay(df),
+        'replay': replay(df, replayed=replayed),
         'tilt': tilt(df),
         'within_pano_stratum': within_pano_stratum(df),
         'multi_perspective': multi_perspective(df),
         'crossed_block': crossed_block(df),
         'referent_exclusion': referent_exclusion(df),
-        'geometry': geometry(df),
+        'geometry': geometry(df, replayed=replayed),
         'labels_by_type': {str(t): int(k) for t, k in df['label_type'].value_counts().items()},
         'date_range': [str(df['time_created'].min().date()), str(df['time_created'].max().date())],
     }
@@ -453,7 +466,13 @@ def main(argv=None):
         frames.append(df)
         result['cities'][city] = census(df)
 
-    pooled = census(pd.concat(frames, ignore_index=True))
+    # One city means the pooled frame IS that city's frame, so recomputing would be the same census
+    # a second time -- another projection, another O(n^2) co-location scan, another leader scan.
+    # Richmond is the only launched Mapillary deployment, so that is the ordinary case here rather
+    # than a corner, and the emitted `pooled` is byte-identical either way (a test asserts it on the
+    # fixture rather than trusting the argument).
+    pooled = (result['cities'][next(iter(result['cities']))] if len(frames) == 1
+              else census(pd.concat(frames, ignore_index=True)))
     result['pooled'] = pooled
     if args.gsv_dir:
         result['gsv_contrast'] = gsv_contrast(args.gsv_dir)

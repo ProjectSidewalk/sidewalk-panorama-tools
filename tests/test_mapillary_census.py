@@ -33,7 +33,9 @@ for p in (REPO_ROOT, SCRIPTS):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import era_replay_study as ers  # noqa: E402
 import mapillary_census as mc  # noqa: E402
+import offaxis_covariate  # noqa: E402
 import pov_replay  # noqa: E402
 import rawlabels  # noqa: E402
 
@@ -641,6 +643,77 @@ class TestMain:
         text = artifact.read_text(encoding='utf-8')
         assert 'NaN' not in text
         json.loads(text)
+
+
+class TestTheProjectionRunsOnce:
+    """`replay` and `geometry` each called `era_replay_study.replay_frame` over the same rows, and
+    `main()` then ran the whole census again to build `pooled` — four full gnomonic projections for
+    one city, plus a second O(n²) co-location scan and a second leader scan.
+
+    `replay_frame`'s own docstring says the `frame_pov` refactor removed exactly this
+    ("`offaxis_covariate.prepare` used to run the full gnomonic projection a second time over the same
+    438k rows"); it came back one module away, with two callers each asking for a private copy. So
+    these tests count calls rather than check outputs — the outputs were always right, which is why
+    nothing caught it.
+    """
+
+    @staticmethod
+    def _count(monkeypatch, module, name):
+        calls = []
+        real = getattr(module, name)
+
+        def counted(*args, **kwargs):
+            calls.append(len(args[0]))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, counted)
+        return calls
+
+    def test_one_census_projects_the_frame_once(self, fixture_frame, monkeypatch):
+        calls = self._count(monkeypatch, ers, 'replay_frame')
+        mc.census(fixture_frame)
+        assert calls == [len(fixture_frame)], 'replay and geometry must share one projection'
+
+    def test_geometry_still_gets_the_covariates_from_that_projection(self, fixture_frame):
+        """Sharing must not quietly change what `geometry` reports: same numbers, one projection."""
+        replayed = ers.replay_frame(fixture_frame)
+        assert mc.geometry(fixture_frame, replayed=replayed) == mc.geometry(fixture_frame)
+        assert mc.replay(fixture_frame, replayed=replayed) == mc.replay(fixture_frame)
+
+    def test_prepare_does_not_write_into_the_frame_it_was_handed(self, fixture_frame):
+        """`census` hands the same replayed frame to two consumers, so the one that adds columns has
+        to work on a copy — otherwise the second consumer reads a frame the first one grew."""
+        replayed = ers.replay_frame(fixture_frame)
+        before = list(replayed.columns)
+        offaxis_covariate.prepare(fixture_frame, replayed=replayed)
+        assert list(replayed.columns) == before
+        assert 'eligible' not in replayed
+
+    def test_a_single_city_run_censuses_once(self, tmp_path, monkeypatch):
+        import shutil
+        shutil.copy(FIXTURE, tmp_path / 'richmond.csv')
+        calls = self._count(monkeypatch, mc, 'census')
+        assert mc.main([str(tmp_path), '--fetched', '2026-08-11']) == 0
+        assert calls == [10], 'the pooled frame IS the city frame when there is only one'
+
+    def test_pooling_one_frame_is_the_same_census(self, fixture_frame):
+        """What licenses that shortcut, asserted rather than argued: concatenating a single frame
+        changes only its index, and no measurement in the census reads the index."""
+        pooled = mc.census(pd.concat([fixture_frame], ignore_index=True))
+        assert pooled == mc.census(fixture_frame)
+
+    def test_two_cities_are_still_pooled(self, tmp_path):
+        """Guards the guard: the shortcut must not survive into the case it is wrong for."""
+        rows = pd.read_csv(FIXTURE, dtype=str)
+        rows.head(6).to_csv(tmp_path / 'a.csv', index=False)
+        rows.tail(4).to_csv(tmp_path / 'b.csv', index=False)
+        artifact = tmp_path / 'out.json'
+        assert mc.main([str(tmp_path), '--fetched', '2026-08-11', '--write', str(artifact)]) == 0
+        doc = json.loads(artifact.read_text(encoding='utf-8'))
+        assert doc['cities']['a']['replay']['n_labels'] == 6
+        assert doc['cities']['b']['replay']['n_labels'] == 4
+        assert doc['pooled']['replay']['n_labels'] == 10
+        assert doc['pooled'] != doc['cities']['a'] and doc['pooled'] != doc['cities']['b']
 
 
 class TestReportMatchesTheArtifact:
