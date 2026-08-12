@@ -1,1 +1,4 @@
 pytest>=7
+# The reports/ figure generators, and tests/test_off_target_markers_figures.py which drives them.
+# Not in requirements.txt: nothing the scraper or cropper runs in production imports it.
+matplotlib>=3.5
