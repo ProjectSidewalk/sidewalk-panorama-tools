@@ -359,7 +359,7 @@ class TestCrossedBlock:
 
     def test_matched_recovers_more_pairs_than_clustered(self, pooled):
         """The tooling finding: clustering needs both clicks inside a radius, matching only needs them
-        on the same pano and type. 2 pairs versus 7 on the same data."""
+        on the same pano and type. 2 pairs versus 6 on the same data."""
         c = pooled['crossed_block']
         assert c['clustered']['n_pairs'] == 2
         assert c['matched']['n_pairs'] == 6
@@ -772,3 +772,44 @@ class TestImagerySourceReadsTheServedColumn:
         out = mc.imagery_source(df)
         assert out['by_source'] is None
         assert out['by_id_shape'] == {'mapillary': 1}
+
+
+class TestTheIncidentalSigmaIsLabelledAsIncidental:
+    """matched_study refuses a defaulted pano list because deriving it from shared_panos silently
+    produces a sigma from force-paired distinct objects. crossed_block derives exactly that list —
+    legitimately, since its finding is that Richmond has no designed block — but it then wrote the
+    sigma into the artifact with nothing marking it as incidental, so a consumer reading
+    `matched.sigma_az_deg` cannot tell it from a designed-block measurement.
+    """
+
+    def test_the_matched_block_declares_its_pano_list_was_derived(self, fixture_frame):
+        out = mc.crossed_block(fixture_frame)
+        assert out['matched']['panos_agreed'] is False
+
+    def test_it_says_so_in_words_a_consumer_will_see(self, fixture_frame):
+        out = mc.crossed_block(fixture_frame)
+        assert 'incidental' in out['matched']['sigma_caveat'].lower()
+
+    def test_the_caveat_travels_with_the_number(self, fixture_frame):
+        """Not a sibling key three levels up: it has to sit in the same dict as the sigma."""
+        m = mc.crossed_block(fixture_frame)['matched']
+        assert {'panos_agreed', 'sigma_caveat'} <= set(m)
+
+
+class TestDocstringCountsMatchTheArtifact:
+    """The transcription class this repo's own CLAUDE.md rule targets — "state which filter a
+    count is under, or don't quote it". TestReportMatchesTheArtifact covers the markdown; nothing
+    covered docstrings, and crossed_block's said "2 pairs versus 7" where 7 is the shared-PANO
+    count from the line above and the artifact says 6 matched pairs."""
+
+    def test_the_crossed_block_docstring_quotes_the_artifact(self, pooled):
+        c = pooled['crossed_block']
+        quoted = re.search(r'that is (\d+) pairs versus (\d+)', mc.crossed_block.__doc__)
+        assert quoted, 'the docstring must quote the comparison it describes'
+        assert int(quoted.group(1)) == c['clustered']['n_pairs']
+        assert int(quoted.group(2)) == c['matched']['n_pairs']
+
+    def test_the_shared_pano_count_is_not_what_it_quotes(self, pooled):
+        """The specific confusion: 7 panos yield 6 pairs, and 7 was quoted as the pair count."""
+        c = pooled['crossed_block']
+        assert c['n_panos_shared_by_two_users'] != c['matched']['n_pairs']

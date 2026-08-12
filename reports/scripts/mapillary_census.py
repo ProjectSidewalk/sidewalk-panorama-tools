@@ -289,7 +289,7 @@ def crossed_block(df):
 
     Both estimators are reported because the gap between them is the finding: the clustering estimator
     needs the two clicks within a radius, the matched estimator only needs them to be on the same pano
-    and the same type. On the Richmond block that is 2 pairs versus 7 — and both are far short of the
+    and the same type. On the Richmond block that is 2 pairs versus 6 — and both are far short of the
     ~150 a sigma needs, because sharing a *route* is not sharing panos.
     """
     # Both filters, and the geometry one first: has_located_referent decides whether a displacement
@@ -311,7 +311,16 @@ def crossed_block(df):
         'n_dropped_unlocated_referent': int(len(df) - len(comparable)),
         'clustered': {'radius_deg': click_noise_study.PRIMARY_RADIUS_DEG,
                       **click_noise_study.sigma_from_pairs(clustered)},
-        'matched': {**diag, **click_noise_study.sigma_from_pairs(matched)},
+        # Labelled at the sigma, not three levels up. matched_study refuses a DEFAULTED pano list
+        # because deriving one from shared_panos silently yields a sigma over force-paired distinct
+        # objects; this call derives one on purpose -- the census's finding is that Richmond has no
+        # designed crossed block -- so the number is real but must never be read as a
+        # designed-block measurement. A consumer holding only this dict can now tell.
+        'matched': {**diag, **click_noise_study.sigma_from_pairs(matched),
+                    'panos_agreed': False,
+                    'sigma_caveat': 'incidental co-location: the pano list was derived from '
+                                    'shared_panos, not agreed between labellers, so pairs may '
+                                    'cross distinct objects and this sigma is an upper bound'},
     }
 
 
