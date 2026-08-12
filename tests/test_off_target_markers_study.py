@@ -166,6 +166,70 @@ class TestCascade:
             assert stat['pct_also_matching_zoom_plus_1'] >= 0.0
 
 
+class TestTheCascadeIsSymmetricInXAndY:
+
+    def test_a_pitch_only_staleness_is_its_own_class(self):
+        """The cascade had x_only but no y_only, so a record whose ONLY stale field is pitch
+        replays with dx exactly 0 and landed in xy_small or multi_field — classes the report
+        defines as 'both axes off' and attributes to a pan moving both axes at once."""
+        df = _forward_frame([360.0], [240.0], [150.0], [-15.0], [1.0])
+        df['pitch'] += 6.0
+        out = _classified(df)
+        assert out['klass'].iloc[0] == 'y_only'
+
+    def test_the_x_only_mirror_still_holds(self):
+        """The symmetric case, unchanged."""
+        df = _forward_frame([360.0], [240.0], [150.0], [-15.0], [1.0])
+        df['heading'] += 6.0
+        out = _classified(df)
+        assert out['klass'].iloc[0] == 'x_only'
+
+    def test_a_pitch_only_row_is_not_reported_as_both_axes_off(self):
+        """The measurement behind the finding: on the cached corpus, 348 of Seattle's 635
+        in-window xy_small rows had |dx| <= 1 px. Here, exactly: dy is large and dx is zero,
+        so nothing about this row belongs in a 'both axes' bucket."""
+        df = _forward_frame([360.0], [240.0], [150.0], [-15.0], [1.0])
+        df['pitch'] += 6.0
+        out = _classified(df)
+        assert abs(out['dx_deg'].iloc[0]) < 1e-6
+        assert out['klass'].iloc[0] not in ('xy_small', 'multi_field')
+
+    def test_y_only_rows_are_still_repaired(self):
+        """The new class must stay in repair scope — it was being repaired before under a
+        different name, and dropping it would silently shrink the deliverable."""
+        assert 'y_only' in rss.REPAIR_CLASSES
+        df = _forward_frame([300.0], [200.0], [150.0], [-15.0], [1.0])
+        df['pitch'] += 6.0
+        g = _classified(df)
+        g['validate_px'] = rss.validate_px(g)
+        rep, summary = rss.repair_frame(g)
+        assert summary['n'] == 1
+        assert summary['pct_repaired'] == 100.0
+
+
+class TestScatterSampleRespectsItsCap:
+
+    def _misses(self, n):
+        return pd.DataFrame({'dx_deg': np.linspace(-5, 5, n), 'dy_deg': np.zeros(n),
+                             'klass': ['x_only'] * n})
+
+    def test_a_city_just_under_a_multiple_of_the_cap_is_still_capped(self):
+        """`len // cap` gave a city with 1,499 misses step 1, so it contributed all 1,499 — twice
+        the budget — while 1,500 contributed 750. The pooled scatter therefore over-weighted
+        cities sitting just under each multiple of the cap."""
+        pts = rss.scatter_sample([self._misses(1499)], per_city_cap=750)
+        assert len(pts) <= 750
+
+    def test_the_cap_holds_across_the_boundary(self):
+        for n in (749, 750, 751, 1499, 1500, 1501, 3001):
+            pts = rss.scatter_sample([self._misses(n)], per_city_cap=750)
+            assert len(pts) <= 750, f'{n} misses produced {len(pts)} points'
+
+    def test_a_small_city_is_not_decimated(self):
+        pts = rss.scatter_sample([self._misses(120)], per_city_cap=750)
+        assert len(pts) == 120
+
+
 class TestValidatePx:
 
     def test_one_degree_at_zoom_1(self):
@@ -254,6 +318,53 @@ class TestRepair:
         scope = g[g['klass'].isin(rss.REPAIR_CLASSES)].copy()
         *_, adx, ady = rss.solve_record(scope)
         assert max(adx.max(), ady.max()) > rss.MATCH_TOL_PX
+
+    def test_the_csv_columns_describe_the_csv_record(self):
+        """End-to-end version of the contract, across the rounding layer: post_px_x/post_px_y must
+        describe new_heading/new_pitch/new_zoom/new_canvas_*, as written.
+
+        solve_record measured full-precision values while repair_frame rounded them into the CSV.
+        That looks harmless at 1e-4 deg, but pano_xy_from_pov lands on integer pixels, so it is
+        enough to move the replayed pixel by one — 3 columbus-oh rows shipped post_px_x = 0.00 for
+        a record that actually replays 1 px off. Run wide enough that some row is rounding-sensitive.
+        """
+        n = 3000
+        rng = np.random.default_rng(20260812)
+        df = _forward_frame(rng.uniform(40, 680, n), rng.uniform(40, 440, n),
+                            rng.uniform(0, 360, n), rng.uniform(-35, 10, n),
+                            rng.choice([1.0, 2.0, 3.0], n))
+        df['heading'] = (df['heading'] + rng.uniform(-20, 20, n)) % 360.0
+        df['pitch'] = np.clip(df['pitch'] + rng.uniform(-8, 8, n), -90, 90)
+        g = _classified(df)
+        g['validate_px'] = rss.validate_px(g)
+        rep, _ = rss.repair_frame(g)
+        assert len(rep) > 10, 'not enough rows in repair scope to be meaningful'
+
+        scope = g[g['klass'].isin(rss.REPAIR_CLASSES)]
+        fresh_x, fresh_y = _residual_of(scope,
+                                        rep['new_heading'].to_numpy(float),
+                                        rep['new_pitch'].to_numpy(float),
+                                        rep['new_zoom'].to_numpy(float),
+                                        rep['new_canvas_x'].to_numpy(float),
+                                        rep['new_canvas_y'].to_numpy(float))
+        # post_px is stored to 1 dp, so 0.05 is the representation floor, not slack.
+        assert rep['post_px_x'].to_numpy() == pytest.approx(fresh_x, abs=0.05)
+        assert rep['post_px_y'].to_numpy() == pytest.approx(fresh_y, abs=0.05)
+
+    def test_solve_record_returns_an_already_rounded_record(self):
+        """The structural half of the guarantee above, and the deterministic one: if solve_record
+        hands back values already at RECORD_DECIMALS, repair_frame has nothing left to round and
+        the measured residual cannot drift from the written record."""
+        df = _forward_frame([200.0, 500.0], [200.0, 300.0], [150.0, 150.0], [-15.0, -15.0],
+                            [1.0, 1.0])
+        df['heading'] += 17.0
+        df['pitch'] -= 9.0
+        g = _classified(df)
+        g['validate_px'] = rss.validate_px(g)
+        scope = g[g['klass'].isin(rss.REPAIR_CLASSES)].copy()
+        rh, rp, *_ = rss.solve_record(scope)
+        assert (rh == np.round(rh, rss.RECORD_DECIMALS)).all()
+        assert (rp == np.round(rp, rss.RECORD_DECIMALS)).all()
 
     def test_the_repair_emits_storable_canvas_coordinates(self):
         """canvas_x/canvas_y are whole numbers in all 626,219 rows of the eight-city corpus, while

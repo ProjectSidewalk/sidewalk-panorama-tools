@@ -35,10 +35,11 @@ INK, MUTED, GRID, SPINE = '#0b0b0b', '#52514e', '#eceae6', '#d8d6d1'
 LINE = '#2a78d6'
 WINDOW = ('2023-03-29', '2024-09-26')  # evolution 179 deploy -> 7.20.7 deploy
 CLASS_COLORS = {  # miss classes only; 'exact' never plotted
-    'x_only': '#2a78d6', 'multi_field': '#d1495b', 'xy_small': '#8d99ae',
+    'x_only': '#2a78d6', 'y_only': '#1f9e8f', 'multi_field': '#d1495b', 'xy_small': '#8d99ae',
     'zoom_desync': '#e28f41', 'dpr2': '#7b5ea7', 'frame_change': '#3f9b7c',
 }
-CLASS_ORDER = ['x_only', 'multi_field', 'xy_small', 'zoom_desync', 'dpr2', 'frame_change']
+CLASS_ORDER = ['x_only', 'y_only', 'multi_field', 'xy_small', 'zoom_desync', 'dpr2',
+               'frame_change']
 
 
 def _style(ax):

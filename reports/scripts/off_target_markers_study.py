@@ -55,9 +55,13 @@ MATCH_TOL_PX = 1.0
 # the cap, because the loop only breaks when EVERY row in the frame is within tolerance.
 SOLVE_ITERS = 25
 
+# Decimal places the repaired heading/pitch are emitted with. The residual is measured against the
+# rounded values, so the CSV's post_px columns describe the record a migration would actually store.
+RECORD_DECIMALS = 4
+
 # The classes repair_frame solves for: every replayable in-window miss except frame_change, whose
 # record is already consistent with the click. Named once so the study and its tests cannot drift.
-REPAIR_CLASSES = ('dpr2', 'zoom_desync', 'x_only', 'xy_small', 'multi_field')
+REPAIR_CLASSES = ('dpr2', 'zoom_desync', 'x_only', 'y_only', 'xy_small', 'multi_field')
 
 
 def _halve_about_centre(df):
@@ -131,6 +135,9 @@ def classify(df):
                   not the zoom the click was projected with; #2478's truncation signature)
     x_only        pano_y exact, pano_x off: heading-shift-shaped (batch staleness or, at drift
                   scale, camera_heading refresh; separated statistically, not per label)
+    y_only        pano_x exact, pano_y off: pitch-shift-shaped. The mirror of x_only, and it has
+                  to exist -- without it a pitch-only staleness (dx exactly 0) falls into
+                  xy_small/multi_field, which are defined as BOTH axes being off
     xy_small      both axes off by <= 10 px: the era study's residual per-label jitter scale
     multi_field   both axes off, beyond jitter scale: several record fields stale at once
     unreplayable  a replay input (camera_heading, dims, canvas/POV) is missing
@@ -185,10 +192,18 @@ def classify(df):
         out['fitted_zoom'] = fitted
         todo &= ~m
 
+    # The residual buckets, symmetric in the two axes. x_only and y_only are named for the axis
+    # that is WRONG: a heading-only staleness leaves y exact, a pitch-only staleness leaves x
+    # exact. y_only was missing, so pitch-only rows fell into xy_small/multi_field -- classes the
+    # report reads as "both axes off" and attributes to a pan moving both at once. Extracting it
+    # moved 348 of Seattle's 635 in-window xy_small rows and 24 of Columbus's 38.
     y_ok = ady <= MATCH_TOL_PX
+    x_ok = adx <= MATCH_TOL_PX
+    rest = todo & ~y_ok & ~x_ok
     klass[todo & y_ok] = 'x_only'
-    klass[todo & ~y_ok & (adx <= 10.0) & (ady <= 10.0)] = 'xy_small'
-    klass[todo & ~y_ok & ((adx > 10.0) | (ady > 10.0))] = 'multi_field'
+    klass[todo & ~y_ok & x_ok] = 'y_only'
+    klass[rest & (adx <= 10.0) & (ady <= 10.0)] = 'xy_small'
+    klass[rest & ((adx > 10.0) | (ady > 10.0))] = 'multi_field'
     out['klass'] = klass
     return out
 
@@ -343,6 +358,15 @@ def solve_record(g):
     else:
         dx, dy = residuals(heading, pitch)
 
+    # Measure what gets WRITTEN, not what was computed. repair_frame used to round heading/pitch to
+    # RECORD_DECIMALS on its way into the CSV while the residual beside them described the
+    # full-precision solve -- the same defect as the loop above, one layer up. It bites because
+    # pano_xy_from_pov lands on integer pixels, so 1e-4 deg is enough to move the replayed pixel by
+    # one: 3 columbus-oh rows shipped post_px_x = 0.00 for a record that actually replays 1 px off.
+    heading = np.round(heading, RECORD_DECIMALS)
+    pitch = np.round(pitch, RECORD_DECIMALS)
+    dx, dy = residuals(heading, pitch)
+
     return heading, pitch, zoom, canvas_x, canvas_y, np.abs(dx), np.abs(dy)
 
 
@@ -360,8 +384,10 @@ def repair_frame(g):
     rep.columns = ['label_id', 'klass', 'time_created', 'old_heading', 'old_pitch', 'old_zoom',
                    'old_canvas_x', 'old_canvas_y', 'old_validate_px']
     rep['old_validate_px'] = np.round(rep['old_validate_px'].to_numpy(float), 1)
-    rep['new_heading'] = np.round(rh, 4)
-    rep['new_pitch'] = np.round(rp, 4)
+    # Already rounded to RECORD_DECIMALS by solve_record, which measured its residual against
+    # these exact values -- rounding again here would re-open the gap it just closed.
+    rep['new_heading'] = rh
+    rep['new_pitch'] = rp
     rep['new_zoom'] = rz
     rep['new_canvas_x'] = rcx
     rep['new_canvas_y'] = rcy
@@ -460,7 +486,10 @@ def scatter_sample(miss_frames, per_city_cap=750):
     so the committed JSON regenerates identically from the same corpus."""
     pts = []
     for miss_w in miss_frames:
-        step = max(1, len(miss_w) // per_city_cap)
+        # Ceiling, not floor: `len // cap` lets a city just under a multiple of the cap through
+        # whole (1,499 misses -> step 1 -> 1,499 points, twice the budget) while a city at 1,500
+        # contributes 750, so the pooled scatter over-weighted cities just under each multiple.
+        step = max(1, -(-len(miss_w) // per_city_cap))
         sub = miss_w.iloc[::step]
         pts += [{'dx': round(float(dx), 3), 'dy': round(float(dy), 3), 'k': k}
                 for dx, dy, k in zip(sub['dx_deg'], sub['dy_deg'], sub['klass'])
@@ -477,6 +506,11 @@ def main():
     ap.add_argument('--fetched', metavar='DATE', required=True,
                     help='the date the CSVs were fetched (rawLabels is a moving target; results '
                          'are only meaningful alongside their fetch date)')
+    ap.add_argument('--artifact-date', metavar='DATE',
+                    help='filename prefix for the repair CSVs; defaults to --fetched. These are '
+                         'two different dates: the artifact keeps the date of the study, so a '
+                         're-run does not rename every committed file and every reference to it, '
+                         'while --fetched records when the corpus was actually pulled')
     args = ap.parse_args()
 
     case_ids = {'teaneck-nj': 14955, 'chicago-il': 30652}
@@ -502,7 +536,10 @@ def main():
               f" | post-fix {result['post_fix']['visibility'].get('pct_ge_10px')}%"
               f" | repair: {result['repair'].get('pct_repaired')}% of {result['repair'].get('n')}")
         if args.repairs_dir and len(rep):
-            prefix = args.fetched
+            prefix = args.artifact_date or args.fetched
+            # Created here, not assumed: the write lands after every city has been classified and
+            # repaired, so a missing directory otherwise throws all of that away at the last step.
+            os.makedirs(args.repairs_dir, exist_ok=True)
             out_path = os.path.join(args.repairs_dir, f'{prefix}-repairs-{city}.csv.gz')
             with gzip.open(out_path, 'wt', newline='') as f:
                 rep.to_csv(f, index=False)
