@@ -89,6 +89,7 @@ reproduces its stored `pano_x`/`pano_y` within 1 px on both axes:
 | `frame_change` | the coordinate replays in a previous pano generation (implied height inversion + full replay in that frame) | the *pano* moved, not the record — Validate renders these correctly |
 | `zoom_desync` | replaying at a different zoom level (1, 1.999, 2, 2.999, 3) reproduces both axes | #2478's stored-zoom desync |
 | `x_only` | `pano_y` exact, `pano_x` off | a pure viewport-heading shift |
+| `y_only` | `pano_x` exact, `pano_y` off | a pure viewport-pitch shift — the mirror of `x_only` |
 | `xy_small` | both axes off ≤ 10 px | the era replay's residual per-label jitter scale |
 | `multi_field` | both axes off, beyond jitter | several record fields stale at once |
 
@@ -146,11 +147,18 @@ Pooled over the eight cities (19,472 misses of 111,910 in-window labels):
 | class | n | share of misses |
 |---|---|---|
 | `x_only` | 11,313 | 58.10% |
-| `multi_field` | 5,164 | 26.52% |
-| `xy_small` | 1,959 | 10.06% |
+| `multi_field` | 5,053 | 25.95% |
+| `y_only` | 1,170 | 6.01% |
+| `xy_small` | 900 | 4.62% |
 | `dpr2` | 663 | 3.40% |
 | `zoom_desync` | 373 | 1.92% |
-| `frame_change` | 0 | — (present in the 2026-08-09 fetch; see open questions) |
+| `frame_change` | 0 | — (never fires on this corpus; see open questions) |
+
+`y_only` is the mirror of `x_only` and was added in review: without it, a record whose only stale
+field is pitch replays with `dx` **exactly** 0 and still landed in `xy_small` or `multi_field` —
+classes this report defines as *both* axes being off. Extracting it moved **348 of Seattle's 635**
+in-window `xy_small` rows and **24 of Columbus's 38**, so a majority of one published class was
+mislabelled. The two axis-pure classes together are **64.11%** of all misses.
 
 Two attribution caveats, stated rather than hidden. First, **dpr2 and zoom_desync are nearly the
 same transformation**: halving canvas offsets multiplies the projected offset's tangent by 0.5,
@@ -395,14 +403,23 @@ and the roster includes Mapillary deployments, which the census machinery does n
 
 ## Open questions
 
-* **frame_change found 0 rows in this fetch** where the 2026-08-09 fetch reported ~3% of Seattle
-  y-misses. The machinery is validated (implied height recovers served height to < 1 px on exact
-  rows), so either the day's `gsv_data` refresh re-served those panos at click-time dims, or the
-  two studies' inversion tolerances differ. Worth re-checking on the next fetch before anyone
-  builds on either count.
+* **`frame_change` never fires on this corpus, and the earlier explanation for that was wrong.**
+  This was first written up as a one-fetch anomaly — 0 rows here where the 2026-08-09 fetch had
+  reported ~3% of Seattle y-misses — with a `gsv_data`-refresh theory attached. Re-checked in
+  review against Seattle's full 261,958 rows: `frame_change` is 0 in **every** era, and of the
+  2,104 rows carrying a y miss, **not one** has an implied height within even 50 px of a
+  *different* generation (tested at tolerances 2, 10 and 50 against all four
+  `GENERATION_HEIGHTS`). So it is not a fetch-to-fetch difference and the refresh theory is not
+  supported by the corpus; the branch simply does not match real input here. The machinery itself
+  is sound — implied height recovers served height to ≤ 1.0 px on 40,098 exact Columbus rows —
+  and it is retained because it is the only thing separating a *pano* that moved from a *record*
+  that went stale, which would otherwise be silently repaired. But it is **validated only by a
+  synthetic test**, and the row this report publishes for it is a structural zero, not a
+  measurement of something rare. Do not read it as "frame changes are rare in Project Sidewalk".
 * The `multi_field` cohort (26% of misses) is repaired but not mechanistically decomposed —
   pan-between-click-and-submit moves both axes, as does the dpr2/zoom family at fractional
-  scales; nothing in the record distinguishes them, and repair does not need to.
+  scales; nothing in the record distinguishes them, and repair does not need to. Note this cohort
+  is now genuinely two-axis: the pitch-pure rows that used to sit in it are the `y_only` class.
 * Per-city deploy lag on the window edge: Chicago's last miss is 56 minutes after Teaneck's;
   nothing in this corpus resolves sub-day ordering beyond that.
 * The separate click-*capture* question (the CSS-`zoom` scaling era, Dec 2023 – Jun 2026,

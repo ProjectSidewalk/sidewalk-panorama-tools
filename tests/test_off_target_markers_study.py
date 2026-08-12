@@ -543,3 +543,161 @@ class TestImageryExamples:
             dx = abs(e['repaired_xy'][0] - e['truth_xy'][0])
             dy = abs(e['repaired_xy'][1] - e['truth_xy'][1])
             assert dx <= 1.5 and dy <= 1.5, e['label_id']
+
+
+class TestTheHeadlineFunctionsAtCodeLevel:
+    """Synthetic, code-level cover for the functions behind the report's headline numbers.
+
+    These existed only as pins against the committed summary, which the same code generated — so
+    five simultaneous mutations (visibility px scaled 3.7x, the shared-dx tolerance x1000, the
+    monthly threshold 10 -> 999, scatter decimation, and fitted_zoom * 1.5) left all 28 tests
+    green. CLAUDE.md: "Committed-artifact tests do not test code... Every finding needs a
+    synthetic code-level test beside its corpus pin."
+    """
+
+    def _visibility_frame(self, px_values):
+        return pd.DataFrame({'validate_px': np.asarray(px_values, float),
+                             'replayable_x': True, 'replayable_y': True})
+
+    def test_visibility_tiers_are_counted_at_the_documented_pixel_values(self):
+        """Tier boundaries are inclusive and are 4 / 10 / 30 px, not a scaled copy of them."""
+        g = self._visibility_frame([1.0, 4.0, 9.99, 10.0, 29.9, 30.0, 500.0])
+        out = rss.visibility_summary(g)
+        assert out['n'] == 7
+        assert out['pct_ge_4px'] == pytest.approx(100.0 * 6 / 7, abs=0.01)
+        assert out['pct_ge_10px'] == pytest.approx(100.0 * 4 / 7, abs=0.01)
+        assert out['pct_ge_30px'] == pytest.approx(100.0 * 2 / 7, abs=0.01)
+        assert out['max_px'] == 500.0
+
+    def test_visibility_excludes_rows_that_are_not_replayable_on_both_axes(self):
+        g = self._visibility_frame([100.0, 100.0, 100.0])
+        g.loc[0, 'replayable_y'] = False
+        out = rss.visibility_summary(g)
+        assert out['n'] == 2
+
+    def test_visibility_of_an_empty_frame_is_undefined_not_zero(self):
+        g = self._visibility_frame([])
+        assert rss.visibility_summary(g) == {'n': 0}
+
+    def _pov_group_frame(self, dxs, canvas_xs, klass='x_only'):
+        n = len(dxs)
+        return pd.DataFrame({
+            'klass': [klass] * n, 'dx_deg': np.asarray(dxs, float),
+            'label_id': np.arange(n) + 1, 'pano_id': ['p1'] * n, 'user_id': ['u1'] * n,
+            'heading': 10.0, 'pitch': -5.0, 'zoom': 1.0,
+            'canvas_x': np.asarray(canvas_xs, float),
+        })
+
+    def test_a_group_moving_together_is_counted_as_shared(self):
+        """Within SHARED_DX_TOL_DEG (0.05°) the group's dx moved as one — the batch fingerprint."""
+        g = self._pov_group_frame([2.00, 2.02, 2.03], [100.0, 200.0, 300.0])
+        out = rss.stale_x_analysis(g)
+        assert out['same_pov_groups']['n_groups'] == 1
+        assert out['same_pov_groups']['pct_groups_shared_dx'] == 100.0
+
+    def test_a_group_moving_apart_is_not_counted_as_shared(self):
+        """Discriminates the tolerance: x1000 on SHARED_DX_TOL_DEG would call this shared."""
+        g = self._pov_group_frame([2.0, 9.0, 20.0], [100.0, 200.0, 300.0])
+        out = rss.stale_x_analysis(g)
+        assert out['same_pov_groups']['n_groups'] == 1
+        assert out['same_pov_groups']['pct_groups_shared_dx'] == 0.0
+
+    def test_a_group_at_one_canvas_position_is_not_a_batch_group(self):
+        """The point of the fingerprint is labels at DIFFERENT canvas positions sharing one POV;
+        same-position rows cannot distinguish a shared record from a repeated click."""
+        g = self._pov_group_frame([2.0, 2.0], [100.0, 100.0])
+        out = rss.stale_x_analysis(g)
+        assert 'same_pov_groups' not in out
+
+    def test_the_heading_shift_distribution_is_over_the_x_only_cohort(self):
+        g = self._pov_group_frame([1.0, 3.0, 5.0], [100.0, 200.0, 300.0])
+        out = rss.stale_x_analysis(g)
+        assert out['n'] == 3
+        assert out['abs_dh_deg']['p50'] == pytest.approx(3.0)
+        assert out['abs_dh_deg']['max'] == pytest.approx(5.0)
+
+    def _monthly_frame(self, months_px):
+        rows = []
+        for month, pxs in months_px.items():
+            for px in pxs:
+                rows.append({'time_created': pd.Timestamp(f'{month}-15', tz='UTC'),
+                             'validate_px': float(px), 'era': 'post179',
+                             'replayable_x': True, 'replayable_y': True})
+        return pd.DataFrame(rows)
+
+    def test_the_monthly_series_thresholds_at_ten_pixels(self):
+        g = self._monthly_frame({'2023-05': [1.0, 9.9, 10.0, 40.0]})
+        out = rss.monthly_visibility(g)
+        assert out['2023-05'] == {'n': 4, 'pct_ge_10px': 50.0}
+
+    def test_the_monthly_series_covers_only_post179(self):
+        g = self._monthly_frame({'2023-05': [40.0, 40.0]})
+        g.loc[0, 'era'] = 'mid'
+        out = rss.monthly_visibility(g)
+        assert out['2023-05']['n'] == 1
+
+    def test_a_fitted_zoom_actually_reproduces_the_stored_pixel(self):
+        """fitted_zoom becomes new_zoom in the migration CSVs, so a scaled copy of it would ship a
+        wrong record — and the artifact pin could not see it.
+
+        The contract is 'this zoom reproduces the stored coordinate', not any particular ladder
+        rung: ZOOM_CANDIDATES is scanned in order and 2.999 reproduces a zoom-3 click as well as
+        3.0 does, so the cascade legitimately reports whichever it reaches first.
+        """
+        df = _forward_frame([500.0], [300.0], [80.0], [-20.0], [3.0])
+        df['zoom'] = 1.0                      # the stored zoom desyncs from the projected one
+        out = _classified(df)
+        assert out['klass'].iloc[0] == 'zoom_desync'
+        fitted = out['fitted_zoom'].to_numpy(float)
+        assert np.isfinite(fitted).all()
+        adx, ady = rss._replay_residuals(out, out['canvas_x'], out['canvas_y'], fitted)
+        assert adx[0] <= rss.MATCH_TOL_PX and ady[0] <= rss.MATCH_TOL_PX
+
+
+class TestReportMatchesTheArtifact:
+    """Every number in the report's prose is transcribed from a committed artifact, and this says
+    so. A report table is the one place in this repo where a plausible number has no compiler and
+    no test — two counts hand-typed into the Mapillary census were wrong by 2x and 6x, and nothing
+    about the surrounding sentences looked different for it.
+    """
+
+    @pytest.fixture(scope='class')
+    def report(self):
+        path = os.path.join(REPO_ROOT, 'reports', '2026-08-10-off-target-markers-validate.md')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_class_decomposition_table_matches(self, summary, report):
+        """The pooled miss decomposition, cell by cell: every class's n and its share."""
+        totals = {}
+        for d in summary['cities'].values():
+            for k, v in d['in_window']['class_counts'].items():
+                totals[k] = totals.get(k, 0) + v
+        misses = {k: v for k, v in totals.items() if k != 'exact'}
+        n_miss = sum(misses.values())
+        assert n_miss == 19472
+
+        for klass, n in misses.items():
+            share = 100.0 * n / n_miss
+            row = f'| `{klass}` | {n:,} | {share:.2f}% |'
+            assert row in report, f'report is missing or contradicts: {row}'
+
+    def test_the_pooled_totals_in_the_prose_match(self, summary, report):
+        n_in_window = sum(d['in_window']['n'] for d in summary['cities'].values())
+        assert f'({n_in_window:,} in-window labels)' in report \
+            or f'{19472:,} misses of {n_in_window:,} in-window labels' in report
+
+    def test_the_repair_total_in_the_prose_matches(self, summary, report):
+        total = sum(d['repair'].get('n', 0) for d in summary['cities'].values())
+        assert total == 19472
+        assert f'{total:,}' in report
+
+    def test_the_per_city_visibility_table_matches(self, summary, report):
+        """The eight-city table's in-window n and its three tier columns."""
+        for city, d in summary['cities'].items():
+            v = d['in_window']['visibility']
+            if not v.get('n'):
+                continue
+            assert f"| {city} | {d['in_window']['n']:,} |" in report, city
+            for key in ('pct_ge_4px', 'pct_ge_10px', 'pct_ge_30px'):
+                assert f'{v[key]:.2f}%' in report, f'{city} {key} = {v[key]}'
