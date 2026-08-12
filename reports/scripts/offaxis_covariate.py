@@ -209,15 +209,17 @@ def prepare(df, replayed=None):
     return out
 
 
-def identification(df):
+def identification(g):
     """Does off-axis offset survive the depression-band fixed effects Study 1 already carries?
 
     The band means are exactly what a band fixed effect removes, so the residual standard deviation
     is the variation left for a coefficient to be estimated from. A ratio near 1 means the covariate
     is essentially orthogonal to the strata; near 0 means the strata already absorb it and no
     coefficient is identifiable.
+
+    Takes the ELIGIBLE rows, already masked. `analyze` masks once and hands the same frame to every
+    block here; see the note there.
     """
-    g = df[df['eligible']]
     if len(g) < 2:
         return {'n': int(len(g)), 'sd_overall_deg': None, 'sd_within_band_deg': None,
                 'pct_surviving_band_fe': None, 'corr_with_depression': None}
@@ -266,10 +268,11 @@ def _spread(series):
             'sd': num(a.std(ddof=1)) if a.size > 1 else None}
 
 
-def by_band(df):
+def by_band(g):
     """Off-axis spread and floor exposure per Study 1 band -- the table that shows the covariate has
-    within-stratum contrast rather than just tracking the strata."""
-    g = df[df['eligible']]
+    within-stratum contrast rather than just tracking the strata.
+
+    Takes the eligible rows, already masked (see `analyze`)."""
     out = {}
     for band in BAND_LABELS:
         b = g[g['band'] == band]
@@ -282,9 +285,11 @@ def by_band(df):
     return out
 
 
-def floor_census(df):
-    """The pitch-floor prior: is -35 a hard floor, and how much of the corpus sits on it."""
-    g = df[df['eligible']]
+def floor_census(df, g):
+    """The pitch-floor prior: is -35 a hard floor, and how much of the corpus sits on it.
+
+    The only block that needs both populations, which is why it takes both: `df` is every prepared
+    row and `g` the eligible ones (already masked -- see `analyze`)."""
     pitch = g['pitch'].astype(float)
     # The floor claim is about the CORPUS, not the eligible subset: prereg 7(b) cites "the minimum
     # observed over 438,410 labels is exactly -35.0000". Measuring it on df[df['eligible']] left
@@ -340,7 +345,7 @@ def eligibility(df):
     }
 
 
-def zoom_conversions(df):
+def zoom_conversions(g):
     """The canvas-px -> degrees ladder, weighted by how the corpus actually distributes over zoom.
 
     The ladder has three rungs because the Explore viewer's zoom control has three stops -- but stored
@@ -352,8 +357,9 @@ def zoom_conversions(df):
     the property a test pins. Before this the three ladder shares summed to 99.94% while the report's
     table read as a census, and that gap is exactly how a re-fetch moving a real share of the corpus
     off-ladder would go unnoticed.
+
+    Takes the eligible rows, already masked (see `analyze`).
     """
-    g = df[df['eligible']]
     z = g['zoom'].round(4)
     n = int(len(g))
     share = lambda k: num(100.0 * k / n) if n else None    # noqa: E731
@@ -446,6 +452,14 @@ def specimen_census(by_band_result):
     return out
 
 
+# Every column `analyze` reads, and the only ones `main` carries into the pool. A prepared frame is
+# 46 columns wide -- 179 MB for seattle-wa alone, ~300 MB pooled -- and the analysis touches 13 of
+# them. Naming them here fails in the safe direction: a block that starts reading a 14th column
+# raises KeyError on the next run rather than quietly reading something else.
+ANALYZE_COLUMNS = ('eligible', 'replayable_y', 'exact_x', 'exact_y', 'era', 'band', 'depression',
+                   'offaxis_v', 'offaxis_r', 'at_floor', 'pitch', 'zoom', 'label_type')
+
+
 def analyze(df):
     """The full analysis dict for one prepared frame -- used for a single city and, on the
     concatenation, for the pooled result, so the two can never drift apart.
@@ -453,14 +467,28 @@ def analyze(df):
     There is deliberately no `identification_post179` key: it was byte-identical to
     by_era_identification['post179'] (same rows, same predicate), cost a second pass over 90k rows,
     and shipped as a second key a consumer could read as a distinct quantity.
+
+    The eligible mask runs ONCE. Each block used to take the prepared frame and mask it itself --
+    five here plus three more inside the per-era loop, eight full copies of a frame that is 179 MB
+    for seattle-wa alone and ~300 MB pooled. Every block below wants the same rows, so the mask is a
+    property of the analysis rather than of any one statistic; `floor_census` is the exception and
+    says so, because its floor claim is about the whole corpus.
     """
+    g = df[df['eligible']]
+    by_era = {era: identification(rows) for era, rows in g.groupby('era')}
+    # An era with rows in the frame but nothing eligible still gets an entry. Grouping the eligible
+    # frame alone would drop it, which reads as "this era does not exist here" rather than "nothing
+    # in it survived the restriction" -- and `identification` already has a documented answer for an
+    # empty group.
+    for era in df['era'].unique():
+        by_era.setdefault(era, identification(g.iloc[:0]))
     return {
         'eligibility': eligibility(df),
-        'identification': identification(df),
-        'by_band': by_band(df),
-        'floor': floor_census(df),
-        'zoom': zoom_conversions(df),
-        'by_era_identification': {era: identification(g) for era, g in df.groupby('era')},
+        'identification': identification(g),
+        'by_band': by_band(g),
+        'floor': floor_census(df, g),
+        'zoom': zoom_conversions(g),
+        'by_era_identification': by_era,
     }
 
 
@@ -494,7 +522,10 @@ def main(argv=None):
     for path in paths:
         city = os.path.splitext(os.path.basename(path))[0]
         print(f'-- {city}', flush=True)
-        df = prepare(rawlabels.load_rawlabels(path))
+        # Sliced to what `analyze` reads before anything is kept: `frames` is held for the whole
+        # run and then concatenated, so the full 46-column frames were the peak of a multi-city run.
+        # The city analysis reads the same slice, so there is one frame shape in play, not two.
+        df = prepare(rawlabels.load_rawlabels(path))[list(ANALYZE_COLUMNS)]
         frames.append(df)
         result['cities'][city] = analyze(df)
         ident = result['cities'][city]['identification']

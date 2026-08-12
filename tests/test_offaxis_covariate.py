@@ -82,6 +82,13 @@ def text():
         return f.read()
 
 
+def _eligible(prepared):
+    """The eligible rows — what the analysis blocks take now that `analyze` masks once and hands the
+    same frame to all of them. Tests call them the way production does, so a block that went back to
+    masking for itself would be exercised by nothing."""
+    return prepared[prepared['eligible'].to_numpy()]
+
+
 def _frame(**cols):
     """A rawlabels-shaped frame with sensible defaults for every column `prepare` touches."""
     n = len(next(iter(cols.values())))
@@ -261,19 +268,19 @@ class TestIdentification:
     def test_a_covariate_collinear_with_band_survives_nothing(self):
         band = np.array(['<5'] * 50 + ['>30'] * 50)
         offaxis = np.where(band == '<5', -8.0, 4.0)      # constant within band
-        assert oc.identification(self._prepared(band, offaxis))['pct_surviving_band_fe'] \
+        assert oc.identification(_eligible(self._prepared(band, offaxis)))['pct_surviving_band_fe'] \
             == pytest.approx(0.0, abs=1e-9)
 
     def test_a_covariate_orthogonal_to_band_survives_entirely(self):
         band = np.array(['<5'] * 50 + ['>30'] * 50)
         wave = np.tile(np.linspace(-10, 10, 50), 2)      # same spread inside each band
-        pct = oc.identification(self._prepared(band, wave))['pct_surviving_band_fe']
+        pct = oc.identification(_eligible(self._prepared(band, wave)))['pct_surviving_band_fe']
         assert pct == pytest.approx(100.0, abs=1e-6)
 
     def test_a_partly_absorbed_covariate_lands_in_between(self):
         band = np.array(['<5'] * 50 + ['>30'] * 50)
         mixed = np.tile(np.linspace(-10, 10, 50), 2) + np.where(band == '<5', -6.0, 6.0)
-        pct = oc.identification(self._prepared(band, mixed))['pct_surviving_band_fe']
+        pct = oc.identification(_eligible(self._prepared(band, mixed)))['pct_surviving_band_fe']
         assert 30.0 < pct < 90.0
 
     def test_it_removes_the_band_mean_and_not_the_band_median(self):
@@ -288,7 +295,7 @@ class TestIdentification:
         band = np.array(['<5'] * 8 + ['>30'] * 8)
         skewed = np.array([0.0] * 7 + [40.0]                      # skewed: mean 5, median 0
                           + [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0])  # symmetric: both 35
-        got = oc.identification(self._prepared(band, skewed))['sd_within_band_deg']
+        got = oc.identification(_eligible(self._prepared(band, skewed)))['sd_within_band_deg']
 
         v = pd.Series(skewed)
         by_mean = float((v - v.groupby(pd.Series(band)).transform('mean')).std(ddof=1))
@@ -297,14 +304,25 @@ class TestIdentification:
         assert got == pytest.approx(by_mean)
 
     def test_ineligible_rows_are_excluded_from_the_estimate(self):
+        """Through `analyze`, which is where the eligible mask lives now — one mask, handed to every
+        block, instead of eight copies of the same 179 MB frame."""
         df = self._prepared(np.array(['<5'] * 50 + ['>30'] * 50),
                             np.tile(np.linspace(-10, 10, 50), 2))
         df.loc[:49, 'eligible'] = False
-        assert oc.identification(df)['n'] == 50
+        df['era'] = 'mid'
+        df['pitch'] = -20.0
+        df['at_floor'] = False
+        df['label_type'] = 'CurbRamp'
+        df['zoom'] = 1.0
+        df['offaxis_r'] = 0.0
+        df['replayable_y'] = True
+        df['exact_x'] = True
+        df['exact_y'] = True
+        assert oc.analyze(df)['identification']['n'] == 50
 
     def test_degenerate_input_returns_nulls_rather_than_raising(self):
         empty = self._prepared(np.array(['<5']), np.array([1.0])).iloc[:0]
-        assert oc.identification(empty)['sd_overall_deg'] is None
+        assert oc.identification(_eligible(empty))['sd_overall_deg'] is None
 
 
 class TestEligibility:
@@ -411,7 +429,7 @@ class TestDegenerateInput:
         return oc.prepare(_frame(canvas_y=np.full(n_eligible, 142.0)))
 
     def test_one_row_returns_nulls_rather_than_raising(self):
-        ident = oc.identification(self._thin(1))
+        ident = oc.identification(_eligible(self._thin(1)))
         assert ident['n'] == 1
         assert ident['sd_overall_deg'] is None
         assert ident['pct_surviving_band_fe'] is None
@@ -422,7 +440,7 @@ class TestDegenerateInput:
         NaN rather than raising. `pct_surviving_band_fe` was guarded for exactly this; corr was not,
         so a handful of duplicate labels on one pano put a bare NaN in the dict.
         """
-        ident = oc.identification(self._thin(2))
+        ident = oc.identification(_eligible(self._thin(2)))
         assert ident['n'] == 2
         assert ident['corr_with_depression'] is None, 'undefined must be null, never NaN'
         assert ident['pct_surviving_band_fe'] is None
@@ -431,14 +449,14 @@ class TestDegenerateInput:
         """The other half of the same undefined case: only the covariate is constant."""
         df = pd.DataFrame({'eligible': True, 'band': ['<5', '>30'], 'offaxis_v': [4.0, 4.0],
                            'depression': [2.0, 40.0]})
-        assert oc.identification(df)['corr_with_depression'] is None
+        assert oc.identification(_eligible(df))['corr_with_depression'] is None
 
     def test_a_varying_pair_still_reports_a_real_correlation(self):
         """Discrimination: the guard must not null out correlations that are perfectly well defined."""
         dep = np.array([2.0, 3.0, 40.0, 41.0])
         df = pd.DataFrame({'eligible': True, 'band': ['<5', '<5', '>30', '>30'],
                            'offaxis_v': 0.5 * dep - 12.0, 'depression': dep})
-        assert oc.identification(df)['corr_with_depression'] == pytest.approx(1.0)
+        assert oc.identification(_eligible(df))['corr_with_depression'] == pytest.approx(1.0)
 
     def test_no_divide_warning_is_emitted_on_the_undefined_case(self):
         """The NaN was reachable from the existing suite and left a RuntimeWarning behind it that
@@ -447,7 +465,7 @@ class TestDegenerateInput:
         """
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            oc.identification(self._thin(2))
+            oc.identification(_eligible(self._thin(2)))
         offenders = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
         assert not offenders, offenders
 
@@ -490,7 +508,7 @@ class TestSpread:
         can reach n=1 in a band (oradell-nj's >30 band is already down to 306 rows)."""
         df = oc.prepare(_frame(canvas_y=np.array([142.0])))
         band = df['band'].iloc[0]
-        stats = oc.by_band(df)[band]
+        stats = oc.by_band(_eligible(df))[band]
         assert stats['n'] == 1
         assert stats['offaxis_v_deg']['sd'] is None
 
@@ -529,7 +547,7 @@ class TestFloorCensusByLabelType:
         df = oc.prepare(_frame(canvas_y=np.full(3, 142.0),
                                label_type=['CurbRamp', 'CurbRamp', 'Signal'],
                                pitch=np.array([-35.0, -20.0, -20.0])))
-        types = oc.floor_census(df)['by_label_type']
+        types = oc.floor_census(df, _eligible(df))['by_label_type']
         assert types['CurbRamp'] == {'n': 2, 'at_floor_pct': 50.0}
         assert types['Signal'] == {'n': 1, 'at_floor_pct': 0.0}
 
@@ -566,7 +584,7 @@ class TestZoomCensus:
         """Discrimination on a synthetic frame: one row per rung plus one between them."""
         df = oc.prepare(_frame(canvas_y=np.full(4, 142.0),
                                zoom=np.array([1.0, 2.0, 3.0, 1.75])))
-        z = oc.zoom_conversions(df)
+        z = oc.zoom_conversions(_eligible(df))
         assert z['n_eligible'] == 4
         assert [z[f'zoom{k}']['n'] for k in (1, 2, 3)] == [1, 1, 1]
         assert z['other']['n'] == 1
@@ -577,7 +595,7 @@ class TestZoomCensus:
         """The tail must be absent-as-zero rather than absent-as-missing, or a consumer cannot tell
         "no off-ladder rows" from "this artifact predates the check"."""
         df = oc.prepare(_frame(canvas_y=np.full(2, 142.0), zoom=np.array([1.0, 3.0])))
-        o = oc.zoom_conversions(df)['other']
+        o = oc.zoom_conversions(_eligible(df))['other']
         assert o == {'n': 0, 'corpus_share_pct': 0.0, 'n_distinct_zooms': 0,
                      'min_zoom': None, 'max_zoom': None, 'fov_deg_range': None}
 
@@ -1098,7 +1116,7 @@ class TestCountsAreOverThePopulationTheyArePublishedAgainst:
         df = _frame(pitch=np.array([-35.0, -20.0, -60.0]), canvas_y=np.array([240.0] * 3))
         prepared = oc.prepare(df)
         prepared['eligible'] = np.array([True, True, False])   # the -60 row is not eligible
-        out = oc.floor_census(prepared)
+        out = oc.floor_census(prepared, _eligible(prepared))
         assert out['min_pitch_deg_all_labels'] == pytest.approx(-60.0)
         assert out['n_all_labels'] == 3
         # the eligible-only floor stays available and stays eligible-only
@@ -1112,7 +1130,7 @@ class TestCountsAreOverThePopulationTheyArePublishedAgainst:
                     canvas_y=np.array([240.0, 240.0]))
         prepared = oc.prepare(df)
         prepared['eligible'] = np.array([True, True])
-        out = oc.floor_census(prepared)
+        out = oc.floor_census(prepared, _eligible(prepared))
         assert out['n'] == 2
         assert sum(v['n'] for v in out['by_label_type'].values()) == 2
 
@@ -1135,6 +1153,131 @@ class TestTailMembershipIsTwoSided:
         assert oc.tail_bands(0.0, by_band) == []
 
 
+class _MaskCountingFrame(pd.DataFrame):
+    """A DataFrame that counts reads of the `eligible` column — how many times the analysis takes
+    that mask. Pandas carries the subclass through slicing and groupby via `_constructor`, so a
+    block deep inside `analyze` that masks again is counted too.
+
+    The counter is on the class rather than the instance because `_metadata` propagation through
+    groupby is not something to rely on for a test's own bookkeeping.
+    """
+
+    reads = 0
+
+    @property
+    def _constructor(self):
+        return _MaskCountingFrame
+
+    def __getitem__(self, key):
+        if isinstance(key, str) and key == 'eligible':
+            _MaskCountingFrame.reads += 1
+        return super().__getitem__(key)
+
+
+class TestTheEligibleMaskRunsOnce:
+    """`analyze` used to hand the prepared frame to five blocks and let each mask it, plus three more
+    masks inside the per-era loop — eight full copies of a frame that is 179 MB for seattle-wa and
+    ~300 MB pooled, of which the analysis reads 13 of 46 columns.
+
+    Nothing about the output changed, which is why these tests watch *what the blocks are handed*
+    rather than what they return.
+    """
+
+    @staticmethod
+    def _prepared(n=6):
+        return oc.prepare(_frame(canvas_y=np.full(n, 142.0)))
+
+    def test_every_block_is_handed_the_same_frame_object(self, monkeypatch):
+        """One mask, shared. Identity rather than equality: two equal frames is the defect."""
+        seen = {}
+
+        def spy(name, arg):
+            real = getattr(oc, name)
+
+            def wrapper(*args):
+                seen.setdefault(name, []).append(id(args[arg]))
+                return real(*args)
+
+            monkeypatch.setattr(oc, name, wrapper)
+
+        for name in ('identification', 'by_band', 'zoom_conversions'):
+            spy(name, 0)
+        spy('floor_census', 1)          # (df, eligible) — the one block needing both populations
+
+        oc.analyze(self._prepared())
+        shared = {seen['by_band'][0], seen['zoom_conversions'][0], seen['floor_census'][0]}
+        assert len(shared) == 1, seen
+        # `identification` runs several times — once over the whole eligible frame and once per era
+        # slice — and the whole-frame call has to be that same object.
+        assert shared.pop() in seen['identification'], seen
+
+    def test_no_block_masks_again_for_itself(self):
+        """The contract that lets the mask move up: the blocks take eligible rows and do not filter.
+        Hand one a frame whose `eligible` column is all False and it must still measure the rows —
+        because by then the filtering has already happened."""
+        prepared = self._prepared(4)
+        rows = prepared.copy()
+        rows['eligible'] = False
+        assert oc.identification(rows)['n'] == 4
+        assert sum(b['n'] for b in oc.by_band(rows).values()) == 4
+        assert oc.zoom_conversions(rows)['n_eligible'] == 4
+
+    def test_the_mask_is_taken_once_however_many_eras_there_are(self):
+        """The per-era loop is the easy place to lose this: grouping the prepared frame and masking
+        each group returns exactly the same numbers as grouping the masked frame, and costs one more
+        full pass per era. Nothing about the output can tell those apart — only the count of masks.
+
+        Three reads: two are `eligibility`'s own accounting over the whole frame (the funnel it
+        reports), and the third is the mask `analyze` hands to every other block. A fourth is a
+        second pass.
+        """
+        prepared = self._prepared(6)
+        prepared['era'] = ['legacy', 'legacy', 'mid', 'mid', 'post179', 'post179']
+        _MaskCountingFrame.reads = 0
+        oc.analyze(_MaskCountingFrame(prepared))
+        assert _MaskCountingFrame.reads == 3
+
+    def test_an_era_with_nothing_eligible_still_gets_a_row(self):
+        """Grouping the eligible frame alone would drop it, and a missing key reads as "that era is
+        not in this city" rather than "nothing in it survived the restriction"."""
+        prepared = self._prepared(4)
+        prepared['era'] = ['legacy', 'legacy', 'mid', 'mid']
+        prepared.loc[prepared['era'] == 'legacy', 'eligible'] = False
+        by_era = oc.analyze(prepared)['by_era_identification']
+        assert set(by_era) == {'legacy', 'mid'}
+        assert by_era['legacy']['n'] == 0
+        assert by_era['legacy']['sd_overall_deg'] is None
+        assert by_era['mid']['n'] == 2
+
+    def test_the_column_slice_changes_nothing(self):
+        """`main` pools `df[ANALYZE_COLUMNS]` rather than the 46-column prepared frame. That is only
+        safe while the slice is everything `analyze` reads, so compare the two whole dicts."""
+        prepared = self._prepared(8)
+        assert set(oc.ANALYZE_COLUMNS) <= set(prepared.columns)
+        assert oc.analyze(prepared[list(oc.ANALYZE_COLUMNS)]) == oc.analyze(prepared)
+
+    def test_the_slice_is_not_the_whole_frame(self):
+        """Guards the guard: if ANALYZE_COLUMNS ever grew to every column the test above would pass
+        while measuring nothing."""
+        prepared = self._prepared(2)
+        assert len(oc.ANALYZE_COLUMNS) < len(prepared.columns) / 2
+
+    def test_main_carries_only_the_slice_into_the_pool(self, tmp_path, monkeypatch):
+        """`frames` is held for the whole run and then concatenated, so the pooled step is where the
+        full-width frames cost most. Checked at `pooled`, since that is what receives them."""
+        seen = {}
+        real = oc.pooled
+
+        def spy(frames):
+            seen['columns'] = list(frames[0].columns)
+            return real(frames)
+
+        monkeypatch.setattr(oc, 'pooled', spy)
+        TestMain._city_csv(tmp_path, 'acity', _frame(canvas_y=np.full(3, 142.0)))
+        assert oc.main([str(tmp_path), '--fetched', '2026-08-11']) == 0
+        assert seen['columns'] == list(oc.ANALYZE_COLUMNS)
+
+
 class TestDegenerateIdentificationIsNotAMeasurement:
 
     def test_saturated_band_fixed_effects_report_undefined_not_zero(self):
@@ -1143,7 +1286,7 @@ class TestDegenerateIdentificationIsNotAMeasurement:
         no coefficient is identifiable", which is a finding — here it is an artefact of ddof=1."""
         df = pd.DataFrame({'offaxis_v': [10.0, 0.0, -10.0], 'depression': [2.0, 10.0, 40.0],
                            'band': ['<5', '5-15', '>30'], 'eligible': [True, True, True]})
-        out = oc.identification(df)
+        out = oc.identification(_eligible(df))
         assert out['n'] == 3
         assert out['pct_surviving_band_fe'] is None, \
             'a saturated fixed effect must not publish 0.0% as a measurement'
@@ -1154,7 +1297,7 @@ class TestDegenerateIdentificationIsNotAMeasurement:
         df = pd.DataFrame({'offaxis_v': rng.normal(0, 8, n), 'depression': rng.uniform(0, 40, n),
                            'band': rng.choice(['<5', '5-15', '15-30', '>30'], n),
                            'eligible': True})
-        out = oc.identification(df)
+        out = oc.identification(_eligible(df))
         assert out['pct_surviving_band_fe'] is not None
         assert 50.0 < out['pct_surviving_band_fe'] <= 100.0
 
