@@ -319,11 +319,25 @@ class TestOneDefinition:
         assert sc.fmt is studyfmt.fmt
 
     def test_no_script_redeclares_them(self):
-        for name in ('offaxis_covariate.py', 'click_noise_study.py', 'photometa_census.py',
-                     'store_coverage.py'):
+        """Every script in reports/scripts/, discovered from the directory rather than listed.
+
+        The list was four filenames typed by hand, and it went stale on the very next script
+        added: mapillary_census.py imports studyfmt and calls num() eleven times, and neither
+        assertion here touched it — a local `def num(...)` there passed the suite, and so would
+        any future script. CLAUDE.md states the rule as "there is one definition of each and no
+        script may grow a local copy (a test asserts that)", so the test has to hold for scripts
+        nobody has written yet.
+
+        Scope is every script, not just current studyfmt importers: a script that declares its
+        own _num WITHOUT importing studyfmt is precisely the violation, and filtering to importers
+        would make it invisible.
+        """
+        scripts = sorted(f for f in os.listdir(SCRIPTS)
+                         if f.endswith('.py') and f != 'studyfmt.py')
+        assert len(scripts) >= 10, f'expected the study scripts, found {scripts}'
+        assert 'mapillary_census.py' in scripts, 'the script the hardcoded list missed'
+        for name in scripts:
             with open(os.path.join(SCRIPTS, name), encoding='utf-8') as f:
                 text = f.read()
-            assert 'def _fmt(' not in text, name
-            assert 'def _num(' not in text, name
-            assert 'def fmt(' not in text, name
-            assert 'def num(' not in text, name
+            for decl in ('def _fmt(', 'def _num(', 'def fmt(', 'def num('):
+                assert decl not in text, f'{name} declares its own {decl}'

@@ -77,6 +77,7 @@ def _frame(**cols):
     base = {
         'label_id': np.arange(n), 'user_id': ['u1'] * n,
         'pano_id': [f'{100000000000000 + i}' for i in range(n)],
+        'pano_source': ['mapillary'] * n,
         'label_type': ['CurbRamp'] * n, 'tags': ['[]'] * n,
         'time_created': pd.date_range('2026-08-11', periods=n, freq='min', tz='UTC'),
         'canvas_x': np.full(n, 360.0), 'canvas_y': np.full(n, 240.0),
@@ -102,7 +103,8 @@ def _frame(**cols):
 
 
 class TestImagerySource:
-    """No `source` column exists on rawLabels, so id shape is the only discriminator a desk study has."""
+    """rawLabels serves `pano_source`; the id shape subdivides it (see
+    TestImagerySourceReadsTheServedColumn for why both are reported)."""
 
     def test_it_separates_the_three_id_shapes(self):
         df = pd.DataFrame({'pano_id': [
@@ -110,12 +112,13 @@ class TestImagerySource:
             'hXlPoi3-dwfgmXBWL-yJlw',               # GSV: 22-char base64
             'CAoSLEFGMVFpcE1UVjdTcVhqeEI3VnV4ZFFxcHQwLTdPa3llLW9CT01uV0NVX0lJ',  # photosphere
         ]})
-        assert mc.imagery_source(df)['by_source'] == {
+        assert mc.imagery_source(df)['by_id_shape'] == {
             'mapillary': 1, 'gsv': 1, 'gsv_photosphere': 1}
 
     def test_the_fixture_is_entirely_mapillary(self, fixture_frame):
         got = mc.imagery_source(fixture_frame)
         assert got['by_source'] == {'mapillary': len(fixture_frame)}
+        assert got['n_disagreeing_with_id_shape'] == 0
 
     def test_the_committed_corpus_is_entirely_mapillary(self, pooled):
         """The premise of the whole census. If a GSV pano appeared here the tilt contrast would be
@@ -729,3 +732,43 @@ class TestAnEmptyCorpusIsReportedNotCrashed:
         empty = fixture_frame[fixture_frame['label_type'] == '__nothing__']
         assert set(mc.multi_perspective(empty, label_type='CurbRamp')) == \
             set(mc.multi_perspective(fixture_frame, label_type='CurbRamp'))
+
+
+class TestImagerySourceReadsTheServedColumn:
+    """rawLabels DOES serve `pano_source` — 'mapillary' for all 267 Richmond rows and 'gsv' across
+    the GSV cities — so reconstructing it from id shape inferred what the endpoint states, and the
+    premise test was checking the heuristic against itself."""
+
+    def test_the_served_column_is_what_is_reported(self):
+        df = _frame(pano_id=['511129198087695', 'hXlPoi3-dwfgmXBWL-yJlw'],
+                    pano_source=['mapillary', 'gsv'])
+        assert mc.imagery_source(df)['by_source'] == {'mapillary': 1, 'gsv': 1}
+
+    def test_the_served_column_wins_over_the_id_shape(self):
+        """The discriminating case: an all-numeric id that the deployment says is GSV. The
+        heuristic alone calls it Mapillary and nothing could notice."""
+        df = _frame(pano_id=['123456789012345'], pano_source=['gsv'])
+        out = mc.imagery_source(df)
+        assert out['by_source'] == {'gsv': 1}
+        assert out['n_disagreeing_with_id_shape'] == 1
+
+    def test_agreement_is_reported_so_the_heuristic_stays_checkable(self):
+        df = _frame(pano_id=['511129198087695', 'hXlPoi3-dwfgmXBWL-yJlw'],
+                    pano_source=['mapillary', 'gsv'])
+        assert mc.imagery_source(df)['n_disagreeing_with_id_shape'] == 0
+
+    def test_the_id_shape_still_subdivides_what_the_column_cannot(self):
+        """pano_source has two values; the id shape separates a user photosphere from ordinary
+        GSV, which matters because those are different capture rigs."""
+        df = _frame(
+            pano_id=['hXlPoi3-dwfgmXBWL-yJlw',
+                     'CAoSLEFGMVFpcE1UVjdTcVhqeEI3VnV4ZFFxcHQwLTdPa3llLW9CT01uV0NVX0lJ'],
+            pano_source=['gsv', 'gsv'])
+        assert mc.imagery_source(df)['by_id_shape'] == {'gsv': 1, 'gsv_photosphere': 1}
+
+    def test_a_corpus_without_the_column_still_reports_the_shape(self):
+        """Older cached exports predate the column; they must degrade, not crash."""
+        df = _frame(pano_id=['511129198087695']).drop(columns=['pano_source'])
+        out = mc.imagery_source(df)
+        assert out['by_source'] is None
+        assert out['by_id_shape'] == {'mapillary': 1}

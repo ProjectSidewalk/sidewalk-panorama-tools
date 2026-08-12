@@ -69,21 +69,45 @@ EARTH_R_M = 6371000.0
 
 
 def imagery_source(df):
-    """Which imagery each label sits on, from `pano_id` shape alone.
+    """Which imagery each label sits on.
 
-    GSV ids are 22-char URL-safe base64; Google *user photospheres* are longer `CAoS...` ids; Mapillary
-    image ids are all-numeric. No `source` column exists on rawLabels -- /adminapi/panos and
-    cvMetadata carry one, this endpoint does not -- so the id shape is what a desk study has.
+    `pano_source` is served by rawLabels and is authoritative -- 'mapillary' for all 267 Richmond
+    rows, 'gsv' across the GSV cities. An earlier revision asserted no such column existed and
+    reconstructed it from `pano_id` shape, which meant the census inferred by heuristic a fact the
+    endpoint states, and the premise test ("the corpus is entirely Mapillary") was checking the
+    heuristic against itself.
+
+    The id shape is still reported, for two reasons. It subdivides what the column cannot: GSV ids
+    are 22-char URL-safe base64 while Google *user photospheres* are longer `CAoS...` ids, and those
+    are different capture rigs. And comparing the two gives the heuristic something to be wrong
+    against -- `n_disagreeing_with_id_shape` is 0 on both corpora today, and would not be if a
+    deployment ever served an all-numeric GSV id or a 22-char Mapillary one.
+
+    `by_source` is None for a cached export predating the column, rather than silently falling back
+    to the heuristic under the same key.
     """
     ids = df['pano_id'].astype(str)
-    def one(s):
+
+    def shape(s):
         if s.isdigit():
             return 'mapillary'
         if len(s) == 22:
             return 'gsv'
         return 'gsv_photosphere' if s.startswith('CAoS') else 'unknown'
-    counts = ids.map(one).value_counts()
-    return {'n_labels': int(len(df)), 'by_source': {k: int(v) for k, v in counts.items()}}
+
+    by_shape = ids.map(shape)
+    out = {'n_labels': int(len(df)),
+           'by_id_shape': {k: int(v) for k, v in by_shape.value_counts().items()}}
+    if 'pano_source' not in df:
+        out['by_source'] = None
+        out['n_disagreeing_with_id_shape'] = None
+        return out
+    served = df['pano_source'].astype(str)
+    out['by_source'] = {k: int(v) for k, v in served.value_counts().items()}
+    # A photosphere is GSV imagery, so it agrees with a served 'gsv'.
+    normalised = by_shape.replace({'gsv_photosphere': 'gsv'})
+    out['n_disagreeing_with_id_shape'] = int((normalised != served).sum())
+    return out
 
 
 def _histogram(keys):

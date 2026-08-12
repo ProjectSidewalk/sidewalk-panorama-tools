@@ -5,9 +5,13 @@
   "richmond": {
    "imagery_source": {
     "n_labels": 267,
+    "by_id_shape": {
+     "mapillary": 267
+    },
     "by_source": {
      "mapillary": 267
-    }
+    },
+    "n_disagreeing_with_id_shape": 0
    },
    "replay": {
     "n_labels": 267,
@@ -185,9 +189,13 @@
  "pooled": {
   "imagery_source": {
    "n_labels": 267,
+   "by_id_shape": {
+    "mapillary": 267
+   },
    "by_source": {
     "mapillary": 267
-   }
+   },
+   "n_disagreeing_with_id_shape": 0
   },
   "replay": {
    "n_labels": 267,

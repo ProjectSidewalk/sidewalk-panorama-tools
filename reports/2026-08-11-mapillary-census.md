@@ -59,11 +59,18 @@ by a factor of 300.
 `.cache/rawlabels-mapillary/`, deliberately a **different directory** from the six GSV cities — every
 study script globs `*.csv` over a directory, so mixing them would silently redefine "the six cities".
 
-**Source identification.** rawLabels carries **no `source` column** (`/adminapi/panos` and cvMetadata
-do; this endpoint does not), so imagery is identified by `pano_id` shape: Mapillary ids are all-numeric,
-GSV ids are 22-char base64, Google user photospheres are longer `CAoS…` ids. All 267 Richmond labels
-are Mapillary. For contrast, the six-city GSV corpus is 438,291 GSV ids plus **119 Google user
-photospheres** and zero Mapillary.
+**Source identification.** rawLabels **does** serve a `pano_source` column — `mapillary` for all 267
+Richmond rows, `gsv` across the six GSV cities — and that is what the census reports. An earlier
+revision of this section asserted the column did not exist and reconstructed the source from
+`pano_id` shape, which meant inferring by heuristic a fact the endpoint states, with the premise
+test ("the corpus is entirely Mapillary") checking the heuristic against itself.
+
+The id shape is still reported alongside it, for two reasons. It **subdivides** what the column
+cannot: GSV ids are 22-char base64 while Google user photospheres are longer `CAoS…` ids, and those
+are different capture rigs — the six-city GSV corpus is 438,291 GSV ids plus **119 photospheres**
+and zero Mapillary. And comparing the two gives the heuristic something to be *wrong* against:
+`n_disagreeing_with_id_shape` is **0** on both corpora, and would not be if a deployment ever served
+an all-numeric GSV id or a 22-char Mapillary one — which the heuristic alone could never notice.
 
 **Two loader bugs this surfaced**, both invisible on GSV and both fixed:
 

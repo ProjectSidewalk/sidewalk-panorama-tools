@@ -34,6 +34,12 @@ STUDY_COLUMNS = [
     'camera_heading', 'camera_pitch', 'camera_roll', 'latitude', 'longitude',
 ]
 
+# Served by rawLabels and authoritative for imagery source ('gsv' / 'mapillary'), but OPTIONAL here:
+# a cache or fixture captured before the column existed still loads, and
+# mapillary_census.imagery_source reports by_source = None rather than silently falling back to the
+# pano-id heuristic. Read when present, absent otherwise — never fabricated.
+OPTIONAL_COLUMNS = ['pano_source']
+
 # Label types whose stored point does not identify a *particular* place, for two different reasons:
 #
 # * 'Occlusion' ("Can't see the sidewalk") marks the **view**, not a thing in it. The pre-registration
@@ -97,7 +103,9 @@ def load_rawlabels(path):
     """
     dtypes = {c: 'float64' for c in _FLOAT_COLUMNS}
     dtypes['pano_id'] = str
-    df = pd.read_csv(path, usecols=STUDY_COLUMNS, dtype=dtypes)
+    header = pd.read_csv(path, nrows=0).columns
+    columns = STUDY_COLUMNS + [c for c in OPTIONAL_COLUMNS if c in header]
+    df = pd.read_csv(path, usecols=columns, dtype=dtypes)
     df['time_created'] = pd.to_datetime(df['time_created'], unit='ms', utc=True)
     return add_era(df)
 
