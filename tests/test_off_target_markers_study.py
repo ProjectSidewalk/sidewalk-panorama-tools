@@ -48,17 +48,23 @@ SUMMARY = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-off-target-mark
 
 
 def _forward_frame(canvas_x, canvas_y, heading, pitch, zoom, camera_heading=100.0,
-                   pano_w=16384.0, pano_h=8192.0):
+                   pano_w=16384.0, pano_h=8192.0, canvas_w=720.0, canvas_h=480.0):
     """A frame whose pano_x/pano_y are produced by the forward math from the given click inputs —
-    the ground truth a corruption is then injected against."""
+    the ground truth a corruption is then injected against.
+
+    The canvas dims go into the projection as well as onto the frame: setting them only on the
+    frame afterwards leaves the stored pixel and the replay disagreeing about the viewport, which
+    is a broken fixture rather than a corruption under test.
+    """
     canvas_x = np.asarray(canvas_x, float)
-    pov_h, pov_p = pov_replay.pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom)
+    pov_h, pov_p = pov_replay.pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom,
+                                              canvas_w, canvas_h)
     px, py = pov_replay.pano_xy_from_pov(pov_h, pov_p, np.full(canvas_x.size, camera_heading),
                                          pano_w, pano_h)
     df = pd.DataFrame({'canvas_x': canvas_x, 'canvas_y': np.asarray(canvas_y, float),
                        'heading': np.asarray(heading, float), 'pitch': np.asarray(pitch, float),
                        'zoom': np.asarray(zoom, float)})
-    df['canvas_width'], df['canvas_height'] = 720.0, 480.0
+    df['canvas_width'], df['canvas_height'] = canvas_w, canvas_h
     df['pano_x'], df['pano_y'] = px, py
     df['pano_width'], df['pano_height'] = pano_w, pano_h
     df['camera_heading'] = camera_heading
@@ -71,6 +77,19 @@ def _forward_frame(canvas_x, canvas_y, heading, pitch, zoom, camera_heading=100.
 
 def _classified(df):
     return rss.classify(ers.replay_frame(df))
+
+
+def _residual_of(g, heading, pitch, zoom, canvas_x, canvas_y):
+    """|dx|, |dy| for an explicit record against the frame's stored pano_x/pano_y — an independent
+    re-measurement, so a solver that reports its own residual cannot mark its own homework."""
+    w = np.asarray(g['pano_width'], float)
+    h = np.asarray(g['pano_height'], float)
+    pov_h, pov_p = pov_replay.pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom,
+                                              g['canvas_width'], g['canvas_height'])
+    rx, ry = pov_replay.pano_xy_from_pov(pov_h, pov_p,
+                                         np.asarray(g['camera_heading'], float), w, h)
+    return (np.abs(ers.wrapped_dx(g['pano_x'], rx, w)),
+            np.abs(np.asarray(g['pano_y'], float) - ry))
 
 
 class TestCascade:
@@ -198,6 +217,90 @@ class TestRepair:
         rep, _ = rss.repair_frame(g)
         assert rep['new_canvas_x'].iloc[0] == pytest.approx(true_x, abs=0.5)
         assert rep['new_canvas_y'].iloc[0] == pytest.approx(true_y, abs=0.5)
+
+    def test_the_returned_residual_measures_the_record_actually_returned(self, monkeypatch):
+        """The loop measured at the top and updated at the bottom, so on exhaustion it applied one
+        more heading/pitch step than it measured and returned the two together — a record from
+        iteration k+1 with the residual from iteration k.
+
+        The budget is patched low to make exhaustion deterministic, but exhaustion is ordinary:
+        303 of 600 randomized synthetic frames hit the real 25-iteration cap, where the gap
+        between the returned residual and the returned record reached 33 px.
+        """
+        monkeypatch.setattr(rss, 'SOLVE_ITERS', 2)
+        df = _forward_frame([200.0, 500.0], [200.0, 300.0], [150.0, 150.0], [-15.0, -15.0],
+                            [1.0, 1.0])
+        df['heading'] += 17.0
+        df['pitch'] -= 9.0
+        g = _classified(df)
+        g['validate_px'] = rss.validate_px(g)
+        scope = g[g['klass'].isin(rss.REPAIR_CLASSES)].copy()
+        rh, rp, rz, rcx, rcy, adx, ady = rss.solve_record(scope)
+
+        fresh_x, fresh_y = _residual_of(scope, rh, rp, rz, rcx, rcy)
+        assert adx == pytest.approx(fresh_x, abs=1e-9)
+        assert ady == pytest.approx(fresh_y, abs=1e-9)
+
+    def test_the_budget_is_genuinely_exhausted_in_that_test(self, monkeypatch):
+        """Guards the test above: if two iterations happened to converge, it would pass on the
+        buggy code too and pin nothing."""
+        monkeypatch.setattr(rss, 'SOLVE_ITERS', 2)
+        df = _forward_frame([200.0, 500.0], [200.0, 300.0], [150.0, 150.0], [-15.0, -15.0],
+                            [1.0, 1.0])
+        df['heading'] += 17.0
+        df['pitch'] -= 9.0
+        g = _classified(df)
+        g['validate_px'] = rss.validate_px(g)
+        scope = g[g['klass'].isin(rss.REPAIR_CLASSES)].copy()
+        *_, adx, ady = rss.solve_record(scope)
+        assert max(adx.max(), ady.max()) > rss.MATCH_TOL_PX
+
+    def test_the_repair_emits_storable_canvas_coordinates(self):
+        """canvas_x/canvas_y are whole numbers in all 626,219 rows of the eight-city corpus, while
+        the dpr2 halving emitted `.5` values. Rounding those at migration time breaks 482 of the
+        19,472 shipped repairs, so the solve has to land on the storable grid itself."""
+        # A click at a half-pixel doubles to a whole number, which is what production stores —
+        # so halving it back is exactly how a .5 gets emitted.
+        df = _forward_frame([421.5], [281.5], [80.0], [-20.0], [2.0])
+        df['canvas_x'] = 360.0 + (df['canvas_x'] - 360.0) * 2.0
+        df['canvas_y'] = 240.0 + (df['canvas_y'] - 240.0) * 2.0
+        assert df['canvas_x'].iloc[0] % 1 == 0 and df['canvas_y'].iloc[0] % 1 == 0
+        g = _classified(df)
+        g['validate_px'] = rss.validate_px(g)
+        assert g['klass'].iloc[0] == 'dpr2'
+        rep, summary = rss.repair_frame(g)
+        assert len(rep) == 1
+        assert rep['new_canvas_x'].iloc[0] % 1 == 0, rep['new_canvas_x'].iloc[0]
+        assert rep['new_canvas_y'].iloc[0] % 1 == 0, rep['new_canvas_y'].iloc[0]
+
+    def test_the_storable_record_still_reproduces_the_stored_pixel(self):
+        """Landing on integers is only worth anything if heading/pitch absorb the remainder —
+        they are fractional in 93% and 83% of production rows respectively, so they can."""
+        df = _forward_frame([421.5], [281.5], [80.0], [-20.0], [2.0])
+        df['canvas_x'] = 360.0 + (df['canvas_x'] - 360.0) * 2.0
+        df['canvas_y'] = 240.0 + (df['canvas_y'] - 240.0) * 2.0
+        g = _classified(df)
+        g['validate_px'] = rss.validate_px(g)
+        rep, summary = rss.repair_frame(g)
+        assert summary['pct_repaired'] == 100.0
+        assert (rep['post_px_x'] <= rss.MATCH_TOL_PX).all()
+        assert (rep['post_px_y'] <= rss.MATCH_TOL_PX).all()
+
+    def test_dpr2_halves_about_the_rows_own_canvas_centre(self):
+        """The dpr2 hypothesis is device-pixel scaling about the CSS centre. Hardcoding (360, 240)
+        halves a 1440x960 row about the wrong point — it either fails the test and falls through to
+        x_only/multi_field, or is 'repaired' to a coordinate that never reproduces its pixel."""
+        df = _forward_frame([500.0], [300.0], [80.0], [-20.0], [2.0],
+                            canvas_w=1440.0, canvas_h=960.0)
+        true_x, true_y = df['canvas_x'].iloc[0], df['canvas_y'].iloc[0]
+        df['canvas_x'] = 720.0 + (df['canvas_x'] - 720.0) * 2.0
+        df['canvas_y'] = 480.0 + (df['canvas_y'] - 480.0) * 2.0
+        g = _classified(df)
+        g['validate_px'] = rss.validate_px(g)
+        assert g['klass'].iloc[0] == 'dpr2'
+        rep, _ = rss.repair_frame(g)
+        assert rep['new_canvas_x'].iloc[0] == pytest.approx(true_x, abs=1.0)
+        assert rep['new_canvas_y'].iloc[0] == pytest.approx(true_y, abs=1.0)
 
     def test_frame_change_is_not_repaired(self):
         """frame_change records are already click-consistent; they are excluded from repair."""

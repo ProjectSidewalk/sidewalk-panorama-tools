@@ -50,6 +50,30 @@ ZOOM_CANDIDATES = (1.0, 1.999, 2.0, 2.999, 3.0)
 # rounded, and the round-trip through a repaired record re-rounds.
 MATCH_TOL_PX = 1.0
 
+# Iterations the record solve is allowed. The pitch walk converges in a handful near axis, but
+# exhaustion is ordinary rather than exceptional -- 303 of 600 randomized synthetic frames reach
+# the cap, because the loop only breaks when EVERY row in the frame is within tolerance.
+SOLVE_ITERS = 25
+
+# The classes repair_frame solves for: every replayable in-window miss except frame_change, whose
+# record is already consistent with the click. Named once so the study and its tests cannot drift.
+REPAIR_CLASSES = ('dpr2', 'zoom_desync', 'x_only', 'xy_small', 'multi_field')
+
+
+def _halve_about_centre(df):
+    """The dpr2 correction: halve the click's offsets about the canvas centre.
+
+    About the ROW's centre, not a hardcoded (360, 240). The hypothesis is device-pixel scaling
+    about the CSS centre, so a row recorded on any other canvas is otherwise halved about the wrong
+    point -- it fails the dpr2 test and falls through to x_only/multi_field, or worse is 'repaired'
+    to a coordinate that never reproduces its pano_x/pano_y. Zero such rows in the eight GSV study
+    cities today, but the all-deployment census spans 54.
+    """
+    cw = np.asarray(df['canvas_width'], float)
+    ch = np.asarray(df['canvas_height'], float)
+    return (cw / 2.0 + (np.asarray(df['canvas_x'], float) - cw / 2.0) * 0.5,
+            ch / 2.0 + (np.asarray(df['canvas_y'], float) - ch / 2.0) * 0.5)
+
 # Validate-canvas visibility tiers (px on the 720x480 frame): barely perceptible / clearly off /
 # nowhere near the target.
 PX_TIERS = (4.0, 10.0, 30.0)
@@ -124,8 +148,8 @@ def classify(df):
     # CSS center); halving the offsets recovers the click. Verified center-scaled, not
     # origin-scaled, on the era study's per-user s = 0.5 cohort.
     if todo.any():
-        adx2, ady2 = _replay_residuals(df, 360.0 + (df['canvas_x'] - 360.0) * 0.5,
-                                       240.0 + (df['canvas_y'] - 240.0) * 0.5, df['zoom'])
+        cx2, cy2 = _halve_about_centre(df)
+        adx2, ady2 = _replay_residuals(df, cx2, cy2, df['zoom'])
         m = todo & (adx2 <= MATCH_TOL_PX) & (ady2 <= MATCH_TOL_PX)
         klass[m] = 'dpr2'
         todo &= ~m
@@ -279,30 +303,45 @@ def solve_record(g):
     canvas_y = g['canvas_y'].to_numpy(float).copy()
 
     is_dpr2 = (g['klass'] == 'dpr2').to_numpy()
-    canvas_x[is_dpr2] = 360.0 + (canvas_x[is_dpr2] - 360.0) * 0.5
-    canvas_y[is_dpr2] = 240.0 + (canvas_y[is_dpr2] - 240.0) * 0.5
+    hx, hy = _halve_about_centre(g)
+    # Rounded, because canvas_x/canvas_y are whole numbers in all 626,219 rows of the eight-city
+    # corpus -- the halving is the only thing in this study that produces a .5, and a migration
+    # that rounds it back breaks 482 of the 19,472 repairs. Land on the storable grid here and let
+    # the heading/pitch walk below absorb the sub-pixel remainder; those two are fractional in 93%
+    # and 83% of production rows, so they have the room. (zoom needs no such treatment: production
+    # stores 6,105 fractional zooms across 92 distinct values.)
+    canvas_x[is_dpr2] = np.round(hx[is_dpr2])
+    canvas_y[is_dpr2] = np.round(hy[is_dpr2])
     if 'fitted_zoom' in g:
         fz = g['fitted_zoom'].to_numpy(float)
         zoom = np.where(np.isfinite(fz), fz, zoom)
 
-    sub = g.copy()
-    sub['canvas_x'] = canvas_x
-    sub['canvas_y'] = canvas_y
     w = np.asarray(g['pano_width'], float)
     h = np.asarray(g['pano_height'], float)
-    for _ in range(25):
+
+    def residuals(heading, pitch):
         pov_h, pov_p = pov_replay.pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom,
                                                   g['canvas_width'], g['canvas_height'])
         rx, ry = pov_replay.pano_xy_from_pov(
             np.where(np.isfinite(pov_h), pov_h, 0.0), np.where(np.isfinite(pov_p), pov_p, 0.0),
             np.where(np.isfinite(g['camera_heading']), g['camera_heading'], 0.0),
             np.where(np.isfinite(w), w, 8192.0), np.where(np.isfinite(h), h, 4096.0))
-        dx = era_replay_study.wrapped_dx(g['pano_x'], rx, np.where(np.isfinite(w), w, 8192.0))
-        dy = np.asarray(g['pano_y'], float) - ry
+        return (era_replay_study.wrapped_dx(g['pano_x'], rx, np.where(np.isfinite(w), w, 8192.0)),
+                np.asarray(g['pano_y'], float) - ry)
+
+    # The residual returned must describe the record returned. The loop measures at the top and
+    # updates at the bottom, so on exhaustion it has applied one more step than it measured -- the
+    # `else` re-measures against what is actually being handed back. Without it the two disagreed
+    # by up to 33 px on randomized inputs and by up to 1.0 px in the committed artifact, and the
+    # `repaired` flag downstream is computed from this number.
+    for _ in range(SOLVE_ITERS):
+        dx, dy = residuals(heading, pitch)
         if (np.abs(dx) <= MATCH_TOL_PX).all() and (np.abs(dy) <= MATCH_TOL_PX).all():
             break
         heading = (heading + dx * 360.0 / w) % 360.0
         pitch = np.clip(pitch - dy * 180.0 / h, -90.0, 90.0)
+    else:
+        dx, dy = residuals(heading, pitch)
 
     return heading, pitch, zoom, canvas_x, canvas_y, np.abs(dx), np.abs(dy)
 
@@ -310,7 +349,7 @@ def solve_record(g):
 def repair_frame(g):
     """Repair every replayable non-exact in-window record except frame_change (whose record is
     already consistent with the click). Returns (per-row repair frame, summary dict)."""
-    scope = g[g['klass'].isin(['dpr2', 'zoom_desync', 'x_only', 'xy_small', 'multi_field'])].copy()
+    scope = g[g['klass'].isin(REPAIR_CLASSES)].copy()
     if len(scope) == 0:
         return scope, {'n': 0}
     rh, rp, rz, rcx, rcy, post_adx, post_ady = solve_record(scope)
