@@ -24,8 +24,12 @@ def sandbox(tmp_path, monkeypatch):
     """Redirect both destinations into tmp_path and stub the network."""
     dest = tmp_path / 'rawlabels'
     dest_all = tmp_path / 'rawlabels-all'
+    mapillary_dest = tmp_path / 'rawlabels-mapillary'
     monkeypatch.setattr(fr, 'DEST', str(dest))
     monkeypatch.setattr(fr, 'DEST_ALL', str(dest_all))
+    # Patched too, or main([]) writes into the developer's real Mapillary cache: the default run
+    # fetches both study corpora, and only two of the three destinations were redirected.
+    monkeypatch.setattr(fr, 'MAPILLARY_DEST', str(mapillary_dest))
 
     fetched = []
 
@@ -39,7 +43,7 @@ def sandbox(tmp_path, monkeypatch):
         'richmond-va': 'https://sidewalk-richmond.cs.washington.edu',
         'crowdstudy': 'https://sidewalk-crowdstudy.cs.washington.edu',
     })
-    return dest, dest_all, fetched
+    return dest, dest_all, mapillary_dest, fetched
 
 
 class TestAllGetsItsOwnDirectory:
@@ -52,7 +56,7 @@ class TestAllGetsItsOwnDirectory:
         """--all pulls every deployment, including Mapillary ones. If those land in
         .cache/rawlabels/ then era_replay, click_noise, clamp_census, offaxis_covariate,
         photometa_census and this study all silently analyze 54 cities instead of six."""
-        dest, dest_all, _ = sandbox
+        dest, dest_all, _, _ = sandbox
         fr.main(['--all'])
         assert sorted(os.listdir(dest_all)) == ['crowdstudy.csv', 'richmond-va.csv',
                                                 'seattle-wa.csv']
@@ -60,7 +64,7 @@ class TestAllGetsItsOwnDirectory:
 
     def test_the_study_corpus_fetch_still_writes_to_dest(self, sandbox):
         """The eight-city default is unchanged."""
-        dest, dest_all, _ = sandbox
+        dest, dest_all, _, _ = sandbox
         fr.main([])
         got = sorted(os.listdir(dest))
         assert got == sorted(f'{c}.csv' for c in fr.CITIES)
@@ -69,7 +73,7 @@ class TestAllGetsItsOwnDirectory:
     def test_a_cached_city_in_one_tree_does_not_satisfy_the_other(self, sandbox):
         """The skip-if-exists check must be per-destination, or an --all sweep would be
         considered already done because the eight-city fetch ran earlier."""
-        dest, dest_all, fetched = sandbox
+        dest, dest_all, _, fetched = sandbox
         fr.main([])
         fetched.clear()
         fr.main(['--all'])
@@ -95,3 +99,25 @@ class TestFetchDoesNotHangForever:
         fr.main([])
         assert seen.get('timeout') is not None, 'the download was issued with no timeout'
         assert seen['timeout'] > 0
+
+
+class TestTheMapillaryCorpusKeepsItsOwnDirectory:
+    """CLAUDE.md's rule, pinned: a Mapillary city in .cache/rawlabels/ silently joins the GSV
+    corpus and moves every committed six-city number."""
+
+    def test_the_three_destinations_are_all_distinct(self):
+        assert len({fr.DEST, fr.MAPILLARY_DEST, fr.DEST_ALL}) == 3
+
+    def test_the_default_run_separates_the_two_corpora(self, sandbox):
+        dest, _, mapillary_dest, _ = sandbox
+        fr.main([])
+        assert sorted(os.listdir(dest)) == sorted(f'{c}.csv' for c in fr.CITIES)
+        assert sorted(os.listdir(mapillary_dest)) == sorted(
+            f'{c}.csv' for c in fr.MAPILLARY_CITIES)
+        assert not set(os.listdir(dest)) & set(os.listdir(mapillary_dest))
+
+    def test_no_mapillary_city_lands_in_the_gsv_corpus(self, sandbox):
+        dest, _, _, _ = sandbox
+        fr.main([])
+        for city in fr.MAPILLARY_CITIES:
+            assert not os.path.exists(os.path.join(dest, f'{city}.csv')), city

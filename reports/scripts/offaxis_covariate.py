@@ -62,6 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import era_replay_study  # noqa: E402
 import pov_replay  # noqa: E402
 import rawlabels  # noqa: E402
+from studyfmt import fmt, num  # noqa: E402
 
 # The Explore viewer's pitch floor. Not a documented constant -- measured: the minimum viewport
 # pitch over 438k labels is exactly -35.0000 and a large share sit precisely on it. Compared with a
@@ -201,18 +202,6 @@ def prepare(df):
     return out
 
 
-def _num(x):
-    """A float for the artifact, or None when the quantity is undefined.
-
-    Every number this module publishes goes through here. `main()` writes with allow_nan=False, so a
-    NaN that reaches the dict aborts the run at the last line; and an artifact that *did* accept it
-    would be unreadable by jq and JSON.parse (reports/data/2026-08-09-photometa-census.json shipped
-    with 4,916 bare NaN tokens once). null is also the honest encoding: undefined is not zero.
-    """
-    x = float(x)
-    return x if np.isfinite(x) else None
-
-
 def identification(df):
     """Does off-axis offset survive the depression-band fixed effects Study 1 already carries?
 
@@ -248,10 +237,10 @@ def identification(df):
                   and not saturated)
     return {
         'n': int(len(g)),
-        'sd_overall_deg': _num(sd_all),
-        'sd_within_band_deg': _num(sd_in),
+        'sd_overall_deg': num(sd_all),
+        'sd_within_band_deg': num(sd_in),
         'pct_surviving_band_fe': float(100.0 * sd_in / sd_all) if identified else None,
-        'corr_with_depression': _num(corr),
+        'corr_with_depression': num(corr),
     }
 
 
@@ -267,7 +256,7 @@ def _spread(series):
         return None
     return {'n': int(a.size), 'p5': float(np.percentile(a, 5)), 'p50': float(np.percentile(a, 50)),
             'p95': float(np.percentile(a, 95)),
-            'sd': _num(a.std(ddof=1)) if a.size > 1 else None}
+            'sd': num(a.std(ddof=1)) if a.size > 1 else None}
 
 
 def by_band(df):
@@ -319,7 +308,7 @@ def floor_census(df):
         # block stopped partitioning the eligible corpus while a test asserted that it did -- and
         # that test read only the committed artifact, so it could not see it.
         'by_label_type': {str(t): {'n': int(len(sub)),
-                                   'at_floor_pct': _num(100.0 * sub['at_floor'].mean())}
+                                   'at_floor_pct': num(100.0 * sub['at_floor'].mean())}
                           for t, sub in g.groupby('label_type', observed=True, dropna=False)},
     }
 
@@ -360,7 +349,7 @@ def zoom_conversions(df):
     g = df[df['eligible']]
     z = g['zoom'].round(4)
     n = int(len(g))
-    share = lambda k: _num(100.0 * k / n) if n else None    # noqa: E731
+    share = lambda k: num(100.0 * k / n) if n else None    # noqa: E731
     out = {'n_eligible': n}
     for zoom in LADDER_ZOOMS:
         k = int((z == zoom).sum())
@@ -379,8 +368,8 @@ def zoom_conversions(df):
         'n': int(len(rest)),
         'corpus_share_pct': share(len(rest)),
         'n_distinct_zooms': int(rest.nunique()),
-        'min_zoom': _num(rest.min()) if len(rest) else None,
-        'max_zoom': _num(rest.max()) if len(rest) else None,
+        'min_zoom': num(rest.min()) if len(rest) else None,
+        'max_zoom': num(rest.max()) if len(rest) else None,
         'fov_deg_range': fov_range(rest.unique()) if len(rest) else None,
     }
     return out
@@ -396,7 +385,7 @@ def fov_range(zooms):
     1.04-2.9091 and happens to order correctly.
     """
     fovs = [float(pov_replay.get_3d_fov(z)) for z in zooms]
-    return [_num(min(fovs)), _num(max(fovs))]
+    return [num(min(fovs)), num(max(fovs))]
 
 
 def tail_bands(value, by_band_result):
@@ -442,8 +431,8 @@ def specimen_census(by_band_result):
         v = float(vertical[i])
         out[name] = {
             'record': dict(SPECIMENS[name]),
-            'offaxis_v_deg': _num(v),
-            'offaxis_r_deg': _num(radial[i]),
+            'offaxis_v_deg': num(v),
+            'offaxis_r_deg': num(radial[i]),
             'at_pitch_floor': bool(at_pitch_floor([SPECIMENS[name]['pitch']])[0]),
             'tail_bands': tail_bands(v, by_band_result),
         }
@@ -474,17 +463,6 @@ def pooled(frames):
     return analyze(pd.concat(frames, ignore_index=True))
 
 
-def _fmt(value, spec=''):
-    """Format a number the analysis may legitimately report as None.
-
-    Every statistic above is null for a degenerate group by design -- `identification` returns nulls
-    for fewer than two eligible rows, a contract its own test pins. Format-specing those directly
-    (`f"{v:.2f}"`) raises TypeError, which in a per-city loop means one thin city aborts the run after
-    every other city has been computed and before --write is reached. Print 'n/a' instead.
-    """
-    return 'n/a' if value is None else format(value, spec)
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('csv_dir', help='directory of <city>.csv rawLabels exports')
@@ -513,32 +491,32 @@ def main(argv=None):
         frames.append(df)
         result['cities'][city] = analyze(df)
         ident = result['cities'][city]['identification']
-        print(f"   eligible {ident['n']:,}  sd {_fmt(ident['sd_overall_deg'], '.2f')} deg  "
-              f"survives band FE {_fmt(ident['pct_surviving_band_fe'], '.0f')}%")
+        print(f"   eligible {ident['n']:,}  sd {fmt(ident['sd_overall_deg'], '.2f')} deg  "
+              f"survives band FE {fmt(ident['pct_surviving_band_fe'], '.0f')}%")
 
     result['pooled'] = pooled(frames)
     p = result['pooled']
     result['specimens'] = specimen_census(p['by_band'])
     print(f"\npooled: {p['identification']['n']:,} eligible of "
           f"{p['eligibility']['n_labels']:,} labels")
-    print(f"  off-axis sd {_fmt(p['identification']['sd_overall_deg'], '.2f')} deg -> within band "
-          f"{_fmt(p['identification']['sd_within_band_deg'], '.2f')} deg "
-          f"({_fmt(p['identification']['pct_surviving_band_fe'], '.0f')}% survives the band "
+    print(f"  off-axis sd {fmt(p['identification']['sd_overall_deg'], '.2f')} deg -> within band "
+          f"{fmt(p['identification']['sd_within_band_deg'], '.2f')} deg "
+          f"({fmt(p['identification']['pct_surviving_band_fe'], '.0f')}% survives the band "
           f"fixed effects)")
-    print(f"  corr with depression {_fmt(p['identification']['corr_with_depression'], '.3f')}")
-    print(f"  pitch floor {_fmt(p['floor']['min_pitch_deg'], '.4f')} deg, "
-          f"{_fmt(p['floor']['at_floor_pct'], '.2f')}% of eligible rows on it")
+    print(f"  corr with depression {fmt(p['identification']['corr_with_depression'], '.3f')}")
+    print(f"  pitch floor {fmt(p['floor']['min_pitch_deg'], '.4f')} deg, "
+          f"{fmt(p['floor']['at_floor_pct'], '.2f')}% of eligible rows on it")
     print(f"  by band: " + '  '.join(
         f"{b}={p['floor']['by_band_pct'][b]:.1f}%" for b in BAND_LABELS
         if p['floor']['by_band_pct'][b] is not None))
-    print(f"  zoom ladder {_fmt(p['zoom']['zoom1']['corpus_share_pct'], '.1f')}/"
-          f"{_fmt(p['zoom']['zoom2']['corpus_share_pct'], '.1f')}/"
-          f"{_fmt(p['zoom']['zoom3']['corpus_share_pct'], '.1f')}%, "
+    print(f"  zoom ladder {fmt(p['zoom']['zoom1']['corpus_share_pct'], '.1f')}/"
+          f"{fmt(p['zoom']['zoom2']['corpus_share_pct'], '.1f')}/"
+          f"{fmt(p['zoom']['zoom3']['corpus_share_pct'], '.1f')}%, "
           f"{p['zoom']['other']['n']:,} rows off-ladder at fractional zoom")
     print(f"  exact_y keeps {p['eligibility']['kept_by_using_exact_y_only']:,} rows that "
           f"exact_x AND exact_y would have dropped")
     for name, s in result['specimens'].items():
-        print(f"  #4842 {name}: off-axis {_fmt(s['offaxis_v_deg'], '.2f')} deg, in the tail of "
+        print(f"  #4842 {name}: off-axis {fmt(s['offaxis_v_deg'], '.2f')} deg, in the tail of "
               f"{', '.join(s['tail_bands']) or 'no band'}")
 
     if args.write:

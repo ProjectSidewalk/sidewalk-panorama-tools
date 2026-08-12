@@ -1,0 +1,605 @@
+{
+ "source": "/v3/api/rawLabels?filetype=csv",
+ "fetched": "2026-08-11",
+ "cities": {
+  "richmond": {
+   "imagery_source": {
+    "n_labels": 267,
+    "by_source": {
+     "mapillary": 267
+    }
+   },
+   "replay": {
+    "n_labels": 267,
+    "replayable_x": 267,
+    "replayable_y": 267,
+    "exact_x": 267,
+    "exact_y": 267,
+    "exact_x_pct": 100.0,
+    "exact_y_pct": 100.0,
+    "max_abs_dx_px": 0.0,
+    "max_abs_dy_px": 0.0,
+    "canvas_frames": {
+     "720x480": 267
+    },
+    "zoom_values": {
+     "1": 96,
+     "1.568": 1,
+     "1.9925": 3,
+     "2": 127,
+     "2.568": 1,
+     "3": 39
+    },
+    "pano_frames": {
+     "11000x5500": 239,
+     "4096x2048": 3,
+     "5760x2880": 25
+    }
+   },
+   "tilt": {
+    "n_labels": 267,
+    "n_panos": 89,
+    "camera_pitch_available_pct": 100.0,
+    "camera_roll_available_pct": 100.0,
+    "camera_pitch_deg": {
+     "n": 89,
+     "min": -17.641828271860774,
+     "max": 5.00750993774022,
+     "sd": 3.32114909641884,
+     "abs_p90": 6.34648778458581
+    },
+    "camera_roll_deg": {
+     "n": 89,
+     "min": -6.371966788929225,
+     "max": 11.975124134416244,
+     "sd": 2.797816619960236,
+     "abs_p90": 5.015601463795537
+    },
+    "sd_pitch_term_deg": 1.938060322947643,
+    "sd_roll_term_deg": 2.477149055657631,
+    "sd_combined_term_deg": 3.377896514163648,
+    "sigma_resid_deg": 0.59,
+    "se_beta_pitch": 0.01863069647153579,
+    "se_beta_roll": 0.014576197398334758,
+    "se_required": 0.15306122448979592,
+    "decision_rule_reachable": true
+   },
+   "within_pano_stratum": {
+    "n_panos": 89,
+    "n_panos_multi_label": 57,
+    "n_panos_separated": 43,
+    "separation_deg": 60.0,
+    "required": 60,
+    "estimable": false,
+    "shortfall_panos": 17
+   },
+   "multi_perspective": {
+    "label_type": "CurbRamp",
+    "radius_m": 8.0,
+    "n_labels": 101,
+    "n_objects": 39,
+    "n_objects_multi_pano": 25,
+    "n_objects_both_users": 16,
+    "panos_per_object": {
+     "1": 14,
+     "2": 15,
+     "3": 8,
+     "4": 1,
+     "5": 1
+    }
+   },
+   "crossed_block": {
+    "n_users": 2,
+    "panos_per_user": {
+     "18b26a38-24ab-402d-a64e-158fc0bb8a8a": 38,
+     "549187e0-82c9-4014-a48d-31f18083d575": 40
+    },
+    "n_panos_shared_by_two_users": 7,
+    "n_dropped_unlocated_referent": 86,
+    "clustered": {
+     "radius_deg": 1.5,
+     "n_pairs": 2,
+     "n_clusters": 2,
+     "sigma_az_deg": 0.7032145102638114,
+     "sigma_el_deg": 0.8577462385531446,
+     "d_total_p50": 1.0866290641872849,
+     "d_total_p90": 1.336692004214773
+    },
+    "matched": {
+     "mode": "matched",
+     "max_sep_deg": 10.0,
+     "n_panos_considered": 7,
+     "n_labels_considered": 42,
+     "n_pairs_matched": 6,
+     "n_rejected_beyond_max_sep": 0,
+     "n_greedy_fallbacks": 0,
+     "n_pairs": 6,
+     "n_clusters": 6,
+     "sigma_az_deg": 1.894440650765728,
+     "sigma_el_deg": 0.3087886458791329,
+     "d_total_p50": 1.8248321268325092,
+     "d_total_p90": 3.5690466283255153
+    }
+   },
+   "referent_exclusion": {
+    "n_labels": 267,
+    "n_comparable": 181,
+    "n_excluded": 86,
+    "excluded_no_referent_type": 65,
+    "excluded_region_tag": 21,
+    "excluded_by_type": {
+     "Crosswalk": 62,
+     "Occlusion": 3
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "geometry": {
+    "n_eligible": 267,
+    "by_band": {
+     "5-15": 150,
+     "15-30": 101,
+     "<5": 8,
+     ">30": 8
+    },
+    "depression_deg": {
+     "n": 267,
+     "min": 1.5709090909090908,
+     "max": 44.345454545454544,
+     "sd": 6.733167411899676,
+     "abs_p90": 23.184
+    },
+    "offaxis_v_deg": {
+     "n": 267,
+     "min": -21.030919565435546,
+     "max": 10.90351839283506,
+     "sd": 4.787592102433475,
+     "abs_p90": 8.69526541824935
+    },
+    "n_at_pitch_floor": 5,
+    "n_above_horizon": 0
+   },
+   "labels_by_type": {
+    "CurbRamp": 101,
+    "Crosswalk": 62,
+    "SurfaceProblem": 50,
+    "Signal": 39,
+    "NoCurbRamp": 6,
+    "Obstacle": 6,
+    "Occlusion": 3
+   },
+   "date_range": [
+    "2026-03-25",
+    "2026-08-11"
+   ]
+  }
+ },
+ "pooled": {
+  "imagery_source": {
+   "n_labels": 267,
+   "by_source": {
+    "mapillary": 267
+   }
+  },
+  "replay": {
+   "n_labels": 267,
+   "replayable_x": 267,
+   "replayable_y": 267,
+   "exact_x": 267,
+   "exact_y": 267,
+   "exact_x_pct": 100.0,
+   "exact_y_pct": 100.0,
+   "max_abs_dx_px": 0.0,
+   "max_abs_dy_px": 0.0,
+   "canvas_frames": {
+    "720x480": 267
+   },
+   "zoom_values": {
+    "1": 96,
+    "1.568": 1,
+    "1.9925": 3,
+    "2": 127,
+    "2.568": 1,
+    "3": 39
+   },
+   "pano_frames": {
+    "11000x5500": 239,
+    "4096x2048": 3,
+    "5760x2880": 25
+   }
+  },
+  "tilt": {
+   "n_labels": 267,
+   "n_panos": 89,
+   "camera_pitch_available_pct": 100.0,
+   "camera_roll_available_pct": 100.0,
+   "camera_pitch_deg": {
+    "n": 89,
+    "min": -17.641828271860774,
+    "max": 5.00750993774022,
+    "sd": 3.32114909641884,
+    "abs_p90": 6.34648778458581
+   },
+   "camera_roll_deg": {
+    "n": 89,
+    "min": -6.371966788929225,
+    "max": 11.975124134416244,
+    "sd": 2.797816619960236,
+    "abs_p90": 5.015601463795537
+   },
+   "sd_pitch_term_deg": 1.938060322947643,
+   "sd_roll_term_deg": 2.477149055657631,
+   "sd_combined_term_deg": 3.377896514163648,
+   "sigma_resid_deg": 0.59,
+   "se_beta_pitch": 0.01863069647153579,
+   "se_beta_roll": 0.014576197398334758,
+   "se_required": 0.15306122448979592,
+   "decision_rule_reachable": true
+  },
+  "within_pano_stratum": {
+   "n_panos": 89,
+   "n_panos_multi_label": 57,
+   "n_panos_separated": 43,
+   "separation_deg": 60.0,
+   "required": 60,
+   "estimable": false,
+   "shortfall_panos": 17
+  },
+  "multi_perspective": {
+   "label_type": "CurbRamp",
+   "radius_m": 8.0,
+   "n_labels": 101,
+   "n_objects": 39,
+   "n_objects_multi_pano": 25,
+   "n_objects_both_users": 16,
+   "panos_per_object": {
+    "1": 14,
+    "2": 15,
+    "3": 8,
+    "4": 1,
+    "5": 1
+   }
+  },
+  "crossed_block": {
+   "n_users": 2,
+   "panos_per_user": {
+    "18b26a38-24ab-402d-a64e-158fc0bb8a8a": 38,
+    "549187e0-82c9-4014-a48d-31f18083d575": 40
+   },
+   "n_panos_shared_by_two_users": 7,
+   "n_dropped_unlocated_referent": 86,
+   "clustered": {
+    "radius_deg": 1.5,
+    "n_pairs": 2,
+    "n_clusters": 2,
+    "sigma_az_deg": 0.7032145102638114,
+    "sigma_el_deg": 0.8577462385531446,
+    "d_total_p50": 1.0866290641872849,
+    "d_total_p90": 1.336692004214773
+   },
+   "matched": {
+    "mode": "matched",
+    "max_sep_deg": 10.0,
+    "n_panos_considered": 7,
+    "n_labels_considered": 42,
+    "n_pairs_matched": 6,
+    "n_rejected_beyond_max_sep": 0,
+    "n_greedy_fallbacks": 0,
+    "n_pairs": 6,
+    "n_clusters": 6,
+    "sigma_az_deg": 1.894440650765728,
+    "sigma_el_deg": 0.3087886458791329,
+    "d_total_p50": 1.8248321268325092,
+    "d_total_p90": 3.5690466283255153
+   }
+  },
+  "referent_exclusion": {
+   "n_labels": 267,
+   "n_comparable": 181,
+   "n_excluded": 86,
+   "excluded_no_referent_type": 65,
+   "excluded_region_tag": 21,
+   "excluded_by_type": {
+    "Crosswalk": 62,
+    "Occlusion": 3
+   },
+   "rule": {
+    "no_referent_types": [
+     "Crosswalk",
+     "NoSidewalk",
+     "Occlusion"
+    ],
+    "region_tags": [
+     "SurfaceProblem+brick/cobblestone"
+    ]
+   }
+  },
+  "geometry": {
+   "n_eligible": 267,
+   "by_band": {
+    "5-15": 150,
+    "15-30": 101,
+    "<5": 8,
+    ">30": 8
+   },
+   "depression_deg": {
+    "n": 267,
+    "min": 1.5709090909090908,
+    "max": 44.345454545454544,
+    "sd": 6.733167411899676,
+    "abs_p90": 23.184
+   },
+   "offaxis_v_deg": {
+    "n": 267,
+    "min": -21.030919565435546,
+    "max": 10.90351839283506,
+    "sd": 4.787592102433475,
+    "abs_p90": 8.69526541824935
+   },
+   "n_at_pitch_floor": 5,
+   "n_above_horizon": 0
+  },
+  "labels_by_type": {
+   "CurbRamp": 101,
+   "Crosswalk": 62,
+   "SurfaceProblem": 50,
+   "Signal": 39,
+   "NoCurbRamp": 6,
+   "Obstacle": 6,
+   "Occlusion": 3
+  },
+  "date_range": [
+   "2026-03-25",
+   "2026-08-11"
+  ]
+ },
+ "gsv_contrast": {
+  "amsterdam": {
+   "n_labels": 30061,
+   "camera_pitch_available_pct": 100.0,
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 30061,
+    "n_comparable": 22518,
+    "n_excluded": 7543,
+    "excluded_no_referent_type": 7025,
+    "excluded_region_tag": 518,
+    "excluded_by_type": {
+     "Crosswalk": 2968,
+     "NoSidewalk": 4002,
+     "Occlusion": 55
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "CurbRamp": 12253,
+    "Obstacle": 6066,
+    "NoSidewalk": 4002,
+    "Crosswalk": 2968,
+    "SurfaceProblem": 1981,
+    "NoCurbRamp": 1538,
+    "Signal": 1034,
+    "Other": 164,
+    "Occlusion": 55
+   }
+  },
+  "cdmx": {
+   "n_labels": 74263,
+   "camera_pitch_available_pct": 100.0,
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 74263,
+    "n_comparable": 64211,
+    "n_excluded": 10052,
+    "excluded_no_referent_type": 9871,
+    "excluded_region_tag": 181,
+    "excluded_by_type": {
+     "Crosswalk": 3894,
+     "NoSidewalk": 5071,
+     "Occlusion": 906
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "Obstacle": 25022,
+    "SurfaceProblem": 14632,
+    "CurbRamp": 12889,
+    "NoCurbRamp": 10941,
+    "NoSidewalk": 5071,
+    "Crosswalk": 3894,
+    "Occlusion": 906,
+    "Other": 799,
+    "Signal": 109
+   }
+  },
+  "columbus-oh": {
+   "n_labels": 41186,
+   "camera_pitch_available_pct": 100.0,
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 41186,
+    "n_comparable": 30474,
+    "n_excluded": 10712,
+    "excluded_no_referent_type": 10429,
+    "excluded_region_tag": 283,
+    "excluded_by_type": {
+     "Crosswalk": 889,
+     "NoSidewalk": 9370,
+     "Occlusion": 170
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "CurbRamp": 18039,
+    "NoSidewalk": 9370,
+    "SurfaceProblem": 6816,
+    "Obstacle": 3679,
+    "NoCurbRamp": 1463,
+    "Crosswalk": 889,
+    "Signal": 724,
+    "Occlusion": 170,
+    "Other": 36
+   }
+  },
+  "newberg-or": {
+   "n_labels": 17351,
+   "camera_pitch_available_pct": 100.0,
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 17351,
+    "n_comparable": 10067,
+    "n_excluded": 7284,
+    "excluded_no_referent_type": 7281,
+    "excluded_region_tag": 3,
+    "excluded_by_type": {
+     "Crosswalk": 42,
+     "NoSidewalk": 7035,
+     "Occlusion": 204
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "NoSidewalk": 7035,
+    "CurbRamp": 4582,
+    "SurfaceProblem": 2183,
+    "NoCurbRamp": 2154,
+    "Obstacle": 1023,
+    "Occlusion": 204,
+    "Other": 128,
+    "Crosswalk": 42
+   }
+  },
+  "oradell-nj": {
+   "n_labels": 13591,
+   "camera_pitch_available_pct": 100.0,
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 13591,
+    "n_comparable": 6996,
+    "n_excluded": 6595,
+    "excluded_no_referent_type": 6513,
+    "excluded_region_tag": 82,
+    "excluded_by_type": {
+     "Crosswalk": 675,
+     "NoSidewalk": 5676,
+     "Occlusion": 162
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "NoSidewalk": 5676,
+    "SurfaceProblem": 4006,
+    "CurbRamp": 1892,
+    "NoCurbRamp": 822,
+    "Crosswalk": 675,
+    "Obstacle": 325,
+    "Occlusion": 162,
+    "Signal": 21,
+    "Other": 12
+   }
+  },
+  "seattle-wa": {
+   "n_labels": 261958,
+   "camera_pitch_available_pct": 100.0,
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 261958,
+    "n_comparable": 202729,
+    "n_excluded": 59229,
+    "excluded_no_referent_type": 59003,
+    "excluded_region_tag": 226,
+    "excluded_by_type": {
+     "Crosswalk": 6229,
+     "NoSidewalk": 51615,
+     "Occlusion": 1159
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "CurbRamp": 100738,
+    "NoSidewalk": 51615,
+    "NoCurbRamp": 44609,
+    "SurfaceProblem": 37472,
+    "Obstacle": 17951,
+    "Crosswalk": 6229,
+    "Signal": 1656,
+    "Occlusion": 1159,
+    "Other": 529
+   }
+  }
+ },
+ "gsv_referent_exclusion": {
+  "n_labels": 438410,
+  "n_comparable": 336995,
+  "n_excluded": 101415,
+  "excluded_no_referent_type": 100122,
+  "excluded_region_tag": 1293,
+  "excluded_by_type": {
+   "Crosswalk": 14697,
+   "NoSidewalk": 82769,
+   "Occlusion": 2656
+  }
+ }
+}

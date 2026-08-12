@@ -28,6 +28,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rawlabels  # noqa: E402
+from studyfmt import fmt  # noqa: E402
 
 SEED = 20260809
 
@@ -175,7 +176,7 @@ def resummarize(json_path):
     return result
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('csv_dir', nargs='?')
     ap.add_argument('--fetched')
@@ -184,17 +185,23 @@ def main():
     ap.add_argument('--write', metavar='JSON')
     ap.add_argument('--resummarize', metavar='JSON',
                     help='no network: recompute the summary from an existing census JSON')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.resummarize:
         result = resummarize(args.resummarize)
         s = result['summary']
         t = s['tilt']
-        print(f"alive {s['alive_pct']:.1f}%  dims-drift {s['dims_drift_pct_of_alive']:.1f}%  "
-              f"depth {s['depth_available_pct_of_alive']:.1f}%")
-        print(f"tilt |pitch| p50/p90/p99: {t['abs_pitch_p50_deg']:.2f}/{t['abs_pitch_p90_deg']:.2f}/"
-              f"{t['abs_pitch_p99_deg']:.2f}  |roll|: {t['abs_roll_p50_deg']:.2f}/"
-              f"{t['abs_roll_p90_deg']:.2f}/{t['abs_roll_p99_deg']:.2f}")
+        # dims_drift/depth are None when nothing was comparable or nothing was alive, and every
+        # tilt quantile is None when no alive pano carried pitch/roll (summarize's `q` and the two
+        # `if len(...) else None` guards). This path re-reads an existing census, so a census taken
+        # on a thin or all-dead sample reaches it with no network call to blame.
+        print(f"alive {fmt(s['alive_pct'], '.1f')}%  "
+              f"dims-drift {fmt(s['dims_drift_pct_of_alive'], '.1f')}%  "
+              f"depth {fmt(s['depth_available_pct_of_alive'], '.1f')}%")
+        print(f"tilt |pitch| p50/p90/p99: {fmt(t['abs_pitch_p50_deg'], '.2f')}/"
+              f"{fmt(t['abs_pitch_p90_deg'], '.2f')}/{fmt(t['abs_pitch_p99_deg'], '.2f')}"
+              f"  |roll|: {fmt(t['abs_roll_p50_deg'], '.2f')}/"
+              f"{fmt(t['abs_roll_p90_deg'], '.2f')}/{fmt(t['abs_roll_p99_deg'], '.2f')}")
         print('alive by era:', {k: round(v['alive_pct'], 1) for k, v in s['by_era'].items()})
         return
 
@@ -217,8 +224,11 @@ def main():
               'records': json_records(records)}
 
     s = result['summary']
-    print(f"alive {s['alive_pct']:.1f}%  dims-drift {s['dims_drift_pct_of_alive']:.1f}%  "
-          f"depth {s['depth_available_pct_of_alive']:.1f}%  errors {s['errors']}")
+    # Same three optional values, and this is the path that has just spent a live network census on
+    # them -- the one place a TypeError costs the most.
+    print(f"alive {fmt(s['alive_pct'], '.1f')}%  "
+          f"dims-drift {fmt(s['dims_drift_pct_of_alive'], '.1f')}%  "
+          f"depth {fmt(s['depth_available_pct_of_alive'], '.1f')}%  errors {s['errors']}")
     t = s['tilt']
     print(f"tilt |pitch| p50/p90/p99: {t['abs_pitch_p50_deg']}/{t['abs_pitch_p90_deg']}/"
           f"{t['abs_pitch_p99_deg']}  |roll|: {t['abs_roll_p50_deg']}/{t['abs_roll_p90_deg']}/"

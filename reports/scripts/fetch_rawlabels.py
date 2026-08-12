@@ -1,20 +1,25 @@
-"""Fetch the era-replay study corpus: /v3/api/rawLabels?filetype=csv for the six study cities,
-into the gitignored reports/scripts/.cache/rawlabels/. Skips files that already exist (delete one
-to re-fetch it). rawLabels is a moving target — labels accrue and gsv_data refreshes — so a fresh
-fetch will NOT reproduce the committed summary bit-for-bit; the committed
-reports/data/2026-08-09-era-replay-summary.json corresponds to the 2026-08-09 fetch.
+"""Fetch the desk-study corpora: /v3/api/rawLabels?filetype=csv, into the gitignored
+reports/scripts/.cache/. Skips files that already exist (delete one to re-fetch it). rawLabels is a
+moving target — labels accrue and gsv_data refreshes — so a fresh fetch will NOT reproduce a committed
+summary bit-for-bit; each committed artifact records the fetch date it corresponds to.
 
-Two destinations, and they must stay separate: the study corpus lands in .cache/rawlabels/, and
-`--all` (every deployment, for the rollout census) lands in .cache/rawlabels-all/. Every study
-globs *.csv over a directory, so mixing them silently redefines the corpus behind every committed
-artifact — see the DEST_ALL comment.
+**Three destinations, and they must stay separate.** Every study script takes a directory and globs
+`*.csv` over it, so a file landing in the wrong one silently redefines the corpus behind every
+committed artifact rather than failing:
 
-The six era-replay cities: three whose deployments span the 2021-01-01 legacy boundary (seattle-wa,
-cdmx, newberg-or) and three that are mid/post-179-heavy (columbus-oh, amsterdam, oradell-nj), mixing
-large/small and US/non-US imagery. The off-target-markers study added teaneck-nj and chicago-il, the
-homes of SidewalkWebpage#4842's two example labels (14955, 30652).
+* **`.cache/rawlabels/` — the GSV study corpus.** Three deployments spanning the 2021-01-01 legacy
+  boundary (seattle-wa, cdmx, newberg-or) and three that are mid/post-179-heavy (columbus-oh,
+  amsterdam, oradell-nj), mixing large/small and US/non-US imagery; this is the corpus the
+  pre-registration's §3 draws from. The off-target-markers study added teaneck-nj and chicago-il,
+  the homes of SidewalkWebpage#4842's two example labels (14955, 30652).
+* **`.cache/rawlabels-mapillary/` — Mapillary-sourced deployments** (richmond). Separate because the
+  census machinery treats these as a different rig, and because dropping one into the GSV cache
+  would silently move every committed six-city number.
+* **`.cache/rawlabels-all/` — every deployment**, for the rollout census (`--all`). The roster
+  includes Mapillary deployments, so this is the same hazard as above at 54x the scale.
 
-    python reports/scripts/fetch_rawlabels.py
+    python reports/scripts/fetch_rawlabels.py            # the GSV corpus + the Mapillary corpus
+    python reports/scripts/fetch_rawlabels.py --all      # every deployment, into rawlabels-all/
 """
 
 import argparse
@@ -38,17 +43,23 @@ CITIES = {
     'chicago-il': 'https://sidewalk-chicago.cs.washington.edu',
 }
 
-DEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache', 'rawlabels')
+# Mapillary-sourced deployments, cached to a SEPARATE directory. Not a stylistic choice: see the
+# module docstring — every study globs a directory, so mixing corpora moves committed artifacts.
+MAPILLARY_CITIES = {
+    'richmond': 'https://sidewalk-richmond.cs.washington.edu',
+}
 
-# --all gets its own tree, and must keep it. Every study globs *.csv over a directory, so a
-# deployment dropped into DEST silently joins the study corpus and moves every committed artifact
-# -- and the roster includes Mapillary deployments (richmond-va), which is the same hazard
-# fetch to .cache/rawlabels-mapillary/ exists to prevent. There is no re-separating them
-# afterwards: the fetcher skips files that already exist, so the pollution is sticky.
-DEST_ALL = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache', 'rawlabels-all')
+_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache')
+DEST = os.path.join(_CACHE, 'rawlabels')
+MAPILLARY_DEST = os.path.join(_CACHE, 'rawlabels-mapillary')
+
+# --all gets its own tree, and must keep it. The roster includes richmond, a Mapillary deployment,
+# and there is no re-separating them afterwards: the fetcher skips files that already exist, so the
+# pollution is sticky and the only recovery is knowing which of 54 files to delete.
+DEST_ALL = os.path.join(_CACHE, 'rawlabels-all')
 
 # Per-socket-operation, not total: a multi-gigabyte city is fine, an unresponsive deployment is
-# not. §7's all-deployment sweep hit one that never answered.
+# not. The all-deployment sweep hit one that never answered.
 FETCH_TIMEOUT_SEC = 60
 
 
@@ -62,16 +73,8 @@ def all_cities():
     return {c['city_id']: c['url'] for c in cities}
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--all', action='store_true',
-                    help='fetch every deployment from the cities API into .cache/rawlabels-all/ '
-                         'instead of the six-city era-replay corpus + teaneck/chicago into '
-                         '.cache/rawlabels/')
-    args = ap.parse_args(argv)
-    cities = all_cities() if args.all else CITIES
-    dest = DEST_ALL if args.all else DEST
-
+def fetch(cities, dest):
+    """Fetch each city's rawLabels into `dest`, skipping what is already cached."""
     os.makedirs(dest, exist_ok=True)
     for city, base in cities.items():
         path = os.path.join(dest, f'{city}.csv')
@@ -92,6 +95,20 @@ def main(argv=None):
             print(f'{city}: FAILED ({e})', file=sys.stderr)
             continue
         print(f'{city}: {os.path.getsize(path):,} bytes')
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--all', action='store_true',
+                    help='fetch every deployment from the cities API into .cache/rawlabels-all/ '
+                         'instead of the study corpora in .cache/rawlabels/ and '
+                         '.cache/rawlabels-mapillary/')
+    args = ap.parse_args(argv)
+    if args.all:
+        fetch(all_cities(), DEST_ALL)
+        return
+    fetch(CITIES, DEST)
+    fetch(MAPILLARY_CITIES, MAPILLARY_DEST)
 
 
 if __name__ == '__main__':
