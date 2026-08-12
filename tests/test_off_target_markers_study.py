@@ -166,6 +166,101 @@ class TestCascade:
             assert stat['pct_also_matching_zoom_plus_1'] >= 0.0
 
 
+class TestTheCascadeOnlyReplaysWhatIsStillUnexplained:
+    """Each hypothesis in the cascade is a full gnomonic projection, and every one of them ran over
+    the whole frame — the dpr2 test, four `GENERATION_HEIGHTS` passes and five `ZOOM_CANDIDATES`
+    passes — even though `todo` starts at ~17% of the corpus and shrinks at every stage. That is up
+    to ten passes over 625,826 rows for the eight-city run and ~1.5M for the 54-deployment census.
+
+    Slicing and scattering back is where a cascade like this breaks, so these tests are about row
+    identity rather than about speed: an answer landing on the wrong row would be invisible in every
+    aggregate the report quotes.
+    """
+
+    @staticmethod
+    def _mixed():
+        """One frame carrying an explained row of each kind plus a run of exact rows, so `todo` is a
+        small minority — the shape the slicing is for."""
+        df = _forward_frame([100.0, 360.0, 500.0, 650.0, 200.0, 420.0, 300.0, 500.0],
+                            [100.0, 240.0, 400.0, 60.0, 200.0, 280.0, 190.0, 150.0],
+                            [10.0, 123.4, 250.0, 340.0, 150.0, 80.0, 80.0, 45.0],
+                            [-20.0, -10.5, -30.0, -5.0, -15.0, -20.0, -20.0, -25.0],
+                            [1.0, 1.0, 2.0, 3.0, 1.0, 2.0, 2.0, 3.0])
+        df.loc[4, 'heading'] += 17.0                                    # x_only
+        for i in (5, 6):                                                # dpr2
+            df.loc[i, 'canvas_x'] = 360.0 + (df.loc[i, 'canvas_x'] - 360.0) * 2.0
+            df.loc[i, 'canvas_y'] = 240.0 + (df.loc[i, 'canvas_y'] - 240.0) * 2.0
+        df.loc[7, 'zoom'] = 2.0                                         # zoom_desync or dpr2
+        return df
+
+    def test_the_frame_still_classifies_every_kind(self):
+        """Guards the guard: if the fixture were all exact, the tests below would be measuring
+        nothing, since the cascade never enters a hypothesis branch."""
+        klass = _classified(self._mixed())['klass']
+        assert list(klass[:4]) == ['exact'] * 4
+        assert klass.iloc[4] == 'x_only'
+        assert set(klass.iloc[5:]) <= {'dpr2', 'zoom_desync'}
+        assert 'dpr2' in set(klass)
+
+    def test_no_hypothesis_is_replayed_over_the_whole_frame(self, monkeypatch):
+        """The finding, measured where it happens. Four of the eight rows are exact, so a pass that
+        sees eight rows is a pass over rows already explained."""
+        sizes = []
+
+        def spy(name):
+            real = getattr(rss, name)
+
+            def wrapper(df, *args):
+                sizes.append(len(df))
+                return real(df, *args)
+
+            monkeypatch.setattr(rss, name, wrapper)
+
+        spy('_replay_residuals')
+        spy('_implied_height')          # the frame_change branch's own projection
+        _classified(self._mixed())
+        assert len(sizes) >= 2, 'the cascade must have entered at least two hypothesis branches'
+        assert max(sizes) <= 4, sizes
+
+    def test_a_row_gets_the_same_class_alone_as_in_company(self):
+        """The scatter-back's correctness condition, stated as the property it would break. The
+        cascade is row-independent by construction, so classifying a row on its own has to give the
+        same answer as classifying it inside the frame — an off-by-one in the index arithmetic gives
+        one row another row's explanation, which no class count would show.
+        """
+        frame = self._mixed()
+        together = list(_classified(frame)['klass'])
+        alone = [_classified(frame.iloc[[i]])['klass'].iloc[0] for i in range(len(frame))]
+        assert together == alone
+
+    def test_a_non_default_index_classifies_the_same(self):
+        """`todo` is positional and the frame's index is not: a study frame arrives from a filter or
+        a concat, and pandas will happily align a positional mask against label-based rows."""
+        frame = self._mixed()
+        shifted = frame.copy()
+        shifted.index = np.arange(len(frame)) * 7 + 3
+        assert list(_classified(shifted)['klass']) == list(_classified(frame)['klass'])
+
+    def test_a_duplicate_index_classifies_the_same(self):
+        """The harsher version: `pd.concat` without ignore_index repeats labels, and `.loc` on a
+        repeated label returns several rows."""
+        frame = self._mixed()
+        doubled = pd.concat([frame, frame])
+        assert list(doubled.index) == list(frame.index) * 2
+        expected = list(_classified(frame)['klass']) * 2
+        assert list(_classified(doubled)['klass']) == expected
+
+    def test_the_fitted_zoom_lands_on_the_row_it_belongs_to(self):
+        """`fitted_zoom` is scattered back beside `klass` and is what the repair reads, so it has to
+        be null everywhere the class is not zoom_desync."""
+        out = _classified(self._mixed())
+        if 'fitted_zoom' not in out:
+            pytest.skip('no zoom_desync row in this frame')
+        fitted = out['fitted_zoom']
+        assert fitted[out['klass'] != 'zoom_desync'].isna().all()
+        assert fitted[out['klass'] == 'zoom_desync'].notna().all()
+
+
 class TestTheCascadeIsSymmetricInXAndY:
 
     def test_a_pitch_only_staleness_is_its_own_class(self):

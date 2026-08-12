@@ -165,16 +165,27 @@ def classify(df):
     # CSS center); halving the offsets recovers the click. Verified center-scaled, not
     # origin-scaled, on the era study's per-user s = 0.5 cohort.
     if todo.any():
-        cx2, cy2 = _halve_about_centre(df)
-        adx2, ady2 = _replay_residuals(df, cx2, cy2, df['zoom'])
-        m = todo & (adx2 <= MATCH_TOL_PX) & (ady2 <= MATCH_TOL_PX)
+        # On the rows still unexplained, not on the frame. `todo` starts at ~17% of the corpus and
+        # shrinks at every stage below, while each hypothesis here is a full gnomonic projection --
+        # 625,826 rows for the eight-city run and ~1.5M for the 54-deployment census, up to ten
+        # times over. Scattering the answer back by position is what frame_change already does.
+        at = np.flatnonzero(todo)
+        rows = df.iloc[at]
+        cx2, cy2 = _halve_about_centre(rows)
+        adx2, ady2 = _replay_residuals(rows, cx2, cy2, rows['zoom'])
+        m = np.zeros(len(df), bool)
+        m[at] = (adx2 <= MATCH_TOL_PX) & (ady2 <= MATCH_TOL_PX)
         klass[m] = 'dpr2'
         todo &= ~m
 
     # frame_change: implied height is a known generation other than the served one, and the full
     # replay in that frame reproduces both axes.
     if todo.any():
-        implied = _implied_height(df)
+        # The implied height is another full projection, and only the unexplained rows can be
+        # candidates. NaN elsewhere, which the |implied - gen_h| <= 2 test rejects on its own.
+        at = np.flatnonzero(todo)
+        implied = np.full(len(df), np.nan)
+        implied[at] = _implied_height(df.iloc[at])
         for gen_h in GENERATION_HEIGHTS:
             cand = todo & (np.abs(implied - gen_h) <= 2.0) & \
                 (np.asarray(df['pano_height'], float) != gen_h)
@@ -191,12 +202,19 @@ def classify(df):
 
     # zoom_desync: some other zoom level projects the stored click onto the stored coordinate.
     if todo.any():
-        fitted = np.full(len(df), np.nan)
+        # Five more projections, again only over what is left -- by here, the survivors of exact,
+        # dpr2 and frame_change.
+        at = np.flatnonzero(todo)
+        rows = df.iloc[at]
+        stored_zoom = rows['zoom'].to_numpy(float)
+        found = np.full(len(rows), np.nan)
         for z in ZOOM_CANDIDATES:
-            adx_z, ady_z = _replay_residuals(df, df['canvas_x'], df['canvas_y'], z)
-            m = todo & ~np.isclose(df['zoom'].to_numpy(float), z) & \
-                (adx_z <= MATCH_TOL_PX) & (ady_z <= MATCH_TOL_PX) & ~np.isfinite(fitted)
-            fitted[m] = z
+            adx_z, ady_z = _replay_residuals(rows, rows['canvas_x'], rows['canvas_y'], z)
+            m = ~np.isclose(stored_zoom, z) & (adx_z <= MATCH_TOL_PX) \
+                & (ady_z <= MATCH_TOL_PX) & ~np.isfinite(found)
+            found[m] = z
+        fitted = np.full(len(df), np.nan)
+        fitted[at] = found
         m = np.isfinite(fitted)
         klass[m] = 'zoom_desync'
         out['fitted_zoom'] = fitted
