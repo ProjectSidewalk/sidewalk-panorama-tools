@@ -79,15 +79,22 @@ BAND_LABELS = ['<5', '5-15', '15-30', '>30']
 # see zoom_conversions, which reports that tail instead of letting it fall out of the census.
 LADDER_ZOOMS = (1.0, 2.0, 3.0)
 
-# The two labels SidewalkWebpage#4842 was filed with, as stored (records quoted in the issue and in
-# the record-staleness study, which found both replay `exact`). They are not in this study's six-city
-# corpus, so their off-axis values are computed from these records rather than joined -- committed
-# here so the report's section 4 reproduces from the repo like every other number it cites.
+# The #4842 specimens (both replay `exact`; see the record-staleness study). Neither label is in the six-city corpus, so these are transcribed from
+# their own deployments' rawLabels exports -- and the canvas dims are part of the record, not an
+# assumption. They used to be omitted, which silently took frame_pov's 720x480 fallback: a
+# load-bearing default, because the covariate scales with the frame. Verified 2026-08-12 against
+# the teaneck-nj and chicago-il exports, where both rows do read 720x480, so no published figure
+# moves -- but at DPR-2 (1440x960) teaneck's offset would be -25.58 deg rather than -15.75 deg,
+# which is past the <5 band's 5th percentile and would have overturned this report's own
+# correction that only chicago-il clears all four bands. An unverified default had no business
+# carrying that.
 SPECIMENS = {
     'teaneck-nj 14955': {'heading': 298.25, 'pitch': -35.0, 'zoom': 1.0,
-                         'canvas_x': 451.0, 'canvas_y': 142.0},
+                         'canvas_x': 451.0, 'canvas_y': 142.0,
+                         'canvas_width': 720.0, 'canvas_height': 480.0},
     'chicago-il 30652': {'heading': 320.5, 'pitch': -35.0, 'zoom': 1.0,
-                         'canvas_x': 361.0, 'canvas_y': 83.0},
+                         'canvas_x': 361.0, 'canvas_y': 83.0,
+                         'canvas_width': 720.0, 'canvas_height': 480.0},
 }
 
 # The canvas frame is NOT redeclared here. pov_replay.CANVAS_W/CANVAS_H is the one definition, and
@@ -139,22 +146,34 @@ def depression_band(depression_deg):
                   BAND_EDGES, labels=BAND_LABELS)
 
 
-def deg_per_canvas_px(zoom, canvas_width=None):
-    """Degrees of field of view per canvas pixel at a given zoom.
+def deg_for_canvas_offset(offset_px, zoom, canvas_width=None):
+    """The angle a canvas offset actually subtends at the centre of the viewport, in degrees.
 
-    This is what converts a canvas-frame error into the units every consumer threshold is stated in.
-    At zoom 1 -- 64.4% of eligible labels -- the GSV viewer's 89.75 deg fov over a 720 px canvas puts
-    a 5 px error at 0.62 deg, already above the 0.5 deg placement threshold the consumer survey set.
-    (An earlier revision cited "70% of post-fix labels": that was the abandoned post-fix-only probe's
-    population, which the study rejected in favour of all-era `exact_y` rows. Every figure here is
-    over the eligible corpus, matching reports/data/2026-08-11-offaxis-covariate.json.)
+    This is what converts a canvas-frame error into the units every consumer threshold is stated
+    in. At zoom 1 -- 64.385% of eligible labels -- a 5 px error is 0.792 deg, already above the
+    0.5 deg placement threshold the consumer survey set.
 
-    The default canvas comes from pov_replay, the module that documents the front end's frame; there
-    is deliberately no second copy of that constant in this file.
+    The viewer is a gnomonic (rectilinear) projection, so degrees are NOT linear in canvas pixels:
+    the focal length is f = (width/2) / tan(fov/2) and an offset of p px subtends atan(p/f). The
+    linear average fov/width that this file used to scale by understates the centre rate by 27.1%
+    at zoom 1 -- 64.4% of the eligible corpus -- 7.8% at zoom 2 and 2.0% at zoom 3, i.e. the error
+    concentrates precisely on the dominant stratum.
+
+    Direction matters when reading the report against its earlier revision: the linear figure was
+    *conservative*. Every consumer argument here is "this error already exceeds the threshold", so
+    the true, larger angle only strengthens them (5 px at zoom 1 is 0.792 deg, not 0.623 deg,
+    against a 0.5 deg placement threshold). The reason to correct it regardless is that the rest of
+    this module computes angles exactly via pov_if_centered, and one study does not get two
+    projections.
+
+    This is still a floor: the gnomonic stretch grows off-centre, so a label away from the canvas
+    centre subtends more than this per pixel, not less.
     """
     if canvas_width is None:
         canvas_width = pov_replay.CANVAS_W
-    return np.asarray(pov_replay.get_3d_fov(zoom), float) / float(canvas_width)
+    fov = np.asarray(pov_replay.get_3d_fov(zoom), float)
+    focal_px = (float(canvas_width) / 2.0) / np.tan(np.radians(fov / 2.0))
+    return np.degrees(np.arctan(np.asarray(offset_px, float) / focal_px))
 
 
 def prepare(df):
@@ -208,7 +227,14 @@ def identification(df):
     # pct_surviving_band_fe is: undefined must not read as a measurement.
     sd_dep = float(dep.std(ddof=1))
     corr = float(v.corr(dep)) if sd_all and sd_dep else float('nan')
-    identified = np.isfinite(sd_all) and np.isfinite(sd_in) and sd_all != 0.0
+    # Residual degrees of freedom, not just row count: n rows spread over n distinct bands leaves
+    # sd_within_band = 0 by construction, and the docstring reads 0.0 as the finding "the strata
+    # absorb it entirely". resid uses ddof=1 rather than n-k, so that artefact ships as a
+    # measurement. Reachable per city in by_era_identification for any thin city or era.
+    n_bands = int(g['band'].astype(str).nunique())
+    saturated = len(g) - n_bands < 1
+    identified = (np.isfinite(sd_all) and np.isfinite(sd_in) and sd_all != 0.0
+                  and not saturated)
     return {
         'n': int(len(g)),
         'sd_overall_deg': num(sd_all),
@@ -253,12 +279,23 @@ def floor_census(df):
     """The pitch-floor prior: is -35 a hard floor, and how much of the corpus sits on it."""
     g = df[df['eligible']]
     pitch = g['pitch'].astype(float)
+    # The floor claim is about the CORPUS, not the eligible subset: prereg 7(b) cites "the minimum
+    # observed over 438,410 labels is exactly -35.0000". Measuring it on df[df['eligible']] left
+    # 4,544 rows uninspected, so the artifact did not verify the claim it is cited for. Both are
+    # published, each named for the population it covers.
+    all_pitch = df['pitch'].astype(float)
     return {
         'n': int(len(g)),
+        'n_all_labels': int(len(df)),
+        'min_pitch_deg_all_labels': float(all_pitch.min()) if len(df) else None,
         'min_pitch_deg': float(pitch.min()) if len(g) else None,
         'max_pitch_deg': float(pitch.max()) if len(g) else None,
         'at_floor_pct': float(100.0 * g['at_floor'].mean()) if len(g) else None,
         'exactly_floor_pct': float(100.0 * (pitch == PITCH_FLOOR_DEG).mean()) if len(g) else None,
+        # NB: by_band[band]['at_floor_pct'] is this same quantity, and the two were byte-identical
+        # in every scope of the committed artifact. Kept here as the single definition; by_band now
+        # reads it from this block rather than recomputing, which is the defect this PR already
+        # removed once for identification_post179.
         'by_band_pct': {band: (float(100.0 * g.loc[g['band'] == band, 'at_floor'].mean())
                                if (g['band'] == band).any() else None)
                         for band in BAND_LABELS},
@@ -267,9 +304,12 @@ def floor_census(df):
         # not: oradell-nj 'Other' is 0.0% from 12 labels and newberg-or 'Crosswalk' is 23.8% from 42,
         # printed beside a 12.07% drawn from 148,796. Every other block in this module carries its n;
         # this one did not, so nothing in the artifact let a consumer rank types safely.
+        # dropna=False: the default silently dropped rows with an unresolved label_type, so this
+        # block stopped partitioning the eligible corpus while a test asserted that it did -- and
+        # that test read only the committed artifact, so it could not see it.
         'by_label_type': {str(t): {'n': int(len(sub)),
                                    'at_floor_pct': num(100.0 * sub['at_floor'].mean())}
-                          for t, sub in g.groupby('label_type', observed=True)},
+                          for t, sub in g.groupby('label_type', observed=True, dropna=False)},
     }
 
 
@@ -284,7 +324,12 @@ def eligibility(df):
         'exact_y': int(df['exact_y'].sum()),
         'exact_x_and_y': int(both.sum()),
         'eligible': int(df['eligible'].sum()),
-        'kept_by_using_exact_y_only': int(df['exact_y'].sum() - both.sum()),
+        # Over the ELIGIBLE rows, which is the denominator every citation of it uses (the module
+        # docstring, the report, prereg 7(c): "13,485 eligible rows -- 3.1% of the eligible
+        # corpus"). It used to be exact_y.sum() - both.sum() over the whole frame, mixing a
+        # 438,410-row numerator with a 433,866-row denominator. Identical today only because no
+        # exact_y row currently lacks a band.
+        'kept_by_using_exact_y_only': int((df['eligible'].to_numpy() & ~both).sum()),
     }
 
 
@@ -308,12 +353,13 @@ def zoom_conversions(df):
     out = {'n_eligible': n}
     for zoom in LADDER_ZOOMS:
         k = int((z == zoom).sum())
-        dpp = float(deg_per_canvas_px(zoom))
         out[f'zoom{zoom:g}'] = {
             'fov_deg': float(pov_replay.get_3d_fov(zoom)),
-            'deg_per_canvas_px': dpp,
-            'deg_at_5px': 5 * dpp,
-            'deg_at_20px': 20 * dpp,
+            # The exact gnomonic angle, not offset x (fov/width). A single degrees-per-pixel rate
+            # cannot be right on a rectilinear projection -- 20 px subtends less than 4x what 5 px
+            # does -- so the two offsets consumers state thresholds at are published directly.
+            'deg_at_5px': float(deg_for_canvas_offset(5.0, zoom)),
+            'deg_at_20px': float(deg_for_canvas_offset(20.0, zoom)),
             'n': k,
             'corpus_share_pct': share(k),
         }
@@ -324,11 +370,50 @@ def zoom_conversions(df):
         'n_distinct_zooms': int(rest.nunique()),
         'min_zoom': num(rest.min()) if len(rest) else None,
         'max_zoom': num(rest.max()) if len(rest) else None,
-        # fov falls with zoom, so the widest fov belongs to the smallest zoom.
-        'fov_deg_range': [num(pov_replay.get_3d_fov(rest.max())),
-                          num(pov_replay.get_3d_fov(rest.min()))] if len(rest) else None,
+        'fov_deg_range': fov_range(rest.unique()) if len(rest) else None,
     }
     return out
+
+
+def fov_range(zooms):
+    """[min fov, max fov] over a set of zoom values, ordered.
+
+    Sorted rather than derived from min/max zoom. `get_3d_fov` is NOT monotone in zoom: it switches
+    branch at 2, where get_3d_fov(2.0) = 53.000 but get_3d_fov(2.0001) = 53.146. Exact 2.0 sits on
+    LADDER_ZOOMS and so is excluded from the off-ladder tail, leaving values that can straddle the
+    discontinuity -- {1.999, 2.0005} emitted [53.132, 53.037], reversed. Today's tail spans
+    1.04-2.9091 and happens to order correctly.
+    """
+    fovs = [float(pov_replay.get_3d_fov(z)) for z in zooms]
+    return [num(min(fovs)), num(max(fovs))]
+
+
+def tail_bands(value, by_band_result):
+    """The bands whose off-axis distribution `value` falls in the tail of, either side.
+
+    Two-sided. This was `v < p5[band]`, which only ever detected clicks far ABOVE the viewport
+    centre: a specimen far below it -- the exact signature mechanisms (i) and (iii) produce for a
+    low click -- came back as "beyond p5 of no band", i.e. reported as not in the tail at all.
+    """
+    out = []
+    for band in BAND_LABELS:
+        stats = (by_band_result.get(band) or {}).get('offaxis_v_deg') or {}
+        p5, p95 = stats.get('p5'), stats.get('p95')
+        if p5 is not None and value < p5:
+            out.append(band)
+        elif p95 is not None and value > p95:
+            out.append(band)
+    return out
+
+
+def specimen_offaxis(record):
+    """One specimen record's vertical off-axis offset, in degrees.
+
+    Split out so the canvas dims in a record are demonstrably what the published figure depends on:
+    a test can hand this the same click on a different frame and see the answer move.
+    """
+    vertical, _ = offaxis_offsets(pd.DataFrame([record]))
+    return float(vertical[0])
 
 
 def specimen_census(by_band_result):
@@ -341,7 +426,6 @@ def specimen_census(by_band_result):
     """
     df = pd.DataFrame.from_dict(SPECIMENS, orient='index')
     vertical, radial = offaxis_offsets(df)
-    p5 = {band: (stats['offaxis_v_deg'] or {}).get('p5') for band, stats in by_band_result.items()}
     out = {}
     for i, name in enumerate(df.index):
         v = float(vertical[i])
@@ -350,7 +434,7 @@ def specimen_census(by_band_result):
             'offaxis_v_deg': num(v),
             'offaxis_r_deg': num(radial[i]),
             'at_pitch_floor': bool(at_pitch_floor([SPECIMENS[name]['pitch']])[0]),
-            'beyond_p5_bands': [b for b in BAND_LABELS if p5.get(b) is not None and v < p5[b]],
+            'tail_bands': tail_bands(v, by_band_result),
         }
     return out
 
@@ -432,8 +516,8 @@ def main(argv=None):
     print(f"  exact_y keeps {p['eligibility']['kept_by_using_exact_y_only']:,} rows that "
           f"exact_x AND exact_y would have dropped")
     for name, s in result['specimens'].items():
-        print(f"  #4842 {name}: off-axis {fmt(s['offaxis_v_deg'], '.2f')} deg, beyond p5 of "
-              f"{', '.join(s['beyond_p5_bands']) or 'no band'}")
+        print(f"  #4842 {name}: off-axis {fmt(s['offaxis_v_deg'], '.2f')} deg, in the tail of "
+              f"{', '.join(s['tail_bands']) or 'no band'}")
 
     if args.write:
         with open(args.write, 'w', encoding='utf-8', newline='\n') as f:

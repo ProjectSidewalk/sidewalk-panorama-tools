@@ -266,7 +266,7 @@ below 53° of depression against a corpus p99 of 43.5°).
 Registered after the merge of this document (PR #79, 2026-08-11 03:29 UTC) and **before any Phase 2
 corpus or annotation exists**. Prompted by
 [SidewalkWebpage#4842](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4842) and the
-[record-staleness study](2026-08-10-record-staleness-validate.md) (PR #80, pending merge — this link
+[record-staleness study](2026-08-10-off-target-markers-validate.md) (PR #80, pending merge — this link
 resolves once it lands), which showed that #4842's two example labels replay `exact` — their stored records reproduce their own `pano_x`/`pano_y` at 0 px,
 so record corruption does not explain them. Evidence for everything below is the
 [off-axis covariate study](2026-08-11-offaxis-covariate.md). Nothing in §§1–6 is retracted; the corpus

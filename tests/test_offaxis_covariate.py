@@ -26,6 +26,7 @@ computed. The tests below exercise the thin-group path deliberately rather than 
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -235,23 +236,18 @@ class TestBands:
 
 class TestCanvasPixelConversion:
 
-    def test_matches_the_gsv_fov_ladder(self):
-        for zoom in (1.0, 2.0, 3.0):
-            assert oc.deg_per_canvas_px(zoom) == pytest.approx(
-                float(pov_replay.get_3d_fov(zoom)) / 720.0)
-
     def test_five_canvas_px_at_zoom_one_exceeds_the_consumer_threshold(self):
         """The size argument the amendment makes: canvas-frame errors of a few px are not small in
         the units every consumer threshold is stated in (0.5 deg, consumer-requirements survey)."""
-        assert 5 * oc.deg_per_canvas_px(1.0) == pytest.approx(0.6233, abs=1e-4)
-        assert 5 * oc.deg_per_canvas_px(1.0) > 0.5
+        assert oc.deg_for_canvas_offset(5.0, 1.0) == pytest.approx(0.7923, abs=1e-4)
+        assert oc.deg_for_canvas_offset(5.0, 1.0) > 0.5
 
     def test_the_conversion_shrinks_with_zoom(self):
         """A fixed canvas-px error is supra-threshold at zoom 1 and sub-threshold at zoom 3 — itself
         a discriminating signature, so the monotonicity has to hold."""
-        assert (oc.deg_per_canvas_px(1.0) > oc.deg_per_canvas_px(2.0)
-                > oc.deg_per_canvas_px(3.0))
-        assert 5 * oc.deg_per_canvas_px(3.0) < 0.5
+        assert (oc.deg_for_canvas_offset(5.0, 1.0) > oc.deg_for_canvas_offset(5.0, 2.0)
+                > oc.deg_for_canvas_offset(5.0, 3.0))
+        assert oc.deg_for_canvas_offset(5.0, 3.0) < 0.5
 
 
 class TestIdentification:
@@ -391,7 +387,9 @@ class TestCommittedFindings:
         """Zoom 1 is where a canvas-px error converts to the largest angular error, so the corpus
         being concentrated there is what makes the mechanism worth testing at all."""
         assert pooled['zoom']['zoom1']['corpus_share_pct'] > 60.0
-        assert pooled['zoom']['zoom1']['deg_at_5px'] == pytest.approx(0.6233, abs=1e-4)
+        # The gnomonic angle, not the linear fov/width average this pinned before review — see
+        # TestCanvasOffsetsUseTheGnomonicAngle for why, and note the old value was conservative.
+        assert pooled['zoom']['zoom1']['deg_at_5px'] == pytest.approx(0.7923, abs=1e-4)
 
     def test_the_committed_artifact_is_strict_portable_json(self):
         """reports/data/ is checked wholesale by tests/test_committed_data_files.py; asserted here
@@ -596,18 +594,18 @@ class TestSpecimens:
 
     def test_tail_membership_is_computed_from_the_percentiles_it_is_given(self):
         """Code-level discrimination for the correction: the committed-artifact test below reads the
-        artifact, so it would still pass if `beyond_p5_bands` were reverted to a prose-style blanket
+        artifact, so it would still pass if `tail_bands` were reverted to a prose-style blanket
         claim. Fed the real per-band p5 values, exactly one specimen clears all four."""
         p5 = {'<5': -23.2505, '5-15': -21.3206, '15-30': -15.9994, '>30': -3.8947}
         s = oc.specimen_census({b: {'offaxis_v_deg': {'p5': v}} for b, v in p5.items()})
-        assert s['teaneck-nj 14955']['beyond_p5_bands'] == ['>30']
-        assert s['chicago-il 30652']['beyond_p5_bands'] == oc.BAND_LABELS
+        assert s['teaneck-nj 14955']['tail_bands'] == ['>30']
+        assert s['chicago-il 30652']['tail_bands'] == oc.BAND_LABELS
 
     def test_with_no_band_percentiles_it_claims_no_tail_membership(self):
         """Guards the guard: a band table with null percentiles must yield an empty claim rather than
         a comparison against None."""
         s = oc.specimen_census({b: {'offaxis_v_deg': None} for b in oc.BAND_LABELS})
-        assert all(v['beyond_p5_bands'] == [] for v in s.values())
+        assert all(v['tail_bands'] == [] for v in s.values())
 
     def test_the_committed_specimens_match_the_reports_table(self, doc):
         s = doc['specimens']
@@ -616,15 +614,16 @@ class TestSpecimens:
         assert s['chicago-il 30652']['offaxis_v_deg'] == pytest.approx(-23.47, abs=0.005)
         assert s['chicago-il 30652']['offaxis_r_deg'] == pytest.approx(23.47, abs=0.005)
         assert s['teaneck-nj 14955']['record'] == {'heading': 298.25, 'pitch': -35.0, 'zoom': 1.0,
-                                                   'canvas_x': 451.0, 'canvas_y': 142.0}
+                                                   'canvas_x': 451.0, 'canvas_y': 142.0,
+                                                   'canvas_width': 720.0, 'canvas_height': 480.0}
 
     def test_only_the_chicago_specimen_is_beyond_the_p5_of_every_band(self, doc, pooled):
         """The report claimed both were, for one revision, while its own §4 prose had it right. The
         membership is now computed from the committed band percentiles instead of asserted in prose.
         """
         s = doc['specimens']
-        assert s['chicago-il 30652']['beyond_p5_bands'] == oc.BAND_LABELS
-        assert s['teaneck-nj 14955']['beyond_p5_bands'] == ['>30']
+        assert s['chicago-il 30652']['tail_bands'] == oc.BAND_LABELS
+        assert s['teaneck-nj 14955']['tail_bands'] == ['>30']
 
         p5 = {b: pooled['by_band'][b]['offaxis_v_deg']['p5'] for b in oc.BAND_LABELS}
         v = s['teaneck-nj 14955']['offaxis_v_deg']
@@ -693,8 +692,8 @@ class TestOneProjectionOneCanvas:
 
     def test_the_conversion_default_follows_pov_replays_canvas(self, monkeypatch):
         monkeypatch.setattr(pov_replay, 'CANVAS_W', 1440.0)
-        assert oc.deg_per_canvas_px(1.0) == pytest.approx(
-            float(pov_replay.get_3d_fov(1.0)) / 1440.0)
+        assert oc.deg_for_canvas_offset(5.0, 1.0) == pytest.approx(
+            oc.deg_for_canvas_offset(5.0, 1.0, canvas_width=1440.0))
 
     def test_the_bare_frame_fallback_follows_pov_replays_canvas(self, monkeypatch):
         bare = _frame(canvas_y=np.array([142.0])).drop(columns=['canvas_width', 'canvas_height'])
@@ -792,7 +791,7 @@ class TestDocstringFigures:
     def test_the_conversion_docstring_cites_the_committed_zoom1_share(self, pooled):
         """It cited "70% of post-fix labels" — the population the study's own Wrong Turns section
         records abandoning, with a number no committed artifact can verify."""
-        m = re.search(r'At zoom 1 -- ([\d.]+)% of (\w+) labels', oc.deg_per_canvas_px.__doc__)
+        m = re.search(r'At zoom 1 -- ([\d.]+)% of (\w+) labels', oc.deg_for_canvas_offset.__doc__)
         assert m, 'the conversion docstring must say what share of the corpus sits at zoom 1'
         assert m.group(2) == 'eligible', 'the study population, not the abandoned post-fix probe'
         assert float(m.group(1)) == pytest.approx(
@@ -862,7 +861,7 @@ class TestReportMatchesTheArtifact:
         m = re.search(r'^\| beyond the p5 of band \| (.+?) \| (.+?) \|$', text, re.M)
         assert m, '§4 must state each specimen\'s tail membership, not generalise it in prose'
         clears_all = [n for n, s in doc['specimens'].items()
-                      if s['beyond_p5_bands'] == oc.BAND_LABELS]
+                      if s['tail_bands'] == oc.BAND_LABELS]
         assert clears_all == ['chicago-il 30652'], clears_all
         assert '>30' in m.group(1) and 'only' in m.group(1), 'teaneck is beyond p5 in >30 alone'
         assert 'all four' in m.group(2)
@@ -949,7 +948,7 @@ class TestMain:
         assert ident['n'] == n
         assert ident['sd_overall_deg'] > 0
         assert ident['corr_with_depression'] is not None
-        assert doc['specimens']['chicago-il 30652']['beyond_p5_bands']
+        assert doc['specimens']['chicago-il 30652']['tail_bands']
 
     def test_an_empty_csv_dir_names_the_directory(self, tmp_path, capsys):
         """It reached `pd.concat([])` and died as "No objects to concatenate", which names neither the
@@ -967,3 +966,209 @@ class TestMain:
         (tmp_path / 'notes.txt').write_text('hi', encoding='utf-8')
         with pytest.raises(SystemExit):
             oc.main([str(tmp_path), '--fetched', '2026-08-11'])
+
+
+class TestCanvasOffsetsUseTheGnomonicAngle:
+    """The viewer is a gnomonic (rectilinear) projection, so a canvas offset does NOT subtend
+    fov/width degrees per pixel — that linear average understates the true angle at the canvas
+    centre by 27% at zoom 1, which is 64.4% of the eligible corpus.
+
+    Direction matters for how this reads: the linear figure was *conservative*. Every consumer
+    argument in the report is 'this error already exceeds the threshold', so a larger true angle
+    strengthens it. The reason to fix it anyway is that the rest of this module computes angles
+    exactly via pov_if_centered, and a study is not entitled to two different projections.
+    """
+
+    def _exact(self, px, zoom, canvas_width=720.0):
+        fov = float(pov_replay.get_3d_fov(zoom))
+        f = (canvas_width / 2.0) / math.tan(math.radians(fov / 2.0))
+        return math.degrees(math.atan(px / f))
+
+    def test_five_pixels_at_zoom_one(self):
+        assert oc.deg_for_canvas_offset(5.0, 1.0) == pytest.approx(0.7923, abs=1e-4)
+
+    def test_twenty_pixels_at_zoom_one(self):
+        assert oc.deg_for_canvas_offset(20.0, 1.0) == pytest.approx(3.1660, abs=1e-4)
+
+    def test_it_matches_an_independent_gnomonic_computation_on_every_rung(self):
+        for zoom in (1.0, 2.0, 3.0):
+            for px in (1.0, 5.0, 20.0, 100.0):
+                assert oc.deg_for_canvas_offset(px, zoom) == pytest.approx(
+                    self._exact(px, zoom), abs=1e-9), (zoom, px)
+
+    def test_it_is_strictly_larger_than_the_linear_average(self):
+        """The defect, stated as a property: the linear rate is a chord, the truth is an arc."""
+        for zoom in (1.0, 2.0, 3.0):
+            linear = 5.0 * float(pov_replay.get_3d_fov(zoom)) / 720.0
+            assert oc.deg_for_canvas_offset(5.0, zoom) > linear, zoom
+
+    def test_it_is_not_linear_in_the_offset(self):
+        """20 px subtends strictly less than 4x what 5 px does — the whole reason a single
+        'degrees per pixel' rate cannot be right."""
+        assert oc.deg_for_canvas_offset(20.0, 1.0) < 4.0 * oc.deg_for_canvas_offset(5.0, 1.0)
+
+    def test_the_consumer_threshold_argument_still_holds(self):
+        """Zoom 1 clears the 0.5 deg placement threshold at 5 px, zoom 3 does not — the report's
+        actual claim, now on the exact angle."""
+        assert oc.deg_for_canvas_offset(5.0, 1.0) > 0.5
+        assert oc.deg_for_canvas_offset(5.0, 3.0) < 0.5
+
+
+class TestTheZoomTableMatchesTheReport:
+    """The published conversion table, cell by cell against the committed artifact — the class of
+    check that caught two hand-typed counts in the Mapillary census."""
+
+    @pytest.fixture(scope='class')
+    def report_text(self):
+        path = os.path.join(REPO_ROOT, 'reports', '2026-08-11-offaxis-covariate.md')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_every_rung_row_matches(self, pooled, report_text):
+        for zoom in (1, 2, 3):
+            z = pooled['zoom'][f'zoom{zoom}']
+            assert f"{z['n']:,}" in report_text, zoom
+            assert f"{z['corpus_share_pct']:.3f}%" in report_text, zoom
+            assert f"{z['deg_at_5px']:.3f}°" in report_text, (zoom, z['deg_at_5px'])
+            assert f"{z['deg_at_20px']:.3f}°" in report_text, (zoom, z['deg_at_20px'])
+
+    def test_the_linear_figures_are_gone_from_the_prose_table(self, report_text):
+        """0.623 and 2.493 were the linear-average values; they may only appear in the paragraph
+        that explains the correction, never as a table cell."""
+        assert '| **0.623°** |' not in report_text
+        assert '| 2.493° |' not in report_text
+
+
+class TestSpecimenCanvasIsRecordedNotAssumed:
+    """The specimens are hand-transcribed because neither label is in the six-city corpus. Their
+    canvas dims are part of that record: the covariate scales with the frame, so taking the
+    720x480 fallback made an unverified default load-bearing for a published correction."""
+
+    def test_every_specimen_states_its_canvas(self):
+        for name, rec in oc.SPECIMENS.items():
+            assert 'canvas_width' in rec and 'canvas_height' in rec, name
+            assert rec['canvas_width'] > 0 and rec['canvas_height'] > 0, name
+
+    def test_the_covariate_moves_with_the_canvas(self):
+        """Why it has to be recorded: same click, different frame, materially different answer.
+        At DPR-2 teaneck's -15.75 deg becomes -25.58 deg, past the <5 band's p5 of -23.25."""
+        rec = dict(oc.SPECIMENS['teaneck-nj 14955'])
+        base = oc.specimen_offaxis(rec)
+        dpr2 = oc.specimen_offaxis({**rec, 'canvas_width': 1440.0, 'canvas_height': 960.0})
+        assert base == pytest.approx(-15.75, abs=0.02)
+        assert dpr2 == pytest.approx(-25.58, abs=0.02)
+
+    def test_the_recorded_canvas_is_what_the_report_publishes(self, pooled):
+        """Guards against 'fixed' by changing the number instead of the record."""
+        assert oc.specimen_offaxis(oc.SPECIMENS['teaneck-nj 14955']) == pytest.approx(
+            -15.75, abs=0.02)
+        assert oc.specimen_offaxis(oc.SPECIMENS['chicago-il 30652']) == pytest.approx(
+            -23.47, abs=0.02)
+
+
+class TestCountsAreOverThePopulationTheyArePublishedAgainst:
+
+    def test_kept_by_using_exact_y_only_is_a_share_of_the_eligible_rows(self):
+        """The docstring, the report and prereg §7(c) all quote this as a share of the ELIGIBLE
+        corpus ("3.1% of the eligible rows, 13,485 of 433,866"), but it was counted over the whole
+        frame. It reads right today only because band-NaN happens to exclude zero rows."""
+        # Row 0: exact on both axes. Row 1: exact_y only, and eligible. Row 2: exact_y only but
+        # NOT eligible (no band — depression exactly -90, which prepare() rejects).
+        df = _frame(canvas_y=np.array([240.0, 240.0, 240.0]))
+        prepared = oc.prepare(df)
+        prepared['exact_x'] = np.array([True, False, False])
+        prepared['exact_y'] = np.array([True, True, True])
+        prepared['eligible'] = np.array([True, True, False])
+        out = oc.eligibility(prepared)
+        assert out['kept_by_using_exact_y_only'] == 1, \
+            'the ineligible exact_y row must not be counted into a share of the eligible corpus'
+
+    def test_it_still_counts_the_ordinary_case(self):
+        df = _frame(canvas_y=np.array([240.0, 240.0]))
+        prepared = oc.prepare(df)
+        prepared['exact_x'] = np.array([True, False])
+        prepared['exact_y'] = np.array([True, True])
+        prepared['eligible'] = np.array([True, True])
+        assert oc.eligibility(prepared)['kept_by_using_exact_y_only'] == 1
+
+    def test_min_pitch_is_measured_over_every_label_not_just_eligible_ones(self):
+        """prereg §7(b) cites "the minimum observed over 438,410 labels is exactly -35.0000", but
+        this was computed on df[df['eligible']] — 433,866 rows — so the artifact did not verify the
+        claim it is cited for. The 4,544 non-eligible rows were never inspected."""
+        df = _frame(pitch=np.array([-35.0, -20.0, -60.0]), canvas_y=np.array([240.0] * 3))
+        prepared = oc.prepare(df)
+        prepared['eligible'] = np.array([True, True, False])   # the -60 row is not eligible
+        out = oc.floor_census(prepared)
+        assert out['min_pitch_deg_all_labels'] == pytest.approx(-60.0)
+        assert out['n_all_labels'] == 3
+        # the eligible-only floor stays available and stays eligible-only
+        assert out['min_pitch_deg'] == pytest.approx(-35.0)
+        assert out['n'] == 2
+
+    def test_label_types_partition_the_eligible_rows_even_with_a_missing_type(self):
+        """groupby's default dropna=True silently shrank the denominator behind every published
+        per-type rate; the artifact-only partition test could not see it."""
+        df = _frame(label_type=np.array(['CurbRamp', None], dtype=object),
+                    canvas_y=np.array([240.0, 240.0]))
+        prepared = oc.prepare(df)
+        prepared['eligible'] = np.array([True, True])
+        out = oc.floor_census(prepared)
+        assert out['n'] == 2
+        assert sum(v['n'] for v in out['by_label_type'].values()) == 2
+
+
+class TestTailMembershipIsTwoSided:
+
+    def test_a_specimen_far_above_the_centre_is_in_the_tail(self):
+        by_band = {'<5': {'offaxis_v_deg': {'p5': -23.25, 'p95': 18.2}}}
+        assert oc.tail_bands(-30.0, by_band) == ['<5']
+
+    def test_a_specimen_far_below_the_centre_is_also_in_the_tail(self):
+        """`v < p5` only ever detected clicks ABOVE the viewport centre. A click far below is the
+        exact signature mechanisms (i) and (iii) produce for a low click, and it was being reported
+        as "beyond p5 of no band" — i.e. not in the tail at all."""
+        by_band = {'<5': {'offaxis_v_deg': {'p5': -23.25, 'p95': 18.2}}}
+        assert oc.tail_bands(31.32, by_band) == ['<5']
+
+    def test_a_specimen_in_the_middle_is_in_no_tail(self):
+        by_band = {'<5': {'offaxis_v_deg': {'p5': -23.25, 'p95': 18.2}}}
+        assert oc.tail_bands(0.0, by_band) == []
+
+
+class TestDegenerateIdentificationIsNotAMeasurement:
+
+    def test_saturated_band_fixed_effects_report_undefined_not_zero(self):
+        """n rows spread over n distinct bands leaves no residual degrees of freedom, so
+        sd_within_band is 0 by construction. The docstring reads 0.0 as "the strata absorb it and
+        no coefficient is identifiable", which is a finding — here it is an artefact of ddof=1."""
+        df = pd.DataFrame({'offaxis_v': [10.0, 0.0, -10.0], 'depression': [2.0, 10.0, 40.0],
+                           'band': ['<5', '5-15', '>30'], 'eligible': [True, True, True]})
+        out = oc.identification(df)
+        assert out['n'] == 3
+        assert out['pct_surviving_band_fe'] is None, \
+            'a saturated fixed effect must not publish 0.0% as a measurement'
+
+    def test_an_identified_frame_still_reports_a_number(self):
+        rng = np.random.default_rng(3)
+        n = 400
+        df = pd.DataFrame({'offaxis_v': rng.normal(0, 8, n), 'depression': rng.uniform(0, 40, n),
+                           'band': rng.choice(['<5', '5-15', '15-30', '>30'], n),
+                           'eligible': True})
+        out = oc.identification(df)
+        assert out['pct_surviving_band_fe'] is not None
+        assert 50.0 < out['pct_surviving_band_fe'] <= 100.0
+
+
+class TestTheFovRangeIsOrdered:
+
+    def test_a_tail_straddling_the_zoom_two_branch_still_reports_low_to_high(self):
+        """get_3d_fov switches branch at zoom 2 and is non-monotone there: get_3d_fov(2.0) = 53.000
+        but get_3d_fov(2.0001) = 53.146. Exact 2.0 is on the ladder so it is excluded from `rest`,
+        leaving values that can straddle the discontinuity and emit an inverted range."""
+        lo, hi = oc.fov_range([1.999, 2.0005])
+        assert lo <= hi, f'fov_deg_range is inverted: [{lo}, {hi}]'
+
+    def test_the_ordinary_tail_is_unchanged(self):
+        lo, hi = oc.fov_range([1.04, 2.9091])
+        assert lo <= hi
+        assert hi == pytest.approx(float(pov_replay.get_3d_fov(1.04)), abs=1e-9)

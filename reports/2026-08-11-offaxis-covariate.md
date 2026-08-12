@@ -1,7 +1,7 @@
 # The covariate that separates a capture-side projection error from tilt and from placement
 
 **2026-08-11** · prompted by [SidewalkWebpage#4842](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4842)
-after the [record-staleness study](2026-08-10-record-staleness-validate.md) cleared its two example
+after the [record-staleness study](2026-08-10-off-target-markers-validate.md) cleared its two example
 labels · amends the [crop-priors pre-registration](2026-08-09-crop-priors-prereg.md) §7 before any
 Phase 2 annotation exists
 
@@ -43,7 +43,8 @@ labels of 438,410** in six cities: **95.08% of the covariate's variation survive
 pre-registration's depression-band fixed effects** (sd 8.34° → 7.93° within band, correlation with
 depression 0.319), holding at 93.5–96.4% in every era. It is therefore identified against the strata
 Study 1 already fits, and no new forced stratum is needed. The Explore viewport's **pitch floor of
-−35° is hard** (minimum observed pitch is exactly −35.0000) and carries **10.18% of eligible labels,
+−35° is hard** (minimum observed pitch is exactly −35.0000, now measured over all **438,410**
+labels rather than the eligible subset) and carries **10.18% of eligible labels,
 rising to 49.2% of the >30° depression band**. Both #4842 examples sit at that floor, clicked
 **15.75°** and **23.47° above** the viewport centre — chicago-il 30652 beyond the 5th percentile of
 every band, teaneck-nj 14955 beyond it in the >30° band only.
@@ -144,9 +145,9 @@ floor is registered as its own covariate rather than folded into depression.
 
 | zoom | fov | n | corpus share | 5 px | 20 px |
 |---|---|---|---|---|---|
-| 1 | 89.75° | 279,344 | 64.385% | **0.623°** | 2.493° |
-| 2 | 53.00° | 91,548 | 21.101% | 0.368° | 1.472° |
-| 3 | 27.68° | 62,694 | 14.450% | 0.192° | 0.769° |
+| 1 | 89.75° | 279,344 | 64.385% | **0.792°** | 3.166° |
+| 2 | 53.00° | 91,548 | 21.101% | 0.397° | 1.587° |
+| 3 | 27.68° | 62,694 | 14.450% | 0.196° | 0.784° |
 | *off-ladder* | 29.4–88.3° | 280 | 0.065% | — | — |
 
 The last row is the one an earlier draft left out. The viewer's zoom control has three stops, but
@@ -161,6 +162,20 @@ Against the consumer survey's **0.5° placement threshold**, a 5-px canvas-frame
 supra-threshold at zoom 1 — where two thirds of the corpus sits — and sub-threshold at zoom 3. That
 monotonicity is itself a discriminating signature: a canvas-pixel-constant error scales with fov,
 while rig tilt and placement behaviour do not.
+
+**These are gnomonic angles, corrected in review.** The viewer is a rectilinear projection, so
+degrees are not linear in canvas pixels: the focal length is `f = (width/2) / tan(fov/2)` and a
+`p`-px offset subtends `atan(p/f)`. An earlier revision scaled by the linear average `fov/width`
+instead, which understates the centre rate by **27.1% at zoom 1** — precisely the dominant stratum —
+7.8% at zoom 2 and 2.0% at zoom 3, and published 0.623°/2.493° at zoom 1 where the truth is
+0.792°/3.166°. Note the direction: **the old figures were conservative**, so every threshold
+argument above held under them and holds more comfortably now. It is corrected regardless because
+the rest of this study computes angles exactly through `pov_if_centered`, and one study does not get
+two projections. These remain *floor* estimates for a second reason — the gnomonic stretch grows
+away from the canvas centre, so an off-centre label subtends more per pixel, not less. The
+consequence is visible in the table itself: 20 px is **less than 4×** what 5 px is worth, which is
+exactly why a single "degrees per canvas pixel" rate cannot be right and no longer appears in the
+artifact.
 
 ### 4. The #4842 specimens
 
@@ -181,6 +196,13 @@ Both are at the floor and both are clicked far off-axis: chicago-il 30652 sits b
 percentile of *every* band, and teaneck-nj 14955 beyond the 5th percentile of the >30° band. (An
 earlier draft of this report claimed both were beyond p5 of every band. They are not — teaneck's
 −15.75° is inside p5 for the <5°, 5–15° and 15–30° bands, whose p5 runs −23.3 / −21.3 / −16.0°.)
+Tail membership is now **two-sided**, corrected in review. It was tested as `v < p5` alone, which
+only ever detected clicks far *above* the viewport centre; a specimen far *below* it — the exact
+signature mechanisms (i) and (iii) produce for a low click — would have been reported as "beyond p5
+of no band", i.e. as not in the tail at all. Both #4842 specimens sit on the negative side, so no
+published figure moves; the artifact key is `tail_bands` rather than `beyond_p5_bands` because it
+no longer describes one tail.
+
 This is not evidence for mechanism (iii); it is the reason the covariate is worth having. The labels
 that made the issue visible are drawn from the covariate's tail, not its middle, which is exactly
 where the three mechanisms diverge most.
@@ -297,9 +319,10 @@ be computed against two different canvases; a vacuous `isfinite(offaxis_v)` term
 Turns); an empty `--csv-dir` now names the directory instead of dying in `pd.concat`; and the index row
 in `reports/README.md` is back in date order.
 
-**Enforcement.** 103 tests in `tests/test_offaxis_covariate.py` (up from 48) and a new
+**Enforcement.** 111 tests in `tests/test_offaxis_covariate.py` (up from 48) and a new
 `tests/test_reports_index.py`; **18/18 mutants killed** on a battery that reverts each fix
-individually. Two mutants survived the first pass and both were the tests' fault, not the fixes':
+individually. Three mutants survived the first pass and all three were the tests' fault, not the
+fixes':
 `floor_census`'s and `specimen_census`'s findings were pinned only against the committed artifact, so a
 code revert left them green — synthetic code-level tests were added. A third survivor,
 "`eligible` stops requiring a band", exposed a test that reimplemented the mask inline instead of
@@ -331,7 +354,7 @@ have caught both mismatches above without a reviewer.
 |---|---|
 | Summary numbers (committed) | `reports/data/2026-08-11-offaxis-covariate.json` |
 | Covariate + identification analysis | `reports/scripts/offaxis_covariate.py` |
-| Machinery tests + findings pins | `tests/test_offaxis_covariate.py` (103 tests; 13/13 study mutants, 18/18 review mutants killed) |
+| Machinery tests + findings pins | `tests/test_offaxis_covariate.py` (111 tests; 13/13 study mutants, 18/18 review mutants, 2/2 gnomonic mutants killed) |
 | Report/index consistency | `tests/test_reports_index.py`, `TestReportMatchesTheArtifact` |
 | Inherited machinery | `reports/scripts/pov_replay.py`, `era_replay_study.py`, `rawlabels.py` |
 | The amendment this supports | `reports/2026-08-09-crop-priors-prereg.md` §7 |
