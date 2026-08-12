@@ -66,9 +66,18 @@ def _title(fig, title, subtitle_lines, plot_top):
 def fig_monthly(summary):
     """Fig A: monthly share of labels >= 10 Validate px off, per city, bug window shaded."""
     cities = summary['cities']
-    fig, axes = plt.subplots(2, 4, figsize=(13, 5.2), sharex=True, sharey=True)
+    # Sized from the corpus, not hardcoded: this was a 2x4 grid zipped against the city dict, so
+    # a 54-city summary silently plotted the 8 alphabetically-first and a 3-city one left five
+    # empty styled frames that read as 'no misses'.
+    ncols = min(4, max(1, len(cities)))
+    nrows = -(-len(cities) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.25 * ncols, 2.6 * nrows),
+                             sharex=True, sharey=True, squeeze=False)
     fig.patch.set_facecolor('white')
-    for ax, (city, d) in zip(axes.ravel(), sorted(cities.items())):
+    flat = axes.ravel()
+    for ax in flat[len(cities):]:
+        ax.set_visible(False)
+    for ax, (city, d) in zip(flat, sorted(cities.items())):
         rows = [(pd.Timestamp(m + '-15'), v['pct_ge_10px'])
                 for m, v in sorted(d['monthly_ge10px'].items()) if v['n'] >= MIN_N]
         if rows:
@@ -174,11 +183,19 @@ def fig_severity(summary):
     ax.set_ylim(0, 100)
     ax.set_xlabel('Validate-canvas error of the stored record (px, log scale)', fontsize=9,
                   color=MUTED)
-    pct = [summary['cities'][c]['repair'].get('pct_repaired') for c in summary['cities']]
-    n_rep = sum(summary['cities'][c]['repair'].get('n', 0) for c in summary['cities'])
-    rng = f'{min(pct):g}%' if min(pct) == max(pct) else f'{min(pct):g}–{max(pct):g}%'
-    ax.annotate(f'after repair from pano_x/y:\n{rng} of {n_rep:,} rows reproduce\n'
-                'stored pano_x/y within 1 px', xy=(0.985, 0.06),
+    # A city with no record to repair has no repair rate -- repair_frame reports {'n': 0} and the
+    # key is absent. That is undefined, not 0%: averaging it in would understate the rate, and
+    # min() over a bare None is a TypeError (31 of the 54 cities in the all-cities summary).
+    pct = [p for p in (d['repair'].get('pct_repaired') for d in summary['cities'].values())
+           if p is not None]
+    n_rep = sum(d['repair'].get('n', 0) for d in summary['cities'].values())
+    if pct:
+        rng = f'{min(pct):g}%' if min(pct) == max(pct) else f'{min(pct):g}–{max(pct):g}%'
+        note = (f'after repair from pano_x/y:\n{rng} of {n_rep:,} rows reproduce\n'
+                'stored pano_x/y within 1 px')
+    else:
+        note = 'no city in this summary had\nany record in repair scope'
+    ax.annotate(note, xy=(0.985, 0.06),
                 xycoords='axes fraction', fontsize=8.5, color=INK, ha='right')
     _style(ax)
     ax.legend(frameon=False, fontsize=8.5, loc='upper left')
