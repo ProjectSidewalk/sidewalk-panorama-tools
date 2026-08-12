@@ -43,7 +43,8 @@ labels of 438,410** in six cities: **95.08% of the covariate's variation survive
 pre-registration's depression-band fixed effects** (sd 8.34° → 7.93° within band, correlation with
 depression 0.319), holding at 93.5–96.4% in every era. It is therefore identified against the strata
 Study 1 already fits, and no new forced stratum is needed. The Explore viewport's **pitch floor of
-−35° is hard** (minimum observed pitch is exactly −35.0000) and carries **10.18% of eligible labels,
+−35° is hard** (minimum observed pitch is exactly −35.0000, now measured over all **438,410**
+labels rather than the eligible subset) and carries **10.18% of eligible labels,
 rising to 49.2% of the >30° depression band**. Both #4842 examples sit at that floor, clicked
 **15.75°** and **23.47° above** the viewport centre — chicago-il 30652 beyond the 5th percentile of
 every band, teaneck-nj 14955 beyond it in the >30° band only.
@@ -195,6 +196,13 @@ Both are at the floor and both are clicked far off-axis: chicago-il 30652 sits b
 percentile of *every* band, and teaneck-nj 14955 beyond the 5th percentile of the >30° band. (An
 earlier draft of this report claimed both were beyond p5 of every band. They are not — teaneck's
 −15.75° is inside p5 for the <5°, 5–15° and 15–30° bands, whose p5 runs −23.3 / −21.3 / −16.0°.)
+Tail membership is now **two-sided**, corrected in review. It was tested as `v < p5` alone, which
+only ever detected clicks far *above* the viewport centre; a specimen far *below* it — the exact
+signature mechanisms (i) and (iii) produce for a low click — would have been reported as "beyond p5
+of no band", i.e. as not in the tail at all. Both #4842 specimens sit on the negative side, so no
+published figure moves; the artifact key is `tail_bands` rather than `beyond_p5_bands` because it
+no longer describes one tail.
+
 This is not evidence for mechanism (iii); it is the reason the covariate is worth having. The labels
 that made the issue visible are drawn from the covariate's tail, not its middle, which is exactly
 where the three mechanisms diverge most.
