@@ -13,7 +13,7 @@ per-label repair
 > ```
 > **Reproduce from the source** (rawLabels is a moving target; expect drifted decimals):
 > ```bash
-> python reports/scripts/fetch_rawlabels.py               # -> scripts/.cache/rawlabels/*.csv (8 cities; --all for every deployment)
+> python reports/scripts/fetch_rawlabels.py               # -> scripts/.cache/rawlabels/*.csv (the 8 study cities)
 > python reports/scripts/off_target_markers_study.py reports/scripts/.cache/rawlabels \
 >     --fetched <date> --write reports/data/<date>-off-target-markers-summary.json \
 >     --repairs-dir reports/data
@@ -337,10 +337,15 @@ they are not committed (the eight-city `2026-08-10-repairs-*.csv.gz` remain the 
 artifact, and the production repair recomputes server-side anyway) — regenerate with:
 
 ```bash
-python reports/scripts/fetch_rawlabels.py --all
-python reports/scripts/off_target_markers_study.py reports/scripts/.cache/rawlabels \
+python reports/scripts/fetch_rawlabels.py --all      # -> scripts/.cache/rawlabels-all/*.csv
+python reports/scripts/off_target_markers_study.py reports/scripts/.cache/rawlabels-all \
     --fetched <date> --write <out>.json --repairs-dir <dir>
 ```
+
+`--all` deliberately writes to a *different* directory than the eight-city fetch. Every study in
+`reports/scripts/` globs `*.csv` over the directory it is given, so a 54-deployment sweep landing in
+`.cache/rawlabels/` would silently redefine the six-city corpus behind every committed artifact —
+and the roster includes Mapillary deployments, which the census machinery does not treat as GSV.
 
 `crowdstudy` stays an open row: re-measure it when it responds, before certifying the rollout.
 
