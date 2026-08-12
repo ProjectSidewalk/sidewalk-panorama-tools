@@ -398,6 +398,34 @@ class TestReferentExclusion:
         assert got['excluded_no_referent_type'] == 1
         assert got['excluded_region_tag'] == 2
 
+    def test_the_reported_tag_arm_is_the_one_the_corpus_was_filtered_by(self, monkeypatch):
+        """The census used to re-implement the tag arm — the same comprehension over REGION_TAGS,
+        transcribed — so `excluded_region_tag` measured its own copy of the rule while
+        `has_located_referent` did the filtering. Patching the shared definition has to move both
+        numbers; against two copies it would move only `n_excluded`.
+        """
+        monkeypatch.setattr(rawlabels, 'region_tag_mask',
+                            lambda df: pd.Series(True, index=df.index))
+        got = mc.referent_exclusion(self._mixed())
+        assert got['excluded_region_tag'] == 4, 'the patched rule excludes everything by tag'
+        assert got['n_excluded'] == 4 and got['n_comparable'] == 0
+
+    def test_widening_the_rule_moves_the_filter_and_the_report_together(self, monkeypatch):
+        """The drift the finding names, run end to end: add the `SurfaceProblem + bumpy` pair the
+        REGION_TAGS comment says is deliberately out, and the published arm count and the corpus
+        filter must agree afterwards — which is exactly what `pool_referent_exclusion`'s asserts
+        cannot detect, since two different rules still sum to their own total.
+        """
+        widened = frozenset(rawlabels.REGION_TAGS | {('SurfaceProblem', 'bumpy')})
+        monkeypatch.setattr(rawlabels, 'REGION_TAGS', widened)
+        df = _frame(label_type=['SurfaceProblem', 'SurfaceProblem', 'CurbRamp'],
+                    tags=['[bumpy]', '[brick/cobblestone]', '[]'])
+        got = mc.referent_exclusion(df)
+        assert got['excluded_region_tag'] == 2
+        assert got['n_excluded'] == 2 and got['n_comparable'] == 1
+        assert got['rule']['region_tags'] == ['SurfaceProblem+brick/cobblestone',
+                                              'SurfaceProblem+bumpy']
+
     def test_the_crossed_block_applies_the_rule_before_pairing(self):
         """Code-level for the same reason. Two labellers on one region-tagged SurfaceProblem must yield
         no pair: a brick sidewalk has no particular spot, so their separation is not placement noise."""

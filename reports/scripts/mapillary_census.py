@@ -325,12 +325,16 @@ def crossed_block(df):
 
 
 def referent_exclusion(df):
-    """How much the referent-quality rule removes, and via which arm."""
+    """How much the referent-quality rule removes, and via which arm.
+
+    Both arms come from `rawlabels`, which is also what filters the corpus. This function used to
+    re-implement the tag arm -- the same list comprehension over REGION_TAGS, transcribed -- so it
+    reported the size of its own copy of the rule rather than of the rule applied. Nothing would have
+    caught the divergence: `pool_referent_exclusion` asserts only that the arms sum to the total.
+    """
     keep = rawlabels.has_located_referent(df)
-    tags = rawlabels.parse_tags(df['tags'])
     by_type = df['label_type']
-    region = pd.Series([any((t, g) in rawlabels.REGION_TAGS for g in s)
-                        for t, s in zip(by_type, tags)], index=df.index)
+    region = rawlabels.region_tag_mask(df)
     return {
         'n_labels': int(len(df)),
         'n_comparable': int(keep.sum()),
