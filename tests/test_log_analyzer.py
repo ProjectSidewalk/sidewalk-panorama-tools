@@ -8,7 +8,7 @@ import argparse
 import ast
 import importlib.util
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -50,8 +50,25 @@ def write_log(path, rows, header=True):
 
 
 def days_ago(n):
-    """A timestamp n days back, fixed at midday so a run never lands on the previous calendar date."""
-    return datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=n)
+    """A timestamp exactly n days before the clock analyze_city measures against, so
+    `(now - ts).days == n` at every time of day.
+
+    It must be that clock: analyze_city computes staleness from `datetime.now(timezone.utc)`, and
+    this used to anchor to *local* midday instead. On a UTC runner that made the elapsed time
+    n-1 days plus a fraction for the whole morning, and `.days` floors -- so every CI run before
+    12:00 UTC saw one day fewer than the test asked for, while every afternoon run passed.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=n)
+
+
+def test_days_ago_agrees_with_the_clock_the_analyzer_measures_against():
+    """Pins the helper's contract in the same order production uses it: the row is written first,
+    the analyzer reads its clock second. Anchoring days_ago to any fixed hour instead reintroduces
+    the morning-only failure, because `.days` floors."""
+    for n in (0, 1, 3, 10, 400):
+        ts = days_ago(n)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        assert (now - ts).days == n, f'days_ago({n}) did not read back as {n} days old'
 
 
 def recent_rows(count=7, **overrides):
