@@ -138,22 +138,34 @@ def depression_band(depression_deg):
                   BAND_EDGES, labels=BAND_LABELS)
 
 
-def deg_per_canvas_px(zoom, canvas_width=None):
-    """Degrees of field of view per canvas pixel at a given zoom.
+def deg_for_canvas_offset(offset_px, zoom, canvas_width=None):
+    """The angle a canvas offset actually subtends at the centre of the viewport, in degrees.
 
-    This is what converts a canvas-frame error into the units every consumer threshold is stated in.
-    At zoom 1 -- 64.4% of eligible labels -- the GSV viewer's 89.75 deg fov over a 720 px canvas puts
-    a 5 px error at 0.62 deg, already above the 0.5 deg placement threshold the consumer survey set.
-    (An earlier revision cited "70% of post-fix labels": that was the abandoned post-fix-only probe's
-    population, which the study rejected in favour of all-era `exact_y` rows. Every figure here is
-    over the eligible corpus, matching reports/data/2026-08-11-offaxis-covariate.json.)
+    This is what converts a canvas-frame error into the units every consumer threshold is stated
+    in. At zoom 1 -- 64.385% of eligible labels -- a 5 px error is 0.792 deg, already above the
+    0.5 deg placement threshold the consumer survey set.
 
-    The default canvas comes from pov_replay, the module that documents the front end's frame; there
-    is deliberately no second copy of that constant in this file.
+    The viewer is a gnomonic (rectilinear) projection, so degrees are NOT linear in canvas pixels:
+    the focal length is f = (width/2) / tan(fov/2) and an offset of p px subtends atan(p/f). The
+    linear average fov/width that this file used to scale by understates the centre rate by 27.1%
+    at zoom 1 -- 64.4% of the eligible corpus -- 7.8% at zoom 2 and 2.0% at zoom 3, i.e. the error
+    concentrates precisely on the dominant stratum.
+
+    Direction matters when reading the report against its earlier revision: the linear figure was
+    *conservative*. Every consumer argument here is "this error already exceeds the threshold", so
+    the true, larger angle only strengthens them (5 px at zoom 1 is 0.792 deg, not 0.623 deg,
+    against a 0.5 deg placement threshold). The reason to correct it regardless is that the rest of
+    this module computes angles exactly via pov_if_centered, and one study does not get two
+    projections.
+
+    This is still a floor: the gnomonic stretch grows off-centre, so a label away from the canvas
+    centre subtends more than this per pixel, not less.
     """
     if canvas_width is None:
         canvas_width = pov_replay.CANVAS_W
-    return np.asarray(pov_replay.get_3d_fov(zoom), float) / float(canvas_width)
+    fov = np.asarray(pov_replay.get_3d_fov(zoom), float)
+    focal_px = (float(canvas_width) / 2.0) / np.tan(np.radians(fov / 2.0))
+    return np.degrees(np.arctan(np.asarray(offset_px, float) / focal_px))
 
 
 def prepare(df):
@@ -319,12 +331,13 @@ def zoom_conversions(df):
     out = {'n_eligible': n}
     for zoom in LADDER_ZOOMS:
         k = int((z == zoom).sum())
-        dpp = float(deg_per_canvas_px(zoom))
         out[f'zoom{zoom:g}'] = {
             'fov_deg': float(pov_replay.get_3d_fov(zoom)),
-            'deg_per_canvas_px': dpp,
-            'deg_at_5px': 5 * dpp,
-            'deg_at_20px': 20 * dpp,
+            # The exact gnomonic angle, not offset x (fov/width). A single degrees-per-pixel rate
+            # cannot be right on a rectilinear projection -- 20 px subtends less than 4x what 5 px
+            # does -- so the two offsets consumers state thresholds at are published directly.
+            'deg_at_5px': float(deg_for_canvas_offset(5.0, zoom)),
+            'deg_at_20px': float(deg_for_canvas_offset(20.0, zoom)),
             'n': k,
             'corpus_share_pct': share(k),
         }

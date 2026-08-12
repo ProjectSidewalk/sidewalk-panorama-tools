@@ -26,6 +26,7 @@ computed. The tests below exercise the thin-group path deliberately rather than 
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -235,23 +236,18 @@ class TestBands:
 
 class TestCanvasPixelConversion:
 
-    def test_matches_the_gsv_fov_ladder(self):
-        for zoom in (1.0, 2.0, 3.0):
-            assert oc.deg_per_canvas_px(zoom) == pytest.approx(
-                float(pov_replay.get_3d_fov(zoom)) / 720.0)
-
     def test_five_canvas_px_at_zoom_one_exceeds_the_consumer_threshold(self):
         """The size argument the amendment makes: canvas-frame errors of a few px are not small in
         the units every consumer threshold is stated in (0.5 deg, consumer-requirements survey)."""
-        assert 5 * oc.deg_per_canvas_px(1.0) == pytest.approx(0.6233, abs=1e-4)
-        assert 5 * oc.deg_per_canvas_px(1.0) > 0.5
+        assert oc.deg_for_canvas_offset(5.0, 1.0) == pytest.approx(0.7923, abs=1e-4)
+        assert oc.deg_for_canvas_offset(5.0, 1.0) > 0.5
 
     def test_the_conversion_shrinks_with_zoom(self):
         """A fixed canvas-px error is supra-threshold at zoom 1 and sub-threshold at zoom 3 — itself
         a discriminating signature, so the monotonicity has to hold."""
-        assert (oc.deg_per_canvas_px(1.0) > oc.deg_per_canvas_px(2.0)
-                > oc.deg_per_canvas_px(3.0))
-        assert 5 * oc.deg_per_canvas_px(3.0) < 0.5
+        assert (oc.deg_for_canvas_offset(5.0, 1.0) > oc.deg_for_canvas_offset(5.0, 2.0)
+                > oc.deg_for_canvas_offset(5.0, 3.0))
+        assert oc.deg_for_canvas_offset(5.0, 3.0) < 0.5
 
 
 class TestIdentification:
@@ -391,7 +387,9 @@ class TestCommittedFindings:
         """Zoom 1 is where a canvas-px error converts to the largest angular error, so the corpus
         being concentrated there is what makes the mechanism worth testing at all."""
         assert pooled['zoom']['zoom1']['corpus_share_pct'] > 60.0
-        assert pooled['zoom']['zoom1']['deg_at_5px'] == pytest.approx(0.6233, abs=1e-4)
+        # The gnomonic angle, not the linear fov/width average this pinned before review — see
+        # TestCanvasOffsetsUseTheGnomonicAngle for why, and note the old value was conservative.
+        assert pooled['zoom']['zoom1']['deg_at_5px'] == pytest.approx(0.7923, abs=1e-4)
 
     def test_the_committed_artifact_is_strict_portable_json(self):
         """reports/data/ is checked wholesale by tests/test_committed_data_files.py; asserted here
@@ -693,8 +691,8 @@ class TestOneProjectionOneCanvas:
 
     def test_the_conversion_default_follows_pov_replays_canvas(self, monkeypatch):
         monkeypatch.setattr(pov_replay, 'CANVAS_W', 1440.0)
-        assert oc.deg_per_canvas_px(1.0) == pytest.approx(
-            float(pov_replay.get_3d_fov(1.0)) / 1440.0)
+        assert oc.deg_for_canvas_offset(5.0, 1.0) == pytest.approx(
+            oc.deg_for_canvas_offset(5.0, 1.0, canvas_width=1440.0))
 
     def test_the_bare_frame_fallback_follows_pov_replays_canvas(self, monkeypatch):
         bare = _frame(canvas_y=np.array([142.0])).drop(columns=['canvas_width', 'canvas_height'])
@@ -792,7 +790,7 @@ class TestDocstringFigures:
     def test_the_conversion_docstring_cites_the_committed_zoom1_share(self, pooled):
         """It cited "70% of post-fix labels" — the population the study's own Wrong Turns section
         records abandoning, with a number no committed artifact can verify."""
-        m = re.search(r'At zoom 1 -- ([\d.]+)% of (\w+) labels', oc.deg_per_canvas_px.__doc__)
+        m = re.search(r'At zoom 1 -- ([\d.]+)% of (\w+) labels', oc.deg_for_canvas_offset.__doc__)
         assert m, 'the conversion docstring must say what share of the corpus sits at zoom 1'
         assert m.group(2) == 'eligible', 'the study population, not the abandoned post-fix probe'
         assert float(m.group(1)) == pytest.approx(
@@ -967,3 +965,74 @@ class TestMain:
         (tmp_path / 'notes.txt').write_text('hi', encoding='utf-8')
         with pytest.raises(SystemExit):
             oc.main([str(tmp_path), '--fetched', '2026-08-11'])
+
+
+class TestCanvasOffsetsUseTheGnomonicAngle:
+    """The viewer is a gnomonic (rectilinear) projection, so a canvas offset does NOT subtend
+    fov/width degrees per pixel — that linear average understates the true angle at the canvas
+    centre by 27% at zoom 1, which is 64.4% of the eligible corpus.
+
+    Direction matters for how this reads: the linear figure was *conservative*. Every consumer
+    argument in the report is 'this error already exceeds the threshold', so a larger true angle
+    strengthens it. The reason to fix it anyway is that the rest of this module computes angles
+    exactly via pov_if_centered, and a study is not entitled to two different projections.
+    """
+
+    def _exact(self, px, zoom, canvas_width=720.0):
+        fov = float(pov_replay.get_3d_fov(zoom))
+        f = (canvas_width / 2.0) / math.tan(math.radians(fov / 2.0))
+        return math.degrees(math.atan(px / f))
+
+    def test_five_pixels_at_zoom_one(self):
+        assert oc.deg_for_canvas_offset(5.0, 1.0) == pytest.approx(0.7923, abs=1e-4)
+
+    def test_twenty_pixels_at_zoom_one(self):
+        assert oc.deg_for_canvas_offset(20.0, 1.0) == pytest.approx(3.1660, abs=1e-4)
+
+    def test_it_matches_an_independent_gnomonic_computation_on_every_rung(self):
+        for zoom in (1.0, 2.0, 3.0):
+            for px in (1.0, 5.0, 20.0, 100.0):
+                assert oc.deg_for_canvas_offset(px, zoom) == pytest.approx(
+                    self._exact(px, zoom), abs=1e-9), (zoom, px)
+
+    def test_it_is_strictly_larger_than_the_linear_average(self):
+        """The defect, stated as a property: the linear rate is a chord, the truth is an arc."""
+        for zoom in (1.0, 2.0, 3.0):
+            linear = 5.0 * float(pov_replay.get_3d_fov(zoom)) / 720.0
+            assert oc.deg_for_canvas_offset(5.0, zoom) > linear, zoom
+
+    def test_it_is_not_linear_in_the_offset(self):
+        """20 px subtends strictly less than 4x what 5 px does — the whole reason a single
+        'degrees per pixel' rate cannot be right."""
+        assert oc.deg_for_canvas_offset(20.0, 1.0) < 4.0 * oc.deg_for_canvas_offset(5.0, 1.0)
+
+    def test_the_consumer_threshold_argument_still_holds(self):
+        """Zoom 1 clears the 0.5 deg placement threshold at 5 px, zoom 3 does not — the report's
+        actual claim, now on the exact angle."""
+        assert oc.deg_for_canvas_offset(5.0, 1.0) > 0.5
+        assert oc.deg_for_canvas_offset(5.0, 3.0) < 0.5
+
+
+class TestTheZoomTableMatchesTheReport:
+    """The published conversion table, cell by cell against the committed artifact — the class of
+    check that caught two hand-typed counts in the Mapillary census."""
+
+    @pytest.fixture(scope='class')
+    def report_text(self):
+        path = os.path.join(REPO_ROOT, 'reports', '2026-08-11-offaxis-covariate.md')
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+
+    def test_every_rung_row_matches(self, pooled, report_text):
+        for zoom in (1, 2, 3):
+            z = pooled['zoom'][f'zoom{zoom}']
+            assert f"{z['n']:,}" in report_text, zoom
+            assert f"{z['corpus_share_pct']:.3f}%" in report_text, zoom
+            assert f"{z['deg_at_5px']:.3f}°" in report_text, (zoom, z['deg_at_5px'])
+            assert f"{z['deg_at_20px']:.3f}°" in report_text, (zoom, z['deg_at_20px'])
+
+    def test_the_linear_figures_are_gone_from_the_prose_table(self, report_text):
+        """0.623 and 2.493 were the linear-average values; they may only appear in the paragraph
+        that explains the correction, never as a table cell."""
+        assert '| **0.623°** |' not in report_text
+        assert '| 2.493° |' not in report_text

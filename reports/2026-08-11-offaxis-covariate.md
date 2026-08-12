@@ -144,9 +144,9 @@ floor is registered as its own covariate rather than folded into depression.
 
 | zoom | fov | n | corpus share | 5 px | 20 px |
 |---|---|---|---|---|---|
-| 1 | 89.75° | 279,344 | 64.385% | **0.623°** | 2.493° |
-| 2 | 53.00° | 91,548 | 21.101% | 0.368° | 1.472° |
-| 3 | 27.68° | 62,694 | 14.450% | 0.192° | 0.769° |
+| 1 | 89.75° | 279,344 | 64.385% | **0.792°** | 3.166° |
+| 2 | 53.00° | 91,548 | 21.101% | 0.397° | 1.587° |
+| 3 | 27.68° | 62,694 | 14.450% | 0.196° | 0.784° |
 | *off-ladder* | 29.4–88.3° | 280 | 0.065% | — | — |
 
 The last row is the one an earlier draft left out. The viewer's zoom control has three stops, but
@@ -161,6 +161,20 @@ Against the consumer survey's **0.5° placement threshold**, a 5-px canvas-frame
 supra-threshold at zoom 1 — where two thirds of the corpus sits — and sub-threshold at zoom 3. That
 monotonicity is itself a discriminating signature: a canvas-pixel-constant error scales with fov,
 while rig tilt and placement behaviour do not.
+
+**These are gnomonic angles, corrected in review.** The viewer is a rectilinear projection, so
+degrees are not linear in canvas pixels: the focal length is `f = (width/2) / tan(fov/2)` and a
+`p`-px offset subtends `atan(p/f)`. An earlier revision scaled by the linear average `fov/width`
+instead, which understates the centre rate by **27.1% at zoom 1** — precisely the dominant stratum —
+7.8% at zoom 2 and 2.0% at zoom 3, and published 0.623°/2.493° at zoom 1 where the truth is
+0.792°/3.166°. Note the direction: **the old figures were conservative**, so every threshold
+argument above held under them and holds more comfortably now. It is corrected regardless because
+the rest of this study computes angles exactly through `pov_if_centered`, and one study does not get
+two projections. These remain *floor* estimates for a second reason — the gnomonic stretch grows
+away from the canvas centre, so an off-centre label subtends more per pixel, not less. The
+consequence is visible in the table itself: 20 px is **less than 4×** what 5 px is worth, which is
+exactly why a single "degrees per canvas pixel" rate cannot be right and no longer appears in the
+artifact.
 
 ### 4. The #4842 specimens
 
