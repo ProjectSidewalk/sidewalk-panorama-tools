@@ -1,0 +1,1262 @@
+{
+ "source": "/v3/api/rawLabels?filetype=csv",
+ "fetched": "2026-08-09",
+ "restriction": "exact_y (record vertical half reproduces stored pano_y)",
+ "cities": {
+  "amsterdam": {
+   "eligibility": {
+    "n_labels": 30061,
+    "replayable_y": 30061,
+    "exact_y": 30021,
+    "exact_x_and_y": 29589,
+    "eligible": 30021,
+    "kept_by_using_exact_y_only": 432
+   },
+   "identification": {
+    "n": 30021,
+    "sd_overall_deg": 8.413548944255064,
+    "sd_within_band_deg": 7.33358344313626,
+    "pct_surviving_band_fe": 87.16397196623875,
+    "corr_with_depression": 0.5206308314114271
+   },
+   "by_band": {
+    "<5": {
+     "n": 867,
+     "offaxis_v_deg": {
+      "n": 867,
+      "p5": -26.824575657999848,
+      "p50": -12.413906980113829,
+      "p95": 1.9879155638954678,
+      "sd": 9.322990258034599
+     },
+     "offaxis_r_p95_deg": 37.217168639504806,
+     "at_floor_pct": 0.0
+    },
+    "5-15": {
+     "n": 10965,
+     "offaxis_v_deg": {
+      "n": 10965,
+      "p5": -19.71013583062825,
+      "p50": -2.273543593283435,
+      "p95": 6.355223123285162,
+      "sd": 7.611030612559343
+     },
+     "offaxis_r_p95_deg": 34.15669646706025,
+     "at_floor_pct": 1.3315093479252167
+    },
+    "15-30": {
+     "n": 13336,
+     "offaxis_v_deg": {
+      "n": 13336,
+      "p5": -14.578300591672122,
+      "p50": -3.077851135785698,
+      "p95": 9.098492034752203,
+      "sd": 7.08480359284889
+     },
+     "offaxis_r_p95_deg": 32.7007306689558,
+     "at_floor_pct": 10.782843431313738
+    },
+    ">30": {
+     "n": 4853,
+     "offaxis_v_deg": {
+      "n": 4853,
+      "p5": -3.332765333152924,
+      "p50": 5.563720913974755,
+      "p95": 19.172701871439546,
+      "sd": 6.95623992506874
+     },
+     "offaxis_r_p95_deg": 29.133262605172938,
+     "at_floor_pct": 54.02843601895735
+    }
+   },
+   "floor": {
+    "n": 30021,
+    "n_all_labels": 30061,
+    "min_pitch_deg_all_labels": -35.0,
+    "min_pitch_deg": -35.0,
+    "max_pitch_deg": 0.0,
+    "at_floor_pct": 14.010192864994503,
+    "exactly_floor_pct": 13.996868858465742,
+    "by_band_pct": {
+     "<5": 0.0,
+     "5-15": 1.3315093479252167,
+     "15-30": 10.782843431313738,
+     ">30": 54.02843601895735
+    },
+    "by_label_type": {
+     "Crosswalk": {
+      "n": 2962,
+      "at_floor_pct": 12.39027683997299
+     },
+     "CurbRamp": {
+      "n": 12237,
+      "at_floor_pct": 20.740377543515567
+     },
+     "NoCurbRamp": {
+      "n": 1538,
+      "at_floor_pct": 16.71001300390117
+     },
+     "NoSidewalk": {
+      "n": 3997,
+      "at_floor_pct": 2.301726294721041
+     },
+     "Obstacle": {
+      "n": 6058,
+      "at_floor_pct": 10.349950478705845
+     },
+     "Occlusion": {
+      "n": 55,
+      "at_floor_pct": 7.2727272727272725
+     },
+     "Other": {
+      "n": 164,
+      "at_floor_pct": 4.2682926829268295
+     },
+     "Signal": {
+      "n": 1034,
+      "at_floor_pct": 6.479690522243714
+     },
+     "SurfaceProblem": {
+      "n": 1976,
+      "at_floor_pct": 12.5
+     }
+    }
+   },
+   "zoom": {
+    "n_eligible": 30021,
+    "zoom1": {
+     "fov_deg": 89.75,
+     "deg_at_5px": 0.7922595490608716,
+     "deg_at_20px": 3.16601390118844,
+     "n": 19859,
+     "corpus_share_pct": 66.15036141367709
+    },
+    "zoom2": {
+     "fov_deg": 53.0,
+     "deg_at_5px": 0.39675229566291625,
+     "deg_at_20px": 1.5866288605649552,
+     "n": 4372,
+     "corpus_share_pct": 14.563139135938176
+    },
+    "zoom3": {
+     "fov_deg": 27.68198649088542,
+     "deg_at_5px": 0.19606405835033505,
+     "deg_at_20px": 0.7842103207988017,
+     "n": 5790,
+     "corpus_share_pct": 19.28649945038473
+    },
+    "other": {
+     "n": 0,
+     "corpus_share_pct": 0.0,
+     "n_distinct_zooms": 0,
+     "min_zoom": null,
+     "max_zoom": null,
+     "fov_deg_range": null
+    }
+   },
+   "by_era_identification": {
+    "mid": {
+     "n": 28116,
+     "sd_overall_deg": 8.303976881107264,
+     "sd_within_band_deg": 7.192941184484224,
+     "pct_surviving_band_fe": 86.62043846544412,
+     "corr_with_depression": 0.5277828271952131
+    },
+    "post179": {
+     "n": 1905,
+     "sd_overall_deg": 9.858079210636763,
+     "sd_within_band_deg": 9.010811602880652,
+     "pct_surviving_band_fe": 91.40534794200154,
+     "corr_with_depression": 0.45605811286279785
+    }
+   }
+  },
+  "cdmx": {
+   "eligibility": {
+    "n_labels": 74263,
+    "replayable_y": 74179,
+    "exact_y": 74130,
+    "exact_x_and_y": 71049,
+    "eligible": 74130,
+    "kept_by_using_exact_y_only": 3081
+   },
+   "identification": {
+    "n": 74130,
+    "sd_overall_deg": 8.223840637773508,
+    "sd_within_band_deg": 7.7841392371958715,
+    "pct_surviving_band_fe": 94.6533326708933,
+    "corr_with_depression": 0.33974297803897174
+   },
+   "by_band": {
+    "<5": {
+     "n": 1779,
+     "offaxis_v_deg": {
+      "n": 1779,
+      "p5": -20.64632019065788,
+      "p50": -4.122599829544934,
+      "p95": 2.9725088996354607,
+      "sd": 7.165402958445026
+     },
+     "offaxis_r_p95_deg": 33.901314233659896,
+     "at_floor_pct": 0.056211354693648116
+    },
+    "5-15": {
+     "n": 25699,
+     "offaxis_v_deg": {
+      "n": 25699,
+      "p5": -20.589470369866685,
+      "p50": -3.6431525907109563,
+      "p95": 6.0336521440219215,
+      "sd": 8.024224953829222
+     },
+     "offaxis_r_p95_deg": 34.919817673520974,
+     "at_floor_pct": 2.2063115296315035
+    },
+    "15-30": {
+     "n": 40480,
+     "offaxis_v_deg": {
+      "n": 40480,
+      "p5": -15.630001403646293,
+      "p50": -4.042536338637115,
+      "p95": 10.340807348776995,
+      "sd": 7.804446437654072
+     },
+     "offaxis_r_p95_deg": 34.2306150456917,
+     "at_floor_pct": 12.492588932806324
+    },
+    ">30": {
+     "n": 6172,
+     "offaxis_v_deg": {
+      "n": 6172,
+      "p5": -3.872858241215488,
+      "p50": 3.7858260476905343,
+      "p95": 17.734317814327767,
+      "sd": 6.738380319959763
+     },
+     "offaxis_r_p95_deg": 32.40927296933295,
+     "at_floor_pct": 45.495787427090086
+    }
+   },
+   "floor": {
+    "n": 74130,
+    "n_all_labels": 74263,
+    "min_pitch_deg_all_labels": -35.0,
+    "min_pitch_deg": -35.0,
+    "max_pitch_deg": 0.0,
+    "at_floor_pct": 11.375961149332255,
+    "exactly_floor_pct": 11.373263186294349,
+    "by_band_pct": {
+     "<5": 0.056211354693648116,
+     "5-15": 2.2063115296315035,
+     "15-30": 12.492588932806324,
+     ">30": 45.495787427090086
+    },
+    "by_label_type": {
+     "Crosswalk": {
+      "n": 3889,
+      "at_floor_pct": 20.64798148624325
+     },
+     "CurbRamp": {
+      "n": 12860,
+      "at_floor_pct": 12.441679626749611
+     },
+     "NoCurbRamp": {
+      "n": 10918,
+      "at_floor_pct": 11.952738596812603
+     },
+     "NoSidewalk": {
+      "n": 5069,
+      "at_floor_pct": 12.329848096271453
+     },
+     "Obstacle": {
+      "n": 24973,
+      "at_floor_pct": 8.645336963921036
+     },
+     "Occlusion": {
+      "n": 905,
+      "at_floor_pct": 3.7569060773480665
+     },
+     "Other": {
+      "n": 798,
+      "at_floor_pct": 14.160401002506266
+     },
+     "Signal": {
+      "n": 109,
+      "at_floor_pct": 0.0
+     },
+     "SurfaceProblem": {
+      "n": 14609,
+      "at_floor_pct": 12.280101307413238
+     }
+    }
+   },
+   "zoom": {
+    "n_eligible": 74130,
+    "zoom1": {
+     "fov_deg": 89.75,
+     "deg_at_5px": 0.7922595490608716,
+     "deg_at_20px": 3.16601390118844,
+     "n": 54308,
+     "corpus_share_pct": 73.26048833130986
+    },
+    "zoom2": {
+     "fov_deg": 53.0,
+     "deg_at_5px": 0.39675229566291625,
+     "deg_at_20px": 1.5866288605649552,
+     "n": 13556,
+     "corpus_share_pct": 18.28679347092945
+    },
+    "zoom3": {
+     "fov_deg": 27.68198649088542,
+     "deg_at_5px": 0.19606405835033505,
+     "deg_at_20px": 0.7842103207988017,
+     "n": 6241,
+     "corpus_share_pct": 8.41899365978686
+    },
+    "other": {
+     "n": 25,
+     "corpus_share_pct": 0.03372453797382976,
+     "n_distinct_zooms": 8,
+     "min_zoom": 1.0417,
+     "max_zoom": 2.8,
+     "fov_deg_range": [
+      31.539695644778465,
+      88.217525
+     ]
+    }
+   },
+   "by_era_identification": {
+    "legacy": {
+     "n": 6137,
+     "sd_overall_deg": 7.230635978374755,
+     "sd_within_band_deg": 6.653230606894572,
+     "pct_surviving_band_fe": 92.01445940292008,
+     "corr_with_depression": 0.4501067126828551
+    },
+    "mid": {
+     "n": 48490,
+     "sd_overall_deg": 8.430783244583926,
+     "sd_within_band_deg": 8.067015848482079,
+     "pct_surviving_band_fe": 95.68524791174606,
+     "corr_with_depression": 0.3041492466207484
+    },
+    "post179": {
+     "n": 19503,
+     "sd_overall_deg": 7.884965450675363,
+     "sd_within_band_deg": 7.132422126307428,
+     "pct_surviving_band_fe": 90.45597182288886,
+     "corr_with_depression": 0.4555677325295411
+    }
+   }
+  },
+  "columbus-oh": {
+   "eligibility": {
+    "n_labels": 41186,
+    "replayable_y": 41077,
+    "exact_y": 40869,
+    "exact_x_and_y": 39886,
+    "eligible": 40869,
+    "kept_by_using_exact_y_only": 983
+   },
+   "identification": {
+    "n": 40869,
+    "sd_overall_deg": 7.670073408326555,
+    "sd_within_band_deg": 7.452968657792288,
+    "pct_surviving_band_fe": 97.16945667953345,
+    "corr_with_depression": 0.2244326828068427
+   },
+   "by_band": {
+    "<5": {
+     "n": 1391,
+     "offaxis_v_deg": {
+      "n": 1391,
+      "p5": -19.85646060534878,
+      "p50": -2.7465411495161547,
+      "p95": 3.244142034734785,
+      "sd": 6.961309133535032
+     },
+     "offaxis_r_p95_deg": 31.497041855396887,
+     "at_floor_pct": 0.14378145219266716
+    },
+    "5-15": {
+     "n": 23218,
+     "offaxis_v_deg": {
+      "n": 23218,
+      "p5": -20.206423755281307,
+      "p50": -3.231364381899219,
+      "p95": 5.523784375431535,
+      "sd": 7.580410768550747
+     },
+     "offaxis_r_p95_deg": 36.04229795677892,
+     "at_floor_pct": 1.7271082780601257
+    },
+    "15-30": {
+     "n": 14836,
+     "offaxis_v_deg": {
+      "n": 14836,
+      "p5": -15.607163069690309,
+      "p50": -3.4827560581771184,
+      "p95": 9.089438362332938,
+      "sd": 7.363949845774587
+     },
+     "offaxis_r_p95_deg": 36.93428680801115,
+     "at_floor_pct": 8.203019681854947
+    },
+    ">30": {
+     "n": 1424,
+     "offaxis_v_deg": {
+      "n": 1424,
+      "p5": -3.8187514800500453,
+      "p50": 3.8209896267547947,
+      "p95": 17.264348423630103,
+      "sd": 6.714040997631697
+     },
+     "offaxis_r_p95_deg": 35.1451144062092,
+     "at_floor_pct": 41.64325842696629
+    }
+   },
+   "floor": {
+    "n": 40869,
+    "n_all_labels": 41186,
+    "min_pitch_deg_all_labels": -35.0,
+    "min_pitch_deg": -35.0,
+    "max_pitch_deg": 0.0,
+    "at_floor_pct": 5.414862120433581,
+    "exactly_floor_pct": 5.409968435733686,
+    "by_band_pct": {
+     "<5": 0.14378145219266716,
+     "5-15": 1.7271082780601257,
+     "15-30": 8.203019681854947,
+     ">30": 41.64325842696629
+    },
+    "by_label_type": {
+     "Crosswalk": {
+      "n": 874,
+      "at_floor_pct": 8.009153318077804
+     },
+     "CurbRamp": {
+      "n": 17920,
+      "at_floor_pct": 5.998883928571429
+     },
+     "NoCurbRamp": {
+      "n": 1446,
+      "at_floor_pct": 8.229598893499308
+     },
+     "NoSidewalk": {
+      "n": 9300,
+      "at_floor_pct": 3.150537634408602
+     },
+     "Obstacle": {
+      "n": 3662,
+      "at_floor_pct": 3.7684325505188423
+     },
+     "Occlusion": {
+      "n": 160,
+      "at_floor_pct": 0.0
+     },
+     "Other": {
+      "n": 36,
+      "at_floor_pct": 5.555555555555555
+     },
+     "Signal": {
+      "n": 694,
+      "at_floor_pct": 0.43227665706051877
+     },
+     "SurfaceProblem": {
+      "n": 6777,
+      "at_floor_pct": 7.569721115537849
+     }
+    }
+   },
+   "zoom": {
+    "n_eligible": 40869,
+    "zoom1": {
+     "fov_deg": 89.75,
+     "deg_at_5px": 0.7922595490608716,
+     "deg_at_20px": 3.16601390118844,
+     "n": 22422,
+     "corpus_share_pct": 54.86309917052044
+    },
+    "zoom2": {
+     "fov_deg": 53.0,
+     "deg_at_5px": 0.39675229566291625,
+     "deg_at_20px": 1.5866288605649552,
+     "n": 11248,
+     "corpus_share_pct": 27.522082752208274
+    },
+    "zoom3": {
+     "fov_deg": 27.68198649088542,
+     "deg_at_5px": 0.19606405835033505,
+     "deg_at_20px": 0.7842103207988017,
+     "n": 7199,
+     "corpus_share_pct": 17.61481807727128
+    },
+    "other": {
+     "n": 0,
+     "corpus_share_pct": 0.0,
+     "n_distinct_zooms": 0,
+     "min_zoom": null,
+     "max_zoom": null,
+     "fov_deg_range": null
+    }
+   },
+   "by_era_identification": {
+    "legacy": {
+     "n": 20121,
+     "sd_overall_deg": 7.938619619950023,
+     "sd_within_band_deg": 7.689417359449017,
+     "pct_surviving_band_fe": 96.86088674818538,
+     "corr_with_depression": 0.24901455592256616
+    },
+    "mid": {
+     "n": 13911,
+     "sd_overall_deg": 7.559814319836233,
+     "sd_within_band_deg": 7.317899772004705,
+     "pct_surviving_band_fe": 96.7999935236932,
+     "corr_with_depression": 0.23075567481253031
+    },
+    "post179": {
+     "n": 6837,
+     "sd_overall_deg": 6.704802271783629,
+     "sd_within_band_deg": 6.559262459164355,
+     "pct_surviving_band_fe": 97.82931984091819,
+     "corr_with_depression": 0.1411072837201852
+    }
+   }
+  },
+  "newberg-or": {
+   "eligibility": {
+    "n_labels": 17351,
+    "replayable_y": 17245,
+    "exact_y": 17245,
+    "exact_x_and_y": 17152,
+    "eligible": 17245,
+    "kept_by_using_exact_y_only": 93
+   },
+   "identification": {
+    "n": 17245,
+    "sd_overall_deg": 7.936015764237788,
+    "sd_within_band_deg": 7.62597631576916,
+    "pct_surviving_band_fe": 96.0932606779114,
+    "corr_with_depression": 0.29480650168097894
+   },
+   "by_band": {
+    "<5": {
+     "n": 350,
+     "offaxis_v_deg": {
+      "n": 350,
+      "p5": -18.626206594200333,
+      "p50": -1.4626841089569527,
+      "p95": 4.226591704975333,
+      "sd": 6.564536379467844
+     },
+     "offaxis_r_p95_deg": 31.458582173616097,
+     "at_floor_pct": 0.0
+    },
+    "5-15": {
+     "n": 7497,
+     "offaxis_v_deg": {
+      "n": 7497,
+      "p5": -18.860585503382424,
+      "p50": -2.989328589101513,
+      "p95": 7.758800555138822,
+      "sd": 7.6509337285311805
+     },
+     "offaxis_r_p95_deg": 38.406957805224664,
+     "at_floor_pct": 1.6139789249032945
+    },
+    "15-30": {
+     "n": 8519,
+     "offaxis_v_deg": {
+      "n": 8519,
+      "p5": -14.871140753934583,
+      "p50": -2.1341000171287554,
+      "p95": 10.859883518121297,
+      "sd": 7.731601499911254
+     },
+     "offaxis_r_p95_deg": 38.85599301854476,
+     "at_floor_pct": 6.867003169386078
+    },
+    ">30": {
+     "n": 879,
+     "offaxis_v_deg": {
+      "n": 879,
+      "p5": -3.395529756101375,
+      "p50": 4.965653170671239,
+      "p95": 17.513568450475407,
+      "sd": 6.734157481713787
+     },
+     "offaxis_r_p95_deg": 35.03622529186218,
+     "at_floor_pct": 42.77588168373151
+    }
+   },
+   "floor": {
+    "n": 17245,
+    "n_all_labels": 17351,
+    "min_pitch_deg_all_labels": -35.0,
+    "min_pitch_deg": -35.0,
+    "max_pitch_deg": 0.0,
+    "at_floor_pct": 6.274282400695854,
+    "exactly_floor_pct": 6.274282400695854,
+    "by_band_pct": {
+     "<5": 0.0,
+     "5-15": 1.6139789249032945,
+     "15-30": 6.867003169386078,
+     ">30": 42.77588168373151
+    },
+    "by_label_type": {
+     "Crosswalk": {
+      "n": 42,
+      "at_floor_pct": 23.809523809523807
+     },
+     "CurbRamp": {
+      "n": 4503,
+      "at_floor_pct": 10.726182544970019
+     },
+     "NoCurbRamp": {
+      "n": 2149,
+      "at_floor_pct": 10.749185667752444
+     },
+     "NoSidewalk": {
+      "n": 7028,
+      "at_floor_pct": 2.2481502561183837
+     },
+     "Obstacle": {
+      "n": 1019,
+      "at_floor_pct": 5.691854759568204
+     },
+     "Occlusion": {
+      "n": 201,
+      "at_floor_pct": 3.482587064676617
+     },
+     "Other": {
+      "n": 128,
+      "at_floor_pct": 7.8125
+     },
+     "SurfaceProblem": {
+      "n": 2175,
+      "at_floor_pct": 5.747126436781609
+     }
+    }
+   },
+   "zoom": {
+    "n_eligible": 17245,
+    "zoom1": {
+     "fov_deg": 89.75,
+     "deg_at_5px": 0.7922595490608716,
+     "deg_at_20px": 3.16601390118844,
+     "n": 11166,
+     "corpus_share_pct": 64.74920266743983
+    },
+    "zoom2": {
+     "fov_deg": 53.0,
+     "deg_at_5px": 0.39675229566291625,
+     "deg_at_20px": 1.5866288605649552,
+     "n": 3976,
+     "corpus_share_pct": 23.05595824876776
+    },
+    "zoom3": {
+     "fov_deg": 27.68198649088542,
+     "deg_at_5px": 0.19606405835033505,
+     "deg_at_20px": 0.7842103207988017,
+     "n": 2103,
+     "corpus_share_pct": 12.194839083792404
+    },
+    "other": {
+     "n": 0,
+     "corpus_share_pct": 0.0,
+     "n_distinct_zooms": 0,
+     "min_zoom": null,
+     "max_zoom": null,
+     "fov_deg_range": null
+    }
+   },
+   "by_era_identification": {
+    "legacy": {
+     "n": 16262,
+     "sd_overall_deg": 7.931270146241768,
+     "sd_within_band_deg": 7.621415960658059,
+     "pct_surviving_band_fe": 96.09325896268288,
+     "corr_with_depression": 0.29655359186604063
+    },
+    "mid": {
+     "n": 479,
+     "sd_overall_deg": 7.9726171840711295,
+     "sd_within_band_deg": 7.407198589113835,
+     "pct_surviving_band_fe": 92.90799267162895,
+     "corr_with_depression": 0.34677358011987997
+    },
+    "post179": {
+     "n": 504,
+     "sd_overall_deg": 7.842137923955886,
+     "sd_within_band_deg": 7.598920111145527,
+     "pct_surviving_band_fe": 96.8985777198921,
+     "corr_with_depression": 0.206457051178064
+    }
+   }
+  },
+  "oradell-nj": {
+   "eligibility": {
+    "n_labels": 13591,
+    "replayable_y": 13591,
+    "exact_y": 13513,
+    "exact_x_and_y": 12886,
+    "eligible": 13513,
+    "kept_by_using_exact_y_only": 627
+   },
+   "identification": {
+    "n": 13513,
+    "sd_overall_deg": 7.143086578566622,
+    "sd_within_band_deg": 6.935218278962994,
+    "pct_surviving_band_fe": 97.08993727967189,
+    "corr_with_depression": 0.24655754587602616
+   },
+   "by_band": {
+    "<5": {
+     "n": 674,
+     "offaxis_v_deg": {
+      "n": 674,
+      "p5": -18.22118700465348,
+      "p50": -4.9797851274605325,
+      "p95": 3.6263239502026763,
+      "sd": 6.713894851054093
+     },
+     "offaxis_r_p95_deg": 35.69455671300373,
+     "at_floor_pct": 0.0
+    },
+    "5-15": {
+     "n": 7523,
+     "offaxis_v_deg": {
+      "n": 7523,
+      "p5": -15.709570085567561,
+      "p50": -2.029386419965549,
+      "p95": 7.621649882573367,
+      "sd": 6.82216432755497
+     },
+     "offaxis_r_p95_deg": 38.668408306038,
+     "at_floor_pct": 0.505117639239665
+    },
+    "15-30": {
+     "n": 5010,
+     "offaxis_v_deg": {
+      "n": 5010,
+      "p5": -12.936748064599426,
+      "p50": -1.317069464479074,
+      "p95": 11.300900358612122,
+      "sd": 7.1151032504793905
+     },
+     "offaxis_r_p95_deg": 38.60250955281752,
+     "at_floor_pct": 3.5728542914171655
+    },
+    ">30": {
+     "n": 306,
+     "offaxis_v_deg": {
+      "n": 306,
+      "p5": -3.1773806979650123,
+      "p50": 5.982233695317332,
+      "p95": 19.57911104738489,
+      "sd": 7.217058242208019
+     },
+     "offaxis_r_p95_deg": 33.51188858496644,
+     "at_floor_pct": 26.143790849673206
+    }
+   },
+   "floor": {
+    "n": 13513,
+    "n_all_labels": 13591,
+    "min_pitch_deg_all_labels": -35.0,
+    "min_pitch_deg": -35.0,
+    "max_pitch_deg": 0.0,
+    "at_floor_pct": 2.197883519573744,
+    "exactly_floor_pct": 2.197883519573744,
+    "by_band_pct": {
+     "<5": 0.0,
+     "5-15": 0.505117639239665,
+     "15-30": 3.5728542914171655,
+     ">30": 26.143790849673206
+    },
+    "by_label_type": {
+     "Crosswalk": {
+      "n": 664,
+      "at_floor_pct": 5.120481927710843
+     },
+     "CurbRamp": {
+      "n": 1862,
+      "at_floor_pct": 3.4908700322234156
+     },
+     "NoCurbRamp": {
+      "n": 818,
+      "at_floor_pct": 3.6674816625916873
+     },
+     "NoSidewalk": {
+      "n": 5665,
+      "at_floor_pct": 1.0767872903795235
+     },
+     "Obstacle": {
+      "n": 318,
+      "at_floor_pct": 2.515723270440252
+     },
+     "Occlusion": {
+      "n": 162,
+      "at_floor_pct": 1.8518518518518516
+     },
+     "Other": {
+      "n": 12,
+      "at_floor_pct": 0.0
+     },
+     "Signal": {
+      "n": 20,
+      "at_floor_pct": 0.0
+     },
+     "SurfaceProblem": {
+      "n": 3992,
+      "at_floor_pct": 2.404809619238477
+     }
+    }
+   },
+   "zoom": {
+    "n_eligible": 13513,
+    "zoom1": {
+     "fov_deg": 89.75,
+     "deg_at_5px": 0.7922595490608716,
+     "deg_at_20px": 3.16601390118844,
+     "n": 8008,
+     "corpus_share_pct": 59.26145193517354
+    },
+    "zoom2": {
+     "fov_deg": 53.0,
+     "deg_at_5px": 0.39675229566291625,
+     "deg_at_20px": 1.5866288605649552,
+     "n": 2903,
+     "corpus_share_pct": 21.483016354621476
+    },
+    "zoom3": {
+     "fov_deg": 27.68198649088542,
+     "deg_at_5px": 0.19606405835033505,
+     "deg_at_20px": 0.7842103207988017,
+     "n": 2602,
+     "corpus_share_pct": 19.255531710204988
+    },
+    "other": {
+     "n": 0,
+     "corpus_share_pct": 0.0,
+     "n_distinct_zooms": 0,
+     "min_zoom": null,
+     "max_zoom": null,
+     "fov_deg_range": null
+    }
+   },
+   "by_era_identification": {
+    "mid": {
+     "n": 12189,
+     "sd_overall_deg": 7.160499554654677,
+     "sd_within_band_deg": 6.957045751721407,
+     "pct_surviving_band_fe": 97.15866468002201,
+     "corr_with_depression": 0.2423284008510034
+    },
+    "post179": {
+     "n": 1324,
+     "sd_overall_deg": 6.9704103339592995,
+     "sd_within_band_deg": 6.691163041836484,
+     "pct_surviving_band_fe": 95.9938184591179,
+     "corr_with_depression": 0.2910368563799211
+    }
+   }
+  },
+  "seattle-wa": {
+   "eligibility": {
+    "n_labels": 261958,
+    "replayable_y": 260197,
+    "exact_y": 258088,
+    "exact_x_and_y": 249819,
+    "eligible": 258088,
+    "kept_by_using_exact_y_only": 8269
+   },
+   "identification": {
+    "n": 258088,
+    "sd_overall_deg": 8.488727179162026,
+    "sd_within_band_deg": 8.11246885530686,
+    "pct_surviving_band_fe": 95.56755310997862,
+    "corr_with_depression": 0.2995782293957634
+   },
+   "by_band": {
+    "<5": {
+     "n": 7930,
+     "offaxis_v_deg": {
+      "n": 7930,
+      "p5": -24.018371455822876,
+      "p50": -4.19808770863367,
+      "p95": 3.9606468633977436,
+      "sd": 8.419320083150916
+     },
+     "offaxis_r_p95_deg": 36.14914510588527,
+     "at_floor_pct": 0.6431273644388399
+    },
+    "5-15": {
+     "n": 118905,
+     "offaxis_v_deg": {
+      "n": 118905,
+      "p5": -21.979010175376658,
+      "p50": -4.077248454957428,
+      "p95": 6.951418253863031,
+      "sd": 8.573076342811882
+     },
+     "offaxis_r_p95_deg": 36.21475742238762,
+     "at_floor_pct": 3.7971489844834108
+    },
+    "15-30": {
+     "n": 114989,
+     "offaxis_v_deg": {
+      "n": 114989,
+      "p5": -16.416049403557626,
+      "p50": -4.248283601926108,
+      "p95": 9.578246101192814,
+      "sd": 7.757497823899979
+     },
+     "offaxis_r_p95_deg": 35.86496660856636,
+     "at_floor_pct": 13.158649957822051
+    },
+    ">30": {
+     "n": 16264,
+     "offaxis_v_deg": {
+      "n": 16264,
+      "p5": -4.033048340573681,
+      "p50": 3.2635080086243384,
+      "p95": 17.995632318058664,
+      "sd": 6.854995273242222
+     },
+     "offaxis_r_p95_deg": 33.86542197567895,
+     "at_floor_pct": 50.67634038366945
+    }
+   },
+   "floor": {
+    "n": 258088,
+    "n_all_labels": 261958,
+    "min_pitch_deg_all_labels": -35.0,
+    "min_pitch_deg": -35.0,
+    "max_pitch_deg": 0.0,
+    "at_floor_pct": 10.82537739065745,
+    "exactly_floor_pct": 10.818403025324695,
+    "by_band_pct": {
+     "<5": 0.6431273644388399,
+     "5-15": 3.7971489844834108,
+     "15-30": 13.158649957822051,
+     ">30": 50.67634038366945
+    },
+    "by_label_type": {
+     "Crosswalk": {
+      "n": 6050,
+      "at_floor_pct": 16.28099173553719
+     },
+     "CurbRamp": {
+      "n": 99414,
+      "at_floor_pct": 12.270907518055807
+     },
+     "NoCurbRamp": {
+      "n": 44107,
+      "at_floor_pct": 12.789353163896887
+     },
+     "NoSidewalk": {
+      "n": 50608,
+      "at_floor_pct": 8.038254821372115
+     },
+     "Obstacle": {
+      "n": 17775,
+      "at_floor_pct": 9.147679324894515
+     },
+     "Occlusion": {
+      "n": 1122,
+      "at_floor_pct": 2.3172905525846703
+     },
+     "Other": {
+      "n": 526,
+      "at_floor_pct": 7.41444866920152
+     },
+     "Signal": {
+      "n": 1540,
+      "at_floor_pct": 1.0389610389610389
+     },
+     "SurfaceProblem": {
+      "n": 36946,
+      "at_floor_pct": 9.037514209928004
+     }
+    }
+   },
+   "zoom": {
+    "n_eligible": 258088,
+    "zoom1": {
+     "fov_deg": 89.75,
+     "deg_at_5px": 0.7922595490608716,
+     "deg_at_20px": 3.16601390118844,
+     "n": 163581,
+     "corpus_share_pct": 63.38186974985276
+    },
+    "zoom2": {
+     "fov_deg": 53.0,
+     "deg_at_5px": 0.39675229566291625,
+     "deg_at_20px": 1.5866288605649552,
+     "n": 55493,
+     "corpus_share_pct": 21.50158085614209
+    },
+    "zoom3": {
+     "fov_deg": 27.68198649088542,
+     "deg_at_5px": 0.19606405835033505,
+     "deg_at_20px": 0.7842103207988017,
+     "n": 38759,
+     "corpus_share_pct": 15.017745885124453
+    },
+    "other": {
+     "n": 255,
+     "corpus_share_pct": 0.09880350888069185,
+     "n_distinct_zooms": 41,
+     "min_zoom": 1.04,
+     "max_zoom": 2.9091,
+     "fov_deg_range": [
+      29.373069579860204,
+      88.28
+     ]
+    }
+   },
+   "by_era_identification": {
+    "legacy": {
+     "n": 103915,
+     "sd_overall_deg": 8.860559503682829,
+     "sd_within_band_deg": 8.563712655452052,
+     "pct_surviving_band_fe": 96.64979566914037,
+     "corr_with_depression": 0.24580517040556835
+    },
+    "mid": {
+     "n": 94409,
+     "sd_overall_deg": 7.438879602335239,
+     "sd_within_band_deg": 7.097221643719985,
+     "pct_surviving_band_fe": 95.40713149184455,
+     "corr_with_depression": 0.2891806116516577
+    },
+    "post179": {
+     "n": 59764,
+     "sd_overall_deg": 9.304489969198556,
+     "sd_within_band_deg": 8.653679830427308,
+     "pct_surviving_band_fe": 93.00541844931124,
+     "corr_with_depression": 0.4051808201158577
+    }
+   }
+  }
+ },
+ "pooled": {
+  "eligibility": {
+   "n_labels": 438410,
+   "replayable_y": 436350,
+   "exact_y": 433866,
+   "exact_x_and_y": 420381,
+   "eligible": 433866,
+   "kept_by_using_exact_y_only": 13485
+  },
+  "identification": {
+   "n": 433866,
+   "sd_overall_deg": 8.33724221208749,
+   "sd_within_band_deg": 7.927283587675924,
+   "pct_surviving_band_fe": 95.08280299428988,
+   "corr_with_depression": 0.31912252314632816
+  },
+  "by_band": {
+   "<5": {
+    "n": 12991,
+    "offaxis_v_deg": {
+     "n": 12991,
+     "p5": -23.250544118000974,
+     "p50": -4.209354922496849,
+     "p95": 3.714751352868463,
+     "sd": 8.229095960861091
+    },
+    "offaxis_r_p95_deg": 35.49160088753062,
+    "at_floor_pct": 0.4156723885767069
+   },
+   "5-15": {
+    "n": 193807,
+    "offaxis_v_deg": {
+     "n": 193807,
+     "p5": -21.320567591086338,
+     "p50": -3.6579549029523237,
+     "p95": 6.729382571439595,
+     "sd": 8.272934856098928
+    },
+    "offaxis_r_p95_deg": 36.188244662972636,
+    "at_floor_pct": 2.986476236668438
+   },
+   "15-30": {
+    "n": 197170,
+    "offaxis_v_deg": {
+     "n": 197170,
+     "p5": -15.999369489027677,
+     "p50": -3.8799621720002655,
+     "p95": 9.8461060950718,
+     "sd": 7.705961663236221
+    },
+    "offaxis_r_p95_deg": 35.81620227601873,
+    "at_floor_pct": 11.972916772328448
+   },
+   ">30": {
+    "n": 29898,
+    "offaxis_v_deg": {
+     "n": 29898,
+     "p5": -3.894715589523491,
+     "p50": 3.8436976015229174,
+     "p95": 18.20258444866843,
+     "sd": 6.873754538976593
+    },
+    "offaxis_r_p95_deg": 33.101669915891414,
+    "at_floor_pct": 49.23740718442705
+   }
+  },
+  "floor": {
+   "n": 433866,
+   "n_all_labels": 438410,
+   "min_pitch_deg_all_labels": -35.0,
+   "min_pitch_deg": -35.0,
+   "max_pitch_deg": 0.0,
+   "at_floor_pct": 10.180562662204458,
+   "exactly_floor_pct": 10.174570028534156,
+   "by_band_pct": {
+    "<5": 0.4156723885767069,
+    "5-15": 2.986476236668438,
+    "15-30": 11.972916772328448,
+    ">30": 49.23740718442705
+   },
+   "by_label_type": {
+    "Crosswalk": {
+     "n": 14481,
+     "at_floor_pct": 15.668807402803676
+    },
+    "CurbRamp": {
+     "n": 148796,
+     "at_floor_pct": 12.070216941315627
+    },
+    "NoCurbRamp": {
+     "n": 60976,
+     "at_floor_pct": 12.43604040934138
+    },
+    "NoSidewalk": {
+     "n": 81667,
+     "at_floor_pct": 6.486095975118469
+    },
+    "Obstacle": {
+     "n": 53805,
+     "at_floor_pct": 8.579128333797973
+    },
+    "Occlusion": {
+     "n": 2605,
+     "at_floor_pct": 2.840690978886756
+    },
+    "Other": {
+     "n": 1664,
+     "at_floor_pct": 10.276442307692307
+    },
+    "Signal": {
+     "n": 3397,
+     "at_floor_pct": 2.5316455696202533
+    },
+    "SurfaceProblem": {
+     "n": 66475,
+     "at_floor_pct": 9.197442647611883
+    }
+   }
+  },
+  "zoom": {
+   "n_eligible": 433866,
+   "zoom1": {
+    "fov_deg": 89.75,
+    "deg_at_5px": 0.7922595490608716,
+    "deg_at_20px": 3.16601390118844,
+    "n": 279344,
+    "corpus_share_pct": 64.38485615374333
+   },
+   "zoom2": {
+    "fov_deg": 53.0,
+    "deg_at_5px": 0.39675229566291625,
+    "deg_at_20px": 1.5866288605649552,
+    "n": 91548,
+    "corpus_share_pct": 21.10052412496024
+   },
+   "zoom3": {
+    "fov_deg": 27.68198649088542,
+    "deg_at_5px": 0.19606405835033505,
+    "deg_at_20px": 0.7842103207988017,
+    "n": 62694,
+    "corpus_share_pct": 14.450083666385474
+   },
+   "other": {
+    "n": 280,
+    "corpus_share_pct": 0.06453605491096329,
+    "n_distinct_zooms": 49,
+    "min_zoom": 1.04,
+    "max_zoom": 2.9091,
+    "fov_deg_range": [
+     29.373069579860204,
+     88.28
+    ]
+   }
+  },
+  "by_era_identification": {
+   "legacy": {
+    "n": 146435,
+    "sd_overall_deg": 8.604735747325703,
+    "sd_within_band_deg": 8.299193929520602,
+    "pct_surviving_band_fe": 96.4491435091419,
+    "corr_with_depression": 0.2643102225602617
+   },
+   "mid": {
+    "n": 197594,
+    "sd_overall_deg": 7.851549311281804,
+    "sd_within_band_deg": 7.424673375455247,
+    "pct_surviving_band_fe": 94.56316302805124,
+    "corr_with_depression": 0.33046660175565085
+   },
+   "post179": {
+    "n": 89837,
+    "sd_overall_deg": 8.864484491199153,
+    "sd_within_band_deg": 8.284589244562202,
+    "pct_surviving_band_fe": 93.45821804739256,
+    "corr_with_depression": 0.38353090042821386
+   }
+  }
+ },
+ "specimens": {
+  "teaneck-nj 14955": {
+   "record": {
+    "heading": 298.25,
+    "pitch": -35.0,
+    "zoom": 1.0,
+    "canvas_x": 451.0,
+    "canvas_y": 142.0,
+    "canvas_width": 720.0,
+    "canvas_height": 480.0
+   },
+   "offaxis_v_deg": -15.747913981930697,
+   "offaxis_r_deg": 20.297831361163286,
+   "at_pitch_floor": true,
+   "tail_bands": [
+    ">30"
+   ]
+  },
+  "chicago-il 30652": {
+   "record": {
+    "heading": 320.5,
+    "pitch": -35.0,
+    "zoom": 1.0,
+    "canvas_x": 361.0,
+    "canvas_y": 83.0,
+    "canvas_width": 720.0,
+    "canvas_height": 480.0
+   },
+   "offaxis_v_deg": -23.471118968661123,
+   "offaxis_r_deg": 23.471505957864643,
+   "at_pitch_floor": true,
+   "tail_bands": [
+    "<5",
+    "5-15",
+    "15-30",
+    ">30"
+   ]
+  }
+ }
+}

@@ -261,7 +261,69 @@ below 53° of depression against a corpus p99 of 43.5°).
 
 ## 7 · Amendment log
 
-*Empty. Registration is the merge of this document, so nothing above is an amendment yet.*
+### Amendment 1 — 2026-08-11 · Study 1's estimand boundary, and two registered secondaries
+
+Registered after the merge of this document (PR #79, 2026-08-11 03:29 UTC) and **before any Phase 2
+corpus or annotation exists**. Prompted by
+[SidewalkWebpage#4842](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4842) and the
+[record-staleness study](2026-08-10-off-target-markers-validate.md) (PR #80, pending merge — this link
+resolves once it lands), which showed that #4842's two example labels replay `exact` — their stored records reproduce their own `pano_x`/`pano_y` at 0 px,
+so record corruption does not explain them. Evidence for everything below is the
+[off-axis covariate study](2026-08-11-offaxis-covariate.md). Nothing in §§1–6 is retracted; the corpus
+spec, pixel source, annotation protocol, and power table are unchanged.
+
+**(a) Study 1's estimand boundary is stated.** Study 1 compares stored `pano_x`/`pano_y` against gold
+annotations on the pano raster. It therefore sees everything up to and including the stored pixel and
+**nothing after it**. Of the three mechanisms that can put a label visibly off target:
+
+| | mechanism | seen by Study 1 |
+|---|---|---|
+| i | the click was low — placement behaviour and/or rig tilt | **yes** |
+| ii | the render lost an offset (e.g. the 5 px vertical fudge Validate dropped in `865b5b8a8`) | **no — structurally invisible** |
+| iii | capture-side canvas→pano projection error | **yes** (and invisible in Validate, which renders from the same record) |
+
+**A null result in Study 1 therefore does not close #4842**, and must not be reported as if it did.
+Row (ii) requires a SidewalkWebpage-side check that is out of scope for this study.
+
+**(b) Two secondary covariates are registered for Study 1**, both computed offline from data already
+in hand, at zero annotation cost:
+
+* **Off-axis vertical offset** — the click's angular offset below the viewport centre,
+  `pitch − pov_pitch` from the verbatim production projection. Registered because it discriminates
+  mechanisms that endpoint 1's band-graded bias otherwise confounds:
+
+  | Δel signature | reading |
+  |---|---|
+  | tracks the tilt terms of §2.2, flat in off-axis | rig tilt → geometry fix warranted |
+  | grows with off-axis, ≈ 0 at the canvas centre, scales with fov | capture-side projection error |
+  | constant in both | human placement behaviour |
+
+  Reported as a descriptive/secondary column with a cluster-robust CI; **no code-change decision rule
+  attaches to it in Phase 3** — it informs the reading of endpoints 1 and 2 rather than replacing them.
+* **Viewport pitch floor** — the indicator `pitch ≤ −35° + 0.01`. The Explore client cannot pitch
+  below −35°; the minimum observed over 438,410 labels is exactly −35.0000, carrying 10.18% of
+  eligible labels and **49.2% of the >30° depression band**, so floor exposure is sharply graded
+  across the very strata §2.1 bands on.
+
+**(c) Both are computed on `exact_y` rows** — those whose stored record's vertical half reproduces
+stored `pano_y` exactly (98.96% of the corpus) — rather than on `exact` (both replay axes). The
+vertical offset is provably independent of viewport heading, so the `x_only` staleness class (58% of
+record misses, stale only in heading) is harmless here and excluding it would discard 13,485 eligible
+rows — 3.1% of the eligible corpus — for no gain. (Two denominators, easily conflated: 58% is a share
+of the record *misses*, 3.1% a share of the eligible rows.) This restriction also makes the covariates **invariant to #4842's pending repair
+migration**, which rewrites heading for `x_only` rows and leaves pitch/zoom/canvas alone, while every
+class whose repair touches canvas or zoom already fails `exact_y`.
+
+**(d) Not adopted, and why.** No forced off-axis stratum is added to §3: 95.08% of the covariate's
+variation already survives the §2.1 depression-band fixed effects (sd 8.34° → 7.93°, correlation with
+depression 0.319), holding at 93.5–96.4% in every era, so it is identified in the corpus as already
+specified. The corpus is also **not** stratified on "appears off target in Validate" — that would be
+selection on the outcome.
+
+**(e) Consequent constraint on Phase 2 tooling.** The annotation tile renderer must cut from the
+equirectangular raster with its own tested transform, and Study 3's rectilinear re-projection must be
+written fresh — never ported from the webpage's render path. Porting it would import the mechanism
+under test into the gold standard, and Study 1 would measure zero by construction.
 
 **Pre-registration revisions (before registration, so not amendments).**
 
