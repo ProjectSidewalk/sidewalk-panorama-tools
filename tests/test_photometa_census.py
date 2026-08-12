@@ -40,6 +40,21 @@ def label_frame():
     return rawlabels.add_era(df)
 
 
+def _write_rawlabels_csv(path, records):
+    """A rawLabels-shaped CSV carrying only what `main`'s sampling step reads; the rest stay blank."""
+    import rawlabels as rl
+    df = pd.DataFrame([{'pano_id': r['pano_id'],
+                        'pano_width': r['stored_width'], 'pano_height': r['stored_height'],
+                        'label_id': i,
+                        'time_created': int(pd.Timestamp('2022-06-01', tz='UTC').value // 10 ** 6)}
+                       for i, r in enumerate(records)])
+    for column in rl.STUDY_COLUMNS:
+        if column not in df:
+            df[column] = np.nan
+    df[rl.STUDY_COLUMNS].to_csv(path, index=False)
+    return str(path)
+
+
 class TestSampling:
 
     def test_deterministic_under_seed(self):
@@ -201,6 +216,101 @@ class TestResummarize:
         text = p.read_text(encoding='utf-8')
         assert 'NaN' not in text
         assert json.loads(text)['records'][0]['error'] is None
+
+
+class TestOneRenderingOfTheSummary:
+    """The two entry points printed the same summary two different ways. `--resummarize` ran the tilt
+    quantiles through `fmt`; the live path interpolated them raw, so the *same records* printed
+    `None/None/None` on one path and `n/a/n/a/n/a` on the other, and `1.2345678901` against `1.23`
+    when the values were there. The unfixed copy was the live one — the path that has just spent a
+    network census, under a comment saying exactly that.
+
+    So the test is not "does it format nicely" but "do the two paths agree", which is the property
+    that was false and the one that goes on being true only if there is one renderer.
+    """
+
+    @staticmethod
+    def _records(alive=1, dead=1, tilt=True, errored=0):
+        rows = [{'pano_id': f'a{i}', 'city': 'a-city', 'era': 'mid', 'stored_width': 16384.0,
+                 'stored_height': 8192.0, 'found': True, 'served_width': 16384,
+                 'served_height': 8192, 'pitch_deg': 1.2345678901 if tilt else None,
+                 'roll_deg': 0.5 if tilt else None, 'has_depth': True,
+                 'capture_date': '2020-01', 'error': None} for i in range(alive)]
+        rows += [{'pano_id': f'd{i}', 'city': 'a-city', 'era': 'mid', 'stored_width': 16384.0,
+                  'stored_height': 8192.0, 'found': False, 'served_width': None,
+                  'served_height': None, 'pitch_deg': None, 'roll_deg': None, 'has_depth': None,
+                  'capture_date': None, 'error': 'boom' if i < errored else None}
+                 for i in range(dead)]
+        return rows
+
+    def _summary(self, **kwargs):
+        return pc.summarize(pd.DataFrame(self._records(**kwargs)))
+
+    def test_the_tilt_line_is_rounded_not_raw(self, capsys):
+        """The live path printed the full float. Two decimals, on both paths."""
+        pc.print_summary(self._summary())
+        printed = capsys.readouterr().out
+        assert '1.23' in printed and '1.2345678901' not in printed
+
+    def test_the_alive_line_is_rounded_too(self, capsys):
+        """One alive of three is 33.333333333333336, which is what an unformatted percentage looks
+        like next to a formatted one."""
+        pc.print_summary(self._summary(alive=1, dead=2))
+        printed = capsys.readouterr().out
+        assert 'alive 33.3%' in printed and '33.33' not in printed
+
+    def test_absent_tilt_prints_n_a_rather_than_None(self, capsys):
+        """A census whose alive panos carry no tilt is reachable — `_tilt_stats` returns None for
+        every quantile — and `None` in a column of numbers is what `studyfmt` exists to prevent."""
+        pc.print_summary(self._summary(tilt=False))
+        printed = capsys.readouterr().out
+        assert 'n/a' in printed and 'None' not in printed
+
+    def test_an_all_dead_census_prints_n_a_for_every_optional_value(self, capsys):
+        """Nothing alive means no comparable dims, no depth share and no tilt — six optional values
+        at once, and the state a thin or badly-aged sample actually reaches."""
+        summary = self._summary(alive=0, dead=2)
+        assert summary['dims_drift_pct_of_alive'] is None
+        assert summary['depth_available_pct_of_alive'] is None
+        pc.print_summary(summary)
+        printed = capsys.readouterr().out
+        assert 'None' not in printed
+        assert printed.count('n/a') == 8, 'two rate columns and six tilt quantiles'
+
+    def test_the_error_count_is_printed(self, capsys):
+        """It was on the live line and not the offline one — the same asymmetry, in the direction
+        that hides how much of a low alive rate is ambiguity rather than decay."""
+        pc.print_summary(self._summary(alive=1, dead=1, errored=1))
+        assert 'errors 1' in capsys.readouterr().out
+
+    def test_the_two_entry_points_print_the_same_thing(self, tmp_path, capsys, monkeypatch):
+        """The property the drift broke, end to end: one set of records, two CLI paths, identical
+        output. The live path is stubbed at `run_census` so no network is touched."""
+        import json
+        records = [
+            {'pano_id': 'p1', 'city': 'a-city', 'era': 'mid', 'stored_width': 16384.0,
+             'stored_height': 8192.0, 'found': True, 'served_width': 16384, 'served_height': 8192,
+             'pitch_deg': 1.2345678901, 'roll_deg': 0.5, 'has_depth': True, 'capture_date': '2020-01'},
+            {'pano_id': 'p2', 'city': 'a-city', 'era': 'mid', 'stored_width': 16384.0,
+             'stored_height': 8192.0, 'found': False, 'served_width': None, 'served_height': None,
+             'pitch_deg': None, 'roll_deg': None, 'has_depth': None, 'capture_date': None},
+        ]
+        census = tmp_path / 'census.json'
+        census.write_text(json.dumps({'source': 's', 'seed': 1, 'summary': {}, 'records': records}),
+                          encoding='utf-8')
+        pc.main(['--resummarize', str(census)])
+        offline = capsys.readouterr().out
+
+        monkeypatch.setattr(pc, 'run_census', lambda sample, interval: pd.DataFrame(records))
+        csv_dir = tmp_path / 'raw'
+        csv_dir.mkdir()
+        _write_rawlabels_csv(csv_dir / 'a-city.csv', records)
+        pc.main([str(csv_dir), '--fetched', '2026-08-11', '--per-stratum', '2'])
+        live = capsys.readouterr().out
+
+        # The live path prints a sample line first; the summary below it must match exactly.
+        assert live.endswith(offline), f'live:\n{live}\noffline:\n{offline}'
+        assert 'alive 50.0%' in offline
 
 
 class TestCommittedFindings:
