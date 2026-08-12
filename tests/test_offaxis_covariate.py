@@ -614,7 +614,8 @@ class TestSpecimens:
         assert s['chicago-il 30652']['offaxis_v_deg'] == pytest.approx(-23.47, abs=0.005)
         assert s['chicago-il 30652']['offaxis_r_deg'] == pytest.approx(23.47, abs=0.005)
         assert s['teaneck-nj 14955']['record'] == {'heading': 298.25, 'pitch': -35.0, 'zoom': 1.0,
-                                                   'canvas_x': 451.0, 'canvas_y': 142.0}
+                                                   'canvas_x': 451.0, 'canvas_y': 142.0,
+                                                   'canvas_width': 720.0, 'canvas_height': 480.0}
 
     def test_only_the_chicago_specimen_is_beyond_the_p5_of_every_band(self, doc, pooled):
         """The report claimed both were, for one revision, while its own §4 prose had it right. The
@@ -1036,3 +1037,30 @@ class TestTheZoomTableMatchesTheReport:
         that explains the correction, never as a table cell."""
         assert '| **0.623°** |' not in report_text
         assert '| 2.493° |' not in report_text
+
+
+class TestSpecimenCanvasIsRecordedNotAssumed:
+    """The specimens are hand-transcribed because neither label is in the six-city corpus. Their
+    canvas dims are part of that record: the covariate scales with the frame, so taking the
+    720x480 fallback made an unverified default load-bearing for a published correction."""
+
+    def test_every_specimen_states_its_canvas(self):
+        for name, rec in oc.SPECIMENS.items():
+            assert 'canvas_width' in rec and 'canvas_height' in rec, name
+            assert rec['canvas_width'] > 0 and rec['canvas_height'] > 0, name
+
+    def test_the_covariate_moves_with_the_canvas(self):
+        """Why it has to be recorded: same click, different frame, materially different answer.
+        At DPR-2 teaneck's -15.75 deg becomes -25.58 deg, past the <5 band's p5 of -23.25."""
+        rec = dict(oc.SPECIMENS['teaneck-nj 14955'])
+        base = oc.specimen_offaxis(rec)
+        dpr2 = oc.specimen_offaxis({**rec, 'canvas_width': 1440.0, 'canvas_height': 960.0})
+        assert base == pytest.approx(-15.75, abs=0.02)
+        assert dpr2 == pytest.approx(-25.58, abs=0.02)
+
+    def test_the_recorded_canvas_is_what_the_report_publishes(self, pooled):
+        """Guards against 'fixed' by changing the number instead of the record."""
+        assert oc.specimen_offaxis(oc.SPECIMENS['teaneck-nj 14955']) == pytest.approx(
+            -15.75, abs=0.02)
+        assert oc.specimen_offaxis(oc.SPECIMENS['chicago-il 30652']) == pytest.approx(
+            -23.47, abs=0.02)

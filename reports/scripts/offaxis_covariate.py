@@ -82,11 +82,22 @@ LADDER_ZOOMS = (1.0, 2.0, 3.0)
 # the record-staleness study, which found both replay `exact`). They are not in this study's six-city
 # corpus, so their off-axis values are computed from these records rather than joined -- committed
 # here so the report's section 4 reproduces from the repo like every other number it cites.
+# The #4842 specimens. Neither label is in the six-city corpus, so these are transcribed from
+# their own deployments' rawLabels exports -- and the canvas dims are part of the record, not an
+# assumption. They used to be omitted, which silently took frame_pov's 720x480 fallback: a
+# load-bearing default, because the covariate scales with the frame. Verified 2026-08-12 against
+# the teaneck-nj and chicago-il exports, where both rows do read 720x480, so no published figure
+# moves -- but at DPR-2 (1440x960) teaneck's offset would be -25.58 deg rather than -15.75 deg,
+# which is past the <5 band's 5th percentile and would have overturned this report's own
+# correction that only chicago-il clears all four bands. An unverified default had no business
+# carrying that.
 SPECIMENS = {
     'teaneck-nj 14955': {'heading': 298.25, 'pitch': -35.0, 'zoom': 1.0,
-                         'canvas_x': 451.0, 'canvas_y': 142.0},
+                         'canvas_x': 451.0, 'canvas_y': 142.0,
+                         'canvas_width': 720.0, 'canvas_height': 480.0},
     'chicago-il 30652': {'heading': 320.5, 'pitch': -35.0, 'zoom': 1.0,
-                         'canvas_x': 361.0, 'canvas_y': 83.0},
+                         'canvas_x': 361.0, 'canvas_y': 83.0,
+                         'canvas_width': 720.0, 'canvas_height': 480.0},
 }
 
 # The canvas frame is NOT redeclared here. pov_replay.CANVAS_W/CANVAS_H is the one definition, and
@@ -353,6 +364,16 @@ def zoom_conversions(df):
                           _num(pov_replay.get_3d_fov(rest.min()))] if len(rest) else None,
     }
     return out
+
+
+def specimen_offaxis(record):
+    """One specimen record's vertical off-axis offset, in degrees.
+
+    Split out so the canvas dims in a record are demonstrably what the published figure depends on:
+    a test can hand this the same click on a different frame and see the answer move.
+    """
+    vertical, _ = offaxis_offsets(pd.DataFrame([record]))
+    return float(vertical[0])
 
 
 def specimen_census(by_band_result):

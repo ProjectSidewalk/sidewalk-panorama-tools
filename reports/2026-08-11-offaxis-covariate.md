@@ -1,7 +1,7 @@
 # The covariate that separates a capture-side projection error from tilt and from placement
 
 **2026-08-11** · prompted by [SidewalkWebpage#4842](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4842)
-after the [record-staleness study](2026-08-10-record-staleness-validate.md) cleared its two example
+after the [record-staleness study](2026-08-10-off-target-markers-validate.md) cleared its two example
 labels · amends the [crop-priors pre-registration](2026-08-09-crop-priors-prereg.md) §7 before any
 Phase 2 annotation exists
 
@@ -311,9 +311,10 @@ be computed against two different canvases; a vacuous `isfinite(offaxis_v)` term
 Turns); an empty `--csv-dir` now names the directory instead of dying in `pd.concat`; and the index row
 in `reports/README.md` is back in date order.
 
-**Enforcement.** 103 tests in `tests/test_offaxis_covariate.py` (up from 48) and a new
+**Enforcement.** 111 tests in `tests/test_offaxis_covariate.py` (up from 48) and a new
 `tests/test_reports_index.py`; **18/18 mutants killed** on a battery that reverts each fix
-individually. Two mutants survived the first pass and both were the tests' fault, not the fixes':
+individually. Three mutants survived the first pass and all three were the tests' fault, not the
+fixes':
 `floor_census`'s and `specimen_census`'s findings were pinned only against the committed artifact, so a
 code revert left them green — synthetic code-level tests were added. A third survivor,
 "`eligible` stops requiring a band", exposed a test that reimplemented the mask inline instead of
@@ -345,7 +346,7 @@ have caught both mismatches above without a reviewer.
 |---|---|
 | Summary numbers (committed) | `reports/data/2026-08-11-offaxis-covariate.json` |
 | Covariate + identification analysis | `reports/scripts/offaxis_covariate.py` |
-| Machinery tests + findings pins | `tests/test_offaxis_covariate.py` (103 tests; 13/13 study mutants, 18/18 review mutants killed) |
+| Machinery tests + findings pins | `tests/test_offaxis_covariate.py` (111 tests; 13/13 study mutants, 18/18 review mutants, 2/2 gnomonic mutants killed) |
 | Report/index consistency | `tests/test_reports_index.py`, `TestReportMatchesTheArtifact` |
 | Inherited machinery | `reports/scripts/pov_replay.py`, `era_replay_study.py`, `rawlabels.py` |
 | The amendment this supports | `reports/2026-08-09-crop-priors-prereg.md` §7 |

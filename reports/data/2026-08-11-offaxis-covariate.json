@@ -1213,7 +1213,9 @@
     "pitch": -35.0,
     "zoom": 1.0,
     "canvas_x": 451.0,
-    "canvas_y": 142.0
+    "canvas_y": 142.0,
+    "canvas_width": 720.0,
+    "canvas_height": 480.0
    },
    "offaxis_v_deg": -15.747913981930697,
    "offaxis_r_deg": 20.297831361163286,
@@ -1228,7 +1230,9 @@
     "pitch": -35.0,
     "zoom": 1.0,
     "canvas_x": 361.0,
-    "canvas_y": 83.0
+    "canvas_y": 83.0,
+    "canvas_width": 720.0,
+    "canvas_height": 480.0
    },
    "offaxis_v_deg": -23.471118968661123,
    "offaxis_r_deg": 23.471505957864643,
