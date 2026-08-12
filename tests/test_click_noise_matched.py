@@ -269,6 +269,112 @@ class TestMatchedPairs:
             assert sorted(np.round(first['d_total'], 9)) == sorted(np.round(again['d_total'], 9))
 
 
+class TestNClustersCountsObjectsInBothModes:
+    """`cluster_id` was a running pair counter in matched mode, so `sigma_from_pairs`' `n_clusters`
+    came out equal to `n_pairs` by construction — and got printed beside a clustered `n_clusters`
+    that means "distinct co-located objects". The committed census shows
+    `clustered: {n_pairs: 2, n_clusters: 2}` next to `matched: {n_pairs: 6, n_clusters: 6}`, where
+    only the first equality is a fact about the data.
+
+    It matters because `n_clusters` is the closest thing the artifact has to an effective n: pairs are
+    not independent, since one object labelled by k users contributes k(k-1)/2 of them. A consumer
+    sizing the objects behind a matched sigma got the pair count instead.
+
+    Two labellers cannot tell the two implementations apart — one object gives exactly one pair either
+    way — so every test here that discriminates needs three.
+    """
+
+    def test_three_users_on_one_object_are_one_object(self):
+        """3 pairs, 1 object. The pair counter said 3."""
+        df = _labels([('u1', 'CurbRamp', 10.0, 0.0),
+                      ('u2', 'CurbRamp', 10.2, 0.0),
+                      ('u3', 'CurbRamp', 10.4, 0.0)])
+        pairs, _ = cn.matched_pairs(df, ['p1'])
+        s = cn.sigma_from_pairs(pairs)
+        assert s['n_pairs'] == 3
+        assert s['n_clusters'] == 1
+
+    def test_the_link_is_transitive_across_user_pairs(self):
+        """u1-u3 need never be matched directly for all three clicks to be one ramp — the components
+        of the match graph are what define the object, which is why this is union-find and not a
+        groupby on the assignment."""
+        df = _labels([('u1', 'CurbRamp', 10.0, 0.0),
+                      ('u2', 'CurbRamp', 10.2, 0.0),
+                      ('u3', 'CurbRamp', 10.4, 0.0),
+                      ('u1', 'CurbRamp', 80.0, 0.0),
+                      ('u2', 'CurbRamp', 80.3, 0.0),
+                      ('u3', 'CurbRamp', 80.6, 0.0)])
+        pairs, _ = cn.matched_pairs(df, ['p1'])
+        s = cn.sigma_from_pairs(pairs)
+        assert s['n_pairs'] == 6, 'three user pairs x two ramps'
+        assert s['n_clusters'] == 2, 'two ramps'
+
+    def test_distinct_objects_stay_distinct(self):
+        """Guards the guard: components must not collapse everything into one id, which would pass
+        the two tests above for the wrong reason."""
+        df = _labels([('u1', 'CurbRamp', 10.0, 0.0), ('u2', 'CurbRamp', 10.2, 0.0),
+                      ('u1', 'CurbRamp', 80.0, 0.0), ('u2', 'CurbRamp', 80.2, 0.0),
+                      ('u1', 'CurbRamp', 200.0, 0.0), ('u2', 'CurbRamp', 200.2, 0.0)])
+        s = cn.sigma_from_pairs(cn.matched_pairs(df, ['p1'])[0])
+        assert s['n_pairs'] == s['n_clusters'] == 3, 'two labellers: one pair per object'
+
+    def test_the_two_estimators_agree_on_the_object_count(self):
+        """The property that makes one name legitimate for both blocks. Three labellers on two ramps:
+        the clustering estimator groups by radius and reports 2, and matched mode has to agree."""
+        df = _labels([('u1', 'CurbRamp', 10.0, 0.0), ('u2', 'CurbRamp', 10.2, 0.0),
+                      ('u3', 'CurbRamp', 10.4, 0.0),
+                      ('u1', 'CurbRamp', 80.0, 0.0), ('u2', 'CurbRamp', 80.3, 0.0),
+                      ('u3', 'CurbRamp', 80.6, 0.0)])
+        matched = cn.sigma_from_pairs(cn.matched_pairs(df, ['p1'])[0])
+        clustered = cn.sigma_from_pairs(cn.cluster_pairs(
+            cn.cluster_labels(df, cn.PRIMARY_RADIUS_DEG)))
+        assert matched['n_pairs'] == clustered['n_pairs'] == 6
+        assert matched['n_clusters'] == clustered['n_clusters'] == 2
+
+    def test_a_rejected_match_does_not_link_two_objects(self):
+        """A forced match past `max_sep_deg` is not evidence of an object and is not in `pairs`, so it
+        must not join what it reaches across. Built so it would actually do damage: u1 labels both
+        ramps, u2 only the near one and u3 only the far one, so the (u2, u3) assignment force-pairs
+        across the frame — and if that edge counted, the two ramps would merge into one object.
+        """
+        df = _labels([('u1', 'CurbRamp', 10.0, 0.0), ('u1', 'CurbRamp', 80.0, 0.0),
+                      ('u2', 'CurbRamp', 10.2, 0.0), ('u3', 'CurbRamp', 80.2, 0.0)])
+        pairs, diag = cn.matched_pairs(df, ['p1'], max_sep_deg=10.0)
+        assert diag['n_pairs_matched'] == 2
+        assert diag['n_rejected_beyond_max_sep'] == 1, 'the u2-u3 forced match'
+        assert cn.sigma_from_pairs(pairs)['n_clusters'] == 2
+
+    def test_objects_are_never_merged_across_panos_or_types(self):
+        df = _labels([('u1', 'CurbRamp', 10.0, 0.0), ('u2', 'CurbRamp', 10.2, 0.0),
+                      ('u1', 'Obstacle', 10.0, 0.0), ('u2', 'Obstacle', 10.2, 0.0)])
+        other = df.iloc[:2].copy()
+        other['pano_id'] = 'p2'
+        s = cn.sigma_from_pairs(cn.matched_pairs(pd.concat([df, other], ignore_index=True))[0])
+        assert s['n_pairs'] == s['n_clusters'] == 3
+
+    def test_it_survives_a_duplicate_index(self):
+        """Object identity is row identity, and a frame concatenated without `ignore_index` repeats
+        its labels. Two ramps on two panos must stay two objects, not collapse into one."""
+        df = _labels([('u1', 'CurbRamp', 10.0, 0.0), ('u2', 'CurbRamp', 10.2, 0.0)])
+        other = df.copy()
+        other['pano_id'] = 'p2'
+        both = pd.concat([df, other])  # deliberately not ignore_index
+        assert list(both.index) == [0, 1, 0, 1]
+        s = cn.sigma_from_pairs(cn.matched_pairs(both)[0])
+        assert s['n_pairs'] == s['n_clusters'] == 2
+
+    def test_the_committed_census_matched_block_counts_objects(self):
+        """The corpus pin. Richmond's block has two labellers, so pairs and objects coincide — the
+        point is that they now coincide *because the data says so*, and the file records both."""
+        path = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-11-mapillary-census.json')
+        if not os.path.exists(path):
+            pytest.skip('committed census not present')
+        with open(path, encoding='utf-8') as f:
+            block = json.load(f)['pooled']['crossed_block']
+        assert block['matched']['n_clusters'] <= block['matched']['n_pairs']
+        assert block['clustered']['n_clusters'] <= block['clustered']['n_pairs']
+
+
 class TestSharedPanos:
 
     def test_it_finds_only_panos_with_two_users(self):

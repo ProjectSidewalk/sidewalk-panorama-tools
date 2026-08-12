@@ -151,6 +151,10 @@ def _pair_record(cid, pano_id, label_type, az_i, el_i, az_j, el_j):
     Shared by `cluster_pairs` and `matched_pairs` deliberately. Two copies of this arithmetic would be
     two conventions to keep in step, and a sign or a missing cos here changes every sigma the study
     reports without failing anything.
+
+    `cid` identifies the object the pair came from. `cluster_pairs` knows it up front; `matched_pairs`
+    passes None and fills it in once every match is in, because the object is only defined by the
+    components of the whole match graph.
     """
     signed = ((az_i - az_j + 180.0) % 360.0) - 180.0
     el_mean = (el_i + el_j) / 2
@@ -256,6 +260,37 @@ def _drop_same_user_repeats(g, radius_deg):
     return g.loc[[label for label in g.index if label in set(keep)]]
 
 
+def _object_ids(matches):
+    """One dense object id per matched pair: labels linked by a match are the same physical object.
+
+    Connected components over the match graph, which is what makes matched mode's `cluster_id` mean
+    what `cluster_labels`' does. Two labellers give one edge per object and the components are the
+    pairs; three labellers give three edges per object and one component, which is the case a running
+    pair counter got wrong.
+
+    Union-find rather than a groupby because the linking is transitive across user pairs: u1-u2 and
+    u2-u3 on the same ramp is one object even though no single assignment saw all three.
+    """
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for x, y in matches:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    dense, out = {}, []
+    for x, _ in matches:
+        out.append(dense.setdefault(find(x), len(dense)))
+    return out
+
+
 def matched_pairs(df, panos=None, max_sep_deg=MATCH_MAX_SEP_DEG,
                   repeat_radius_deg=REPEAT_RADIUS_DEG):
     """Cross-user pairs for a *designed* crossed block: two labellers asked to label the same panos
@@ -306,10 +341,12 @@ def matched_pairs(df, panos=None, max_sep_deg=MATCH_MAX_SEP_DEG,
     letting a forced match inflate sigma; rejections are counted, never silently dropped.
     """
     d = df if panos is None else df[df['pano_id'].isin(set(panos))]
-    d = d.copy()
+    # Row identity is what links a label matched in two different user pairs into one object below,
+    # so the index has to be unique. A concatenated multi-city frame is the case that would not be.
+    d = d.copy().reset_index(drop=True)
     d['_az'], d['_el'] = _angular(d)
 
-    rows, rejected, greedy, cid = [], 0, 0, 0
+    rows, matches, rejected, greedy = [], [], 0, 0
     for (pano_id, label_type), g in d.groupby(['pano_id', 'label_type'], sort=True):
         # One placement per user per object: a double-submit is not an independent placement, and
         # the earliest is the one the clustering estimator keeps too.
@@ -341,9 +378,18 @@ def matched_pairs(df, panos=None, max_sep_deg=MATCH_MAX_SEP_DEG,
                 # signs of d_az/d_el mean the same thing on every pano.
                 first = (az_b[j], el_b[j]) if flip else (az_a[i], el_a[i])
                 second = (az_a[i], el_a[i]) if flip else (az_b[j], el_b[j])
-                rows.append(_pair_record(cid, pano_id, label_type,
+                rows.append(_pair_record(None, pano_id, label_type,
                                          first[0], first[1], second[0], second[1]))
-                cid += 1
+                matches.append((a.index[i], b.index[j]))
+
+    # cluster_id has to mean the same thing here as in `cluster_pairs`, where it identifies the
+    # co-located object a pair came from. It was a running pair counter, which made
+    # `sigma_from_pairs`' n_clusters a second copy of n_pairs in matched mode and printed it beside a
+    # clustered n_clusters that meant distinct objects -- so a consumer sizing the independent objects
+    # behind a matched sigma got the pair count. The equality is real for two labellers (each object
+    # yields exactly one pair) and wrong for three, where one object yields three.
+    for row, cid in zip(rows, _object_ids(matches)):
+        row['cluster_id'] = cid
 
     diagnostics = {
         'mode': 'matched',
@@ -371,7 +417,14 @@ def shared_panos(df, min_users=2):
 
 def sigma_from_pairs(pairs):
     """Robust per-axis noise sigma from pair differences (see module docstring), plus the raw
-    separation quantiles a reader can sanity-check against."""
+    separation quantiles a reader can sanity-check against.
+
+    `n_clusters` is the number of distinct objects the pairs came from, and means that in **both**
+    modes: `cluster_pairs` gets it from the radius clustering, `matched_pairs` from the connected
+    components of its match graph. It is the effective-n reader's number -- n_pairs is not one, since
+    a k-user object contributes k(k-1)/2 pairs -- so the two blocks of an artifact reporting it under
+    one name have to be counting the same thing.
+    """
     if not len(pairs):
         return {'n_pairs': 0, 'n_clusters': 0, 'sigma_az_deg': None, 'sigma_el_deg': None,
                 'd_total_p50': None, 'd_total_p90': None}
