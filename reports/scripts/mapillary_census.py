@@ -281,6 +281,12 @@ def referent_exclusion(df):
         'n_excluded': int((~keep).sum()),
         'excluded_no_referent_type': int(by_type.isin(rawlabels.NO_REFERENT_TYPES).sum()),
         'excluded_region_tag': int(region.sum()),
+        # Split by type, because the arms are sized very differently in the two corpora and a single
+        # total hides which rule is doing the work: Crosswalk carries the Richmond arm, NoSidewalk the
+        # GSV one. Types absent from the corpus are omitted rather than reported as 0.
+        'excluded_by_type': {str(t): int(k) for t, k in
+                             sorted(by_type[by_type.isin(rawlabels.NO_REFERENT_TYPES)]
+                                    .value_counts().items())},
         'rule': {'no_referent_types': sorted(rawlabels.NO_REFERENT_TYPES),
                  'region_tags': sorted('+'.join(p) for p in rawlabels.REGION_TAGS)},
     }
@@ -307,6 +313,11 @@ def gsv_contrast(csv_dir):
     §5 prices endpoint 2 at n ~= 310 rather than 650 because camera_roll is empty in 100% of GSV
     rawLabels rows, so pitch/roll must come from photometa, which only answers for panos still served
     by Google. Measured here rather than quoted.
+
+    The referent exclusion is measured per GSV city for a different reason: the rule was *derived* from
+    Richmond, but the corpus it will actually be applied to is the GSV one, where its arms are sized
+    completely differently. NoSidewalk is absent from Richmond entirely and is the largest arm here.
+    Reporting it only for Richmond would understate the rule by two orders of magnitude.
     """
     out = {}
     for path in sorted(glob.glob(os.path.join(csv_dir, '*.csv'))):
@@ -316,8 +327,29 @@ def gsv_contrast(csv_dir):
             'n_labels': int(len(df)),
             'camera_pitch_available_pct': num(100.0 * df['camera_pitch'].notna().mean()),
             'camera_roll_available_pct': num(100.0 * df['camera_roll'].notna().mean()),
+            'referent_exclusion': referent_exclusion(df),
+            'labels_by_type': {str(t): int(k) for t, k in df['label_type'].value_counts().items()},
         }
     return out
+
+
+def pool_referent_exclusion(per_city):
+    """Sum the per-city referent counts into one corpus figure, so the report quotes a computed total
+    rather than one added up by hand. Every arm is disjoint — the tag arm is keyed on SurfaceProblem,
+    which is not in NO_REFERENT_TYPES — so a plain sum is correct, and the reconciliation is asserted
+    here rather than trusted.
+    """
+    keys = ['n_labels', 'n_comparable', 'n_excluded', 'excluded_no_referent_type', 'excluded_region_tag']
+    total = {k: int(sum(c['referent_exclusion'][k] for c in per_city.values())) for k in keys}
+    by_type = {}
+    for city in per_city.values():
+        for t, n in city['referent_exclusion']['excluded_by_type'].items():
+            by_type[t] = by_type.get(t, 0) + int(n)
+    total['excluded_by_type'] = dict(sorted(by_type.items()))
+    assert total['n_comparable'] + total['n_excluded'] == total['n_labels']
+    assert total['excluded_no_referent_type'] + total['excluded_region_tag'] == total['n_excluded']
+    assert sum(by_type.values()) == total['excluded_no_referent_type']
+    return total
 
 
 def census(df):
@@ -365,6 +397,7 @@ def main(argv=None):
     result['pooled'] = pooled
     if args.gsv_dir:
         result['gsv_contrast'] = gsv_contrast(args.gsv_dir)
+        result['gsv_referent_exclusion'] = pool_referent_exclusion(result['gsv_contrast'])
 
     r, t, w = pooled['replay'], pooled['tilt'], pooled['within_pano_stratum']
     print(f"\nsource: {pooled['imagery_source']['by_source']}")
@@ -386,6 +419,14 @@ def main(argv=None):
     m = pooled['multi_perspective']
     print(f"objects: {m['n_labels']} {m['label_type']} labels -> {m['n_objects']} objects, "
           f"{m['n_objects_multi_pano']} seen from >= 2 panos")
+    e = pooled['referent_exclusion']
+    print(f"referent: {e['n_comparable']}/{e['n_labels']} comparable "
+          f"({fmt(num(100.0 * e['n_excluded'] / e['n_labels']), '.1f')}% excluded) {e['excluded_by_type']}")
+    if 'gsv_referent_exclusion' in result:
+        g = result['gsv_referent_exclusion']
+        print(f"          GSV: {g['n_comparable']}/{g['n_labels']} comparable "
+              f"({fmt(num(100.0 * g['n_excluded'] / g['n_labels']), '.1f')}% excluded) "
+              f"{g['excluded_by_type']} + {g['excluded_region_tag']} region-tagged")
 
     if args.write:
         with open(args.write, 'w', encoding='utf-8', newline='\n') as f:

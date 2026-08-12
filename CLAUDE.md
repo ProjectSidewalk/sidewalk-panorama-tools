@@ -129,7 +129,7 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 - **`pano_x` is never bounds-checked and must not be.** Column 0 and column `pano_width` are the same place in the world, so the seam modulo reads any finite x correctly; production rows storing `pano_x == pano_width` exist and crop fine. `pano_y` *is* checked, because the poles are not adjacent and a clamp yields clean imagery of the wrong place.
 - **`bulk_extract_crops`' counts have one non-disjoint key.** `success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total`; `shifted_vertically` annotates a success instead of being its own bucket. Adding a bucket without adding it to that sum is how the invariant went stale before — a test asserts the sum from the dict, not from the docstring.
 
-## Desk studies under `reports/scripts/` — four conventions that keep being rediscovered
+## Desk studies under `reports/scripts/` — five conventions that keep being rediscovered
 
 These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11-mapillary-census.md`.
 
@@ -150,6 +150,16 @@ These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11
   nothing about the function that produced it: the artifact was generated *by* the current code, so a
   revert stays green. Every finding needs a synthetic code-level test beside its corpus pin. Three
   mutation batteries in a row surfaced survivors of exactly this shape.
+- **Every number in a report's prose is transcribed from a committed artifact, and a test says so.**
+  Two counts hand-typed into `reports/2026-08-11-mapillary-census.md` §6 were wrong by 2× and 6×, and
+  nothing about the surrounding sentences looked different for it — a report table is the one place in
+  this repo where a plausible number has no compiler and no test. So the script computes the whole
+  table, and `TestReportMatchesTheArtifact` asserts each value appears in the markdown. The same round
+  found a filtered count (81,667 eligible) quoted as a raw one (82,769): **state which filter a count is
+  under, or don't quote it.** Corollary for exclusion rules: **size the rule against the corpus it will
+  be applied to, not only the one it was derived from.** `NoSidewalk` was left as an open question after
+  a rule was derived on 267 Richmond labels that contain none of it; it is 82,769 labels and the largest
+  arm in the six-city corpus the rule actually governs.
 
 ## Label Type IDs
 

@@ -48,7 +48,9 @@ today's labelling. And the cross-user block failed: two labellers shared a *rout
 **A referent-quality rule came out of this**, distinct from anything in the study spec: 86 of 267 labels
 have no *point* referent to measure a displacement against — 62 `Crosswalk` (correctly placed anywhere
 along the crossing), 3 `Occlusion`, 21 `SurfaceProblem` tagged `brick/cobblestone`. That leaves **181
-comparable**. See §6; it applies to the GSV corpus too, where `NoSidewalk` is the open case.
+comparable**. See §6. It applies to the GSV corpus too, and there its largest arm is `NoSidewalk`, which
+Richmond has none of: **82,769** labels across the six cities, more than the entire Richmond deployment
+by a factor of 300.
 
 ## Method
 
@@ -165,13 +167,18 @@ in several panos. Effective n is nearer 39 than 101, and the analysis needs an o
 
 ### 6. Referent quality: a new exclusion principle
 
-267 labels → **181 comparable**, **86** excluded:
+267 Richmond labels → **181 comparable**, **86** excluded; 438,410 GSV labels → **336,995 comparable**,
+**101,415** excluded. Both columns are computed by `mapillary_census.py` and committed, because the rule
+was *derived* from Richmond but the corpus it will be *applied* to is the GSV one, where its arms are
+sized completely differently:
 
-| arm | rule | n |
-|---|---|---|
-| by type | `Crosswalk` — an extended linear feature | 62 |
-| by type | `Occlusion` — marks the view, not a thing in it | 3 |
-| by (type, tag) | `SurfaceProblem` + `brick/cobblestone` | 21 |
+| arm | rule | n (Richmond, of 267) | n (six GSV cities, of 438,410) |
+|---|---|---|---|
+| by type | `Crosswalk` — an extended linear feature | 62 | 14,697 |
+| by type | `NoSidewalk` — an extended linear feature | 0 | **82,769** |
+| by type | `Occlusion` — marks the view, not a thing in it | 3 | 2,656 |
+| by (type, tag) | `SurfaceProblem` + `brick/cobblestone` | 21 | 1,293 |
+| | **total excluded** | **86 (32.2%)** | **101,415 (23.1%)** |
 
 Every other exclusion in the study spec is about **record** quality — does the record replay, do the
 dims agree. This one is about **referent** quality: if a label is correctly placed *anywhere* within some
@@ -182,24 +189,33 @@ Three ways a label can lack a point referent, and all three occur here:
 
 * **The type is an extended feature.** A `Crosswalk` label is correctly placed anywhere along the
   crosswalk, so two annotators who both place it correctly can be metres apart along its length. This is
-  the largest arm — 62 of 267 labels, 23% of the corpus — and it is the one this census initially got
-  wrong, keeping crosswalks on the reasoning that "a crosswalk is a located object whatever its surface".
-  It is a located *object*; it is not a located *point*.
-* **The type marks the view.** `Occlusion` ("Can't see the sidewalk"). §3 already excludes it as having
-  no crop consumer.
+  the largest arm in Richmond — 62 of 267 labels, 23% of the corpus — and it is the one this census
+  initially got wrong, keeping crosswalks on the reasoning that "a crosswalk is a located object whatever
+  its surface". It is a located *object*; it is not a located *point*.
+
+  **`NoSidewalk` is the same argument with a worse constant**, and was the open case until Jon settled
+  it: a crosswalk's extent is bounded by the width of the roadway it crosses, while a stretch of missing
+  sidewalk is bounded by nothing in particular and can run the length of a block, so the arbitrary
+  along-feature offset it admits is larger. Richmond has none, which is why nothing measured here moved
+  when it was added — but it is by a wide margin the **largest arm in the GSV corpus at 82,769 labels**,
+  more than the entire Richmond deployment by a factor of 300, and 5.6× the Crosswalk arm it was reasoned
+  from. A rule derived on a 267-label corpus had its dominant term invisible.
+* **The type marks the view.** `Occlusion` ("Can't see the sidewalk"). §3 already excludes it corpus-wide
+  as having no crop consumer, so this arm only restates an existing exclusion in referent terms.
 * **A tag makes the extent arbitrary.** `SurfaceProblem` + `brick/cobblestone`: the whole sidewalk is
   brick, so any point on it qualifies.
 
-**This is about placement-measurability, not crop-corpus membership.** Crosswalk (label type 9) has real
-crop consumers and stays in the crop corpus; what it cannot be is the subject of a displacement
-measurement. A test pins that distinction so the set is not wired into crop selection by mistake.
+**This is about placement-measurability, not crop-corpus membership.** Crosswalk (label type 9) and
+NoSidewalk (type 7) have real crop consumers and stay in the crop corpus; what they cannot be is the
+subject of a displacement measurement. A test pins that distinction so the set is not wired into crop
+selection by mistake.
 
 The rule stays narrow and enumerated rather than a heuristic over tag text, and a test pins its
-membership so widening it is a decision rather than a drift. Two candidates are deliberately left out:
-`SurfaceProblem` + `{bumpy, uneven/slanted}`, and — the open one — **`NoSidewalk`**, which may belong
-with `Crosswalk` by exactly the same extended-feature argument (it marks a *stretch* of missing
-sidewalk). Richmond has no `NoSidewalk` labels, so nothing here turns on it, but the six-city GSV corpus
-has 81,667 and a placement study reading them should settle it first.
+membership so widening it is a decision rather than a drift. The candidates deliberately left out are
+`SurfaceProblem` + `{bumpy, uneven/slanted}` — both name a defect you can point at, not a property of a
+whole stretch. `NoCurbRamp` is the near-name worth stating explicitly: it *is* a point (a specific corner
+where a ramp should be and isn't), it is 61,527 labels in the GSV corpus, and a rule keyed on the `No`
+prefix rather than on the referent would wrongly take all of them. A test pins that too.
 
 ### 7. Where Richmond sits against §2.1's strata
 
@@ -261,6 +277,26 @@ The tails are thin — 8 labels in each of `<5°` and `>30°` against the ~44 §
   inherent to the type. Caught by Jon from the labelling semantics, not by any test, and it is the
   largest arm of the rule at 62 of 267 labels. The code-level lesson: an exclusion rule about referents
   has to be derived from what a label *means*, and the tests can only pin a decision once it is made.
+* **Filing `NoSidewalk` as an open question instead of measuring it.** Having got `Crosswalk` wrong, the
+  first fix named `NoSidewalk` as "the open case" and left it — reasonable-sounding, since Richmond has
+  none of them and so nothing measured here could move. But the rule exists to be applied to the GSV
+  corpus, and there `NoSidewalk` is 82,769 labels: the *dominant* arm, 5.6× the `Crosswalk` arm it was
+  reasoned from. Jon settled it in one sentence. The lesson is about sizing rather than semantics: a rule
+  derived on a 267-label corpus should be counted against the corpus it will be applied to before it is
+  called narrow, which is why the census now computes the GSV column too rather than reporting Richmond
+  alone.
+* **Quoting a filtered count as if it were the raw one.** The "81,667 `NoSidewalk` labels" above was
+  written as the corpus count. It is the count *eligible* under the off-axis replay filter; the raw count
+  is 82,769. The gap is small and changed no conclusion, but it took a re-count to establish which number
+  had been quoted, and the report is the wrong place to discover that. Every count in §6 is now read from
+  the committed JSON.
+* **Typing four GSV counts into the table without measuring them.** Drafting the GSV column, I wrote
+  plausible-looking figures for the `Crosswalk` and `Occlusion` arms — 27,090 and 15,617 — that were
+  invented rather than computed; the measured values are 14,697 and 2,656. Caught before commit only
+  because the numbers were being checked against the corpus anyway. Nothing about the surrounding prose
+  would have looked wrong. The fix is structural, not vigilance: `gsv_contrast` now computes the whole
+  column and `pool_referent_exclusion` asserts the arms reconcile to the total, so the table is
+  transcribed from an artifact that a test pins.
 
 ## Open questions
 
@@ -285,6 +321,7 @@ The tails are thin — 8 labels in each of `<5°` and `>30°` against the ~44 §
 |---|---|
 | Census numbers (committed) | `reports/data/2026-08-11-mapillary-census.json` |
 | Census script | `reports/scripts/mapillary_census.py` |
+| GSV-side referent counts | same JSON, `gsv_referent_exclusion` (`pool_referent_exclusion`) |
 | Mapillary rawLabels fixture (10 real rows) | `tests/fixtures/rawlabels_richmond_head.csv` |
 | Loader + referent rule | `reports/scripts/rawlabels.py` (`has_located_referent`, `parse_tags`) |
 | Matched-pair mode | `reports/scripts/click_noise_study.py` (`matched_pairs`, `--pano-list`) |

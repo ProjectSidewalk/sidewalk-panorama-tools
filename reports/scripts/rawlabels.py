@@ -38,16 +38,24 @@ STUDY_COLUMNS = [
 #
 # * 'Occlusion' ("Can't see the sidewalk") marks the **view**, not a thing in it. The pre-registration
 #   already excludes it corpus-wide as having no crop consumer.
-# * 'Crosswalk' marks an **extended linear feature**. A crosswalk label is correctly placed anywhere
-#   along the crosswalk — it need not be at any particular point — so two annotators who both place it
-#   correctly can be metres apart along its length. Same property as a region tag, but it is inherent
-#   to the type rather than conditional on a tag.
+# * 'Crosswalk' and 'NoSidewalk' mark **extended linear features**. A crosswalk label is correctly
+#   placed anywhere along the crosswalk — it need not be at any particular point — so two annotators
+#   who both place it correctly can be metres apart along its length. Same property as a region tag,
+#   but it is inherent to the type rather than conditional on a tag.
+#
+#   NoSidewalk is the same argument with a worse constant. A crosswalk's extent is bounded by the width
+#   of the roadway it crosses; a stretch of missing sidewalk is bounded by nothing in particular and can
+#   run the length of a block, so the arbitrary along-feature offset it admits is larger. It is also by
+#   far the bigger corpus effect: 82,769 labels across the six GSV cities (81,667 of them eligible under
+#   the off-axis replay filter), against Richmond's zero — which is why nothing in the Mapillary census
+#   that named this an open question turned on it, and why a GSV placement study must not read these
+#   rows as measurable subjects.
 #
 # IMPORTANT: this is about **placement-measurability, not crop-corpus membership.** Crosswalk (label
-# type 9) has real crop consumers and stays in the crop corpus; what it cannot do is serve as a subject
-# for a stored-vs-gold *displacement*, because there is no displacement-from. Do not read this set as
-# "types to drop".
-NO_REFERENT_TYPES = frozenset({'Occlusion', 'Crosswalk'})
+# type 9) and NoSidewalk (type 7) have real crop consumers and stay in the crop corpus; what they cannot
+# do is serve as a subject for a stored-vs-gold *displacement*, because there is no displacement-from.
+# Do not read this set as "types to drop".
+NO_REFERENT_TYPES = frozenset({'Occlusion', 'Crosswalk', 'NoSidewalk'})
 
 # (label_type, tag) pairs where the tag names a property of an extended region rather than of a point,
 # so the label could have been placed anywhere on any qualifying stretch. A SurfaceProblem tagged
@@ -64,10 +72,6 @@ NO_REFERENT_TYPES = frozenset({'Occlusion', 'Crosswalk'})
 #
 # ('Crosswalk', 'brick/cobblestone') is absent from this set for a different reason: Crosswalk is
 # excluded by NO_REFERENT_TYPES regardless of tag, so a pair here would be dead weight.
-#
-# The open candidate is **NoSidewalk**, which may belong in NO_REFERENT_TYPES by the same argument as
-# Crosswalk -- it marks a stretch of missing sidewalk, which is extended rather than point-like. Left in
-# for now because nobody has stated it; raise it before any placement study reads NoSidewalk rows.
 REGION_TAGS = frozenset({
     ('SurfaceProblem', 'brick/cobblestone'),
 })

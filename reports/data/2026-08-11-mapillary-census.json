@@ -127,9 +127,14 @@
     "n_excluded": 86,
     "excluded_no_referent_type": 65,
     "excluded_region_tag": 21,
+    "excluded_by_type": {
+     "Crosswalk": 62,
+     "Occlusion": 3
+    },
     "rule": {
      "no_referent_types": [
       "Crosswalk",
+      "NoSidewalk",
       "Occlusion"
      ],
      "region_tags": [
@@ -302,9 +307,14 @@
    "n_excluded": 86,
    "excluded_no_referent_type": 65,
    "excluded_region_tag": 21,
+   "excluded_by_type": {
+    "Crosswalk": 62,
+    "Occlusion": 3
+   },
    "rule": {
     "no_referent_types": [
      "Crosswalk",
+     "NoSidewalk",
      "Occlusion"
     ],
     "region_tags": [
@@ -355,32 +365,241 @@
   "amsterdam": {
    "n_labels": 30061,
    "camera_pitch_available_pct": 100.0,
-   "camera_roll_available_pct": 0.0
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 30061,
+    "n_comparable": 22518,
+    "n_excluded": 7543,
+    "excluded_no_referent_type": 7025,
+    "excluded_region_tag": 518,
+    "excluded_by_type": {
+     "Crosswalk": 2968,
+     "NoSidewalk": 4002,
+     "Occlusion": 55
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "CurbRamp": 12253,
+    "Obstacle": 6066,
+    "NoSidewalk": 4002,
+    "Crosswalk": 2968,
+    "SurfaceProblem": 1981,
+    "NoCurbRamp": 1538,
+    "Signal": 1034,
+    "Other": 164,
+    "Occlusion": 55
+   }
   },
   "cdmx": {
    "n_labels": 74263,
    "camera_pitch_available_pct": 100.0,
-   "camera_roll_available_pct": 0.0
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 74263,
+    "n_comparable": 64211,
+    "n_excluded": 10052,
+    "excluded_no_referent_type": 9871,
+    "excluded_region_tag": 181,
+    "excluded_by_type": {
+     "Crosswalk": 3894,
+     "NoSidewalk": 5071,
+     "Occlusion": 906
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "Obstacle": 25022,
+    "SurfaceProblem": 14632,
+    "CurbRamp": 12889,
+    "NoCurbRamp": 10941,
+    "NoSidewalk": 5071,
+    "Crosswalk": 3894,
+    "Occlusion": 906,
+    "Other": 799,
+    "Signal": 109
+   }
   },
   "columbus-oh": {
    "n_labels": 41186,
    "camera_pitch_available_pct": 100.0,
-   "camera_roll_available_pct": 0.0
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 41186,
+    "n_comparable": 30474,
+    "n_excluded": 10712,
+    "excluded_no_referent_type": 10429,
+    "excluded_region_tag": 283,
+    "excluded_by_type": {
+     "Crosswalk": 889,
+     "NoSidewalk": 9370,
+     "Occlusion": 170
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "CurbRamp": 18039,
+    "NoSidewalk": 9370,
+    "SurfaceProblem": 6816,
+    "Obstacle": 3679,
+    "NoCurbRamp": 1463,
+    "Crosswalk": 889,
+    "Signal": 724,
+    "Occlusion": 170,
+    "Other": 36
+   }
   },
   "newberg-or": {
    "n_labels": 17351,
    "camera_pitch_available_pct": 100.0,
-   "camera_roll_available_pct": 0.0
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 17351,
+    "n_comparable": 10067,
+    "n_excluded": 7284,
+    "excluded_no_referent_type": 7281,
+    "excluded_region_tag": 3,
+    "excluded_by_type": {
+     "Crosswalk": 42,
+     "NoSidewalk": 7035,
+     "Occlusion": 204
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "NoSidewalk": 7035,
+    "CurbRamp": 4582,
+    "SurfaceProblem": 2183,
+    "NoCurbRamp": 2154,
+    "Obstacle": 1023,
+    "Occlusion": 204,
+    "Other": 128,
+    "Crosswalk": 42
+   }
   },
   "oradell-nj": {
    "n_labels": 13591,
    "camera_pitch_available_pct": 100.0,
-   "camera_roll_available_pct": 0.0
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 13591,
+    "n_comparable": 6996,
+    "n_excluded": 6595,
+    "excluded_no_referent_type": 6513,
+    "excluded_region_tag": 82,
+    "excluded_by_type": {
+     "Crosswalk": 675,
+     "NoSidewalk": 5676,
+     "Occlusion": 162
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "NoSidewalk": 5676,
+    "SurfaceProblem": 4006,
+    "CurbRamp": 1892,
+    "NoCurbRamp": 822,
+    "Crosswalk": 675,
+    "Obstacle": 325,
+    "Occlusion": 162,
+    "Signal": 21,
+    "Other": 12
+   }
   },
   "seattle-wa": {
    "n_labels": 261958,
    "camera_pitch_available_pct": 100.0,
-   "camera_roll_available_pct": 0.0
+   "camera_roll_available_pct": 0.0,
+   "referent_exclusion": {
+    "n_labels": 261958,
+    "n_comparable": 202729,
+    "n_excluded": 59229,
+    "excluded_no_referent_type": 59003,
+    "excluded_region_tag": 226,
+    "excluded_by_type": {
+     "Crosswalk": 6229,
+     "NoSidewalk": 51615,
+     "Occlusion": 1159
+    },
+    "rule": {
+     "no_referent_types": [
+      "Crosswalk",
+      "NoSidewalk",
+      "Occlusion"
+     ],
+     "region_tags": [
+      "SurfaceProblem+brick/cobblestone"
+     ]
+    }
+   },
+   "labels_by_type": {
+    "CurbRamp": 100738,
+    "NoSidewalk": 51615,
+    "NoCurbRamp": 44609,
+    "SurfaceProblem": 37472,
+    "Obstacle": 17951,
+    "Crosswalk": 6229,
+    "Signal": 1656,
+    "Occlusion": 1159,
+    "Other": 529
+   }
+  }
+ },
+ "gsv_referent_exclusion": {
+  "n_labels": 438410,
+  "n_comparable": 336995,
+  "n_excluded": 101415,
+  "excluded_no_referent_type": 100122,
+  "excluded_region_tag": 1293,
+  "excluded_by_type": {
+   "Crosswalk": 14697,
+   "NoSidewalk": 82769,
+   "Occlusion": 2656
   }
  }
 }

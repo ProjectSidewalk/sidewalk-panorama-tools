@@ -165,11 +165,29 @@ class TestLocatedReferent:
         assert crosswalks.sum() >= 2, 'fixture must carry crosswalks'
         assert not keep[crosswalks].any()
 
+    def test_no_sidewalk_is_excluded_by_type(self):
+        """Synthetic because Richmond has no NoSidewalk labels at all — the type carries 82,769 labels
+        in the six GSV cities and zero here, so the corpus this rule was written against cannot test it.
+
+        Same argument as Crosswalk with a worse constant: a crosswalk's extent is bounded by the width
+        of the roadway, a stretch of missing sidewalk by nothing in particular.
+        """
+        df = pd.DataFrame({'label_type': ['NoSidewalk', 'NoSidewalk'], 'tags': ['[]', '[street has a]']})
+        assert not rl.has_located_referent(df).any()
+
+    def test_no_curb_ramp_is_kept(self):
+        """Discrimination against the near-name: NoCurbRamp is a *point* — a specific corner where a
+        ramp should be and isn't — so a prefix or substring rule on 'No' would wrongly take it. Richmond
+        has 6 of these and they are comparable subjects."""
+        df = pd.DataFrame({'label_type': ['NoCurbRamp'] * 2, 'tags': ['[]', '[missing tactile warning]']})
+        assert rl.has_located_referent(df).all()
+
     def test_the_exclusion_is_about_placement_not_crop_corpus_membership(self):
-        """Guards a misreading with real consequences: Crosswalk (type 9) has crop consumers and stays
-        in the crop corpus. What it cannot be is the subject of a stored-vs-gold displacement. The set
-        is named for referents, and this pins the distinction so nobody wires it into crop selection."""
-        assert 'Crosswalk' in rl.NO_REFERENT_TYPES
+        """Guards a misreading with real consequences: Crosswalk (type 9) and NoSidewalk (type 7) have
+        crop consumers and stay in the crop corpus. What they cannot be is the subject of a
+        stored-vs-gold displacement. The set is named for referents, and this pins the distinction so
+        nobody wires it into crop selection."""
+        assert {'Crosswalk', 'NoSidewalk'} <= rl.NO_REFERENT_TYPES
         assert 'has_located_referent' in dir(rl)
         assert 'crop' not in rl.has_located_referent.__doc__.lower()
 
@@ -234,11 +252,10 @@ class TestLocatedReferent:
 
     def test_the_rule_is_narrow_by_design(self):
         """Pins the scope so widening it is a visible decision rather than a drift. The adjacent
-        candidates in the live Richmond vocabulary are deliberately absent — including NoSidewalk, which
-        may belong with Crosswalk by the same extended-feature argument but has not been decided."""
-        assert rl.NO_REFERENT_TYPES == frozenset({'Occlusion', 'Crosswalk'})
+        candidates in the live Richmond vocabulary are deliberately absent — the two SurfaceProblem tags
+        below name a defect you can point at, not a property of a whole stretch."""
+        assert rl.NO_REFERENT_TYPES == frozenset({'Occlusion', 'Crosswalk', 'NoSidewalk'})
         assert rl.REGION_TAGS == frozenset({('SurfaceProblem', 'brick/cobblestone')})
-        assert 'NoSidewalk' not in rl.NO_REFERENT_TYPES, 'open question, not yet decided'
         for candidate in (('SurfaceProblem', 'bumpy'), ('SurfaceProblem', 'uneven/slanted')):
             assert candidate not in rl.REGION_TAGS, candidate
 

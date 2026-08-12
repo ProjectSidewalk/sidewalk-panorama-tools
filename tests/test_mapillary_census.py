@@ -419,8 +419,136 @@ class TestReferentExclusion:
     def test_the_rule_is_recorded_in_the_artifact(self, pooled):
         """So a consumer reading the JSON alone knows which rule produced these counts."""
         assert pooled['referent_exclusion']['rule'] == {
-            'no_referent_types': ['Crosswalk', 'Occlusion'],
+            'no_referent_types': ['Crosswalk', 'NoSidewalk', 'Occlusion'],
             'region_tags': ['SurfaceProblem+brick/cobblestone']}
+
+    def test_adding_no_sidewalk_moved_no_richmond_number(self, pooled):
+        """Why the counts above are unchanged by a rule that grew an arm: Richmond has no NoSidewalk
+        labels. The arm is live and consequential — 82,769 labels in the six GSV cities — but it cannot
+        be exercised by this corpus, so its behaviour is pinned synthetically in
+        tests/test_rawlabels_mapillary.py instead."""
+        assert 'NoSidewalk' not in pooled['labels_by_type']
+        assert pooled['referent_exclusion']['excluded_no_referent_type'] == 65, '62 Crosswalk + 3 Occlusion'
+
+
+class TestGsvReferentExclusion:
+    """The rule is derived on 267 Richmond labels and applied to 438,410 GSV ones, and its arms are
+    sized completely differently in the two: NoSidewalk dominates the GSV corpus and does not occur in
+    Richmond at all. That asymmetry is why the GSV column is computed and committed rather than
+    reasoned about — the first draft of the report's table carried two hand-typed arm counts that were
+    wrong by 2x and 6x, and no surrounding prose looked any different for it."""
+
+    @staticmethod
+    def _per_city():
+        """Two synthetic cities whose arms are disjoint by construction, shaped like `gsv_contrast`.
+
+        City A carries the Richmond-shaped arms, city B the GSV-shaped one, so pooling has to take a
+        union over types rather than assuming both cities carry the same keys.
+        """
+        a = _frame(label_type=['Crosswalk', 'Occlusion', 'SurfaceProblem', 'CurbRamp'],
+                   tags=['[]', '[]', '[brick/cobblestone]', '[]'])
+        b = _frame(label_type=['NoSidewalk', 'NoSidewalk', 'Crosswalk', 'NoCurbRamp'],
+                   tags=['[]'] * 4)
+        return {city: {'referent_exclusion': mc.referent_exclusion(df)}
+                for city, df in (('a', a), ('b', b))}
+
+    def test_excluded_by_type_splits_the_arm(self):
+        got = mc.referent_exclusion(_frame(
+            label_type=['Crosswalk', 'Crosswalk', 'NoSidewalk', 'Occlusion', 'CurbRamp'],
+            tags=['[]'] * 5))
+        assert got['excluded_by_type'] == {'Crosswalk': 2, 'NoSidewalk': 1, 'Occlusion': 1}
+        assert sum(got['excluded_by_type'].values()) == got['excluded_no_referent_type'] == 4
+
+    def test_absent_types_are_omitted_not_reported_as_zero(self):
+        """A zero would read as "measured none here"; omission reads as "this corpus has none". The
+        distinction matters because Richmond genuinely has no NoSidewalk labels."""
+        got = mc.referent_exclusion(_frame(label_type=['Crosswalk', 'CurbRamp'], tags=['[]'] * 2))
+        assert got['excluded_by_type'] == {'Crosswalk': 1}
+
+    def test_pooling_sums_the_arms_across_cities(self):
+        got = mc.pool_referent_exclusion(self._per_city())
+        assert got['n_labels'] == 8
+        assert got['excluded_by_type'] == {'Crosswalk': 2, 'NoSidewalk': 2, 'Occlusion': 1}
+        assert got['excluded_region_tag'] == 1
+        assert got['n_excluded'] == 6
+        assert got['n_comparable'] == 2, 'the CurbRamp and the NoCurbRamp'
+
+    def test_pooling_takes_a_union_over_types(self):
+        """City A has no NoSidewalk and city B no Occlusion. A dict comprehension over one city's keys
+        would silently drop the other's arm — which is exactly the shape of the corpus this runs on."""
+        per_city = self._per_city()
+        assert 'NoSidewalk' not in per_city['a']['referent_exclusion']['excluded_by_type']
+        assert 'Occlusion' not in per_city['b']['referent_exclusion']['excluded_by_type']
+        assert set(mc.pool_referent_exclusion(per_city)['excluded_by_type']) == \
+            {'Crosswalk', 'NoSidewalk', 'Occlusion'}
+
+    def test_the_reconciliation_assertion_actually_fires(self):
+        """Guard-the-guard: the three asserts in `pool_referent_exclusion` are the only thing standing
+        between a mis-summed column and a published table, so prove one of them can fail."""
+        tampered = self._per_city()
+        tampered['a']['referent_exclusion']['n_comparable'] += 1
+        with pytest.raises(AssertionError):
+            mc.pool_referent_exclusion(tampered)
+
+    def test_the_arm_reconciliation_actually_fires(self):
+        """The third assert, guarded separately: type-arm plus tag-arm must equal the total. Without
+        its own tampered case the synthetic corpus satisfies it either way, so dropping the assert
+        survived a first mutation battery."""
+        tampered = self._per_city()
+        tampered['a']['referent_exclusion']['excluded_region_tag'] += 1
+        with pytest.raises(AssertionError):
+            mc.pool_referent_exclusion(tampered)
+
+    def test_a_type_arm_that_stops_matching_is_caught(self):
+        """The by-type sum is checked against the independently-computed `isin` count, so an
+        excluded_by_type that drifted out of step with NO_REFERENT_TYPES cannot pass."""
+        tampered = self._per_city()
+        tampered['b']['referent_exclusion']['excluded_by_type']['NoSidewalk'] = 1
+        with pytest.raises(AssertionError):
+            mc.pool_referent_exclusion(tampered)
+
+    def test_gsv_contrast_measures_the_whole_city(self, tmp_path):
+        """Code-level, and the reason it exists: `test_committed_gsv_column` below reads numbers the
+        current code wrote, so a `gsv_contrast` that quietly measured a subset of each city would keep
+        it green until the artifact was regenerated. Run the function and check its counts against a
+        frame of known composition instead."""
+        import shutil
+        shutil.copy(FIXTURE, tmp_path / 'somecity.csv')
+        got = mc.gsv_contrast(str(tmp_path))['somecity']
+        assert got['n_labels'] == 10
+        assert got['referent_exclusion']['n_labels'] == 10, 'measured over the whole city, not a head'
+        assert got['referent_exclusion']['n_excluded'] == 5
+        assert got['referent_exclusion']['excluded_by_type'] == {'Crosswalk': 2, 'Occlusion': 1}
+
+    def test_every_city_referent_count_covers_its_whole_label_count(self, doc):
+        """The same check applied to the committed artifact: a per-city referent block that counted
+        fewer labels than the city has is the signature of a subset bug that regenerated cleanly."""
+        for city, row in doc['gsv_contrast'].items():
+            assert row['referent_exclusion']['n_labels'] == row['n_labels'], city
+            assert sum(row['labels_by_type'].values()) == row['n_labels'], city
+
+    def test_committed_gsv_column(self, doc):
+        g = doc['gsv_referent_exclusion']
+        assert g['n_labels'] == 438410
+        assert g['n_comparable'] == 336995
+        assert g['n_excluded'] == 101415
+        assert g['excluded_by_type'] == {'Crosswalk': 14697, 'NoSidewalk': 82769, 'Occlusion': 2656}
+        assert g['excluded_region_tag'] == 1293
+
+    def test_no_sidewalk_dominates_the_corpus_the_rule_will_be_applied_to(self, doc, pooled):
+        """The finding that made this worth computing: the arm Richmond cannot see is the largest one,
+        at 5.6x the Crosswalk arm it was reasoned from."""
+        g = doc['gsv_referent_exclusion']['excluded_by_type']
+        assert g['NoSidewalk'] > g['Crosswalk'] * 5
+        assert g['NoSidewalk'] > max(pooled['labels_by_type'].values()) * 100
+        assert 'NoSidewalk' not in pooled['referent_exclusion']['excluded_by_type']
+
+    def test_every_gsv_city_carries_the_pitch_roll_asymmetry(self, doc):
+        """Unchanged by this addition, and re-pinned because gsv_contrast grew two keys."""
+        for city, row in doc['gsv_contrast'].items():
+            assert row['camera_roll_available_pct'] == 0.0, city
+            assert set(row) == {'n_labels', 'camera_pitch_available_pct', 'camera_roll_available_pct',
+                                'referent_exclusion', 'labels_by_type'}, city
 
 
 class TestGeometry:
@@ -504,3 +632,12 @@ class TestReportMatchesTheArtifact:
         c = pooled['crossed_block']
         assert str(c['matched']['n_pairs']) in text
         assert str(c['n_panos_shared_by_two_users']) in text
+
+    def test_the_gsv_referent_column_is_transcribed_not_invented(self, text, doc):
+        """The one class of error this file exists to catch, applied to the table that already had it:
+        every GSV arm count in §6 must appear in the prose exactly as the artifact computed it. The
+        report writes thousands separators, so compare in that form."""
+        g = doc['gsv_referent_exclusion']
+        for value in (*g['excluded_by_type'].values(), g['excluded_region_tag'],
+                      g['n_excluded'], g['n_comparable'], g['n_labels']):
+            assert f'{value:,}' in text, value
