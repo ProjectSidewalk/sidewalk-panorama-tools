@@ -19,6 +19,7 @@ imagery. Neither is testable here; both are stated in the report.
 
 import itertools
 import json
+import re
 import os
 import sys
 
@@ -641,3 +642,90 @@ class TestReportMatchesTheArtifact:
         for value in (*g['excluded_by_type'].values(), g['excluded_region_tag'],
                       g['n_excluded'], g['n_comparable'], g['n_labels']):
             assert f'{value:,}' in text, value
+
+
+class TestBlankPanoGeometryDoesNotKillTheCensus:
+    """Rows whose pano metadata never resolved carry NaN geometry — rawlabels preserves that
+    deliberately, because a crashed lookup must not read as pixel 0. The six GSV cities carry 84
+    (cdmx), 106 (newberg), 109 (columbus) and 1,761 (seattle) such rows today, so any Mapillary
+    deployment that ever serves one reaches these paths. Each defect below fires after the whole
+    census has been computed and before anything is written.
+    """
+
+    def test_replay_counts_a_row_with_blank_pano_dims_instead_of_raising(self, fixture_frame):
+        """`int(w)` over the raw column raises on NaN — the exact rows replay_frame's
+        replayable_x/replayable_y masks exist to tolerate."""
+        df = fixture_frame.copy()
+        df.loc[df.index[0], 'pano_width'] = np.nan
+        out = mc.replay(df)
+        assert out['n_labels'] == len(df)
+
+    def test_the_frame_histogram_names_the_unresolved_rows(self, fixture_frame):
+        df = fixture_frame.copy()
+        df.loc[df.index[0], 'pano_width'] = np.nan
+        out = mc.replay(df)
+        assert sum(out['pano_frames'].values()) == len(df), \
+            'every row must be accounted for in the frame histogram, resolved or not'
+        assert out['pano_frames'].get('unresolved') == 1, \
+            'rows with no dimensions need their own bucket'
+        # And that bucket must not be dimension-shaped: '0x0' would read as a real degenerate
+        # frame, silently merging "we never resolved this" with "the pano is 0 by 0".
+        dimension_shaped = re.compile(r'\d+x\d+')
+        for key in out['pano_frames']:
+            if key != 'unresolved':
+                assert dimension_shaped.fullmatch(key), key
+        assert not dimension_shaped.fullmatch('unresolved')
+
+    def test_crossed_block_does_not_emit_nan_into_the_artifact(self):
+        """NaN costs are never rejected by max_sep_deg because NaN > 10.0 is False, so a NaN
+        sigma reaches json.dump(allow_nan=False) and aborts the run on its last line.
+
+        The unresolved row has to sit INSIDE a shared pano to reach the estimator — nulling an
+        arbitrary row proves nothing, which is how the first version of this test passed against
+        the unfixed code.
+        """
+        n = 4
+        df = _frame(
+            pano_id=['p1'] * n,
+            user_id=['u1', 'u2', 'u1', 'u2'],
+            label_type=['CurbRamp'] * n,
+            pano_x=np.array([1000.0, 1002.0, 4000.0, 4003.0]),
+            pano_y=np.array([500.0, 502.0, 700.0, 701.0]),
+        )
+        df.loc[df.index[0], 'pano_x'] = np.nan       # inside the shared pano
+        out = mc.crossed_block(df)
+        blob = json.dumps(out, allow_nan=False)      # must not raise
+        assert 'NaN' not in blob
+
+    def test_the_unresolved_row_is_excluded_rather_than_silently_costed(self):
+        n = 4
+        df = _frame(
+            pano_id=['p1'] * n,
+            user_id=['u1', 'u2', 'u1', 'u2'],
+            label_type=['CurbRamp'] * n,
+            pano_x=np.array([1000.0, 1002.0, 4000.0, 4003.0]),
+            pano_y=np.array([500.0, 502.0, 700.0, 701.0]),
+        )
+        full = mc.crossed_block(df)
+        df.loc[df.index[0], 'pano_x'] = np.nan
+        holed = mc.crossed_block(df)
+        assert holed['matched']['n_labels_considered'] < full['matched']['n_labels_considered']
+
+
+class TestAnEmptyCorpusIsReportedNotCrashed:
+
+    def test_multi_perspective_always_publishes_its_full_key_set(self, fixture_frame):
+        """It returned a short three-key dict when no label of the requested type exists, so
+        main() raised KeyError after the full census — and a JSON consumer reading the key
+        KeyErrors too."""
+        empty = fixture_frame[fixture_frame['label_type'] == '__nothing__']
+        out = mc.multi_perspective(empty, label_type='CurbRamp')
+        assert out['n_labels'] == 0
+        assert out['n_objects'] == 0
+        assert out['n_objects_multi_pano'] == 0
+
+    def test_the_key_set_matches_the_populated_case(self, fixture_frame):
+        """The real guarantee: a consumer sees the same shape either way."""
+        empty = fixture_frame[fixture_frame['label_type'] == '__nothing__']
+        assert set(mc.multi_perspective(empty, label_type='CurbRamp')) == \
+            set(mc.multi_perspective(fixture_frame, label_type='CurbRamp'))

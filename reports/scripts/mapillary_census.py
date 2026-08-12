@@ -124,12 +124,25 @@ def replay(df):
         'max_abs_dy_px': num(misses_y.max()) if len(misses_y) else 0.0,
         # Zoom is rounded to 4 dp first: the legacy client's truncation leaves values like
         # 2.999999999999998 that are the ladder stop 3, not an off-ladder zoom.
-        'canvas_frames': _histogram(f'{int(w)}x{int(h)}' for w, h in
+        'canvas_frames': _histogram(_frame_key(w, h) for w, h in
                                     zip(df['canvas_width'], df['canvas_height'])),
         'zoom_values': _histogram(f'{z:g}' for z in df['zoom'].round(4)),
-        'pano_frames': _histogram(f'{int(w)}x{int(h)}' for w, h in
+        'pano_frames': _histogram(_frame_key(w, h) for w, h in
                                   zip(df['pano_width'], df['pano_height'])),
     }
+
+
+def _frame_key(w, h):
+    """A frame label for the dimension histograms, tolerating rows with no dimensions.
+
+    `int(w)` raises on NaN, and NaN is the state rawlabels deliberately preserves for labels whose
+    pano metadata never resolved -- 84 to 1,761 rows per city among the six GSV cities. Counting
+    them as 'unresolved' keeps the histogram a partition of the frame, which is what makes it
+    readable as a census; raising threw the whole run away instead.
+    """
+    if not (np.isfinite(w) and np.isfinite(h)):
+        return 'unresolved'
+    return f'{int(w)}x{int(h)}'
 
 
 def delta_bearing(df):
@@ -216,7 +229,12 @@ def multi_perspective(df, label_type='CurbRamp', radius_m=OBJECT_RADIUS_M):
     """
     g = df[df['label_type'] == label_type].dropna(subset=['latitude', 'longitude'])
     if not len(g):
-        return {'label_type': label_type, 'n_labels': 0, 'n_objects': 0}
+        # The full key set, not a short dict: main() reads n_objects_multi_pano unconditionally and
+        # raised KeyError after the entire census, and the short dict landed in the artifact too, so
+        # a JSON consumer reading that key hit the same wall.
+        return {'label_type': label_type, 'n_labels': 0, 'n_objects': 0,
+                'n_objects_multi_pano': 0, 'n_objects_both_users': 0,
+                'panos_per_object': None, 'radius_m': radius_m}
     pts = np.radians(g[['latitude', 'longitude']].to_numpy())
     assigned = -np.ones(len(g), int)
     nxt = 0
@@ -250,6 +268,11 @@ def crossed_block(df):
     and the same type. On the Richmond block that is 2 pairs versus 7 — and both are far short of the
     ~150 a sigma needs, because sharing a *route* is not sharing panos.
     """
+    # Both filters, and the geometry one first: has_located_referent decides whether a displacement
+    # is *meaningful*, replayable_geometry whether it is *computable*. Skipping the latter let a row
+    # with unresolved pano metadata produce a NaN cost that max_sep_deg cannot reject (NaN > 10.0 is
+    # False), which then reached the artifact and aborted the write on the run's last line.
+    df = df[click_noise_study.replayable_geometry(df)]
     comparable = df[rawlabels.has_located_referent(df)]
     shared = click_noise_study.shared_panos(comparable)
     by_user = comparable.groupby('user_id')['pano_id'].nunique().to_dict()

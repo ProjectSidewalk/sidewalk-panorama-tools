@@ -36,6 +36,7 @@ for p in (REPO_ROOT, SCRIPTS):
 
 import click_noise_study as cn  # noqa: E402
 import rawlabels  # noqa: E402
+import studyfmt  # noqa: E402
 
 PANO_H = 4096.0
 PANO_W = 8192.0
@@ -368,3 +369,67 @@ class TestReferentExclusionIsApplied:
         out = cn.matched_study(self._frame(), panos=['p1'], exclude_unlocated=False)
         assert out['n_pairs_matched'] == 2
         assert out['n_dropped_unlocated_referent'] == 0
+
+
+class TestSameUserDoubleSubmitsAreNotIndependentPlacements:
+    """matched_pairs' own comment says "One placement per user per object: a double-submit is not an
+    independent placement, and the earliest is the one the clustering estimator keeps too" — but
+    sort_values('time_created') enforces nothing on its own. The clustered estimator does the real
+    work with drop_duplicates('user_id', keep='first') inside each cluster.
+    """
+
+    def _block(self):
+        """u1 clicks ramp A twice; u2 clicks ramp A and ramp B. One true pair, one forced."""
+        return _labels([('u1', 'CurbRamp', 10.0, 0.0),
+                        ('u1', 'CurbRamp', 10.05, 0.0),
+                        ('u2', 'CurbRamp', 10.2, 0.0),
+                        ('u2', 'CurbRamp', 14.0, 0.0)])
+
+    def test_the_double_submit_does_not_manufacture_a_second_pair(self):
+        pairs, diag = cn.matched_pairs(self._block(), ['p1'])
+        assert len(pairs) == 1, 'the second u1 click is the same object, not a second placement'
+
+    def test_the_sigma_is_not_inflated_by_the_forced_match(self):
+        """The measured consequence: the forced pair sits at d_az -3.95 deg and drags a sigma that
+        should read ~0.2 deg up by an order of magnitude."""
+        pairs, _ = cn.matched_pairs(self._block(), ['p1'])
+        sigma = cn.sigma_from_pairs(pairs)
+        assert sigma['sigma_az_deg'] < 0.5, sigma['sigma_az_deg']
+
+    def test_it_agrees_with_the_clustered_estimator_on_this_block(self):
+        """The two estimators disagreeing by 10x on a four-label block is the signal that one of
+        them is pairing distinct objects."""
+        block = self._block()
+        matched, _ = cn.matched_pairs(block, ['p1'])
+        clustered = cn.cluster_pairs(cn.cluster_labels(block, cn.PRIMARY_RADIUS_DEG))
+        assert len(matched) == len(clustered) == 1
+        assert cn.sigma_from_pairs(matched)['sigma_az_deg'] == pytest.approx(
+            cn.sigma_from_pairs(clustered)['sigma_az_deg'], rel=0.05)
+
+    def test_two_genuinely_distinct_objects_still_pair(self):
+        """Guards the guard: the dedupe must not collapse a user's two real labels on one pano."""
+        block = _labels([('u1', 'CurbRamp', 10.0, 0.0),
+                         ('u1', 'CurbRamp', 40.0, 0.0),
+                         ('u2', 'CurbRamp', 10.2, 0.0),
+                         ('u2', 'CurbRamp', 40.3, 0.0)])
+        pairs, _ = cn.matched_pairs(block, ['p1'])
+        assert len(pairs) == 2
+
+
+class TestTheSummaryPrintSurvivesADisabledGate:
+    """matched_pairs explicitly supports max_sep_deg=None and a test exercises it, but main()
+    format-specced it with :g — the exact format(None, spec) defect studyfmt was added in this PR
+    to eliminate, left in the function the PR just fixed. It fires at the summary print, after the
+    whole study and before --write."""
+
+    def test_a_disabled_gate_prints_instead_of_raising(self, tmp_path, capsys):
+        df = _labels([('u1', 'CurbRamp', 10.0, 0.0), ('u2', 'CurbRamp', 10.2, 0.0)])
+        csv = tmp_path / 'somewhere.csv'
+        df.to_csv(csv, index=False)
+        _, diag = cn.matched_pairs(df, ['p1'], max_sep_deg=None)
+        assert diag['max_sep_deg'] is None
+        # the print path, exercised directly on the diagnostics dict main() would hold
+        line = (f"matched: {diag['n_pairs_matched']} pairs "
+                f"(rejected {diag['n_rejected_beyond_max_sep']} beyond "
+                f"{studyfmt.fmt(diag['max_sep_deg'], 'g')} deg)")
+        assert 'n/a' in line

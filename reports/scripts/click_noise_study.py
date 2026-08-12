@@ -61,6 +61,20 @@ DEPRESSION_BANDS = ((0.0, 5.0), (5.0, 15.0), (15.0, 90.0))
 # corpus tops out at 2 deg, so 10 deg censors forced matches without censoring genuine spread.
 MATCH_MAX_SEP_DEG = 10.0
 
+# How close two labels by the SAME user must be, in matched mode, to be read as one placement
+# repeated rather than two nearby objects.
+#
+# Deliberately far below PRIMARY_RADIUS_DEG. Matched mode exists precisely to measure objects that
+# sit closer together than the clustering radius -- reusing 1.5 deg here would collapse the very
+# blocks it was built for (two ramps 1.0 deg apart are two placements, and a test pins that). A
+# same-user repeat is a near-exact duplicate: the measured within-user click precision is ~0.3 deg
+# per axis, and the observed double-submits sit at ~0.05 deg. 0.25 deg separates those cleanly.
+#
+# This is a convention, not a measurement, and it is the only place matched mode makes one. Two
+# genuinely distinct objects closer together than this would be merged; nothing in the record can
+# tell that case from a repeat, which is the same honest limit dpr2/zoom_desync attribution has.
+REPEAT_RADIUS_DEG = 0.25
+
 # Cap on the exhaustive assignment search, per (pano, label_type, user pair). 5040 = 7!, so any
 # realistic block is solved exactly; beyond it the search degrades to greedy and is counted.
 ASSIGNMENT_MAX_MAPS = 5040
@@ -183,7 +197,46 @@ def _assign(cost):
     return out, False
 
 
-def matched_pairs(df, panos=None, max_sep_deg=MATCH_MAX_SEP_DEG):
+def _drop_same_user_repeats(g, radius_deg):
+    """Keep one placement per user per object: drop a label that repeats an EARLIER label by the
+    same user within `radius_deg`.
+
+    matched_pairs claimed to do this and did not -- `sort_values('time_created')` orders rows and
+    enforces nothing, while the clustered estimator does the real work with
+    drop_duplicates('user_id', keep='first') inside each cluster. Without it, a double-submit
+    becomes a surplus label that the one-to-one assignment must pair with something, so it forces a
+    match against a genuinely different object: u1 clicking one ramp twice (az 10.0, 10.05) against
+    u2's two ramps (10.2, 14.0) produced 2 pairs and sigma_az 2.175 deg where the clustered
+    estimator, which dedupes, reports one pair at 0.20 deg.
+
+    Radius-based rather than a blanket drop_duplicates('user_id'): the group here is a whole
+    (pano, label_type), which legitimately holds several distinct objects -- a corner's four curb
+    ramps are four placements by one user, not three repeats. And the radius is REPEAT_RADIUS_DEG,
+    not the clustering radius: matched mode exists to measure objects closer together than the
+    clustering radius, so reusing it here would collapse exactly the blocks the mode was built for.
+    """
+    keep = []
+    for user, sub in g.groupby('user_id', sort=False):
+        kept_az, kept_el = [], []
+        for label, row in sub.iterrows():
+            az, el = row['_az'], row['_el']
+            duplicate = False
+            for a, e in zip(kept_az, kept_el):
+                daz = abs(az - a)
+                daz = min(daz, 360.0 - daz)
+                mean_el = np.radians((el + e) / 2)
+                if np.hypot(daz * np.cos(mean_el), el - e) <= radius_deg:
+                    duplicate = True
+                    break
+            if not duplicate:
+                keep.append(label)
+                kept_az.append(az)
+                kept_el.append(el)
+    return g.loc[[label for label in g.index if label in set(keep)]]
+
+
+def matched_pairs(df, panos=None, max_sep_deg=MATCH_MAX_SEP_DEG,
+                  repeat_radius_deg=REPEAT_RADIUS_DEG):
     """Cross-user pairs for a *designed* crossed block: two labellers asked to label the same panos
     exhaustively, matched one-to-one by minimum total angular separation.
 
@@ -223,9 +276,9 @@ def matched_pairs(df, panos=None, max_sep_deg=MATCH_MAX_SEP_DEG):
 
     rows, rejected, greedy, cid = [], 0, 0, 0
     for (pano_id, label_type), g in d.groupby(['pano_id', 'label_type'], sort=True):
-        # One placement per user per object: a double-submit is not an independent placement, and the
-        # earliest is the one the clustering estimator keeps too.
-        g = g.sort_values('time_created')
+        # One placement per user per object: a double-submit is not an independent placement, and
+        # the earliest is the one the clustering estimator keeps too.
+        g = _drop_same_user_repeats(g.sort_values('time_created'), repeat_radius_deg)
         users = sorted(g['user_id'].dropna().unique())
         for ua, ub in itertools.combinations(users, 2):
             a = g[g['user_id'] == ua]
@@ -298,11 +351,21 @@ def sigma_from_pairs(pairs):
     }
 
 
+def replayable_geometry(df):
+    """Rows whose pano geometry can be turned into an angle at all.
+
+    Split out of load_city so every consumer of the angular estimators applies the SAME predicate.
+    mapillary_census.crossed_block reached them straight from a rawLabels frame and skipped this,
+    so a row whose pano metadata never resolved produced a NaN cost -- which max_sep_deg cannot
+    reject, because NaN > 10.0 is False -- and the NaN travelled into sigma_az_deg / d_total_p50
+    and aborted json.dump(allow_nan=False) on the run's last line.
+    """
+    return (df['pano_width'].gt(0) & df['pano_height'].gt(0)
+            & df['pano_x'].notna() & df['pano_y'].ge(0) & df['pano_y'].le(df['pano_height']))
+
+
 def load_city(path):
-    df = rawlabels.load_rawlabels(path)
-    ok = (df['pano_width'].gt(0) & df['pano_height'].gt(0)
-          & df['pano_x'].notna() & df['pano_y'].ge(0) & df['pano_y'].le(df['pano_height']))
-    return df[ok]
+    return rawlabels.load_rawlabels(path).pipe(lambda d: d[replayable_geometry(d)])
 
 
 def read_pano_list(path):
@@ -424,7 +487,7 @@ def main(argv=None):
               f"{m['n_panos_with_two_users']} of them with two labellers, "
               f"{m['n_pairs_matched']} pairs matched 1:1  "
               f"(dropped {m['n_dropped_unlocated_referent']} unlocated-referent labels, "
-              f"rejected {m['n_rejected_beyond_max_sep']} beyond {m['max_sep_deg']:g} deg)")
+              f"rejected {m['n_rejected_beyond_max_sep']} beyond {fmt(m['max_sep_deg'], 'g')} deg)")
         ms = m['sigma']
         print(f"  sigma_az {fmt(ms['sigma_az_deg'], '.3f')} deg  "
               f"sigma_el {fmt(ms['sigma_el_deg'], '.3f')} deg"
