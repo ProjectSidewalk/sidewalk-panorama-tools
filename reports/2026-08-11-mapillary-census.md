@@ -156,8 +156,17 @@ The gap between 2 and 6 is a tooling finding: the clustering estimator requires 
 radius, while a one-to-one assignment only requires them on the same pano and label type.
 `click_noise_study.py` now has that matched mode behind `--pano-list`. It is **opt-in on purpose** —
 run on the six-city corpus, where co-location is incidental, it returns σ_el **0.967°** against the
-clustered estimate's 0.507°, because a corner's four curb ramps get paired across users almost
-arbitrarily. A plausible σ from force-paired objects must not land in an artifact by default.
+clustered estimate's 0.507° *on the same all-label frame*, because a corner's four curb ramps get
+paired across users almost arbitrarily. A plausible σ from force-paired objects must not land in an
+artifact by default.
+
+Naming the frame is not pedantry here: matched mode is referent-filtered (§6's rule) and the clustered
+figures are not, so the two σ values `study()` emits sit 100,636 labels apart. Running the clustered
+estimator on the same referent-filtered frame — `comparable_only`, committed in
+`reports/data/2026-08-09-click-noise-summary.json` — gives σ_az **0.570°** / σ_el **0.507°** against
+0.573° / 0.507° over all labels, so the population accounts for essentially none of the gap and the
+estimator accounts for all of it. That is the measurement; before it, the comparison was quoted with
+one number from each frame.
 
 Six pairs give σ_az 1.89°, σ_el 0.309°. Not a finding — 6 pairs — but the σ_el is suggestively close
 to the GSV core estimate of 0.299°.

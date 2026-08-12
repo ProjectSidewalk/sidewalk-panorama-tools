@@ -3,6 +3,33 @@
  "fetched": "2026-08-09",
  "primary_radius_deg": 1.5,
  "n_labels": 436348,
+ "populations": {
+  "all_labels": {
+   "n_labels": 436348,
+   "referent_filtered": false,
+   "figures": [
+    "overall",
+    "by_label_type",
+    "by_depression_band",
+    "radius_sweep",
+    "validated_only"
+   ]
+  },
+  "comparable": {
+   "n_labels": 335712,
+   "referent_filtered": true,
+   "figures": [
+    "comparable_only"
+   ]
+  },
+  "n_dropped_unlocated_referent": 100636,
+  "dropped_by_label_type": {
+   "NoSidewalk": 81998,
+   "Crosswalk": 14697,
+   "Occlusion": 2648,
+   "SurfaceProblem": 1293
+  }
+ },
  "overall": {
   "n_pairs": 13359,
   "n_clusters": 9916,
@@ -10,6 +37,14 @@
   "sigma_el_deg": 0.5067739007076677,
   "d_total_p50": 0.916210169060241,
   "d_total_p90": 1.439951958289071
+ },
+ "comparable_only": {
+  "n_pairs": 12904,
+  "n_clusters": 9511,
+  "sigma_az_deg": 0.5702238393966332,
+  "sigma_el_deg": 0.5067739007076677,
+  "d_total_p50": 0.9159940151440764,
+  "d_total_p90": 1.4417001089348205
  },
  "by_label_type": {
   "Crosswalk": {

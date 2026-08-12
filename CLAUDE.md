@@ -129,7 +129,7 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 - **`pano_x` is never bounds-checked and must not be.** Column 0 and column `pano_width` are the same place in the world, so the seam modulo reads any finite x correctly; production rows storing `pano_x == pano_width` exist and crop fine. `pano_y` *is* checked, because the poles are not adjacent and a clamp yields clean imagery of the wrong place.
 - **`bulk_extract_crops`' counts have one non-disjoint key.** `success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total`; `shifted_vertically` annotates a success instead of being its own bucket. Adding a bucket without adding it to that sum is how the invariant went stale before — a test asserts the sum from the dict, not from the docstring.
 
-## Desk studies under `reports/scripts/` — five conventions that keep being rediscovered
+## Desk studies under `reports/scripts/` — six conventions that keep being rediscovered
 
 These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11-mapillary-census.md`.
 
@@ -160,6 +160,15 @@ These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11
   be applied to, not only the one it was derived from.** `NoSidewalk` was left as an open question after
   a rule was derived on 267 Richmond labels that contain none of it; it is 82,769 labels and the largest
   arm in the six-city corpus the rule actually governs.
+- **Two figures in one artifact must each name the frame they were computed on.**
+  `click_noise_study.study()` put a matched sigma (referent-filtered, 335,712 labels) and every clustered
+  sigma (all 436,348) in one dict and printed them in one column, and nothing recorded that they were
+  100,636 labels apart — so a docstring, a test docstring and a report all quoted one against the other
+  as a single comparison. The fix is not prose: `populations` names each side, lists the keys it covers,
+  and a test asserts every emitted figure is claimed by exactly one side, so the *next* figure added
+  cannot land unclaimed. Where the comparison is the point, compute the like-for-like cell too
+  (`comparable_only`) rather than leaving a reader to assume the difference is the estimator — here it
+  mostly was, but that was a measurement, not a given.
 
 ## Label Type IDs
 

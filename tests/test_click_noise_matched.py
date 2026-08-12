@@ -14,10 +14,15 @@ Two things this file is careful about, because both were live risks:
    and the remaining labels can be forced across the frame. `test_greedy_would_get_this_wrong` builds
    the counterexample and asserts the optimum is chosen.
 2. **The mode is only valid on a designed block, and it is worse than clustering without one.**
-   Measured on the six-city corpus it returns sigma_el 0.967 deg against the clustered 0.507 deg,
-   because a corner's four curb ramps get paired across users almost arbitrarily. So `study()` must not
-   emit it unless a pano list is supplied — a plausible sigma from force-paired objects landing in a
-   committed artifact is exactly the failure the radius sweep already documents.
+   Measured on the six-city corpus it returns sigma_el 0.967 deg against the clustered 0.507 deg —
+   both on all 436,348 labels — because a corner's four curb ramps get paired across users almost
+   arbitrarily. So `study()` must not emit it unless a pano list is supplied: a plausible sigma from
+   force-paired objects landing in a committed artifact is exactly the failure the radius sweep
+   already documents.
+3. **The two estimators do not run on the same labels.** `matched_study` is referent-filtered and the
+   clustered figures are not, so the pair of sigmas `study()` emits spans two populations 100,636
+   labels apart. `TestTheTwoEstimatorsRunOnDifferentPopulations` covers what records that; the
+   `matched_pairs` docstring carries the measured 2x2 the comparison above is one column of.
 """
 
 import json
@@ -299,8 +304,9 @@ class TestReadPanoList:
 
 
 class TestMatchedStudyIsOptIn:
-    """The footgun guard. Matched mode on incidental data reports sigma_el 0.967 deg against the
-    clustered 0.507 deg, so it must never appear in an artifact unasked."""
+    """The footgun guard. Matched mode on incidental data reports sigma_el 0.967 deg where the
+    clustered estimator on the same 436,348-label frame reports 0.507 deg, so it must never appear in
+    an artifact unasked."""
 
     @staticmethod
     def _city(tmp_path):
@@ -369,6 +375,227 @@ class TestReferentExclusionIsApplied:
         out = cn.matched_study(self._frame(), panos=['p1'], exclude_unlocated=False)
         assert out['n_pairs_matched'] == 2
         assert out['n_dropped_unlocated_referent'] == 0
+
+
+class TestTheTwoEstimatorsRunOnDifferentPopulations:
+    """`study()` computed `matched` on the referent-filtered frame and every clustered figure on the
+    unfiltered one, put both in one dict, printed them in one column, and recorded the difference
+    nowhere. On the six-city corpus that is 100,636 labels — and not a random 23%, because the rule
+    drops Crosswalk, NoSidewalk and Occlusion outright: three of the arms `by_label_type` reports,
+    and two of the three loosest in azimuth. That is how "matched σ_el 0.967° against the clustered
+    0.507°" came to be quoted in three docstrings and a report as though both halves were over the
+    same labels.
+
+    `populations` now states which frame each figure used, and `comparable_only` runs the clustered
+    estimator on the frame matched mode uses, so the comparison is available like for like. The
+    discrimination that matters: a `comparable_only` accidentally fed the full frame would simply
+    equal `overall`, so these tests assert a *difference* rather than a value.
+    """
+
+    LOCATED, UNLOCATED = 4, 6
+
+    @staticmethod
+    def _write(tmp_path, rows):
+        """rawLabels-shaped CSV from (pano, label_type, az_deg, el_deg, user, tags) tuples."""
+        out = []
+        for i, (pano, label_type, az, el, user, tags) in enumerate(rows):
+            out.append({
+                'label_id': i, 'user_id': user, 'pano_id': pano, 'label_type': label_type,
+                'tags': tags,
+                'time_created': int(pd.Timestamp('2026-08-11', tz='UTC').value // 10 ** 6) + i,
+                'pano_x': (az % 360.0) / 360.0 * PANO_W,
+                'pano_y': PANO_H / 2 - el * (PANO_H / 2) / 90.0,
+                'pano_width': PANO_W, 'pano_height': PANO_H,
+                'agree_count': 1, 'disagree_count': 0,
+            })
+        df = pd.DataFrame(out)
+        for col in rawlabels.STUDY_COLUMNS:
+            if col not in df:
+                df[col] = np.nan
+        df[rawlabels.STUDY_COLUMNS].to_csv(tmp_path / 'city.csv', index=False)
+        return str(tmp_path)
+
+    @classmethod
+    def _city(cls, tmp_path):
+        """A corpus where the excluded arm is both larger and *wider* than the kept one, so the two
+        populations differ in sigma and not only in count. A count-only check cannot tell
+        `comparable_only` from a second copy of `overall` once someone folds the extra clustering
+        pass away.
+
+        Kept: CurbRamp duplicate pairs 0.2° apart. Excluded: Crosswalk pairs 0.9° apart — inside the
+        1.5° radius, so they do form clustered pairs and do move σ — plus one brick-tagged
+        SurfaceProblem pair, so both arms of `has_located_referent` are exercised rather than only
+        the label-type one.
+        """
+        rows = []
+        for k in range(cls.LOCATED):
+            az = 20.0 + k * 20
+            rows += [(f'pL{k}', 'CurbRamp', az, -20.0, 'u1', '[]'),
+                     (f'pL{k}', 'CurbRamp', az + 0.2, -20.2, 'u2', '[]')]
+        for k in range(cls.UNLOCATED):
+            az = 20.0 + k * 20
+            rows += [(f'pX{k}', 'Crosswalk', az, -20.0, 'u1', '[]'),
+                     (f'pX{k}', 'Crosswalk', az + 0.9, -20.9, 'u2', '[]')]
+        rows += [('pS', 'SurfaceProblem', 40.0, -20.0, 'u1', '[brick/cobblestone]'),
+                 ('pS', 'SurfaceProblem', 40.8, -20.8, 'u2', '[brick/cobblestone]')]
+        return cls._write(tmp_path, rows)
+
+    def test_both_frames_are_recorded_and_they_reconcile(self, tmp_path):
+        p = cn.study(self._city(tmp_path))['populations']
+        assert p['all_labels']['n_labels'] == 2 * (self.LOCATED + self.UNLOCATED) + 2
+        assert p['comparable']['n_labels'] == 2 * self.LOCATED
+        assert p['all_labels']['referent_filtered'] is False
+        assert p['comparable']['referent_filtered'] is True
+        assert p['comparable']['n_labels'] + p['n_dropped_unlocated_referent'] == \
+            p['all_labels']['n_labels']
+
+    def test_the_dropped_arms_are_named_and_not_only_counted(self, tmp_path):
+        """A bare count would say 23% and leave a reader to assume it fell evenly. It does not: the
+        arms are whole label types, two of which `by_label_type` reports a σ for."""
+        p = cn.study(self._city(tmp_path))['populations']
+        assert p['dropped_by_label_type'] == {'Crosswalk': 2 * self.UNLOCATED,
+                                              'SurfaceProblem': 2}
+
+    def test_comparable_only_is_not_a_second_copy_of_overall(self, tmp_path):
+        """The load-bearing assertion. Both the pair count and σ must move — σ alone can coincide
+        (the committed corpus has two σ_el values that are bit-identical for an unrelated reason),
+        and a count alone would survive a σ computed off the wrong frame."""
+        out = cn.study(self._city(tmp_path))
+        assert out['overall']['n_pairs'] == self.LOCATED + self.UNLOCATED + 1
+        assert out['comparable_only']['n_pairs'] == self.LOCATED
+        assert out['comparable_only']['sigma_el_deg'] < out['overall']['sigma_el_deg'] / 2
+
+    def test_comparable_only_is_computed_on_the_frame_matched_mode_uses(self, tmp_path):
+        """The tie that makes the two comparable: same referent filter, same drop count. Without it
+        the artifact carries two sigmas whose populations a consumer has to reconstruct."""
+        panos = [f'pL{k}' for k in range(self.LOCATED)] + \
+                [f'pX{k}' for k in range(self.UNLOCATED)] + ['pS']
+        out = cn.study(self._city(tmp_path), pano_list=panos)
+        p, m = out['populations'], out['matched']
+        assert m['n_dropped_unlocated_referent'] == p['n_dropped_unlocated_referent']
+        assert m['n_labels_considered'] == p['comparable']['n_labels']
+        assert m['n_pairs_matched'] == out['comparable_only']['n_pairs'] == self.LOCATED
+
+    def test_every_figure_is_claimed_by_exactly_one_population(self, tmp_path):
+        """What stops this from going stale. The defect was a figure sitting in the artifact with no
+        population attached; a figure added later is the same defect again, so the two `figures`
+        lists must partition everything `study()` emits that is not bookkeeping.
+        """
+        panos = [f'pL{k}' for k in range(self.LOCATED)]
+        out = cn.study(self._city(tmp_path), pano_list=panos)
+        p = out['populations']
+        claimed = p['all_labels']['figures'] + p['comparable']['figures']
+        assert len(claimed) == len(set(claimed)), 'a figure claimed by both populations'
+        assert set(out) - {'primary_radius_deg', 'n_labels', 'populations'} == set(claimed)
+
+    def test_matched_is_claimed_only_when_it_was_run(self, tmp_path):
+        """The list describes this run, not the module: without a pano list there is no `matched`
+        key, and claiming one would point a consumer at a figure that is not there."""
+        p = cn.study(self._city(tmp_path))['populations']
+        assert p['comparable']['figures'] == ['comparable_only']
+
+    def test_a_corpus_with_nothing_to_drop_reports_one_population(self, tmp_path):
+        """Guards the guard: where the rule removes nothing, the two frames are the same frame and
+        `comparable_only` must reproduce `overall` exactly — otherwise the new key is measuring
+        something else and the difference above proves nothing."""
+        rows = []
+        for k in range(3):
+            az = 20.0 + k * 20
+            rows += [(f'p{k}', 'CurbRamp', az, -20.0, 'u1', '[]'),
+                     (f'p{k}', 'CurbRamp', az + 0.2, -20.2, 'u2', '[]')]
+        out = cn.study(self._write(tmp_path, rows))
+        assert out['populations']['n_dropped_unlocated_referent'] == 0
+        assert out['populations']['dropped_by_label_type'] == {}
+        assert out['comparable_only'] == out['overall']
+
+    def test_the_cli_prints_each_sigma_with_its_population(self, tmp_path, capsys):
+        """The finding was about a *printed* side-by-side, so the print is part of the fix."""
+        cn.main([self._city(tmp_path), '--fetched', '2026-08-11'])
+        printed = capsys.readouterr().out
+        assert 'comparable-only' in printed
+        assert 'referent-filtered' in printed
+        assert f'[all {2 * (self.LOCATED + self.UNLOCATED) + 2} labels]' in printed
+
+    def test_the_cli_names_which_sigma_the_matched_one_compares_against(self, tmp_path, capsys):
+        """The side-by-side that started this: `matched` prints under `overall`, and `overall` is the
+        wrong partner. The line has to say so where the reader is looking."""
+        panos = [f'pL{k}' for k in range(self.LOCATED)]
+        block = tmp_path / 'panos.txt'
+        block.write_text('\n'.join(panos), encoding='utf-8')
+        cn.main([self._city(tmp_path), '--fetched', '2026-08-11', '--pano-list', str(block)])
+        printed = capsys.readouterr().out
+        assert 'compare against comparable-only' in printed
+        assert f'same {2 * self.LOCATED}-label frame' in printed
+
+    def test_the_committed_artifact_carries_both_populations(self):
+        """The corpus pin. The synthetic tests above prove the code; this proves the artifact a
+        consumer actually reads was regenerated with the block in it, and that the six-city drop is
+        the one the docstrings quote."""
+        path = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-09-click-noise-summary.json')
+        if not os.path.exists(path):
+            pytest.skip('committed click-noise summary not present')
+        with open(path, encoding='utf-8') as f:
+            summary = json.load(f)
+        p = summary['populations']
+        assert p['all_labels']['n_labels'] == summary['n_labels']
+        assert p['comparable']['n_labels'] + p['n_dropped_unlocated_referent'] == summary['n_labels']
+        assert set(p['dropped_by_label_type']) == {'NoSidewalk', 'Crosswalk', 'Occlusion',
+                                                   'SurfaceProblem'}
+        assert sum(p['dropped_by_label_type'].values()) == p['n_dropped_unlocated_referent']
+        # The clustered arms the filter removes are reported with a sigma right above it, which is
+        # why the two populations were so easy to read as one.
+        assert {'Crosswalk', 'NoSidewalk'} <= set(summary['by_label_type'])
+        assert summary['comparable_only']['n_pairs'] < summary['overall']['n_pairs']
+        # The committed run predates matched mode and was produced without a pano list, so the
+        # matched side claims only the figure that is actually in the file.
+        assert p['all_labels']['figures'] == list(cn.FIGURES_ON_ALL_LABELS)
+        assert p['comparable']['figures'] == ['comparable_only']
+        assert set(p['all_labels']['figures']) | set(p['comparable']['figures']) <= set(summary)
+
+    @pytest.mark.parametrize('report', ['2026-08-09-click-noise.md',
+                                        '2026-08-11-mapillary-census.md'])
+    def test_the_reports_transcribe_comparable_only_rather_than_recall_it(self, report):
+        """Both write-ups publish the cross-population comparison — the census in §4, the click-noise
+        study in its Numbers section — so both have to quote the committed figure. A σ typed from
+        memory into prose is the one number in this repo with no compiler and no test, which is the
+        rule CLAUDE.md states and the reason this pin exists in two files.
+        """
+        summary_path = os.path.join(REPO_ROOT, 'reports', 'data',
+                                    '2026-08-09-click-noise-summary.json')
+        report_path = os.path.join(REPO_ROOT, 'reports', report)
+        if not (os.path.exists(summary_path) and os.path.exists(report_path)):
+            pytest.skip('committed artifact or report not present')
+        with open(summary_path, encoding='utf-8') as f:
+            c = json.load(f)['comparable_only']
+        with open(report_path, encoding='utf-8') as f:
+            text = f.read()
+        for axis in ('sigma_az_deg', 'sigma_el_deg'):
+            assert f'{c[axis]:.3f}' in text, (report, axis, c[axis])
+
+    def test_the_population_counts_in_the_prose_are_the_artifact_s(self):
+        """The counts alongside those sigmas, in the form the reports write them. `100,636 of
+        436,348` is the sentence that carries the finding, so it is the sentence most worth pinning:
+        it is arithmetic over two frames, which is exactly what nobody recomputes when editing prose.
+        """
+        base = os.path.join(REPO_ROOT, 'reports')
+        summary_path = os.path.join(base, 'data', '2026-08-09-click-noise-summary.json')
+        if not os.path.exists(summary_path):
+            pytest.skip('committed click-noise summary not present')
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+        p = summary['populations']
+        wanted = {
+            '2026-08-09-click-noise.md': (p['all_labels']['n_labels'], p['comparable']['n_labels'],
+                                          p['n_dropped_unlocated_referent'],
+                                          summary['comparable_only']['n_pairs'],
+                                          summary['overall']['n_pairs']),
+            '2026-08-11-mapillary-census.md': (p['n_dropped_unlocated_referent'],),
+        }
+        for report, values in wanted.items():
+            with open(os.path.join(base, report), encoding='utf-8') as f:
+                text = f.read()
+            for value in values:
+                assert f'{value:,}' in text, (report, value)
 
 
 class TestSameUserDoubleSubmitsAreNotIndependentPlacements:
