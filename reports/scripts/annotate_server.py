@@ -92,6 +92,7 @@ def tasks_payload(tasks, annotator, done):
         # flag existed carries no help for it. Sending a flag with no explanation is worse than the
         # explanation being slightly newer than the tiles.
         'flag_help': dict(annotation_tiles.FLAG_HELP),
+        'box_rule': annotation_tiles.BOX_RULE,
         'initial_view_fraction': tasks.get('initial_view_fraction', 1.0),
         # Falls back to the module constant for task files cut before this was written, so an existing
         # tile directory keeps working rather than labelling its framing control off a missing value.

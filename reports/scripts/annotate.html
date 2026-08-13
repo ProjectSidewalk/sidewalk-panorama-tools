@@ -102,7 +102,8 @@
   <p class="rubric" id="rubric">–</p>
 
   <div class="step" id="s1"><b>1</b> <span>Click the canonical point</span></div>
-  <div class="step" id="s2"><b>2</b> <span>Drag a tight box</span></div>
+  <div class="step" id="s2"><b>2</b> <span>Drag a box round the whole object</span></div>
+  <p class="note" id="boxrule"></p>
 
   <div class="flags" id="flags"></div>
   <textarea id="notes" placeholder="Notes (optional)"></textarea>
@@ -418,6 +419,7 @@ function buildViewRow() {
                        : Math.round((data.initial_view_fraction || 1) * cutDeg);
   el('who').textContent = data.annotator;
 
+  el('boxrule').textContent = data.box_rule || '';
   const help = data.flag_help || {};
   el('flags').replaceChildren(...data.flags.map((f, i) => {
     const row = document.createElement('div');

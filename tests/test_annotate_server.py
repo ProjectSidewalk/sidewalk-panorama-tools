@@ -111,6 +111,24 @@ class TestTasksPayload:
         out = srv.tasks_payload(self._tasks(tmp_path), 'jon', {'city:2', 'city:0'})
         assert out['done'] == ['city:0', 'city:2']
 
+    def test_the_flag_help_and_box_rule_come_from_code(self, tmp_path):
+        """Protocol wording, sent from the module rather than the task file, so a tile directory cut
+        before a flag or a convention existed still explains it. A flag with no explanation, or a "tight
+        box" instruction that never says tight around WHAT, is per-annotator drift the agreement gate
+        reads as noise."""
+        out = srv.tasks_payload(self._tasks(tmp_path), 'jon', set())
+        assert set(out['flag_help']) == set(at.FLAGS), 'every flag needs its line'
+        assert all(out['flag_help'][f].strip() for f in at.FLAGS)
+        assert out['box_rule'] == at.BOX_RULE
+
+    def test_the_box_rule_says_whole_object(self, tmp_path):
+        """The specific ambiguity it exists to close: for a fire hydrant, box the hydrant or the part
+        blocking the footway? Both are defensible, they differ by a lot, and the answer is the whole
+        object — the POINT carries impedance, the BOX carries extent."""
+        rule = srv.tasks_payload(self._tasks(tmp_path), 'jon', set())['box_rule'].lower()
+        assert 'whole object' in rule
+        assert 'not just the part' in rule
+
     def test_it_forwards_the_cut_width_the_framing_control_is_labelled_in(self, tmp_path):
         """The page offers 20°/30°/45°/60°, which it cannot label from the fraction alone."""
         payload = self._tasks(tmp_path)

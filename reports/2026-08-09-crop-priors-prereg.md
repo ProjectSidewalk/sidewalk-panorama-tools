@@ -186,7 +186,14 @@ From the six-city rawLabels fetch of 2026-08-09 (era study provenance):
   Phase 2 corpus store (§3), never fetched live from Google — so an annotation can never be made
   against different pixels than the analysis reads.
 * **Task**: per label — (a) mark the object's **canonical point** per the type rubric below;
-  (b) drag a **tight bounding box**; (c) flag {object-absent, ambiguous, occluded}.
+  (b) drag a box round the **whole object**, ordinary CV convention (the entire hydrant, pole or tree,
+  not the part of it blocking the path); (c) flag {object-absent, ambiguous, occluded, no-extent}.
+  The point and the box do different jobs and that is why the box convention has to be stated: the
+  **point** carries Project Sidewalk's semantics — every rubric below puts it at ground contact,
+  because what the project cares about is how a thing impedes a path — while the **box** is a scale
+  reference for the sizing rule and the only mark here a future detector could train on. Keeping
+  impedance out of the box is deliberate: how much of an object blocks a path is a modelling decision,
+  and gold that bakes one answer into its geometry can never be used to compare another.
 * **Rubric (canonical points)**: CurbRamp/NoCurbRamp — centre of the ramp (or would-be ramp)
   where it meets the gutter line; Obstacle — centroid of the obstruction at ground contact;
   SurfaceProblem — centroid of the defect; Crosswalk — centre of the marked area; Signal — the

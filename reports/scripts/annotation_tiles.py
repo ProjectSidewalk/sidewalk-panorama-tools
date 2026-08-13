@@ -154,6 +154,30 @@ RUBRIC = {
     'Other': 'Mark the centroid of the feature at its point of ground contact.',
 }
 
+# What the box means, shown beside the rubric. It needs saying because the honest answer to "draw a
+# tight box around the problem" is a question: for a fire hydrant, do you box the hydrant, or the part
+# of it that blocks the footway? Both are defensible and they differ by a lot, so an unstated convention
+# is not a convention -- it is per-annotator drift that the agreement gate reads as noise.
+#
+# The answer is the whole object, and the reasoning is that the box and the point are doing DIFFERENT
+# jobs:
+#
+# * The POINT carries Project Sidewalk's semantics. Every rubric below puts it at ground contact,
+#   because what the project cares about is how a thing impedes a path, not that it exists.
+# * The BOX is the object's extent, by ordinary CV convention. It is a scale reference for the sizing
+#   rule and the only mark here with any value to a future detector, which trains on object extents.
+#
+# Keeping impedance OUT of the box is the point, not an oversight. "How much of this object blocks the
+# path" is a modelling decision, and a gold standard that bakes one answer into its geometry can never
+# be used to compare another. Recording object extent plus ground contact leaves every sizing rule --
+# width-only, footprint-derived, distance-only -- still testable against the same annotations.
+#
+# The whole object is also the more reproducible mark, which matters because the agreement gate is what
+# licenses the gold: a silhouette is visible, while "where it becomes a barrier" is a judgement.
+BOX_RULE = ('Box the WHOLE object as you would for object detection — the entire hydrant, pole or '
+            'tree, not just the part blocking the path. The point carries where it impedes; the box '
+            'carries how big it is.')
+
 TileWindow = collections.namedtuple(
     'TileWindow', 'left top width height shifted wraps')
 
@@ -344,6 +368,7 @@ def build_tasks(corpus, seed):
              # private geometry because the page labels its framing control in degrees, and a page that
              # has only the fraction can offer "a third of the tile" but not "20°".
              'flag_help': dict(FLAG_HELP),
+             'box_rule': BOX_RULE,
              'initial_view_fraction': VIEW_FOV_DEG / CUT_FOV_DEG,
              'cut_fov_deg': CUT_FOV_DEG,
              'tasks': tasks},
