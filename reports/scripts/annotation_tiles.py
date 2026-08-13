@@ -283,9 +283,13 @@ def build_tasks(corpus, seed):
     return ({'protocol': 'reports/2026-08-09-crop-priors-prereg.md §4',
              'flags': list(FLAGS),
              'n_tasks': len(tasks),
-             # The fraction of the cut tile the view starts at. Safe to ship: it is a constant of the
-             # protocol, identical for every label, so it says nothing about where any stored point is.
+             # The fraction of the cut tile the view starts at, and the cut's angular width. Both are
+             # safe to ship: they are constants of the protocol, identical for every label, so neither
+             # says anything about where any stored point is. `cut_fov_deg` is here as well as in the
+             # private geometry because the page labels its framing control in degrees, and a page that
+             # has only the fraction can offer "a third of the tile" but not "20°".
              'initial_view_fraction': VIEW_FOV_DEG / CUT_FOV_DEG,
+             'cut_fov_deg': CUT_FOV_DEG,
              'tasks': tasks},
             {'seed': seed, 'cut_fov_deg': CUT_FOV_DEG, 'view_fov_deg': VIEW_FOV_DEG,
              'jitter_px': [JITTER_MIN_PX, JITTER_MAX_PX],

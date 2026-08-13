@@ -53,7 +53,26 @@
           color: var(--dim); margin-bottom: 12px; }
   .keys { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
           color: var(--dim); font-size: 12.5px; }
-  .keys div { display: flex; justify-content: space-between; padding: 2px 0; }
+  .keys .hint { display: flex; justify-content: space-between; padding: 2px 0; }
+  /* Every shortcut is also a button. The keyboard is faster once learned, but an annotator who has not
+     learned it yet should not have to read a legend to find out the tool can do the thing at all. */
+  .keys button { display: flex; align-items: center; justify-content: space-between; gap: 9px;
+                 width: 100%; margin: 0 0 4px; padding: 6px 10px; background: #0e0f12;
+                 color: var(--dim); font: inherit; font-size: 12.5px; font-weight: 400;
+                 border: 1px solid transparent; border-radius: 6px; text-align: left; }
+  .keys button:hover { background: #202a3d; color: var(--ink); border-color: var(--line); }
+  .nav { display: flex; gap: 8px; margin-bottom: 12px; }
+  .nav button { margin-top: 0; padding: 7px; font-size: 12.5px; background: #0e0f12;
+                color: var(--ink); border: 1px solid var(--line); }
+  .nav button:hover:not(:disabled) { background: #202a3d; border-color: var(--accent); }
+  .view { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .view .row { display: flex; gap: 6px; margin-top: 7px; }
+  .view button { margin-top: 0; padding: 6px 0; font-size: 12.5px; font-weight: 400;
+                 background: #0e0f12; color: var(--dim); border: 1px solid var(--line); }
+  .view button.on { background: #202a3d; color: var(--ink); border-color: var(--accent); }
+  .note { color: var(--dim); font-size: 11.5px; line-height: 1.4; margin: 8px 0 0; }
+  .saved { color: var(--good); font-size: 12px; margin-bottom: 10px; display: none; }
+  .saved.show { display: block; }
   #toast { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
            background: #202a3d; border: 1px solid var(--accent); padding: 9px 16px;
            border-radius: 7px; opacity: 0; transition: opacity .18s; pointer-events: none; }
@@ -67,6 +86,11 @@
 <aside id="side">
   <h1>Gold standard · <span id="who"></span></h1>
   <div class="meta"><span id="progress">–</span><span id="zoom">1.0×</span></div>
+  <div class="nav">
+    <button id="prev">◀ Prev <kbd>←</kbd></button>
+    <button id="next">Next <kbd>→</kbd> ▶</button>
+  </div>
+  <p class="saved" id="saved">✓ already annotated — editing revises it</p>
   <p class="type" id="ltype">–</p>
   <p class="rubric" id="rubric">–</p>
 
@@ -77,13 +101,16 @@
   <textarea id="notes" placeholder="Notes (optional)"></textarea>
   <button id="submit" disabled>Submit &amp; next &nbsp;<kbd>↵</kbd></button>
 
-  <div class="keys">
-    <div><span>Zoom</span><span><kbd>wheel</kbd> <kbd>+</kbd> <kbd>-</kbd></span></div>
-    <div><span>Whole 60° tile</span><kbd>w</kbd></div>
-    <div><span>Pan</span><span><kbd>space</kbd>+drag · <kbd>middle</kbd></span></div>
-    <div><span>Undo last mark</span><kbd>u</kbd></div>
-    <div><span>Reset view</span><kbd>r</kbd></div>
-    <div><span>Skip (no submit)</span><kbd>s</kbd></div>
+  <div class="keys" id="keys">
+    <div class="hint"><span>Zoom</span><span><kbd>wheel</kbd> <kbd>+</kbd> <kbd>-</kbd></span></div>
+    <div class="hint"><span>Pan</span><span><kbd>space</kbd>+drag · <kbd>middle</kbd></span></div>
+  </div>
+
+  <div class="view">
+    <span>Opening view</span>
+    <div class="row" id="viewrow"></div>
+    <p class="note">The protocol opens every tile at 20°, chosen so the window does not imply a crop
+      size. Widening it is recorded per annotation so any effect on box size stays measurable.</p>
   </div>
 </aside>
 
@@ -92,9 +119,18 @@
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const el = id => document.getElementById(id);
 
-let queue = [], task = null, img = null, flags = [], meta = {n_total: 0, n_done: 0};
+// The whole task list, plus which are already annotated. Not a consuming queue: a one-way conveyor
+// made a misplaced point unfixable except by editing JSON, so navigation is by index over `tasks` and
+// `done` decides what "next unannotated" means.
+let tasks = [], done = new Set(), idx = 0;
+let task = null, img = null, flags = [], meta = {n_total: 0, n_done: 0};
 let point = null, box = null, drag = null, startedAt = 0, maxZoom = 1;
 let view = {scale: 1, x: 0, y: 0}, panning = false, spaceDown = false, lastPan = null;
+
+// Opening framing in degrees. Defaults to the protocol's 20 deg; the annotator can widen it and the
+// choice persists, because re-picking it on every tile would make the default the only usable setting.
+const VIEW_KEY = 'crop-priors:view-deg';
+let cutDeg = 60, viewDeg = 20;
 
 const toast = (msg, err) => {
   const t = el('toast');
@@ -115,7 +151,10 @@ function fitView() {
   const sw = cv.parentElement.clientWidth - pad, sh = cv.parentElement.clientHeight - pad;
   cv.width = sw; cv.height = sh;
   fitScale = Math.min(sw / task.tile_width, sh / task.tile_height);
-  const frac = meta.initial_view_fraction || 1;
+  // `fitScale` is bound by the SHORT axis, so on a landscape canvas the fraction sets the VERTICAL
+  // extent and the horizontal comes out wider. That is why 20 deg feels tighter than it reads: at
+  // 16:9 you see 20 deg of sky-to-ground and about 32 deg across.
+  const frac = Math.min(1, viewDeg / cutDeg);
   view.scale = fitScale / frac;
   // Centre on the tile's middle, which is the jittered point — never the stored point.
   view.x = sw / 2 - (task.tile_width / 2) * view.scale;
@@ -174,25 +213,52 @@ function syncUi() {
   draw();
 }
 
-function show(next) {
-  task = next; point = box = drag = null; flags = []; el('notes').value = '';
+async function goTo(i) {
+  if (i < 0 || i >= tasks.length) return;
+  idx = i;
+  task = tasks[idx];
+  point = box = drag = null; flags = []; el('notes').value = '';
   el('ltype').textContent = task.label_type;
   el('rubric').textContent = task.rubric;
-  el('progress').textContent = `${meta.n_done + 1} / ${meta.n_total}`;
+  el('progress').textContent = `${idx + 1} / ${meta.n_total} · ${done.size} done`;
+  el('prev').disabled = idx === 0;
+  el('next').disabled = idx === tasks.length - 1;
+  el('saved').className = 'saved' + (done.has(task.label_uid) ? ' show' : '');
+
   img = new Image();
   img.onload = () => { fitView(); syncUi(); };
   img.onerror = () => toast('tile failed to load: ' + task.tile, true);
   img.src = '/tiles/' + encodeURIComponent(task.tile);
   startedAt = performance.now();
+
+  // Stepping back onto a finished label reloads what was submitted, so "go back and look" and "go back
+  // and fix" are the same gesture. Without this, revisiting showed a blank tile and re-submitting
+  // silently replaced good work with nothing.
+  if (done.has(task.label_uid)) {
+    const uid = task.label_uid;
+    const r = await fetch('/api/annotation/' + encodeURIComponent(uid));
+    if (r.ok && task && task.label_uid === uid) {      // guard: they may have navigated on already
+      const a = await r.json();
+      point = a.point; box = a.box; flags = a.flags || [];
+      el('notes').value = a.notes || '';
+      syncUi();
+    }
+  }
 }
 
-function advance() {
-  if (!queue.length) {
-    el('stage').innerHTML = '<div id="done">Queue complete — ' + meta.n_done + ' annotated.</div>';
-    el('side').style.display = 'none';
-    return;
+/* The next label with no annotation: forward from here, then wrapping. Wrapping matters on a resumed
+   session, where the gaps are behind you rather than ahead. */
+function nextUnannotated() {
+  for (let n = 1; n <= tasks.length; n++) {
+    const i = (idx + n) % tasks.length;
+    if (!done.has(tasks[i].label_uid)) return i;
   }
-  show(queue.shift());
+  return -1;
+}
+
+function finish() {
+  el('stage').innerHTML = '<div id="done">All ' + meta.n_total + ' labels annotated.</div>';
+  el('side').style.display = 'none';
 }
 
 async function submit() {
@@ -202,13 +268,19 @@ async function submit() {
     notes: el('notes').value,
     elapsed_ms: Math.round(performance.now() - startedAt),
     zoom_used: view.scale / maxZoom,
+    initial_view_deg: viewDeg,
   };
   const r = await fetch('/api/annotation', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
   });
   if (!r.ok) { toast((await r.json()).error || 'rejected', true); return; }
-  meta.n_done++;
-  advance();
+  const wasDone = done.has(task.label_uid);
+  done.add(task.label_uid);
+  meta.n_done = done.size;
+  toast(wasDone ? 'revised' : 'saved');
+  const nxt = nextUnannotated();
+  if (nxt < 0) return finish();
+  goTo(nxt);
 }
 
 /* ---- input ---- */
@@ -254,24 +326,38 @@ cv.addEventListener('wheel', e => {
   draw();
 }, {passive: false});
 
+function showWholeCut() {              // the WHOLE cut, to hunt for a far-off object
+  view.scale = fitScale;
+  view.x = (cv.width - task.tile_width * fitScale) / 2;
+  view.y = (cv.height - task.tile_height * fitScale) / 2;
+  draw();
+}
+
+/*
+  One table drives the keyboard AND the sidebar buttons. Two lists would be two things to keep in step,
+  and the failure is quiet in the worst way: a legend that advertises a key which no longer does what it
+  says, on a tool whose entire job is that the annotator follows the protocol exactly.
+*/
+const ACTIONS = [
+  {key: 'w', label: 'Whole ' + '60' + '° tile', fn: showWholeCut},
+  {key: 'u', label: 'Undo last mark', fn: () => { if (box) box = null; else point = null; syncUi(); }},
+  {key: 'r', label: 'Reset view', fn: () => { fitView(); draw(); }},
+  {key: '+', label: 'Zoom in', fn: () => { view.scale = clampScale(view.scale * 1.3); draw(); }},
+  {key: '-', label: 'Zoom out', fn: () => { view.scale = clampScale(view.scale / 1.3); draw(); }},
+  {key: 's', label: 'Skip (no submit)', fn: () => goTo(Math.min(idx + 1, tasks.length - 1))},
+];
+
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'TEXTAREA') return;
   if (e.code === 'Space') { spaceDown = true; e.preventDefault(); return; }
-  const k = e.key.toLowerCase();
   if (e.key === 'Enter') { submit(); return; }
-  if (k === 'u') { if (box) box = null; else point = null; syncUi(); return; }
-  if (k === 'r') { fitView(); draw(); return; }
-  if (k === 's') { advance(); return; }
-  if (k === '+' || k === '=') { view.scale = clampScale(view.scale * 1.3); draw(); return; }
-  if (k === '-') { view.scale = clampScale(view.scale / 1.3); draw(); return; }
-  if (k === 'w') {                      // w = show the WHOLE cut, to hunt for a far-off object
-    view.scale = fitScale;
-    view.x = (cv.width - task.tile_width * fitScale) / 2;
-    view.y = (cv.height - task.tile_height * fitScale) / 2;
-    draw(); return;
-  }
+  if (e.key === 'ArrowLeft') { goTo(idx - 1); return; }
+  if (e.key === 'ArrowRight') { goTo(idx + 1); return; }
+  const k = e.key.toLowerCase();
+  const action = ACTIONS.find(a => a.key === k || (a.key === '+' && k === '='));
+  if (action) { action.fn(); return; }
   const i = Number(k) - 1;
-  if (i >= 0 && i < meta.flags.length) {
+  if (k.trim() !== '' && i >= 0 && i < meta.flags.length) {
     const f = meta.flags[i];
     flags = flags.includes(f) ? flags.filter(x => x !== f) : flags.concat(f);
     syncUi();
@@ -281,10 +367,33 @@ window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = fals
 window.addEventListener('resize', () => { if (task) { fitView(); draw(); } });
 el('submit').addEventListener('click', submit);
 
+el('prev').addEventListener('click', () => goTo(idx - 1));
+el('next').addEventListener('click', () => goTo(idx + 1));
+
+function buildViewRow() {
+  const options = [20, 30, 45, 60].filter(d => d <= cutDeg);
+  if (!options.includes(cutDeg)) options.push(cutDeg);
+  el('viewrow').innerHTML = options.map(d =>
+    `<button data-deg="${d}" class="${d === viewDeg ? 'on' : ''}">${d}°</button>`).join('');
+  [...el('viewrow').children].forEach(b => b.addEventListener('click', () => {
+    viewDeg = Number(b.dataset.deg);
+    try { localStorage.setItem(VIEW_KEY, String(viewDeg)); } catch (_) { /* private mode */ }
+    buildViewRow();
+    if (task) { fitView(); draw(); }
+  }));
+}
+
 (async function init() {
   const data = await (await fetch('/api/tasks')).json();
-  meta = data; queue = data.tasks;
+  meta = data;
+  tasks = data.tasks;
+  done = new Set(data.done || []);
+  cutDeg = data.cut_fov_deg || 60;
+  const wanted = Number(localStorage.getItem(VIEW_KEY));
+  viewDeg = wanted > 0 ? Math.min(wanted, cutDeg)
+                       : Math.round((data.initial_view_fraction || 1) * cutDeg);
   el('who').textContent = data.annotator;
+
   el('flags').innerHTML = data.flags.map((f, i) =>
     `<div class="flag" data-flag="${f}">${f}<kbd>${i + 1}</kbd></div>`).join('');
   [...el('flags').children].forEach(n => n.addEventListener('click', () => {
@@ -292,7 +401,20 @@ el('submit').addEventListener('click', submit);
     flags = flags.includes(f) ? flags.filter(x => x !== f) : flags.concat(f);
     syncUi();
   }));
-  advance();
+
+  ACTIONS.forEach(a => {
+    if (a.key === 'w') a.label = `Whole ${cutDeg}° tile`;
+    const b = document.createElement('button');
+    b.innerHTML = `<span>${a.label}</span><kbd>${a.key}</kbd>`;
+    b.addEventListener('click', () => { a.fn(); });
+    el('keys').appendChild(b);
+  });
+  buildViewRow();
+
+  if (!tasks.length) return finish();
+  const first = tasks.findIndex(t => !done.has(t.label_uid));
+  if (first < 0) { idx = 0; goTo(0); toast('every label is annotated — stepping back to review'); }
+  else goTo(first);
 })();
 </script>
 </body>

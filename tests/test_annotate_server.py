@@ -9,7 +9,15 @@ this suite socket-free.
 
 import json
 import os
+import re
+import shutil
+import socketserver
+import subprocess
 import sys
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import pytest
 
@@ -90,10 +98,31 @@ class TestTasksPayload:
         del payload['initial_view_fraction']
         assert srv.tasks_payload(payload, 'jon', set())['initial_view_fraction'] == 1.0
 
-    def test_completed_labels_are_dropped_from_the_queue_but_counted(self, tmp_path):
+    def test_completed_labels_stay_in_the_list_and_are_marked_done(self, tmp_path):
+        """Deliberate reversal. The payload used to drop finished labels, which made the queue a one-way
+        conveyor: a misplaced point could only be fixed by editing JSON by hand, because the page had no
+        record the label existed. Back-navigation needs the whole list plus which of it is finished."""
         out = srv.tasks_payload(self._tasks(tmp_path), 'jon', {'city:1'})
-        assert [t['label_uid'] for t in out['tasks']] == ['city:0', 'city:2']
+        assert [t['label_uid'] for t in out['tasks']] == ['city:0', 'city:1', 'city:2']
+        assert out['done'] == ['city:1']
         assert (out['n_total'], out['n_done']) == (3, 1)
+
+    def test_the_done_list_is_sorted_so_the_payload_is_stable(self, tmp_path):
+        out = srv.tasks_payload(self._tasks(tmp_path), 'jon', {'city:2', 'city:0'})
+        assert out['done'] == ['city:0', 'city:2']
+
+    def test_it_forwards_the_cut_width_the_framing_control_is_labelled_in(self, tmp_path):
+        """The page offers 20°/30°/45°/60°, which it cannot label from the fraction alone."""
+        payload = self._tasks(tmp_path)
+        payload['cut_fov_deg'] = 60.0
+        assert srv.tasks_payload(payload, 'jon', set())['cut_fov_deg'] == 60.0
+
+    def test_a_task_file_without_a_cut_width_falls_back_to_the_constant(self, tmp_path):
+        """Tile directories rendered before the control existed must keep working rather than labelling
+        the framing buttons off a missing value."""
+        payload = self._tasks(tmp_path)
+        payload.pop('cut_fov_deg', None)
+        assert srv.tasks_payload(payload, 'jon', set())['cut_fov_deg'] == at.CUT_FOV_DEG
 
     def test_the_payload_carries_no_stored_geometry(self, tmp_path):
         out = srv.tasks_payload(self._tasks(tmp_path), 'jon', set())
@@ -274,3 +303,204 @@ class TestRecordAndResume:
         srv.record_annotation(str(tmp_path), 'jon', rec)
         files = os.listdir(srv.annotator_dir(str(tmp_path), 'jon'))
         assert files == ['seattle-wa_1.json'], files
+
+
+class TestOverARealSocket:
+    """The handler end to end. Everything else in this file calls the functions directly, which is what
+    keeps the suite fast — but the handler is glue, and glue is where a field gets dropped without any
+    function being wrong. It already happened once: the first handler assembled the task payload inline
+    and omitted `initial_view_fraction`, so every tile opened at 3x the intended scale.
+
+    Bound to port 0 and a tmp_path out-dir, deliberately. The by-hand version of this check was pointed
+    at a live annotation directory and overwrote 32 seconds of real work with its test fixture; the
+    revision history added in the same change is the only reason it came back.
+    """
+
+    @pytest.fixture
+    def live(self, tmp_path):
+        ts = [task('city:0'), task('city:1')]
+        tdir = tasks_dir(tmp_path, ts)
+        out = tmp_path / 'out'
+        server = socketserver.TCPServer(('127.0.0.1', 0), srv.Handler)
+        server.cfg = {'tasks': srv.load_tasks(tdir), 'tasks_dir': tdir,
+                      'out_dir': str(out), 'annotator': 'tester'}
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        yield f'http://127.0.0.1:{server.server_address[1]}'
+        server.shutdown()
+        server.server_close()
+
+    def _get(self, base, path):
+        with urllib.request.urlopen(base + path) as r:
+            return json.load(r)
+
+    def _post(self, base, path, body):
+        req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                     headers={'Content-Type': 'application/json'}, method='POST')
+        with urllib.request.urlopen(req) as r:
+            return json.load(r)
+
+    def test_the_task_payload_survives_the_handler(self, live):
+        got = self._get(live, '/api/tasks')
+        assert got['n_total'] == 2 and len(got['tasks']) == 2
+        assert got['done'] == []
+        assert 'initial_view_fraction' in got and 'cut_fov_deg' in got
+        assert got['flags'] == list(at.FLAGS)
+
+    def test_submit_then_reload_round_trips(self, live):
+        self._post(live, '/api/annotation', {
+            'label_uid': 'city:0', 'point': {'x': 5, 'y': 6},
+            'box': {'x': 1, 'y': 1, 'w': 9, 'h': 9}, 'initial_view_deg': 45})
+        back = self._get(live, '/api/annotation/city%3A0')
+        assert back['point'] == {'x': 5.0, 'y': 6.0}
+        assert back['initial_view_deg'] == 45.0
+        assert self._get(live, '/api/tasks')['done'] == ['city:0']
+
+    def test_a_revision_over_the_wire_keeps_the_original(self, live):
+        for x in (5, 50):
+            self._post(live, '/api/annotation', {
+                'label_uid': 'city:0', 'point': {'x': x, 'y': 6},
+                'box': {'x': 1, 'y': 1, 'w': 9, 'h': 9}})
+        back = self._get(live, '/api/annotation/city%3A0')
+        assert back['point']['x'] == 50.0
+        assert [h['point']['x'] for h in back['superseded']] == [5.0]
+
+    def test_an_unannotated_label_is_404_not_an_empty_record(self, live):
+        """An empty record would render as a blank annotation the page then re-submits over the top."""
+        with pytest.raises(urllib.error.HTTPError) as e:
+            self._get(live, '/api/annotation/city%3A1')
+        assert e.value.code == 404
+
+    def test_a_label_not_in_the_task_list_cannot_name_a_file(self, live):
+        """`annotation_path` builds a filename from the uid, so an unchecked one is a path to anywhere."""
+        with pytest.raises(urllib.error.HTTPError) as e:
+            self._get(live, '/api/annotation/' + urllib.parse.quote('../../etc/passwd', safe=''))
+        assert e.value.code == 404
+
+    def test_the_answer_key_is_still_refused_over_the_wire(self, live):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            self._get(live, '/geometry.json')
+        assert e.value.code == 404
+
+
+class TestThePageItself:
+    """`annotate.html` is a real source file with no compiler and no linter, and the Python suite reads
+    it only as bytes to serve. A syntax error in its script block is a blank screen at annotation time
+    with nothing in this suite to catch it — which is exactly what nearly shipped when the queue was
+    rewritten for back-navigation."""
+
+    @pytest.fixture(scope='class')
+    def script(self):
+        page = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            'reports', 'scripts', srv.PAGE)
+        with open(page, encoding='utf-8') as f:
+            html = f.read()
+        m = re.search(r'<script>(.*?)</script>', html, re.S)
+        assert m, 'the page must have exactly one inline script block'
+        return m.group(1)
+
+    def test_the_script_parses(self, script, tmp_path):
+        node = shutil.which('node')
+        if not node:
+            pytest.skip('node not available to parse the page script')
+        js = tmp_path / 'page.js'
+        js.write_text(script, encoding='utf-8')
+        proc = subprocess.run([node, '--check', str(js)], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+
+    def test_no_shortcut_key_is_bound_twice(self, script):
+        """The action table drives both the keyboard and the sidebar buttons, so a duplicate key means
+        one of the two buttons silently does the other's job."""
+        keys = re.findall(r"\{key: '(.+?)'", script)
+        assert keys, 'the action table must be findable'
+        assert len(keys) == len(set(keys)), keys
+
+    def test_no_shortcut_collides_with_a_flag_digit(self, script):
+        """Flags are bound to 1..N by index. A digit in the action table would shadow a flag, and the
+        annotator would think they had flagged something."""
+        keys = re.findall(r"\{key: '(.+?)'", script)
+        assert not [k for k in keys if k.isdigit()], keys
+        assert len(at.FLAGS) <= 9, 'flags past 9 would need a different binding than a single digit'
+
+
+class TestRevisionsAreKept:
+    """Back-navigation invites revision, and silent revision is the thing that would quietly cost this
+    corpus its meaning: an annotation edited after the annotator has seen fifty more tiles is no longer
+    an independent judgement of that tile, and if the edit overwrites in place there is nothing left to
+    say it happened. Overwriting was the old behaviour and was correct while the queue was one-way.
+    """
+
+    def _rec(self, x, y):
+        return srv.validate_annotation({'point': {'x': x, 'y': y},
+                                        'box': {'x': 1, 'y': 1, 'w': 5, 'h': 5}}, task())
+
+    def test_a_first_submission_carries_no_history(self, tmp_path):
+        srv.record_annotation(str(tmp_path), 'jon', self._rec(1, 2))
+        stored = srv.load_annotation(str(tmp_path), 'jon', 'seattle-wa:1')
+        assert 'superseded' not in stored and 'revision' not in stored
+
+    def test_a_revision_keeps_what_it_replaced(self, tmp_path):
+        srv.record_annotation(str(tmp_path), 'jon', self._rec(1, 2))
+        srv.record_annotation(str(tmp_path), 'jon', self._rec(3, 4))
+        stored = srv.load_annotation(str(tmp_path), 'jon', 'seattle-wa:1')
+        assert stored['point'] == {'x': 3.0, 'y': 4.0}
+        assert stored['revision'] == 1
+        assert [h['point'] for h in stored['superseded']] == [{'x': 1.0, 'y': 2.0}]
+
+    def test_history_accumulates_flat_rather_than_nesting(self, tmp_path):
+        """Nesting each prior record inside the next makes the file grow quadratically under repeated
+        edits and turns reading the history into a recursive walk."""
+        for i in range(4):
+            srv.record_annotation(str(tmp_path), 'jon', self._rec(i, i))
+        stored = srv.load_annotation(str(tmp_path), 'jon', 'seattle-wa:1')
+        assert stored['revision'] == 3
+        assert [h['point']['x'] for h in stored['superseded']] == [0.0, 1.0, 2.0]
+        assert not any('superseded' in h for h in stored['superseded'])
+
+    def test_a_revision_is_still_one_file(self, tmp_path):
+        srv.record_annotation(str(tmp_path), 'jon', self._rec(1, 2))
+        srv.record_annotation(str(tmp_path), 'jon', self._rec(3, 4))
+        assert len(os.listdir(srv.annotator_dir(str(tmp_path), 'jon'))) == 1
+
+    def test_another_annotators_history_is_untouched(self, tmp_path):
+        srv.record_annotation(str(tmp_path), 'jon', self._rec(1, 2))
+        srv.record_annotation(str(tmp_path), 'claude', self._rec(7, 8))
+        srv.record_annotation(str(tmp_path), 'jon', self._rec(3, 4))
+        claude = srv.load_annotation(str(tmp_path), 'claude', 'seattle-wa:1')
+        assert claude['point'] == {'x': 7.0, 'y': 8.0} and 'revision' not in claude
+
+
+class TestLoadAnnotation:
+    """What lets the page step back onto a finished label and show what was submitted, rather than a
+    blank tile that re-submits as nothing."""
+
+    def test_it_returns_none_when_nothing_was_submitted(self, tmp_path):
+        assert srv.load_annotation(str(tmp_path), 'jon', 'seattle-wa:1') is None
+
+    def test_it_round_trips_the_record(self, tmp_path):
+        rec = srv.validate_annotation({'point': {'x': 1.5, 'y': 2.5},
+                                       'box': {'x': 1, 'y': 1, 'w': 5, 'h': 5},
+                                       'flags': ['occluded'], 'notes': 'hi'}, task())
+        srv.record_annotation(str(tmp_path), 'jon', rec)
+        got = srv.load_annotation(str(tmp_path), 'jon', 'seattle-wa:1')
+        assert (got['point'], got['flags'], got['notes']) == ({'x': 1.5, 'y': 2.5}, ['occluded'], 'hi')
+
+
+class TestInitialViewIsRecorded:
+    """§4 opens every tile at 20°, chosen partly so the window would not imply a crop size — Study 2 is
+    choosing between sizing rules, and an annotator shown a tight window draws boxes calibrated to it.
+    The page can now widen that. Recording the framing per annotation is what keeps the effect
+    measurable instead of an assumption; a preference the artifact never sees is a confound."""
+
+    def test_the_framing_is_stored(self):
+        rec = srv.validate_annotation({'point': {'x': 1, 'y': 2},
+                                       'box': {'x': 1, 'y': 1, 'w': 5, 'h': 5},
+                                       'initial_view_deg': 45}, task())
+        assert rec['initial_view_deg'] == 45.0
+
+    def test_an_absent_framing_is_none_not_zero(self):
+        """Zero degrees is not a framing anyone used; it is the absence of a record, and a study that
+        averaged it would silently pull the mean toward a value that never happened."""
+        rec = srv.validate_annotation({'point': {'x': 1, 'y': 2},
+                                       'box': {'x': 1, 'y': 1, 'w': 5, 'h': 5}}, task())
+        assert rec['initial_view_deg'] is None

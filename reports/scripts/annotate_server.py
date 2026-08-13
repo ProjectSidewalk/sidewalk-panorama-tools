@@ -31,6 +31,7 @@ import os
 import re
 import socketserver
 import sys
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import annotation_tiles  # noqa: E402
@@ -66,7 +67,8 @@ def load_tasks(tasks_dir):
 
 
 def tasks_payload(tasks, annotator, done):
-    """What `GET /api/tasks` returns: the pending queue plus the constants the page needs.
+    """What `GET /api/tasks` returns: the **whole** task list, which of them are already annotated, and
+    the constants the page needs.
 
     A function rather than a dict literal inside the handler, because the handler is the one part of
     this module the socket-free tests could not reach — and the first version of it silently dropped
@@ -74,17 +76,26 @@ def tasks_payload(tasks, annotator, done):
     the protocol specifies. Nothing failed; the framing was just wrong. A smoke test caught it, and now
     a unit test does.
 
+    It used to return only the *pending* tasks, which made the queue a one-way conveyor: a label you had
+    already submitted was gone from the page's list, so there was nothing to step back to and a
+    misplaced point could only be fixed by editing JSON by hand. Shipping the full list plus `done` is
+    what makes back-navigation possible, and it costs no blindness — every task record is already the
+    annotator-facing one (`load_tasks` asserts that), and `done` is a list of the annotator's own work.
+
     `initial_view_fraction` is safe to ship and `n_total`/`n_done` are progress: none of them vary per
     label, so none says anything about where a stored point is.
     """
-    pending = [t for t in tasks['tasks'] if t['label_uid'] not in done]
     return {
         'annotator': annotator,
         'flags': tasks['flags'],
         'initial_view_fraction': tasks.get('initial_view_fraction', 1.0),
+        # Falls back to the module constant for task files cut before this was written, so an existing
+        # tile directory keeps working rather than labelling its framing control off a missing value.
+        'cut_fov_deg': tasks.get('cut_fov_deg', annotation_tiles.CUT_FOV_DEG),
         'n_total': len(tasks['tasks']),
         'n_done': len(done),
-        'tasks': pending,
+        'done': sorted(done),
+        'tasks': list(tasks['tasks']),
     }
 
 
@@ -156,12 +167,43 @@ def validate_annotation(payload, task):
         'notes': str(payload.get('notes') or '')[:2000],
         'elapsed_ms': int(payload.get('elapsed_ms') or 0),
         'zoom_used': float(payload.get('zoom_used') or 1.0),
+        # The angular width the tile was actually FRAMED at when this annotation was made. The protocol
+        # opens every tile at 20 deg, but the annotator can change it, and the framing is not cosmetic:
+        # §4 picked 20 deg partly so the window would not imply a crop size, since Study 2 is choosing
+        # between sizing rules and an annotator shown a tight window draws boxes calibrated to it. If
+        # the setting is used, its effect on box size has to be measurable rather than assumed absent —
+        # so it is recorded per annotation instead of being a preference the artifact never sees.
+        'initial_view_deg': float(payload.get('initial_view_deg') or 0.0) or None,
     }
 
 
+def load_annotation(out_dir, annotator, label_uid):
+    """A previously submitted annotation, or None. What lets the page step back and edit one."""
+    path = annotation_path(out_dir, annotator, label_uid)
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding='utf-8') as f:
+        return json.load(f)
+
+
 def record_annotation(out_dir, annotator, record):
-    """Write one annotation atomically. Overwrites a prior submission for the same label."""
+    """Write one annotation atomically, preserving any version it replaces.
+
+    Re-submitting used to overwrite outright. That is the wrong default now that the page can navigate
+    backwards: a gold standard where an annotation may be silently revised after the annotator has seen
+    fifty more tiles is one where "what did they think at the time" is unrecoverable, and revision is
+    exactly the behaviour back-navigation invites. So a resubmission keeps the record it displaces in
+    `superseded` and bumps `revision`.
+
+    Flattened rather than nested — each entry in `superseded` has its own `superseded` stripped — so the
+    file cannot grow quadratically under repeated edits, and reading the history is a list scan.
+    """
     path = annotation_path(out_dir, annotator, record['label_uid'])
+    prior = load_annotation(out_dir, annotator, record['label_uid'])
+    if prior is not None:
+        history = list(prior.pop('superseded', []))
+        history.append(prior)
+        record = dict(record, revision=int(prior.get('revision', 0)) + 1, superseded=history)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + '.part'
     with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
@@ -212,6 +254,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == '/api/tasks':
             done = completed(cfg['out_dir'], cfg['annotator'])
             return self._send(200, tasks_payload(cfg['tasks'], cfg['annotator'], done))
+        if self.path.startswith('/api/annotation/'):
+            uid = urllib.parse.unquote(self.path[len('/api/annotation/'):])
+            # Resolved through the task list, exactly like a tile: `annotation_path` builds a filename
+            # from the uid, so an unchecked one is a path to anywhere.
+            if uid not in {t['label_uid'] for t in cfg['tasks']['tasks']}:
+                return self._send(404, {'error': 'no such label'})
+            saved = load_annotation(cfg['out_dir'], cfg['annotator'], uid)
+            return self._send(200, saved) if saved else self._send(404, {'error': 'not annotated'})
         if self.path.startswith('/tiles/'):
             path = resolve_tile(cfg['tasks'], cfg['tasks_dir'], self.path[len('/tiles/'):])
             if not path:
