@@ -170,6 +170,30 @@ These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11
   (`comparable_only`) rather than leaving a reader to assume the difference is the estimator — here it
   mostly was, but that was a measurement, not a given.
 
+## The gold-standard annotation tool (`corpus_sample.py` → `annotation_tiles.py` → `annotate_server.py`)
+
+Three scripts feed each other, and the seams between them are load-bearing:
+
+- **`corpus_sample.py`** draws the study corpus from a rawLabels frame. **Label identity is
+  `(city, label_id)`, carried as `label_uid`** — `label_id` restarts at 1 in every deployment, and keying
+  on it silently cost 314 labels of a 763-label draw. `pano_id` does *not* collide across cities, which is
+  why the per-pano cap and the pano-wise tune/eval split are sound on it.
+- **`annotation_tiles.py`** cuts one tile per label and emits **two** files. `tasks.json` is
+  annotator-facing and carries no stored coordinate, no jitter, no tile origin and **no seed** — each of
+  those recovers the answer, since the tile origin is `stored + jitter - size/2`. `geometry.json` carries
+  all of them and is what the analysis uses to map a tile-space annotation back to pano coordinates.
+  Tiles are cut at **60°** but the view opens at **20°**: a tile of angular width F can only measure a
+  displacement up to F/2, so a tight tile converts gross errors into `object-absent` and deletes the
+  largest errors from the distribution being estimated.
+- **`annotate_server.py`** serves tiles to `annotate.html` on loopback and writes one JSON per label per
+  annotator. It refuses `geometry.json` **by name** — it sits beside the file that is served, and the
+  natural static-file handler would publish the answer key at a guessable URL.
+
+Amendment 1(e) forbids porting the webpage's render path into any of this: Study 1 compares stored
+`pano_x`/`pano_y` against gold *in pano coordinates*, so a mapping sharing the projection under test would
+make the study measure zero by construction. The tile transform is verified by round-trip against
+directly-indexed pixels, never against another implementation.
+
 ## Label Type IDs
 
 Used in both APIs and as the crop output subdirectory name. Note 8 is intentionally skipped.

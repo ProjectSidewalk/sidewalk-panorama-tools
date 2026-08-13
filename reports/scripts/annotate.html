@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crop-priors gold standard</title>
+<!--
+  Annotation surface for prereg §4. Deliberately renders NOTHING but the tile and the annotator's own
+  marks: no stored point, no crop box, no prior annotation, no neighbouring label. It cannot render
+  them because the server never sends them, and that is the point -- a page that received the answer and
+  chose not to draw it would be one edit away from anchoring every annotation.
+
+  Coordinates are kept in TILE pixel space throughout and only converted for drawing, so zooming and
+  panning cannot move a recorded point. The view transform is (scale, offset); every mouse position goes
+  through toTile() before it is stored.
+-->
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313c; --ink: #e8eaf0; --dim: #949cad;
+    --accent: #6ea8fe; --good: #5cd38a; --warn: #f0b84a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif;
+         background: var(--bg); color: var(--ink); overflow: hidden; }
+  #stage { flex: 1; position: relative; display: grid; place-items: center; background: #0e0f12; }
+  canvas { cursor: crosshair; image-rendering: auto; }
+  canvas.panning { cursor: grabbing; }
+  #side { width: 330px; flex: none; padding: 18px; background: var(--panel);
+          border-left: 1px solid var(--line); overflow-y: auto; }
+  h1 { font-size: 13px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim);
+       margin: 0 0 14px; font-weight: 600; }
+  .type { font-size: 21px; font-weight: 650; margin: 0 0 6px; }
+  .rubric { background: #0e0f12; border-left: 3px solid var(--accent); padding: 10px 12px;
+            border-radius: 0 5px 5px 0; margin: 0 0 16px; color: #cfd6e4; }
+  .step { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px;
+          margin-bottom: 5px; background: #0e0f12; color: var(--dim); }
+  .step.active { background: #202a3d; color: var(--ink); outline: 1px solid var(--accent); }
+  .step.done { color: var(--good); }
+  .step b { font-variant-numeric: tabular-nums; }
+  .flags { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; }
+  .flag { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px;
+          background: #0e0f12; cursor: pointer; user-select: none; }
+  .flag.on { background: #3a2f16; outline: 1px solid var(--warn); color: #ffe6b0; }
+  .flag kbd { margin-left: auto; }
+  kbd { font: 11px ui-monospace, monospace; background: #262c38; border: 1px solid var(--line);
+        border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; color: var(--dim); }
+  textarea { width: 100%; min-height: 52px; background: #0e0f12; color: var(--ink); resize: vertical;
+             border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: inherit; }
+  button { width: 100%; padding: 11px; margin-top: 12px; border: 0; border-radius: 7px;
+           background: var(--accent); color: #08101f; font: inherit; font-weight: 650;
+           cursor: pointer; }
+  button:disabled { background: #333a48; color: #6b7384; cursor: not-allowed; }
+  .meta { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums;
+          color: var(--dim); margin-bottom: 12px; }
+  .keys { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
+          color: var(--dim); font-size: 12.5px; }
+  .keys div { display: flex; justify-content: space-between; padding: 2px 0; }
+  #toast { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+           background: #202a3d; border: 1px solid var(--accent); padding: 9px 16px;
+           border-radius: 7px; opacity: 0; transition: opacity .18s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  #toast.err { background: #3d2020; border-color: #e06c6c; }
+  #done { text-align: center; padding: 40px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas><div id="toast"></div></div>
+<aside id="side">
+  <h1>Gold standard · <span id="who"></span></h1>
+  <div class="meta"><span id="progress">–</span><span id="zoom">1.0×</span></div>
+  <p class="type" id="ltype">–</p>
+  <p class="rubric" id="rubric">–</p>
+
+  <div class="step" id="s1"><b>1</b> <span>Click the canonical point</span></div>
+  <div class="step" id="s2"><b>2</b> <span>Drag a tight box</span></div>
+
+  <div class="flags" id="flags"></div>
+  <textarea id="notes" placeholder="Notes (optional)"></textarea>
+  <button id="submit" disabled>Submit &amp; next &nbsp;<kbd>↵</kbd></button>
+
+  <div class="keys">
+    <div><span>Zoom</span><span><kbd>wheel</kbd> <kbd>+</kbd> <kbd>-</kbd></span></div>
+    <div><span>Whole 60° tile</span><kbd>w</kbd></div>
+    <div><span>Pan</span><span><kbd>space</kbd>+drag · <kbd>middle</kbd></span></div>
+    <div><span>Undo last mark</span><kbd>u</kbd></div>
+    <div><span>Reset view</span><kbd>r</kbd></div>
+    <div><span>Skip (no submit)</span><kbd>s</kbd></div>
+  </div>
+</aside>
+
+<script>
+'use strict';
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const el = id => document.getElementById(id);
+
+let queue = [], task = null, img = null, flags = [], meta = {n_total: 0, n_done: 0};
+let point = null, box = null, drag = null, startedAt = 0, maxZoom = 1;
+let view = {scale: 1, x: 0, y: 0}, panning = false, spaceDown = false, lastPan = null;
+
+const toast = (msg, err) => {
+  const t = el('toast');
+  t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.className = '', 2200);
+};
+
+/*
+  The tile is cut wider than the annotator's starting view (60 deg cut, 20 deg view) so that an object
+  tens of degrees from the stored point can still be found and placed rather than reported absent. So
+  there are two scales: fitScale shows the whole cut, and the view opens at fitScale / fraction, centred.
+  Zooming out to the full cut is deliberately allowed — that is the whole reason the extra margin exists.
+*/
+let fitScale = 1;
+
+function fitView() {
+  const pad = 32;
+  const sw = cv.parentElement.clientWidth - pad, sh = cv.parentElement.clientHeight - pad;
+  cv.width = sw; cv.height = sh;
+  fitScale = Math.min(sw / task.tile_width, sh / task.tile_height);
+  const frac = meta.initial_view_fraction || 1;
+  view.scale = fitScale / frac;
+  // Centre on the tile's middle, which is the jittered point — never the stored point.
+  view.x = sw / 2 - (task.tile_width / 2) * view.scale;
+  view.y = sh / 2 - (task.tile_height / 2) * view.scale;
+  maxZoom = view.scale;                       // "1.0x" in the readout means the default framing
+}
+
+const clampScale = s => Math.max(fitScale * 0.85, Math.min(maxZoom * 8, s));
+
+// Screen <-> tile space. Everything is stored in tile pixels, so zoom and pan can never move a mark.
+const toTile = (sx, sy) => ({x: (sx - view.x) / view.scale, y: (sy - view.y) / view.scale});
+const toScreen = (tx, ty) => ({x: tx * view.scale + view.x, y: ty * view.scale + view.y});
+
+function draw() {
+  ctx.fillStyle = '#0e0f12';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!img) return;
+  ctx.imageSmoothingEnabled = view.scale < 2;
+  ctx.drawImage(img, view.x, view.y, task.tile_width * view.scale, task.tile_height * view.scale);
+
+  if (box) {
+    const a = toScreen(box.x, box.y);
+    ctx.strokeStyle = '#5cd38a'; ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(a.x, a.y, box.w * view.scale, box.h * view.scale);
+    ctx.setLineDash([]);
+  }
+  if (drag) {
+    const a = toScreen(Math.min(drag.x0, drag.x1), Math.min(drag.y0, drag.y1));
+    ctx.strokeStyle = '#f0b84a'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.strokeRect(a.x, a.y, Math.abs(drag.x1 - drag.x0) * view.scale,
+                             Math.abs(drag.y1 - drag.y0) * view.scale);
+    ctx.setLineDash([]);
+  }
+  if (point) {
+    const p = toScreen(point.x, point.y), r = 11;
+    ctx.strokeStyle = '#6ea8fe'; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(p.x - r, p.y); ctx.lineTo(p.x - 3, p.y);
+    ctx.moveTo(p.x + 3, p.y); ctx.lineTo(p.x + r, p.y);
+    ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x, p.y - 3);
+    ctx.moveTo(p.x, p.y + 3); ctx.lineTo(p.x, p.y + r);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 7); ctx.fillStyle = '#6ea8fe'; ctx.fill();
+  }
+  el('zoom').textContent = (view.scale / maxZoom).toFixed(1) + '×';
+}
+
+function syncUi() {
+  const absent = flags.includes('object-absent');
+  el('s1').className = 'step' + (point ? ' done' : (absent ? '' : ' active'));
+  el('s2').className = 'step' + (box ? ' done' : (point && !absent ? ' active' : ''));
+  el('submit').disabled = !(absent || (point && box));
+  [...el('flags').children].forEach(n =>
+    n.className = 'flag' + (flags.includes(n.dataset.flag) ? ' on' : ''));
+  draw();
+}
+
+function show(next) {
+  task = next; point = box = drag = null; flags = []; el('notes').value = '';
+  el('ltype').textContent = task.label_type;
+  el('rubric').textContent = task.rubric;
+  el('progress').textContent = `${meta.n_done + 1} / ${meta.n_total}`;
+  img = new Image();
+  img.onload = () => { fitView(); syncUi(); };
+  img.onerror = () => toast('tile failed to load: ' + task.tile, true);
+  img.src = '/tiles/' + encodeURIComponent(task.tile);
+  startedAt = performance.now();
+}
+
+function advance() {
+  if (!queue.length) {
+    el('stage').innerHTML = '<div id="done">Queue complete — ' + meta.n_done + ' annotated.</div>';
+    el('side').style.display = 'none';
+    return;
+  }
+  show(queue.shift());
+}
+
+async function submit() {
+  if (el('submit').disabled) return;
+  const body = {
+    label_uid: task.label_uid, point, box, flags,
+    notes: el('notes').value,
+    elapsed_ms: Math.round(performance.now() - startedAt),
+    zoom_used: view.scale / maxZoom,
+  };
+  const r = await fetch('/api/annotation', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!r.ok) { toast((await r.json()).error || 'rejected', true); return; }
+  meta.n_done++;
+  advance();
+}
+
+/* ---- input ---- */
+cv.addEventListener('mousedown', e => {
+  if (e.button === 1 || spaceDown) {
+    panning = true; lastPan = {x: e.clientX, y: e.clientY};
+    cv.classList.add('panning'); e.preventDefault(); return;
+  }
+  if (e.button !== 0) return;
+  const t = toTile(e.offsetX, e.offsetY);
+  if (!point) { point = t; syncUi(); return; }
+  drag = {x0: t.x, y0: t.y, x1: t.x, y1: t.y};
+});
+
+cv.addEventListener('mousemove', e => {
+  if (panning) {
+    view.x += e.clientX - lastPan.x; view.y += e.clientY - lastPan.y;
+    lastPan = {x: e.clientX, y: e.clientY}; draw(); return;
+  }
+  if (!drag) return;
+  const t = toTile(e.offsetX, e.offsetY);
+  drag.x1 = t.x; drag.y1 = t.y; draw();
+});
+
+window.addEventListener('mouseup', () => {
+  if (panning) { panning = false; cv.classList.remove('panning'); return; }
+  if (!drag) return;
+  const w = Math.abs(drag.x1 - drag.x0), h = Math.abs(drag.y1 - drag.y0);
+  // A stray click while in box mode is not a zero-area box; ignore it rather than record one.
+  if (w > 2 && h > 2) {
+    box = {x: Math.min(drag.x0, drag.x1), y: Math.min(drag.y0, drag.y1), w, h};
+  }
+  drag = null; syncUi();
+});
+
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const before = toTile(e.offsetX, e.offsetY);
+  view.scale = clampScale(view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+  const after = toTile(e.offsetX, e.offsetY);   // keep the cursor over the same pixel
+  view.x += (after.x - before.x) * view.scale;
+  view.y += (after.y - before.y) * view.scale;
+  draw();
+}, {passive: false});
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA') return;
+  if (e.code === 'Space') { spaceDown = true; e.preventDefault(); return; }
+  const k = e.key.toLowerCase();
+  if (e.key === 'Enter') { submit(); return; }
+  if (k === 'u') { if (box) box = null; else point = null; syncUi(); return; }
+  if (k === 'r') { fitView(); draw(); return; }
+  if (k === 's') { advance(); return; }
+  if (k === '+' || k === '=') { view.scale = clampScale(view.scale * 1.3); draw(); return; }
+  if (k === '-') { view.scale = clampScale(view.scale / 1.3); draw(); return; }
+  if (k === 'w') {                      // w = show the WHOLE cut, to hunt for a far-off object
+    view.scale = fitScale;
+    view.x = (cv.width - task.tile_width * fitScale) / 2;
+    view.y = (cv.height - task.tile_height * fitScale) / 2;
+    draw(); return;
+  }
+  const i = Number(k) - 1;
+  if (i >= 0 && i < meta.flags.length) {
+    const f = meta.flags[i];
+    flags = flags.includes(f) ? flags.filter(x => x !== f) : flags.concat(f);
+    syncUi();
+  }
+});
+window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
+window.addEventListener('resize', () => { if (task) { fitView(); draw(); } });
+el('submit').addEventListener('click', submit);
+
+(async function init() {
+  const data = await (await fetch('/api/tasks')).json();
+  meta = data; queue = data.tasks;
+  el('who').textContent = data.annotator;
+  el('flags').innerHTML = data.flags.map((f, i) =>
+    `<div class="flag" data-flag="${f}">${f}<kbd>${i + 1}</kbd></div>`).join('');
+  [...el('flags').children].forEach(n => n.addEventListener('click', () => {
+    const f = n.dataset.flag;
+    flags = flags.includes(f) ? flags.filter(x => x !== f) : flags.concat(f);
+    syncUi();
+  }));
+  advance();
+})();
+</script>
+</body>
+</html>

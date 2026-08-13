@@ -1,0 +1,405 @@
+"""Tests for reports/scripts/annotation_tiles.py — the gold-standard annotation tile renderer.
+
+Two properties carry the whole gold standard, and both are structural rather than statistical:
+
+**The transform must be exact and its own.** Amendment 1(e) forbids porting the webpage's render path,
+because Study 1 measures stored `pano_x`/`pano_y` against gold annotations *in pano coordinates* — so if
+the tile→pano mapping carried the same error as the projection under test, the study would measure zero
+by construction. The mapping is therefore verified by round-trip against directly-indexed pixels rather
+than against any other implementation, seam-crossing windows included.
+
+**The annotator must not be able to see the answer.** §4 requires that the stored point, any crop box,
+and any prior annotation are never rendered, and that the viewport is jittered. The jitter is not
+decoration: it is what stops an annotator from converging on the centre of the tile. So the tests below
+check that the annotator-facing package contains no stored coordinate and no jitter — the point being
+that blindness is enforced by what the file *lacks*, not by the UI choosing not to draw something.
+"""
+
+import json
+import os
+import sys
+
+import numpy as np
+import pytest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS = os.path.join(REPO_ROOT, 'reports', 'scripts')
+for p in (REPO_ROOT, SCRIPTS):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+import annotation_tiles as at  # noqa: E402
+import pandas as pd  # noqa: E402
+
+PIL = pytest.importorskip('PIL', reason='Pillow is needed to cut tiles')
+from PIL import Image  # noqa: E402
+
+
+def corpus_row(label_uid='seattle-wa:1', pano_id='pano1', label_type='CurbRamp',
+               pano_x=8000.0, pano_y=5000.0, pano_width=16384.0, pano_height=8192.0,
+               city='seattle-wa', **extra):
+    row = {'label_uid': label_uid, 'label_id': int(label_uid.split(':')[1]), 'city': city,
+           'pano_id': pano_id, 'label_type': label_type, 'pano_x': pano_x, 'pano_y': pano_y,
+           'pano_width': pano_width, 'pano_height': pano_height, 'band': '5-15',
+           'quality': 'post_fix', 'split': 'tune', 'measurable': True, 'roles': 'cell'}
+    row.update(extra)
+    return row
+
+
+def corpus(rows):
+    return pd.DataFrame(rows)
+
+
+def gradient_pano(width=512, height=256):
+    """A pano whose every pixel encodes its own (x, y), so a cut tile can be checked pixel-by-pixel
+    against direct indexing. Red carries x, green carries y, blue marks the seam column."""
+    xs = np.arange(width, dtype=np.uint16)
+    ys = np.arange(height, dtype=np.uint16)
+    r = np.tile((xs % 256).astype(np.uint8), (height, 1))
+    g = np.tile((ys % 256).astype(np.uint8)[:, None], (1, width))
+    b = np.zeros((height, width), dtype=np.uint8)
+    b[:, 0] = 255
+    return Image.fromarray(np.dstack([r, g, b]), mode='RGB')
+
+
+class TestTileExtent:
+    """The tile is a fixed ANGULAR window, so an annotator sees the same amount of world on a
+    13312x6656 pano as on a 16384x8192 one. A fixed pixel window would show half as much world on the
+    low-resolution panos — and resolution-dependence is the very thing #32 is trying to remove."""
+
+    def test_the_extent_is_angular_not_pixel(self):
+        """Asserted in DEGREES, within a pixel's worth. Comparing the pixel fractions directly fails on
+        integer rounding (910/16384 vs 740/13312 differ in the fourth decimal), and loosening that
+        comparison until it passes would stop testing the property — which is that an annotator sees
+        the same angular extent of world at either resolution."""
+        big = at.tile_extent_px(16384.0, 8192.0)
+        small = at.tile_extent_px(13312.0, 6656.0)
+        assert big != small, 'different rasters must give different pixel extents'
+        assert big[0] / 16384.0 * 360.0 == pytest.approx(at.TILE_FOV_DEG, abs=0.02)
+        assert small[0] / 13312.0 * 360.0 == pytest.approx(at.TILE_FOV_DEG, abs=0.02)
+        assert big[1] / 8192.0 * 180.0 == pytest.approx(at.TILE_FOV_DEG, abs=0.02)
+        assert small[1] / 6656.0 * 180.0 == pytest.approx(at.TILE_FOV_DEG, abs=0.02)
+
+    def test_the_extent_matches_the_declared_field_of_view(self):
+        w, h = at.tile_extent_px(16384.0, 8192.0, fov_deg=20.0)
+        assert w == round(20.0 / 360.0 * 16384.0)
+        assert h == round(20.0 / 180.0 * 8192.0)
+
+    def test_a_two_to_one_pano_gives_a_square_tile(self):
+        """Equirectangular 2:1 panos have equal degrees-per-pixel on both axes, so the angular window
+        is square in pixels too. Computed per axis anyway, because that equality is a property of the
+        aspect ratio and not something to assume."""
+        assert at.tile_extent_px(16384.0, 8192.0) == at.tile_extent_px(16384.0, 8192.0)[::-1]
+
+    def test_the_cut_is_wider_than_the_starting_view(self):
+        """The bound this exists to remove: a tile of angular width F can only measure a displacement up
+        to F/2, because past that the object is off the tile and `object-absent` is the only response
+        left — so a tight tile silently deletes the largest errors from the very distribution Study 1
+        estimates. Cutting wider than the view keeps them measurable, and the view still opens at the
+        framing that does not prejudge Study 2's sizing question.
+        """
+        assert at.CUT_FOV_DEG == 60.0
+        assert at.VIEW_FOV_DEG == 20.0
+        assert at.CUT_FOV_DEG > at.VIEW_FOV_DEG
+        assert at.TILE_FOV_DEG == at.CUT_FOV_DEG, 'geometry is denominated in the cut'
+
+    def test_the_measurable_displacement_reaches_the_observed_signal_offsets(self):
+        """Sized against a measurement, not a guess: 45 of the drawn corpus's 72 Signal labels sit
+        10-42 deg below the horizon, on the pole base rather than the head their rubric names. Half of
+        60 deg covers a 30 deg displacement; half of 20 deg would not have covered any of them."""
+        assert at.CUT_FOV_DEG / 2 >= 30.0
+
+    def test_the_cut_is_still_resolvable_on_a_low_resolution_pano(self):
+        """The other side of the trade: the corpus contains 3328x1664 panos, where the whole cut is only
+        ~555 px. Recorded rather than guarded — those labels have coarser gold by construction, and the
+        analysis needs to know that rather than the renderer pretending otherwise."""
+        w, h = at.tile_extent_px(3328.0, 1664.0)
+        assert (w, h) == (554, 554)
+        big, _ = at.tile_extent_px(16384.0, 8192.0)
+        assert big / w > 4
+
+    def test_every_extent_is_even(self):
+        """So the window centre lands on a pixel boundary and the mapping stays exactly invertible."""
+        for W, H in ((16384.0, 8192.0), (13312.0, 6656.0), (3328.0, 1664.0), (512.0, 256.0)):
+            w, h = at.tile_extent_px(W, H)
+            assert w % 2 == 0 and h % 2 == 0, (W, H, w, h)
+
+
+class TestJitter:
+    """§4: 'a uniform random jitter of ±40–80 px per axis (seeded, logged)'. Read as magnitude uniform
+    in [40, 80] with a random sign, NOT uniform in [-80, +80] — the latter puts the stored point at or
+    near the tile centre for a meaningful share of labels, which is exactly the anchoring the jitter
+    exists to prevent."""
+
+    def test_the_magnitude_is_always_in_the_specified_band(self):
+        for i in range(400):
+            jx, jy = at.jitter_for(f'city:{i}', seed=1)
+            assert at.JITTER_MIN_PX <= abs(jx) <= at.JITTER_MAX_PX, jx
+            assert at.JITTER_MIN_PX <= abs(jy) <= at.JITTER_MAX_PX, jy
+
+    def test_the_stored_point_is_never_at_the_tile_centre(self):
+        """The property that matters, stated over the offset rather than over the distribution."""
+        for i in range(200):
+            jx, jy = at.jitter_for(f'city:{i}', seed=7)
+            assert jx != 0 and jy != 0
+
+    def test_both_signs_occur(self):
+        """Discrimination: a magnitude-only implementation would displace every tile the same way, and
+        an annotator could learn the offset."""
+        signs = {(np.sign(at.jitter_for(f'city:{i}', seed=3)[0]),
+                  np.sign(at.jitter_for(f'city:{i}', seed=3)[1])) for i in range(200)}
+        assert signs == {(-1, -1), (-1, 1), (1, -1), (1, 1)}
+
+    def test_it_is_deterministic_per_label(self):
+        assert at.jitter_for('seattle-wa:5', seed=11) == at.jitter_for('seattle-wa:5', seed=11)
+
+    def test_it_is_seed_sensitive(self):
+        different = [at.jitter_for(f'c:{i}', seed=1) != at.jitter_for(f'c:{i}', seed=2)
+                     for i in range(50)]
+        assert sum(different) > 40
+
+    def test_one_labels_jitter_does_not_depend_on_any_other(self):
+        """Derived from the label's own uid, so re-running after the corpus gains or loses a label
+        reproduces every surviving label's tile exactly. A shared sequential RNG would reshuffle
+        everything downstream of an insertion — and tiles already annotated would no longer match the
+        geometry the annotation was recorded against."""
+        alone = at.jitter_for('seattle-wa:99', seed=5)
+        assert alone == at.jitter_for('seattle-wa:99', seed=5)
+        assert alone != at.jitter_for('seattle-wa:98', seed=5)
+
+
+class TestTileWindow:
+
+    def test_the_window_is_centred_on_the_jittered_point(self):
+        w = at.tile_window(pano_x=8000.0, pano_y=4000.0, pano_width=16384.0, pano_height=8192.0,
+                           jx=50, jy=-60)
+        assert w.left + w.width / 2 == pytest.approx(8000.0 + 50)
+        assert w.top + w.height / 2 == pytest.approx(4000.0 - 60)
+        assert w.shifted is False
+
+    def test_a_window_crossing_the_seam_keeps_its_full_width(self):
+        """Column 0 and column pano_width are the same place in the world, so a window straddling them
+        is ordinary — it must wrap, not clip. Clipping would silently narrow the tile and move the
+        mapping origin."""
+        w = at.tile_window(10.0, 4000.0, 16384.0, 8192.0, jx=-40, jy=40)
+        assert w.width == at.tile_extent_px(16384.0, 8192.0)[0]
+        assert w.wraps is True
+
+    def test_a_window_at_the_pole_shifts_instead_of_overflowing(self):
+        """Cannot happen for real labels — corpus depression p99 is 43.5 deg against a 20 deg tile —
+        but a clip or an out-of-range read is a crash or a black band, and the shift keeps the tile
+        full-size with an exact mapping."""
+        w = at.tile_window(8000.0, 5.0, 16384.0, 8192.0, jx=40, jy=-40)
+        assert w.top == 0
+        assert w.height == at.tile_extent_px(16384.0, 8192.0)[1]
+        assert w.shifted is True
+
+        w2 = at.tile_window(8000.0, 8190.0, 16384.0, 8192.0, jx=40, jy=40)
+        assert w2.top + w2.height == 8192
+        assert w2.shifted is True
+
+    def test_the_window_never_leaves_the_raster_vertically(self):
+        for y in (0.0, 1.0, 100.0, 4096.0, 8100.0, 8192.0):
+            w = at.tile_window(8000.0, y, 16384.0, 8192.0, jx=40, jy=40)
+            assert w.top >= 0 and w.top + w.height <= 8192, y
+
+
+class TestCoordinateRoundTrip:
+    """The mapping is what Study 1's estimate is denominated in: an annotation is submitted in tile
+    pixels and becomes a pano coordinate. An off-by-one here is a systematic placement bias
+    indistinguishable from the real thing."""
+
+    @pytest.mark.parametrize('pano_x', [0.0, 1.0, 10.0, 8000.0, 16380.0, 16383.0])
+    @pytest.mark.parametrize('pano_y', [200.0, 4000.0, 7000.0])
+    def test_pano_to_tile_inverts_tile_to_pano(self, pano_x, pano_y):
+        W, H = 16384.0, 8192.0
+        win = at.tile_window(pano_x, pano_y, W, H, jx=-55, jy=65)
+        for tx in (0, 1, win.width // 2, win.width - 1):
+            for ty in (0, 1, win.height // 2, win.height - 1):
+                px, py = at.tile_to_pano(win, tx, ty, W)
+                back = at.pano_to_tile(win, px, py, W)
+                assert back == (tx, ty), (pano_x, pano_y, tx, ty, px, py, back)
+
+    def test_the_stored_point_maps_to_where_the_jitter_puts_it(self):
+        """The jitter offset is exactly recoverable from the geometry — which is why the geometry is
+        withheld from the annotator (see TestBlindness) rather than merely unrendered."""
+        W, H = 16384.0, 8192.0
+        win = at.tile_window(8000.0, 4000.0, W, H, jx=50, jy=-60)
+        tx, ty = at.pano_to_tile(win, 8000.0, 4000.0, W)
+        assert (tx, ty) == (win.width // 2 - 50, win.height // 2 + 60)
+
+    def test_a_seam_crossing_window_maps_continuously(self):
+        """Across the seam the pano x jumps from pano_width-1 to 0, and the tile must not."""
+        W, H = 16384.0, 8192.0
+        win = at.tile_window(5.0, 4000.0, W, H, jx=-40, jy=40)
+        xs = [at.tile_to_pano(win, tx, 10, W)[0] for tx in range(win.width)]
+        assert all(0 <= x < W for x in xs)
+        assert len(set(xs)) == win.width, 'no pano column may be visited twice'
+        # Exactly one step in the sequence is the wrap itself.
+        steps = [b - a for a, b in zip(xs, xs[1:])]
+        assert steps.count(1) == len(steps) - 1
+        assert sorted(steps)[0] == -(W - 1)
+
+
+class TestCutTile:
+
+    def test_the_tile_pixels_are_the_pano_pixels(self):
+        """Checked against direct indexing of a coordinate-encoding pano, not against another
+        implementation of the same idea."""
+        pano = gradient_pano(512, 256)
+        win = at.tile_window(200.0, 128.0, 512.0, 256.0, jx=40, jy=-40, fov_deg=20.0)
+        tile = at.cut_tile(pano, win, 512.0)
+        assert tile.size == (win.width, win.height)
+        src, out = np.asarray(pano), np.asarray(tile)
+        for tx in (0, win.width // 3, win.width - 1):
+            for ty in (0, win.height // 2, win.height - 1):
+                px, py = at.tile_to_pano(win, tx, ty, 512.0)
+                assert tuple(out[ty, tx]) == tuple(src[int(py), int(px)]), (tx, ty)
+
+    def test_a_seam_crossing_tile_carries_no_synthetic_black(self):
+        """The failure this guards is a tile with a black band where the raster ran out — an annotator
+        would read it as the edge of the world and place differently.
+
+        The jitter here is deliberately smaller than §4's band: on this 512-wide test raster a 20 deg
+        tile is 28 px, so any jitter of 40+ px carries the window clear of the seam and the case under
+        test would not arise. `tile_window` takes the offset as an argument precisely so geometry can be
+        exercised independently of the draw that generates it; the ±40–80 band is `jitter_for`'s
+        property and is tested there.
+        """
+        pano = gradient_pano(512, 256)
+        win = at.tile_window(3.0, 128.0, 512.0, 256.0, jx=-5, jy=5, fov_deg=20.0)
+        assert win.wraps
+        tile = np.asarray(at.cut_tile(pano, win, 512.0))
+        assert tile.shape[:2] == (win.height, win.width)
+        assert (tile[:, :, 2] == 255).sum() == win.height, 'the seam column appears exactly once'
+        for tx in range(win.width):
+            px, py = at.tile_to_pano(win, tx, 5, 512.0)
+            assert tuple(tile[5, tx]) == tuple(np.asarray(pano)[int(py), int(px)]), tx
+
+    def test_the_tile_is_cut_once_per_pano_regardless_of_label_count(self):
+        """Two labels on one pano must not decode a 250 MB raster twice — the same reason CropRunner
+        groups by pano."""
+        pano = gradient_pano(512, 256)
+        wins = [at.tile_window(x, 128.0, 512.0, 256.0, jx=40, jy=40, fov_deg=20.0)
+                for x in (100.0, 300.0)]
+        tiles = [at.cut_tile(pano, w, 512.0) for w in wins]
+        assert len({t.size for t in tiles}) == 1
+        assert not np.array_equal(np.asarray(tiles[0]), np.asarray(tiles[1]))
+
+
+class TestRubric:
+    """§4's rubric is binding, and it is data here rather than prose in a prompt so that the text the
+    annotator sees is the text under version control."""
+
+    def test_every_corpus_label_type_has_a_canonical_point_rule(self):
+        for label_type in at.CORPUS_LABEL_TYPES:
+            assert label_type in at.RUBRIC, label_type
+            assert len(at.RUBRIC[label_type]) > 20, label_type
+
+    def test_it_covers_the_eight_types_the_corpus_carries(self):
+        assert at.CORPUS_LABEL_TYPES == frozenset({
+            'CurbRamp', 'NoCurbRamp', 'Obstacle', 'SurfaceProblem', 'Crosswalk', 'Signal',
+            'NoSidewalk', 'Other'})
+
+    def test_the_flags_are_the_three_the_protocol_names(self):
+        assert at.FLAGS == ('object-absent', 'ambiguous', 'occluded')
+
+
+class TestBlindness:
+    """The blindness audit, enforced structurally. §4 says the stored point is never rendered; this goes
+    further and never *ships* it, because a UI that merely declines to draw a value it was handed is one
+    edit away from anchoring every annotation, and the leak would be invisible in the output."""
+
+    @pytest.fixture
+    def built(self):
+        rows = [corpus_row(f'seattle-wa:{i}', pano_id=f'p{i}', pano_x=8000.0 + i, pano_y=5000.0 - i)
+                for i in range(5)]
+        return at.build_tasks(corpus(rows), seed=20260812)
+
+    def test_the_annotator_package_has_no_stored_coordinate(self, built):
+        tasks, _ = built
+        blob = json.dumps(tasks)
+        for row in tasks['tasks']:
+            assert 'pano_x' not in row and 'pano_y' not in row
+            assert 'jitter_x' not in row and 'jitter_y' not in row
+            assert 'left' not in row and 'top' not in row
+        assert '8000' not in blob and '5000' not in blob
+
+    def test_the_annotator_package_carries_what_the_task_needs_and_no_more(self, built):
+        tasks, _ = built
+        row = tasks['tasks'][0]
+        assert set(row) == {'label_uid', 'tile', 'tile_width', 'tile_height', 'label_type', 'rubric'}
+
+    def test_the_geometry_is_kept_separately_for_the_analysis(self, built):
+        tasks, geometry = built
+        assert set(geometry['geometry']) == {t['label_uid'] for t in tasks['tasks']}
+        g = geometry['geometry']['seattle-wa:0']
+        for key in ('left', 'top', 'width', 'height', 'jitter_x', 'jitter_y',
+                    'pano_width', 'pano_height', 'pano_x', 'pano_y'):
+            assert key in g, key
+
+    def test_the_two_files_are_enough_to_recover_a_pano_coordinate(self, built):
+        """The round trip the analysis performs: a tile-space annotation plus the private geometry
+        gives a pano coordinate, with nothing the annotator held contributing to it."""
+        tasks, geometry = built
+        g = geometry['geometry']['seattle-wa:0']
+        win = at.window_from_geometry(g)
+        px, py = at.tile_to_pano(win, g['width'] // 2, g['height'] // 2, g['pano_width'])
+        assert px == pytest.approx(8000.0 + g['jitter_x'], abs=1.0)
+        assert py == pytest.approx(5000.0 + g['jitter_y'], abs=1.0)
+
+    def test_the_rubric_shipped_is_the_type_specific_one(self, built):
+        tasks, _ = built
+        for row in tasks['tasks']:
+            assert row['rubric'] == at.RUBRIC[row['label_type']]
+
+    def test_no_task_leaks_the_stored_point_through_the_tile_name(self, built):
+        """A filename like `p3_8000_5000.jpg` would defeat every check above."""
+        tasks, _ = built
+        for row in tasks['tasks']:
+            assert row['tile'] == f"{row['label_uid'].replace(':', '_')}.jpg"
+
+
+class TestBuildTasks:
+
+    def test_it_covers_every_corpus_row(self):
+        rows = [corpus_row(f'c:{i}', pano_id=f'p{i}') for i in range(12)]
+        tasks, geometry = at.build_tasks(corpus(rows), seed=1)
+        assert len(tasks['tasks']) == 12
+        assert len(geometry['geometry']) == 12
+
+    def test_it_records_the_seed_so_the_tiles_can_be_regenerated(self):
+        tasks, geometry = at.build_tasks(corpus([corpus_row()]), seed=4242)
+        assert geometry['seed'] == 4242
+        assert geometry['cut_fov_deg'] == at.CUT_FOV_DEG
+        assert geometry['view_fov_deg'] == at.VIEW_FOV_DEG
+
+    def test_the_view_fraction_ships_but_the_geometry_does_not(self):
+        """The starting zoom is a constant of the protocol — identical for every label — so it tells an
+        annotator nothing about where any stored point is, unlike the tile origin."""
+        tasks, _ = at.build_tasks(corpus([corpus_row()]), seed=1)
+        assert tasks['initial_view_fraction'] == pytest.approx(at.VIEW_FOV_DEG / at.CUT_FOV_DEG)
+
+    def test_it_is_deterministic(self):
+        rows = [corpus_row(f'c:{i}', pano_id=f'p{i}') for i in range(6)]
+        a, _ = at.build_tasks(corpus(rows), seed=9)
+        b, _ = at.build_tasks(corpus(rows), seed=9)
+        assert a == b
+
+    def test_it_rejects_a_label_type_with_no_rubric(self):
+        """An unknown type must not reach an annotator with an empty instruction — the rubric is
+        binding and 'use your judgement' is what it exists to prevent."""
+        with pytest.raises(ValueError, match='rubric'):
+            at.build_tasks(corpus([corpus_row(label_type='Bollard')]), seed=1)
+
+    def test_the_task_order_does_not_group_by_stratum(self):
+        """Interleaved deliberately: §4 has Jon's 50 running through the same tooling, and a run
+        ordered by band or type lets an annotator calibrate on a block of similar labels and drift
+        between blocks."""
+        rows = ([corpus_row(f'c:{i}', pano_id=f'p{i}', label_type='CurbRamp') for i in range(10)]
+                + [corpus_row(f'c:{100 + i}', pano_id=f'q{i}', label_type='Obstacle')
+                   for i in range(10)])
+        tasks, _ = at.build_tasks(corpus(rows), seed=3)
+        types = [t['label_type'] for t in tasks['tasks']]
+        runs = sum(1 for a, b in zip(types, types[1:]) if a != b)
+        assert runs >= 5, f'order looks blocked by type: {types}'
