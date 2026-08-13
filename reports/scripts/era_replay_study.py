@@ -49,6 +49,29 @@ FIXED_FRAME = (13312.0, 6656.0)
 # canvas/POV record is the corrupted side (see reports/2026-08-09-era-replay-study.md).
 BUG_WINDOW_END = pd.Timestamp('2024-09-26', tz='UTC')
 
+# The pre-registration's §3 era-QUALITY stratum, which is not `rawlabels.add_era`'s three-level
+# `era`: it splits post179 at BUG_WINDOW_END, because the two halves differ in exactly the property
+# the corpus stratifies on — whether the stored canvas/POV record can be trusted to be the
+# click-time record. Ordered oldest-first so a manifest or report table reads chronologically.
+QUALITY_LEVELS = ('legacy', 'mid', 'window', 'post_fix')
+
+
+def era_quality(time_created):
+    """Bucket timestamps into QUALITY_LEVELS: legacy < LEGACY_END <= mid < EVO179 <= window <
+    BUG_WINDOW_END <= post_fix.
+
+    Lives here rather than beside `add_era` in rawlabels because it needs BUG_WINDOW_END, which this
+    module owns and measured; rawlabels importing it back would be circular. Every boundary is
+    lower-inclusive, matching `add_era` and `window_split`, so a label's `era` and its `quality` can
+    never disagree about which side of a deploy it fell on.
+    """
+    t = pd.Series(pd.to_datetime(time_created, utc=True))
+    quality = pd.Series('mid', index=t.index, dtype=object)
+    quality[t < rawlabels.LEGACY_END] = 'legacy'
+    quality[(t >= rawlabels.EVO179) & (t < BUG_WINDOW_END)] = 'window'
+    quality[t >= BUG_WINDOW_END] = 'post_fix'
+    return quality
+
 
 def wrapped_dx(stored, replay, width):
     """Seam-aware pixel difference stored - replay on a cylindrical x axis, in (-w/2, w/2]."""

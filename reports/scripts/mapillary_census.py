@@ -220,6 +220,18 @@ def _spread(series):
             'abs_p90': num(np.percentile(np.abs(a), 90))}
 
 
+def bearing_separation(a, b):
+    """|ΔΔb| between two bearings, taking the short way round: the answer is in [0, 180].
+
+    One definition, because three callers need it and the wrap is easy to get subtly wrong — a plain
+    `abs(a - b)` calls -170 and 170 a 340 deg separation when they are 20 deg apart, which would let a
+    pair through the gate that carries almost no within-pano contrast at all. `corpus_sample`'s draw
+    selects the pairs this predicate accepts, so the two must agree by construction rather than by
+    two transcriptions happening to match.
+    """
+    return np.abs(((np.asarray(a, float) - np.asarray(b, float) + 180.0) % 360.0) - 180.0)
+
+
 def within_pano_stratum(df, separation_deg=BEARING_SEPARATION_DEG):
     """§2.3's provisioning count: panos carrying >= 2 labels whose pairwise |ΔΔb| clears the gate.
 
@@ -232,7 +244,7 @@ def within_pano_stratum(df, separation_deg=BEARING_SEPARATION_DEG):
             continue
         multi += 1
         b = delta_bearing(g).to_numpy()
-        if any(abs(((x - y + 180.0) % 360.0) - 180.0) >= separation_deg
+        if any(bearing_separation(x, y) >= separation_deg
                for x, y in itertools.combinations(b, 2)):
             ok += 1
     return {'n_panos': int(df['pano_id'].nunique()),

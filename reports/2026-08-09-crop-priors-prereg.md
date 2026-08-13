@@ -325,6 +325,103 @@ equirectangular raster with its own tested transform, and Study 3's rectilinear 
 written fresh — never ported from the webpage's render path. Porting it would import the mechanism
 under test into the gold standard, and Study 1 would measure zero by construction.
 
+### Amendment 2 — 2026-08-12 · The sampling frame, a Mapillary arm, and the corpus/measurable split
+
+Registered during Phase 2 assembly and **before any annotation exists**. Prompted by a direct
+challenge to §3's frame: why six deployments when the project has 49 GSV ones, and why is Richmond —
+the only Mapillary deployment — absent. Evidence for everything below is the
+[corpus assembly report](2026-08-12-corpus-assembly.md) and the `frame_comparison` block of
+[the GSV manifest](data/2026-08-12-crop-corpus-gsv.json). §§1–2 and §§4–5 are untouched: the
+endpoints, decision rules, annotation protocol and power table all stand.
+
+**(a) The frame widens from six deployments to all 49 GSV deployments, and corpus-level claims
+reweight to that population.** §3 drew from six cities and reweighted to "the label population"; the
+six turn out to be **31.98%** of it (431,276 of 1,348,743 corpus-eligible labels) and to misdescribe
+its shape. Total-variation distance between the six-city and 49-deployment populations:
+**43.16 pp on era-quality**, 11.34 pp on band × type (§3's own reweighting key), 11.06 pp on label
+type, 3.35 pp on depression band.
+
+| stratum | six-city | 49 GSV | ratio |
+|---|---|---|---|
+| post_fix (≥ 2024-09-26) | 9.98% | 46.34% | **4.64×** |
+| window | 10.74% | 17.54% | 1.63× |
+| mid | 45.54% | 21.76% | 0.48× |
+| legacy | 33.75% | 14.36% | 0.43× |
+| PedestrianSignal | 0.79% | 2.36% | **3.00×** |
+| Crosswalk | 3.36% | 8.59% | **2.56×** |
+| NoSidewalk | 18.94% | 22.57% | 1.19× |
+| Obstacle | 12.48% | 13.10% | 1.05× |
+| SurfaceProblem | 15.41% | 14.96% | 0.97× |
+| CurbRamp | 34.50% | 30.23% | 0.88× |
+| NoCurbRamp | 14.14% | 8.00% | **0.57×** |
+| Other | 0.39% | 0.21% | 0.53× |
+
+The era-quality row is the substantive one. The six cities were chosen in Phase 1 *to span* the era
+boundaries, which necessarily loaded them with old data; nearly half the label population is now
+post-fix, and that is the stratum the old frame represents worst. Reweighting on six-city weights puts
+79% of the mass on legacy+mid where the population carries 31%. Since this study's consumers are the
+project's own AI training and human-validation workflows, which run on every deployment, the estimand
+has to be the population those workflows serve.
+
+Widening the *draw* as well costs nothing and is not the point: the six cities already occupy **120 of
+120** strata cells, so no cell carrying population weight lacked reference support and the wider
+reweighting would have been licensed either way. What the wider draw buys is that all 120 cells reach
+the §3 target (the six-city frame left four cells at 2–5 labels, including `>30|window|Signal` at 2
+carrying a 3.00× weight).
+
+Deployments excluded from the frame, with reasons recorded in the manifest: **validation-study**
+(10,809 labels — a research deployment, not a city), **la-piedad-old** (4,391 — superseded by
+la-piedad, would double-count one city), **winterthur-infra3d** (a 0-label export).
+
+**This is gated on pixel availability.** The 99.2%/97.8% store-coverage figures in §1 and §3 were
+measured on the six cities only. The corpus does **not** freeze until a store probe covers the drawn
+panos; panos unreachable on both the store and Google are logged and their cells re-drawn.
+
+**(b) A Mapillary arm is registered, replacing §6's blanket exclusion of Mapillary.** It is drawn by
+the same code path with the same seed, and **reported beside the GSV arm, never pooled into it** —
+two rigs in one estimate is the hazard the separate cache trees exist to prevent. The reason to add it
+is endpoint 2: `camera_roll` is present for **0 of 1,376,851** GSV rows and for **267 of 267**
+Richmond rows, so Richmond is the only place in Project Sidewalk where rig roll is measured rather
+than fetched from photometa — and photometa answers only for the 47.9% of panos still alive, which
+selects on era. Richmond's arm is unselected.
+
+Its stated limits: the arm draws **97 labels over 44 panos** from 264 eligible, and carries **40**
+panos with a separated bearing pair — below §2.3's 60-pano gate, so **the within-pano contrast column
+is *not estimable* on this arm** and its endpoint-2 fit is pooled-only. It has **0** replay-mismatch
+rows (every Richmond record replays exactly), so §3's mismatch stratum is empty here, and 0.38% of its
+population sits in a cell the draw did not reach.
+
+**(c) The corpus is 8 label types; Study 1's measurable set is 6.** The referent rule
+(`rawlabels.NO_REFERENT_TYPES` plus the region-tag pairs) was established *after* registration, in the
+Mapillary census, and it removes Crosswalk, NoSidewalk and region-tagged SurfaceProblem from any
+stored-vs-gold *displacement* — a label correctly placed anywhere along an extended feature has no
+point to be displaced from. It is **not** a corpus rule: those types have real crop consumers and
+Study 2 sizes crops for them. So the corpus carries all 8 types (763 labels) and Study 1 reads the
+measurable subset (**584** of them). Reading the referent rule as "types to drop" would remove 31.2%
+of the label population from the sizing study.
+
+**(d) The corpus is 763 labels, not ≈650.** §3's estimate assumed some cells would be empty; 120 are
+occupied, so cell fill alone is 720 and the forced strata add the rest. Annotation cost rises ~17%.
+
+Its effect on §5 has to be stated under both filters, because the two studies read different
+populations and the corpus number is the flattering one. Per depression band: **190.8 on average
+(180–205) for the 763-label corpus**, which is Study 2's population, but **146.0 on average (137–155)
+for the 584 measurable labels**, which is Study 1's. So Study 1's bands land *below* the ≈160/band §5
+assumed, not above it. The conclusion is unchanged — §5 needs 44 per stratum for δ = 0.25° at
+σ_gold = 0.30°, or ~57 after its stated design effect of ~1.3 for pano clustering, and the thinnest
+band carries 137 — but "power only improves" would have been a corpus-filter claim quoted about a
+measurable-filter study.
+
+**(e) Label identity is (city, label_id).** Not a spec change but recorded because §3 and §2 are
+written in terms of label and pano identity: `label_id` restarts at 1 in every deployment, and across
+three cities alone 90,369 of 316,735 rows share one with another city. `pano_id` does **not** collide
+(0 cases), so the per-pano cap and the pano-wise tune/eval split are sound as written.
+
+**(f) Not adopted.** `zurich-infra3d` (4,791 labels) stays out of scope: it is a **third rig**
+(infra3d), not GSV or Mapillary, and it is the sole source of the 8032-px served height the GSV frame
+lacks entirely. Recorded here because §3's resolution stratum would otherwise look under-provisioned
+for a reason that is really a scope boundary.
+
 **Pre-registration revisions (before registration, so not amendments).**
 
 * **2026-08-10 — pre-merge review** ([review report](2026-08-10-crop-priors-review.md)). Six changes,
