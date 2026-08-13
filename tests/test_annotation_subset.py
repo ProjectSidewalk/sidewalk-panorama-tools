@@ -27,12 +27,16 @@ import rawlabels  # noqa: E402
 
 
 def _corpus(rows):
-    """A drawn-corpus frame with the columns the script reads, plus a deliberately WRONG `measurable`."""
+    """A drawn-corpus frame with the columns the script reads, plus a deliberately WRONG `measurable`.
+
+    `city` is split off the uid rather than passed separately, exactly as the real corpus has it —
+    `label_uid` IS `city:label_id`, because `label_id` restarts at 1 in every deployment.
+    """
     return pd.DataFrame([
-        {'label_uid': uid, 'label_type': lt, 'tags': tags, 'band': band,
+        {'label_uid': uid, 'city': uid.split(':', 1)[0], 'label_type': lt, 'tags': tags, 'band': band,
          'pano_id': f'pano{i}', 'measurable': stale}
         for i, (uid, lt, tags, band, stale) in enumerate(rows)
-    ])
+    ], columns=['label_uid', 'city', 'label_type', 'tags', 'band', 'pano_id', 'measurable'])
 
 
 def _tasks(uids, flags=('object-absent', 'ambiguous', 'occluded')):
@@ -88,6 +92,44 @@ class TestMeasurableMaskUsesTheLiveRule:
         ])
         got = list(asub.measurable_mask(corpus))
         assert got == [True, False, False], 'one excluded tag is enough, even beside a kept one'
+
+
+class TestTheStudyFrame:
+    """Taiwan's four deployments leave the frame (2026-08-13). Not a referent rule and not a
+    data-quality one — these labels replay fine and have good referents. They go because the rubric was
+    written against North American infrastructure and an annotator guessing at what counts as a gutter
+    line produces a confidently wrong gold standard rather than a weaker one.
+    """
+
+    def _frame(self, cities):
+        return _corpus([(f'{c}:{i}', 'CurbRamp', '[]', '<5', True) for i, c in enumerate(cities)])
+
+    def test_taiwan_is_out_and_everywhere_else_is_in(self):
+        corpus = self._frame(['taipei', 'kaohsiung-tw', 'keelung-tw', 'new-taipei-tw',
+                              'seattle-wa', 'amsterdam', 'cdmx'])
+        assert list(asub.measurable_mask(corpus)) == [False] * 4 + [True] * 3
+
+    def test_taipei_carries_no_country_suffix(self):
+        """The trap in this particular list, and the largest deployment of the four: three of them end
+        in `-tw` and `taipei` does not, so a suffix rule keeps 54 of the 116 labels and looks right."""
+        assert 'taipei' in rawlabels.EXCLUDED_DEPLOYMENTS
+        assert not asub.measurable_mask(self._frame(['taipei'])).iloc[0]
+
+    def test_the_frame_arm_is_separate_from_the_referent_arm(self):
+        """Two different kinds of exclusion that get revisited for different reasons; a single collapsed
+        mask would lose which one fired. A Taiwanese label with a perfect referent is still excluded,
+        and a stairs-tagged Seattle Obstacle is still excluded — by the other rule."""
+        assert rawlabels.in_study_frame(self._frame(['taipei'])).iloc[0] is not True
+        ok = _corpus([('taipei:1', 'CurbRamp', '[]', '<5', True)])
+        assert rawlabels.has_located_referent(ok).iloc[0], 'the referent arm has no opinion on the city'
+
+    def test_the_rule_is_not_widened_to_non_us(self):
+        """Priced, not assumed: the same unfamiliarity argument would reach Amsterdam, CDMX, SPGG,
+        Cuenca and Zurich, and that cut leaves 201 measurable labels with a thinnest band of 36 against
+        the ~57 the power table needs. The line is unfamiliarity that makes an annotation unreliable,
+        not a passport."""
+        corpus = self._frame(['amsterdam', 'cdmx', 'spgg', 'cuenca', 'zurich', 'burnaby', 'auckland'])
+        assert asub.measurable_mask(corpus).all()
 
 
 class TestAllocate:
@@ -239,16 +281,71 @@ class TestWriteSubset:
         written = json.loads((out / 'tasks.json').read_text(encoding='utf-8'))
         assert written['n_tasks'] == len(written['tasks']) == 1
 
-    def test_it_carries_the_view_fraction_through(self, tmp_path):
-        """The one instrument constant that is NOT re-read from code, because it belongs to the geometry
-        the tiles were cut at: a 60 deg tile opened at a third is the 20 deg view §4 specifies, and a
-        subset of those tiles inherits it. Losing it opens every tile at 3x the intended scale."""
-        tasks = _tasks(['c:1'])
+    def test_it_refreshes_the_view_fraction_from_code(self, tmp_path):
+        """Refreshed for the same reason as the flags: how the page OPENS is a property of the
+        instrument, not of the pixels. The protocol moved from a 20 deg opening view to the full 60 deg
+        cut on 2026-08-13, and a subset built from tiles rendered before that would otherwise keep
+        serving the old third-of-a-tile framing with nothing looking wrong."""
+        stale = dict(_tasks(['c:1']), initial_view_fraction=1 / 3)
+        src = _rendered_dir(tmp_path, stale)
+        out = tmp_path / 'out'
+        asub.write_subset(stale, str(src), str(out))
+        written = json.loads((out / 'tasks.json').read_text(encoding='utf-8'))
+        assert written['initial_view_fraction'] == pytest.approx(at.VIEW_FOV_DEG / at.CUT_FOV_DEG)
+
+    def test_the_cut_width_is_NOT_refreshed_from_code(self, tmp_path):
+        """The deliberate exception. `cut_fov_deg` describes the pixels, so it has to come from whatever
+        rendered them — overwriting it from the current constant would relabel an old tile set as
+        something it is not, and the framing control would then offer views the imagery cannot fill."""
+        tasks = dict(_tasks(['c:1']), cut_fov_deg=40.0)
         src = _rendered_dir(tmp_path, tasks)
         out = tmp_path / 'out'
         asub.write_subset(tasks, str(src), str(out))
         written = json.loads((out / 'tasks.json').read_text(encoding='utf-8'))
-        assert written['initial_view_fraction'] == pytest.approx(1 / 3)
+        assert written['cut_fov_deg'] == 40.0
+
+
+class TestTagsReachTheAnnotator:
+    """Tags are shown so the rubric can be applied to the right object: "the centroid of the obstruction"
+    does not say which obstruction on a tile holding a pole and a tree. They are blindness-safe because
+    they name WHAT the label is about and never where — there is no function from a tag to a coordinate.
+    """
+
+    def test_they_are_backfilled_from_the_corpus(self):
+        tasks = _tasks(['c:1', 'c:2'])
+        corpus = _corpus([('c:1', 'Obstacle', '[pole,stairs]', '<5', True),
+                          ('c:2', 'Obstacle', '[]', '<5', True)])
+        got = asub.backfill_tags(tasks, corpus)['tasks']
+        assert got[0]['tags'] == ['pole', 'stairs']
+        assert got[1]['tags'] == []
+
+    def test_they_are_sorted_so_display_order_is_a_property_of_the_label(self):
+        corpus = _corpus([('c:1', 'Obstacle', '[stairs,pole]', '<5', True)])
+        assert asub.backfill_tags(_tasks(['c:1']), corpus)['tasks'][0]['tags'] == ['pole', 'stairs']
+
+    def test_a_missing_row_is_no_tags_rather_than_a_crash(self):
+        """A task whose uid is absent from the corpus is caught by main()'s check, but backfill runs
+        first and must not be the thing that raises."""
+        assert asub.backfill_tags(_tasks(['gone:9']), _corpus([]))['tasks'][0]['tags'] == []
+
+    def test_the_backfill_uses_the_renderer_definition(self, monkeypatch):
+        """One definition of what a label's tags are, so a freshly rendered set and a backfilled one
+        cannot disagree. If this grew a local parser, the two paths could drift on a tag containing a
+        comma or a stray bracket and nothing would fail."""
+        monkeypatch.setattr(at, 'display_tags', lambda v: ['SENTINEL'])
+        assert asub.backfill_tags(_tasks(['c:1']),
+                                  _corpus([('c:1', 'Obstacle', '[pole]', '<5', True)])
+                                  )['tasks'][0]['tags'] == ['SENTINEL']
+
+    def test_they_survive_the_servers_blindness_audit(self, tmp_path):
+        import annotate_server
+        tasks = asub.backfill_tags(_tasks(['c:1']),
+                                   _corpus([('c:1', 'Obstacle', '[pole]', '<5', True)]))
+        src = _rendered_dir(tmp_path, tasks)
+        out = tmp_path / 'out'
+        asub.write_subset(tasks, str(src), str(out))
+        served = annotate_server.load_tasks(str(out))
+        assert served['tasks'][0]['tags'] == ['pole']
 
 
 class TestBlindnessOfTheProducedDirectory:

@@ -91,16 +91,24 @@ class TestTileExtent:
         aspect ratio and not something to assume."""
         assert at.tile_extent_px(16384.0, 8192.0) == at.tile_extent_px(16384.0, 8192.0)[::-1]
 
-    def test_the_cut_is_wider_than_the_starting_view(self):
-        """The bound this exists to remove: a tile of angular width F can only measure a displacement up
-        to F/2, because past that the object is off the tile and `object-absent` is the only response
-        left — so a tight tile silently deletes the largest errors from the very distribution Study 1
-        estimates. Cutting wider than the view keeps them measurable, and the view still opens at the
-        framing that does not prejudge Study 2's sizing question.
+    def test_the_view_never_exceeds_the_cut(self):
+        """The bound the wide cut exists to remove: a tile of angular width F can only measure a
+        displacement up to F/2, because past that the object is off the tile and `object-absent` is the
+        only response left — so a tight CUT silently deletes the largest errors from the very
+        distribution Study 1 estimates.
+
+        The VIEW is a separate question and moved on 2026-08-13 from 20 deg to the full cut, after
+        annotating against it: `fitScale` is bound by the short axis, so on a landscape canvas a
+        one-third fraction is 20 deg vertically and ~32 deg across — tight enough that finding the object
+        meant panning, which the setting existed to avoid. Opening at the full cut is also the safe
+        direction for Study 2, since a window equal to the cut implies nothing tighter than the cut.
+
+        What must hold is only the inequality. A view WIDER than the cut would be a framing showing
+        pixels that were never rendered.
         """
         assert at.CUT_FOV_DEG == 60.0
-        assert at.VIEW_FOV_DEG == 20.0
-        assert at.CUT_FOV_DEG > at.VIEW_FOV_DEG
+        assert at.VIEW_FOV_DEG == 60.0
+        assert at.VIEW_FOV_DEG <= at.CUT_FOV_DEG
         assert at.TILE_FOV_DEG == at.CUT_FOV_DEG, 'geometry is denominated in the cut'
 
     def test_the_measurable_displacement_reaches_the_observed_signal_offsets(self):
@@ -340,9 +348,27 @@ class TestBlindness:
         assert '8000' not in blob and '5000' not in blob
 
     def test_the_annotator_package_carries_what_the_task_needs_and_no_more(self, built):
+        """A strict allowlist, not a denylist, so every field added to a task record is a decision
+        someone had to come here and make. `tags` was added on 2026-08-13 and this is the test that
+        stopped it going in unexamined: tags name WHAT a label is about — `pole`, `stairs` — and never
+        where, so no function takes them to a stored coordinate. They earn their place by telling the
+        annotator which of several candidate objects on a busy tile the rubric is talking about, which
+        the rubric alone cannot do.
+        """
         tasks, _ = built
         row = tasks['tasks'][0]
-        assert set(row) == {'label_uid', 'tile', 'tile_width', 'tile_height', 'label_type', 'rubric'}
+        assert set(row) == {'label_uid', 'tile', 'tile_width', 'tile_height', 'label_type', 'tags',
+                            'rubric'}
+
+    def test_tags_are_the_only_metadata_that_got_in(self, built):
+        """The corpus row carries plenty that would be convenient and is not blindness-safe — `city`
+        and `pano_id` identify the imagery, `band` and `depression` are the covariate under study, and
+        `severity`/`agree_count` are the labeller's own confidence. None of them belong in front of an
+        annotator."""
+        row = built[0]['tasks'][0]
+        for leaked in ('city', 'pano_id', 'band', 'depression', 'severity', 'agree_count',
+                       'pano_width', 'pano_height', 'user_id'):
+            assert leaked not in row, leaked
 
     def test_the_geometry_is_kept_separately_for_the_analysis(self, built):
         tasks, geometry = built

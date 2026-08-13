@@ -59,13 +59,18 @@ STRATA = ('label_type', 'band')
 
 
 def measurable_mask(corpus):
-    """The live referent rule over a drawn-corpus frame.
+    """What Study 1 can read: the live referent rule AND the study frame.
 
-    Applied to `label_type` and `tags` directly rather than trusting `corpus['measurable']`, for the
-    reason in the module docstring. Every drawn row is corpus-eligible by construction — that filter ran
-    before the draw — so the referent rule is the whole of the difference here.
+    Applied to `label_type`, `tags` and `city` directly rather than trusting `corpus['measurable']`, for
+    the reason in the module docstring — that column is a snapshot of the rules as they stood when the
+    corpus was drawn, and both have moved since.
+
+    The frame arm is second and separate because it is a different KIND of exclusion. The referent rule
+    says a label has no point to be displaced from; the frame rule says the label is fine and the
+    annotator is not equipped to judge it. Collapsing them into one mask would be convenient and would
+    lose that, and the two get revisited for entirely different reasons.
     """
-    return rawlabels.has_located_referent(corpus)
+    return rawlabels.has_located_referent(corpus) & rawlabels.in_study_frame(corpus)
 
 
 def allocate(counts, n):
@@ -147,6 +152,25 @@ def subset_tasks(tasks, keep):
     return out
 
 
+def backfill_tags(tasks, corpus):
+    """Add each task's `tags` from the corpus, for tile sets rendered before tasks carried them.
+
+    Same shape as the flag refresh and for the same reason — it costs nothing but a re-read of the
+    corpus, where re-rendering 358 tiles to add a metadata field would re-cut every one of them and
+    require re-verifying the geometry. `display_tags` is shared with `build_tasks` rather than
+    reimplemented here, so a freshly rendered set and a backfilled one cannot disagree about what a
+    label's tags are.
+
+    Tags are annotator-safe: they say what the label is about, never where it is. The reasoning is in
+    `annotation_tiles.display_tags`.
+    """
+    by_uid = dict(zip(corpus['label_uid'], corpus.get('tags', pd.Series(dtype=object))))
+    out = dict(tasks)
+    out['tasks'] = [dict(t, tags=annotation_tiles.display_tags(by_uid.get(t['label_uid'])))
+                    for t in tasks['tasks']]
+    return out
+
+
 def write_subset(tasks, src_dir, out_dir):
     """Write `tasks.json` and copy exactly the tiles it names into `out_dir`.
 
@@ -156,7 +180,13 @@ def write_subset(tasks, src_dir, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     for task in tasks['tasks']:
         shutil.copyfile(os.path.join(src_dir, task['tile']), os.path.join(out_dir, task['tile']))
-    tasks = dict(tasks, flags=list(annotation_tiles.FLAGS))
+    # Both refreshed from code, for the same reason: they are properties of the INSTRUMENT, not of the
+    # pixels, and a rendered tasks.json is a snapshot of the protocol as it stood when the tiles were
+    # cut. `cut_fov_deg` is deliberately NOT in this list — that one describes the pixels, so it has to
+    # come from whatever actually produced them.
+    tasks = dict(tasks,
+                 flags=list(annotation_tiles.FLAGS),
+                 initial_view_fraction=annotation_tiles.VIEW_FOV_DEG / annotation_tiles.CUT_FOV_DEG)
     path = os.path.join(out_dir, TASKS_FILE)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         json.dump(tasks, f, indent=1, allow_nan=False)
@@ -195,6 +225,8 @@ def main(argv=None):
     missing = [t['label_uid'] for t in tasks['tasks'] if t['label_uid'] not in known]
     if missing:
         ap.error(f'{len(missing)} tasks are not in this corpus (e.g. {missing[0]}); wrong --corpus?')
+
+    tasks = backfill_tags(tasks, corpus)
 
     start = len(tasks['tasks'])
     if args.measurable_only:

@@ -48,6 +48,7 @@ for _p in (_HERE, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 import CropRunner  # noqa: E402
+import rawlabels  # noqa: E402
 import store_coverage  # noqa: E402
 from studyfmt import fmt  # noqa: E402
 
@@ -65,11 +66,22 @@ from studyfmt import fmt  # noqa: E402
 # point is tens of degrees from the stored point. At CUT = 60 deg an annotator can see that and place it;
 # at 20 deg they can only report it missing.
 #
-# VIEW stays at 20 deg because that is the framing question: wide enough not to imply a crop size (Study
-# 2 is choosing between sizing rules, and an annotator shown a tight window draws boxes calibrated to
-# it), narrow enough that the object is resolvable without panning.
+# VIEW opened at 20 deg until 2026-08-13, on the argument that it was narrow enough for the object to be
+# resolvable without panning while still wide enough not to imply a crop size. Annotating against it
+# showed the second half of that was the part that mattered and the first half was wrong.
+#
+# What the number hid: `fitScale` is bound by the SHORT axis, so on a landscape canvas the fraction sets
+# the VERTICAL extent and the horizontal falls out wider. At 16:9, "a third of the tile" is 20 deg of
+# sky-to-ground and about 32 deg across -- considerably tighter than the fraction reads, and tight enough
+# that finding the object meant panning, which is precisely what the setting was supposed to avoid.
+#
+# So VIEW is now the whole cut. It is the conservative direction for the one thing the framing can
+# actually bias: Study 2 is choosing between sizing rules, an annotator shown a tight window draws boxes
+# calibrated to that window, and a window equal to the full cut implies nothing tighter than the cut
+# itself. Click precision does not pay for it -- at 60 deg on a ~970 px canvas one screen pixel is
+# 0.06 deg against a 0.34 deg agreement gate -- and the wheel zooms in for anything finer.
 CUT_FOV_DEG = 60.0
-VIEW_FOV_DEG = 20.0
+VIEW_FOV_DEG = 60.0
 
 # Kept as the name the geometry is denominated in, so a reader of geometry.json is not left guessing
 # which of the two a `width` refers to: it is always the cut.
@@ -101,6 +113,28 @@ JITTER_MAX_PX = 80
 # same bias direction that cutting tiles at 20 deg would have introduced -- invisible in the estimate
 # and impossible to detect from inside it.
 FLAGS = ('object-absent', 'ambiguous', 'occluded', 'no-extent')
+
+# One line per flag, shown as a tooltip. Here rather than in the page for the same reason RUBRIC is here:
+# this is protocol text, and the words an annotator is held to belong under version control next to the
+# thing they define, not in a `title=` attribute someone edits while adjusting a margin.
+#
+# Three of the four say "still place your best guess", which is not padding — it is the distinction that
+# makes the flags usable. Only `object-absent` opts out of the task (`validate_annotation` enforces
+# exactly that); the others annotate a placement WITH a caveat, because a flagged-but-placed label is a
+# measurement the analysis can include or exclude on purpose, while a flagged-and-blank one is a hole
+# nothing can recover.
+FLAG_HELP = {
+    'object-absent': "The object this label names is not in this tile at all. Check the whole cut "
+                     "first (press w) — the tile is much wider than the opening view, and a badly "
+                     "placed label can put its object far from the centre. No point or box needed.",
+    'ambiguous': "You cannot tell WHICH object the label means — several candidates fit the type and "
+                 "tags equally well. Place your best guess anyway; the flag is what records the doubt.",
+    'occluded': "The object is present but substantially hidden — a vehicle, vegetation, glare. Place "
+                "your best guess at where its centre and extent actually are.",
+    'no-extent': "You know exactly what the label means and it has no particular centre or edge — it "
+                 "runs along a stretch rather than sitting somewhere. Place your best guess anyway: "
+                 "these are reported as their own group, never dropped.",
+}
 
 # The 8 types prereg §3's corpus carries (Occlusion excluded -- it marks the view, not a thing in it).
 CORPUS_LABEL_TYPES = frozenset({'CurbRamp', 'NoCurbRamp', 'Obstacle', 'SurfaceProblem', 'Crosswalk',
@@ -238,6 +272,26 @@ def tile_name(label_uid):
     return f"{str(label_uid).replace(':', '_')}.jpg"
 
 
+def display_tags(value):
+    """The label's tags, sorted, as a list of plain strings for the annotator to read.
+
+    Shown deliberately, and the blindness argument is worth writing down because "show the annotator
+    less" is the reflex everywhere else in this file. A tag says WHAT the label is about — `pole`,
+    `stairs`, `missing tactile warning` — and never where it is. There is no function from a tag to a
+    stored coordinate, so unlike jitter, tile origin or seed it cannot be inverted into the answer.
+
+    What it *does* couple is object identity: the tag is the original labeller's claim, so an annotator
+    who reads `pole` on a tile containing a pole and a sign will bound the pole. That is the point —
+    §4's rubric says "the centroid of the obstruction", and on a tile with several candidate obstructions
+    the rubric alone does not say which one, which was leaving the choice to judgement the rubric exists
+    to remove. The residual risk is a MIS-tagged label steering gold onto the wrong object; the rubric
+    governs when they disagree, and `ambiguous` is the recorded answer rather than a guess.
+
+    Sorted so the display order is a property of the label rather than of the corpus row order.
+    """
+    return sorted(rawlabels.parse_tags([value]).iloc[0])
+
+
 def build_tasks(corpus, seed):
     """Split the corpus into (annotator-facing tasks, private geometry).
 
@@ -263,6 +317,7 @@ def build_tasks(corpus, seed):
             'tile_width': win.width,
             'tile_height': win.height,
             'label_type': row.label_type,
+            'tags': display_tags(getattr(row, 'tags', None)),
             'rubric': RUBRIC[row.label_type],
         })
         geometry[row.label_uid] = {
@@ -288,6 +343,7 @@ def build_tasks(corpus, seed):
              # says anything about where any stored point is. `cut_fov_deg` is here as well as in the
              # private geometry because the page labels its framing control in degrees, and a page that
              # has only the fraction can offer "a third of the tile" but not "20°".
+             'flag_help': dict(FLAG_HELP),
              'initial_view_fraction': VIEW_FOV_DEG / CUT_FOV_DEG,
              'cut_fov_deg': CUT_FOV_DEG,
              'tasks': tasks},

@@ -131,6 +131,37 @@ REGION_TAGS = frozenset({
     ('Obstacle', 'stairs'),
 })
 
+# Deployments outside the study frame. Not a data-quality rule and not a referent rule: these labels
+# replay fine and have perfectly good referents. They are excluded because the gold standard is only as
+# good as the annotator's ability to read the scene, and Taiwan's pedestrian infrastructure — arcaded
+# walkways, scooter parking on the footway, and markings that do not map onto the North American
+# vocabulary the rubric was written against — is not infrastructure this project's annotators can judge
+# reliably. An annotator guessing at what counts as the gutter line does not produce a weaker gold
+# standard, it produces a confidently wrong one, and the agreement gate cannot see the difference.
+#
+# The cost is priced rather than assumed: 116 of the drawn corpus's 763 labels (15.2%), 51 of its 368
+# measurable ones. Study 1 keeps 317, the thinnest depression band holds 67 against the ~57 §5 needs
+# after its 1.3 design effect, and the thinnest type-band cell holds 7 against a target of 6. So the
+# draw is FILTERED rather than redrawn — a strict subset of an already-registered corpus, with no new
+# selection decisions in it.
+#
+# Deliberately not widened to "non-US". The same argument would reach Amsterdam, CDMX, SPGG, Cuenca,
+# Zurich and the rest, and that cut does not survive its own arithmetic: US-only leaves 201 measurable
+# labels, a thinnest band of 36 against the 57 required, and two cells below target. The line is drawn
+# at unfamiliarity that would make an annotation unreliable, not at a passport.
+EXCLUDED_DEPLOYMENTS = frozenset({'kaohsiung-tw', 'keelung-tw', 'new-taipei-tw', 'taipei'})
+
+
+def in_study_frame(df):
+    """Boolean mask: is this label from a deployment the study draws on?
+
+    Keyed on the `city` column, which is the deployment id. Note `taipei` carries no `-tw` suffix while
+    its three siblings do, so a rule written as a suffix match would silently keep the largest of the
+    four — 54 of the 116.
+    """
+    return ~df['city'].isin(EXCLUDED_DEPLOYMENTS)
+
+
 # Every replay/geometry input as float64: several are blank for labels whose pano metadata never
 # resolved, and a blank must stay NaN (a crashed lookup must never read as pixel 0).
 _FLOAT_COLUMNS = [

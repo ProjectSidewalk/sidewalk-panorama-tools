@@ -29,6 +29,12 @@
   h1 { font-size: 13px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim);
        margin: 0 0 14px; font-weight: 600; }
   .type { font-size: 21px; font-weight: 650; margin: 0 0 6px; }
+  /* The labeller's own tags. They name WHAT the label is about, never where — so they narrow which
+     object on a busy tile the rubric is talking about without saying anything about the stored point. */
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 10px; }
+  .tags span { background: #232a36; border: 1px solid var(--line); border-radius: 11px;
+               padding: 2px 9px; font-size: 12px; color: #b9c2d2; }
+  .tags .none { background: none; border: 0; padding: 2px 0; color: var(--dim); font-style: italic; }
   .rubric { background: #0e0f12; border-left: 3px solid var(--accent); padding: 10px 12px;
             border-radius: 0 5px 5px 0; margin: 0 0 16px; color: #cfd6e4; }
   .step { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px;
@@ -92,6 +98,7 @@
   </div>
   <p class="saved" id="saved">✓ already annotated — editing revises it</p>
   <p class="type" id="ltype">–</p>
+  <div class="tags" id="tags"></div>
   <p class="rubric" id="rubric">–</p>
 
   <div class="step" id="s1"><b>1</b> <span>Click the canonical point</span></div>
@@ -102,15 +109,15 @@
   <button id="submit" disabled>Submit &amp; next &nbsp;<kbd>↵</kbd></button>
 
   <div class="keys" id="keys">
-    <div class="hint"><span>Zoom</span><span><kbd>wheel</kbd> <kbd>+</kbd> <kbd>-</kbd></span></div>
+    <div class="hint"><span>Zoom</span><kbd>wheel</kbd></div>
     <div class="hint"><span>Pan</span><span><kbd>space</kbd>+drag · <kbd>middle</kbd></span></div>
   </div>
 
   <div class="view">
     <span>Opening view</span>
     <div class="row" id="viewrow"></div>
-    <p class="note">The protocol opens every tile at 20°, chosen so the window does not imply a crop
-      size. Widening it is recorded per annotation so any effect on box size stays measurable.</p>
+    <p class="note">Every tile opens at the full 60° cut, so the window never implies a crop size.
+      Narrowing it is recorded per annotation, so any effect on box size stays measurable.</p>
   </div>
 </aside>
 
@@ -127,10 +134,15 @@ let task = null, img = null, flags = [], meta = {n_total: 0, n_done: 0};
 let point = null, box = null, drag = null, startedAt = 0, maxZoom = 1;
 let view = {scale: 1, x: 0, y: 0}, panning = false, spaceDown = false, lastPan = null;
 
-// Opening framing in degrees. Defaults to the protocol's 20 deg; the annotator can widen it and the
-// choice persists, because re-picking it on every tile would make the default the only usable setting.
-const VIEW_KEY = 'crop-priors:view-deg';
-let cutDeg = 60, viewDeg = 20;
+// Opening framing in degrees. Defaults to the protocol's setting -- the whole 60 deg cut since
+// 2026-08-13 -- and the annotator can narrow it, with the choice persisting because re-picking it on
+// every tile would make the default the only usable setting.
+//
+// The key is versioned. A stored 20 from before the default changed would otherwise outrank the new
+// default for exactly the annotator who had already tried the setting, i.e. the one who asked for the
+// change, and nothing would look wrong.
+const VIEW_KEY = 'crop-priors:view-deg:v2';
+let cutDeg = 60, viewDeg = 60;
 
 const toast = (msg, err) => {
   const t = el('toast');
@@ -219,6 +231,11 @@ async function goTo(i) {
   task = tasks[idx];
   point = box = drag = null; flags = []; el('notes').value = '';
   el('ltype').textContent = task.label_type;
+  // textContent per tag, never innerHTML with the tag inside: tag text is operator-entered in production
+  // and `cycle lane: no protection from traffic` is one of the tamer ones.
+  el('tags').replaceChildren(...(task.tags && task.tags.length
+    ? task.tags.map(t => { const s = document.createElement('span'); s.textContent = t; return s; })
+    : [Object.assign(document.createElement('span'), {className: 'none', textContent: 'no tags'})]));
   el('rubric').textContent = task.rubric;
   el('progress').textContent = `${idx + 1} / ${meta.n_total} · ${done.size} done`;
   el('prev').disabled = idx === 0;
@@ -338,12 +355,19 @@ function showWholeCut() {              // the WHOLE cut, to hunt for a far-off o
   and the failure is quiet in the worst way: a legend that advertises a key which no longer does what it
   says, on a tool whose entire job is that the annotator follows the protocol exactly.
 */
+/*
+  Zoom is the WHEEL only. There were +/- keys and buttons; they scaled `view.scale` without moving
+  `view.x`/`view.y`, so they zoomed about the canvas origin rather than about anything the annotator was
+  looking at. The content slid off toward the corner instead of growing under the cursor, and a couple of
+  presses could push it off-screen entirely — which reads as "the buttons don't work" rather than as a
+  transform bug. Anchoring them to the canvas centre would have been a two-line fix; keeping one zoom
+  gesture that is already correct is the better one, since two ways to zoom with different anchors is
+  itself the confusion.
+*/
 const ACTIONS = [
   {key: 'w', label: 'Whole ' + '60' + '° tile', fn: showWholeCut},
   {key: 'u', label: 'Undo last mark', fn: () => { if (box) box = null; else point = null; syncUi(); }},
   {key: 'r', label: 'Reset view', fn: () => { fitView(); draw(); }},
-  {key: '+', label: 'Zoom in', fn: () => { view.scale = clampScale(view.scale * 1.3); draw(); }},
-  {key: '-', label: 'Zoom out', fn: () => { view.scale = clampScale(view.scale / 1.3); draw(); }},
   {key: 's', label: 'Skip (no submit)', fn: () => goTo(Math.min(idx + 1, tasks.length - 1))},
 ];
 
@@ -394,8 +418,21 @@ function buildViewRow() {
                        : Math.round((data.initial_view_fraction || 1) * cutDeg);
   el('who').textContent = data.annotator;
 
-  el('flags').innerHTML = data.flags.map((f, i) =>
-    `<div class="flag" data-flag="${f}">${f}<kbd>${i + 1}</kbd></div>`).join('');
+  const help = data.flag_help || {};
+  el('flags').replaceChildren(...data.flags.map((f, i) => {
+    const row = document.createElement('div');
+    row.className = 'flag';
+    row.dataset.flag = f;
+    // `title` rather than a custom popup: it is the one tooltip that survives the annotator being
+    // mid-drag on the canvas, and this page has no other hover state to collide with.
+    row.title = help[f] || '';
+    const name = document.createElement('span');
+    name.textContent = f;
+    const key = document.createElement('kbd');
+    key.textContent = String(i + 1);
+    row.append(name, key);
+    return row;
+  }));
   [...el('flags').children].forEach(n => n.addEventListener('click', () => {
     const f = n.dataset.flag;
     flags = flags.includes(f) ? flags.filter(x => x !== f) : flags.concat(f);
