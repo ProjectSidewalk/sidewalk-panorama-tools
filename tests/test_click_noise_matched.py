@@ -27,6 +27,7 @@ Two things this file is careful about, because both were live risks:
 
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -702,6 +703,61 @@ class TestTheTwoEstimatorsRunOnDifferentPopulations:
                 text = f.read()
             for value in values:
                 assert f'{value:,}' in text, (report, value)
+
+    def test_the_derived_figures_in_the_prose_are_derived(self):
+        """The counts above are transcribed; these are *arithmetic over* the artifact — a share, a
+        difference of two pair counts, a difference of two sigmas — and arithmetic in prose is the
+        half of the rule with no compiler at all. Each is recomputed here in the form the paragraph
+        writes it, so a sentence that survives a re-run with stale numbers fails instead.
+        """
+        summary_path = os.path.join(REPO_ROOT, 'reports', 'data',
+                                    '2026-08-09-click-noise-summary.json')
+        report_path = os.path.join(REPO_ROOT, 'reports', '2026-08-09-click-noise.md')
+        if not (os.path.exists(summary_path) and os.path.exists(report_path)):
+            pytest.skip('committed artifact or report not present')
+        with open(summary_path, encoding='utf-8') as f:
+            s = json.load(f)
+        with open(report_path, encoding='utf-8') as f:
+            text = f.read()
+        p, o, c = s['populations'], s['overall'], s['comparable_only']
+
+        def cell(pattern, what):
+            """The claim in the sentence that makes it, not the digits somewhere in the document.
+
+            `n in text` is not a transcription check: every number here also appears in §Numbers'
+            own tables, so retyping one inside this paragraph leaves the bare-substring assertion
+            green. Two of these five survived a mutation of the prose for exactly that reason.
+            """
+            m = re.search(pattern, text, re.S)
+            assert m, f'the report must state {what}'
+            return [float(g.replace(',', '')) for g in m.groups()]
+
+        dropped, total, pct = cell(r'\*\*([\d,]+) of ([\d,]+) labels, ([\d.]+)%\*\*',
+                                   'the referent filter as a share of the corpus')
+        assert dropped == p['n_dropped_unlocated_referent']
+        assert total == p['all_labels']['n_labels']
+        assert pct == pytest.approx(100.0 * dropped / total, abs=0.05)
+
+        # The paragraph's own argument: the excluded arms are large in labels and small in pairs.
+        cost, of_total = cell(r'small in \*pairs\* — ([\d,]+)\s+of ([\d,]+)',
+                              'what the filter costs in pairs')
+        assert cost == o['n_pairs'] - c['n_pairs']
+        assert of_total == o['n_pairs']
+        crosswalk, nosidewalk = cell(
+            r'Crosswalk contributes ([\d,]+) and NoSidewalk ([\d,]+)', 'the two arms by name')
+        assert crosswalk == s['by_label_type']['Crosswalk']['n_pairs']
+        assert nosidewalk == s['by_label_type']['NoSidewalk']['n_pairs']
+        assert crosswalk + nosidewalk <= cost, \
+            'the two named arms cannot exceed the total the filter removes'
+
+        az, el = cell(r'against ([\d.]+)° / ([\d.]+)° over all labels',
+                      'the all-label sigmas it is compared against')
+        assert az == pytest.approx(o['sigma_az_deg'], abs=0.0005)
+        assert el == pytest.approx(o['sigma_el_deg'], abs=0.0005)
+        moved, = cell(r'moves the floor by ([\d.]+)° in\s+azimuth', 'how far the floor moved')
+        assert moved == pytest.approx(o['sigma_az_deg'] - c['sigma_az_deg'], abs=0.0005)
+        assert o['sigma_el_deg'] == c['sigma_el_deg'], \
+            'the prose says elevation does not move at all — that is an equality, not a rounding'
 
 
 class TestSameUserDoubleSubmitsAreNotIndependentPlacements:
