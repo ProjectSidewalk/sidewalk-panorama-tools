@@ -65,6 +65,29 @@ def load_tasks(tasks_dir):
     return tasks
 
 
+def tasks_payload(tasks, annotator, done):
+    """What `GET /api/tasks` returns: the pending queue plus the constants the page needs.
+
+    A function rather than a dict literal inside the handler, because the handler is the one part of
+    this module the socket-free tests could not reach — and the first version of it silently dropped
+    `initial_view_fraction`, which made the page open at the full 60 deg cut instead of the 20 deg view
+    the protocol specifies. Nothing failed; the framing was just wrong. A smoke test caught it, and now
+    a unit test does.
+
+    `initial_view_fraction` is safe to ship and `n_total`/`n_done` are progress: none of them vary per
+    label, so none says anything about where a stored point is.
+    """
+    pending = [t for t in tasks['tasks'] if t['label_uid'] not in done]
+    return {
+        'annotator': annotator,
+        'flags': tasks['flags'],
+        'initial_view_fraction': tasks.get('initial_view_fraction', 1.0),
+        'n_total': len(tasks['tasks']),
+        'n_done': len(done),
+        'tasks': pending,
+    }
+
+
 def annotator_dir(out_dir, annotator):
     if not ANNOTATOR_RE.match(annotator or ''):
         raise ValueError(f'annotator name {annotator!r} must match {ANNOTATOR_RE.pattern}')
@@ -188,12 +211,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, f.read(), 'text/html; charset=utf-8')
         if self.path == '/api/tasks':
             done = completed(cfg['out_dir'], cfg['annotator'])
-            pending = [t for t in cfg['tasks']['tasks'] if t['label_uid'] not in done]
-            return self._send(200, {'annotator': cfg['annotator'],
-                                    'flags': cfg['tasks']['flags'],
-                                    'n_total': len(cfg['tasks']['tasks']),
-                                    'n_done': len(done),
-                                    'tasks': pending})
+            return self._send(200, tasks_payload(cfg['tasks'], cfg['annotator'], done))
         if self.path.startswith('/tiles/'):
             path = resolve_tile(cfg['tasks'], cfg['tasks_dir'], self.path[len('/tiles/'):])
             if not path:

@@ -67,6 +67,41 @@ class TestLoadTasks:
             srv.load_tasks(tasks_dir(tmp_path, extra_top={'seed': 20260812}))
 
 
+class TestTasksPayload:
+    """What the page is handed. This is the seam a socket-free suite would otherwise miss entirely: the
+    first version of the handler assembled this inline and dropped `initial_view_fraction`, so the view
+    opened at the full 60 deg cut instead of the 20 deg the protocol specifies. Nothing failed — the
+    framing was simply wrong, which is the failure mode a UI cannot report on itself."""
+
+    def _tasks(self, tmp_path, n=3):
+        ts = [task(f'city:{i}') for i in range(n)]
+        payload = json.load(open(os.path.join(tasks_dir(tmp_path, ts), srv.TASKS_FILE),
+                                 encoding='utf-8'))
+        payload['initial_view_fraction'] = 1 / 3
+        return payload
+
+    def test_it_forwards_the_initial_view_fraction(self, tmp_path):
+        out = srv.tasks_payload(self._tasks(tmp_path), 'jon', set())
+        assert out['initial_view_fraction'] == pytest.approx(1 / 3)
+
+    def test_a_task_file_without_one_defaults_to_the_whole_tile(self, tmp_path):
+        """Rather than KeyError-ing the whole session on an older tasks.json."""
+        payload = self._tasks(tmp_path)
+        del payload['initial_view_fraction']
+        assert srv.tasks_payload(payload, 'jon', set())['initial_view_fraction'] == 1.0
+
+    def test_completed_labels_are_dropped_from_the_queue_but_counted(self, tmp_path):
+        out = srv.tasks_payload(self._tasks(tmp_path), 'jon', {'city:1'})
+        assert [t['label_uid'] for t in out['tasks']] == ['city:0', 'city:2']
+        assert (out['n_total'], out['n_done']) == (3, 1)
+
+    def test_the_payload_carries_no_stored_geometry(self, tmp_path):
+        out = srv.tasks_payload(self._tasks(tmp_path), 'jon', set())
+        blob = json.dumps(out)
+        for leak in ('pano_x', 'pano_y', 'jitter', 'left', 'top', 'seed'):
+            assert leak not in blob, leak
+
+
 class TestTileResolution:
     """Tiles are resolved through the task list, so the allowlist is the data rather than a filter."""
 
