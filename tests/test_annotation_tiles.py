@@ -301,8 +301,22 @@ class TestRubric:
             'CurbRamp', 'NoCurbRamp', 'Obstacle', 'SurfaceProblem', 'Crosswalk', 'Signal',
             'NoSidewalk', 'Other'})
 
-    def test_the_flags_are_the_three_the_protocol_names(self):
-        assert at.FLAGS == ('object-absent', 'ambiguous', 'occluded')
+    def test_the_flags_are_the_four_the_protocol_names(self):
+        """Order matters as much as membership: the page binds these to keys 1..N by index, so
+        reordering them silently rebinds every annotator's muscle memory mid-study, and a flag recorded
+        against the wrong key is indistinguishable from a real judgement in the output."""
+        assert at.FLAGS == ('object-absent', 'ambiguous', 'occluded', 'no-extent')
+
+    def test_no_extent_is_distinct_from_ambiguous(self):
+        """Amendment 3 could have overloaded `ambiguous` and saved a key. It must not: they fail
+        differently and the analysis has to tell them apart. `ambiguous` means "I cannot tell WHICH
+        thing this label is about"; `no-extent` means "I know exactly what it is about and it has no
+        particular centre or edge". Only the second is evidence about the referent rule's coverage —
+        it is the leak-catcher for the labels the pre-draw tag rule cannot see, because tags are
+        optional and 14% of Obstacle labels carry none.
+        """
+        assert 'no-extent' in at.FLAGS and 'ambiguous' in at.FLAGS
+        assert len(set(at.FLAGS)) == len(at.FLAGS)
 
 
 class TestBlindness:

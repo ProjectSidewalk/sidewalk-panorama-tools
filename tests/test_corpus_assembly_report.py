@@ -14,6 +14,7 @@ a revert stays green.
 
 import json
 import os
+import re
 
 import pytest
 
@@ -295,21 +296,65 @@ class TestTheDefectsAreRecorded:
         assert 'does **not** freeze' in prereg
 
 
-class TestTheAmendmentIsWellFormed:
+class TestTheDecisionLogIsWellFormed:
+    """§7 was an "amendment log" in pre-registration style through 2026-08-12 and became a plain dated
+    decision log on 2026-08-13, when Jon asked why an unpublishable internal study was carrying
+    submission vocabulary. The answer that survived the question is the part these tests pin: the
+    *ordering* — that a filter was fixed before anyone saw a gold annotation — is the only content here
+    that cannot be reconstructed later, and it is what separates "we measured a 0.5° bias" from "we
+    filtered until one appeared". The lettered-clause packaging went; the dates and the what-we-knew-when
+    stayed.
+    """
 
-    def test_it_is_appended_after_amendment_one(self, prereg):
-        assert prereg.index('### Amendment 1') < prereg.index('### Amendment 2')
+    ENTRIES = ('### 2026-08-11', '### 2026-08-12', '### 2026-08-13')
 
-    def test_it_is_dated_and_precedes_any_annotation(self, prereg):
-        assert '### Amendment 2 — 2026-08-12' in prereg
-        assert 'before any annotation exists' in prereg
+    def test_the_entries_are_in_chronological_order(self, prereg):
+        found = [prereg.index(e) for e in self.ENTRIES]
+        assert found == sorted(found), 'a decision log read out of order tells you nothing about order'
 
-    def test_it_states_what_it_does_not_change(self, prereg):
-        """An amendment that silently touched the endpoints or the power table would invalidate the
-        registration it is appended to."""
-        head = prereg[prereg.index('### Amendment 2'):]
+    def test_every_entry_is_dated(self, prereg):
+        """No line anchors: the `prereg` fixture collapses whitespace, so `^###` matches nothing and a
+        regex written with `re.M` passes vacuously on an empty result — which is exactly how the first
+        version of this test failed loudly instead of quietly, and worth keeping the note for the next
+        person who reaches for a line-anchored pattern here."""
+        log = prereg[prereg.index('## 7 · Decision log'):]
+        headings = re.findall(r'### (\S+)', log)
+        assert len(headings) >= 3, f'the log must have entries, found {headings}'
+        for heading in headings:
+            assert re.fullmatch(r'\d{4}-\d{2}-\d{2}', heading), \
+                f'undated decision-log entry: {heading}'
+
+    def test_each_entry_records_that_it_preceded_any_annotation(self, prereg):
+        """The load-bearing claim. Both corpus-level changes were made before gold existed, and an entry
+        that does not say so is indistinguishable from one made after seeing the answer."""
+        for entry in ('### 2026-08-12', '### 2026-08-13'):
+            body = prereg[prereg.index(entry):]
+            body = body[:body.find('\n### ', 5) if '\n### ' in body[5:] else len(body)]
+            assert 'no gold annotation existed' in body or 'before any annotation exists' in body, entry
+
+    def test_the_2026_08_12_entry_states_what_it_does_not_change(self, prereg):
+        """A change that silently touched the endpoints or the power table would invalidate everything
+        above it."""
+        head = prereg[prereg.index('### 2026-08-12'):]
         assert 'endpoints, decision rules, annotation protocol and power table all stand' in head
 
-    def test_it_supersedes_section_six_on_mapillary(self, prereg):
-        head = prereg[prereg.index('### Amendment 2'):]
+    def test_the_2026_08_12_entry_supersedes_section_six_on_mapillary(self, prereg):
+        head = prereg[prereg.index('### 2026-08-12'):]
         assert "replacing §6's blanket exclusion of Mapillary" in head
+
+    def test_the_old_amendment_names_still_resolve(self, prereg):
+        """The headings became dates on 2026-08-13, but roughly thirty "Amendment 1(e)" / "Amendment
+        2(c)" references live in code, tests and other reports. Rewriting them all would be churn with a
+        transcription error in it, so the log carries the mapping instead — and this fails if someone
+        removes it while those references are still out there."""
+        log = prereg[prereg.index('## 7 · Decision log'):]
+        for name, date in (('Amendment 1', '2026-08-11'),
+                           ('Amendment 2', '2026-08-12'),
+                           ('Amendment 3', '2026-08-13')):
+            assert f'**{name} = {date}**' in log, name
+
+    def test_the_log_says_why_it_is_not_a_submission_artifact(self, prereg):
+        """So the next person to add an entry writes four plain paragraphs instead of reconstructing the
+        lettered-clause form from the two entries above."""
+        log = prereg[prereg.index('## 7 · Decision log'):]
+        assert 'This log is not a submission artifact' in log

@@ -259,11 +259,34 @@ label-latlng-estimation's #7); shifted-crop stratum (retired by the clamp census
 exactly zero across 436,348 labels, and analytically the wanted crop cannot reach the bottom edge
 below 53° of depression against a corpus p99 of 43.5°).
 
-## 7 · Amendment log
+## 7 · Decision log
 
-### Amendment 1 — 2026-08-11 · Study 1's estimand boundary, and two registered secondaries
+Every entry below records a change to this spec, when it was made, and **what was known at the time**.
+That last part is the only thing here that cannot be reconstructed later, and it is the whole reason the
+log exists.
 
-Registered after the merge of this document (PR #79, 2026-08-11 03:29 UTC) and **before any Phase 2
+Study 1 is estimating a bias of order 0.5°. Several of the choices recorded below move the estimate by
+more than that — dropping `Signal` removed labels carrying 30–40° of convention mismatch, and the
+referent rule moved the measurable set by 216 labels. When the knobs are larger than the signal,
+"we measured a 0.5° bias" and "we filtered until a 0.5° bias appeared" produce identical-looking output,
+and the only thing separating them is whether the filter was fixed before anyone saw a gold annotation.
+Recording the ordering costs a paragraph now and is unrecoverable in a week.
+
+This log is not a submission artifact. It was written in pre-registration style through
+2026-08-12 — lettered clauses, "registered", "not adopted" — and that vocabulary exists to satisfy
+reviewers who were not in the room. There are none. From 2026-08-13 the entries are plain: what
+changed, what we knew, what it moved. The earlier entries keep their structure because their content is
+genuinely multi-part, not because the form is worth preserving.
+
+**The old names still resolve.** Around thirty references across the code, tests and reports point at
+"Amendment 1(e)", "Amendment 2(c)" and so on, and rewriting them all to dates would be churn with a
+transcription error in it. The mapping is: **Amendment 1 = 2026-08-11**, **Amendment 2 = 2026-08-12**,
+**Amendment 3 = 2026-08-13**. Lettered sub-clauses are unchanged within each entry. New references
+should use the date.
+
+### 2026-08-11 · Study 1's estimand boundary, and two added secondaries
+
+Decided after the merge of this document (PR #79, 2026-08-11 03:29 UTC) and **before any Phase 2
 corpus or annotation exists**. Prompted by
 [SidewalkWebpage#4842](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4842) and the
 [record-staleness study](2026-08-10-off-target-markers-validate.md) (PR #80, pending merge — this link
@@ -325,9 +348,9 @@ equirectangular raster with its own tested transform, and Study 3's rectilinear 
 written fresh — never ported from the webpage's render path. Porting it would import the mechanism
 under test into the gold standard, and Study 1 would measure zero by construction.
 
-### Amendment 2 — 2026-08-12 · The sampling frame, a Mapillary arm, and the corpus/measurable split
+### 2026-08-12 · The sampling frame, a Mapillary arm, and the corpus/measurable split
 
-Registered during Phase 2 assembly and **before any annotation exists**. Prompted by a direct
+Decided during Phase 2 assembly and **before any annotation exists**. Prompted by a direct
 challenge to §3's frame: why six deployments when the project has 49 GSV ones, and why is Richmond —
 the only Mapillary deployment — absent. Evidence for everything below is the
 [corpus assembly report](2026-08-12-corpus-assembly.md) and the `frame_comparison` block of
@@ -421,6 +444,70 @@ three cities alone 90,369 of 316,735 rows share one with another city. `pano_id`
 (infra3d), not GSV or Mapillary, and it is the sole source of the 8032-px served height the GSV frame
 lacks entirely. Recorded here because §3's resolution stratum would otherwise look under-provisioned
 for a reason that is really a scope boundary.
+
+### 2026-08-13 · The referent rule widens, and extended referents stop being annotated
+
+**What we knew when.** Tiles were rendered and the tool was running, but **no gold annotation existed** —
+the only two written were QA scribbles made while checking the tool, and they were discarded rather than
+kept. The trigger was Jon opening the tool and landing on an `Obstacle` tagged `stairs`, whose centre and
+extent are both a function of viewing angle. Nothing about the study's estimates was visible to anyone.
+
+**Signal leaves the measurable set.** §4's rubric says "the centre of the pedestrian signal head", but
+**45 of the 72 drawn Signal labels sit at 10° or more of depression** (10.0–42.1°, median 15.2° over all
+72) — on the pole base, where the button is, not on the head. That is two incompatible conventions inside
+one arm, and gold-vs-stored would book the 30–40° difference as placement error against a 0.5° effect.
+Even a 60° tile does not reach the head from a pole-base click, so this is not fixable by re-cutting. The
+underlying property is Crosswalk's: a signal *installation* is one vertically extended object, so "the"
+point on it is a convention rather than a fact.
+
+**`Other` leaves too**, for a blunter reason: it is a residual category, 73% untagged, and an untagged
+`Other` can be anything the other eight types are not. No rubric can name its referent because the type
+does not name one.
+
+**Eleven (type, tag) pairs join the tag arm.** The full tag vocabulary of the five surviving types was
+tabulated with population and corpus counts and ruled on pair by pair, rather than derived from a
+principle. Excluded: `SurfaceProblem` + {brick/cobblestone, bumpy, construction, height difference,
+narrow sidewalk, rail/tram track, sand/gravel, very broken} and `Obstacle` + {construction, outdoor
+dining area, stairs}. The calls that went *against* the first proposal are the boundary of the rule and
+are recorded because they will otherwise be re-litigated: `Obstacle` + {vegetation, narrow, garage
+entrance, height difference, litter/garbage} and `SurfaceProblem` + {cracks, grass, uneven/slanted,
+debris} are all **kept**. Nothing is excluded for CurbRamp or NoCurbRamp under any tag — those tags
+describe a property *of* the ramp, and a narrow curb ramp still has a gutter line to be centred on.
+
+The rule is (type, tag) **pairs**, and `height difference` is why: excluded under SurfaceProblem where it
+names a run of pavement, kept under Obstacle where it names a discrete step. A flat tag blacklist cannot
+express that and would take 3,707 measurable Obstacle labels with it.
+
+**Extended referents stop being annotated at all.** Amendment 2(c) kept Crosswalk and NoSidewalk in the
+annotation set on the grounds that Study 2 needs a gold *box* even where Study 1 has no gold *point*.
+That does not hold: if the referent has no located centre it has no tight extent either, so those boxes
+were arbitrary in exactly the way the excluded points are. Study 2 sizes their crops from the distance
+prior instead. **They stay in the drawn corpus** — 2(c)'s corpus-vs-measurable distinction is unchanged —
+they are simply not put in front of an annotator.
+
+**A fourth flag, `no-extent`.** The tag rule is leaky by construction: tags are optional, and 14% of
+Obstacle and 10% of SurfaceProblem labels carry none, so an untagged unboundable referent reaches the
+annotator with nothing to catch it. It is deliberately distinct from `ambiguous` — that one means "I
+cannot tell which thing this is about", this one means "I know exactly what it is and it has no
+particular centre". **It is reported as its own bucket and never silently dropped from a denominator**:
+excluding on annotator judgement removes precisely the labels where placement error is largest, which is
+the same undetectable bias direction that cutting tiles at 20° would have introduced.
+
+**What it moved.** Measurable set **584 → 368** of the 763-label corpus (CurbRamp 125, NoCurbRamp 96,
+Obstacle 95, SurfaceProblem 52); of the 742 tiles already rendered, **358** survive, so nothing was
+re-cut. Power holds: the thinnest depression band carries **81** against the ~57 §5 requires after its
+1.3 design effect. Cell fill *improves* — 16 occupied cells, none below the target of 6, minimum 10 —
+because the 12 deficient cells flagged on 2026-08-12 were all in the types just dropped, so the top-up
+draw contemplated then is no longer needed. Jon's n = 50 is drawn from the 358 (seed 20260813; CurbRamp
+16, NoCurbRamp 14, Obstacle 13, SurfaceProblem 7).
+
+**What it invalidated.** §6 of the [Mapillary census](2026-08-11-mapillary-census.md) reports the
+referent exclusion under the old rule, and those numbers are **not** regenerated — it is a dated
+measurement, and recomputing it under a rule invented two days later would rewrite a published finding
+rather than record that the rule moved. The artifact records the rule it was computed under, and
+`TestTheCommittedRuleIsCurrentOrSuperseded` now fails if the live rule ever diverges from it without the
+report saying so. The whole suite was green across this change until that test existed, because the
+artifact tests read the artifact and the code tests read the code.
 
 **Pre-registration revisions (before registration, so not amendments).**
 

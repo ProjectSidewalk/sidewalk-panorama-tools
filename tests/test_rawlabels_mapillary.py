@@ -208,13 +208,56 @@ class TestLocatedReferent:
         assert bool(keep.iloc[0]), 'a brick-surfaced obstacle is still a located point'
         assert not bool(keep.iloc[1])
 
-    def test_surface_problems_with_point_tags_are_kept(self, mly):
-        """Discrimination in the other direction: the rule must not exclude the type wholesale."""
-        keep = rl.has_located_referent(mly)
-        target = (mly['label_type'] == 'SurfaceProblem') & \
-            rl.parse_tags(mly['tags']).map(lambda s: 'height difference' in s)
-        assert target.sum() >= 1
-        assert keep[target].all()
+    def test_surface_problems_with_point_tags_are_kept(self):
+        """Discrimination in the other direction: the rule must not exclude the type wholesale.
+
+        Synthetic since Amendment 3, and the reason is worth stating rather than hiding behind a
+        fixture swap. This test used to read the Richmond fixture and assert that a SurfaceProblem
+        tagged `height difference` survived — that tag is now excluded, and every SurfaceProblem row in
+        the fixture is excluded with it, so a fixture-based version of this test could only have been
+        deleted or inverted. Neither is right: Amendment 3 widened the rule a long way but explicitly
+        did *not* take the type wholesale, and these four tags are the ones Jon kept.
+        """
+        df = pd.DataFrame({
+            'label_type': ['SurfaceProblem'] * 4,
+            'tags': ['[cracks]', '[grass]', '[uneven/slanted]', '[debris]'],
+        })
+        assert rl.has_located_referent(df).all(), \
+            'SurfaceProblem survives on cracks/grass/uneven-slanted/debris'
+
+    def test_the_same_tag_is_a_region_in_one_type_and_an_object_in_another(self):
+        """`height difference` is the pair rule's whole justification, so it gets its own test.
+
+        Under SurfaceProblem it names a run of pavement that rises and falls, with no particular spot
+        the click was aiming at. Under Obstacle it names a discrete step you can stand in front of. A
+        tag blacklist — the obvious simplification, and what `REGION_TAGS` would collapse to if someone
+        "cleaned it up" into a flat set of strings — cannot express that, and would silently take 3,707
+        measurable Obstacle labels with it.
+        """
+        df = pd.DataFrame({
+            'label_type': ['Obstacle', 'SurfaceProblem'],
+            'tags': ['[height difference]', '[height difference]'],
+        })
+        keep = rl.has_located_referent(df)
+        assert bool(keep.iloc[0]), 'an Obstacle height difference is a discrete step'
+        assert not bool(keep.iloc[1]), 'a SurfaceProblem height difference is a stretch of pavement'
+
+    def test_one_excluded_tag_is_enough_even_beside_a_kept_one(self):
+        """`Obstacle [pole,stairs]` is a real corpus row. The pole is locatable and the stairs are not,
+        and a label carrying both is not half-measurable — there is no way to know which of the two the
+        annotator was pointing at. `any()`, not `all()`."""
+        df = pd.DataFrame({'label_type': ['Obstacle'], 'tags': ['[pole,stairs]']})
+        assert not rl.has_located_referent(df).iloc[0]
+
+    def test_signal_and_other_are_excluded_by_type(self):
+        """Amendment 3's two type additions, which came from annotation QA rather than the tag
+        vocabulary: 45 of 72 drawn Signal labels sit at 10 deg or more of depression — on the pole base
+        — while the rubric says the signal head, and `Other` is a residual category that names no
+        referent at all."""
+        df = pd.DataFrame({'label_type': ['Signal', 'Other', 'CurbRamp'], 'tags': ['[]', '[]', '[]']})
+        keep = rl.has_located_referent(df)
+        assert not keep.iloc[0] and not keep.iloc[1]
+        assert bool(keep.iloc[2]), 'the control: the widening did not swallow everything'
 
     def test_ordinary_and_untagged_labels_are_kept(self, mly):
         keep = rl.has_located_referent(mly)
@@ -225,9 +268,10 @@ class TestLocatedReferent:
     def test_the_counts_reconcile_on_the_fixture(self, mly):
         keep = rl.has_located_referent(mly)
         assert len(mly) == 10
-        assert int((~keep).sum()) == 5, \
-            'one Occlusion, two Crosswalks, two SurfaceProblem/brick rows'
-        assert int(keep.sum()) == 5
+        assert int((~keep).sum()) == 6, \
+            'one Occlusion, two Crosswalks, and all three SurfaceProblems: two brick/cobblestone and ' \
+            'one that Amendment 3 took via height difference'
+        assert int(keep.sum()) == 4, 'the four CurbRamps'
 
     def test_it_returns_an_aligned_boolean_series(self, mly):
         keep = rl.has_located_referent(mly)
@@ -261,14 +305,48 @@ class TestLocatedReferent:
         keep = rl.has_located_referent(mly)
         assert int(keep.sum()) == 7, 'only the type arm left: one Occlusion and two Crosswalks'
 
-    def test_the_rule_is_narrow_by_design(self):
-        """Pins the scope so widening it is a visible decision rather than a drift. The adjacent
-        candidates in the live Richmond vocabulary are deliberately absent — the two SurfaceProblem tags
-        below name a defect you can point at, not a property of a whole stretch."""
-        assert rl.NO_REFERENT_TYPES == frozenset({'Occlusion', 'Crosswalk', 'NoSidewalk'})
-        assert rl.REGION_TAGS == frozenset({('SurfaceProblem', 'brick/cobblestone')})
-        for candidate in (('SurfaceProblem', 'bumpy'), ('SurfaceProblem', 'uneven/slanted')):
+    def test_the_rule_is_enumerated_by_design(self):
+        """Pins the scope so moving it is a visible decision rather than a drift.
+
+        It has moved once — Amendment 3, 2026-08-13 — and the friction worked exactly as this test was
+        written to make it work: the rule could not widen without someone editing this list, so the tag
+        vocabulary went in front of Jon and was ruled on pair by pair. The `kept` half below is not
+        decoration; those are his calls against the first proposal, and they are the ones a later reader
+        is most likely to "tidy up" on the theory that a big defect cannot have a centre.
+        """
+        assert rl.NO_REFERENT_TYPES == frozenset(
+            {'Occlusion', 'Crosswalk', 'NoSidewalk', 'Signal', 'Other'})
+        assert rl.REGION_TAGS == frozenset({
+            ('SurfaceProblem', 'brick/cobblestone'),
+            ('SurfaceProblem', 'bumpy'),
+            ('SurfaceProblem', 'construction'),
+            ('SurfaceProblem', 'height difference'),
+            ('SurfaceProblem', 'narrow sidewalk'),
+            ('SurfaceProblem', 'rail/tram track'),
+            ('SurfaceProblem', 'sand/gravel'),
+            ('SurfaceProblem', 'very broken'),
+            ('Obstacle', 'construction'),
+            ('Obstacle', 'outdoor dining area'),
+            ('Obstacle', 'stairs'),
+        })
+        kept = [
+            ('SurfaceProblem', 'cracks'), ('SurfaceProblem', 'grass'),
+            ('SurfaceProblem', 'uneven/slanted'), ('SurfaceProblem', 'debris'),
+            ('Obstacle', 'vegetation'), ('Obstacle', 'narrow'), ('Obstacle', 'garage entrance'),
+            ('Obstacle', 'height difference'), ('Obstacle', 'litter/garbage'),
+        ]
+        for candidate in kept:
             assert candidate not in rl.REGION_TAGS, candidate
+
+    def test_no_curb_ramp_tag_excludes_anything(self):
+        """CurbRamp and NoCurbRamp lose nothing under any tag, and that is a decision rather than an
+        omission. Every tag those types carry — narrow, steep, points into traffic, not level with
+        street — describes a property OF the ramp, and a narrow curb ramp is still a curb ramp with a
+        gutter line to be centred on. The rule is "does the tag change what the referent IS", not "is
+        the tag about a defect"; between them those two types are 528,033 labels, so reading it the
+        other way would empty the study.
+        """
+        assert not [pair for pair in rl.REGION_TAGS if pair[0] in ('CurbRamp', 'NoCurbRamp')]
 
 
 class TestRegionTagMask:
@@ -281,7 +359,8 @@ class TestRegionTagMask:
 
     def test_it_is_exactly_the_tag_arm(self, mly):
         mask = rl.region_tag_mask(mly)
-        assert int(mask.sum()) == 2, 'the two SurfaceProblem/brick rows'
+        assert int(mask.sum()) == 3, \
+            'two SurfaceProblem/brick rows plus the height-difference row Amendment 3 added'
         assert set(mly.loc[mask, 'label_type']) == {'SurfaceProblem'}
 
     def test_the_type_arm_is_not_in_it(self, mly):

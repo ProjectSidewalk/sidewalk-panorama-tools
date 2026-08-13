@@ -57,11 +57,30 @@ OPTIONAL_COLUMNS = ['pano_source']
 #   that named this an open question turned on it, and why a GSV placement study must not read these
 #   rows as measurable subjects.
 #
+# * 'Signal' was added 2026-08-13, from annotation QA rather than from the tag vocabulary. §4's rubric
+#   says "the signal head centre", but 45 of the 72 drawn Signal labels sit at 10 deg or more below the
+#   horizon (10.0 to 42.1 deg, median 15.2 over all 72), on the pole base rather than on the head — two
+#   incompatible conventions in one arm. Gold-vs-stored would then book a 30-40
+#   deg convention mismatch as placement error, swamping the ~0.5 deg effect Study 1 is estimating, and
+#   even a 60 deg tile does not reach the head from a pole-base click. The underlying property is the
+#   same as Crosswalk's: a signal *installation* is one vertically extended object, so "the" point on it
+#   is a convention, not a fact about the world.
+#
+# * 'Other' was added at the same time and for a blunter reason: it is a residual category, 73% untagged,
+#   and an untagged 'Other' can be any of the things the other eight types are not. There is no rubric
+#   that could name its referent, because the type does not name one.
+#
 # IMPORTANT: this is about **placement-measurability, not crop-corpus membership.** Crosswalk (label
 # type 9) and NoSidewalk (type 7) have real crop consumers and stay in the crop corpus; what they cannot
 # do is serve as a subject for a stored-vs-gold *displacement*, because there is no displacement-from.
 # Do not read this set as "types to drop".
-NO_REFERENT_TYPES = frozenset({'Occlusion', 'Crosswalk', 'NoSidewalk'})
+#
+# What DID change on 2026-08-13 is whether they are *annotated*: Amendment 3 stopped cutting tiles for
+# them. Amendment 2(c) had kept them in the annotation set on the grounds that Study 2 needs a gold box
+# even where Study 1 has no gold point — but if the referent has no located centre it has no tight
+# extent either, so those boxes were arbitrary in exactly the way the excluded points are. Study 2 sizes
+# their crops from the distance prior instead. They remain in the drawn corpus; they are not annotated.
+NO_REFERENT_TYPES = frozenset({'Occlusion', 'Crosswalk', 'NoSidewalk', 'Signal', 'Other'})
 
 # (label_type, tag) pairs where the tag names a property of an extended region rather than of a point,
 # so the label could have been placed anywhere on any qualifying stretch. A SurfaceProblem tagged
@@ -71,15 +90,45 @@ NO_REFERENT_TYPES = frozenset({'Occlusion', 'Crosswalk', 'NoSidewalk'})
 # excludes on *record* quality (does the record replay?) rather than on *referent* quality (is there a
 # located thing to be right or wrong about?).
 #
-# Deliberately a narrow, enumerated set rather than a heuristic over tag text. Adjacent candidates
-# exist in the Richmond vocabulary -- SurfaceProblem + {bumpy, uneven/slanted} -- and are NOT excluded
-# here, because they were not part of the rule as stated. Extending it is a one-line edit plus a
-# decision, which is the right amount of friction for something that changes a corpus.
+# Deliberately a narrow, enumerated set rather than a heuristic over tag text. Extending it is a
+# one-line edit plus a decision, which is the right amount of friction for something that changes a
+# corpus. It was extended once, on 2026-08-13, and the friction did its job: the trigger was an
+# annotator opening the tool and landing on an Obstacle tagged `stairs`, whose extent and centre are
+# both a matter of viewing angle. The full tag vocabulary of the five surviving measurable types was
+# then put in front of Jon and ruled on pair by pair, rather than derived from a principle here.
+#
+# The rule is (type, tag) PAIRS, not tags, and `height difference` is why that matters: it is excluded
+# under SurfaceProblem, where it names a run of pavement, and kept under Obstacle, where it names a
+# discrete step you can stand at. The same word is a region in one type and an object in the other.
+#
+# Jon's calls that went AGAINST the first proposal, recorded because they are the boundary of the rule
+# and a later reader will otherwise re-litigate them: Obstacle + {vegetation, narrow, garage entrance,
+# height difference, litter/garbage} are KEPT, as is SurfaceProblem + {cracks, grass, uneven/slanted,
+# debris}. The principle that survives is "does the tag change what the referent IS", not "is the tag
+# about a defect" and not "is the tag about something big".
+#
+# Nothing is excluded for CurbRamp or NoCurbRamp under any tag. Every tag those types carry describes a
+# property OF the ramp (or of the place a ramp should be) — narrow, steep, points into traffic — and a
+# narrow curb ramp is still a curb ramp with a gutter line to be centred on.
+#
+# A label carrying several tags is excluded if ANY of its pairs is here, which is `region_tag_mask`'s
+# `any(...)`: `Obstacle [pole,stairs]` is a real corpus row, and the pole does not rescue it.
 #
 # ('Crosswalk', 'brick/cobblestone') is absent from this set for a different reason: Crosswalk is
-# excluded by NO_REFERENT_TYPES regardless of tag, so a pair here would be dead weight.
+# excluded by NO_REFERENT_TYPES regardless of tag, so a pair here would be dead weight. Same now for
+# every ('Other', ...) and ('Signal', ...) pair.
 REGION_TAGS = frozenset({
     ('SurfaceProblem', 'brick/cobblestone'),
+    ('SurfaceProblem', 'bumpy'),
+    ('SurfaceProblem', 'construction'),
+    ('SurfaceProblem', 'height difference'),
+    ('SurfaceProblem', 'narrow sidewalk'),
+    ('SurfaceProblem', 'rail/tram track'),
+    ('SurfaceProblem', 'sand/gravel'),
+    ('SurfaceProblem', 'very broken'),
+    ('Obstacle', 'construction'),
+    ('Obstacle', 'outdoor dining area'),
+    ('Obstacle', 'stairs'),
 })
 
 # Every replay/geometry input as float64: several are blank for labels whose pano metadata never

@@ -196,6 +196,21 @@ sized completely differently:
 | by (type, tag) | `SurfaceProblem` + `brick/cobblestone` | 21 | 1,293 |
 | | **total excluded** | **86 (32.2%)** | **101,415 (23.1%)** |
 
+> **Superseded by Amendment 3 (2026-08-13).** Every number in this section, and the `referent_exclusion`
+> blocks of `reports/data/2026-08-11-mapillary-census.json`, is computed under the rule **as it stood on
+> 2026-08-11** — three types and one (type, tag) pair. That rule has since widened: `Signal` and `Other`
+> joined the type arm, and the tag arm went from one pair to eleven. The artifact records the rule it was
+> computed under, in its own `rule` block, which is what makes this note checkable rather than a promise;
+> `TestTheCommittedRuleIsCurrentOrSuperseded` fails if the two ever diverge without a note saying so.
+>
+> These figures are **not** regenerated, because this is a dated measurement and recomputing it would
+> rewrite a published finding rather than record that the rule moved. Two consequences for a reader:
+> the 23.1% GSV exclusion is a **floor** under the current rule, not the current value; and the sentence
+> below about `SurfaceProblem` + `{bumpy, uneven/slanted}` being deliberately left out is **half
+> obsolete** — `bumpy` was moved into the rule by Amendment 3, `uneven/slanted` was explicitly kept. The
+> current rule and the reasoning for each pair live in `reports/scripts/rawlabels.py`; what Amendment 3
+> changed and why is in `reports/2026-08-09-crop-priors-prereg.md`.
+
 Every other exclusion in the study spec is about **record** quality — does the record replay, do the
 dims agree. This one is about **referent** quality: if a label is correctly placed *anywhere* within some
 extent, there is no particular spot it was aiming at, so a stored-vs-gold displacement has nothing to be

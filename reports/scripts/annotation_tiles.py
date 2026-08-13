@@ -82,9 +82,25 @@ TILE_FOV_DEG = CUT_FOV_DEG
 JITTER_MIN_PX = 40
 JITTER_MAX_PX = 80
 
-# §4's three flags. An annotator picks one of these instead of guessing, which is what keeps edge cases
-# out of the placement distribution rather than in it as noise.
-FLAGS = ('object-absent', 'ambiguous', 'occluded')
+# §4's flags. An annotator picks one of these instead of guessing, which is what keeps edge cases out of
+# the placement distribution rather than in it as noise. The page renders them from this tuple and binds
+# them to keys 1..N in order, so adding one here is the whole change.
+#
+# 'no-extent' is Amendment 3's, and it exists because the tag rule it accompanies is leaky by
+# construction: tags are optional in Project Sidewalk, and 14% of Obstacle and 10% of SurfaceProblem
+# labels carry none at all, so an untagged label whose referent has no well-defined extent reaches the
+# annotator with nothing to catch it. The pre-draw tag rule handles the labels it can see; this handles
+# the rest.
+#
+# It is deliberately separate from 'ambiguous' rather than folded into it. They fail differently and the
+# analysis has to tell them apart: 'ambiguous' means "I cannot tell WHICH thing this label is about",
+# 'no-extent' means "I know exactly what it is about and it has no particular centre or edge".
+#
+# The flag must be REPORTED as its own bucket and never silently dropped from the denominator. Excluding
+# on annotator judgement removes precisely the labels where placement error is largest, which is the
+# same bias direction that cutting tiles at 20 deg would have introduced -- invisible in the estimate
+# and impossible to detect from inside it.
+FLAGS = ('object-absent', 'ambiguous', 'occluded', 'no-extent')
 
 # The 8 types prereg §3's corpus carries (Occlusion excluded -- it marks the view, not a thing in it).
 CORPUS_LABEL_TYPES = frozenset({'CurbRamp', 'NoCurbRamp', 'Obstacle', 'SurfaceProblem', 'Crosswalk',

@@ -170,9 +170,9 @@ These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11
   (`comparable_only`) rather than leaving a reader to assume the difference is the estimator — here it
   mostly was, but that was a measurement, not a given.
 
-## The gold-standard annotation tool (`corpus_sample.py` → `annotation_tiles.py` → `annotate_server.py`)
+## The gold-standard annotation tool (`corpus_sample.py` → `annotation_tiles.py` → `annotation_subset.py` → `annotate_server.py`)
 
-Three scripts feed each other, and the seams between them are load-bearing:
+Four scripts feed each other, and the seams between them are load-bearing:
 
 - **`corpus_sample.py`** draws the study corpus from a rawLabels frame. **Label identity is
   `(city, label_id)`, carried as `label_uid`** — `label_id` restarts at 1 in every deployment, and keying
@@ -185,6 +185,12 @@ Three scripts feed each other, and the seams between them are load-bearing:
   Tiles are cut at **60°** but the view opens at **20°**: a tile of angular width F can only measure a
   displacement up to F/2, so a tight tile converts gross errors into `object-absent` and deletes the
   largest errors from the distribution being estimated.
+- **`annotation_subset.py`** narrows an already-rendered tile set, and is where the *current* referent
+  rule is applied. It recomputes measurability from `rawlabels.has_located_referent` and **never reads
+  the corpus CSV's `measurable` column**, which is a snapshot of the rule as it stood at draw time — it
+  says 584 where the live rule says 368. It also re-reads `FLAGS` from code, because a rendered
+  `tasks.json` is a snapshot of the protocol too. Both filters fail silently: a queue drawn from the
+  wrong population or missing a flag looks perfectly well-formed.
 - **`annotate_server.py`** serves tiles to `annotate.html` on loopback and writes one JSON per label per
   annotator. It refuses `geometry.json` **by name** — it sits beside the file that is served, and the
   natural static-file handler would publish the answer key at a guessable URL.
@@ -193,6 +199,24 @@ Amendment 1(e) forbids porting the webpage's render path into any of this: Study
 `pano_x`/`pano_y` against gold *in pano coordinates*, so a mapping sharing the projection under test would
 make the study measure zero by construction. The tile transform is verified by round-trip against
 directly-indexed pixels, never against another implementation.
+
+**The corpus is 8 types; Study 1's measurable set is 4.** The referent rule (2026-08-13) excludes
+Occlusion, Crosswalk, NoSidewalk, **Signal** and **Other** by type, plus eleven `(label_type, tag)`
+pairs — leaving CurbRamp, NoCurbRamp, Obstacle and SurfaceProblem, 368 of the 763-label corpus. It is a
+**placement-measurability** rule, not a corpus rule: the excluded types have real crop consumers and
+Study 2 still sizes crops for them. What changed on 2026-08-13 is that they are no longer *annotated* —
+if a referent has no located centre it has no tight extent either, so a gold box on one is as arbitrary
+as a gold point. The rule is keyed on **pairs, not tags**: `height difference` is excluded under
+SurfaceProblem (a run of pavement) and kept under Obstacle (a discrete step). Tags are optional, so the
+rule is leaky by construction — 14% of Obstacle labels carry none — which is what the `no-extent` flag
+is for, and that flag is **reported as its own bucket, never dropped from a denominator**.
+
+The prereg's §7 is a **decision log**, not an amendment log — plain dated entries recording what changed
+and *what was known at the time*, since the ordering (a filter fixed before any gold existed) is the only
+part that cannot be reconstructed later. Old references resolve as Amendment 1/2/3 = 2026-08-11/12/13.
+Note that changing the referent rule invalidates published artifacts computed under the old one: the
+Mapillary census is deliberately **not** regenerated, and `TestTheCommittedRuleIsCurrentOrSuperseded`
+fails if the live rule diverges from a committed artifact's recorded rule without the report saying so.
 
 ## Label Type IDs
 
