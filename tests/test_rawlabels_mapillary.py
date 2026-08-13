@@ -250,6 +250,17 @@ class TestLocatedReferent:
         assert not keep.loc[9]          # the Occlusion row
         assert not keep.loc[3]          # a SurfaceProblem/brick row
 
+    def test_the_filter_is_defined_in_terms_of_the_exposed_tag_arm(self, mly, monkeypatch):
+        """`region_tag_mask` is not a convenience wrapper — it is the definition, and this is what
+        says so. Replace it and the corpus filter has to move with it; a `has_located_referent`
+        holding its own copy of the comprehension would sail through.
+        """
+        monkeypatch.setattr(rl, 'region_tag_mask', lambda df: pd.Series(True, index=df.index))
+        assert not rl.has_located_referent(mly).any()
+        monkeypatch.setattr(rl, 'region_tag_mask', lambda df: pd.Series(False, index=df.index))
+        keep = rl.has_located_referent(mly)
+        assert int(keep.sum()) == 7, 'only the type arm left: one Occlusion and two Crosswalks'
+
     def test_the_rule_is_narrow_by_design(self):
         """Pins the scope so widening it is a visible decision rather than a drift. The adjacent
         candidates in the live Richmond vocabulary are deliberately absent — the two SurfaceProblem tags
@@ -258,6 +269,53 @@ class TestLocatedReferent:
         assert rl.REGION_TAGS == frozenset({('SurfaceProblem', 'brick/cobblestone')})
         for candidate in (('SurfaceProblem', 'bumpy'), ('SurfaceProblem', 'uneven/slanted')):
             assert candidate not in rl.REGION_TAGS, candidate
+
+
+class TestRegionTagMask:
+    """The tag arm on its own. It exists because two callers needed it and each had a transcription:
+    `has_located_referent` filters the corpus on it, and `mapillary_census.referent_exclusion`
+    publishes how many labels it removes. Two copies of one comprehension is a rule that can be
+    changed in one place and reported from the other, and the only assertion over those published
+    counts is that the arms sum to the total — which two different rules would still satisfy.
+    """
+
+    def test_it_is_exactly_the_tag_arm(self, mly):
+        mask = rl.region_tag_mask(mly)
+        assert int(mask.sum()) == 2, 'the two SurfaceProblem/brick rows'
+        assert set(mly.loc[mask, 'label_type']) == {'SurfaceProblem'}
+
+    def test_the_type_arm_is_not_in_it(self, mly):
+        """Occlusion and Crosswalk are excluded by type, not by tag, and must not be double-counted:
+        the census reports the two arms as disjoint and asserts they sum."""
+        mask = rl.region_tag_mask(mly)
+        assert not mask[mly['label_type'].isin({'Occlusion', 'Crosswalk', 'NoSidewalk'})].any()
+
+    def test_the_two_arms_partition_the_exclusion(self, mly):
+        """The invariant `pool_referent_exclusion` asserts, checked here against the definitions
+        rather than against numbers a previous run produced."""
+        excluded = ~rl.has_located_referent(mly)
+        by_type = mly['label_type'].isin(rl.NO_REFERENT_TYPES)
+        by_tag = rl.region_tag_mask(mly)
+        assert not (by_type & by_tag).any()
+        assert list(excluded) == list(by_type | by_tag)
+
+    def test_it_keys_on_the_pair_not_the_tag(self):
+        """A CurbRamp on a brick sidewalk is still a point you can stand at."""
+        df = pd.DataFrame({'label_type': ['CurbRamp', 'SurfaceProblem'],
+                           'tags': ['[brick/cobblestone]', '[brick/cobblestone]']})
+        assert list(rl.region_tag_mask(df)) == [False, True]
+
+    def test_a_missing_tags_column_is_no_tags_rather_than_a_crash(self, mly):
+        """The drift the two copies had already: the filtering caller tolerated the column's absence
+        and the reporting caller read `df['tags']` straight, so a frame built before `tags` was
+        loaded crashed one and not the other."""
+        assert not rl.region_tag_mask(mly.drop(columns=['tags'])).any()
+
+    def test_it_returns_an_aligned_boolean_series(self, mly):
+        mask = rl.region_tag_mask(mly.iloc[[9, 0, 3, 6]])
+        assert mask.dtype == bool
+        assert list(mask.index) == [9, 0, 3, 6]
+        assert bool(mask.loc[3]), 'a SurfaceProblem/brick row'
 
 
 class TestGsvCorpusUnaffected:

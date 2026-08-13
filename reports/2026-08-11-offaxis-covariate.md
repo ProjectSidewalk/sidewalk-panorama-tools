@@ -183,14 +183,28 @@ artifact.
 |---|---|---|
 | stored record | (298.25°, **−35°**, zoom 1) @ canvas (451, 142) | (320.5°, **−35°**, zoom 1) @ canvas (361, 83) |
 | viewport at pitch floor | yes | yes |
+| replays exact / eligible | yes / yes | yes / yes |
+| depression, own band | 19.25°, **15–30°** | 11.52°, **5–15°** |
 | vertical off-axis | **−15.75°** (above centre) | **−23.47°** (above centre) |
 | radial off-axis | 20.30° | 23.47° |
 | beyond the p5 of band | >30° only | **all four** |
+| beyond the p5 of its own band | no | **yes** |
 
-Neither specimen is in this study's six-city corpus, so both rows are computed from the records above
-rather than joined — the records, the computed offsets, and the band membership are committed in
+Neither specimen is in this study's six-city corpus, so they are committed as their own two-row
+rawLabels export, `reports/data/2026-08-11-offaxis-specimens.csv`, copied verbatim from the teaneck-nj
+and chicago-il exports and read through the same loader and the same `prepare()` as any city. That is
+what makes the last four rows of this table possible at all: a replay check, an eligibility verdict and
+a depression band **assigned from the row** rather than inferred by comparing the offset against other
+bands' percentiles. Before, the specimens were five hand-copied fields in a dict — a parallel path
+beside the machinery every other label goes through, and the reason the canvas dims could go missing
+(see §Enforcement). The computed values are committed in
 `reports/data/2026-08-11-offaxis-covariate.json` under `specimens` and pinned in
 `tests/test_offaxis_covariate.py`, so this table reproduces from the repo like every other number here.
+
+The own-band row is the sharper claim. teaneck-nj 14955 sits in the 15–30° band, whose p5 is −16.0°,
+so its −15.75° is just *inside* its own band's tail while clearing the >30° band's; chicago-il 30652
+sits in the 5–15° band, whose p5 is −21.3°, and is beyond it. A cross-band list alone could not say
+which of those two things was true of either label.
 
 Both are at the floor and both are clicked far off-axis: chicago-il 30652 sits beyond the 5th
 percentile of *every* band, and teaneck-nj 14955 beyond the 5th percentile of the >30° band. (An
@@ -306,9 +320,17 @@ than a description.
 
 **§4's specimen values reproduced from nothing.** Neither label is in the six-city corpus, so the two
 off-axis figures existed only in the prose — against this repo's own bar that a fresh clone reproduce
-every number in `reports/`. Their records now live in `SPECIMENS`, their offsets and band membership in
-the artifact under `specimens`, and both are pinned. Computing the band membership is also what caught
-the Summary claiming both specimens sat beyond the 5th percentile of every band when only one does.
+every number in `reports/`. Their rows now live in `reports/data/2026-08-11-offaxis-specimens.csv`,
+copied verbatim from the two deployments' exports, and go through the same loader and `prepare()` as
+any city; their offsets, band and replay verdicts are in the artifact under `specimens`, and all are
+pinned. Computing the band membership is also what caught the Summary claiming both specimens sat
+beyond the 5th percentile of every band when only one does.
+
+The first version of that fix was five hand-copied fields in a dict, which is how the canvas dims
+came to be missing from it: a transcription can omit a field and a row cannot. That dict was also a
+parallel path beside the machinery every other label goes through, so the specimens got no replay
+check, no eligibility verdict and no depression band of their own — §4's band claim had to be
+*inferred* from other bands' percentiles. All four now come from the row.
 
 The rest, briefly: `by_label_type` publishes its *n* (per city a rate could be 0.0% from 12 labels);
 `_spread` reports a null sd for a one-row band instead of `0.0`; `identification_post179` is gone,
@@ -319,7 +341,7 @@ be computed against two different canvases; a vacuous `isfinite(offaxis_v)` term
 Turns); an empty `--csv-dir` now names the directory instead of dying in `pd.concat`; and the index row
 in `reports/README.md` is back in date order.
 
-**Enforcement.** 111 tests in `tests/test_offaxis_covariate.py` (up from 48) and a new
+**Enforcement.** 144 tests in `tests/test_offaxis_covariate.py` (up from 48) and a new
 `tests/test_reports_index.py`; **18/18 mutants killed** on a battery that reverts each fix
 individually. Three mutants survived the first pass and all three were the tests' fault, not the
 fixes':

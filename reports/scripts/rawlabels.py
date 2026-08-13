@@ -34,6 +34,12 @@ STUDY_COLUMNS = [
     'camera_heading', 'camera_pitch', 'camera_roll', 'latitude', 'longitude',
 ]
 
+# Served by rawLabels and authoritative for imagery source ('gsv' / 'mapillary'), but OPTIONAL here:
+# a cache or fixture captured before the column existed still loads, and
+# mapillary_census.imagery_source reports by_source = None rather than silently falling back to the
+# pano-id heuristic. Read when present, absent otherwise — never fabricated.
+OPTIONAL_COLUMNS = ['pano_source']
+
 # Label types whose stored point does not identify a *particular* place, for two different reasons:
 #
 # * 'Occlusion' ("Can't see the sidewalk") marks the **view**, not a thing in it. The pre-registration
@@ -97,7 +103,9 @@ def load_rawlabels(path):
     """
     dtypes = {c: 'float64' for c in _FLOAT_COLUMNS}
     dtypes['pano_id'] = str
-    df = pd.read_csv(path, usecols=STUDY_COLUMNS, dtype=dtypes)
+    header = pd.read_csv(path, nrows=0).columns
+    columns = STUDY_COLUMNS + [c for c in OPTIONAL_COLUMNS if c in header]
+    df = pd.read_csv(path, usecols=columns, dtype=dtypes)
     df['time_created'] = pd.to_datetime(df['time_created'], unit='ms', utc=True)
     return add_era(df)
 
@@ -131,13 +139,30 @@ def has_located_referent(df):
     Applies only to the two things the rule names. Every other label passes, including ones with
     severity or validation problems: this is about the referent, not about label quality.
     """
+    return ~df['label_type'].isin(NO_REFERENT_TYPES) & ~region_tag_mask(df)
+
+
+def region_tag_mask(df):
+    """Boolean mask: does this label carry a `(label_type, tag)` pair from `REGION_TAGS`?
+
+    The tag arm of the referent rule, on its own because two callers need it and had a copy each:
+    `has_located_referent` *filters* the corpus on it, and `mapillary_census.referent_exclusion`
+    *reports* how many labels it removes. Two transcriptions of one list comprehension, so a change
+    to either — adding the `SurfaceProblem + bumpy` pair the REGION_TAGS comment says is deliberately
+    out, or matching tag text case-insensitively — would leave the published arm count describing a
+    rule the study no longer applies, and nothing would fail: the only assertion over those counts
+    checks that the two arms sum to the total, which they still would.
+
+    A missing `tags` column is treated as no tags rather than raising. rawLabels always serves it, but
+    a study frame assembled by hand need not, and the caller that was reporting the count read
+    `df['tags']` directly while the caller that was filtering tolerated its absence — the two copies
+    had already drifted on that.
+    """
     types = df['label_type']
     tags = parse_tags(df['tags']) if 'tags' in df else parse_tags([None] * len(df))
     tags.index = df.index
-    region = pd.Series(
-        [any((t, tag) in REGION_TAGS for tag in tagset)
-         for t, tagset in zip(types, tags)], index=df.index)
-    return ~types.isin(NO_REFERENT_TYPES) & ~region
+    return pd.Series([any((t, tag) in REGION_TAGS for tag in tagset)
+                      for t, tagset in zip(types, tags)], index=df.index)
 
 
 def add_era(df):

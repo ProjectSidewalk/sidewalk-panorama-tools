@@ -5,9 +5,13 @@
   "richmond": {
    "imagery_source": {
     "n_labels": 267,
+    "by_id_shape": {
+     "mapillary": 267
+    },
     "by_source": {
      "mapillary": 267
-    }
+    },
+    "n_disagreeing_with_id_shape": 0
    },
    "replay": {
     "n_labels": 267,
@@ -118,7 +122,9 @@
      "sigma_az_deg": 1.894440650765728,
      "sigma_el_deg": 0.3087886458791329,
      "d_total_p50": 1.8248321268325092,
-     "d_total_p90": 3.5690466283255153
+     "d_total_p90": 3.5690466283255153,
+     "panos_agreed": false,
+     "sigma_caveat": "incidental co-location: the pano list was derived from shared_panos, not agreed between labellers, so pairs may cross distinct objects and this sigma is an upper bound"
     }
    },
    "referent_exclusion": {
@@ -185,9 +191,13 @@
  "pooled": {
   "imagery_source": {
    "n_labels": 267,
+   "by_id_shape": {
+    "mapillary": 267
+   },
    "by_source": {
     "mapillary": 267
-   }
+   },
+   "n_disagreeing_with_id_shape": 0
   },
   "replay": {
    "n_labels": 267,
@@ -298,7 +308,9 @@
     "sigma_az_deg": 1.894440650765728,
     "sigma_el_deg": 0.3087886458791329,
     "d_total_p50": 1.8248321268325092,
-    "d_total_p90": 3.5690466283255153
+    "d_total_p90": 3.5690466283255153,
+    "panos_agreed": false,
+    "sigma_caveat": "incidental co-location: the pano list was derived from shared_panos, not agreed between labellers, so pairs may cross distinct objects and this sigma is an upper bound"
    }
   },
   "referent_exclusion": {

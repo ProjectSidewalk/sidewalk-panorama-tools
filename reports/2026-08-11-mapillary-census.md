@@ -59,11 +59,18 @@ by a factor of 300.
 `.cache/rawlabels-mapillary/`, deliberately a **different directory** from the six GSV cities — every
 study script globs `*.csv` over a directory, so mixing them would silently redefine "the six cities".
 
-**Source identification.** rawLabels carries **no `source` column** (`/adminapi/panos` and cvMetadata
-do; this endpoint does not), so imagery is identified by `pano_id` shape: Mapillary ids are all-numeric,
-GSV ids are 22-char base64, Google user photospheres are longer `CAoS…` ids. All 267 Richmond labels
-are Mapillary. For contrast, the six-city GSV corpus is 438,291 GSV ids plus **119 Google user
-photospheres** and zero Mapillary.
+**Source identification.** rawLabels **does** serve a `pano_source` column — `mapillary` for all 267
+Richmond rows, `gsv` across the six GSV cities — and that is what the census reports. An earlier
+revision of this section asserted the column did not exist and reconstructed the source from
+`pano_id` shape, which meant inferring by heuristic a fact the endpoint states, with the premise
+test ("the corpus is entirely Mapillary") checking the heuristic against itself.
+
+The id shape is still reported alongside it, for two reasons. It **subdivides** what the column
+cannot: GSV ids are 22-char base64 while Google user photospheres are longer `CAoS…` ids, and those
+are different capture rigs — the six-city GSV corpus is 438,291 GSV ids plus **119 photospheres**
+and zero Mapillary. And comparing the two gives the heuristic something to be *wrong* against:
+`n_disagreeing_with_id_shape` is **0** on both corpora, and would not be if a deployment ever served
+an all-numeric GSV id or a 22-char Mapillary one — which the heuristic alone could never notice.
 
 **Two loader bugs this surfaced**, both invisible on GSV and both fixed:
 
@@ -149,8 +156,17 @@ The gap between 2 and 6 is a tooling finding: the clustering estimator requires 
 radius, while a one-to-one assignment only requires them on the same pano and label type.
 `click_noise_study.py` now has that matched mode behind `--pano-list`. It is **opt-in on purpose** —
 run on the six-city corpus, where co-location is incidental, it returns σ_el **0.967°** against the
-clustered estimate's 0.507°, because a corner's four curb ramps get paired across users almost
-arbitrarily. A plausible σ from force-paired objects must not land in an artifact by default.
+clustered estimate's 0.507° *on the same all-label frame*, because a corner's four curb ramps get
+paired across users almost arbitrarily. A plausible σ from force-paired objects must not land in an
+artifact by default.
+
+Naming the frame is not pedantry here: matched mode is referent-filtered (§6's rule) and the clustered
+figures are not, so the two σ values `study()` emits sit 100,636 labels apart. Running the clustered
+estimator on the same referent-filtered frame — `comparable_only`, committed in
+`reports/data/2026-08-09-click-noise-summary.json` — gives σ_az **0.570°** / σ_el **0.507°** against
+0.573° / 0.507° over all labels, so the population accounts for essentially none of the gap and the
+estimator accounts for all of it. That is the measurement; before it, the comparison was quoted with
+one number from each frame.
 
 Six pairs give σ_az 1.89°, σ_el 0.309°. Not a finding — 6 pairs — but the σ_el is suggestively close
 to the GSV core estimate of 0.299°.

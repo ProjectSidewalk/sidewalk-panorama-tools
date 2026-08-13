@@ -69,21 +69,45 @@ EARTH_R_M = 6371000.0
 
 
 def imagery_source(df):
-    """Which imagery each label sits on, from `pano_id` shape alone.
+    """Which imagery each label sits on.
 
-    GSV ids are 22-char URL-safe base64; Google *user photospheres* are longer `CAoS...` ids; Mapillary
-    image ids are all-numeric. No `source` column exists on rawLabels -- /adminapi/panos and
-    cvMetadata carry one, this endpoint does not -- so the id shape is what a desk study has.
+    `pano_source` is served by rawLabels and is authoritative -- 'mapillary' for all 267 Richmond
+    rows, 'gsv' across the GSV cities. An earlier revision asserted no such column existed and
+    reconstructed it from `pano_id` shape, which meant the census inferred by heuristic a fact the
+    endpoint states, and the premise test ("the corpus is entirely Mapillary") was checking the
+    heuristic against itself.
+
+    The id shape is still reported, for two reasons. It subdivides what the column cannot: GSV ids
+    are 22-char URL-safe base64 while Google *user photospheres* are longer `CAoS...` ids, and those
+    are different capture rigs. And comparing the two gives the heuristic something to be wrong
+    against -- `n_disagreeing_with_id_shape` is 0 on both corpora today, and would not be if a
+    deployment ever served an all-numeric GSV id or a 22-char Mapillary one.
+
+    `by_source` is None for a cached export predating the column, rather than silently falling back
+    to the heuristic under the same key.
     """
     ids = df['pano_id'].astype(str)
-    def one(s):
+
+    def shape(s):
         if s.isdigit():
             return 'mapillary'
         if len(s) == 22:
             return 'gsv'
         return 'gsv_photosphere' if s.startswith('CAoS') else 'unknown'
-    counts = ids.map(one).value_counts()
-    return {'n_labels': int(len(df)), 'by_source': {k: int(v) for k, v in counts.items()}}
+
+    by_shape = ids.map(shape)
+    out = {'n_labels': int(len(df)),
+           'by_id_shape': {k: int(v) for k, v in by_shape.value_counts().items()}}
+    if 'pano_source' not in df:
+        out['by_source'] = None
+        out['n_disagreeing_with_id_shape'] = None
+        return out
+    served = df['pano_source'].astype(str)
+    out['by_source'] = {k: int(v) for k, v in served.value_counts().items()}
+    # A photosphere is GSV imagery, so it agrees with a served 'gsv'.
+    normalised = by_shape.replace({'gsv_photosphere': 'gsv'})
+    out['n_disagreeing_with_id_shape'] = int((normalised != served).sum())
+    return out
 
 
 def _histogram(keys):
@@ -102,13 +126,15 @@ def _histogram(keys):
     return dict(sorted(out.items()))
 
 
-def replay(df):
+def replay(df, replayed=None):
     """The census's central measurement: does the verbatim GSV projection reproduce stored pano_x/y?
 
     An exact replay is only possible if the front end ran this same projection with this same fov
     ladder, so a 100% rate settles both the eligibility rule and the fov question at once.
+
+    `replayed` is the frame `census()` already projected; see the note there.
     """
-    out = era_replay_study.replay_frame(df)
+    out = era_replay_study.replay_frame(df) if replayed is None else replayed
     n = int(len(out))
     misses_y = out.loc[out['replayable_y'] & ~out['exact_y'], 'dy'].abs()
     misses_x = out.loc[out['replayable_x'] & ~out['exact_x'], 'dx'].abs()
@@ -265,7 +291,7 @@ def crossed_block(df):
 
     Both estimators are reported because the gap between them is the finding: the clustering estimator
     needs the two clicks within a radius, the matched estimator only needs them to be on the same pano
-    and the same type. On the Richmond block that is 2 pairs versus 7 — and both are far short of the
+    and the same type. On the Richmond block that is 2 pairs versus 6 — and both are far short of the
     ~150 a sigma needs, because sharing a *route* is not sharing panos.
     """
     # Both filters, and the geometry one first: has_located_referent decides whether a displacement
@@ -287,17 +313,30 @@ def crossed_block(df):
         'n_dropped_unlocated_referent': int(len(df) - len(comparable)),
         'clustered': {'radius_deg': click_noise_study.PRIMARY_RADIUS_DEG,
                       **click_noise_study.sigma_from_pairs(clustered)},
-        'matched': {**diag, **click_noise_study.sigma_from_pairs(matched)},
+        # Labelled at the sigma, not three levels up. matched_study refuses a DEFAULTED pano list
+        # because deriving one from shared_panos silently yields a sigma over force-paired distinct
+        # objects; this call derives one on purpose -- the census's finding is that Richmond has no
+        # designed crossed block -- so the number is real but must never be read as a
+        # designed-block measurement. A consumer holding only this dict can now tell.
+        'matched': {**diag, **click_noise_study.sigma_from_pairs(matched),
+                    'panos_agreed': False,
+                    'sigma_caveat': 'incidental co-location: the pano list was derived from '
+                                    'shared_panos, not agreed between labellers, so pairs may '
+                                    'cross distinct objects and this sigma is an upper bound'},
     }
 
 
 def referent_exclusion(df):
-    """How much the referent-quality rule removes, and via which arm."""
+    """How much the referent-quality rule removes, and via which arm.
+
+    Both arms come from `rawlabels`, which is also what filters the corpus. This function used to
+    re-implement the tag arm -- the same list comprehension over REGION_TAGS, transcribed -- so it
+    reported the size of its own copy of the rule rather than of the rule applied. Nothing would have
+    caught the divergence: `pool_referent_exclusion` asserts only that the arms sum to the total.
+    """
     keep = rawlabels.has_located_referent(df)
-    tags = rawlabels.parse_tags(df['tags'])
     by_type = df['label_type']
-    region = pd.Series([any((t, g) in rawlabels.REGION_TAGS for g in s)
-                        for t, s in zip(by_type, tags)], index=df.index)
+    region = rawlabels.region_tag_mask(df)
     return {
         'n_labels': int(len(df)),
         'n_comparable': int(keep.sum()),
@@ -315,10 +354,13 @@ def referent_exclusion(df):
     }
 
 
-def geometry(df):
+def geometry(df, replayed=None):
     """Depression bands and off-axis spread, so the Mapillary corpus can be placed against §2.1's
-    strata and against the off-axis covariate's own distribution."""
-    prep = offaxis_covariate.prepare(df)
+    strata and against the off-axis covariate's own distribution.
+
+    `replayed` is the frame `census()` already projected; see the note there.
+    """
+    prep = offaxis_covariate.prepare(df, replayed=replayed)
     g = prep[prep['eligible']]
     return {
         'n_eligible': int(len(g)),
@@ -376,15 +418,23 @@ def pool_referent_exclusion(per_city):
 
 
 def census(df):
+    """Every measurement, over one frame.
+
+    The projection runs once. `replay` reports the residuals and `geometry` reads the covariates
+    `offaxis_covariate.prepare` derives from the same replay, and both used to call `replay_frame`
+    themselves -- which is the duplication `replay_frame`'s docstring says the `frame_pov` refactor
+    removed, reintroduced one module away by two callers each asking for its own copy.
+    """
+    replayed = era_replay_study.replay_frame(df)
     return {
         'imagery_source': imagery_source(df),
-        'replay': replay(df),
+        'replay': replay(df, replayed=replayed),
         'tilt': tilt(df),
         'within_pano_stratum': within_pano_stratum(df),
         'multi_perspective': multi_perspective(df),
         'crossed_block': crossed_block(df),
         'referent_exclusion': referent_exclusion(df),
-        'geometry': geometry(df),
+        'geometry': geometry(df, replayed=replayed),
         'labels_by_type': {str(t): int(k) for t, k in df['label_type'].value_counts().items()},
         'date_range': [str(df['time_created'].min().date()), str(df['time_created'].max().date())],
     }
@@ -416,7 +466,13 @@ def main(argv=None):
         frames.append(df)
         result['cities'][city] = census(df)
 
-    pooled = census(pd.concat(frames, ignore_index=True))
+    # One city means the pooled frame IS that city's frame, so recomputing would be the same census
+    # a second time -- another projection, another O(n^2) co-location scan, another leader scan.
+    # Richmond is the only launched Mapillary deployment, so that is the ordinary case here rather
+    # than a corner, and the emitted `pooled` is byte-identical either way (a test asserts it on the
+    # fixture rather than trusting the argument).
+    pooled = (result['cities'][next(iter(result['cities']))] if len(frames) == 1
+              else census(pd.concat(frames, ignore_index=True)))
     result['pooled'] = pooled
     if args.gsv_dir:
         result['gsv_contrast'] = gsv_contrast(args.gsv_dir)

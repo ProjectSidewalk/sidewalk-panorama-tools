@@ -33,7 +33,9 @@ for p in (REPO_ROOT, SCRIPTS):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import era_replay_study as ers  # noqa: E402
 import mapillary_census as mc  # noqa: E402
+import offaxis_covariate  # noqa: E402
 import pov_replay  # noqa: E402
 import rawlabels  # noqa: E402
 
@@ -77,6 +79,7 @@ def _frame(**cols):
     base = {
         'label_id': np.arange(n), 'user_id': ['u1'] * n,
         'pano_id': [f'{100000000000000 + i}' for i in range(n)],
+        'pano_source': ['mapillary'] * n,
         'label_type': ['CurbRamp'] * n, 'tags': ['[]'] * n,
         'time_created': pd.date_range('2026-08-11', periods=n, freq='min', tz='UTC'),
         'canvas_x': np.full(n, 360.0), 'canvas_y': np.full(n, 240.0),
@@ -102,7 +105,8 @@ def _frame(**cols):
 
 
 class TestImagerySource:
-    """No `source` column exists on rawLabels, so id shape is the only discriminator a desk study has."""
+    """rawLabels serves `pano_source`; the id shape subdivides it (see
+    TestImagerySourceReadsTheServedColumn for why both are reported)."""
 
     def test_it_separates_the_three_id_shapes(self):
         df = pd.DataFrame({'pano_id': [
@@ -110,12 +114,13 @@ class TestImagerySource:
             'hXlPoi3-dwfgmXBWL-yJlw',               # GSV: 22-char base64
             'CAoSLEFGMVFpcE1UVjdTcVhqeEI3VnV4ZFFxcHQwLTdPa3llLW9CT01uV0NVX0lJ',  # photosphere
         ]})
-        assert mc.imagery_source(df)['by_source'] == {
+        assert mc.imagery_source(df)['by_id_shape'] == {
             'mapillary': 1, 'gsv': 1, 'gsv_photosphere': 1}
 
     def test_the_fixture_is_entirely_mapillary(self, fixture_frame):
         got = mc.imagery_source(fixture_frame)
         assert got['by_source'] == {'mapillary': len(fixture_frame)}
+        assert got['n_disagreeing_with_id_shape'] == 0
 
     def test_the_committed_corpus_is_entirely_mapillary(self, pooled):
         """The premise of the whole census. If a GSV pano appeared here the tilt contrast would be
@@ -356,7 +361,7 @@ class TestCrossedBlock:
 
     def test_matched_recovers_more_pairs_than_clustered(self, pooled):
         """The tooling finding: clustering needs both clicks inside a radius, matching only needs them
-        on the same pano and type. 2 pairs versus 7 on the same data."""
+        on the same pano and type. 2 pairs versus 6 on the same data."""
         c = pooled['crossed_block']
         assert c['clustered']['n_pairs'] == 2
         assert c['matched']['n_pairs'] == 6
@@ -394,6 +399,34 @@ class TestReferentExclusion:
         assert got['n_excluded'] == 3
         assert got['excluded_no_referent_type'] == 1
         assert got['excluded_region_tag'] == 2
+
+    def test_the_reported_tag_arm_is_the_one_the_corpus_was_filtered_by(self, monkeypatch):
+        """The census used to re-implement the tag arm — the same comprehension over REGION_TAGS,
+        transcribed — so `excluded_region_tag` measured its own copy of the rule while
+        `has_located_referent` did the filtering. Patching the shared definition has to move both
+        numbers; against two copies it would move only `n_excluded`.
+        """
+        monkeypatch.setattr(rawlabels, 'region_tag_mask',
+                            lambda df: pd.Series(True, index=df.index))
+        got = mc.referent_exclusion(self._mixed())
+        assert got['excluded_region_tag'] == 4, 'the patched rule excludes everything by tag'
+        assert got['n_excluded'] == 4 and got['n_comparable'] == 0
+
+    def test_widening_the_rule_moves_the_filter_and_the_report_together(self, monkeypatch):
+        """The drift the finding names, run end to end: add the `SurfaceProblem + bumpy` pair the
+        REGION_TAGS comment says is deliberately out, and the published arm count and the corpus
+        filter must agree afterwards — which is exactly what `pool_referent_exclusion`'s asserts
+        cannot detect, since two different rules still sum to their own total.
+        """
+        widened = frozenset(rawlabels.REGION_TAGS | {('SurfaceProblem', 'bumpy')})
+        monkeypatch.setattr(rawlabels, 'REGION_TAGS', widened)
+        df = _frame(label_type=['SurfaceProblem', 'SurfaceProblem', 'CurbRamp'],
+                    tags=['[bumpy]', '[brick/cobblestone]', '[]'])
+        got = mc.referent_exclusion(df)
+        assert got['excluded_region_tag'] == 2
+        assert got['n_excluded'] == 2 and got['n_comparable'] == 1
+        assert got['rule']['region_tags'] == ['SurfaceProblem+brick/cobblestone',
+                                              'SurfaceProblem+bumpy']
 
     def test_the_crossed_block_applies_the_rule_before_pairing(self):
         """Code-level for the same reason. Two labellers on one region-tagged SurfaceProblem must yield
@@ -612,6 +645,77 @@ class TestMain:
         json.loads(text)
 
 
+class TestTheProjectionRunsOnce:
+    """`replay` and `geometry` each called `era_replay_study.replay_frame` over the same rows, and
+    `main()` then ran the whole census again to build `pooled` — four full gnomonic projections for
+    one city, plus a second O(n²) co-location scan and a second leader scan.
+
+    `replay_frame`'s own docstring says the `frame_pov` refactor removed exactly this
+    ("`offaxis_covariate.prepare` used to run the full gnomonic projection a second time over the same
+    438k rows"); it came back one module away, with two callers each asking for a private copy. So
+    these tests count calls rather than check outputs — the outputs were always right, which is why
+    nothing caught it.
+    """
+
+    @staticmethod
+    def _count(monkeypatch, module, name):
+        calls = []
+        real = getattr(module, name)
+
+        def counted(*args, **kwargs):
+            calls.append(len(args[0]))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, counted)
+        return calls
+
+    def test_one_census_projects_the_frame_once(self, fixture_frame, monkeypatch):
+        calls = self._count(monkeypatch, ers, 'replay_frame')
+        mc.census(fixture_frame)
+        assert calls == [len(fixture_frame)], 'replay and geometry must share one projection'
+
+    def test_geometry_still_gets_the_covariates_from_that_projection(self, fixture_frame):
+        """Sharing must not quietly change what `geometry` reports: same numbers, one projection."""
+        replayed = ers.replay_frame(fixture_frame)
+        assert mc.geometry(fixture_frame, replayed=replayed) == mc.geometry(fixture_frame)
+        assert mc.replay(fixture_frame, replayed=replayed) == mc.replay(fixture_frame)
+
+    def test_prepare_does_not_write_into_the_frame_it_was_handed(self, fixture_frame):
+        """`census` hands the same replayed frame to two consumers, so the one that adds columns has
+        to work on a copy — otherwise the second consumer reads a frame the first one grew."""
+        replayed = ers.replay_frame(fixture_frame)
+        before = list(replayed.columns)
+        offaxis_covariate.prepare(fixture_frame, replayed=replayed)
+        assert list(replayed.columns) == before
+        assert 'eligible' not in replayed
+
+    def test_a_single_city_run_censuses_once(self, tmp_path, monkeypatch):
+        import shutil
+        shutil.copy(FIXTURE, tmp_path / 'richmond.csv')
+        calls = self._count(monkeypatch, mc, 'census')
+        assert mc.main([str(tmp_path), '--fetched', '2026-08-11']) == 0
+        assert calls == [10], 'the pooled frame IS the city frame when there is only one'
+
+    def test_pooling_one_frame_is_the_same_census(self, fixture_frame):
+        """What licenses that shortcut, asserted rather than argued: concatenating a single frame
+        changes only its index, and no measurement in the census reads the index."""
+        pooled = mc.census(pd.concat([fixture_frame], ignore_index=True))
+        assert pooled == mc.census(fixture_frame)
+
+    def test_two_cities_are_still_pooled(self, tmp_path):
+        """Guards the guard: the shortcut must not survive into the case it is wrong for."""
+        rows = pd.read_csv(FIXTURE, dtype=str)
+        rows.head(6).to_csv(tmp_path / 'a.csv', index=False)
+        rows.tail(4).to_csv(tmp_path / 'b.csv', index=False)
+        artifact = tmp_path / 'out.json'
+        assert mc.main([str(tmp_path), '--fetched', '2026-08-11', '--write', str(artifact)]) == 0
+        doc = json.loads(artifact.read_text(encoding='utf-8'))
+        assert doc['cities']['a']['replay']['n_labels'] == 6
+        assert doc['cities']['b']['replay']['n_labels'] == 4
+        assert doc['pooled']['replay']['n_labels'] == 10
+        assert doc['pooled'] != doc['cities']['a'] and doc['pooled'] != doc['cities']['b']
+
+
 class TestReportMatchesTheArtifact:
     """The report/data mismatch class this repo has now hit twice. Every headline number the write-up
     quotes is checked against the committed JSON."""
@@ -729,3 +833,84 @@ class TestAnEmptyCorpusIsReportedNotCrashed:
         empty = fixture_frame[fixture_frame['label_type'] == '__nothing__']
         assert set(mc.multi_perspective(empty, label_type='CurbRamp')) == \
             set(mc.multi_perspective(fixture_frame, label_type='CurbRamp'))
+
+
+class TestImagerySourceReadsTheServedColumn:
+    """rawLabels DOES serve `pano_source` — 'mapillary' for all 267 Richmond rows and 'gsv' across
+    the GSV cities — so reconstructing it from id shape inferred what the endpoint states, and the
+    premise test was checking the heuristic against itself."""
+
+    def test_the_served_column_is_what_is_reported(self):
+        df = _frame(pano_id=['511129198087695', 'hXlPoi3-dwfgmXBWL-yJlw'],
+                    pano_source=['mapillary', 'gsv'])
+        assert mc.imagery_source(df)['by_source'] == {'mapillary': 1, 'gsv': 1}
+
+    def test_the_served_column_wins_over_the_id_shape(self):
+        """The discriminating case: an all-numeric id that the deployment says is GSV. The
+        heuristic alone calls it Mapillary and nothing could notice."""
+        df = _frame(pano_id=['123456789012345'], pano_source=['gsv'])
+        out = mc.imagery_source(df)
+        assert out['by_source'] == {'gsv': 1}
+        assert out['n_disagreeing_with_id_shape'] == 1
+
+    def test_agreement_is_reported_so_the_heuristic_stays_checkable(self):
+        df = _frame(pano_id=['511129198087695', 'hXlPoi3-dwfgmXBWL-yJlw'],
+                    pano_source=['mapillary', 'gsv'])
+        assert mc.imagery_source(df)['n_disagreeing_with_id_shape'] == 0
+
+    def test_the_id_shape_still_subdivides_what_the_column_cannot(self):
+        """pano_source has two values; the id shape separates a user photosphere from ordinary
+        GSV, which matters because those are different capture rigs."""
+        df = _frame(
+            pano_id=['hXlPoi3-dwfgmXBWL-yJlw',
+                     'CAoSLEFGMVFpcE1UVjdTcVhqeEI3VnV4ZFFxcHQwLTdPa3llLW9CT01uV0NVX0lJ'],
+            pano_source=['gsv', 'gsv'])
+        assert mc.imagery_source(df)['by_id_shape'] == {'gsv': 1, 'gsv_photosphere': 1}
+
+    def test_a_corpus_without_the_column_still_reports_the_shape(self):
+        """Older cached exports predate the column; they must degrade, not crash."""
+        df = _frame(pano_id=['511129198087695']).drop(columns=['pano_source'])
+        out = mc.imagery_source(df)
+        assert out['by_source'] is None
+        assert out['by_id_shape'] == {'mapillary': 1}
+
+
+class TestTheIncidentalSigmaIsLabelledAsIncidental:
+    """matched_study refuses a defaulted pano list because deriving it from shared_panos silently
+    produces a sigma from force-paired distinct objects. crossed_block derives exactly that list —
+    legitimately, since its finding is that Richmond has no designed block — but it then wrote the
+    sigma into the artifact with nothing marking it as incidental, so a consumer reading
+    `matched.sigma_az_deg` cannot tell it from a designed-block measurement.
+    """
+
+    def test_the_matched_block_declares_its_pano_list_was_derived(self, fixture_frame):
+        out = mc.crossed_block(fixture_frame)
+        assert out['matched']['panos_agreed'] is False
+
+    def test_it_says_so_in_words_a_consumer_will_see(self, fixture_frame):
+        out = mc.crossed_block(fixture_frame)
+        assert 'incidental' in out['matched']['sigma_caveat'].lower()
+
+    def test_the_caveat_travels_with_the_number(self, fixture_frame):
+        """Not a sibling key three levels up: it has to sit in the same dict as the sigma."""
+        m = mc.crossed_block(fixture_frame)['matched']
+        assert {'panos_agreed', 'sigma_caveat'} <= set(m)
+
+
+class TestDocstringCountsMatchTheArtifact:
+    """The transcription class this repo's own CLAUDE.md rule targets — "state which filter a
+    count is under, or don't quote it". TestReportMatchesTheArtifact covers the markdown; nothing
+    covered docstrings, and crossed_block's said "2 pairs versus 7" where 7 is the shared-PANO
+    count from the line above and the artifact says 6 matched pairs."""
+
+    def test_the_crossed_block_docstring_quotes_the_artifact(self, pooled):
+        c = pooled['crossed_block']
+        quoted = re.search(r'that is (\d+) pairs versus (\d+)', mc.crossed_block.__doc__)
+        assert quoted, 'the docstring must quote the comparison it describes'
+        assert int(quoted.group(1)) == c['clustered']['n_pairs']
+        assert int(quoted.group(2)) == c['matched']['n_pairs']
+
+    def test_the_shared_pano_count_is_not_what_it_quotes(self, pooled):
+        """The specific confusion: 7 panos yield 6 pairs, and 7 was quoted as the pair count."""
+        c = pooled['crossed_block']
+        assert c['n_panos_shared_by_two_users'] != c['matched']['n_pairs']

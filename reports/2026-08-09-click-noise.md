@@ -80,6 +80,23 @@ radius sweep already shows. `tests/test_click_noise_study.py` asserts the pixel-
 directly, and pins the validated-only *pair counts* as well, since two equal σ values on their own
 cannot distinguish this from the sensitivity analysis having been run on the wrong frame.
 
+### The floor the placement study will actually use is the referent-filtered one
+
+#54 measures displacement against gold, so it can only run on labels that have a located referent to
+be displaced *from*. `rawlabels.has_located_referent` drops Crosswalk, NoSidewalk, Occlusion and
+brick-tagged SurfaceProblems — **100,636 of 436,348 labels, 23.1%**. Restricting the estimator to the
+remaining **335,712** (`comparable_only` in the committed JSON) gives **σ_az 0.570°, σ_el 0.507°** over
+12,904 pairs, against 0.573° / 0.507° over all labels. A 23% cut in labels moves the floor by 0.003° in
+azimuth and not at all in elevation: the excluded arms are large in labels and small in *pairs* — 455
+of 13,359, of which Crosswalk contributes 277 and NoSidewalk 173 — even though they are the two
+loosest rows in the table above.
+
+It matters for reading the artifact rather than for the number. Matched mode (`--pano-list`) is
+computed on the referent-filtered frame and every clustered figure on the unfiltered one, so the JSON
+now carries a `populations` block naming which figure sits on which frame, and the CLI prints each σ
+with its label count. Comparing a σ from one against a σ from the other is a comparison across
+corpora, and the two used to be printed in one column with nothing recording the difference.
+
 ## What this means downstream
 
 * **The 0.5° placement threshold** (consumer-requirements survey) **equals ≈ 1σ of between-user

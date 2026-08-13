@@ -176,6 +176,33 @@ def resummarize(json_path):
     return result
 
 
+def print_summary(summary):
+    """The one rendering of a census summary. Both entry points call it.
+
+    There were two copies of these three lines, and they drifted exactly where it costs most.
+    `--resummarize` formats the tilt quantiles through `fmt`; the live path interpolated them raw --
+    so the *same records* printed `n/a` on one path and `None` on the other when no alive pano
+    carried tilt, and `1.23` versus `1.2345678901` when they did. The unfixed copy was the one that
+    had just spent a live network census, under a comment saying so.
+
+    Every value below is optional by construction: `dims_drift_pct_of_alive` and
+    `depth_available_pct_of_alive` are None when nothing was comparable or nothing was alive, and
+    every tilt quantile is None when no alive pano carried pitch/roll. `by_era`'s `alive_pct` is the
+    one that cannot be None -- a group only exists if it has rows -- so it stays a rounded number
+    rather than becoming a quoted string in a dict of numbers.
+    """
+    t = summary['tilt']
+    print(f"alive {fmt(summary['alive_pct'], '.1f')}%  "
+          f"dims-drift {fmt(summary['dims_drift_pct_of_alive'], '.1f')}%  "
+          f"depth {fmt(summary['depth_available_pct_of_alive'], '.1f')}%  "
+          f"errors {summary['errors']}")
+    print(f"tilt |pitch| p50/p90/p99: {fmt(t['abs_pitch_p50_deg'], '.2f')}/"
+          f"{fmt(t['abs_pitch_p90_deg'], '.2f')}/{fmt(t['abs_pitch_p99_deg'], '.2f')}"
+          f"  |roll|: {fmt(t['abs_roll_p50_deg'], '.2f')}/"
+          f"{fmt(t['abs_roll_p90_deg'], '.2f')}/{fmt(t['abs_roll_p99_deg'], '.2f')}")
+    print('alive by era:', {k: round(v['alive_pct'], 1) for k, v in summary['by_era'].items()})
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('csv_dir', nargs='?')
@@ -188,21 +215,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.resummarize:
-        result = resummarize(args.resummarize)
-        s = result['summary']
-        t = s['tilt']
-        # dims_drift/depth are None when nothing was comparable or nothing was alive, and every
-        # tilt quantile is None when no alive pano carried pitch/roll (summarize's `q` and the two
-        # `if len(...) else None` guards). This path re-reads an existing census, so a census taken
-        # on a thin or all-dead sample reaches it with no network call to blame.
-        print(f"alive {fmt(s['alive_pct'], '.1f')}%  "
-              f"dims-drift {fmt(s['dims_drift_pct_of_alive'], '.1f')}%  "
-              f"depth {fmt(s['depth_available_pct_of_alive'], '.1f')}%")
-        print(f"tilt |pitch| p50/p90/p99: {fmt(t['abs_pitch_p50_deg'], '.2f')}/"
-              f"{fmt(t['abs_pitch_p90_deg'], '.2f')}/{fmt(t['abs_pitch_p99_deg'], '.2f')}"
-              f"  |roll|: {fmt(t['abs_roll_p50_deg'], '.2f')}/"
-              f"{fmt(t['abs_roll_p90_deg'], '.2f')}/{fmt(t['abs_roll_p99_deg'], '.2f')}")
-        print('alive by era:', {k: round(v['alive_pct'], 1) for k, v in s['by_era'].items()})
+        print_summary(resummarize(args.resummarize)['summary'])
         return
 
     if not args.csv_dir or not args.fetched:
@@ -223,17 +236,7 @@ def main(argv=None):
               'summary': summarize(records),
               'records': json_records(records)}
 
-    s = result['summary']
-    # Same three optional values, and this is the path that has just spent a live network census on
-    # them -- the one place a TypeError costs the most.
-    print(f"alive {fmt(s['alive_pct'], '.1f')}%  "
-          f"dims-drift {fmt(s['dims_drift_pct_of_alive'], '.1f')}%  "
-          f"depth {fmt(s['depth_available_pct_of_alive'], '.1f')}%  errors {s['errors']}")
-    t = s['tilt']
-    print(f"tilt |pitch| p50/p90/p99: {t['abs_pitch_p50_deg']}/{t['abs_pitch_p90_deg']}/"
-          f"{t['abs_pitch_p99_deg']}  |roll|: {t['abs_roll_p50_deg']}/{t['abs_roll_p90_deg']}/"
-          f"{t['abs_roll_p99_deg']}")
-    print('alive by era:', {k: round(v['alive_pct'], 1) for k, v in s['by_era'].items()})
+    print_summary(result['summary'])
 
     if args.write:
         write_json(result, args.write)
