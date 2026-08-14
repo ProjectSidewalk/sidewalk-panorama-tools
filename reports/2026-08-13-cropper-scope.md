@@ -171,12 +171,43 @@ shipping sooner, not for expanding this study to anticipate it.
 It belongs in `sidewalk-auto-labeler` or a RampNet 3.0, because that is where models, weights
 and GPUs live. This repo downloads panoramas and cuts crops.
 
-**What survives the transition:** crops for *human* consumption. The validator UI and share
-images need a context window whether or not a segmenter exists, and the context-floor rule in
-§5 is exactly that. So this work is a bridge with a permanent piece in it.
+**What survives the transition — less than this section first claimed.** It originally said that
+crops for *human* consumption survive: that the validator UI and share images need a context
+window whether or not a segmenter exists, so the work has a permanent piece in it. **That is
+wrong. It was checked on 2026-08-14 rather than assumed, and the check refutes it.**
+
+The crops the human UI shows are not this tool's. When a user places a label the browser captures
+the Explore canvas and uploads it — `Label.js#uploadCrop` → `POST /saveImage` →
+`ImageController.writeImageFile`, which resizes to 1440×960 and writes
+`<city-id>/<LabelType>/crop_<labelId>.png`, the same path `PanoDataService.getCropDirectory`
+serves from. `ShareController` composites its social preview out of that stored crop, falling
+back to a Street View still or a branded placeholder — never to a cut from this tool. The
+human-facing crop already exists, produced at label time by a mechanism with no size formula
+anywhere in it.
+
+The four consumers in the [requirements survey](2026-08-09-cropper-consumer-requirements.md) —
+RampNet 2.0, `sidewalk-validator-ai`, `sidewalk-tagger-ai`, `sidewalk-ai-api` — are **all ML
+pipelines**. That is the entire current consumer set for `CropRunner`, and it is exactly the set
+a detection-first pipeline replaces.
+
+What the canvas capture *cannot* do is what still justifies this tool: it exists only for labels
+placed after that feature shipped, and its geometry is whatever the annotator's viewport happened
+to show — variable POV and zoom, 3:2, uncontrolled. Training over the full historical corpus
+needs controlled, reproducible windows, and only this tool produces those.
+
+So the honest version: **nothing survives on the human side, and the ML side's lifetime is
+bounded by the pipeline in this section.** That shortens the bridge. It does not change its
+direction — ship a context floor, spend less here, and spend it sooner.
 
 ## 8. Wrong turns
 
+* **Claiming a permanent human-facing consumer without checking who writes the file.** §7 asserted
+  that the validator UI and share images need this cropper's context window, and made that the
+  reason the work has a permanent piece. Neither is served by this tool — the browser writes
+  `crop_<labelId>.png` from the Explore canvas at label time. The requirements survey never said
+  otherwise: "the validator" in it is `sidewalk-validator-ai`, a model, and it was read as the
+  human validate page. Every consumer in that survey is ML. The check that settles it is one
+  search for who writes `crop_<labelId>.png`, and it took two minutes once asked.
 * **Treating the drawn corpus as fixed because it was "already registered".** Filtering
   rather than redrawing was recommended on that basis. It is not a reason — the corpus after
   five type-exclusions was a leftover, not a design, and the question was always which dataset
@@ -199,3 +230,4 @@ images need a context window whether or not a segmenter exists, and the context-
 | `8725.6 · d^-1.192`, clamp [50, 1500] | `CropRunner.predict_crop_size` |
 | Corpus composition, measurable counts, per-type survivors | [data/2026-08-12-crop-corpus-gsv.csv.gz](data/2026-08-12-crop-corpus-gsv.csv.gz) under `rawlabels.has_located_referent` + `in_study_frame` |
 | Tohme box counts, pano coverage, `sidewalk_dc` overlap | measured 2026-08-13 on makelab1/makelab2; paths in §6 |
+| Production crops are browser canvas captures, not this tool's output | SidewalkWebpage `public/js/explore/src/label/Label.js` (`#uploadCrop`), `app/controllers/ImageController.scala` (`saveImage`, `writeImageFile`, 1440×960), `app/controllers/ShareController.scala` (crop → GSV still → placeholder), `conf/routes`; read 2026-08-14 |
