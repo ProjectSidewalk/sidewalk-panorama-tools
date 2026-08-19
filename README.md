@@ -5,7 +5,6 @@
 # sidewalk-panorama-tools
 
 [![Tests](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/actions/workflows/tests.yml/badge.svg)](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
 Python tooling that turns [Project Sidewalk](https://github.com/ProjectSidewalk/SidewalkWebpage)'s
@@ -129,7 +128,6 @@ data-driven).
 * [label-latlng-estimation](https://github.com/ProjectSidewalk/label-latlng-estimation) — estimating a label's
   real-world latitude and longitude from its position on the panorama.
 
-## License
+---
 
-MIT — see [LICENSE](LICENSE). Built by the [Makeability Lab](https://makeabilitylab.cs.washington.edu/) at the
-University of Washington.
+Built by the [Makeability Lab](https://makeabilitylab.cs.washington.edu/) at the University of Washington.
