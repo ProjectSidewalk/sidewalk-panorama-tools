@@ -14,3 +14,6 @@ log_analyzer/logs/
 
 # raw cvMetadata dumps (~100 MB per city); regenerate with reports/scripts/pano_y_histogram.py
 reports/scripts/.cache/
+
+# Claude Code local agent state (worktrees, caches). Never belongs in the repo.
+.claude/worktrees/
