@@ -30,6 +30,7 @@ for p in (REPO_ROOT, SCRIPTS):
 
 import annotation_tiles as at  # noqa: E402
 import pandas as pd  # noqa: E402
+import rawlabels  # noqa: E402
 
 PIL = pytest.importorskip('PIL', reason='Pillow is needed to cut tiles')
 from PIL import Image  # noqa: E402
@@ -133,36 +134,41 @@ class TestTileExtent:
             assert w % 2 == 0 and h % 2 == 0, (W, H, w, h)
 
 
+STD = (16384, 8192)     # the pano height 641 of the 763 drawn labels sit on
+
+
 class TestJitter:
     """§4: 'a uniform random jitter of ±40–80 px per axis (seeded, logged)'. Read as magnitude uniform
-    in [40, 80] with a random sign, NOT uniform in [-80, +80] — the latter puts the stored point at or
-    near the tile centre for a meaningful share of labels, which is exactly the anchoring the jitter
-    exists to prevent."""
+    in the band with a random sign, NOT uniform in [-max, +max] — the latter puts the stored point at
+    or near the tile centre for a meaningful share of labels, which is exactly the anchoring the
+    jitter exists to prevent. Read as a FRACTION of the tile rather than as pixels, for the reason in
+    TestJitterIsAnAngle below."""
 
     def test_the_magnitude_is_always_in_the_specified_band(self):
+        w, h = at.tile_extent_px(*STD)
         for i in range(400):
-            jx, jy = at.jitter_for(f'city:{i}', seed=1)
-            assert at.JITTER_MIN_PX <= abs(jx) <= at.JITTER_MAX_PX, jx
-            assert at.JITTER_MIN_PX <= abs(jy) <= at.JITTER_MAX_PX, jy
+            jx, jy = at.jitter_for(f'city:{i}', 1, *STD)
+            assert at.JITTER_MIN_FRAC <= abs(jx) / w <= at.JITTER_MAX_FRAC, jx
+            assert at.JITTER_MIN_FRAC <= abs(jy) / h <= at.JITTER_MAX_FRAC, jy
 
     def test_the_stored_point_is_never_at_the_tile_centre(self):
         """The property that matters, stated over the offset rather than over the distribution."""
         for i in range(200):
-            jx, jy = at.jitter_for(f'city:{i}', seed=7)
+            jx, jy = at.jitter_for(f'city:{i}', 7, *STD)
             assert jx != 0 and jy != 0
 
     def test_both_signs_occur(self):
         """Discrimination: a magnitude-only implementation would displace every tile the same way, and
         an annotator could learn the offset."""
-        signs = {(np.sign(at.jitter_for(f'city:{i}', seed=3)[0]),
-                  np.sign(at.jitter_for(f'city:{i}', seed=3)[1])) for i in range(200)}
+        signs = {(np.sign(at.jitter_for(f'city:{i}', 3, *STD)[0]),
+                  np.sign(at.jitter_for(f'city:{i}', 3, *STD)[1])) for i in range(200)}
         assert signs == {(-1, -1), (-1, 1), (1, -1), (1, 1)}
 
     def test_it_is_deterministic_per_label(self):
-        assert at.jitter_for('seattle-wa:5', seed=11) == at.jitter_for('seattle-wa:5', seed=11)
+        assert at.jitter_for('seattle-wa:5', 11, *STD) == at.jitter_for('seattle-wa:5', 11, *STD)
 
     def test_it_is_seed_sensitive(self):
-        different = [at.jitter_for(f'c:{i}', seed=1) != at.jitter_for(f'c:{i}', seed=2)
+        different = [at.jitter_for(f'c:{i}', 1, *STD) != at.jitter_for(f'c:{i}', 2, *STD)
                      for i in range(50)]
         assert sum(different) > 40
 
@@ -171,9 +177,53 @@ class TestJitter:
         reproduces every surviving label's tile exactly. A shared sequential RNG would reshuffle
         everything downstream of an insertion — and tiles already annotated would no longer match the
         geometry the annotation was recorded against."""
-        alone = at.jitter_for('seattle-wa:99', seed=5)
-        assert alone == at.jitter_for('seattle-wa:99', seed=5)
-        assert alone != at.jitter_for('seattle-wa:98', seed=5)
+        alone = at.jitter_for('seattle-wa:99', 5, *STD)
+        assert alone == at.jitter_for('seattle-wa:99', 5, *STD)
+        assert alone != at.jitter_for('seattle-wa:98', 5, *STD)
+
+
+class TestJitterIsAnAngle:
+    """The jitter has to be resolution-independent for the same reason the tile does.
+
+    The module's whole design argument is that a fixed PIXEL window shows an annotator different
+    amounts of world on different panos, so the tile is a fixed angular window. §4 wrote the jitter as
+    40–80 px, which left the one quantity whose job is to decentre the stored point varying with
+    resolution — and varying the wrong way. Measured on the drawn corpus, 40–80 px was 1.5–2.9% of the
+    tile on the 8192-height panos 641 of 763 labels sit on, against 7.2–14.4% on the 1664s: a ~5x
+    swing, weakest on 84% of the corpus, where 2% off centre reads as dead centre.
+    """
+
+    HEIGHTS = (1664, 2880, 6656, 8192, 16384)
+
+    # The offset is an angle stored as whole pixels, so two panos agree only to their own rounding.
+    # One pixel of the coarsest pano in the set is the honest tolerance: tighter than that asserts
+    # something the integer return type cannot deliver, looser stops discriminating.
+    COARSEST_PIXEL_DEG = 360.0 / (2 * min(HEIGHTS))
+
+    def test_the_same_label_is_displaced_by_the_same_angle_at_every_resolution(self):
+        for i in range(40):
+            degs = [abs(at.jitter_for(f'city:{i}', 20260812, h * 2, h)[0]) / (h * 2) * 360.0
+                    for h in self.HEIGHTS]
+            assert max(degs) - min(degs) <= self.COARSEST_PIXEL_DEG, (i, degs)
+
+    def test_a_pixel_jitter_would_not_have_this_property(self):
+        """Discrimination, twice over: the assertion above passes trivially for a constant, so pin
+        that the pixel offsets it is computed from really do differ across resolutions — and that the
+        fixed-pixel reading it replaced would blow the tolerance by two orders of magnitude."""
+        pixels = {at.jitter_for('seattle-wa:1', 20260812, h * 2, h)[0] for h in self.HEIGHTS}
+        assert len(pixels) == len(self.HEIGHTS)
+        fixed = [60.0 / (h * 2) * 360.0 for h in self.HEIGHTS]      # a constant 60 px, as §4 wrote it
+        assert max(fixed) - min(fixed) > 20 * self.COARSEST_PIXEL_DEG   # measured: 54x the tolerance
+
+    def test_it_lands_in_the_band_section_4_meant(self):
+        """§4's 40–80 px, on the pano the corpus is mostly made of, at the 20 deg tile §4 was written
+        for. The cut later tripled to 60 deg and the pixel constant did not move, which is what
+        diluted it; restating it as a fraction restores the design point and makes the drift
+        impossible."""
+        assert (at.JITTER_MIN_FRAC, at.JITTER_MAX_FRAC) == (40.0 / 910.0, 80.0 / 910.0)
+        assert at.tile_extent_px(16384, 8192, fov_deg=20.0)[1] == 910
+        assert 2.6 < at.JITTER_MIN_FRAC * at.CUT_FOV_DEG < 2.7
+        assert 5.2 < at.JITTER_MAX_FRAC * at.CUT_FOV_DEG < 5.3
 
 
 class TestTileWindow:
@@ -443,3 +493,75 @@ class TestBuildTasks:
         types = [t['label_type'] for t in tasks['tasks']]
         runs = sum(1 for a, b in zip(types, types[1:]) if a != b)
         assert runs >= 5, f'order looks blocked by type: {types}'
+
+
+
+def _capture_rendered_uids(monkeypatch):
+    """Replace `render` with a recorder, so main()'s filtering can be checked without any pixels.
+
+    Returns a list that fills with the uids main() actually handed to the renderer. Every outcome is
+    `unreachable`, which is the real code path for a pano the local cache does not hold, so main()
+    finishes normally and writes its task file.
+    """
+    seen = []
+
+    def fake_render(tasks, geometry, pano_root, out_dir):
+        seen.extend(t['label_uid'] for t in tasks['tasks'])
+        return {t['label_uid']: 'unreachable' for t in tasks['tasks']}
+
+    monkeypatch.setattr(at, 'render', fake_render)
+    return seen
+
+
+class TestMeasurableOnlyUsesTheLiveRule:
+    """`--measurable-only` recomputes the referent rule and the study frame; it must never read the
+    corpus CSV's `measurable` column.
+
+    That column is a snapshot of the rule as it stood when the corpus was drawn, and the rule has moved
+    twice since — on the committed GSV corpus it says 584 where the live rule says 368. This script had
+    the stale reading, which is the failure `annotation_subset.py` was written to prevent, one script
+    upstream of it: a tile set rendered from the wrong population looks perfectly well-formed, and 216
+    labels of annotation would be spent on labels with no point to be displaced from.
+    """
+
+    def _corpus_csv(self, tmp_path, rows):
+        path = tmp_path / 'corpus.csv'
+        corpus(rows).to_csv(path, index=False)
+        return str(path)
+
+    def test_a_stale_column_does_not_decide_the_queue(self, tmp_path, monkeypatch):
+        rows = [
+            # The column says measurable, the live rule says no (Signal has no located referent).
+            corpus_row('c:1', pano_id='p1', label_type='Signal', tags='[]', measurable=True),
+            # The column says not measurable, the live rule says yes.
+            corpus_row('c:2', pano_id='p2', label_type='CurbRamp', tags='[]', measurable=False),
+            # Excluded by the frame arm rather than the referent arm.
+            corpus_row('c:3', pano_id='p3', label_type='CurbRamp', tags='[]', measurable=True,
+                       city='taipei'),
+        ]
+        seen = _capture_rendered_uids(monkeypatch)
+        at.main([self._corpus_csv(tmp_path, rows), '--pano-root', str(tmp_path),
+                 '--out-dir', str(tmp_path / 'out'), '--seed', '1', '--measurable-only'])
+        assert seen == ['c:2']
+
+    def test_without_the_flag_the_whole_corpus_is_rendered(self, tmp_path, monkeypatch):
+        """Discrimination: the filter must be the flag's doing, not something applied unconditionally.
+        The corpus arm and the measurable arm are deliberately different populations — Study 2 sizes
+        crops for types Study 1 cannot measure."""
+        rows = [corpus_row('c:1', pano_id='p1', label_type='Signal', tags='[]'),
+                corpus_row('c:2', pano_id='p2', label_type='CurbRamp', tags='[]')]
+        seen = _capture_rendered_uids(monkeypatch)
+        at.main([self._corpus_csv(tmp_path, rows), '--pano-root', str(tmp_path),
+                 '--out-dir', str(tmp_path / 'out'), '--seed', '1'])
+        assert sorted(seen) == ['c:1', 'c:2']
+
+    def test_it_is_the_shared_rule_and_not_a_transcription(self, tmp_path, monkeypatch):
+        """Patch the rule and the filter must move with it — otherwise this grew its own copy of the
+        type list and could drift from `annotation_subset`'s answer."""
+        rows = [corpus_row('c:1', pano_id='p1', label_type='CurbRamp', tags='[]'),
+                corpus_row('c:2', pano_id='p2', label_type='Obstacle', tags='[]')]
+        monkeypatch.setattr(rawlabels, 'NO_REFERENT_TYPES', frozenset({'CurbRamp'}))
+        seen = _capture_rendered_uids(monkeypatch)
+        at.main([self._corpus_csv(tmp_path, rows), '--pano-root', str(tmp_path),
+                 '--out-dir', str(tmp_path / 'out'), '--seed', '1', '--measurable-only'])
+        assert seen == ['c:2']

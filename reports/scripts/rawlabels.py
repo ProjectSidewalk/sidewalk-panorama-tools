@@ -222,6 +222,26 @@ def has_located_referent(df):
     return ~df['label_type'].isin(NO_REFERENT_TYPES) & ~region_tag_mask(df)
 
 
+def study_measurable(df):
+    """Boolean mask: what Study 1 can read — the live referent rule AND the study frame.
+
+    The one definition of "measurable", and it lives here rather than in a script because three
+    callers need it: `annotation_tiles.py --measurable-only`, `annotation_subset.py --measurable-only`
+    and the analysis. Each of them previously had, or could have had, its own answer.
+
+    **Never read a stored `measurable` column instead of calling this.** A corpus CSV's `measurable`
+    is a snapshot of the rules as they stood when the corpus was drawn, and both arms have moved
+    since: on the committed 2026-08-12 GSV corpus the stored column says 584 and this rule says 368.
+    A queue drawn from the stale column is 216 labels of perfectly well-formed work on labels that
+    have no point to be displaced from, and nothing about it looks wrong.
+
+    The two arms stay separate inside because they are different kinds of exclusion and get revisited
+    for different reasons: the referent rule says a label has no point to be displaced from, the frame
+    rule says the label is fine and the annotator is not equipped to judge it.
+    """
+    return has_located_referent(df) & in_study_frame(df)
+
+
 def region_tag_mask(df):
     """Boolean mask: does this label carry a `(label_type, tag)` pair from `REGION_TAGS`?
 

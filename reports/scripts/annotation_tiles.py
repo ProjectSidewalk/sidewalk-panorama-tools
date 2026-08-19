@@ -50,6 +50,7 @@ for _p in (_HERE, _REPO_ROOT):
 import CropRunner  # noqa: E402
 import rawlabels  # noqa: E402
 import store_coverage  # noqa: E402
+from downloaders.common import atomic_output_path  # noqa: E402
 from studyfmt import fmt  # noqa: E402
 
 # Two angular extents, because one number cannot serve both jobs.
@@ -87,12 +88,32 @@ VIEW_FOV_DEG = 60.0
 # which of the two a `width` refers to: it is always the cut.
 TILE_FOV_DEG = CUT_FOV_DEG
 
-# §4's jitter, read as MAGNITUDE uniform in [40, 80] with a random sign per axis -- not uniform in
-# [-80, +80]. The difference is the whole point of the jitter: a symmetric-about-zero draw puts the
+# §4's jitter, read as MAGNITUDE uniform in [min, max] with a random sign per axis -- not uniform in
+# [-max, +max]. The difference is the whole point of the jitter: a symmetric-about-zero draw puts the
 # stored point at or near the tile centre for a real share of labels, and "the object is in the middle"
 # is precisely the anchor §4 is written to remove.
-JITTER_MIN_PX = 40
-JITTER_MAX_PX = 80
+#
+# Expressed as a FRACTION OF THE TILE, which on a fixed angular tile is the same thing as a fixed
+# angle -- 4.4% of a 60 deg tile is 2.64 deg on every panorama. §4 wrote it as 40-80 *pixels*, and
+# that was the one resolution-dependent quantity left on an instrument whose entire design argument
+# is that a fixed pixel window shows an annotator different amounts of world on different panos.
+# Measured on the drawn corpus, the pixel form varies ~5x and is weakest exactly where the corpus is:
+#
+#     pano height   labels   tile      40-80 px as a fraction of the tile
+#     8192            641    2730 px   1.5% - 2.9%      <- 84% of the corpus
+#     6656            116    2218 px   1.8% - 3.6%
+#     1664              6     554 px   7.2% - 14.4%
+#
+# At 1.5-2.9% off centre the stored point is, to the eye, in the middle -- so on most of the corpus
+# the anti-anchor was not doing the job it exists for.
+#
+# The fractions below are what §4's numbers MEANT at the tile width §4 was written for. The tile was
+# 20 deg then, which is 910 px on the 8192-height pano the corpus is mostly made of, so 40-80 px was
+# 4.4%-8.8% of the tile. CUT_FOV_DEG later tripled to 60 and the pixel constant did not move, which
+# is what diluted it. Restating it as the fraction keeps §4's design point and makes this class of
+# drift impossible: change the cut and the jitter tracks it.
+JITTER_MIN_FRAC = 40.0 / 910.0
+JITTER_MAX_FRAC = 80.0 / 910.0
 
 # §4's flags. An annotator picks one of these instead of guessing, which is what keeps edge cases out of
 # the placement distribution rather than in it as noise. The page renders them from this tuple and binds
@@ -202,8 +223,13 @@ def tile_extent_px(pano_width, pano_height, fov_deg=TILE_FOV_DEG):
     return w, h
 
 
-def jitter_for(label_uid, seed):
+def jitter_for(label_uid, seed, pano_width, pano_height, fov_deg=TILE_FOV_DEG):
     """This label's viewport offset in pixels, (jx, jy). Deterministic, logged in the geometry file.
+
+    The magnitude is drawn as a fraction of the tile and converted to this pano's pixels here, so the
+    offset is the same ANGLE on every panorama — see JITTER_MIN_FRAC. The tile extent is recomputed
+    from `tile_extent_px` rather than passed in, so a caller cannot hand this function one tile size
+    and `tile_window` another; per axis, because the tile is only square when the pano is 2:1.
 
     Derived from the label's OWN uid rather than from a position in a shared RNG stream, so that a
     corpus which gains or loses a label reproduces every surviving label's tile exactly. With a shared
@@ -211,15 +237,21 @@ def jitter_for(label_uid, seed):
     match the geometry their annotation was recorded against, which silently invalidates the work
     rather than failing.
 
+    The fraction is drawn as a float and only rounded on the way out, so the two axes of a 2:1 pano
+    get the same integer offset while a non-2:1 one gets the same angle on each. Rounding the fraction
+    first would quantise the draw to whatever the tile happened to be.
+
     `hashlib`, not `hash()`: Python salts string hashing per process, so `hash()` would give a
     different jitter on every run and the "seeded, logged" half of §4 would be a fiction.
     """
+    width, height = tile_extent_px(pano_width, pano_height, fov_deg)
     digest = hashlib.blake2b(str(label_uid).encode('utf-8'), digest_size=8,
                              key=str(seed).encode('utf-8')).digest()
     rng = np.random.default_rng(int.from_bytes(digest, 'big'))
-    magnitude = rng.integers(JITTER_MIN_PX, JITTER_MAX_PX + 1, size=2)
+    fraction = rng.uniform(JITTER_MIN_FRAC, JITTER_MAX_FRAC, size=2)
     sign = rng.choice(np.array([-1, 1]), size=2)
-    return int(magnitude[0] * sign[0]), int(magnitude[1] * sign[1])
+    return (int(round(fraction[0] * sign[0] * width)),
+            int(round(fraction[1] * sign[1] * height)))
 
 
 def tile_window(pano_x, pano_y, pano_width, pano_height, jx, jy, fov_deg=TILE_FOV_DEG):
@@ -231,8 +263,12 @@ def tile_window(pano_x, pano_y, pano_width, pano_height, jx, jy, fov_deg=TILE_FO
     shift keeps the tile full-size with an exact mapping; clipping would narrow the tile and move its
     origin, and padding would show an annotator a black band they would read as the edge of the world.
 
-    A pole shift cannot arise for a real corpus label — depression p99 is 43.5 deg against a 20 deg
-    tile — so the branch exists to make an out-of-range read impossible, not because it is expected.
+    A pole shift does not arise for any label in the drawn corpus, but the margin is thinner than it
+    was: on an 8192-high pano the 60 deg tile reaches 30 deg either side of the label, so a shift needs
+    a depression past about 62 deg once the jitter is spent, and the corpus tops out at 56.6 deg
+    (p99 49.5). It was ~36 deg of margin when the tile was 20 deg wide. So the branch is still
+    unexercised by real data — it exists to make an out-of-range read impossible — but it is now close
+    enough to reachable that widening the cut again is a decision that has to look here.
     """
     width, height = tile_extent_px(pano_width, pano_height, fov_deg)
     W, H = int(pano_width), int(pano_height)
@@ -333,7 +369,7 @@ def build_tasks(corpus, seed):
 
     tasks, geometry = [], {}
     for row in corpus.itertuples():
-        jx, jy = jitter_for(row.label_uid, seed)
+        jx, jy = jitter_for(row.label_uid, seed, row.pano_width, row.pano_height)
         win = tile_window(row.pano_x, row.pano_y, row.pano_width, row.pano_height, jx, jy)
         tasks.append({
             'label_uid': row.label_uid,
@@ -373,7 +409,8 @@ def build_tasks(corpus, seed):
              'cut_fov_deg': CUT_FOV_DEG,
              'tasks': tasks},
             {'seed': seed, 'cut_fov_deg': CUT_FOV_DEG, 'view_fov_deg': VIEW_FOV_DEG,
-             'jitter_px': [JITTER_MIN_PX, JITTER_MAX_PX],
+             'jitter_tile_fraction': [JITTER_MIN_FRAC, JITTER_MAX_FRAC],
+             'jitter_deg': [JITTER_MIN_FRAC * CUT_FOV_DEG, JITTER_MAX_FRAC * CUT_FOV_DEG],
              'geometry': geometry})
 
 
@@ -382,13 +419,17 @@ def pano_path(pano_root, city, pano_id):
     return store_coverage.store_path(pano_root, city, pano_id)
 
 
-def render(corpus, tasks, geometry, pano_root, out_dir):
+def render(tasks, geometry, pano_root, out_dir):
     """Cut every task's tile, decoding each pano exactly once.
 
     Grouped by pano for the reason CropRunner groups: a 16384x8192 equirect is ~400 MB decoded, and the
     corpus deliberately puts up to 3 labels on one pano. Returns per-label outcomes; a pano missing from
     the local cache is reported as unreachable rather than raised, because the store is known not to
     hold every drawn pano and one gap must not discard the rest of the run.
+
+    Tiles are written through `atomic_output_path`, the same contract as every other write in this
+    repo: the file this produces is handed to an annotator, and a JPEG truncated by a crash is one
+    they would annotate rather than one they would notice.
     """
     from PIL import Image
 
@@ -420,9 +461,14 @@ def render(corpus, tasks, geometry, pano_root, out_dir):
                         continue
                     win = window_from_geometry(g)
                     tile = cut_tile(image, win, g['pano_width'])
-                    tile.convert('RGB').save(os.path.join(out_dir, tile_name(uid)), quality=95)
+                    # format= is explicit because the temp path ends in .part, not .jpg.
+                    with atomic_output_path(os.path.join(out_dir, tile_name(uid))) as tmp:
+                        tile.convert('RGB').save(tmp, format='JPEG', quality=95)
                     outcomes[uid] = 'rendered'
         except OSError:
+            # `unreadable` names the pano, which is the usual cause; a write that fails part-way
+            # through a pano's labels leaves the tiles already written marked `rendered` and the rest
+            # unattempted, which is why this fills in rather than overwriting.
             for uid in uids:
                 outcomes[uid] = outcomes.get(uid, 'unreadable')
     return outcomes
@@ -436,8 +482,10 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, required=True,
                     help='jitter seed, recorded in geometry.json (never in tasks.json)')
     ap.add_argument('--measurable-only', action='store_true',
-                    help='restrict to Study 1 subjects (drops Crosswalk/NoSidewalk/region-tagged '
-                         'SurfaceProblem, which have no point for a displacement to be measured from)')
+                    help='restrict to Study 1 subjects: the LIVE referent rule and study frame '
+                         '(rawlabels.study_measurable), recomputed rather than read from the '
+                         "corpus CSV's `measurable` column, which is a snapshot of the rule as it "
+                         'stood at draw time')
     args = ap.parse_args(argv)
 
     # A 16384x8192 corpus pano is 134 MP, over Pillow's 89 MP DecompressionBombWarning default, so
@@ -450,11 +498,18 @@ def main(argv=None):
     with opener(args.corpus, 'rt', encoding='utf-8') as f:
         corpus = pd.read_csv(f, dtype={'pano_id': str})
     if args.measurable_only:
-        corpus = corpus[corpus['measurable']]
+        # `rawlabels.study_measurable`, never `corpus['measurable']`. The stored column is the rule as
+        # it stood at draw time and it has moved twice since: on the committed GSV corpus it says 584
+        # where the live rule says 368. A queue drawn from it is 216 labels of well-formed work on
+        # labels that have no point to be displaced from, and nothing about it looks wrong.
+        corpus = corpus[rawlabels.study_measurable(corpus).to_numpy()]
     print(f'{len(corpus)} labels over {corpus["pano_id"].nunique()} panos', flush=True)
 
+    # main() owns the output directory, not render(): the two JSON files below are written whatever
+    # the render outcomes are, including a run where every pano is missing from the local cache.
+    os.makedirs(args.out_dir, exist_ok=True)
     tasks, geometry = build_tasks(corpus, args.seed)
-    outcomes = render(corpus, tasks, geometry, args.pano_root, args.out_dir)
+    outcomes = render(tasks, geometry, args.pano_root, args.out_dir)
 
     counts = collections.Counter(outcomes.values())
     rendered = {uid for uid, o in outcomes.items() if o == 'rendered'}

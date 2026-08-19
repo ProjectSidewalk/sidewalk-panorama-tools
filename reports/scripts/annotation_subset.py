@@ -61,16 +61,13 @@ STRATA = ('label_type', 'band')
 def measurable_mask(corpus):
     """What Study 1 can read: the live referent rule AND the study frame.
 
-    Applied to `label_type`, `tags` and `city` directly rather than trusting `corpus['measurable']`, for
-    the reason in the module docstring — that column is a snapshot of the rules as they stood when the
-    corpus was drawn, and both have moved since.
-
-    The frame arm is second and separate because it is a different KIND of exclusion. The referent rule
-    says a label has no point to be displaced from; the frame rule says the label is fine and the
-    annotator is not equipped to judge it. Collapsing them into one mask would be convenient and would
-    lose that, and the two get revisited for entirely different reasons.
+    Delegates to `rawlabels.study_measurable`, which is the single definition. It used to be spelled
+    out here, which was fine while this was the only script applying it — but `annotation_tiles.py`
+    grew a `--measurable-only` of its own that reached for the stored `measurable` column instead,
+    and two answers to "which labels are measurable" is exactly the drift this rule cannot survive.
+    Kept as a name because the whole module is written around it.
     """
-    return rawlabels.has_located_referent(corpus) & rawlabels.in_study_frame(corpus)
+    return rawlabels.study_measurable(corpus)
 
 
 def allocate(counts, n):
@@ -180,17 +177,30 @@ def write_subset(tasks, src_dir, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     for task in tasks['tasks']:
         shutil.copyfile(os.path.join(src_dir, task['tile']), os.path.join(out_dir, task['tile']))
-    # Both refreshed from code, for the same reason: they are properties of the INSTRUMENT, not of the
-    # pixels, and a rendered tasks.json is a snapshot of the protocol as it stood when the tiles were
-    # cut. `cut_fov_deg` is deliberately NOT in this list — that one describes the pixels, so it has to
-    # come from whatever actually produced them.
+    # Every protocol field refreshed from code, for the same reason: they are properties of the
+    # INSTRUMENT, not of the pixels, and a rendered tasks.json is a snapshot of the protocol as it
+    # stood when the tiles were cut. `flag_help` and `box_rule` are in the list because a flag list
+    # refreshed without its help text serves a key with no explanation, and BOX_RULE itself landed
+    # after the first tiles were cut. `cut_fov_deg` is deliberately NOT here — that one describes the
+    # pixels, so it has to come from whatever actually produced them.
+    #
+    # `annotate_server.tasks_payload` sends the same block from code on every request, so a directory
+    # served straight out of annotation_tiles.py is right too. This keeps the artifact on disk right,
+    # which matters because a subset directory is a thing that gets handed to someone.
     tasks = dict(tasks,
                  flags=list(annotation_tiles.FLAGS),
+                 flag_help=dict(annotation_tiles.FLAG_HELP),
+                 box_rule=annotation_tiles.BOX_RULE,
                  initial_view_fraction=annotation_tiles.VIEW_FOV_DEG / annotation_tiles.CUT_FOV_DEG)
     path = os.path.join(out_dir, TASKS_FILE)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         json.dump(tasks, f, indent=1, allow_nan=False)
-    assert not (set(os.listdir(out_dir)) & FORBIDDEN), 'subset directory holds an answer key'
+    # `raise`, not `assert`: this is the write-side half of the blindness guarantee whose read-side
+    # half is annotate_server's refuse-by-name, and `python -O` strips an assert.
+    leaked = sorted(set(os.listdir(out_dir)) & FORBIDDEN)
+    if leaked:
+        raise RuntimeError(f'{out_dir} holds an answer key ({leaked}); a subset directory must never '
+                           f'carry geometry, or the blindness is a convention rather than a property')
     return path
 
 
@@ -231,7 +241,7 @@ def main(argv=None):
     start = len(tasks['tasks'])
     if args.measurable_only:
         keep = set(corpus.loc[measurable_mask(corpus), 'label_uid'])
-        tasks = subset_tasks(tasks, [u for u in keep])
+        tasks = subset_tasks(tasks, keep)
         print(f'referent rule: {start} -> {len(tasks["tasks"])} tasks')
 
     if args.n is not None:

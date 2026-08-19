@@ -199,8 +199,9 @@ def prepare(df):
     # The label's identity across deployments, and the reason it is not `label_id`. Measured over
     # three deployments: 90,369 of 316,735 rows share a label_id with a different city (seattle-wa 9
     # and oradell-nj 9 are different labels on different panos). Keying the draw on the bare integer
-    # made one city's label displace another's -- it silently cost 238 labels of a 687-label draw and
-    # left 50 strata cells short while the frame held thousands of candidates for each. pano_id, by
+    # made one city's label displace another's -- it silently drew 449 labels instead of 763, 314
+    # lost, and left 50 of the 98 occupied strata cells short (22 more never occupied at all) while
+    # the frame held thousands of candidates for every one of them. pano_id, by
     # contrast, does NOT collide across cities (0 cases over the same frames), which is why the
     # per-pano cap and the tune/eval split are safe on it.
     out['label_uid'] = out['city'].astype(str) + ':' + out['label_id'].astype('int64').astype(str)
@@ -242,6 +243,12 @@ def prepare(df):
     out['corpus_eligible'] = (
         out['exact_y'].to_numpy()
         & pd.notna(out['band']).to_numpy()
+        # The quality guard is NOT implied by anything above it, unlike the absent pano_y term. A
+        # label with no `time_created` replays fine and lands in a band; what it has no answer for is
+        # which side of the 7.20.7 deploy it fell on, which is one of the three axes the draw
+        # stratifies over. `era_quality` reports that as None rather than as the default level, and a
+        # row with an unknown stratum has to leave the frame rather than fill a cell in it.
+        & pd.notna(out['quality']).to_numpy()
         & (out['pano_id'].astype(str) != 'tutorial').to_numpy()
         & ~out['label_type'].isin(CORPUS_EXCLUDED_TYPES).to_numpy())
     out['measurable'] = out['corpus_eligible'].to_numpy() & out['referent'].to_numpy()
@@ -416,8 +423,20 @@ def draw(prepared, seed, cell_target=CELL_TARGET):
         first, second = pairs[0]
         # drop=False: `take` reads row['label_uid'], so the column has to survive becoming the index.
         lookup = g.set_index('label_uid', drop=False)
-        if take(lookup.loc[first], 'contrast') and take(lookup.loc[second], 'contrast'):
-            contrast_panos += 1
+        # Both halves or neither. A pair is the unit here -- one label alone carries no within-pano
+        # contrast -- so taking the first and then finding the second refused would leave a row
+        # tagged `contrast` that provides none, and `shortfalls` would count a stratum it does not
+        # have. Unreachable as the strata are ordered today (this runs first, so per_pano is 0 for
+        # every fresh pano and the cap cannot bind), which is exactly why it is asserted rather than
+        # left to the ordering: reordering the strata is a one-line edit.
+        if not take(lookup.loc[first], 'contrast'):
+            continue
+        if not take(lookup.loc[second], 'contrast'):
+            raise AssertionError(
+                f'pano {pid}: took one half of a contrast pair and the per-pano cap refused the '
+                f'other. A lone contrast label is not a contrast pano; if a stratum now runs before '
+                f'this one, take() needs a two-phase form rather than this guard.')
+        contrast_panos += 1
 
     # 2. Resolution oversample (§3): every non-8192 served height, up to the target.
     for _, row in pool[pool['pano_height'] != STANDARD_HEIGHT].iterrows():

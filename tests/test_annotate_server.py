@@ -7,6 +7,7 @@ is deliberately thin and every decision it makes lives in a module-level functio
 this suite socket-free.
 """
 
+import http.client
 import json
 import os
 import re
@@ -77,9 +78,11 @@ class TestLoadTasks:
 
 class TestTasksPayload:
     """What the page is handed. This is the seam a socket-free suite would otherwise miss entirely: the
-    first version of the handler assembled this inline and dropped `initial_view_fraction`, so the view
-    opened at the full 60 deg cut instead of the 20 deg the protocol specifies. Nothing failed — the
-    framing was simply wrong, which is the failure mode a UI cannot report on itself."""
+    first version of the handler assembled this inline and dropped `initial_view_fraction`, so the page
+    framed every tile off a default instead of off the protocol. Nothing failed — the framing was
+    simply wrong, which is the failure mode a UI cannot report on itself. (The protocol has since moved
+    the opening view to the whole cut, which is why the tests below pin the plumbing rather than the
+    value: the same drop would be invisible today.)"""
 
     def _tasks(self, tmp_path, n=3):
         ts = [task(f'city:{i}') for i in range(n)]
@@ -111,15 +114,33 @@ class TestTasksPayload:
         out = srv.tasks_payload(self._tasks(tmp_path), 'jon', {'city:2', 'city:0'})
         assert out['done'] == ['city:0', 'city:2']
 
-    def test_the_flag_help_and_box_rule_come_from_code(self, tmp_path):
+    def test_the_flags_flag_help_and_box_rule_all_come_from_code(self, tmp_path):
         """Protocol wording, sent from the module rather than the task file, so a tile directory cut
         before a flag or a convention existed still explains it. A flag with no explanation, or a "tight
         box" instruction that never says tight around WHAT, is per-annotator drift the agreement gate
         reads as noise."""
         out = srv.tasks_payload(self._tasks(tmp_path), 'jon', set())
+        assert out['flags'] == list(at.FLAGS)
         assert set(out['flag_help']) == set(at.FLAGS), 'every flag needs its line'
         assert all(out['flag_help'][f].strip() for f in at.FLAGS)
         assert out['box_rule'] == at.BOX_RULE
+
+    def test_a_task_file_cut_before_a_flag_existed_still_offers_it(self, tmp_path):
+        """The whole reason `flags` moved out of the task file. A rendered tasks.json is a snapshot of
+        the protocol as it stood when the tiles were cut; Amendment 3 added `no-extent` after tiles
+        existed, and taking the list from the file served three flags to a page whose own server
+        accepts four — so the annotator had no key to press for a referent with no extent, and nothing
+        failed. `annotation_subset.write_subset` refreshes the copies it writes; this covers every
+        directory, including one served straight out of annotation_tiles.py."""
+        payload = self._tasks(tmp_path)
+        payload['flags'] = ['object-absent', 'ambiguous', 'occluded']       # a pre-Amendment-3 file
+        out = srv.tasks_payload(payload, 'jon', set())
+        assert out['flags'] == list(at.FLAGS)
+        assert 'no-extent' in out['flags']
+        # Discrimination: the flag the page offers must be one the server would actually accept.
+        for flag in out['flags']:
+            srv.validate_annotation({'flags': [flag], 'point': {'x': 1, 'y': 1},
+                                     'box': {'x': 0, 'y': 0, 'w': 2, 'h': 2}}, task())
 
     def test_the_box_rule_says_whole_object(self, tmp_path):
         """The specific ambiguity it exists to close: for a fire hydrant, box the hydrant or the part
@@ -276,17 +297,34 @@ class TestRecordAndResume:
             rec = srv.validate_annotation({'point': {'x': 1, 'y': 2},
                                            'box': {'x': 1, 'y': 1, 'w': 5, 'h': 5}}, task(uid))
             srv.record_annotation(str(tmp_path), 'jon', rec)
-        assert srv.completed(str(tmp_path), 'jon') == {'seattle-wa:1', 'cdmx:2'}
+        assert srv.completed(str(tmp_path), 'jon',
+                             ['seattle-wa:1', 'cdmx:2', 'cdmx:3']) == {'seattle-wa:1', 'cdmx:2'}
 
-    def test_a_city_with_a_hyphen_round_trips_through_the_filename(self, tmp_path):
-        """The uid contains a colon, which is not a legal Windows filename character, so it is stored
-        as an underscore — and city ids contain hyphens and underscores of their own. Only the FIRST
-        underscore is the separator, or `walla-walla-wa:7` would come back wrong."""
+    def test_a_uid_whose_city_holds_an_underscore_still_resumes(self, tmp_path):
+        """Why `completed` resolves forward instead of inverting the filename.
+
+        The uid's colon is not a legal Windows filename character, so it is stored as an underscore —
+        and the inverse is not a function: `sao_paulo:12` and `sao:paulo_12` write the same file, so
+        recovering the uid means guessing which underscore was the colon. Every deployment id in the
+        corpus is hyphenated today, which is what made the inverse look correct; the failure mode is a
+        silently broken resume that re-serves finished work as a revision, so it is asserted against
+        rather than left to a naming convention holding."""
+        for uid in ('sao_paulo:12', 'walla-walla-wa:7'):
+            rec = srv.validate_annotation({'point': {'x': 1, 'y': 2},
+                                           'box': {'x': 1, 'y': 1, 'w': 5, 'h': 5}}, task(uid))
+            srv.record_annotation(str(tmp_path), 'jon', rec)
+        assert srv.completed(str(tmp_path), 'jon',
+                             ['sao_paulo:12', 'walla-walla-wa:7']) == {'sao_paulo:12',
+                                                                       'walla-walla-wa:7'}
+
+    def test_a_stray_file_cannot_inflate_the_done_count(self, tmp_path):
+        """Discrimination for the above: a directory scan would count anything ending in .json."""
         rec = srv.validate_annotation({'point': {'x': 1, 'y': 2},
-                                       'box': {'x': 1, 'y': 1, 'w': 5, 'h': 5}},
-                                      task('walla-walla-wa:7'))
+                                       'box': {'x': 1, 'y': 1, 'w': 5, 'h': 5}}, task())
         srv.record_annotation(str(tmp_path), 'jon', rec)
-        assert srv.completed(str(tmp_path), 'jon') == {'walla-walla-wa:7'}
+        with open(os.path.join(srv.annotator_dir(str(tmp_path), 'jon'), 'notes.json'), 'w') as f:
+            f.write('{}')
+        assert srv.completed(str(tmp_path), 'jon', [rec['label_uid']]) == {rec['label_uid']}
 
     def test_two_annotators_never_collide(self, tmp_path):
         """§4 requires Jon's independent 50 through the same tooling; the agreement gate is computed on
@@ -296,13 +334,15 @@ class TestRecordAndResume:
         srv.record_annotation(str(tmp_path), 'jon', rec)
         other = dict(rec, point={'x': 9, 'y': 9})
         srv.record_annotation(str(tmp_path), 'claude', other)
-        assert srv.completed(str(tmp_path), 'jon') == srv.completed(str(tmp_path), 'claude')
+        uids = [rec['label_uid']]
+        assert (srv.completed(str(tmp_path), 'jon', uids)
+                == srv.completed(str(tmp_path), 'claude', uids))
         jon = json.load(open(srv.annotation_path(str(tmp_path), 'jon', rec['label_uid'])))
         claude = json.load(open(srv.annotation_path(str(tmp_path), 'claude', rec['label_uid'])))
         assert jon['point'] != claude['point']
 
     def test_no_annotations_yet_is_an_empty_set_not_an_error(self, tmp_path):
-        assert srv.completed(str(tmp_path), 'nobody') == set()
+        assert srv.completed(str(tmp_path), 'nobody', ['seattle-wa:1']) == set()
 
     def test_resubmitting_overwrites_rather_than_duplicating(self, tmp_path):
         rec = srv.validate_annotation({'point': {'x': 1, 'y': 2},
@@ -388,6 +428,29 @@ class TestOverARealSocket:
         with pytest.raises(urllib.error.HTTPError) as e:
             self._get(live, '/api/annotation/city%3A1')
         assert e.value.code == 404
+
+    @pytest.mark.parametrize('method', ['HEAD', 'PUT', 'DELETE'])
+    def test_an_unsupported_method_gets_a_response_instead_of_a_dropped_connection(self, live,
+                                                                                   method):
+        """`log_message` reads args[0] to decide whether a line is worth printing, and it has two
+        callers with different shapes: `log_request` passes the request line, `log_error` passes an
+        HTTPStatus. `send_error` — which the stdlib reaches on every unsupported method and every
+        malformed request line — goes through the second, so an unguarded `'POST' in args[0]` raised
+        TypeError *inside* the handler and the client got a dropped connection rather than the 501
+        the stdlib was midway through sending. A bare HEAD from any link-checker did it."""
+        host, port = live.rsplit(':', 1)
+        conn = http.client.HTTPConnection(host.removeprefix('http://'), int(port), timeout=5)
+        conn.request(method, '/')
+        assert conn.getresponse().status == 501
+        conn.close()
+
+    def test_a_query_string_does_not_hide_a_tile(self, live):
+        """Routing splits the query off first, so a cache-busting suffix cannot turn a valid tile into
+        a 404. Every path here is matched against an allowlist, which is what made this a real risk
+        rather than a cosmetic one."""
+        for path in ('/tiles/city_0.jpg', '/tiles/city_0.jpg?v=2'):
+            with urllib.request.urlopen(live + path) as r:
+                assert r.status == 200 and r.read()[:2] == b'\xff\xd8'
 
     def test_a_label_not_in_the_task_list_cannot_name_a_file(self, live):
         """`annotation_path` builds a filename from the uid, so an unchecked one is a path to anywhere."""

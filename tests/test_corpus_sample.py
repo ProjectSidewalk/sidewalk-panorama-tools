@@ -166,6 +166,33 @@ class TestEraQuality:
             assert got[1] == opens, (edge, got)
             assert got[0] != opens, (edge, got)
 
+    def test_a_missing_timestamp_is_not_a_quality_level(self):
+        """Blank must stay blank. Every comparison against NaT is False, so seeding the series with
+        'mid' and overwriting the other three files a label with no `time_created` into a real
+        stratum — where it fills a corpus cell it does not belong in and is counted in `by_quality`.
+        Same rule as rawlabels._FLOAT_COLUMNS: a lookup that never resolved must never read as an
+        answer."""
+        t = pd.Series(pd.to_datetime([None, '2025-01-01'], utc=True))
+        got = era_replay_study.era_quality(t)
+        assert got.iloc[0] is None
+        assert got.iloc[1] == 'post_fix', 'discrimination: a real timestamp still buckets'
+
+    def test_an_undated_label_is_not_corpus_eligible(self):
+        """The other half: `era_quality` reporting None only helps if the draw refuses the row. A
+        label with no timestamp replays fine and lands in a band, so nothing else in `corpus_eligible`
+        would catch it — it simply has no answer for one of the three axes the draw stratifies on."""
+        rows = [synth_row(1, 'p1', 'CurbRamp', 10.0, 0.0, 'post_fix'),
+                synth_row(2, 'p2', 'CurbRamp', 10.0, 0.0, 'post_fix')]
+        rows[0]['time_created'] = pd.NaT
+        prepared = cs.prepare(frame(rows))
+        assert list(prepared['corpus_eligible']) == [False, True]
+        # pd.isna rather than `is None`: the column round-trips through to_numpy() on the way into the
+        # frame, which normalises None to NaN. The guard in corpus_eligible is pd.notna for exactly
+        # that reason — "blank" has two spellings here and both have to mean blank.
+        assert pd.isna(prepared['quality'].iloc[0])
+        assert prepared['exact_y'].iloc[0], 'discrimination: nothing else in the mask rejects it'
+        assert pd.notna(prepared['band'].iloc[0]), '...including the band, which does have a guard'
+
     def test_the_window_is_a_strict_subset_of_post179(self):
         """`window` and `post_fix` must partition what `add_era` calls post179 — if they did not, the
         two era columns would disagree about the same label and every cross-tab would be wrong."""
@@ -408,10 +435,18 @@ class TestDraw:
 
         `label_id` restarts at 1 in every deployment: across just seattle-wa, columbus-oh and
         oradell-nj, 90,369 of 316,735 rows share a label_id with a different city. The draw keyed its
-        selection on the bare integer, so one city's label displaced another's — it cost 238 labels of
-        a 687-label draw and left 50 strata cells short while the frame held thousands of candidates
-        for every one of them. Nothing failed: the corpus was simply smaller and thinner than the
-        spec, which is exactly the kind of defect that is only visible once the annotation is spent.
+        selection on the bare integer, so one city's label displaced another's — it drew 449 labels
+        instead of 763, 314 lost, and left 50 of the 98 occupied strata cells short (22 more never
+        occupied at all) while the frame held thousands of candidates for every one of them. Nothing
+        failed: the corpus was simply smaller and thinner than the spec, which is exactly the kind of
+        defect that is only visible once the annotation is spent.
+
+        (Those are the figures in reports/2026-08-12-corpus-assembly.md §3, over the frame this module
+        actually draws — all 49 GSV deployments. This docstring and the comment in `corpus_sample.
+        prepare` both used to quote the smaller pre-widening draw instead, so the code and the report
+        described the same defect with different numbers and nothing covered the code side.
+        `TestTheDefectsAreRecorded.test_the_code_quotes_the_same_cost_as_the_report` pins them
+        together now, which is also why the superseded pair is described here rather than restated.)
 
         The fixture has to be built with care to discriminate at all: two cities sharing label ids
         *within one cell* cannot show the bug, because six distinct ids are drawn either way. What

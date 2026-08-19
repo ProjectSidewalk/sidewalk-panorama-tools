@@ -21,6 +21,8 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS = os.path.join(REPO_ROOT, 'reports')
 DATA = os.path.join(REPORTS, 'data')
+SCRIPTS = os.path.join(REPORTS, 'scripts')
+TESTS = os.path.dirname(os.path.abspath(__file__))
 
 REPORT = os.path.join(REPORTS, '2026-08-12-corpus-assembly.md')
 PREREG = os.path.join(REPORTS, '2026-08-09-crop-priors-prereg.md')
@@ -275,6 +277,22 @@ class TestTheDefectsAreRecorded:
             assert '90,369 of 316,735' in doc
         assert '449 labels instead of 763' in report
         assert 'label_uid' in report
+
+    def test_the_code_quotes_the_same_cost_as_the_report(self):
+        """A defect this expensive gets described in four places, and they drifted: the report,
+        CLAUDE.md and reports/README.md said 314 lost of 763, while `corpus_sample.prepare`'s comment
+        and this suite's own regression docstring said 238 of a 687-label draw — the figure from
+        before the frame widened to all 49 deployments. Nothing covered the code-side pair, which is
+        the one a reader of the module hits first.
+
+        Pinned on the numerals rather than on prose so a re-measurement has to move all of them."""
+        sources = {name: _text(path) for name, path in (
+            ('corpus_sample.py', os.path.join(SCRIPTS, 'corpus_sample.py')),
+            ('test_corpus_sample.py', os.path.join(TESTS, 'test_corpus_sample.py')),
+        )}
+        for name, text in sources.items():
+            assert '449' in text and '763' in text and '314' in text, name
+            assert '687' not in text, f'{name} still quotes the pre-widening draw size'
 
     def test_the_stratum_tally_overshoot_is_written_down(self, report):
         assert '96/60' in report

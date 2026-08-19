@@ -72,9 +72,10 @@ def tasks_payload(tasks, annotator, done):
 
     A function rather than a dict literal inside the handler, because the handler is the one part of
     this module the socket-free tests could not reach — and the first version of it silently dropped
-    `initial_view_fraction`, which made the page open at the full 60 deg cut instead of the 20 deg view
-    the protocol specifies. Nothing failed; the framing was just wrong. A smoke test caught it, and now
-    a unit test does.
+    `initial_view_fraction`, so the page framed every tile off a default instead of off the protocol.
+    Nothing failed; the framing was just wrong. A smoke test caught it, and now a unit test does.
+    (The protocol has since moved the opening view to the whole cut, which makes the drop invisible
+    today — that is exactly why the test pins the plumbing rather than the current value.)
 
     It used to return only the *pending* tasks, which made the queue a one-way conveyor: a label you had
     already submitted was gone from the page's list, so there was nothing to step back to and a
@@ -87,10 +88,16 @@ def tasks_payload(tasks, annotator, done):
     """
     return {
         'annotator': annotator,
-        'flags': tasks['flags'],
-        # From code, not from the file: the help text is protocol wording, and a task file cut before a
-        # flag existed carries no help for it. Sending a flag with no explanation is worse than the
-        # explanation being slightly newer than the tiles.
+        # The whole protocol block comes from CODE, not from the task file, and the three fields move
+        # together for one reason: a rendered tasks.json is a snapshot of the protocol as it stood when
+        # the tiles were cut, while the annotator is held to the protocol as it stands now. Taking the
+        # flag list from the file and its help text from code is the half-measure this used to be, and
+        # it fails in a specific way — Amendment 3 added `no-extent` after tiles existed, so a directory
+        # rendered before it serves three flags to a page whose server accepts four, and the annotator
+        # simply has no key to press for a referent with no extent. `annotation_subset.write_subset`
+        # refreshes the same three on the copies it writes, which fixes the artifact on disk; this
+        # fixes every directory, including one served straight out of `annotation_tiles.py`.
+        'flags': list(annotation_tiles.FLAGS),
         'flag_help': dict(annotation_tiles.FLAG_HELP),
         'box_rule': annotation_tiles.BOX_RULE,
         'initial_view_fraction': tasks.get('initial_view_fraction', 1.0),
@@ -110,13 +117,23 @@ def annotator_dir(out_dir, annotator):
     return os.path.join(out_dir, annotator)
 
 
-def completed(out_dir, annotator):
-    """label_uids this annotator has already submitted — what makes the queue resumable."""
-    path = annotator_dir(out_dir, annotator)
-    if not os.path.isdir(path):
+def completed(out_dir, annotator, label_uids):
+    """label_uids this annotator has already submitted — what makes the queue resumable.
+
+    Resolved FORWARD, by asking `annotation_path` where each known uid would live, rather than by
+    listing the directory and inverting the filenames. The inverse cannot be written correctly: a
+    filename is `uid.replace(':', '_')`, so recovering the uid means guessing which underscore was
+    the colon, and `sao_paulo:12` and `sao:paulo_12` produce the same file. Every deployment id in
+    the corpus is hyphenated today, so the inverse happened to work — but its failure mode is a
+    silently broken resume that re-serves finished work and books each resubmission as a revision,
+    which is exactly the class of silence the rest of this tool is built to avoid.
+
+    Forward resolution also means a stray file in the annotator's directory cannot inflate `n_done`.
+    """
+    if not os.path.isdir(annotator_dir(out_dir, annotator)):
         return set()
-    return {os.path.splitext(f)[0].replace('_', ':', 1)
-            for f in os.listdir(path) if f.endswith('.json')}
+    return {uid for uid in label_uids
+            if os.path.isfile(annotation_path(out_dir, annotator, uid))}
 
 
 def annotation_path(out_dir, annotator, label_uid):
@@ -173,11 +190,13 @@ def validate_annotation(payload, task):
         'elapsed_ms': int(payload.get('elapsed_ms') or 0),
         'zoom_used': float(payload.get('zoom_used') or 1.0),
         # The angular width the tile was actually FRAMED at when this annotation was made. The protocol
-        # opens every tile at 20 deg, but the annotator can change it, and the framing is not cosmetic:
-        # §4 picked 20 deg partly so the window would not imply a crop size, since Study 2 is choosing
-        # between sizing rules and an annotator shown a tight window draws boxes calibrated to it. If
-        # the setting is used, its effect on box size has to be measurable rather than assumed absent —
-        # so it is recorded per annotation instead of being a preference the artifact never sees.
+        # opens every tile at the whole cut (annotation_tiles.VIEW_FOV_DEG == CUT_FOV_DEG since
+        # 2026-08-13), but the annotator can change it, and the framing is not cosmetic: Study 2 is
+        # choosing between sizing rules, and an annotator shown a tight window draws boxes calibrated
+        # to that window. If the setting is used, its effect on box size has to be measurable rather
+        # than assumed absent — so it is recorded per annotation instead of being a preference the
+        # artifact never sees. It is also what makes annotations taken under the earlier 20 deg opening
+        # view separable from the ones taken after it.
         'initial_view_deg': float(payload.get('initial_view_deg') or 0.0) or None,
     }
 
@@ -247,37 +266,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def log_message(self, fmt, *args):        # one line per submit is enough; the rest is noise
-        if 'POST' in (args[0] if args else ''):
+    def log_message(self, fmt, *args):
+        """One line per submit is enough; the rest is noise.
+
+        The isinstance guard is not defensive padding. `log_message` has two callers with different
+        argument shapes: `log_request` passes the request line as args[0], and `log_error` passes an
+        HTTPStatus — which `send_error` reaches on every unsupported method (a bare HEAD does it) and
+        on every malformed request line. Without the guard, `'POST' in <HTTPStatus>` raises TypeError
+        inside the handler, so the client's connection is dropped with no response at all rather than
+        receiving the 501 the stdlib was in the middle of sending.
+        """
+        if args and isinstance(args[0], str) and 'POST' in args[0]:
             super().log_message(fmt, *args)
 
     def do_GET(self):
         cfg = self.server.cfg
-        if self.path in ('/', '/index.html'):
+        if self.path.partition('?')[0] in ('/', '/index.html'):
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), PAGE), 'rb') as f:
                 return self._send(200, f.read(), 'text/html; charset=utf-8')
-        if self.path == '/api/tasks':
-            done = completed(cfg['out_dir'], cfg['annotator'])
-            return self._send(200, tasks_payload(cfg['tasks'], cfg['annotator'], done))
-        if self.path.startswith('/api/annotation/'):
-            uid = urllib.parse.unquote(self.path[len('/api/annotation/'):])
+        # Split off any query string before routing: every path below is matched against an
+        # allowlist, so a cache-busting `?v=2` would otherwise turn a valid tile into a 404.
+        path, _, _ = self.path.partition('?')
+        if path == '/api/tasks':
+            uids = [t['label_uid'] for t in cfg['tasks']['tasks']]
+            return self._send(200, tasks_payload(cfg['tasks'], cfg['annotator'],
+                                                 completed(cfg['out_dir'], cfg['annotator'], uids)))
+        if path.startswith('/api/annotation/'):
+            uid = urllib.parse.unquote(path[len('/api/annotation/'):])
             # Resolved through the task list, exactly like a tile: `annotation_path` builds a filename
             # from the uid, so an unchecked one is a path to anywhere.
             if uid not in {t['label_uid'] for t in cfg['tasks']['tasks']}:
                 return self._send(404, {'error': 'no such label'})
             saved = load_annotation(cfg['out_dir'], cfg['annotator'], uid)
             return self._send(200, saved) if saved else self._send(404, {'error': 'not annotated'})
-        if self.path.startswith('/tiles/'):
-            path = resolve_tile(cfg['tasks'], cfg['tasks_dir'], self.path[len('/tiles/'):])
-            if not path:
+        if path.startswith('/tiles/'):
+            tile = resolve_tile(cfg['tasks'], cfg['tasks_dir'], path[len('/tiles/'):])
+            if not tile:
                 return self._send(404, {'error': 'no such tile'})
-            with open(path, 'rb') as f:
+            with open(tile, 'rb') as f:
                 return self._send(200, f.read(), 'image/jpeg')
         return self._send(404, {'error': 'not found'})
 
     def do_POST(self):
         cfg = self.server.cfg
-        if self.path != '/api/annotation':
+        if self.path.partition('?')[0] != '/api/annotation':
             return self._send(404, {'error': 'not found'})
         try:
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
@@ -294,7 +326,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def serve(tasks_dir, out_dir, annotator, port, host='127.0.0.1'):
     tasks = load_tasks(tasks_dir)
-    done = completed(out_dir, annotator)
+    done = completed(out_dir, annotator, [t['label_uid'] for t in tasks['tasks']])
     os.makedirs(annotator_dir(out_dir, annotator), exist_ok=True)
     print(f'{len(tasks["tasks"])} tasks, {len(done)} already done by {annotator!r}')
     print(f'  http://{host}:{port}')

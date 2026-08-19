@@ -64,12 +64,20 @@ def era_quality(time_created):
     module owns and measured; rawlabels importing it back would be circular. Every boundary is
     lower-inclusive, matching `add_era` and `window_split`, so a label's `era` and its `quality` can
     never disagree about which side of a deploy it fell on.
+
+    A missing timestamp is None, NOT the default level. Every comparison against NaT is False, so the
+    natural way to write this — seed the series with 'mid' and overwrite the other three — quietly
+    files a label with no `time_created` into a real stratum, where it fills a corpus cell it does not
+    belong in and is counted in `by_quality`. Same rule as `_FLOAT_COLUMNS` in rawlabels: a blank must
+    stay blank, because a lookup that never resolved must never read as an answer. `corpus_sample`'s
+    `corpus_eligible` carries the matching notna() term.
     """
     t = pd.Series(pd.to_datetime(time_created, utc=True))
     quality = pd.Series('mid', index=t.index, dtype=object)
     quality[t < rawlabels.LEGACY_END] = 'legacy'
     quality[(t >= rawlabels.EVO179) & (t < BUG_WINDOW_END)] = 'window'
     quality[t >= BUG_WINDOW_END] = 'post_fix'
+    quality[t.isna()] = None
     return quality
 
 

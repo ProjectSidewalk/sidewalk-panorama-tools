@@ -516,6 +516,45 @@ rather than record that the rule moved. The artifact records the rule it was com
 report saying so. The whole suite was green across this change until that test existed, because the
 artifact tests read the artifact and the code tests read the code.
 
+### 2026-08-19 · The jitter becomes an angle, and the tiles have to be re-cut
+
+Found in review of the Phase 2 tooling, not by anything failing.
+
+§4 wrote the viewport jitter as **±40–80 px per axis**, and that was the one resolution-dependent
+quantity left on an instrument whose entire design argument is that a fixed *pixel* window shows an
+annotator different amounts of world on different panoramas. The tile is a fixed 60° angular window
+for exactly that reason; the jitter, whose whole job is to stop the stored point sitting at the tile
+centre, was not.
+
+**What it cost, measured on the drawn corpus.** 40–80 px is a different fraction of the tile on every
+pano height, weakest where the corpus actually is:
+
+| pano height | labels | tile | 40–80 px as a fraction of the tile |
+|---|---:|---:|---|
+| 8192 | **641** | 2730 px | 1.5% – 2.9% |
+| 6656 | 116 | 2218 px | 1.8% – 3.6% |
+| 1664 | 6 | 554 px | 7.2% – 14.4% |
+
+So the anti-anchor varied ~5× across the corpus, correlated with resolution — which is a covariate
+Study 1 estimates against — and on 84% of it the stored point sat within 3% of the tile centre, which
+to the eye is the middle. That is the anchoring §4 exists to remove, still present.
+
+**Where the dilution came from.** §4's numbers were written when the cut was 20°, which is 910 px on
+the 8192-height pano the corpus is mostly made of — so 40–80 px *was* 4.4%–8.8% of the tile. The cut
+later tripled to 60° (2026-08-13, above) and the pixel constant did not move.
+
+**What changes.** `JITTER_MIN_PX`/`JITTER_MAX_PX` become `JITTER_MIN_FRAC`/`JITTER_MAX_FRAC` =
+40/910 and 80/910 of the tile, i.e. **2.64°–5.27°** on every panorama at the current cut. This is §4's
+design point restored rather than a new number, and stating it as a fraction makes the same drift
+impossible: change the cut again and the jitter tracks it.
+
+**What it invalidates.** Every tile already rendered was cut at a different origin, so **tiles must be
+re-cut before any further annotation**, and annotations already collected remain valid only against
+the `geometry.json` they were recorded under — which is why that file carries the jitter per label and
+why `jitter_for` derives from the label's own uid rather than a shared stream. `geometry.json` now
+records `jitter_tile_fraction` and `jitter_deg` in place of `jitter_px`, so a geometry file says which
+convention produced it. Nothing about the corpus draw, the referent rule or the split moves.
+
 **Pre-registration revisions (before registration, so not amendments).**
 
 * **2026-08-10 — pre-merge review** ([review report](2026-08-10-crop-priors-review.md)). Six changes,

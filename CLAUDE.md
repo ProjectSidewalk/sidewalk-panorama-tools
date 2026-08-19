@@ -182,15 +182,30 @@ Four scripts feed each other, and the seams between them are load-bearing:
   annotator-facing and carries no stored coordinate, no jitter, no tile origin and **no seed** — each of
   those recovers the answer, since the tile origin is `stored + jitter - size/2`. `geometry.json` carries
   all of them and is what the analysis uses to map a tile-space annotation back to pano coordinates.
-  Tiles are cut at **60°** but the view opens at **20°**: a tile of angular width F can only measure a
-  displacement up to F/2, so a tight tile converts gross errors into `object-absent` and deletes the
-  largest errors from the distribution being estimated.
+  Tiles are cut at **60°** and the view opens at the whole cut: a tile of angular width F can only
+  measure a displacement up to F/2, so a tight tile converts gross errors into `object-absent` and
+  deletes the largest errors from the distribution being estimated.
+- **Everything angular on that instrument must be angular, including the jitter.** It was `±40–80 px`
+  until 2026-08-19, which is 1.5–2.9% of the tile on the 8192-height panos 641 of the 763 drawn labels
+  sit on and 7.2–14.4% on the 1664s — so the one device whose job is to keep the stored point off the
+  tile centre varied ~5× with resolution and was weakest on 84% of the corpus. It is now
+  `JITTER_MIN_FRAC`/`JITTER_MAX_FRAC` of the tile (§4's numbers at the 20° cut §4 was written for),
+  which also means changing `CUT_FOV_DEG` can no longer dilute it.
+- **`measurable` has exactly one definition, `rawlabels.study_measurable`,** and **no script may read
+  the corpus CSV's `measurable` column** — that is a snapshot of the rule at draw time and says 584
+  where the live rule says 368. `annotation_subset.py --measurable-only` and
+  `annotation_tiles.py --measurable-only` both call it; the latter used to read the column, which is
+  the failure the former was written to prevent, one script upstream.
+- **Protocol fields come from code, pixel fields come from the rendered file.** `FLAGS`, `FLAG_HELP`,
+  `BOX_RULE` and `initial_view_fraction` are properties of the instrument, so
+  `annotate_server.tasks_payload` sends them from `annotation_tiles` on every request and
+  `annotation_subset.write_subset` refreshes them in the copies it writes. `cut_fov_deg` is the one
+  exception: it describes the pixels, so it comes from whatever produced them. Taking the flag *list*
+  from the file while taking its *help text* from code is the specific half-measure that shipped a
+  queue offering three flags to a server that accepted four — the annotator had no key to press.
 - **`annotation_subset.py`** narrows an already-rendered tile set, and is where the *current* referent
-  rule is applied. It recomputes measurability from `rawlabels.has_located_referent` and **never reads
-  the corpus CSV's `measurable` column**, which is a snapshot of the rule as it stood at draw time — it
-  says 584 where the live rule says 368. It also re-reads `FLAGS` from code, because a rendered
-  `tasks.json` is a snapshot of the protocol too. Both filters fail silently: a queue drawn from the
-  wrong population or missing a flag looks perfectly well-formed.
+  rule is applied. Both its filters fail silently: a queue drawn from the wrong population or missing a
+  flag looks perfectly well-formed.
 - **`annotate_server.py`** serves tiles to `annotate.html` on loopback and writes one JSON per label per
   annotator. It refuses `geometry.json` **by name** — it sits beside the file that is served, and the
   natural static-file handler would publish the answer key at a guessable URL.
