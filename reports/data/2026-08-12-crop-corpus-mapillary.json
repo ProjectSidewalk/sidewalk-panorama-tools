@@ -1,0 +1,504 @@
+{
+ "source": "/v3/api/rawLabels?filetype=csv",
+ "fetched": "2026-08-12",
+ "rig": "mapillary",
+ "seed": 20260812,
+ "prereg": "reports/2026-08-09-crop-priors-prereg.md",
+ "spec": {
+  "cell_target": 6,
+  "max_labels_per_pano": 3,
+  "resolution_target": 60,
+  "mismatch_target": 30,
+  "contrast_panos_target": 80,
+  "contrast_estimability_gate": 60,
+  "bearing_separation_deg": 60.0,
+  "standard_height": 8192.0,
+  "excluded_deployments": [
+   "la-piedad-old",
+   "validation-study"
+  ],
+  "corpus_excluded_types": [
+   "Occlusion"
+  ]
+ },
+ "provenance": [
+  {
+   "city": "richmond-va",
+   "file": "richmond-va.csv",
+   "sha256": "0b26969bf177d1625e5b26b7e8de1460d15a98e58698b8e2f749c2a6e845cdd4",
+   "bytes": 109474,
+   "n_rows": 267
+  }
+ ],
+ "excluded_deployments": [
+  {
+   "city": "amsterdam",
+   "rig": "gsv",
+   "n_rows": 30061,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "auckland",
+   "rig": "gsv",
+   "n_rows": 5640,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "blackhawk-hills-il",
+   "rig": "gsv",
+   "n_rows": 206,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "burnaby",
+   "rig": "gsv",
+   "n_rows": 20680,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "cdmx",
+   "rig": "gsv",
+   "n_rows": 74278,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "chandigarh-india",
+   "rig": "gsv",
+   "n_rows": 3209,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "chicago-il",
+   "rig": "gsv",
+   "n_rows": 164453,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "cliffside-park-nj",
+   "rig": "gsv",
+   "n_rows": 1042,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "clifton-nj",
+   "rig": "gsv",
+   "n_rows": 259,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "columbia-sc",
+   "rig": "gsv",
+   "n_rows": 100472,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "columbus-oh",
+   "rig": "gsv",
+   "n_rows": 41186,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "cuenca",
+   "rig": "gsv",
+   "n_rows": 14994,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "danville-il",
+   "rig": "gsv",
+   "n_rows": 14537,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "detroit-mi",
+   "rig": "gsv",
+   "n_rows": 1864,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "fort-wayne-in",
+   "rig": "gsv",
+   "n_rows": 1091,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "gainesville-fl",
+   "rig": "gsv",
+   "n_rows": 15453,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "hackensack-nj",
+   "rig": "gsv",
+   "n_rows": 271,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "houston-tx",
+   "rig": "gsv",
+   "n_rows": 359,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "kaohsiung-tw",
+   "rig": "gsv",
+   "n_rows": 136371,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "keelung-tw",
+   "rig": "gsv",
+   "n_rows": 7487,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "knox-oh",
+   "rig": "gsv",
+   "n_rows": 15580,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "la-ca",
+   "rig": "gsv",
+   "n_rows": 285,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "la-piedad-old",
+   "rig": null,
+   "n_rows": 4391,
+   "reason": "not a population"
+  },
+  {
+   "city": "la-piedad",
+   "rig": "gsv",
+   "n_rows": 564,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "madison-wi",
+   "rig": "gsv",
+   "n_rows": 848,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "maywood-nj",
+   "rig": "gsv",
+   "n_rows": 3869,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "mendota-il",
+   "rig": "gsv",
+   "n_rows": 18259,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "new-taipei-tw",
+   "rig": "gsv",
+   "n_rows": 18248,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "newberg-or",
+   "rig": "gsv",
+   "n_rows": 17351,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "niagara-falls-ny",
+   "rig": "gsv",
+   "n_rows": 1375,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "oradell-nj",
+   "rig": "gsv",
+   "n_rows": 13591,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "paterson-nj",
+   "rig": "gsv",
+   "n_rows": 21628,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "pittsburgh-pa",
+   "rig": "gsv",
+   "n_rows": 25687,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "rancagua-chile",
+   "rig": "gsv",
+   "n_rows": 1995,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "santiago-chile",
+   "rig": "gsv",
+   "n_rows": 866,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "sao-paulo-brazil",
+   "rig": "gsv",
+   "n_rows": 423,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "seattle-wa",
+   "rig": "gsv",
+   "n_rows": 261958,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "spgg",
+   "rig": "gsv",
+   "n_rows": 103538,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "st-louis-mo",
+   "rig": "gsv",
+   "n_rows": 68662,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "taichung-tw",
+   "rig": "gsv",
+   "n_rows": 2511,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "tainan-tw",
+   "rig": "gsv",
+   "n_rows": 427,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "taipei",
+   "rig": "gsv",
+   "n_rows": 49313,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "teaneck-nj",
+   "rig": "gsv",
+   "n_rows": 23356,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "tucson-az",
+   "rig": "gsv",
+   "n_rows": 5942,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "validation-study",
+   "rig": null,
+   "n_rows": 10809,
+   "reason": "not a population"
+  },
+  {
+   "city": "vancouver-wa",
+   "rig": "gsv",
+   "n_rows": 64910,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "virden-il",
+   "rig": "gsv",
+   "n_rows": 641,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "walla-walla-wa",
+   "rig": "gsv",
+   "n_rows": 6306,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "waltham-ma",
+   "rig": "gsv",
+   "n_rows": 3822,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "west-chester-pa",
+   "rig": "gsv",
+   "n_rows": 1214,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "zurich-infra3d",
+   "rig": "infra3d",
+   "n_rows": 4791,
+   "reason": "different rig (drawing mapillary)"
+  },
+  {
+   "city": "zurich",
+   "rig": "gsv",
+   "n_rows": 9769,
+   "reason": "different rig (drawing mapillary)"
+  }
+ ],
+ "frame": {
+  "n_labels": 267,
+  "n_corpus_eligible": 264,
+  "n_measurable": 181,
+  "n_panos": 89,
+  "n_panos_corpus_eligible": 89,
+  "n_cities": 1,
+  "by_quality": {
+   "legacy": 0,
+   "mid": 0,
+   "window": 0,
+   "post_fix": 264
+  },
+  "by_band": {
+   "<5": 8,
+   "5-15": 149,
+   "15-30": 99,
+   ">30": 8
+  },
+  "by_label_type": {
+   "CurbRamp": 101,
+   "Crosswalk": 62,
+   "SurfaceProblem": 50,
+   "Signal": 39,
+   "NoCurbRamp": 6,
+   "Obstacle": 6
+  },
+  "n_nonstandard_height": 264,
+  "n_replay_mismatch": 0,
+  "n_contrast_panos_available": 40
+ },
+ "frame_comparison": {
+  "reference_cities": [
+   "amsterdam",
+   "cdmx",
+   "columbus-oh",
+   "newberg-or",
+   "oradell-nj",
+   "seattle-wa"
+  ],
+  "population": "corpus_eligible",
+  "applicable": false,
+  "reason": "none of the reference deployments are in this frame; the six-city reference is GSV, so there is nothing to compare another rig against",
+  "n_reference_corpus_eligible": 0,
+  "n_frame_corpus_eligible": 264
+ },
+ "population_weights": {
+  "15-30|Crosswalk": 0.125,
+  "15-30|CurbRamp": 0.14772727272727273,
+  "15-30|NoCurbRamp": 0.007575757575757576,
+  "15-30|Obstacle": 0.011363636363636364,
+  "15-30|Signal": 0.03787878787878788,
+  "15-30|SurfaceProblem": 0.045454545454545456,
+  "5-15|Crosswalk": 0.09090909090909091,
+  "5-15|CurbRamp": 0.21212121212121213,
+  "5-15|NoCurbRamp": 0.015151515151515152,
+  "5-15|Obstacle": 0.011363636363636364,
+  "5-15|Signal": 0.0946969696969697,
+  "5-15|SurfaceProblem": 0.14015151515151514,
+  "<5|Crosswalk": 0.003787878787878788,
+  "<5|CurbRamp": 0.011363636363636364,
+  "<5|Signal": 0.015151515151515152,
+  ">30|Crosswalk": 0.015151515151515152,
+  ">30|CurbRamp": 0.011363636363636364,
+  ">30|SurfaceProblem": 0.003787878787878788
+ },
+ "draw": {
+  "n_labels": 97,
+  "n_panos": 44,
+  "n_measurable": 75,
+  "labels_per_pano_max": 3,
+  "by_role": {
+   "cell": 17,
+   "contrast": 80,
+   "resolution": 0,
+   "mismatch": 0
+  },
+  "by_quality": {
+   "legacy": 0,
+   "mid": 0,
+   "window": 0,
+   "post_fix": 97
+  },
+  "by_band": {
+   "<5": 4,
+   "5-15": 46,
+   "15-30": 39,
+   ">30": 8
+  },
+  "by_band_measurable": {
+   "<5": 4,
+   "5-15": 38,
+   "15-30": 30,
+   ">30": 3
+  },
+  "by_label_type": {
+   "CurbRamp": 32,
+   "Signal": 19,
+   "Crosswalk": 19,
+   "SurfaceProblem": 17,
+   "Obstacle": 6,
+   "NoCurbRamp": 4
+  },
+  "by_city": {
+   "richmond-va": 97
+  },
+  "by_split": {
+   "tune": 45,
+   "eval": 52
+  },
+  "n_disputed": 0,
+  "shortfalls": {
+   "contrast_panos": {
+    "achieved": 40,
+    "required": 80,
+    "shortfall": 40
+   },
+   "resolution": {
+    "achieved": 97,
+    "required": 60,
+    "shortfall": 0
+   },
+   "mismatch": {
+    "achieved": 0,
+    "required": 30,
+    "shortfall": 30
+   }
+  },
+  "weight_coverage": {
+   "cells_total": 18,
+   "cells_supported": 17,
+   "cells_unsupported": 1,
+   "unsupported_population_pct": 0.3787878787878788,
+   "unsupported_cells": {
+    "<5|Crosswalk": 0.3787878787878788
+   }
+  },
+  "strata": {
+   "15-30|post_fix|Crosswalk": 9,
+   "15-30|post_fix|CurbRamp": 13,
+   "15-30|post_fix|NoCurbRamp": 1,
+   "15-30|post_fix|Obstacle": 3,
+   "15-30|post_fix|Signal": 6,
+   "15-30|post_fix|SurfaceProblem": 7,
+   "5-15|post_fix|Crosswalk": 6,
+   "5-15|post_fix|CurbRamp": 14,
+   "5-15|post_fix|NoCurbRamp": 3,
+   "5-15|post_fix|Obstacle": 3,
+   "5-15|post_fix|Signal": 11,
+   "5-15|post_fix|SurfaceProblem": 9,
+   "<5|post_fix|CurbRamp": 2,
+   "<5|post_fix|Signal": 2,
+   ">30|post_fix|Crosswalk": 4,
+   ">30|post_fix|CurbRamp": 3,
+   ">30|post_fix|SurfaceProblem": 1
+  }
+ }
+}

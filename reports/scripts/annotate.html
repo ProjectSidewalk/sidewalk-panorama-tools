@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crop-priors gold standard</title>
+<!--
+  Annotation surface for prereg §4. Deliberately renders NOTHING but the tile and the annotator's own
+  marks: no stored point, no crop box, no prior annotation, no neighbouring label. It cannot render
+  them because the server never sends them, and that is the point -- a page that received the answer and
+  chose not to draw it would be one edit away from anchoring every annotation.
+
+  Coordinates are kept in TILE pixel space throughout and only converted for drawing, so zooming and
+  panning cannot move a recorded point. The view transform is (scale, offset); every mouse position goes
+  through toTile() before it is stored.
+-->
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313c; --ink: #e8eaf0; --dim: #949cad;
+    --accent: #6ea8fe; --good: #5cd38a; --warn: #f0b84a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif;
+         background: var(--bg); color: var(--ink); overflow: hidden; }
+  #stage { flex: 1; position: relative; display: grid; place-items: center; background: #0e0f12; }
+  canvas { cursor: crosshair; image-rendering: auto; }
+  canvas.panning { cursor: grabbing; }
+  #side { width: 330px; flex: none; padding: 18px; background: var(--panel);
+          border-left: 1px solid var(--line); overflow-y: auto; }
+  h1 { font-size: 13px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim);
+       margin: 0 0 14px; font-weight: 600; }
+  .type { font-size: 21px; font-weight: 650; margin: 0 0 6px; }
+  /* The labeller's own tags. They name WHAT the label is about, never where — so they narrow which
+     object on a busy tile the rubric is talking about without saying anything about the stored point. */
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 10px; }
+  .tags span { background: #232a36; border: 1px solid var(--line); border-radius: 11px;
+               padding: 2px 9px; font-size: 12px; color: #b9c2d2; }
+  .tags .none { background: none; border: 0; padding: 2px 0; color: var(--dim); font-style: italic; }
+  .rubric { background: #0e0f12; border-left: 3px solid var(--accent); padding: 10px 12px;
+            border-radius: 0 5px 5px 0; margin: 0 0 16px; color: #cfd6e4; }
+  .step { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px;
+          margin-bottom: 5px; background: #0e0f12; color: var(--dim); }
+  .step.active { background: #202a3d; color: var(--ink); outline: 1px solid var(--accent); }
+  .step.done { color: var(--good); }
+  .step b { font-variant-numeric: tabular-nums; }
+  .flags { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; }
+  .flag { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px;
+          background: #0e0f12; cursor: pointer; user-select: none; }
+  .flag.on { background: #3a2f16; outline: 1px solid var(--warn); color: #ffe6b0; }
+  .flag kbd { margin-left: auto; }
+  kbd { font: 11px ui-monospace, monospace; background: #262c38; border: 1px solid var(--line);
+        border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; color: var(--dim); }
+  textarea { width: 100%; min-height: 52px; background: #0e0f12; color: var(--ink); resize: vertical;
+             border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: inherit; }
+  button { width: 100%; padding: 11px; margin-top: 12px; border: 0; border-radius: 7px;
+           background: var(--accent); color: #08101f; font: inherit; font-weight: 650;
+           cursor: pointer; }
+  button:disabled { background: #333a48; color: #6b7384; cursor: not-allowed; }
+  .meta { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums;
+          color: var(--dim); margin-bottom: 12px; }
+  .keys { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
+          color: var(--dim); font-size: 12.5px; }
+  .keys .hint { display: flex; justify-content: space-between; padding: 2px 0; }
+  /* Every shortcut is also a button. The keyboard is faster once learned, but an annotator who has not
+     learned it yet should not have to read a legend to find out the tool can do the thing at all. */
+  .keys button { display: flex; align-items: center; justify-content: space-between; gap: 9px;
+                 width: 100%; margin: 0 0 4px; padding: 6px 10px; background: #0e0f12;
+                 color: var(--dim); font: inherit; font-size: 12.5px; font-weight: 400;
+                 border: 1px solid transparent; border-radius: 6px; text-align: left; }
+  .keys button:hover { background: #202a3d; color: var(--ink); border-color: var(--line); }
+  .nav { display: flex; gap: 8px; margin-bottom: 12px; }
+  .nav button { margin-top: 0; padding: 7px; font-size: 12.5px; background: #0e0f12;
+                color: var(--ink); border: 1px solid var(--line); }
+  .nav button:hover:not(:disabled) { background: #202a3d; border-color: var(--accent); }
+  .view { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .view .row { display: flex; gap: 6px; margin-top: 7px; }
+  .view button { margin-top: 0; padding: 6px 0; font-size: 12.5px; font-weight: 400;
+                 background: #0e0f12; color: var(--dim); border: 1px solid var(--line); }
+  .view button.on { background: #202a3d; color: var(--ink); border-color: var(--accent); }
+  .note { color: var(--dim); font-size: 11.5px; line-height: 1.4; margin: 8px 0 0; }
+  .saved { color: var(--good); font-size: 12px; margin-bottom: 10px; display: none; }
+  .saved.show { display: block; }
+  #toast { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+           background: #202a3d; border: 1px solid var(--accent); padding: 9px 16px;
+           border-radius: 7px; opacity: 0; transition: opacity .18s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  #toast.err { background: #3d2020; border-color: #e06c6c; }
+  #done { text-align: center; padding: 40px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas><div id="toast"></div></div>
+<aside id="side">
+  <h1>Gold standard · <span id="who"></span></h1>
+  <div class="meta"><span id="progress">–</span><span id="zoom">1.0×</span></div>
+  <div class="nav">
+    <button id="prev">◀ Prev <kbd>←</kbd></button>
+    <button id="next">Next <kbd>→</kbd> ▶</button>
+  </div>
+  <p class="saved" id="saved">✓ already annotated — editing revises it</p>
+  <p class="type" id="ltype">–</p>
+  <div class="tags" id="tags"></div>
+  <p class="rubric" id="rubric">–</p>
+
+  <div class="step" id="s1"><b>1</b> <span>Click the canonical point</span></div>
+  <div class="step" id="s2"><b>2</b> <span>Drag a box round the whole object</span></div>
+  <p class="note" id="boxrule"></p>
+
+  <div class="flags" id="flags"></div>
+  <textarea id="notes" placeholder="Notes (optional)"></textarea>
+  <button id="submit" disabled>Submit &amp; next &nbsp;<kbd>↵</kbd></button>
+
+  <div class="keys" id="keys">
+    <div class="hint"><span>Zoom</span><kbd>wheel</kbd></div>
+    <div class="hint"><span>Pan</span><span><kbd>space</kbd>+drag · <kbd>middle</kbd></span></div>
+  </div>
+
+  <div class="view">
+    <span>Opening view</span>
+    <div class="row" id="viewrow"></div>
+    <p class="note">Every tile opens at the full 60° cut, so the window never implies a crop size.
+      Narrowing it is recorded per annotation, so any effect on box size stays measurable.</p>
+  </div>
+</aside>
+
+<script>
+'use strict';
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const el = id => document.getElementById(id);
+
+// The whole task list, plus which are already annotated. Not a consuming queue: a one-way conveyor
+// made a misplaced point unfixable except by editing JSON, so navigation is by index over `tasks` and
+// `done` decides what "next unannotated" means.
+let tasks = [], done = new Set(), idx = 0;
+let task = null, img = null, flags = [], meta = {n_total: 0, n_done: 0};
+let point = null, box = null, drag = null, startedAt = 0, maxZoom = 1;
+let view = {scale: 1, x: 0, y: 0}, panning = false, spaceDown = false, lastPan = null;
+
+// Opening framing in degrees. Defaults to the protocol's setting -- the whole 60 deg cut since
+// 2026-08-13 -- and the annotator can narrow it, with the choice persisting because re-picking it on
+// every tile would make the default the only usable setting.
+//
+// The key is versioned. A stored 20 from before the default changed would otherwise outrank the new
+// default for exactly the annotator who had already tried the setting, i.e. the one who asked for the
+// change, and nothing would look wrong.
+const VIEW_KEY = 'crop-priors:view-deg:v2';
+let cutDeg = 60, viewDeg = 60;
+
+const toast = (msg, err) => {
+  const t = el('toast');
+  t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.className = '', 2200);
+};
+
+/*
+  The tile is cut wider than the annotator's starting view (60 deg cut, 20 deg view) so that an object
+  tens of degrees from the stored point can still be found and placed rather than reported absent. So
+  there are two scales: fitScale shows the whole cut, and the view opens at fitScale / fraction, centred.
+  Zooming out to the full cut is deliberately allowed — that is the whole reason the extra margin exists.
+*/
+let fitScale = 1;
+
+function fitView() {
+  const pad = 32;
+  const sw = cv.parentElement.clientWidth - pad, sh = cv.parentElement.clientHeight - pad;
+  cv.width = sw; cv.height = sh;
+  fitScale = Math.min(sw / task.tile_width, sh / task.tile_height);
+  // `fitScale` is bound by the SHORT axis, so on a landscape canvas the fraction sets the VERTICAL
+  // extent and the horizontal comes out wider. That is why 20 deg feels tighter than it reads: at
+  // 16:9 you see 20 deg of sky-to-ground and about 32 deg across.
+  const frac = Math.min(1, viewDeg / cutDeg);
+  view.scale = fitScale / frac;
+  // Centre on the tile's middle, which is the jittered point — never the stored point.
+  view.x = sw / 2 - (task.tile_width / 2) * view.scale;
+  view.y = sh / 2 - (task.tile_height / 2) * view.scale;
+  maxZoom = view.scale;                       // "1.0x" in the readout means the default framing
+}
+
+const clampScale = s => Math.max(fitScale * 0.85, Math.min(maxZoom * 8, s));
+
+// Screen <-> tile space. Everything is stored in tile pixels, so zoom and pan can never move a mark.
+const toTile = (sx, sy) => ({x: (sx - view.x) / view.scale, y: (sy - view.y) / view.scale});
+const toScreen = (tx, ty) => ({x: tx * view.scale + view.x, y: ty * view.scale + view.y});
+
+function draw() {
+  ctx.fillStyle = '#0e0f12';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!img) return;
+  ctx.imageSmoothingEnabled = view.scale < 2;
+  ctx.drawImage(img, view.x, view.y, task.tile_width * view.scale, task.tile_height * view.scale);
+
+  if (box) {
+    const a = toScreen(box.x, box.y);
+    ctx.strokeStyle = '#5cd38a'; ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(a.x, a.y, box.w * view.scale, box.h * view.scale);
+    ctx.setLineDash([]);
+  }
+  if (drag) {
+    const a = toScreen(Math.min(drag.x0, drag.x1), Math.min(drag.y0, drag.y1));
+    ctx.strokeStyle = '#f0b84a'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.strokeRect(a.x, a.y, Math.abs(drag.x1 - drag.x0) * view.scale,
+                             Math.abs(drag.y1 - drag.y0) * view.scale);
+    ctx.setLineDash([]);
+  }
+  if (point) {
+    const p = toScreen(point.x, point.y), r = 11;
+    ctx.strokeStyle = '#6ea8fe'; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(p.x - r, p.y); ctx.lineTo(p.x - 3, p.y);
+    ctx.moveTo(p.x + 3, p.y); ctx.lineTo(p.x + r, p.y);
+    ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x, p.y - 3);
+    ctx.moveTo(p.x, p.y + 3); ctx.lineTo(p.x, p.y + r);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 7); ctx.fillStyle = '#6ea8fe'; ctx.fill();
+  }
+  el('zoom').textContent = (view.scale / maxZoom).toFixed(1) + '×';
+}
+
+function syncUi() {
+  const absent = flags.includes('object-absent');
+  el('s1').className = 'step' + (point ? ' done' : (absent ? '' : ' active'));
+  el('s2').className = 'step' + (box ? ' done' : (point && !absent ? ' active' : ''));
+  el('submit').disabled = !(absent || (point && box));
+  [...el('flags').children].forEach(n =>
+    n.className = 'flag' + (flags.includes(n.dataset.flag) ? ' on' : ''));
+  draw();
+}
+
+async function goTo(i) {
+  if (i < 0 || i >= tasks.length) return;
+  idx = i;
+  task = tasks[idx];
+  point = box = drag = null; flags = []; el('notes').value = '';
+  el('ltype').textContent = task.label_type;
+  // textContent per tag, never innerHTML with the tag inside: tag text is operator-entered in production
+  // and `cycle lane: no protection from traffic` is one of the tamer ones.
+  el('tags').replaceChildren(...(task.tags && task.tags.length
+    ? task.tags.map(t => { const s = document.createElement('span'); s.textContent = t; return s; })
+    : [Object.assign(document.createElement('span'), {className: 'none', textContent: 'no tags'})]));
+  el('rubric').textContent = task.rubric;
+  el('progress').textContent = `${idx + 1} / ${meta.n_total} · ${done.size} done`;
+  el('prev').disabled = idx === 0;
+  el('next').disabled = idx === tasks.length - 1;
+  el('saved').className = 'saved' + (done.has(task.label_uid) ? ' show' : '');
+
+  img = new Image();
+  img.onload = () => { fitView(); syncUi(); };
+  img.onerror = () => toast('tile failed to load: ' + task.tile, true);
+  img.src = '/tiles/' + encodeURIComponent(task.tile);
+  startedAt = performance.now();
+
+  // Stepping back onto a finished label reloads what was submitted, so "go back and look" and "go back
+  // and fix" are the same gesture. Without this, revisiting showed a blank tile and re-submitting
+  // silently replaced good work with nothing.
+  if (done.has(task.label_uid)) {
+    const uid = task.label_uid;
+    const r = await fetch('/api/annotation/' + encodeURIComponent(uid));
+    if (r.ok && task && task.label_uid === uid) {      // guard: they may have navigated on already
+      const a = await r.json();
+      point = a.point; box = a.box; flags = a.flags || [];
+      el('notes').value = a.notes || '';
+      syncUi();
+    }
+  }
+}
+
+/* The next label with no annotation: forward from here, then wrapping. Wrapping matters on a resumed
+   session, where the gaps are behind you rather than ahead. */
+function nextUnannotated() {
+  for (let n = 1; n <= tasks.length; n++) {
+    const i = (idx + n) % tasks.length;
+    if (!done.has(tasks[i].label_uid)) return i;
+  }
+  return -1;
+}
+
+function finish() {
+  el('stage').innerHTML = '<div id="done">All ' + meta.n_total + ' labels annotated.</div>';
+  el('side').style.display = 'none';
+}
+
+async function submit() {
+  if (el('submit').disabled) return;
+  const body = {
+    label_uid: task.label_uid, point, box, flags,
+    notes: el('notes').value,
+    elapsed_ms: Math.round(performance.now() - startedAt),
+    zoom_used: view.scale / maxZoom,
+    initial_view_deg: viewDeg,
+  };
+  const r = await fetch('/api/annotation', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!r.ok) { toast((await r.json()).error || 'rejected', true); return; }
+  const wasDone = done.has(task.label_uid);
+  done.add(task.label_uid);
+  meta.n_done = done.size;
+  toast(wasDone ? 'revised' : 'saved');
+  const nxt = nextUnannotated();
+  if (nxt < 0) return finish();
+  goTo(nxt);
+}
+
+/* ---- input ---- */
+cv.addEventListener('mousedown', e => {
+  if (e.button === 1 || spaceDown) {
+    panning = true; lastPan = {x: e.clientX, y: e.clientY};
+    cv.classList.add('panning'); e.preventDefault(); return;
+  }
+  if (e.button !== 0) return;
+  const t = toTile(e.offsetX, e.offsetY);
+  if (!point) { point = t; syncUi(); return; }
+  drag = {x0: t.x, y0: t.y, x1: t.x, y1: t.y};
+});
+
+cv.addEventListener('mousemove', e => {
+  if (panning) {
+    view.x += e.clientX - lastPan.x; view.y += e.clientY - lastPan.y;
+    lastPan = {x: e.clientX, y: e.clientY}; draw(); return;
+  }
+  if (!drag) return;
+  const t = toTile(e.offsetX, e.offsetY);
+  drag.x1 = t.x; drag.y1 = t.y; draw();
+});
+
+window.addEventListener('mouseup', () => {
+  if (panning) { panning = false; cv.classList.remove('panning'); return; }
+  if (!drag) return;
+  const w = Math.abs(drag.x1 - drag.x0), h = Math.abs(drag.y1 - drag.y0);
+  // A stray click while in box mode is not a zero-area box; ignore it rather than record one.
+  if (w > 2 && h > 2) {
+    box = {x: Math.min(drag.x0, drag.x1), y: Math.min(drag.y0, drag.y1), w, h};
+  }
+  drag = null; syncUi();
+});
+
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const before = toTile(e.offsetX, e.offsetY);
+  view.scale = clampScale(view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+  const after = toTile(e.offsetX, e.offsetY);   // keep the cursor over the same pixel
+  view.x += (after.x - before.x) * view.scale;
+  view.y += (after.y - before.y) * view.scale;
+  draw();
+}, {passive: false});
+
+function showWholeCut() {              // the WHOLE cut, to hunt for a far-off object
+  view.scale = fitScale;
+  view.x = (cv.width - task.tile_width * fitScale) / 2;
+  view.y = (cv.height - task.tile_height * fitScale) / 2;
+  draw();
+}
+
+/*
+  One table drives the keyboard AND the sidebar buttons. Two lists would be two things to keep in step,
+  and the failure is quiet in the worst way: a legend that advertises a key which no longer does what it
+  says, on a tool whose entire job is that the annotator follows the protocol exactly.
+*/
+/*
+  Zoom is the WHEEL only. There were +/- keys and buttons; they scaled `view.scale` without moving
+  `view.x`/`view.y`, so they zoomed about the canvas origin rather than about anything the annotator was
+  looking at. The content slid off toward the corner instead of growing under the cursor, and a couple of
+  presses could push it off-screen entirely — which reads as "the buttons don't work" rather than as a
+  transform bug. Anchoring them to the canvas centre would have been a two-line fix; keeping one zoom
+  gesture that is already correct is the better one, since two ways to zoom with different anchors is
+  itself the confusion.
+*/
+const ACTIONS = [
+  {key: 'w', label: 'Whole ' + '60' + '° tile', fn: showWholeCut},
+  {key: 'u', label: 'Undo last mark', fn: () => { if (box) box = null; else point = null; syncUi(); }},
+  {key: 'r', label: 'Reset view', fn: () => { fitView(); draw(); }},
+  {key: 's', label: 'Skip (no submit)', fn: () => goTo(Math.min(idx + 1, tasks.length - 1))},
+];
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA') return;
+  if (e.code === 'Space') { spaceDown = true; e.preventDefault(); return; }
+  if (e.key === 'Enter') { submit(); return; }
+  if (e.key === 'ArrowLeft') { goTo(idx - 1); return; }
+  if (e.key === 'ArrowRight') { goTo(idx + 1); return; }
+  const k = e.key.toLowerCase();
+  const action = ACTIONS.find(a => a.key === k || (a.key === '+' && k === '='));
+  if (action) { action.fn(); return; }
+  const i = Number(k) - 1;
+  if (k.trim() !== '' && i >= 0 && i < meta.flags.length) {
+    const f = meta.flags[i];
+    flags = flags.includes(f) ? flags.filter(x => x !== f) : flags.concat(f);
+    syncUi();
+  }
+});
+window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
+window.addEventListener('resize', () => { if (task) { fitView(); draw(); } });
+el('submit').addEventListener('click', submit);
+
+el('prev').addEventListener('click', () => goTo(idx - 1));
+el('next').addEventListener('click', () => goTo(idx + 1));
+
+function buildViewRow() {
+  const options = [20, 30, 45, 60].filter(d => d <= cutDeg);
+  if (!options.includes(cutDeg)) options.push(cutDeg);
+  el('viewrow').innerHTML = options.map(d =>
+    `<button data-deg="${d}" class="${d === viewDeg ? 'on' : ''}">${d}°</button>`).join('');
+  [...el('viewrow').children].forEach(b => b.addEventListener('click', () => {
+    viewDeg = Number(b.dataset.deg);
+    try { localStorage.setItem(VIEW_KEY, String(viewDeg)); } catch (_) { /* private mode */ }
+    buildViewRow();
+    if (task) { fitView(); draw(); }
+  }));
+}
+
+(async function init() {
+  const data = await (await fetch('/api/tasks')).json();
+  meta = data;
+  tasks = data.tasks;
+  done = new Set(data.done || []);
+  cutDeg = data.cut_fov_deg || 60;
+  const wanted = Number(localStorage.getItem(VIEW_KEY));
+  viewDeg = wanted > 0 ? Math.min(wanted, cutDeg)
+                       : Math.round((data.initial_view_fraction || 1) * cutDeg);
+  el('who').textContent = data.annotator;
+
+  el('boxrule').textContent = data.box_rule || '';
+  const help = data.flag_help || {};
+  el('flags').replaceChildren(...data.flags.map((f, i) => {
+    const row = document.createElement('div');
+    row.className = 'flag';
+    row.dataset.flag = f;
+    // `title` rather than a custom popup: it is the one tooltip that survives the annotator being
+    // mid-drag on the canvas, and this page has no other hover state to collide with.
+    row.title = help[f] || '';
+    const name = document.createElement('span');
+    name.textContent = f;
+    const key = document.createElement('kbd');
+    key.textContent = String(i + 1);
+    row.append(name, key);
+    return row;
+  }));
+  [...el('flags').children].forEach(n => n.addEventListener('click', () => {
+    const f = n.dataset.flag;
+    flags = flags.includes(f) ? flags.filter(x => x !== f) : flags.concat(f);
+    syncUi();
+  }));
+
+  ACTIONS.forEach(a => {
+    if (a.key === 'w') a.label = `Whole ${cutDeg}° tile`;
+    const b = document.createElement('button');
+    b.innerHTML = `<span>${a.label}</span><kbd>${a.key}</kbd>`;
+    b.addEventListener('click', () => { a.fn(); });
+    el('keys').appendChild(b);
+  });
+  buildViewRow();
+
+  if (!tasks.length) return finish();
+  const first = tasks.findIndex(t => !done.has(t.label_uid));
+  if (first < 0) { idx = 0; goTo(0); toast('every label is annotated — stepping back to review'); }
+  else goTo(first);
+})();
+</script>
+</body>
+</html>
