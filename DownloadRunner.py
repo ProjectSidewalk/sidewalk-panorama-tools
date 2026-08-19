@@ -340,7 +340,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
 
 
 # Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration. Positional, parsed by
-# our log-analyzer tooling. The full column table lives in README.md's "Ops notes".
+# our log-analyzer tooling. The full column table lives in docs/ops.md.
 LOG_CSV_FIELD_COUNT = 18
 
 

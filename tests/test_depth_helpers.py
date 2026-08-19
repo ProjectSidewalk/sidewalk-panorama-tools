@@ -350,7 +350,7 @@ class TestWriteDepthArtifact:
     @pytest.mark.parametrize('indices', [[[1, 1]], [[0, 0]], [[0, 1]]],
                              ids=['no-sentinel', 'extra-sentinel', 'mirrored'])
     def test_indices_disagreeing_with_the_raster_refuse_to_write(self, tmp_path, indices):
-        """The README promises consumers that plane_indices == 0 exactly where depth == -1. That is the only
+        """docs/depth.md promises consumers that plane_indices == 0 exactly where depth == -1. That is the only
         cross-check that streetlevel's decode of the payload (which produces the raster) and ours (which
         produces the indices) still agree on column order and on which pixels have no plane, so it is
         enforced rather than assumed - a one-shot backfill cannot be re-derived offline.

@@ -806,7 +806,7 @@ def _write_depth_artifact(storage_path, pano_id, pano, planes):
     if tuple(planes.indices.shape) != stored_depth.shape:
         raise DepthPayloadError("pano %s plane indices shape %r does not match depth shape %r"
                                 % (pano_id, tuple(planes.indices.shape), stored_depth.shape))
-    # The one invariant the README promises consumers - index 0 sits exactly where the raster says -1 -
+    # The one invariant docs/depth.md promises consumers - index 0 sits exactly where the raster says -1 -
     # enforced instead of assumed. Both now come from our own decode, so this is no longer a cross-parser
     # check; what it still guards, for one pass over ~130k pixels, is the flip plumbing between the seam and
     # this writer (payload order -> mirrored -> un-mirrored) and any raster/index divergence a future edit
