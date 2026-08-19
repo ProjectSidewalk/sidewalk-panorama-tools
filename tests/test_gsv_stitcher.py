@@ -523,6 +523,51 @@ class TestDownloadSinglePano:
         assert native == DownloadResult.success
         assert upscaled == DownloadResult.fallback_success
 
+    def test_a_legacy_xml_beside_the_pano_is_ignored(self, tmp_path, monkeypatch):
+        """#52 items 3/4/5. download_single_pano used to read a legacy `<pano_id>.xml` for dims and zoom.
+        Its producer was removed in #39 (the cbk?output=xml endpoint died in 2022), but the files are still
+        on the store - sampled across dc/columbus-oh/amsterdam/newberg-or, 1,025 of them, of which exactly
+        ONE had no .jpg beside it. That one pano is the only case the block could ever run, because the
+        "image already exists -> skipped" check returns first.
+
+        The block is gone; dims come from /adminapi/panos and the zoom comes from the probe. This pins that
+        a stray .xml cannot change the outcome - including a malformed one, which the deleted code swallowed
+        with a bare `except Exception: pass` so it was indistinguishable from no file at all."""
+        shard = tmp_path / 'st'
+        shard.mkdir()
+        (shard / 'stitchPanoAAAAAAAAAAAA.xml').write_text('<not-even-xml')
+        stub_probe(monkeypatch, pick_zoom=5)
+        stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], jpeg_bytes(RED)))
+
+        result = gsv.download_single_pano(str(tmp_path), self.pano_info())
+
+        assert result == DownloadResult.success
+        with Image.open(shard / 'stitchPanoAAAAAAAAAAAA.jpg') as image:
+            assert image.size == (1024, 512)
+            assert gsv._black_fraction(image) == 0.0
+
+    def test_a_wellformed_legacy_xml_cannot_veto_a_pano_google_still_serves(self, tmp_path, monkeypatch):
+        """The discriminating half, and the reason deleting the block is a fix rather than a tidy-up.
+
+        A well-formed legacy XML declaring `num_zoom_levels` made the old code trust that zoom over the
+        probe, then test-fetch one tile at it - and return DownloadResult.failure if that tile came back
+        black. failure is PERMANENT under the #41 ledger: the pano is written downloaded=0 and never
+        re-attempted. So a stale 2022 XML could blacklist a pano that Google serves perfectly well today,
+        which is precisely the pano this block only ever runs on (an .xml with no .jpg beside it).
+
+        With the block gone the probe answers, finds zoom 5, and the pano downloads at native resolution."""
+        shard = tmp_path / 'st'
+        shard.mkdir()
+        (shard / 'stitchPanoAAAAAAAAAAAA.xml').write_text(
+            '<panorama><data_properties num_zoom_levels="3" width="8192" height="4096"/></panorama>')
+        stub_probe(monkeypatch, pick_zoom=5)
+        stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], jpeg_bytes(RED)))
+
+        result = gsv.download_single_pano(str(tmp_path), self.pano_info(width=8192, height=4096))
+
+        assert result == DownloadResult.success
+        assert (shard / 'stitchPanoAAAAAAAAAAAA.jpg').is_file()
+
     def test_degraded_tile_bodies_still_fill_the_whole_frame(self, tmp_path, monkeypatch, caplog):
         """The regression this review caught, end to end: every body arrives at half size (cbk's load-shed
         rendering). The saved pano must still be full-frame imagery at the reported dims, and the run must
