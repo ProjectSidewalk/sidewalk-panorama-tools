@@ -15,5 +15,7 @@ log_analyzer/logs/
 # raw cvMetadata dumps (~100 MB per city); regenerate with reports/scripts/pano_y_histogram.py
 reports/scripts/.cache/
 
-# Claude Code local agent state (worktrees, caches). Never belongs in the repo.
+# Claude Code local agent state (worktrees, caches, per-machine settings). Never belongs in the repo.
+# A shared .claude/settings.json is deliberately still trackable; only the .local. override is ignored.
 .claude/worktrees/
+.claude/settings.local.json

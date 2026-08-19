@@ -55,7 +55,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 | `docs/testing.md` | what the suite covers |
 | `docs/history.md` | removed code, and why |
 
-`tests/test_docs.py` fails if a relative link, a cross-page anchor, or a `docs/*.md` path cited in a Python comment stops resolving, and if a docs page is not linked from the README.
+`tests/test_docs.py` fails if a relative link or an anchor (cross-page **or** same-page) stops resolving, if a docs page is not linked from the README, or if a `docs/*.md` path cited in a Python comment **or in this file** goes missing — so the pointers above are checked, not decorative. Links are scanned over the joined page text, so one that hard-wraps across a newline is still checked.
 
 ## Architecture
 
@@ -75,7 +75,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 
 **CropRunner.py** — extracts per-label crops from downloaded panos.
 1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake additionally dtype-pins `pano_id` to `str` (the #46 bug class) and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
-2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 16384×8192 pano is ~250 MB decoded. Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, size, shifted)` centered at `(pano_x, pano_y)` where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]` (replacement tracked in #32/#54).
+2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 16384×8192 pano is 384 MB decoded (`16384 × 8192 × 3` bytes). Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, size, shifted)` centered at `(pano_x, pano_y)` where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]` (replacement tracked in #32/#54).
 3. Two preflights skip a label rather than emit a quietly wrong crop: a metadata/image **dims mismatch** (`dims_mismatch`) and a `pano_y` **outside the image** (`out_of_frame`).
 4. Writes to `<crop-dir>/<label_type_id>/<label_id>.jpg` through `atomic_output_path`. Existing crops are the resume marker (`skipped_existing`) and are **never re-cut**, so a store cropped before #47 keeps its black-padded crops — delete them to pick the fix up. Rotating `crop.log` lands next to the crops, not the CWD.
 5. `--mark-label` draws a dot at the label position **inside the crop**, never on the shared pano, and follows the label through both transforms. It is **off by default**: it was a `MARK_LABEL = True` module constant until #48, so every crop this tool produced before then has a (128, 0, 0) dot burned over the feature of interest.
@@ -193,7 +193,7 @@ See `docs/api-fields.md` for the full field glossary for `/adminapi/panos` and `
 
 ## Other directories
 
-- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
+- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), the README's hero figure (`test_make_banner.py`), and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
 - `log_analyzer/` — the log analyzer plus `cities.csv`; `log_analyzer/logs/` is a gitignored local cache.
 - `flag_panos/` — one-off web tool (HTML/JS) from the 2022 depth-endpoint outage. Not wired into the Python scripts; keep unless asked.
 - `samples/` — reference CSV/JSON/XML and a sample pano+crop used for manual testing and as examples for the `-c`/`-f` flags.

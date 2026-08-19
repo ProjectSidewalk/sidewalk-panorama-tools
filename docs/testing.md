@@ -19,7 +19,8 @@ CI runs exactly this on Ubuntu 22.04 / Python 3.10 for every push to `master` an
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
 | The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
-| That the docs' internal links resolve | `test_docs.py` |
+| That the docs' internal links and anchors resolve, and that cited `docs/` paths exist | `test_docs.py` |
+| That the README's hero figure still builds against the current cropper, and isn't stale | `test_make_banner.py` |
 
 ## Three things that are deliberately unusual
 

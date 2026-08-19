@@ -3,15 +3,18 @@
 Three failure modes this pins, all of which the split itself could have introduced:
 
 1. **A link points at a file that isn't there** — a page renamed, or a link written from memory.
-2. **A cross-page anchor points at a heading that isn't there.** These are the easiest to get wrong: an
-   anchor is a slug of a heading, so retitling a section breaks every link into it, and nothing about the
-   rendered page looks different - the jump just lands at the top.
+2. **An anchor points at a heading that isn't there.** These are the easiest to get wrong: an anchor is a
+   slug of a heading, so retitling a section breaks every link into it, and nothing about the rendered page
+   looks different - the jump just lands at the top. Same-page `#anchor` links count: they rot for exactly
+   the same reason, and dropping them (which this test did until the fix below) left the depth page's own
+   "read this first" callout unchecked.
 3. **A page is orphaned.** A doc nobody links to from the README's documentation map is, for a reader
    arriving at the front door, the same as a doc that does not exist.
 
-It also checks the other direction: code comments that cite a `docs/*.md` page (there are several - the
-log.csv column table, the log analyzer's setup, the depth artifact's invariants) name a file that exists.
-Those citations are the reason a reader trusts the comment instead of re-deriving the behaviour.
+It also checks the other direction: prose and code that cite a `docs/*.md` page by path (there are several -
+the log.csv column table, the log analyzer's setup, the depth artifact's invariants, and every pointer in
+CLAUDE.md) name a file that exists. Those citations are the reason a reader trusts the comment instead of
+re-deriving the behaviour.
 
 Anchors are slugged the way GitHub does it: lowercase, drop everything that is not a word character,
 whitespace, or hyphen, then turn each remaining whitespace character into a hyphen. Runs of whitespace are
@@ -31,14 +34,21 @@ PAGES = ['README.md', 'CONTRIBUTING.md'] + [
     os.path.join('docs', f) for f in sorted(os.listdir(DOCS_DIR)) if f.endswith('.md')
 ]
 
-# Python sources that may cite a docs page in a comment or docstring.
-PY_SOURCES = [
+# Sources named one by one, so a rename fails this test instead of quietly dropping the file out of coverage.
+# CLAUDE.md earns its place here for the same reason the Python sources do: it is a pointer document that
+# cites docs/ pages by path, and nothing else checks those.
+NAMED_SOURCES = [
+    'CLAUDE.md',
     'DownloadRunner.py', 'CropRunner.py', 'migrate_depth_artifacts.py', 'config.py',
     os.path.join('downloaders', 'gsv.py'), os.path.join('downloaders', 'mapillary.py'),
     os.path.join('downloaders', 'common.py'), os.path.join('log_analyzer', 'analyze.py'),
     os.path.join('assets', 'make_banner.py'),
-] + [os.path.join('tests', f) for f in sorted(os.listdir(os.path.join(REPO_ROOT, 'tests')))
-     if f.endswith('.py')]
+]
+
+# Everything that may cite a docs page in a comment, a docstring, or a paragraph.
+CITING_SOURCES = NAMED_SOURCES + [
+    os.path.join('tests', f) for f in sorted(os.listdir(os.path.join(REPO_ROOT, 'tests')))
+    if f.endswith('.py')]
 
 FENCE = re.compile(r'^\s*(```|~~~)')
 LINK = re.compile(r'\[[^\]]*\]\(([^)]+)\)')
@@ -71,15 +81,27 @@ def _anchors(path):
 
 
 def _links(path):
-    """(target, anchor) for every relative link on the page. External and in-page-only links are dropped."""
+    """(target, anchor) for every relative link on the page. External links are dropped.
+
+    Two things here are deliberate, and both were bugs first:
+
+    * **The scan runs over the joined text, not line by line.** These pages hard-wrap at ~110 characters, so
+      a `[text](target)` whose brackets straddle a newline is an ordinary thing to write - and a per-line
+      regex cannot see one, which made every assertion below skip it in silence. (`[^\\]]*` already spans
+      newlines, so joining is the whole fix.) A bracket and a paren from two different paragraphs are not a
+      link, hence the blank-line guard.
+    * **A same-page `#anchor` resolves to this page** rather than being dropped. Those rot exactly like a
+      cross-page anchor does, and dropping them left one unchecked on the depth page.
+    """
     found = []
-    for line in _uncode(path):
-        for m in LINK.finditer(line):
-            target = m.group(1).strip()
-            if target.startswith(('http://', 'https://', 'mailto:', '#')):
-                continue
-            file_part, _, anchor = target.partition('#')
-            found.append((file_part, anchor))
+    for m in LINK.finditer(''.join(_uncode(path))):
+        if '\n\n' in m.group(0):
+            continue
+        target = ''.join(m.group(1).split())      # a wrapped target carries the newline and its indent
+        if target.startswith(('http://', 'https://', 'mailto:')):
+            continue
+        file_part, _, anchor = target.partition('#')
+        found.append((file_part or os.path.basename(path), anchor))
     return found
 
 
@@ -138,11 +160,12 @@ def test_every_docs_page_is_linked_from_the_readme(doc):
     assert f'docs/{doc}' in targets, f'docs/{doc} is not linked from README.md'
 
 
-@pytest.mark.parametrize('source', PY_SOURCES)
+@pytest.mark.parametrize('source', CITING_SOURCES)
 def test_docs_paths_cited_in_code_exist(source):
+    # Asserted, not skipped: skipping on a missing file meant a rename silently retired the check instead of
+    # failing it, which is the same silent-rot failure this module exists to prevent.
     path = os.path.join(REPO_ROOT, source)
-    if not os.path.exists(path):
-        pytest.skip(f'{source} not present')
+    assert os.path.exists(path), f'{source} is gone or was renamed - update NAMED_SOURCES'
     with open(path, encoding='utf-8') as f:
         text = f.read()
     for cited in sorted(set(DOCS_PATH_IN_CODE.findall(text))):

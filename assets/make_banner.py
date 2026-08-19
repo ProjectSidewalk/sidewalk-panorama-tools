@@ -14,6 +14,11 @@ legacy `sv_image_x/y` pairs, but they do not belong to this panorama (converted 
 roadway), and `samples/sample_crop.jpg` is a crop of some third, uncommitted pano. So for the figure we pick a
 curb ramp visible in this pano by eye and let the code size the window around it - which is the part of the
 pipeline the figure is claiming to show.
+
+The output is **not** byte-reproducible across machines: `_font` picks the best face it can find, which is
+DejaVu on Linux and Segoe UI on Windows, so the captions render differently. The geometry - the only thing
+the figure is asserting - is identical either way. Regenerating on a different OS than the committed image
+was built on is therefore a real but purely cosmetic diff.
 """
 
 import os
@@ -65,7 +70,9 @@ def _font(size, bold=False):
         return ImageFont.load_default()
 
 
-def build():
+def build(out_path=OUT_PATH):
+    """Render the banner to out_path. Parameterised so a test can drive the real thing into a tmp dir - with
+    the destination hardcoded there was no way to exercise this without overwriting the committed figure."""
     Image.MAX_IMAGE_PIXELS = None                    # a real pano is well past Pillow's bomb ceiling
     pano = Image.open(PANO_PATH).convert('RGB')
     pano_w, pano_h = pano.size
@@ -110,9 +117,9 @@ def build():
     caption(PAD, 'DownloadRunner.py', f'stitched panorama - {pano_w} x {pano_h}')
     caption(crop_x, 'CropRunner.py', f'crop - {box.size} px')
 
-    banner.save(OUT_PATH, quality=88, optimize=True, progressive=True)
-    print(f'wrote {OUT_PATH}  ({banner.size[0]}x{banner.size[1]}, '
-          f'{os.path.getsize(OUT_PATH) / 1024:.0f} KB)\n'
+    banner.save(out_path, quality=88, optimize=True, progressive=True)
+    print(f'wrote {out_path}  ({banner.size[0]}x{banner.size[1]}, '
+          f'{os.path.getsize(out_path) / 1024:.0f} KB)\n'
           f'  label ({LABEL_X}, {LABEL_Y}) -> predicted {crop_size:.1f} px -> {box}')
 
 
