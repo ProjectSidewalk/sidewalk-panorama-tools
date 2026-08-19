@@ -36,10 +36,19 @@ RUNNER = os.path.join(REPO_ROOT, 'CropRunner.py')
 CSV_COLUMNS = ['pano_id', 'source', 'pano_x', 'pano_y', 'label_type_id',
                'camera_heading', 'heading', 'pitch', 'label_id']
 
-# A 512x256 pano with a label at y=128 predicts a 248.3 px crop — comfortably interior, so none of these
-# tests depend on the (separately tracked, #47) edge/seam behaviour.
-PANO_SIZE = (512, 256)
-INTERIOR_Y = 128
+# A 2048x1024 pano with a label at the horizon predicts a 96x64 window — comfortably interior, so none of
+# these tests depend on the (separately tracked, #47) edge/seam behaviour.
+#
+# The pano is this size because sizing rule v2 is resolution-normalised: a window is an ANGLE, so a toy
+# 512x256 pano yields a 24 px one and the 20 px landmark below would be larger than the crop it is meant
+# to sit inside. Shrinking the landmark instead would have hidden the property under test; the honest fix
+# is a pano whose pixels mean something. NEAR_BOTTOM_Y is under the horizon on purpose: it is where the
+# window is large enough for "the label is not at the centre" to be a visible distinction rather than a
+# rounding difference, which the top edge (at the 8-degree floor, a 31 px tall window) cannot show.
+PANO_SIZE = (2048, 1024)
+INTERIOR_Y = 512
+NEAR_TOP_Y = 8
+NEAR_BOTTOM_Y = 1000
 
 
 def label_row(pano_id='testpano0001', pano_x=200, pano_y=INTERIOR_Y, label_type_id=1, label_id=1):
@@ -58,18 +67,23 @@ def write_labels_csv(path, rows):
             writer.writerow(full)
 
 
-def put_pano(store_dir, pano_id, size=PANO_SIZE, color=(255, 255, 255), square_at=None):
+def put_pano(store_dir, pano_id, size=PANO_SIZE, color=(255, 255, 255), square_at=None,
+             square_size=20):
     """Write a synthetic pano JPEG into the store's <pano_id[:2]>/<pano_id>.jpg layout.
 
-    square_at: optionally burn a 20x20 black square centred there, as a JPEG-robust landmark.
+    square_at: optionally burn a square_size x square_size black square centred there, as a
+    JPEG-robust landmark. The size is a parameter because rule v2's window varies with the label's
+    depression angle, and a landmark that comfortably fits a near-field crop can be wider than a
+    far-field one.
     """
     shard = os.path.join(str(store_dir), pano_id[:2])
     os.makedirs(shard, exist_ok=True)
     img = Image.new('RGB', size, color)
     if square_at is not None:
         x, y = square_at
-        for dx in range(-10, 10):
-            for dy in range(-10, 10):
+        half = square_size // 2
+        for dx in range(-half, half):
+            for dy in range(-half, half):
                 if 0 <= x + dx < size[0] and 0 <= y + dy < size[1]:
                     img.putpixel((x + dx, y + dy), (0, 0, 0))
     path = os.path.join(shard, pano_id + '.jpg')
@@ -348,17 +362,84 @@ class TestServerFetch:
 # ---------------------------------------------------------------------------
 
 class TestPredictCropSize:
+    """The regression itself: unchanged constants, evaluated in the space they were fit in."""
 
     @pytest.mark.parametrize('pano_y, pano_height, expected', [
-        (4677, 8192, 503.21326713898634),   # a real Seattle sample row
-        (5049, 8192, 1200.051484399708),    # near field, unclamped
-        (4096, 8192, 248.32906718298392),   # the horizon
-        (0, 8192, 50),                      # far field clamps to the floor
-        (6000, 8192, 1500),                 # near field clamps to the ceiling
-        (128, 256, 248.32906718298392),     # height-normalised: same relative y, same size
+        (3328, 6656, 248.32906718298392),   # the horizon AT the calibration height
+        (2000, 6656, 107.29426765313778),   # above the horizon
+        (0, 6656, 54.649733399851385),      # the top row: the smallest window the formula can ask for
+        (6000, 6656, 1500),                 # near field clamps to the ceiling
     ])
-    def test_known_values(self, crop_runner, pano_y, pano_height, expected):
+    def test_is_the_old_formula_at_the_calibration_height(self, crop_runner, pano_y, pano_height,
+                                                          expected):
+        """At pano_height == V1_REF_HEIGHT the normalisation is the identity, so these are the
+        values the pre-v2 function returned. That is the compatibility claim, pinned."""
         assert crop_runner.predict_crop_size(pano_y, pano_height) == pytest.approx(expected)
+
+    @pytest.mark.parametrize('pano_height', [2048, 6656, 16384])
+    def test_the_regressions_lower_clamp_is_now_unreachable(self, crop_runner, pano_height):
+        """A consequence of normalising that is worth knowing about rather than discovering later.
+
+        Normalisation bounds the reference y-offset at +/-V1_REF_HEIGHT/2 for EVERY pano, because the
+        offset is scaled by the same factor as the pano - so the largest distance the regression can
+        ever be handed is fixed, and with it the smallest size: 54.65 reference px, above the 50 px
+        floor. The floor is dead code kept for fidelity to the published formula; what actually bounds
+        a far-field window now is CROP_MIN_FOV_DEG, one level up in crop_window_width."""
+        smallest = crop_runner.predict_crop_size(0, pano_height) * 6656.0 / pano_height
+        assert smallest > crop_runner.V1_SIZE_MIN
+        assert smallest == pytest.approx(54.649733399851385)
+
+    @pytest.mark.parametrize('pano_height', [2048, 4000, 6656, 8192, 16384])
+    def test_the_same_relative_y_scales_with_the_pano(self, crop_runner, pano_height):
+        """The defect v2 fixes, stated as a property. The old function fed native pixels into
+        constants fit on 6656-px panos, so the same ramp at the same place in the world asked for a
+        different window on a bigger pano. Normalised, the window is a fixed FRACTION of the pano -
+        which is the same thing as a fixed angle.
+
+        This is the case the pre-v2 suite claimed to cover and did not: its two rows both sat exactly
+        on the horizon, where the y-offset is zero and raw and normalised agree for any height, so it
+        passed under a rule that has no normalisation in it at all."""
+        at_horizon = crop_runner.predict_crop_size(pano_height / 2, pano_height)
+        assert at_horizon == pytest.approx(248.32906718298392 * pano_height / 6656.0)
+
+    @pytest.mark.parametrize('pano_height', [2048, 4000, 6656, 8192, 16384])
+    def test_window_width_is_an_angle_independent_of_resolution(self, crop_runner, pano_height):
+        """What the cropper actually cuts. A quarter-degree below the horizon subtends the same angle
+        whatever the pano's pixel count, so the window must too."""
+        y = pano_height / 2 + 10.0 / 180.0 * pano_height          # 10 degrees below the horizon
+        deg = crop_runner.crop_window_width(y, pano_height) / pano_height * 180.0
+        assert deg == pytest.approx(25.0, abs=0.05)
+
+    def test_scale_and_clamps_are_applied_on_top_of_the_regression(self, crop_runner):
+        h = 8192
+        near = h / 2 + 40.0 / 180.0 * h                            # deep near field
+        far = 0                                                    # far above the horizon
+        mid = h / 2 + 10.0 / 180.0 * h
+
+        assert crop_runner.crop_window_width(mid, h) == pytest.approx(
+            crop_runner.predict_crop_size(mid, h) * crop_runner.CROP_SIZE_SCALE)
+        assert crop_runner.crop_window_width(near, h) / h * 180.0 == pytest.approx(
+            crop_runner.CROP_MAX_FOV_DEG)
+        assert crop_runner.crop_window_width(far, h) / h * 180.0 == pytest.approx(
+            crop_runner.CROP_MIN_FOV_DEG)
+
+
+class TestStorageSize:
+    """min(window, 1440): a ceiling, not a target."""
+
+    def test_a_wide_window_is_downscaled_to_the_cap(self, crop_runner):
+        out = crop_runner.downscale_for_storage(Image.new('RGB', (3000, 2000)))
+        assert out.size == (crop_runner.CROP_MAX_STORED_WIDTH, 960)
+
+    def test_a_narrow_window_is_left_alone_rather_than_upscaled(self, crop_runner):
+        """The whole point. The ramp carries a fixed number of source pixels; stretching them to fill
+        a 1440-px file adds bytes and blur, not detail."""
+        crop = Image.new('RGB', (300, 200))
+        assert crop_runner.downscale_for_storage(crop) is crop
+
+    def test_the_cap_preserves_the_aspect(self, crop_runner):
+        out = crop_runner.downscale_for_storage(Image.new('RGB', (2880, 1920)))
+        assert out.size == (1440, 960)
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +479,7 @@ class TestBulkExtractCrops:
         shifted_vertically is deliberately NOT in the sum - it annotates a success (the crop was
         written, just de-centred), so counting it as its own bucket would double-count."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
-        put_pano(store, 'testpano0001')          # 512x256
+        put_pano(store, 'testpano0001')          # 2048x1024
         crop_runner.bulk_extract_crops([label_row(label_id=1)], str(store), str(out))  # pre-exists
 
         labels = [
@@ -408,7 +489,7 @@ class TestBulkExtractCrops:
             dict(label_row(label_id=4), pano_width=1024, pano_height=512),   # dims_mismatch
             label_row(label_id=5, pano_y=-720),                       # out_of_frame
             label_row(label_id=6, pano_x='not-a-number'),             # errors
-            label_row(label_id=7, pano_y=8),                          # success, shifted
+            label_row(label_id=7, pano_y=NEAR_TOP_Y),                 # success, shifted
         ]
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
 
@@ -668,12 +749,12 @@ class TestMarkLabel:
         inside label 2's crop. It must not."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        labels = [label_row(label_id=1, pano_x=200), label_row(label_id=2, pano_x=260)]
+        labels = [label_row(label_id=1, pano_x=200), label_row(label_id=2, pano_x=230)]
         crop_runner.bulk_extract_crops(labels, str(store), str(out), mark_label=True)
         with Image.open(crop_path(out, 1, 2)) as crop2:
             w, h = crop2.size
             # Label 1's pano position, expressed in crop 2's coordinates.
-            other = crop2.getpixel((w // 2 - 60, h // 2))
+            other = crop2.getpixel((w // 2 - 30, h // 2))
             centre = crop2.getpixel((w // 2, h // 2))
         assert sum(centre) < 600   # crop 2's own mark is present
         assert sum(other) > 600    # crop 2 does not contain crop 1's mark
@@ -797,48 +878,57 @@ def darkest_pixel_sum(crop):
 
 
 class TestComputeCropBox:
-    """The pure geometry: integer window, x wraps at the seam, y clamps by shifting, size capped."""
+    """The pure geometry: integer 3:2 window, x wraps at the seam, y clamps by shifting, size capped."""
 
     def test_interior_label_is_centred(self, crop_runner):
         box = crop_runner.compute_crop_box(300, 128, 248.33, 512, 256)
-        assert (box.left, box.top, box.size) == (300 - 124, 128 - 124, 248)
+        assert (box.left, box.top, box.width, box.height) == (176, 46, 248, 165)
         assert box.shifted is False
+
+    def test_the_window_is_three_by_two(self, crop_runner):
+        """Not square. A square window is stretched 1.5x by ImageController on write, and curb-ramp
+        aprons run ~3:1 in equirectangular pixels, so its extra height is sky and road."""
+        for requested in (120, 248.33, 900):
+            box = crop_runner.compute_crop_box(1000, 512, requested, 2048, 1024)
+            assert box.width / box.height == pytest.approx(crop_runner.CROP_ASPECT_W_OVER_H, abs=0.01)
 
     def test_x_wraps_at_the_seam(self, crop_runner):
         """x=0 and x=width are the same place in the world; the window must reach across, not stop."""
         box = crop_runner.compute_crop_box(0, 128, 248.33, 512, 256)
-        assert (box.left, box.top, box.size) == ((0 - 124) % 512, 4, 248)
+        assert (box.left, box.top, box.width) == ((0 - 124) % 512, 46, 248)
 
     def test_top_clamps_by_shifting(self, crop_runner):
         """The poles are NOT adjacent, so y shifts to stay inside rather than wrapping or padding."""
         box = crop_runner.compute_crop_box(300, 8, 248.33, 512, 256)
         assert box.top == 0
-        assert box.size == 248
+        assert (box.width, box.height) == (248, 165)
 
     def test_bottom_clamps_by_shifting(self, crop_runner):
         box = crop_runner.compute_crop_box(300, 250, 200.0, 512, 256)
-        assert box.top == 256 - 200
+        assert box.top == 256 - 133
 
     def test_size_caps_at_the_pano(self, crop_runner):
-        """predict_crop_size can return up to 1500; a window can never exceed the image it's cut from."""
+        """crop_window_width can ask for up to 90 degrees; a window can never exceed the image it is
+        cut from. On a 2:1 pano the binding term is pano_height * 1.5, not pano_width: capping at the
+        width alone would leave a 512-wide window needing 341 rows out of 256."""
         box = crop_runner.compute_crop_box(300, 250, 1500, 512, 256)
-        assert box.size == 256
+        assert (box.width, box.height) == (384, 256)
         assert box.top == 0
 
     def test_size_caps_at_the_narrow_axis_of_a_portrait_pano(self, crop_runner):
-        """The cap is min(size, width, height), and the WIDTH half is load-bearing, not decoration:
-        drop it and a window wider than the pano makes extract_crop's second segment read past the
-        far edge, where Pillow zero-fills - reintroducing #47's black exactly where the fix claims
-        to have removed it. Every other pano in this file is landscape or square, so nothing else
-        discriminates the width term."""
+        """The cap is min(requested, pano_width, pano_height * 1.5), and the WIDTH term is
+        load-bearing, not decoration: drop it and a window wider than the pano makes extract_crop's
+        second segment read past the far edge, where Pillow zero-fills - reintroducing #47's black
+        exactly where the fix claims to have removed it. Every other pano in this file is landscape,
+        so nothing else discriminates the width term."""
         box = crop_runner.compute_crop_box(100, 300, 400, 200, 600)
-        assert box.size == 200
+        assert box.width == 200
         assert 0 <= box.left < 200
-        assert 0 <= box.top <= 600 - box.size
+        assert 0 <= box.top <= 600 - box.height
 
     def test_box_reports_whether_it_shifted(self, crop_runner):
         """The shift is reported by the geometry itself rather than re-derived by the caller: a
-        second copy of round(pano_y - size / 2) elsewhere is free to drift out of step with this
+        second copy of round(pano_y - height / 2) elsewhere is free to drift out of step with this
         one, and a de-centred crop that quietly stops being announced is exactly the class of
         silence this PR exists to remove."""
         assert crop_runner.compute_crop_box(300, 128, 248.33, 512, 256).shifted is False
@@ -849,15 +939,15 @@ class TestComputeCropBox:
         """Pillow's float-box crop banker's-rounds each edge independently, so the same predicted size
         yielded 503- or 504-px crops depending on the centre's parity. Integers end that.
 
-        `left` is pinned too, not just `size`: this is the only case exercising a fractional centre,
-        so without it a truncating int(...) in place of int(round(...)) would move every such window
-        a pixel with nothing to notice. Expected values are round-half-to-even on pano_x - 251.5,
-        matching Python's round()."""
+        `left` is pinned too, not just the dimensions: this is the only case exercising a fractional
+        centre, so without it a truncating int(...) in place of int(round(...)) would move every such
+        window a pixel with nothing to notice. Expected values are round-half-to-even on
+        pano_x - 251.5, matching Python's round()."""
         for x, raw_left in ((100, -152), (100.5, -151), (101, -150), (250.25, -1)):
-            box = crop_runner.compute_crop_box(x, 128, 503.21, 2048, 1024)
+            box = crop_runner.compute_crop_box(x, 512, 503.21, 2048, 1024)
             assert isinstance(box.left, int) and isinstance(box.top, int)
-            assert isinstance(box.size, int)
-            assert box.size == 503
+            assert isinstance(box.width, int) and isinstance(box.height, int)
+            assert (box.width, box.height) == (503, 335)
             assert box.left == raw_left % 2048
 
 
@@ -873,7 +963,7 @@ class TestSeamCrops:
         assert counts['success'] == 1
         with Image.open(crop_path(out, 1, 1)) as crop:
             w, h = crop.size
-            assert (w, h) == (248, 248)
+            assert (w, h) == (96, 64)
             just_left_of_centre = crop.getpixel((w // 2 - 10, h // 2))
             just_right_of_centre = crop.getpixel((w // 2 + 10, h // 2))
             no_black = darkest_pixel_sum(crop)
@@ -887,7 +977,7 @@ class TestSeamCrops:
         """Same property approached from x = width-1."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_striped_pano(store, 'testpano0001')
-        counts = crop_runner.bulk_extract_crops([label_row(pano_x=511)], str(store), str(out))
+        counts = crop_runner.bulk_extract_crops([label_row(pano_x=2047)], str(store), str(out))
         assert counts['success'] == 1
         with Image.open(crop_path(out, 1, 1)) as crop:
             w, h = crop.size
@@ -899,12 +989,12 @@ class TestSeamCrops:
         assert no_black > 60
 
     @pytest.mark.parametrize('pano_x, pano_y', [
-        (0, 128),      # left seam
-        (511, 128),    # right seam
-        (300, 8),      # near the top edge
-        (300, 250),    # near the bottom edge
-        (0, 0),        # corner: seam wrap and top clamp together
-        (511, 255),    # corner: seam wrap and bottom clamp together
+        (0, INTERIOR_Y),        # left seam
+        (2047, INTERIOR_Y),     # right seam
+        (300, NEAR_TOP_Y),      # near the top edge
+        (300, NEAR_BOTTOM_Y),   # near the bottom edge, where the window is widest
+        (0, 0),                 # corner: seam wrap and top clamp together
+        (2047, 1023),           # corner: seam wrap and bottom clamp together
     ])
     def test_no_crop_ever_contains_synthetic_black(self, crop_runner, tmp_path, pano_x, pano_y):
         """The general #47 property on an all-white pano: whatever the label position, the crop is real
@@ -920,29 +1010,42 @@ class TestSeamCrops:
 
 class TestEdgeClampBehaviour:
 
-    def test_label_near_top_stays_at_its_true_position(self, crop_runner, tmp_path):
+    def test_label_near_an_edge_stays_at_its_true_position(self, crop_runner, tmp_path):
         """When the window shifts to stay inside, the label is deliberately no longer centred — the
-        landmark must sit at its true (shifted) position in the crop, not be dragged to the centre."""
+        landmark must sit at its true (shifted) position in the crop, not be dragged to the centre.
+
+        Taken at the BOTTOM edge rather than the top: rule v2 sizes by depression angle, so a
+        near-field label gets a wide window in which "at the label" and "at the centre" are far apart,
+        while a top-edge label sits at the 8-degree floor and its 31-row window cannot separate the
+        two at all."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
-        put_pano(store, 'testpano0001', square_at=(300, 8))
-        crop_runner.bulk_extract_crops([label_row(pano_x=300, pano_y=8)], str(store), str(out))
+        put_pano(store, 'testpano0001', square_at=(300, NEAR_BOTTOM_Y))
+        crop_runner.bulk_extract_crops([label_row(pano_x=300, pano_y=NEAR_BOTTOM_Y)],
+                                       str(store), str(out))
+        box = crop_runner.compute_crop_box(300, NEAR_BOTTOM_Y,
+                                           crop_runner.crop_window_width(NEAR_BOTTOM_Y, 1024),
+                                           2048, 1024)
+        assert box.shifted is True
         with Image.open(crop_path(out, 1, 1)) as crop:
             w, h = crop.size
-            at_label = crop.getpixel((w // 2, 8))       # top=0, so crop row == pano row
+            at_label = crop.getpixel((w // 2, NEAR_BOTTOM_Y - box.top))
             at_centre = crop.getpixel((w // 2, h // 2))
         assert sum(at_label) < 150       # the landmark, at its true position
         assert sum(at_centre) > 600      # the centre is plain imagery, not the landmark
 
     def test_mark_follows_the_label_not_the_crop_centre(self, crop_runner, tmp_path):
         """--mark-label must annotate the label's true position; under an edge shift that is not the
-        crop centre."""
+        crop centre. At the bottom edge, for the reason given above."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        crop_runner.bulk_extract_crops([label_row(pano_x=300, pano_y=8)], str(store), str(out),
-                                       mark_label=True)
+        crop_runner.bulk_extract_crops([label_row(pano_x=300, pano_y=NEAR_BOTTOM_Y)],
+                                       str(store), str(out), mark_label=True)
+        box = crop_runner.compute_crop_box(300, NEAR_BOTTOM_Y,
+                                           crop_runner.crop_window_width(NEAR_BOTTOM_Y, 1024),
+                                           2048, 1024)
         with Image.open(crop_path(out, 1, 1)) as crop:
             w, h = crop.size
-            at_label = crop.getpixel((w // 2, 8))
+            at_label = crop.getpixel((w // 2, NEAR_BOTTOM_Y - box.top))
             at_centre = crop.getpixel((w // 2, h // 2))
         assert sum(at_label) < 600       # the dot
         assert sum(at_centre) > 600      # not at the centre
@@ -952,7 +1055,7 @@ class TestEdgeClampBehaviour:
         discrimination that the mark's x is computed modulo the seam, not clamped."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        crop_runner.bulk_extract_crops([label_row(pano_x=0, pano_y=128)], str(store), str(out),
+        crop_runner.bulk_extract_crops([label_row(pano_x=0, pano_y=INTERIOR_Y)], str(store), str(out),
                                        mark_label=True)
         with Image.open(crop_path(out, 1, 1)) as crop:
             w, h = crop.size
@@ -967,7 +1070,7 @@ class TestDimsReconciliation:
 
     def test_mismatched_dims_are_a_loud_skip(self, crop_runner, tmp_path, caplog):
         store, out = tmp_path / 'store', tmp_path / 'crops'
-        put_pano(store, 'testpano0001')  # 512x256 on disk
+        put_pano(store, 'testpano0001')  # 2048x1024 on disk
         row = label_row()
         row.update(pano_width=1024, pano_height=512)
         with caplog.at_level(logging.WARNING):
@@ -981,7 +1084,7 @@ class TestDimsReconciliation:
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         row = label_row()
-        row.update(pano_width=512, pano_height=256)
+        row.update(pano_width=2048, pano_height=1024)
         counts = crop_runner.bulk_extract_crops([row], str(store), str(out))
         assert counts['success'] == 1
         assert counts['dims_mismatch'] == 0
@@ -1043,21 +1146,21 @@ class TestCoordinateBounds:
     def test_label_below_the_bottom_edge_is_a_loud_skip(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        counts = crop_runner.bulk_extract_crops([label_row(pano_y=300)], str(store), str(out))
+        counts = crop_runner.bulk_extract_crops([label_row(pano_y=1100)], str(store), str(out))
         assert counts['out_of_frame'] == 1
 
     def test_pano_y_equal_to_the_height_is_out_of_frame(self, crop_runner, tmp_path):
         """Row indices run [0, height); pano_y == height is one row past the last one."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        counts = crop_runner.bulk_extract_crops([label_row(pano_y=256)], str(store), str(out))
+        counts = crop_runner.bulk_extract_crops([label_row(pano_y=1024)], str(store), str(out))
         assert counts['out_of_frame'] == 1
 
     def test_the_last_real_row_is_still_in_frame(self, crop_runner, tmp_path):
         """Discrimination for the test above: the check must be < height, not <= height - 1 - k."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        counts = crop_runner.bulk_extract_crops([label_row(pano_y=255)], str(store), str(out))
+        counts = crop_runner.bulk_extract_crops([label_row(pano_y=1023)], str(store), str(out))
         assert counts['success'] == 1
         assert counts['out_of_frame'] == 0
 
@@ -1067,7 +1170,7 @@ class TestCoordinateBounds:
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_striped_pano(store, 'testpano0001')
         counts = crop_runner.bulk_extract_crops(
-            [label_row(label_id=1, pano_x=0), label_row(label_id=2, pano_x=512)],
+            [label_row(label_id=1, pano_x=0), label_row(label_id=2, pano_x=2048)],
             str(store), str(out))
         assert counts['success'] == 2
         assert counts['out_of_frame'] == 0
@@ -1088,10 +1191,10 @@ class TestCoordinateBounds:
         """The two real rows, at their real pano dimensions. Pre-check they clamped to a pole and
         produced a clean crop of the wrong place; the geometry still would, which is why the
         rejection has to happen before the crop, not inside it."""
-        size = crop_runner.predict_crop_size(pano_y, pano_height)
-        box = crop_runner.compute_crop_box(pano_x, pano_y, size, pano_width, pano_height)
+        width = crop_runner.crop_window_width(pano_y, pano_height)
+        box = crop_runner.compute_crop_box(pano_x, pano_y, width, pano_width, pano_height)
         assert box.shifted is True
-        assert not 0 <= pano_y - box.top < box.size   # the label is not inside its own crop
+        assert not 0 <= pano_y - box.top < box.height  # the label is not inside its own crop
         assert not 0 <= pano_y < pano_height          # ... because the row is out of frame
 
     def test_a_shifted_crop_is_counted_but_still_succeeds(self, crop_runner, tmp_path):
@@ -1101,7 +1204,7 @@ class TestCoordinateBounds:
         success rather than as its own bucket."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        counts = crop_runner.bulk_extract_crops([label_row(pano_y=8)], str(store), str(out))
+        counts = crop_runner.bulk_extract_crops([label_row(pano_y=NEAR_TOP_Y)], str(store), str(out))
         assert counts['success'] == 1
         assert counts['shifted_vertically'] == 1
         assert counts['out_of_frame'] == 0

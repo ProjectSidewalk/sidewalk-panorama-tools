@@ -43,7 +43,52 @@ REQUIRED_LABEL_COLUMNS = ('pano_id', 'pano_x', 'pano_y', 'label_type_id', 'label
 
 # The crop window compute_crop_box resolves. `shifted` rides along rather than being recomputed by
 # callers: it is derived from the same rounding that produced `top`, so the two cannot drift apart.
-CropBox = collections.namedtuple('CropBox', ['left', 'top', 'size', 'shifted'])
+CropBox = collections.namedtuple('CropBox', ['left', 'top', 'width', 'height', 'shifted'])
+
+# Which sizing rule cut a crop store. Stamped into the run summary because crops are derived data with
+# no other provenance on disk: a store cut under one rule and topped up under another is otherwise
+# indistinguishable from a consistent one, and every consumer here trains on whole directories.
+CROP_RULE_VERSION = 'v2'
+
+# ---------------------------------------------------------------------------
+# Sizing rule v2. Measured, not guessed - see reports/2026-08-19-crop-sizing-v2.md for the four-city
+# extent gold and the three blind human rounds these five numbers come out of.
+
+# The 2013 pano-y -> distance -> size regression, and the pano height it was fit on. The formula is
+# unchanged; what v2 fixes is that it used to be fed native pixels regardless of resolution.
+V1_REF_HEIGHT = 6656.0
+V1_DIST_INTERCEPT = 19.80546390
+V1_DIST_SLOPE = 0.01523952
+V1_SIZE_COEF = 8725.6
+V1_SIZE_EXP = -1.192
+V1_SIZE_MIN = 50.0
+V1_SIZE_MAX = 1500.0
+
+# The window the formula asks for is about the size of the ramp itself, so it ships scaled. x2.5 is
+# where two independent instruments overlap: absolute judgement puts "too tight" above fill 0.49, which
+# needs at least x1.95, and two forced-choice rounds peak at fill 0.28-0.44, i.e. x2-x3.
+CROP_SIZE_SCALE = 2.5
+
+# The scaled window is clamped as an angle, not as pixels, because the whole point of v1-norm is that a
+# window means the same thing on a 2048-px pano as on a 16384-px one. The floor keeps a far-field crop
+# from collapsing to a postage stamp; the ceiling stops a near-field one from swallowing a quarter of
+# the sphere. Measured over 482 gold ramps, the ceiling binds on 9-15% of them and the floor never does.
+CROP_MIN_FOV_DEG = 8.0
+CROP_MAX_FOV_DEG = 90.0
+
+# Windows are cut 3:2 rather than square. Curb-ramp aprons run ~3:1 in equirectangular pixels, so the
+# top and bottom of a square window are sky and road; measured, framing quality reads the same at 1:1,
+# 3:2 and 2:1 because it is the ramp against the window WIDTH that binds. 3:2 is also the shape the
+# rest of Project Sidewalk already assumes - stored crops and share images are 1440x960 and the label
+# canvas is 720x480 - so a square window would be stretched 1.5x by ImageController on write.
+CROP_ASPECT_W_OVER_H = 1.5
+
+# Crops are stored at min(window, 1440) px wide. 1440 is a ceiling, not a target: a window narrower
+# than that is written at its own size rather than upscaled, because the ramp carries a fixed number of
+# source pixels and stretching them adds bytes and blur, not detail. Under the old rule 89% of crops
+# were upscales, median 4.0x, worst exactly where the imagery is weakest (95% of Richmond, 98% of
+# Annapolis above 2x).
+CROP_MAX_STORED_WIDTH = 1440
 
 
 def raise_decompression_bomb_ceiling():
@@ -216,50 +261,89 @@ def load_label_metadata(sidewalk_server_fdqn, label_metadata_file):
     return fetch_cvMetadata_from_server(sidewalk_server_fdqn)
 
 
+def _reference_crop_size(ref_y_offset):
+    """The 2013 regression evaluated in the 6656-px-high space it was fit in.
+
+    Two experimentally determined steps, unchanged since sidewalk-cv-tools#2: a linear map from the
+    label's offset above the horizon to a camera-to-label distance, then a power law from that distance
+    to a crop size, clamped to [50, 1500] px. `ref_y_offset` is already in reference space - putting the
+    conversion in the caller is what keeps this function honest about the one coordinate frame its
+    constants mean anything in.
+
+    :param ref_y_offset: pixels above the horizon, expressed on a 6656-px-high pano.
+    :return: crop size in reference pixels.
+    """
+    distance = max(0.0, V1_DIST_INTERCEPT + V1_DIST_SLOPE * ref_y_offset)
+    size = V1_SIZE_COEF * distance ** V1_SIZE_EXP if distance > 0 else 0.0
+    if size > V1_SIZE_MAX or distance == 0:
+        size = V1_SIZE_MAX
+    if size < V1_SIZE_MIN:
+        size = V1_SIZE_MIN
+    return size
+
+
 def predict_crop_size(pano_y, pano_height):
+    """Resolution-normalised `predict_crop_size`: the size the regression asks for, in native pixels.
+
+    The constants above were fit on GSV panoramas 6656 px high, and for a decade this function fed them
+    native pixels from panos of any height - so the same ramp at the same place in the world asked for a
+    different window depending only on how large the pano happened to be served. Measured on 2048-px
+    panos the error is 1.97x. The fix is to convert into reference space, evaluate there (including the
+    [50, 1500] clamp, which is also a reference-space quantity), and scale the answer back:
+
+        ref_offset = (pano_height / 2 - pano_y) * (V1_REF_HEIGHT / pano_height)
+
+    Upstream's own docstring says step 1 "converts pano_y to the old version of pano_y that we had when
+    this alg was written" - that conversion is what was missing, so this is the faithful reading of the
+    formula rather than a new one. Bit-identical to the old behaviour at pano_height == 6656.
+
+    This is the sizing rule on its own. It is deliberately NOT what the cropper cuts: see
+    crop_window_width, which scales and clamps it. Callers wanting the window want that one.
+
+    :return: crop size in native pixels of this pano.
     """
-    As it stands, this algorithm:
-    1. Converts `pano_y` and `pano_height` to the old version of `pano_y` that we had when this alg was written.
-    2. Approximates the distance to label from camera using an experimentally determined formula.
-    3. Predict an ideal crop size using an experimentally determined formula based on the estimated distance.
+    ref_offset = (pano_height / 2 - pano_y) * (V1_REF_HEIGHT / pano_height)
+    return _reference_crop_size(ref_offset) * (pano_height / V1_REF_HEIGHT)
 
-    Here is some context for the current formulae:
-    https://github.com/ProjectSidewalk/sidewalk-cv-tools/issues/2#issuecomment-510609873
-    https://github.com/ProjectSidewalk/SidewalkWebpage/issues/633#issuecomment-307283178
 
-    There are some clear areas to improve this function:
-    1. We have an updated distance estimation formula that takes into account zoom level:
-       https://github.com/ProjectSidewalk/SidewalkWebpage/blob/develop/public/javascripts/SVLabel/src/SVLabel/label/Label.js#L17
-    2. That distance estimation formula should be recreated given some of the bugs we've fixed in the past few years.
+def crop_window_width(pano_y, pano_height):
+    """The window width rule v2 actually cuts, in native pixels: predict_crop_size scaled and clamped.
+
+    Three steps, each of which is one measured number from reports/2026-08-19-crop-sizing-v2.md:
+
+    1. **Scale by CROP_SIZE_SCALE.** The regression predicts something close to the ramp's own extent,
+       which as a crop reads as "too tight" - it is a size estimate, not a framing decision.
+    2. **Clamp as an angle.** Converting to degrees is what makes the clamp resolution-independent;
+       a fixed pixel clamp is the defect this rule exists to fix, one level up. Production panos are
+       2:1, where degrees-per-pixel is the same on both axes, so `width / pano_height * 180` and
+       `width / pano_width * 360` agree; the height form is used because the size it clamps is a
+       vertical quantity all the way back to the regression's y-offset.
+    3. **Return a width.** The 3:2 window is cut by width (compute_crop_box derives the height), because
+       the ramp against the window's width is what decides whether a crop reads as too tight.
+
+    Not clamped to the pano here: compute_crop_box owns the "a window cannot exceed the image" cap,
+    because that is a property of the image rather than of the rule, and keeping it there means the
+    reported window is the one that was cut.
     """
-    old_pano_y = pano_height / 2 - pano_y
-    crop_size = 0
-    distance = max(0, 19.80546390 + 0.01523952 * old_pano_y)
-
-    if distance > 0:
-        crop_size = 8725.6 * (distance ** -1.192)
-    if crop_size > 1500 or distance == 0:
-        crop_size = 1500
-    if crop_size < 50:
-        crop_size = 50
-
-    return crop_size
+    deg = predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE / pano_height * 180.0
+    deg = min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
+    return deg / 180.0 * pano_height
 
 
-def compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height):
-    """Integer crop window for an equirectangular pano: x wraps at the seam, y clamps by shifting.
+def compute_crop_box(pano_x, pano_y, crop_width, pano_width, pano_height):
+    """Integer 3:2 crop window for an equirectangular pano: x wraps at the seam, y clamps by shifting.
 
     On an equirectangular pano, column 0 and column width are the same place in the world, so a window
     near either edge reaches across the seam (#47) - extract_crop pastes the two segments. The poles are
     NOT adjacent, so the window shifts vertically to stay inside rather than wrapping or zero-padding:
     no crop ever contains synthetic black, at the price of the label sitting off-centre vertically when
-    it is within crop_size/2 of the top or bottom edge.
+    it is within height/2 of the top or bottom edge.
 
-    size is round(crop_size) capped at BOTH pano dimensions - predict_crop_size can say 1500 but a window
-    can never exceed the image it is cut from. (Production panos are 2:1 with height >= 1664, so only
-    sub-crop-size synthetic images actually hit the cap.) The width half of that cap is load-bearing, not
-    symmetry: a window wider than the pano makes extract_crop's second segment read past the far edge,
-    where Pillow zero-fills - the #47 black, back again. Integers throughout: Pillow's float-box crop
+    The window is 3:2 (CROP_ASPECT_W_OVER_H) and capped so it fits the pano on both axes at that shape:
+    width is capped at pano_width AND at pano_height * 1.5, which is what keeps the derived height
+    inside the image without silently changing the aspect. The width cap is load-bearing, not symmetry:
+    a window wider than the pano makes extract_crop's second segment read past the far edge, where
+    Pillow zero-fills - the #47 black, back again. Integers throughout: Pillow's float-box crop
     banker's-rounds each edge independently, which made output dimensions vary with the centre's parity.
 
     Callers must not re-derive `shifted` from pano_y: it is reported here, off the same rounding that
@@ -270,27 +354,43 @@ def compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height):
     such check: column 0 and column pano_width are the same place in the world, so the modulo below is
     the correct reading of any finite x.
 
-    :return: CropBox(left, top, size, shifted) - integers, 0 <= left < pano_width,
-             0 <= top <= pano_height - size, and shifted True when the window moved to stay inside.
+    :param crop_width: requested window WIDTH in native pixels, per crop_window_width.
+    :return: CropBox(left, top, width, height, shifted) - integers, 0 <= left < pano_width,
+             0 <= top <= pano_height - height, and shifted True when the window moved to stay inside.
     """
-    size = min(int(round(crop_size)), pano_width, pano_height)
-    left = int(round(pano_x - size / 2)) % pano_width
-    ideal_top = int(round(pano_y - size / 2))
-    top = max(0, min(ideal_top, pano_height - size))
-    return CropBox(left, top, size, top != ideal_top)
+    width = int(round(min(crop_width, pano_width, pano_height * CROP_ASPECT_W_OVER_H)))
+    height = int(round(width / CROP_ASPECT_W_OVER_H))
+    left = int(round(pano_x - width / 2)) % pano_width
+    ideal_top = int(round(pano_y - height / 2))
+    top = max(0, min(ideal_top, pano_height - height))
+    return CropBox(left, top, width, height, top != ideal_top)
 
 
-def extract_crop(pano, left, top, size):
-    """Extract the (left, top, size) window from an equirectangular pano, pasting two segments when the
-    window crosses the seam."""
+def extract_crop(pano, left, top, width, height):
+    """Extract the (left, top, width, height) window from an equirectangular pano, pasting two segments
+    when the window crosses the seam."""
     pano_width = pano.size[0]
-    if left + size <= pano_width:
-        return pano.crop((left, top, left + size, top + size))
-    out = Image.new(pano.mode, (size, size))
+    if left + width <= pano_width:
+        return pano.crop((left, top, left + width, top + height))
+    out = Image.new(pano.mode, (width, height))
     first_width = pano_width - left
-    out.paste(pano.crop((left, top, pano_width, top + size)), (0, 0))
-    out.paste(pano.crop((0, top, size - first_width, top + size)), (first_width, 0))
+    out.paste(pano.crop((left, top, pano_width, top + height)), (0, 0))
+    out.paste(pano.crop((0, top, width - first_width, top + height)), (first_width, 0))
     return out
+
+
+def downscale_for_storage(crop):
+    """Cap a cut window at CROP_MAX_STORED_WIDTH, never stretching one that is already narrower.
+
+    The ramp inside a crop carries however many source pixels the imagery gave it, and no resampling
+    adds more - so upscaling a narrow window to hit a fixed output size buys bytes and blur. Returned
+    unchanged when it already fits, so the common far-field case does no work and loses nothing.
+    """
+    width, height = crop.size
+    if width <= CROP_MAX_STORED_WIDTH:
+        return crop
+    scale = CROP_MAX_STORED_WIDTH / width
+    return crop.resize((CROP_MAX_STORED_WIDTH, max(1, int(round(height * scale)))), Image.LANCZOS)
 
 
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
@@ -317,27 +417,29 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     try:
         pano_width, pano_height = pano.size
 
-        crop_size = predict_crop_size(pano_y, pano_height)
-        box = compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height)
-        left, top, size = box.left, box.top, box.size
-        cropped_square = extract_crop(pano, left, top, size)
+        box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_height),
+                               pano_width, pano_height)
+        cropped = downscale_for_storage(extract_crop(pano, box.left, box.top, box.width, box.height))
 
         if draw_mark:
             # Draw on the crop, never the source pano: the pano image is shared by every label on it, so a
             # mark on the source would leak this label's dot into its neighbours' crops. The label's x is
             # recovered modulo the seam, and its y deliberately follows any vertical shift - the dot marks
-            # the label, not the crop centre.
-            draw = ImageDraw.Draw(cropped_square)
+            # the label, not the crop centre. Drawn after the downscale, and its centre carried across by
+            # the same factor, so the dot is a fixed size in the file rather than shrinking with the
+            # window it happened to be cut from.
+            scale = cropped.size[0] / box.width
+            draw = ImageDraw.Draw(cropped)
             r = 10
-            centre_x = (pano_x - left) % pano_width
-            centre_y = pano_y - top
+            centre_x = ((pano_x - box.left) % pano_width) * scale
+            centre_y = (pano_y - box.top) * scale
             draw.ellipse((centre_x - r, centre_y - r, centre_x + r, centre_y + r), fill=128)
 
         # The crop file is its own resume marker (bulk_extract_crops skips existing ones), so a mid-write
         # crash must not leave a truncated .jpg the next run trusts - same contract as every write in
         # downloaders/. format= is explicit because the temp path ends in .part, not .jpg.
         with atomic_output_path(output_filename) as tmp_path:
-            cropped_square.save(tmp_path, format='JPEG')
+            cropped.save(tmp_path, format='JPEG')
         return box
     finally:
         if close_after:
@@ -494,12 +596,16 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     logging.info("Label %d on pano %s: window shifted to stay inside the pano "
                                  "(top=%d), so the label sits %d px from the crop's centre",
                                  label_id, pano_id, box.top,
-                                 abs(int(pano_y - box.top - box.size / 2)))
+                                 abs(int(pano_y - box.top - box.height / 2)))
                 logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
         finally:
             pano.close()
 
     print("Finished.")
+    # The rule version goes in the summary because a crop store carries no other provenance: cut under
+    # one rule and topped up under another, it looks exactly like a consistent one, and every consumer
+    # here trains on whole directories.
+    print("Crop sizing rule %s." % CROP_RULE_VERSION)
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
           "%d skipped on a metadata/image dimension mismatch, %d skipped for a label position outside "
           "the image, %d errors, of %d labels total."

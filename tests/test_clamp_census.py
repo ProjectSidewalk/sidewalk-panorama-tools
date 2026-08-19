@@ -1,12 +1,11 @@
 """Tests for reports/scripts/clamp_census.py — the crop-size clamp/truncation census.
 
-The census replicates CropRunner.predict_crop_size (CropRunner has no import guard, so importing
-it would run a download). The replica is pinned against the REAL function, ast-extracted from
-CropRunner.py source — if the deployed formula ever changes, the census fails here rather than
-silently measuring a stale formula.
+The census replicates the crop-size formula as it stood when the census ran (sizing rule v1). That
+replica is pinned against a frozen copy of v1 below rather than against CropRunner, which now ships
+rule v2 — see the note above _real_predict_crop_size for why, and for which of this report's
+findings survive the change.
 """
 
-import ast
 import os
 import sys
 
@@ -23,15 +22,39 @@ for p in (REPO_ROOT, SCRIPTS):
 import clamp_census as cc  # noqa: E402
 
 
+
+# ---------------------------------------------------------------------------
+# Sizing rule v1, frozen.
+#
+# This census was run under rule v1 - raw pixels into constants fit on 6656-px panos, square window.
+# CropRunner has since shipped rule v2 (resolution-normalised, x2.5, 3:2, angular clamps; see
+# reports/2026-08-19-crop-sizing-v2.md), so pinning against the deployed function would now compare
+# this report's numbers to a formula that did not produce them.
+#
+# The pin against CropRunner did its job: it failed the moment the rule changed, which is how this
+# note came to be written instead of the census quietly describing geometry nobody cuts any more.
+# What replaces it is the same guard against a different target - the replica must still faithfully
+# reproduce the rule the corpus was measured under, which is now a historical constant.
+#
+# NOTE FOR ANY RE-USE: findings that depend on the window's SIZE are v1 findings and do not carry
+# over. The seam-crossing rate in particular is a function of window width, and v2's windows are
+# ~2.5x wider - re-run the census before citing that number against current crops.
+
+
 def _real_predict_crop_size():
-    """Extract predict_crop_size from CropRunner.py without importing the module."""
-    with open(os.path.join(REPO_ROOT, 'CropRunner.py')) as f:
-        tree = ast.parse(f.read())
-    fn = next(n for n in tree.body
-              if isinstance(n, ast.FunctionDef) and n.name == 'predict_crop_size')
-    ns = {}
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), 'CropRunner.py', 'exec'), ns)
-    return ns['predict_crop_size']
+    """Rule v1's predict_crop_size, scalar, exactly as it stood when this census was run."""
+    def predict_crop_size(pano_y, pano_height):
+        old_pano_y = pano_height / 2 - pano_y
+        crop_size = 0
+        distance = max(0, 19.80546390 + 0.01523952 * old_pano_y)
+        if distance > 0:
+            crop_size = 8725.6 * (distance ** -1.192)
+        if crop_size > 1500 or distance == 0:
+            crop_size = 1500
+        if crop_size < 50:
+            crop_size = 50
+        return crop_size
+    return predict_crop_size
 
 
 class TestReplicaFidelity:

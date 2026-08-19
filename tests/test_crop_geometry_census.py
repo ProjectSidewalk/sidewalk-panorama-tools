@@ -4,10 +4,10 @@ The census replicates CropRunner's geometry vectorized — it has to run over 43
 the array form. Both replicas are pinned against the REAL functions here, so if the deployed
 geometry ever changes the census fails in CI rather than silently measuring a stale formula.
 
-CropRunner is imported directly rather than ast-extracted (the older reports/scripts tests predate
-#52.1 and had no choice): the import is side-effect-free now, and test_crop_runner.py pins that.
-ast extraction would in any case no longer work here, since compute_crop_box returns a
-module-level CropBox that a lifted function body cannot see.
+The replicas are pinned against frozen copies of sizing rule v1 rather than against the deployed
+functions, which now implement rule v2 — see the note by _v1_predict_crop_size. CropRunner is still
+imported (its import is side-effect-free since #52.1, pinned by test_crop_runner.py) for the
+geometry properties that v2 did not change.
 
 The committed-findings class pins the conclusions the PR #77 review and the follow-up fixes rest
 on, offline, from reports/data/2026-08-10-crop-geometry-census.json.
@@ -30,6 +30,41 @@ for p in (REPO_ROOT, SCRIPTS):
 import CropRunner  # noqa: E402
 import crop_geometry_census as cgc  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Sizing rule v1, frozen.
+#
+# This census was run under rule v1 - raw pixels into constants fit on 6656-px panos, square window.
+# CropRunner has since shipped rule v2 (resolution-normalised, x2.5, 3:2, angular clamps; see
+# reports/2026-08-19-crop-sizing-v2.md), so pinning against the deployed function would now compare
+# this report's numbers to a formula that did not produce them.
+#
+# The pin against CropRunner did its job: it failed the moment the rule changed, which is how this
+# note came to be written instead of the census quietly describing geometry nobody cuts any more.
+# What replaces it is the same guard against a different target - the replica must still faithfully
+# reproduce the rule the corpus was measured under, which is now a historical constant.
+#
+# NOTE FOR ANY RE-USE: findings that depend on the window's SIZE are v1 findings and do not carry
+# over. The seam-crossing rate in particular is a function of window width, and v2's windows are
+# ~2.5x wider - re-run the census before citing that number against current crops.
+
+
+def _v1_predict_crop_size(pano_y, pano_height):
+    """Rule v1: native pixels straight into the 6656-calibrated constants."""
+    distance = max(0, 19.80546390 + 0.01523952 * (pano_height / 2 - pano_y))
+    crop_size = 8725.6 * (distance ** -1.192) if distance > 0 else 0
+    if crop_size > 1500 or distance == 0:
+        crop_size = 1500
+    return max(crop_size, 50)
+
+
+def _v1_compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height):
+    """Rule v1's square window. The seam wrap and the y-shift are unchanged in v2; the SHAPE is not,
+    so this keeps its own copy rather than calling the deployed function."""
+    size = min(int(round(crop_size)), pano_width, pano_height)
+    left = int(round(pano_x - size / 2)) % pano_width
+    ideal_top = int(round(pano_y - size / 2))
+    return left, max(0, min(ideal_top, pano_height - size)), size
+
 CENSUS_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-crop-geometry-census.json')
 
 
@@ -37,7 +72,7 @@ class TestReplicaFidelity:
     """The census is only as good as its replicas matching the deployed code."""
 
     def test_predict_crop_size_replica_matches(self):
-        real = CropRunner.predict_crop_size
+        real = _v1_predict_crop_size
         for h in (1664.0, 3328.0, 6656.0, 8192.0):
             ys = np.linspace(-800, h + 200, 97)
             mine = cgc.predict_crop_size(ys, np.full_like(ys, h))
@@ -47,7 +82,7 @@ class TestReplicaFidelity:
     def test_compute_crop_box_replica_matches(self):
         """Including the banker's rounding: np.round and Python's round are both half-to-even, and
         the census's seam/shift rates would drift by a pixel at odd crop sizes if they weren't."""
-        real = CropRunner.compute_crop_box
+        real = _v1_compute_crop_box
         rng = np.random.default_rng(0)
         for w, h in ((16384, 8192), (13312, 6656), (3328, 1664), (512, 256), (200, 600)):
             xs = np.concatenate([rng.uniform(-50, w + 50, 200), [0, w, w - 1, w / 2]])
@@ -55,9 +90,8 @@ class TestReplicaFidelity:
             sizes = np.concatenate([rng.uniform(1, 1600, 200), [50, 503, 1500, h + 10]])
             mine = cgc.compute_crop_box(xs, ys, sizes, w, h)
             for i, (x, y, sz) in enumerate(zip(xs, ys, sizes)):
-                box = real(x, y, sz, w, h)
                 mine_i = tuple(int(v[i]) for v in mine)
-                assert mine_i == (box.left, box.top, box.size), (w, h, x, y, sz)
+                assert mine_i == real(x, y, sz, w, h), (w, h, x, y, sz)
 
 
 class TestGeometryFlags:
@@ -102,11 +136,11 @@ class TestGeometryFlags:
 
     def test_x_at_the_seam_boundary_still_centres_the_label(self):
         """Why x is exempt from the bounds check, asserted rather than argued."""
-        size = CropRunner.predict_crop_size(5010, 8192)
-        at_width = CropRunner.compute_crop_box(16384, 5010, size, 16384, 8192)
-        at_zero = CropRunner.compute_crop_box(0, 5010, size, 16384, 8192)
+        width = CropRunner.crop_window_width(5010, 8192)
+        at_width = CropRunner.compute_crop_box(16384, 5010, width, 16384, 8192)
+        at_zero = CropRunner.compute_crop_box(0, 5010, width, 16384, 8192)
         assert at_width == at_zero
-        assert abs((16384 - at_width.left) % 16384 - at_width.size / 2) <= 1
+        assert abs((16384 - at_width.left) % 16384 - at_width.width / 2) <= 1
 
     def test_dims_are_per_pano_detects_a_planted_split(self):
         """Discrimination: the corpus answer is 0, so the check must be able to return non-zero."""
