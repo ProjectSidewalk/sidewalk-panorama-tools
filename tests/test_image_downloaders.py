@@ -82,6 +82,36 @@ class TestAtomicOutputPath:
         assert os.stat(final).st_mode & 0o777 == 0o664
 
 
+class TestDownloadResultIsARealEnum:
+    """#52 item 2. `DownloadResult` was a hand-rolled class whose members were tuple indices, which cost
+    three things the stdlib gives away: `skipped` was 0 and therefore FALSY (so `if result:` anywhere
+    misclassifies it), a typo'd member raised `ValueError` from inside `__getattr__` rather than
+    `AttributeError` (so `hasattr` RAISED instead of returning False, and the message never named the
+    attribute), and members printed into logs as bare ints."""
+
+    def test_no_member_is_falsy(self):
+        """The one that could have silently misclassified a pano: 'skipped' was index 0."""
+        for member in DownloadResult:
+            assert member, f"{member!r} is falsy; `if result:` would misread it"
+
+    def test_a_typo_raises_attribute_error_naming_the_attribute(self):
+        with pytest.raises(AttributeError, match='sucess'):
+            DownloadResult.sucess
+
+    def test_hasattr_answers_instead_of_raising(self):
+        assert hasattr(DownloadResult, 'success')
+        assert not hasattr(DownloadResult, 'sucess')
+
+    def test_members_identify_themselves_in_logs(self):
+        """A log line carrying a bare 2 says nothing; the point of the enum is that the name travels."""
+        assert 'fallback_success' in repr(DownloadResult.fallback_success)
+
+    def test_the_four_outcomes_are_distinct(self):
+        members = [DownloadResult.skipped, DownloadResult.success,
+                   DownloadResult.fallback_success, DownloadResult.failure]
+        assert len(set(members)) == 4
+
+
 class FakeResponse:
     def __init__(self, status_code=200, payload=None, body=None, chunks=None):
         self.status_code = status_code
