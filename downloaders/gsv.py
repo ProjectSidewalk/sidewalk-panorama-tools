@@ -423,12 +423,23 @@ def download_single_pano(storage_path, pano_info):
                         "stitching at reduced resolution - check the CBK request parameters (#73)",
                         pano_id, degraded, len(ok), TILE_SIZE)
 
-    image = _stitch_tiles(ok, _dims_at_zoom(final_image_width, final_image_height, zoom), final_im_dimension)
+    zoom_dims = _dims_at_zoom(final_image_width, final_image_height, zoom)
+    image = _stitch_tiles(ok, zoom_dims, final_im_dimension)
     _reject_mostly_black_stitch(image, pano_id, zoom)
     # atomic_output_path, not a direct save: an image on disk IS the resume marker, so a mid-write crash
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:
         image.save(tmp_path, 'jpeg')
+
+    # log.csv column 8 (#52 item 2). The test is whether the grid we could actually download covers the
+    # pano's reported frame; if it doesn't, _stitch_tiles LANCZOS-upscaled to reach it, and the JPEG on disk
+    # holds less imagery than its dimensions advertise. Deliberately NOT `zoom == 3`: an old four-level pano
+    # (3328x1664) has max zoom 3, so zoom 3 IS its native resolution and nothing was lost - calling that
+    # degraded would put a permanent false positive in front of ops on the oldest imagery in the store.
+    if zoom_dims != final_im_dimension:
+        logging.info("IMAGEDOWNLOAD: pano %s: only zoom %s was available for a %dx%d frame; stitched %dx%d "
+                     "and upscaled", pano_id, zoom, final_image_width, final_image_height, *zoom_dims)
+        return DownloadResult.fallback_success
     return DownloadResult.success
 
 

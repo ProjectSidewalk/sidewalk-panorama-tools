@@ -708,6 +708,49 @@ class TestRetrySemantics:
         assert attempts == []
 
 
+class TestFallbackResolutionReachesTheLog:
+    """log.csv column 8, which README documents as "downloaded, but at a fallback resolution".
+
+    `fallback_success` was defined in the enum and threaded through this loop's counters, but no downloader
+    ever returned it - so the column has been a hard 0 for every run ever recorded, and
+    log_analyzer/analyze.py sums that zero into daily_success. gsv.download_single_pano now returns it when
+    the stitch had to be upscaled to reach the pano's reported dims; these pin the loop's half of that.
+    """
+
+    def fallback_download_pano(self, attempts):
+        def fake(storage_path, pano_info):
+            attempts.append(pano_info['pano_id'])
+            return downloaders.DownloadResult.fallback_success
+        return fake
+
+    def test_a_fallback_is_counted_in_its_own_column_not_as_a_plain_success(self, monkeypatch, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        monkeypatch.setattr(DownloadRunner, 'download_pano', self.fallback_download_pano([]))
+
+        success, fallback, fail, skipped, total = DownloadRunner.download_panorama_images(
+            str(storage), gsv_pano_infos()[:1])
+
+        assert (success, fallback, fail, skipped, total) == (0, 1, 0, 0, 1)
+
+    def test_a_fallback_is_ledgered_downloaded_1_and_never_reattempted(self, monkeypatch, tmp_path):
+        """It is real imagery on disk, just less of it - so it is terminal like any other success. Ledgering
+        it 0 would re-download it against --max-runtime every night, forever."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        attempts = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', self.fallback_download_pano(attempts))
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        with open(storage / 'pano_id_log.csv') as f:
+            assert f.read().strip().splitlines()[1:] == ['%s,1' % GSV_PANO_IDS[0]]
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert attempts == [GSV_PANO_IDS[0]], "a ledgered fallback must not be re-attempted"
+
+
 class TestSourceOrdering:
     """#40: grouping by source put every GSV pano ahead of every Mapillary one, so a city whose GSV backlog
     exceeds --max-runtime starved Mapillary indefinitely - zero progress, and invisibly, since unattempted
