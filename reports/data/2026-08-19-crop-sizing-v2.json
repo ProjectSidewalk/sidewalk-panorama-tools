@@ -2,26 +2,39 @@
  "cities": {
   "annapolis": {
    "n": 131,
+   "pano_heights": [
+    4000
+   ],
+   "provider": "mapillary",
+   "ramp_width_deg_p50": 14.9292,
    "v1": {
-    "containment": 0.5114503816793893,
+    "containment": 0.3282442748091603,
     "fill_p10": 0.481042345276873,
     "fill_p50": 0.971607843137255,
     "fill_p90": 1.6687323943661974,
+    "fits_by_size": 0.5114503816793893,
     "frac_clearing_too_tight": 0.10687022900763359,
-    "frac_upsampled_over_2x": 0.9847328244274809,
-    "median_upsample": 4.542586750788644,
+    "imagecontroller_frac_upsampled_over_2x": 0.9847328244274809,
+    "imagecontroller_median_upsample": 4.542586750788644,
+    "stored_width_p10": 275,
+    "stored_width_p50": 317,
+    "stored_width_p90": 419,
     "window_deg_p10": 12.375000000000002,
     "window_deg_p50": 14.265,
     "window_deg_p90": 18.855
    },
    "v2": {
-    "containment": 0.9465648854961832,
+    "containment": 0.8549618320610687,
     "fill_p10": 0.2691764705882353,
     "fill_p50": 0.5186577181208054,
     "fill_p90": 0.8126200274348424,
+    "fits_by_size": 0.9465648854961832,
     "frac_clearing_too_tight": 0.42748091603053434,
-    "frac_upsampled_over_2x": 0.0,
-    "median_upsample": 1.0,
+    "imagecontroller_frac_upsampled_over_2x": 0.648854961832061,
+    "imagecontroller_median_upsample": 2.4956672443674175,
+    "stored_width_p10": 443,
+    "stored_width_p50": 577,
+    "stored_width_p90": 1080,
     "window_deg_p10": 19.935,
     "window_deg_p50": 25.964999999999996,
     "window_deg_p90": 48.6
@@ -29,14 +42,25 @@
   },
   "paterson": {
    "n": 109,
+   "pano_heights": [
+    1664,
+    6656,
+    8192
+   ],
+   "provider": "gsv",
+   "ramp_width_deg_p50": 8.744399999999999,
    "v1": {
-    "containment": 0.7522935779816514,
+    "containment": 0.47706422018348627,
     "fill_p10": 0.5660566523605151,
     "fill_p50": 0.8331666885245901,
     "fill_p90": 1.1519367901234567,
+    "fits_by_size": 0.7522935779816514,
     "frac_clearing_too_tight": 0.05504587155963303,
-    "frac_upsampled_over_2x": 0.7889908256880734,
-    "median_upsample": 3.5036496350364965,
+    "imagecontroller_frac_upsampled_over_2x": 0.7889908256880734,
+    "imagecontroller_median_upsample": 3.5036496350364965,
+    "stored_width_p10": 300,
+    "stored_width_p50": 411,
+    "stored_width_p90": 1164,
     "window_deg_p10": 6.591796875,
     "window_deg_p50": 9.03076171875,
     "window_deg_p90": 27.0263671875
@@ -46,9 +70,13 @@
     "fill_p10": 0.21873140529531568,
     "fill_p50": 0.31493625392396235,
     "fill_p90": 0.456975421686747,
+    "fits_by_size": 0.9908256880733946,
     "frac_clearing_too_tight": 0.926605504587156,
-    "frac_upsampled_over_2x": 0.0,
-    "median_upsample": 1.0,
+    "imagecontroller_frac_upsampled_over_2x": 0.009174311926605505,
+    "imagecontroller_median_upsample": 1.273209549071618,
+    "stored_width_p10": 890,
+    "stored_width_p50": 1131,
+    "stored_width_p90": 1440,
     "window_deg_p10": 19.5556640625,
     "window_deg_p50": 24.85107421875,
     "window_deg_p90": 50.07568359375
@@ -56,26 +84,42 @@
   },
   "richmond": {
    "n": 299,
+   "pano_heights": [
+    2048,
+    2880,
+    5500,
+    6144
+   ],
+   "provider": "mapillary",
+   "ramp_width_deg_p50": 9.972,
    "v1": {
-    "containment": 0.6923076923076923,
+    "containment": 0.5250836120401338,
     "fill_p10": 0.44,
     "fill_p50": 0.8060714285714285,
     "fill_p90": 1.4346478873239437,
+    "fits_by_size": 0.6923076923076923,
     "frac_clearing_too_tight": 0.1605351170568562,
-    "frac_upsampled_over_2x": 0.9698996655518395,
-    "median_upsample": 4.311377245508982,
+    "imagecontroller_frac_upsampled_over_2x": 0.9698996655518395,
+    "imagecontroller_median_upsample": 4.311377245508982,
+    "stored_width_p10": 275,
+    "stored_width_p50": 334,
+    "stored_width_p90": 513,
     "window_deg_p10": 9.196363636363635,
     "window_deg_p50": 12.216796875,
     "window_deg_p90": 23.203125
    },
    "v2": {
-    "containment": 0.9832775919732442,
+    "containment": 0.9498327759197325,
     "fill_p10": 0.22231884057971013,
     "fill_p50": 0.37812500000000004,
     "fill_p90": 0.6703587443946188,
+    "fits_by_size": 0.9832775919732442,
     "frac_clearing_too_tight": 0.7424749163879598,
-    "frac_upsampled_over_2x": 0.0,
-    "median_upsample": 1.0,
+    "imagecontroller_frac_upsampled_over_2x": 0.4882943143812709,
+    "imagecontroller_median_upsample": 1.927710843373494,
+    "stored_width_p10": 351,
+    "stored_width_p50": 747,
+    "stored_width_p90": 1334,
     "window_deg_p10": 19.53818181818182,
     "window_deg_p50": 24.840000000000003,
     "window_deg_p90": 43.88727272727273
@@ -83,26 +127,40 @@
   },
   "sao_paulo": {
    "n": 119,
+   "pano_heights": [
+    6656,
+    8192
+   ],
+   "provider": "gsv",
+   "ramp_width_deg_p50": 9.666,
    "v1": {
-    "containment": 0.7899159663865546,
+    "containment": 0.48739495798319327,
     "fill_p10": 0.6015213238770686,
     "fill_p50": 0.8274586016260163,
     "fill_p90": 1.1647705747126438,
+    "fits_by_size": 0.7899159663865546,
     "frac_clearing_too_tight": 0.03361344537815126,
-    "frac_upsampled_over_2x": 0.7058823529411765,
-    "median_upsample": 2.962962962962963,
+    "imagecontroller_frac_upsampled_over_2x": 0.7058823529411765,
+    "imagecontroller_median_upsample": 2.962962962962963,
+    "stored_width_p10": 330,
+    "stored_width_p50": 486,
+    "stored_width_p90": 1500,
     "window_deg_p10": 7.2509765625,
     "window_deg_p50": 10.6787109375,
     "window_deg_p90": 32.958984375
    },
    "v2": {
-    "containment": 0.9915966386554622,
+    "containment": 0.9831932773109243,
     "fill_p10": 0.22029741991341992,
     "fill_p50": 0.3220909161793372,
     "fill_p90": 0.438210433244916,
+    "fits_by_size": 0.9915966386554622,
     "frac_clearing_too_tight": 0.9495798319327731,
-    "frac_upsampled_over_2x": 0.0,
-    "median_upsample": 1.0,
+    "imagecontroller_frac_upsampled_over_2x": 0.0,
+    "imagecontroller_median_upsample": 1.1276429130775254,
+    "stored_width_p10": 950,
+    "stored_width_p50": 1277,
+    "stored_width_p90": 1440,
     "window_deg_p10": 21.005859375,
     "window_deg_p50": 28.05908203125,
     "window_deg_p90": 66.9287109375
@@ -118,13 +176,85 @@
  },
  "figure_examples": [
   {
+   "city": "annapolis",
+   "depression_deg": 6.83,
+   "key": "missed:1",
+   "pano_h": 4000,
+   "pano_id": "869773754548856",
+   "pano_w": 8000,
+   "v1_fill": 0.689,
+   "v1_window_deg": 13.0,
+   "v1_window_px": 288,
+   "v2_fill": 0.411,
+   "v2_window_deg": 21.7,
+   "v2_window_px": [
+    483,
+    322
+   ]
+  },
+  {
+   "city": "annapolis",
+   "depression_deg": 20.74,
+   "key": "det:4",
+   "pano_h": 4000,
+   "pano_id": "1424988461692696",
+   "pano_w": 8000,
+   "v1_fill": 0.72,
+   "v1_window_deg": 18.9,
+   "v1_window_px": 419,
+   "v2_fill": 0.279,
+   "v2_window_deg": 48.6,
+   "v2_window_px": [
+    1080,
+    720
+   ]
+  },
+  {
+   "city": "paterson",
+   "depression_deg": 5.05,
+   "key": "missed:1",
+   "pano_h": 6656,
+   "pano_id": "ycJKMD6I5D8glf_jMPqkDQ",
+   "pano_w": 13312,
+   "v1_fill": 0.44,
+   "v1_window_deg": 8.1,
+   "v1_window_px": 299,
+   "v2_fill": 0.176,
+   "v2_window_deg": 20.2,
+   "v2_window_px": [
+    747,
+    498
+   ]
+  },
+  {
+   "city": "paterson",
+   "depression_deg": 20.74,
+   "key": "det:0",
+   "pano_h": 8192,
+   "pano_id": "Xs3lDDc1o50wJmW9eGx_WA",
+   "pano_w": 16384,
+   "v1_fill": 0.749,
+   "v1_window_deg": 25.6,
+   "v1_window_px": 1164,
+   "v2_fill": 0.394,
+   "v2_window_deg": 48.6,
+   "v2_window_px": [
+    2213,
+    1475
+   ]
+  },
+  {
    "city": "richmond",
    "depression_deg": 5.63,
    "key": "missed:1",
    "pano_h": 5500,
    "pano_id": "1991876994661275",
    "pano_w": 11000,
+   "v1_fill": 0.546,
+   "v1_window_deg": 9.6,
    "v1_window_px": 294,
+   "v2_fill": 0.254,
+   "v2_window_deg": 20.7,
    "v2_window_px": [
     632,
     421
@@ -137,7 +267,11 @@
    "pano_h": 5500,
    "pano_id": "1050503583329955",
    "pano_w": 11000,
+   "v1_fill": 1.104,
+   "v1_window_deg": 15.9,
    "v1_window_px": 485,
+   "v2_fill": 0.435,
+   "v2_window_deg": 40.3,
    "v2_window_px": [
     1231,
     821
@@ -150,7 +284,11 @@
    "pano_h": 8192,
    "pano_id": "oubzmEZebW0xt9hWWIgN3Q",
    "pano_w": 16384,
+   "v1_fill": 0.863,
+   "v1_window_deg": 7.6,
    "v1_window_px": 348,
+   "v2_fill": 0.301,
+   "v2_window_deg": 21.9,
    "v2_window_px": [
     997,
     665
@@ -163,7 +301,11 @@
    "pano_h": 8192,
    "pano_id": "I0LGgFwBsGIYNbIsIaLgpQ",
    "pano_w": 16384,
+   "v1_fill": 0.377,
+   "v1_window_deg": 33.0,
    "v1_window_px": 1500,
+   "v2_fill": 0.197,
+   "v2_window_deg": 63.0,
    "v2_window_px": [
     2867,
     1911
@@ -183,25 +325,33 @@
  "pooled": {
   "n": 658,
   "v1": {
-   "containment": 0.6838905775075987,
+   "containment": 0.47112462006079026,
    "fill_p10": 0.4807407407407407,
    "fill_p50": 0.8391666666666667,
    "fill_p90": 1.43,
+   "fits_by_size": 0.6838905775075987,
    "frac_clearing_too_tight": 0.1094224924012158,
-   "frac_upsampled_over_2x": 0.8951367781155015,
-   "median_upsample": 4.137931034482759,
+   "imagecontroller_frac_upsampled_over_2x": 0.8951367781155015,
+   "imagecontroller_median_upsample": 4.137931034482759,
+   "stored_width_p10": 281,
+   "stored_width_p50": 348,
+   "stored_width_p90": 807,
    "window_deg_p10": 7.646484375,
    "window_deg_p50": 12.915,
    "window_deg_p90": 23.90625
   },
   "v2": {
-   "containment": 0.9787234042553191,
+   "containment": 0.9437689969604863,
    "fill_p10": 0.22631136690647483,
    "fill_p50": 0.37068156424581006,
    "fill_p90": 0.6728818897637795,
+   "fits_by_size": 0.9787234042553191,
    "frac_clearing_too_tight": 0.7477203647416414,
-   "frac_upsampled_over_2x": 0.0,
-   "median_upsample": 1.0,
+   "imagecontroller_frac_upsampled_over_2x": 0.3525835866261398,
+   "imagecontroller_median_upsample": 1.6494845360824741,
+   "stored_width_p10": 458,
+   "stored_width_p50": 873,
+   "stored_width_p90": 1440,
    "window_deg_p10": 19.5556640625,
    "window_deg_p50": 24.85107421875,
    "window_deg_p90": 50.07272727272728

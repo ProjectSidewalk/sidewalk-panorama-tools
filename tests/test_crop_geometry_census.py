@@ -29,9 +29,9 @@ for p in (REPO_ROOT, SCRIPTS):
 
 import CropRunner  # noqa: E402
 import crop_geometry_census as cgc  # noqa: E402
+import crop_rule_v1  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Sizing rule v1, frozen.
+# Rule v1, frozen, from the one copy in reports/scripts/crop_rule_v1.py.
 #
 # This census was run under rule v1 - raw pixels into constants fit on 6656-px panos, square window.
 # CropRunner has since shipped rule v2 (resolution-normalised, x2.5, 3:2, angular clamps; see
@@ -40,30 +40,17 @@ import crop_geometry_census as cgc  # noqa: E402
 #
 # The pin against CropRunner did its job: it failed the moment the rule changed, which is how this
 # note came to be written instead of the census quietly describing geometry nobody cuts any more.
-# What replaces it is the same guard against a different target - the replica must still faithfully
-# reproduce the rule the corpus was measured under, which is now a historical constant.
+# What replaces it is the same guard against a different target - the vectorized replica in
+# crop_geometry_census must still faithfully reproduce the rule the corpus was measured under, which
+# is now a historical constant. Imported rather than transcribed, for the reason in crop_rule_v1's
+# docstring: three files needed a frozen v1 and three hand copies agree until one is edited.
 #
 # NOTE FOR ANY RE-USE: findings that depend on the window's SIZE are v1 findings and do not carry
 # over. The seam-crossing rate in particular is a function of window width, and v2's windows are
 # ~2.5x wider - re-run the census before citing that number against current crops.
 
-
-def _v1_predict_crop_size(pano_y, pano_height):
-    """Rule v1: native pixels straight into the 6656-calibrated constants."""
-    distance = max(0, 19.80546390 + 0.01523952 * (pano_height / 2 - pano_y))
-    crop_size = 8725.6 * (distance ** -1.192) if distance > 0 else 0
-    if crop_size > 1500 or distance == 0:
-        crop_size = 1500
-    return max(crop_size, 50)
-
-
-def _v1_compute_crop_box(pano_x, pano_y, crop_size, pano_width, pano_height):
-    """Rule v1's square window. The seam wrap and the y-shift are unchanged in v2; the SHAPE is not,
-    so this keeps its own copy rather than calling the deployed function."""
-    size = min(int(round(crop_size)), pano_width, pano_height)
-    left = int(round(pano_x - size / 2)) % pano_width
-    ideal_top = int(round(pano_y - size / 2))
-    return left, max(0, min(ideal_top, pano_height - size)), size
+_v1_predict_crop_size = crop_rule_v1.predict_crop_size
+_v1_compute_crop_box = crop_rule_v1.compute_crop_box
 
 CENSUS_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-10-crop-geometry-census.json')
 

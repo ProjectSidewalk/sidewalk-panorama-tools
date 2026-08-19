@@ -424,6 +424,72 @@ class TestPredictCropSize:
             crop_runner.CROP_MIN_FOV_DEG)
 
 
+class TestTheRuleMarker:
+    """A crop store is derived data with no other provenance, and existing crops are never re-cut.
+
+    So a mixed store is the ORDINARY consequence of changing the rule, not an edge case: run v2 over a
+    directory cut under v1 and the new crops are 3:2 while the old ones stay square, and a consumer
+    training on the whole directory sees one consistent-looking set. The version therefore has to land
+    in the store. It used to be a line of stdout, which is where a cron run's output goes to be lost.
+    """
+
+    def test_a_fresh_store_records_the_rule_and_its_constants(self, crop_runner, tmp_path):
+        assert crop_runner.write_rule_marker(str(tmp_path)) is None
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            marker = json.load(f)
+        assert marker['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
+        # The constants too, so a store cut under a retuned v2 is distinguishable from this one.
+        assert marker['crop_size_scale'] == crop_runner.CROP_SIZE_SCALE
+        assert marker['crop_max_fov_deg'] == crop_runner.CROP_MAX_FOV_DEG
+        assert marker['crop_max_stored_width'] == crop_runner.CROP_MAX_STORED_WIDTH
+
+    def test_a_crop_run_writes_it_before_cutting_anything(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
+        assert (out / crop_runner.CROP_RULE_MARKER).is_file()
+
+    def test_it_is_written_even_when_every_label_fails(self, crop_runner, tmp_path):
+        """Before cutting, not after: a run that dies or crops nothing still has to leave the store
+        saying what it holds."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
+        assert counts['missing_pano'] == 1 and counts['success'] == 0
+        assert (out / crop_runner.CROP_RULE_MARKER).is_file()
+
+    def test_a_store_cut_under_another_rule_is_reported_not_refused(self, crop_runner, tmp_path,
+                                                                    caplog):
+        """Warn, don't fail. A deliberately topped-up store is a real thing and refusing to run would
+        strand it; what must not happen is that the mixing goes unrecorded."""
+        os.makedirs(tmp_path, exist_ok=True)
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            json.dump({'crop_rule_version': 'v1'}, f)
+        with caplog.at_level(logging.WARNING):
+            previous = crop_runner.write_rule_marker(str(tmp_path))
+        assert previous == 'v1'
+        assert 'v1' in caplog.text and crop_runner.CROP_RULE_VERSION in caplog.text
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            marker = json.load(f)
+        assert marker['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
+        assert marker['previous_crop_rule_version'] == 'v1'
+
+    def test_rewriting_the_same_rule_is_silent(self, crop_runner, tmp_path, caplog):
+        """Discrimination: the warning must be about a CHANGE, not about the marker existing — every
+        run after the first would otherwise cry wolf."""
+        crop_runner.write_rule_marker(str(tmp_path))
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path)) == crop_runner.CROP_RULE_VERSION
+        assert 'sizing rule' not in caplog.text
+
+    def test_an_unreadable_marker_does_not_stop_the_run(self, crop_runner, tmp_path):
+        """It is provenance, not a lock. A truncated or hand-edited marker is rewritten."""
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            f.write('{not json')
+        assert crop_runner.write_rule_marker(str(tmp_path)) is None
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            assert json.load(f)['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
+
+
 class TestStorageSize:
     """min(window, 1440): a ceiling, not a target."""
 
@@ -681,7 +747,9 @@ class TestBulkExtractCrops:
                   label_row(label_id=3, label_type_id=2, pano_x=220)]
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts['success'] == 3
-        assert made == [str(out / '1'), str(out / '2')]  # one per label type, not one per label
+        # The crop root first (the rule marker goes in it before any crop is cut), then one directory
+        # per label TYPE, not one per label.
+        assert made == [str(out), str(out / '1'), str(out / '2')]
 
     def test_the_shared_pano_is_closed_when_its_labels_are_done(self, crop_runner, tmp_path, monkeypatch):
         """The other half of decode-once: holding one ~250 MB decoded pano is the point, holding every

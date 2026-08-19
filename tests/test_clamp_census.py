@@ -20,41 +20,27 @@ for p in (REPO_ROOT, SCRIPTS):
         sys.path.insert(0, p)
 
 import clamp_census as cc  # noqa: E402
+import crop_rule_v1  # noqa: E402
 
-
-
-# ---------------------------------------------------------------------------
-# Sizing rule v1, frozen.
-#
-# This census was run under rule v1 - raw pixels into constants fit on 6656-px panos, square window.
-# CropRunner has since shipped rule v2 (resolution-normalised, x2.5, 3:2, angular clamps; see
-# reports/2026-08-19-crop-sizing-v2.md), so pinning against the deployed function would now compare
-# this report's numbers to a formula that did not produce them.
-#
-# The pin against CropRunner did its job: it failed the moment the rule changed, which is how this
-# note came to be written instead of the census quietly describing geometry nobody cuts any more.
-# What replaces it is the same guard against a different target - the replica must still faithfully
-# reproduce the rule the corpus was measured under, which is now a historical constant.
-#
-# NOTE FOR ANY RE-USE: findings that depend on the window's SIZE are v1 findings and do not carry
-# over. The seam-crossing rate in particular is a function of window width, and v2's windows are
-# ~2.5x wider - re-run the census before citing that number against current crops.
 
 
 def _real_predict_crop_size():
-    """Rule v1's predict_crop_size, scalar, exactly as it stood when this census was run."""
-    def predict_crop_size(pano_y, pano_height):
-        old_pano_y = pano_height / 2 - pano_y
-        crop_size = 0
-        distance = max(0, 19.80546390 + 0.01523952 * old_pano_y)
-        if distance > 0:
-            crop_size = 8725.6 * (distance ** -1.192)
-        if crop_size > 1500 or distance == 0:
-            crop_size = 1500
-        if crop_size < 50:
-            crop_size = 50
-        return crop_size
-    return predict_crop_size
+    """Rule v1's predict_crop_size, from the one frozen copy in reports/scripts/crop_rule_v1.py.
+
+    This census was run under rule v1 - raw pixels into constants fit on 6656-px panos, square window.
+    CropRunner has since shipped rule v2, so pinning against the deployed function would compare this
+    report's numbers to a formula that did not produce them. That pin did its job: it failed the moment
+    the rule changed, which is how this note came to be written instead of the census quietly
+    describing geometry nobody cuts any more. What replaces it is the same guard against a different
+    target - the vectorized replica must still faithfully reproduce the rule the corpus was measured
+    under, which is now a historical constant rather than a live one.
+
+    Imported rather than transcribed. Three files needed a frozen v1 and each had its own copy, which
+    is the arrangement `studyfmt` and `region_tag_mask` exist to prevent: copies of a constant agree
+    until one is edited, and nothing fails. See crop_rule_v1's docstring for what does and does not
+    carry over from a v1 finding.
+    """
+    return crop_rule_v1.predict_crop_size
 
 
 class TestReplicaFidelity:

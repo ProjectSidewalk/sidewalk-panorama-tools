@@ -18,8 +18,11 @@ Three questions, in the order the report answers them:
    measures it.
 2. How much of the frame does the ramp occupy? The "fill" ratio, against the acceptance threshold
    the human study measured.
-3. What does the stored file cost? Under the old always-scale-to-1440 write path most crops are
-   upscales; v2 caps at 1440 instead.
+3. What does the stored file cost? Two different questions, kept apart: what CropRunner writes
+   (`stored_width_*`, where v2's cap makes near-field crops SMALLER than v1's, because v1 never
+   resized anything) and what the webpage's unconditional resize-to-1440 does to a crop it is handed
+   (`imagecontroller_*` — no code in this repo performs that resize; it is modelled because it is
+   the path a formula cut takes to a Gallery card once SidewalkWebpage#4865 lands).
 """
 import argparse
 import json
@@ -31,27 +34,38 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 import CropRunner  # noqa: E402
+import crop_rule_v1  # noqa: E402
 
 # The fill above which a crop reads as "too tight", from the absolute-judgement round of the human
 # study (95% CI 0.46-0.54). Not a property of any rule - it is what the eye reported.
+#
+# One-sided by construction, and the report says so: the round returned ZERO "too wide" verdicts
+# anywhere in the range tested (fills 0.12-1.79), so it bounds crops from below and nothing bounds
+# them from above. `frac_clearing_too_tight` is therefore monotone in crop size - a rule returning a
+# constant 90 deg window scores 1.00 - which is exactly the failure mode the report's own method
+# lesson warns about. What actually bounds v2's window is CROP_MAX_FOV_DEG plus the forced-choice
+# rounds' two-sided peak at fill 0.28-0.44; this number selects nothing on its own.
 TOO_TIGHT_FILL = 0.49
+
+# What ImageController does to a crop on write: getScaledInstance to 1440x960, unconditionally and
+# without preserving aspect. This is NOT CropRunner's write path - CropRunner has never resized, and
+# under v1 it wrote the cut window at its own size. It is modelled here because it is the path a
+# formula-cut crop takes to a Gallery card once the server-side CropService lands
+# (ProjectSidewalk/SidewalkWebpage#4865), which is the consumer that makes the stored width a
+# question at all. Every figure derived from it is named `imagecontroller_*` so it cannot be read as
+# a property of this repo's output.
+IMAGECONTROLLER_STORED_WIDTH = 1440
 
 
 def v1_side(pano_y, pano_height):
-    """Sizing rule v1, frozen: native pixels straight into constants fit on 6656-px panos."""
-    distance = max(0.0, 19.80546390 + 0.01523952 * (pano_height / 2 - pano_y))
-    size = 8725.6 * distance ** -1.192 if distance > 0 else 0.0
-    if size > 1500 or distance == 0:
-        size = 1500.0
-    return max(size, 50.0)
+    """Sizing rule v1's size in native pixels. One definition, in crop_rule_v1."""
+    return float(crop_rule_v1.predict_crop_size(pano_y, pano_height))
 
 
 def v1_box(pano_x, pano_y, side, pano_width, pano_height):
-    """v1's square window. Same seam wrap and vertical shift as v2 - only the shape differs."""
-    size = min(int(round(side)), pano_width, pano_height)
-    left = int(round(pano_x - size / 2)) % pano_width
-    ideal_top = int(round(pano_y - size / 2))
-    return left, max(0, min(ideal_top, pano_height - size)), size, size
+    """v1's square window as (left, top, w, h), so it is shape-comparable with `v2_box`."""
+    left, top, size = crop_rule_v1.compute_crop_box(pano_x, pano_y, side, pano_width, pano_height)
+    return left, top, size, size
 
 
 def v2_box(pano_x, pano_y, pano_width, pano_height):
@@ -93,36 +107,82 @@ def load_bundle(root):
 
 
 def pct(values, q):
+    """The q-th percentile by nearest rank - an order statistic, with no interpolation.
+
+    So `pct(xs, 50)` is a middle *observation* rather than the mean of the middle two on an even
+    count. The difference is under a pixel on every figure here and the report calls these p50 rather
+    than "the median" for that reason.
+    """
     ordered = sorted(values)
     return ordered[min(len(ordered) - 1, max(0, int(round(q / 100.0 * (len(ordered) - 1)))))]
 
 
+def box_inside_window(ramp, left, top, w, h):
+    """Is the gold apron actually inside the window that was cut? Position included, not just size.
+
+    The distinction is not pedantic and it is the one this function exists to make. The window is
+    centred on the label's stored POINT (`ramp['x']`, `ramp['y']`), while the box is centred on the
+    apron (`box_cx`, `box_cy`), and those are different places — the point is a click at ground
+    contact, the box is an extent. A check on dimensions alone ("would the apron fit in a window this
+    big") passes for an apron sitting entirely outside its own crop, which is the case a containment
+    number is supposed to be reporting.
+
+    x is compared through the seam modulo, exactly as the window was cut: `left` is normalised into
+    [0, pano_w) and a window may run off the right edge and continue at column 0, so the box's offset
+    from `left` is taken modulo the pano width. That is well-defined as long as the box is not wider
+    than the pano, which no apron is. y is a plain interval - the poles are not adjacent.
+    """
+    rel_left = (ramp['box_cx'] - ramp['box_w'] / 2.0 - left) % ramp['pano_w']
+    if rel_left + ramp['box_w'] > w:
+        return False
+    box_top = ramp['box_cy'] - ramp['box_h'] / 2.0
+    return top <= box_top and box_top + ramp['box_h'] <= top + h
+
+
 def score(ramps):
-    """Per-rule distributions for one set of gold ramps."""
+    """Per-rule distributions for one set of gold ramps.
+
+    Three families of key, deliberately named apart because they are about different things:
+
+    * `window_deg_*`, `fill_*`, `frac_clearing_too_tight`, `containment`, `fits_by_size` — the crop
+      as cut. These are properties of the sizing rule.
+    * `stored_width_*` — what **CropRunner** writes. v1 wrote the window at its own size (it has never
+      resized); v2 caps at CROP_MAX_STORED_WIDTH, so for a wide near-field window v2 stores FEWER
+      pixels than v1 did, of more world. That trade is the honest cropper-to-cropper comparison.
+    * `imagecontroller_*` — what the *webpage's* write path does to a crop, modelled. Nothing in this
+      repo performs that resize; see IMAGECONTROLLER_STORED_WIDTH.
+    """
     out = {'n': len(ramps)}
     for name in ('v1', 'v2'):
-        degs, fills, upsamples, contained = [], [], [], 0
+        degs, fills, stored, upsamples = [], [], [], []
+        contained = fits_by_size = 0
         for ramp in ramps:
             if name == 'v1':
-                _, _, w, h = v1_box(ramp['x'], ramp['y'], v1_side(ramp['y'], ramp['pano_h']),
-                                    ramp['pano_w'], ramp['pano_h'])
-                # The old write path scaled every crop to 1440 wide, upscaling whatever was narrower.
-                upsamples.append(max(1.0, CropRunner.CROP_MAX_STORED_WIDTH / w))
+                left, top, w, h = v1_box(ramp['x'], ramp['y'],
+                                         v1_side(ramp['y'], ramp['pano_h']),
+                                         ramp['pano_w'], ramp['pano_h'])
+                stored_width = w                       # v1 wrote the window, unresized
             else:
-                _, _, w, h = v2_box(ramp['x'], ramp['y'], ramp['pano_w'], ramp['pano_h'])
-                upsamples.append(1.0)  # v2 stores min(window, 1440); it never upscales.
+                left, top, w, h = v2_box(ramp['x'], ramp['y'], ramp['pano_w'], ramp['pano_h'])
+                stored_width = min(w, CropRunner.CROP_MAX_STORED_WIDTH)
             degs.append(w / ramp['pano_h'] * 180.0)
             fills.append(ramp['box_w'] / w)
-            if ramp['box_w'] <= w and ramp['box_h'] <= h:
-                contained += 1
+            stored.append(stored_width)
+            upsamples.append(max(1.0, IMAGECONTROLLER_STORED_WIDTH / stored_width))
+            contained += bool(box_inside_window(ramp, left, top, w, h))
+            fits_by_size += bool(ramp['box_w'] <= w and ramp['box_h'] <= h)
         out[name] = {
             'window_deg_p10': pct(degs, 10), 'window_deg_p50': pct(degs, 50),
             'window_deg_p90': pct(degs, 90),
             'fill_p10': pct(fills, 10), 'fill_p50': pct(fills, 50), 'fill_p90': pct(fills, 90),
             'frac_clearing_too_tight': sum(1 for f in fills if f <= TOO_TIGHT_FILL) / len(fills),
             'containment': contained / len(ramps),
-            'median_upsample': pct(upsamples, 50),
-            'frac_upsampled_over_2x': sum(1 for u in upsamples if u > 2.0) / len(upsamples),
+            'fits_by_size': fits_by_size / len(ramps),
+            'stored_width_p10': pct(stored, 10), 'stored_width_p50': pct(stored, 50),
+            'stored_width_p90': pct(stored, 90),
+            'imagecontroller_median_upsample': pct(upsamples, 50),
+            'imagecontroller_frac_upsampled_over_2x':
+                sum(1 for u in upsamples if u > 2.0) / len(upsamples),
         }
     return out
 
@@ -195,8 +255,13 @@ def render_examples(examples, path, panel_w=380):
                 # The gold apron in crop coordinates - x through the seam, as the window was cut.
                 box_left = ((example['box_cx'] - example['box_w'] / 2) - left) % example['pano_w']
                 box_top = (example['box_cy'] - example['box_h'] / 2) - top
-                draw.rectangle([box_left, box_top,
-                                box_left + example['box_w'], box_top + example['box_h']],
+                # Clamped to the panel. A box wider than the window runs off the right edge, and
+                # Pillow silently drops a rectangle whose x1 < x0 rather than drawing it — so an
+                # unclamped overflow makes the WORST case (v1's row-2 apron, fill 1.10) the one with
+                # no gold outline at all, which is the opposite of what the figure is for.
+                draw.rectangle([max(0, min(box_left, w - 1)), max(0, min(box_top, h - 1)),
+                                max(0, min(box_left + example['box_w'], w - 1)),
+                                max(0, min(box_top + example['box_h'], h - 1))],
                                outline=(255, 205, 0), width=max(2, w // 200))
                 scale = panel_w / crop.size[0]
                 panels.append(crop.resize((panel_w, max(1, int(round(crop.size[1] * scale)))),
@@ -238,6 +303,9 @@ def main(argv=None):
     parser.add_argument('--figure', help='where to write the example contact sheet')
     args = parser.parse_args(argv)
 
+    bad = [spec for spec in args.bundle if '=' not in spec]
+    if bad:
+        parser.error(f'--bundle wants CITY=PATH; got {bad}')
     bundles = dict(spec.split('=', 1) for spec in args.bundle)
     by_city = {city: load_bundle(path) for city, path in bundles.items()}
     pooled = [ramp for ramps in by_city.values() for ramp in ramps]
@@ -253,18 +321,31 @@ def main(argv=None):
                       'max_fov_deg': CropRunner.CROP_MAX_FOV_DEG,
                       'aspect_w_over_h': CropRunner.CROP_ASPECT_W_OVER_H,
                       'max_stored_width': CropRunner.CROP_MAX_STORED_WIDTH},
-        'cities': {city: score(ramps) for city, ramps in by_city.items() if ramps},
+        # Per-city pano heights and provider ride along so the report's corpus table is checkable
+        # against this artifact like everything else in it. Provider is inferred from the id shape,
+        # which is what tells the two apart offline: Mapillary image ids are all-numeric (the #46
+        # dtype trap), GSV pano ids are 22-char alphanumeric.
+        'cities': {city: dict(score(ramps),
+                              # How large the ramps themselves are, in the only unit that compares
+                              # across resolutions. This is what a single global scale constant
+                              # cannot serve: it is the whole reason Annapolis is under-sized.
+                              ramp_width_deg_p50=pct([r['box_w'] / r['pano_w'] * 360.0
+                                                      for r in ramps], 50),
+                              pano_heights=sorted({r['pano_h'] for r in ramps}),
+                              provider=('mapillary' if all(r['pano_id'].isdigit() for r in ramps)
+                                        else 'gsv'))
+                   for city, ramps in by_city.items() if ramps},
         'pooled': score(pooled),
         'resolution_invariance': resolution_invariance(heights),
         'pano_heights': heights,
     }
 
     for city, city_score in sorted(summary['cities'].items()):
-        print("%-11s n=%3d | v1 %5.1f-%4.1f deg, fill p50 %.2f, %3.0f%% upscaled >2x "
+        print("%-11s n=%3d | v1 %5.1f-%4.1f deg, fill p50 %.2f, contains %.3f "
               "| v2 %5.1f-%4.1f deg, fill p50 %.2f, contains %.3f"
               % (city, city_score['n'],
                  city_score['v1']['window_deg_p10'], city_score['v1']['window_deg_p90'],
-                 city_score['v1']['fill_p50'], 100 * city_score['v1']['frac_upsampled_over_2x'],
+                 city_score['v1']['fill_p50'], city_score['v1']['containment'],
                  city_score['v2']['window_deg_p10'], city_score['v2']['window_deg_p90'],
                  city_score['v2']['fill_p50'], city_score['v2']['containment']))
     print("\nresolution invariance (same ramp geometry at every pano height in the corpus):")
@@ -280,7 +361,13 @@ def main(argv=None):
                 {'city': e['city'], 'pano_id': e['pano_id'], 'key': e['key'],
                  'pano_w': e['pano_w'], 'pano_h': e['pano_h'],
                  'depression_deg': round(e['depression_deg'], 2),
-                 'v1_window_px': e['v1'][2], 'v2_window_px': [e['v2'][2], e['v2'][3]]}
+                 'v1_window_px': e['v1'][2], 'v2_window_px': [e['v2'][2], e['v2'][3]],
+                 # The two numbers the caption quotes per row, so the prose is transcribed from the
+                 # artifact like every other figure in reports/.
+                 'v1_fill': round(e['box_w'] / e['v1'][2], 3),
+                 'v2_fill': round(e['box_w'] / e['v2'][2], 3),
+                 'v1_window_deg': round(e['v1'][2] / e['pano_h'] * 180, 1),
+                 'v2_window_deg': round(e['v2'][2] / e['pano_h'] * 180, 1)}
                 for e in examples]
             print("\nwrote %s %sx%s" % (args.figure, size[0], size[1]))
         else:

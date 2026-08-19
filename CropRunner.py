@@ -83,12 +83,26 @@ CROP_MAX_FOV_DEG = 90.0
 # canvas is 720x480 - so a square window would be stretched 1.5x by ImageController on write.
 CROP_ASPECT_W_OVER_H = 1.5
 
-# Crops are stored at min(window, 1440) px wide. 1440 is a ceiling, not a target: a window narrower
-# than that is written at its own size rather than upscaled, because the ramp carries a fixed number of
-# source pixels and stretching them adds bytes and blur, not detail. Under the old rule 89% of crops
-# were upscales, median 4.0x, worst exactly where the imagery is weakest (95% of Richmond, 98% of
-# Annapolis above 2x).
+# Crops are stored at min(window, 1440) px wide. A ceiling, not a target: a window narrower than that
+# is written at its own size and never upscaled, because the ramp carries a fixed number of source
+# pixels and stretching them adds bytes and blur, not detail.
+#
+# Note what this does and does not change here. v1 wrote the cut window unresized - this file has never
+# contained a resize - so against v1 the cap is a REDUCTION at the near field: a 90 deg window on a
+# 16384x8192 pano is 4096 px and is now stored at 1440, where v1's 1500 px square was stored whole.
+# More world at lower magnification, which is the trade the report argues; it is not the removal of an
+# upscale this tool was doing.
+#
+# The upscale it does remove is one level out. ImageController scales anything it is handed to
+# 1440x960 unconditionally (getScaledInstance, no aspect preservation), so a narrower window handed to
+# it is upsampled into the stored file - modelled over the gold at a median 4.14x with 89.5% above 2x
+# under v1's window sizes, worst where the imagery is weakest (97.0% of Richmond, 98.5% of Annapolis).
+# Nothing in this repo takes that path today; the server-side CropService in SidewalkWebpage#4865 is
+# what will, which is why 1440 is the number and not something arbitrary.
 CROP_MAX_STORED_WIDTH = 1440
+
+# Written into the crop directory so a store says which rule cut it. See write_rule_marker.
+CROP_RULE_MARKER = 'crop_rule.json'
 
 
 def raise_decompression_bomb_ceiling():
@@ -393,6 +407,50 @@ def downscale_for_storage(crop):
     return crop.resize((CROP_MAX_STORED_WIDTH, max(1, int(round(height * scale)))), Image.LANCZOS)
 
 
+def write_rule_marker(destination_dir):
+    """Record which sizing rule cut this crop store, in the store, and warn if it disagrees.
+
+    A crop directory is derived data with no other provenance: a JPEG does not say what geometry
+    produced it, and existing crops are the resume marker so they are never re-cut. That makes a MIXED
+    store the ordinary consequence of upgrading the rule -- run against a store cut under v1 and the
+    new crops are 3:2 while the old ones stay square, and the directory looks exactly like a
+    consistent one to a consumer that trains on all of it.
+
+    The version therefore has to live next to the crops rather than in a line of stdout that scrolls
+    past on a cron run. A disagreement is a warning and not an error: the mixed store is a real thing
+    an operator may be deliberately topping up, and refusing to run would strand it. What must not
+    happen is that it goes unrecorded.
+
+    :return: the rule version already on disk, or None if this is a fresh store.
+    """
+    path = os.path.join(destination_dir, CROP_RULE_MARKER)
+    previous = None
+    try:
+        with open(path, encoding='utf-8') as f:
+            previous = json.load(f).get('crop_rule_version')
+    except (OSError, ValueError):
+        pass
+
+    if previous is not None and previous != CROP_RULE_VERSION:
+        message = ("Crop store %s was cut under sizing rule %s and this run uses %s. Existing crops "
+                   "are never re-cut, so this store now holds both geometries; delete it to re-cut "
+                   "under %s." % (destination_dir, previous, CROP_RULE_VERSION, CROP_RULE_VERSION))
+        print(message)
+        logging.warning(message)
+
+    with atomic_output_path(path) as tmp_path:
+        with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump({'crop_rule_version': CROP_RULE_VERSION,
+                       'crop_size_scale': CROP_SIZE_SCALE,
+                       'crop_min_fov_deg': CROP_MIN_FOV_DEG,
+                       'crop_max_fov_deg': CROP_MAX_FOV_DEG,
+                       'crop_aspect_w_over_h': CROP_ASPECT_W_OVER_H,
+                       'crop_max_stored_width': CROP_MAX_STORED_WIDTH,
+                       'previous_crop_rule_version': previous},
+                      f, indent=1, sort_keys=True)
+    return previous
+
+
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     """
     Makes a crop around the object of interest and saves it atomically.
@@ -472,6 +530,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     counts = {'total': len(labels_to_crop), 'success': 0, 'skipped_existing': 0,
               'missing_pano': 0, 'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
               'errors': 0}
+
+    # Before any crop is cut, so a run that dies partway still leaves the store saying what it holds.
+    os.makedirs(destination_dir, exist_ok=True)
+    write_rule_marker(destination_dir)
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
@@ -602,10 +664,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             pano.close()
 
     print("Finished.")
-    # The rule version goes in the summary because a crop store carries no other provenance: cut under
-    # one rule and topped up under another, it looks exactly like a consistent one, and every consumer
-    # here trains on whole directories.
-    print("Crop sizing rule %s." % CROP_RULE_VERSION)
+    # Echoed here as well as written to <crop-dir>/crop_rule.json, because the summary is what an
+    # operator reads and the marker is what a consumer reads. The marker is the one that matters: a
+    # line of stdout scrolls past on a cron run, and a crop store carries no other provenance.
+    print("Crop sizing rule %s (recorded in %s)." % (CROP_RULE_VERSION, CROP_RULE_MARKER))
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
           "%d skipped on a metadata/image dimension mismatch, %d skipped for a label position outside "
           "the image, %d errors, of %d labels total."
