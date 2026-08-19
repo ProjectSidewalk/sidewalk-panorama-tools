@@ -72,6 +72,11 @@ Concretely:
 * Centering is fit on the same corpus, which is exactly the population the ≤ 0.5° target
   was written for.
 
+**Amended 2026-08-19 (#88).** The size half of this happened elsewhere and does not need a corpus
+drawn here: RampNet's whole-apron extent gold (four cities, two providers, 658 boxes) settled it,
+and the shipped rule is a correction to the existing formula rather than a refit. The **centering**
+half is untouched and is what the corpus and tooling in this PR are for.
+
 This is already an improvement over what ships today. `predict_crop_size` is
 `8725.6 · d^-1.192` clamped to [50, 1500] — distance in, size out, no object term at all —
 and it was fit on the 2013 Tohme curb-ramp boxes (see §6). Replacing a curb-ramp fit from
@@ -130,6 +135,19 @@ crop_side = max(context_floor(distance),          # enough pathway to judge impe
 The current formula has none of these; it is distance-only. That it works tolerably at all is
 itself evidence for (a): a distance-only rule is a context floor with the object term missing,
 and the object term rarely binds.
+
+**Superseded 2026-08-19 for curb ramps, and partly vindicated (#88).** The rule that shipped is not
+this one: it keeps the distance-only form and fixes what was actually broken in it — the formula
+was fed native pixels while its constants were fit on 6656-px panoramas, so the window's *angle*
+moved with the panorama's resolution by 1.86–4.09× and the largest panoramas got the tightest
+crops. Normalising that, scaling ×2.5 and clamping 8°–90° took whole-apron containment from 0.684
+to 0.979 over 658 hand-drawn extents.
+
+The (b) term is vindicated rather than refuted, though: measured against an oracle that knows each
+ramp's true cross-range extent, **any** distance-only rule tops out at R² ≈ 0.43–0.74 where the
+oracle reaches 0.72–0.95. The object term is real and is the remaining headroom — it is being
+pursued as extent-aware sizing in RampNet #83, where the segmenter lives, which is the same
+"belongs in a different repo" conclusion §7 reaches.
 
 ## 6. What the Tohme data can and cannot do
 
@@ -199,6 +217,31 @@ So the honest version: **nothing survives on the human side, and the ML side's l
 bounded by the pipeline in this section.** That shortens the bridge. It does not change its
 direction — ship a context floor, spend less here, and spend it sooner.
 
+### Amended 2026-08-19: that consumer set was complete for the deployed system, and stops being complete when AI labels ship
+
+The paragraph above is a true statement about **who writes `crop_<labelId>.png` today**, and the
+check behind it stands. What it cannot see is a consumer that does not exist yet, and one is close:
+a **server-side CropService** (ProjectSidewalk/SidewalkWebpage#4865) that cuts crops from a size
+formula for **AI-submitted labels**. Those labels have no browser canvas capture — nobody placed
+them in Explore — so the mechanism that makes the human-facing crop for crowd labels produces
+nothing for them, and the crop that reaches the Gallery card is a formula cut. That is a
+**human-facing consumer of a size rule**, which §7 concluded did not exist.
+
+Two things follow, and only one of them is a correction:
+
+* **A detection-first pipeline does not replace it.** "Given a detection you crop from the
+  detection" holds only where there is a detection. Crowd labels, Vancouver's ~64,824 backfilled
+  AI labels, and any point-only submitter carry a point and nothing else, so a heuristic has to
+  exist for them however good the segmenter gets. The bridge in this section has no far end for
+  that population.
+* **The "spend less, ship sooner" direction was still right**, and #88 is what spending less looks
+  like: the shipped fix is one normalisation, one scale constant, an angular clamp and a 3:2
+  window — not the three-term fit §5 anticipated, and not a new corpus drawn in this repo.
+
+What this does *not* revive is the study this report scoped down. The gold that settled the size
+rule was drawn in RampNet, not here, and the annotation tooling in this PR is aimed at click noise
+and the y-error — a different quantity from window size. Nothing below changes about that.
+
 ## 8. Wrong turns
 
 * **Claiming a permanent human-facing consumer without checking who writes the file.** §7 asserted
@@ -230,4 +273,6 @@ direction — ship a context floor, spend less here, and spend it sooner.
 | `8725.6 · d^-1.192`, clamp [50, 1500] | `CropRunner.predict_crop_size` |
 | Corpus composition, measurable counts, per-type survivors | [data/2026-08-12-crop-corpus-gsv.csv.gz](data/2026-08-12-crop-corpus-gsv.csv.gz) under `rawlabels.has_located_referent` + `in_study_frame` |
 | Tohme box counts, pano coverage, `sidewalk_dc` overlap | measured 2026-08-13 on makelab1/makelab2; paths in §6 |
+| Sizing rule v2; the 1.86–4.09× resolution swing; containment 0.684 → 0.979; the y-only R² ceiling | `reports/2026-08-19-crop-sizing-v2.md`, added in #88 (link resolves once that PR merges) |
+| A server-side CropService makes a formula cut the human-facing Gallery crop for AI labels | ProjectSidewalk/SidewalkWebpage#4865; `PanoDataService.getCropDirectory` / `cropUrl`, read 2026-08-19 |
 | Production crops are browser canvas captures, not this tool's output | SidewalkWebpage `public/js/explore/src/label/Label.js` (`#uploadCrop`), `app/controllers/ImageController.scala` (`saveImage`, `writeImageFile`, 1440×960), `app/controllers/ShareController.scala` (crop → GSV still → placeholder), `conf/routes`; read 2026-08-14 |
