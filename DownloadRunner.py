@@ -38,7 +38,7 @@ def _reservation_minutes(value):
 
 def build_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument('d', help='sidewalk_server_domain - FDQN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
+    parser.add_argument('d', help='sidewalk_server_domain - FQDN of SidewalkWebpage server to fetch pano list from, i.e. sidewalk-columbus.cs.washington.edu')
     parser.add_argument('s', help='storage_path - location to store scraped panos')
     parser.add_argument('-c', nargs='?', default=None, help='csv_path - location of csv from which to read pano metadata')
     parser.add_argument('--all-panos', action='store_true', help='Download images for all panos that users visited, even if no labels were added on them. Does not affect depth, which always covers every pano.')
@@ -218,15 +218,21 @@ def filter_supported_sources(pano_infos):
     # unsupported source - hence 'known' rather than reusing 'supported' in the loop below.
     known = {'gsv', 'mapillary'}
     supported = {'gsv'}
+    # Both warnings go to stdout AND to scrape.log, the depth phase's pattern (#52 item 6). stdout is what
+    # cron mails, which is how an operator finds out tonight; scrape.log is what is still there next week
+    # when someone asks why a city's Mapillary panos never arrived. Either channel alone loses one of those.
     if source_counts.get('mapillary'):
         if mapillary.is_token_set():
             supported.add('mapillary')
         else:
+            logging.warning("%d Mapillary panos skipped - set %s to download them",
+                            source_counts['mapillary'], mapillary.TOKEN_ENV_VAR)
             print("WARNING: %d Mapillary panos skipped — set %s to download them"
                   % (source_counts['mapillary'], mapillary.TOKEN_ENV_VAR))
 
     for source, count in source_counts.items():
         if source not in known:
+            logging.warning("%d panos with unsupported source %r skipped", count, source)
             print("WARNING: %d panos with unsupported source %r skipped" % (count, source))
 
     return [p for p in pano_infos if p.get('source') in supported]

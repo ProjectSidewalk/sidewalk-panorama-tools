@@ -770,24 +770,29 @@ class TestSourceOrdering:
 
         assert kept == self.mixed_panos()
 
-    def test_filter_without_token_still_drops_mapillary_with_one_warning(self, monkeypatch, capsys):
+    def test_filter_without_token_still_drops_mapillary_with_one_warning(self, monkeypatch, capsys, caplog):
         monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
 
-        kept = DownloadRunner.filter_supported_sources(self.mixed_panos())
+        with caplog.at_level(logging.WARNING):
+            kept = DownloadRunner.filter_supported_sources(self.mixed_panos())
 
         assert [p['pano_id'] for p in kept] == ['gsvPanoIdAAAAAAAAAAAAA', 'gsvPanoIdBBBBBBBBBBBBB']
         out = capsys.readouterr().out
         assert out.count('WARNING') == 1
         assert '2 Mapillary panos skipped' in out
+        # And durably, in scrape.log: stdout is cron mail, which nobody has after the fact (#52 item 6).
+        assert '2 Mapillary panos skipped' in caplog.text
 
-    def test_unsupported_source_warning_still_prints_a_count(self, monkeypatch, capsys):
+    def test_unsupported_source_warning_still_prints_a_count(self, monkeypatch, capsys, caplog):
         monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token')
         panos = self.mixed_panos() + [{'pano_id': 'testPanoIdOtherAAAAAAA', 'source': 'bing'},
                                       {'pano_id': 'testPanoIdOtherBBBBBBB', 'source': 'bing'}]
 
-        DownloadRunner.filter_supported_sources(panos)
+        with caplog.at_level(logging.WARNING):
+            DownloadRunner.filter_supported_sources(panos)
 
         assert "2 panos with unsupported source 'bing' skipped" in capsys.readouterr().out
+        assert "2 panos with unsupported source 'bing' skipped" in caplog.text
 
     def test_budget_exhaustion_does_not_starve_mapillary(self, monkeypatch, tmp_path):
         """End to end with a fake monotonic clock: 4 interleaved panos, one simulated minute each, and a

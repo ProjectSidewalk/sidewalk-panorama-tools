@@ -194,15 +194,27 @@ class TestParser:
         assert e.value.code == 2
 
     def test_defaults(self, crop_runner):
-        args = crop_runner.build_parser().parse_args(['-d', 'sidewalk-test.invalid'])
-        assert args.s == '/tmp/download_dest/'
-        assert args.o == '/crops/'
+        args = crop_runner.build_parser().parse_args(
+            ['-d', 'sidewalk-test.invalid', '-s', '/panos', '-o', '/out'])
         assert args.mark_label is False
+
+    def test_the_pano_and_crop_directories_are_required(self, crop_runner):
+        """#52 item 6. -o defaulted to the filesystem ROOT (needs sudo on Linux, lands on the system drive
+        on Windows) and -s to /tmp/download_dest/, a path that only means anything inside the Docker
+        container - which runs DownloadRunner, not this script. A forgotten flag should name itself rather
+        than quietly write an ML training corpus somewhere nobody will look for it."""
+        for argv in (['-d', 'x.invalid'],
+                     ['-d', 'x.invalid', '-s', '/panos'],
+                     ['-d', 'x.invalid', '-o', '/out']):
+            with pytest.raises(SystemExit) as e:
+                crop_runner.build_parser().parse_args(argv)
+            assert e.value.code == 2
 
     def test_mark_label_is_a_flag(self, crop_runner):
         """The old MARK_LABEL=True module constant burned a dot into every crop ever produced (#48);
         marking must be an explicit opt-in."""
-        args = crop_runner.build_parser().parse_args(['-d', 'x.invalid', '--mark-label'])
+        args = crop_runner.build_parser().parse_args(
+            ['-d', 'x.invalid', '-s', '/panos', '-o', '/out', '--mark-label'])
         assert args.mark_label is True
 
 
