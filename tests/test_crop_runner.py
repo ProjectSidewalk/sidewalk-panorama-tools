@@ -698,7 +698,7 @@ class TestMain:
 
         assert os.path.exists(crop_path(out, 1, 1))
         # crop.log lives with the crops, not in whatever CWD the process happened to have (the
-        # DownloadRunner #49 lesson: a Docker CWD dies with the container).
+        # DownloadRunner #49 lesson: a cron CWD is nowhere anyone looks).
         assert os.path.exists(os.path.join(str(out), 'crop.log'))
         assert not os.path.exists(os.path.join(str(cwd), 'crop.log'))
 

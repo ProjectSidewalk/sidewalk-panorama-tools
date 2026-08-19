@@ -19,9 +19,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# The scraper only ever runs on Linux (Docker/Ubuntu), but the suite should stay usable on a Windows dev box, so
-# assertions about POSIX file modes and the bash entrypoint are skipped rather than failed there.
-posix_only = pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes / bash are unavailable on Windows')
+# The scraper only ever runs on Linux in production, but the suite should stay usable on a Windows dev box, so
+# assertions about POSIX file modes are skipped rather than failed there.
+posix_only = pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes are unavailable on Windows')
 
 
 @pytest.fixture

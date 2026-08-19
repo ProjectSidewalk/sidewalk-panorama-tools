@@ -58,8 +58,8 @@ def last_log_fields(storage):
 
 
 def test_scrape_log_lands_in_storage_not_cwd(tmp_path):
-    """A relative scrape.log resolves against the CWD - /app inside Docker - and dies with the container.
-    It must live on the pano store next to log.csv, where a failed run's evidence survives (#49)."""
+    """A relative scrape.log resolves against whatever CWD cron happened to hand the process. It must live on
+    the pano store next to log.csv, where a failed run's evidence survives and the operator looks (#49)."""
     storage, result = run_downloader(tmp_path)
     assert result.returncode == 0, result.stderr
     assert (storage / 'scrape.log').exists()
@@ -88,7 +88,7 @@ def test_crash_mid_run_still_writes_a_full_width_log_row(tmp_path):
     assert fields[0] != ''  # run start timestamp
     assert fields[1:6] == ['0'] * 5  # xml stub completed before the crash
     assert fields[6:] == [''] * 12  # image/depth/total never completed - blank, not fabricated
-    # The traceback must land in scrape.log, not just stderr - in Docker, stderr dies with the container.
+    # The traceback must land in scrape.log, not just stderr - under cron, stderr goes to mail at best.
     # `.exists()` is not enough: the FileHandler opens the file eagerly, so an empty file proves nothing.
     scrape_log = (storage / 'scrape.log').read_text()
     assert 'Traceback' in scrape_log
@@ -553,7 +553,7 @@ def test_urllib3_is_quieted_and_scrape_log_rotates(tmp_path):
 
 
 def test_sigterm_is_translated_to_systemexit_so_the_evidence_row_still_lands(tmp_path, monkeypatch):
-    """docker stop sends SIGTERM; CPython's default dies without running finally blocks, losing the row (#49).
+    """A stop sends SIGTERM; CPython's default dies without running finally blocks, losing the row (#49).
 
     The handler is installed by main() - not by importing the module (test_import_is_side_effect_free pins
     the other side of that seam) - so run a harmless all-filtered mini-scrape to get it installed.
