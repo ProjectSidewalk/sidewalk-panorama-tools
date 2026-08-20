@@ -108,7 +108,9 @@ The run writes a rotating `crop.log` into the crop directory, prints a per-outco
 
 `log_analyzer/analyze.py` monitors the nightly scrape across every city. It pulls each city's `log.csv` off the pano store over SFTP and flags the ones that look broken. Nothing is downloaded by the scraper itself — this is an ops tool you run from a workstation or a cron box, not something the Docker image needs.
 
-It needs only `pandas` (already in `requirements.txt`) plus the `sftp` client binary (`openssh-client`).
+It needs only `pandas` plus the `sftp` client binary (`openssh-client`). `pandas` is in
+`requirements-dev.txt` rather than `requirements.txt` — nothing the scraper or cropper runs imports it (#72) — so
+a box running only the analyzer wants `pip3 install pandas`, not the whole dev file.
 
 Connection settings are read from the environment, or the matching flag. Host and base path are required and have no defaults — a wrong default would silently analyze the wrong store:
 

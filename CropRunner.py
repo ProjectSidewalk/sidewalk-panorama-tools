@@ -15,6 +15,7 @@ are the seams, and `python3 CropRunner.py ...` behaviour lives under the __main_
 
 import argparse
 import collections
+import csv
 import json
 import logging
 import logging.handlers
@@ -22,7 +23,6 @@ import math
 import os
 import sys
 
-import pandas as pd
 import requests
 from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
@@ -173,19 +173,37 @@ def request_session():
 def fetch_label_ids_csv(metadata_csv_path):
     """
     Reads metadata from a csv. Useful for old csv formats of cvMetadata such as cv-metadata-seattle.csv.
-    Dedupes on label_id.
+    Dedupes on label_id, keeping the first row per id.
 
-    pano_id is dtype-pinned to str: an all-numeric (Mapillary) column otherwise infers int64 and crashes
-    every pano_id[:2] shard slice - the same #46 intake bug DownloadRunner.fetch_pano_ids_csv fixed. The
-    column guard exists because pd.read_csv ignores dtype keys for absent columns, so a header typo would
-    otherwise surface as a KeyError deep in the crop loop instead of an error naming the file.
+    Read with csv, not pandas (#72), so no field's type depends on what the values happen to look like -
+    the inference that gave an all-numeric (Mapillary) pano_id column int64 and crashed every pano_id[:2]
+    shard slice (#46). Every cell arrives as a str and the crop loop coerces at use, which is why this
+    intake needs no per-field conversion of its own; unlike the downloader's, blank cells stay '' rather
+    than becoming None, because every consumer here is inside the loop's try/except and handles both.
+
+    utf-8-sig for the Excel BOM, and the column guard because a header typo would otherwise surface as a
+    KeyError deep in the crop loop instead of an error naming the file.
     """
-    df_meta = pd.read_csv(metadata_csv_path, dtype={'pano_id': str})
-    missing = [c for c in REQUIRED_LABEL_COLUMNS if c not in df_meta.columns]
-    if missing:
-        raise ValueError("%s is missing required column(s) %r; found %r"
-                         % (metadata_csv_path, missing, list(df_meta.columns)))
-    return df_meta.drop_duplicates(subset=['label_id']).to_dict('records')
+    unique_label_ids = set()
+    labels = []
+    with open(metadata_csv_path, newline='', encoding='utf-8-sig') as csv_file:
+        reader = csv.DictReader(csv_file)
+        # fieldnames is None for an empty file, and `c not in None` is a TypeError.
+        fieldnames = reader.fieldnames or []
+        missing = [c for c in REQUIRED_LABEL_COLUMNS if c not in fieldnames]
+        if missing:
+            raise ValueError("%s is missing required column(s) %r; found %r"
+                             % (metadata_csv_path, missing, reader.fieldnames))
+        for row in reader:
+            # Surplus fields land under the key None. pandas did something worse with the same input -
+            # it consumed the first column as the frame's index, shifting every field by one.
+            label = {key: value for key, value in row.items() if key is not None}
+            label_id = label.get('label_id')
+            if label_id in unique_label_ids:
+                continue
+            unique_label_ids.add(label_id)
+            labels.append(label)
+    return labels
 
 
 def json_to_list(jsondata):
@@ -245,18 +263,29 @@ def fetch_cvMetadata_from_server(server_fqdn):
     return json_to_list(jsondata)
 
 
+def _absent(value):
+    """True for a field the row does not actually carry: absent, JSON null, or a blank CSV cell.
+
+    The blank cell is the case that has to be spelled out. '' is not None, so treating only None as
+    missing would both skip the width/height fallback below AND hand '' to float(), turning a row that
+    simply doesn't claim dimensions into a counted malformed-row error - and main() exits 1 on errors, so
+    a blank dims column would fail an otherwise clean run.
+    """
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def _metadata_dims(row):
     """The pano dimensions a label row claims, or None if it doesn't carry them.
 
-    cvMetadata calls them pano_width/pano_height (null for third-party photospheres, which pandas turns
-    into NaN); the old CSV export calls them width/height. Raises ValueError on non-numeric values so the
-    caller's malformed-row handling applies.
+    cvMetadata calls them pano_width/pano_height (null for third-party photospheres); the old CSV export
+    calls them width/height. Raises ValueError on non-numeric values so the caller's malformed-row
+    handling applies.
     """
     raw_width = row.get('pano_width')
     raw_height = row.get('pano_height')
-    if raw_width is None or raw_height is None:
+    if _absent(raw_width) or _absent(raw_height):
         raw_width, raw_height = row.get('width'), row.get('height')
-    if raw_width is None or raw_height is None:
+    if _absent(raw_width) or _absent(raw_height):
         return None
     width, height = float(raw_width), float(raw_height)
     if not (math.isfinite(width) and math.isfinite(height) and width > 0 and height > 0):
