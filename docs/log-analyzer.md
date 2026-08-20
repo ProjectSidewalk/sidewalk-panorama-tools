@@ -7,7 +7,9 @@ neither knows nor needs it, and it shares no code with the runners.
 It needs only `pandas` plus the `sftp` client binary (`openssh-client`). `pandas` lives in
 `requirements-dev.txt`, not `requirements.txt` — nothing the scraper or cropper runs imports it
 ([#72](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/72)) — so a box running only the
-analyzer wants `pip3 install pandas`, not the whole dev file.
+analyzer wants `pip3 install 'pandas>=2.0'`, not the whole dev file. The floor is not cosmetic:
+`read_log` parses timestamps with `format="ISO8601"`, which 1.x does not accept, and the inference it
+would otherwise fall back to discards every row whose timestamp width differs from the first row's.
 
 ## Connection settings
 
