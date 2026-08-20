@@ -1,4 +1,3 @@
-pandas>=1.2.3
 Pillow>=8.1.2
 requests>=2.31
 # Imported directly (urllib3.util.retry.Retry), not just via requests. 2.0+ for Retry(backoff_jitter=...).

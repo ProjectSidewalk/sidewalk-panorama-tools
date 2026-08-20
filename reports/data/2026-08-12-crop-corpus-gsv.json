@@ -1,0 +1,803 @@
+{
+ "source": "/v3/api/rawLabels?filetype=csv",
+ "fetched": "2026-08-12",
+ "rig": "gsv",
+ "seed": 20260812,
+ "prereg": "reports/2026-08-09-crop-priors-prereg.md",
+ "spec": {
+  "cell_target": 6,
+  "max_labels_per_pano": 3,
+  "resolution_target": 60,
+  "mismatch_target": 30,
+  "contrast_panos_target": 80,
+  "contrast_estimability_gate": 60,
+  "bearing_separation_deg": 60.0,
+  "standard_height": 8192.0,
+  "excluded_deployments": [
+   "la-piedad-old",
+   "validation-study"
+  ],
+  "corpus_excluded_types": [
+   "Occlusion"
+  ]
+ },
+ "provenance": [
+  {
+   "city": "amsterdam",
+   "file": "amsterdam.csv",
+   "sha256": "ceedf18ae301dcf5e1e78be791b88fb3218ded8d2b176f239d1a9a47c4cac7e4",
+   "bytes": 17955553,
+   "n_rows": 30061
+  },
+  {
+   "city": "auckland",
+   "file": "auckland.csv",
+   "sha256": "2e9de6a05985cfe1fec563c76e9f21e244b44bb297f0907911617f48cde3785a",
+   "bytes": 3306627,
+   "n_rows": 5640
+  },
+  {
+   "city": "blackhawk-hills-il",
+   "file": "blackhawk-hills-il.csv",
+   "sha256": "26341b9eb05ac476fba9eb350454de7688aa647260d1441c1ef14005f6143382",
+   "bytes": 129988,
+   "n_rows": 206
+  },
+  {
+   "city": "burnaby",
+   "file": "burnaby.csv",
+   "sha256": "5e77b28d7c087aaaf3e42c6f5f27563726e4d08fe32fbcf8494ba80b54b3992a",
+   "bytes": 10773866,
+   "n_rows": 20680
+  },
+  {
+   "city": "cdmx",
+   "file": "cdmx.csv",
+   "sha256": "c545ca0a076510e68e73b29cc23b6bf04f8a24e64e5064c9d2e9314fc9730f4d",
+   "bytes": 41108509,
+   "n_rows": 74278
+  },
+  {
+   "city": "chandigarh-india",
+   "file": "chandigarh-india.csv",
+   "sha256": "82e9feb2b5c105ebd6d425e8f89f6cef42f0a89e7726ac11e8f4525c7edcbaa2",
+   "bytes": 1752540,
+   "n_rows": 3209
+  },
+  {
+   "city": "chicago-il",
+   "file": "chicago-il.csv",
+   "sha256": "f1e64af8544d095978e98f6a1af00cc9849b0ed8b77dcde304025fd530fe02a8",
+   "bytes": 100963428,
+   "n_rows": 164453
+  },
+  {
+   "city": "cliffside-park-nj",
+   "file": "cliffside-park-nj.csv",
+   "sha256": "59b4b356eb60d0334def2802f9ea5c70242142d0b4e4f8f8a1b2bdec17409b72",
+   "bytes": 647515,
+   "n_rows": 1042
+  },
+  {
+   "city": "clifton-nj",
+   "file": "clifton-nj.csv",
+   "sha256": "b8565ab910d173c34c6fef903be307df69b38f646352d429fafe2e71e7513784",
+   "bytes": 181591,
+   "n_rows": 259
+  },
+  {
+   "city": "columbia-sc",
+   "file": "columbia-sc.csv",
+   "sha256": "a75f087d640977986da1bfb3348d32694381b5fe9c8838bb013b28045265cf87",
+   "bytes": 48783956,
+   "n_rows": 100472
+  },
+  {
+   "city": "columbus-oh",
+   "file": "columbus-oh.csv",
+   "sha256": "47723850fd5ed1e6cfec87a9dbcc8a9c0cb2f468000a772fe0df2f0778d32a29",
+   "bytes": 23127905,
+   "n_rows": 41186
+  },
+  {
+   "city": "cuenca",
+   "file": "cuenca.csv",
+   "sha256": "7a0874cec169cd16285fc848a97e7bc068b7d3f8f37932d3df15f41fb4e40bee",
+   "bytes": 8202974,
+   "n_rows": 14994
+  },
+  {
+   "city": "danville-il",
+   "file": "danville-il.csv",
+   "sha256": "a7e78fd6ed7d607c78afb2d0c2fddac46b10c22e9b223470ea9dd23c14396202",
+   "bytes": 7155952,
+   "n_rows": 14537
+  },
+  {
+   "city": "detroit-mi",
+   "file": "detroit-mi.csv",
+   "sha256": "190ef95c819b47ee68b69eb60f5c480059913d58806efaa60406b92329b7faa6",
+   "bytes": 1117691,
+   "n_rows": 1864
+  },
+  {
+   "city": "fort-wayne-in",
+   "file": "fort-wayne-in.csv",
+   "sha256": "3ab75a163c9ef233c39a9c23310e685b4a39ef18421bc89dba10835989c2f805",
+   "bytes": 552768,
+   "n_rows": 1091
+  },
+  {
+   "city": "gainesville-fl",
+   "file": "gainesville-fl.csv",
+   "sha256": "a3c25241821ed99603e4c67e05bef91b2e1c04ae67e52b25eaa251b7c050b57f",
+   "bytes": 6957547,
+   "n_rows": 15453
+  },
+  {
+   "city": "hackensack-nj",
+   "file": "hackensack-nj.csv",
+   "sha256": "7016085c188811bbe2d5d9035803bad2d0889c55a8a15db0b7b5f2161b04a928",
+   "bytes": 166826,
+   "n_rows": 271
+  },
+  {
+   "city": "houston-tx",
+   "file": "houston-tx.csv",
+   "sha256": "c1819bcb215b8712571d23d77f2679fd580f78d5d336a9040f40ac3bc5dde9eb",
+   "bytes": 204479,
+   "n_rows": 359
+  },
+  {
+   "city": "kaohsiung-tw",
+   "file": "kaohsiung-tw.csv",
+   "sha256": "bf2e2d46d358842baffe34fc83b13c7350cb2437e54ad597df37fdece94dcd21",
+   "bytes": 85309006,
+   "n_rows": 136371
+  },
+  {
+   "city": "keelung-tw",
+   "file": "keelung-tw.csv",
+   "sha256": "04661f04e0723571ab35130506102b7372342ae7c74c6fcfa4e2e482ab428f13",
+   "bytes": 5222260,
+   "n_rows": 7487
+  },
+  {
+   "city": "knox-oh",
+   "file": "knox-oh.csv",
+   "sha256": "8a03f17378b0b56ca4697166a33bb8eba0a987ee973eeea7ed0f23aa2818faf8",
+   "bytes": 7369218,
+   "n_rows": 15580
+  },
+  {
+   "city": "la-ca",
+   "file": "la-ca.csv",
+   "sha256": "69777c44ec60949454760f26f16643253833e6ebe42e15c1fb2bc9a6f4d3d8a8",
+   "bytes": 174046,
+   "n_rows": 285
+  },
+  {
+   "city": "la-piedad",
+   "file": "la-piedad.csv",
+   "sha256": "ca7bd821fa35b158e4e2fef5328042726905fb870fb1a641d9ce9b8da02ce94d",
+   "bytes": 320590,
+   "n_rows": 564
+  },
+  {
+   "city": "madison-wi",
+   "file": "madison-wi.csv",
+   "sha256": "308ac949c136d79c28901f823192be80ab474e3339a1a78cf3025065fa507efa",
+   "bytes": 503101,
+   "n_rows": 848
+  },
+  {
+   "city": "maywood-nj",
+   "file": "maywood-nj.csv",
+   "sha256": "e6f662d0cec7ee5b3418260a82b183d1d6f5c1bbf27ef5a6bbb62933540e76b1",
+   "bytes": 2134578,
+   "n_rows": 3869
+  },
+  {
+   "city": "mendota-il",
+   "file": "mendota-il.csv",
+   "sha256": "bbb31df317302c97cd3937ed473034db0fefc6eb75b7dd4778729a211f84a71d",
+   "bytes": 10110265,
+   "n_rows": 18259
+  },
+  {
+   "city": "new-taipei-tw",
+   "file": "new-taipei-tw.csv",
+   "sha256": "09e0488e894f082905f5b159cb11836352757ed4d80c752d6626aa0f59f9a5b7",
+   "bytes": 12012159,
+   "n_rows": 18248
+  },
+  {
+   "city": "newberg-or",
+   "file": "newberg-or.csv",
+   "sha256": "04aba4574b676892b55b8405175d26b4928220cdca334138781001f24fb34fc9",
+   "bytes": 9796021,
+   "n_rows": 17351
+  },
+  {
+   "city": "niagara-falls-ny",
+   "file": "niagara-falls-ny.csv",
+   "sha256": "7d13f3c361160d3575a84f7f6ce10a2b7656ddc0e1dab72886bfce727ae81bc5",
+   "bytes": 769759,
+   "n_rows": 1375
+  },
+  {
+   "city": "oradell-nj",
+   "file": "oradell-nj.csv",
+   "sha256": "bf387e9d7767795a1eae067cf6fb9aaf1e7b5132d982f1b20dc9c74f2b939cfb",
+   "bytes": 8708028,
+   "n_rows": 13591
+  },
+  {
+   "city": "paterson-nj",
+   "file": "paterson-nj.csv",
+   "sha256": "27d7c1796f511a5988c22141cd33f806ce8ea28ba022d1a585d0ffafe716b2b6",
+   "bytes": 11097013,
+   "n_rows": 21628
+  },
+  {
+   "city": "pittsburgh-pa",
+   "file": "pittsburgh-pa.csv",
+   "sha256": "b055dc8b162b42cbb22d106a72ac68f73763cbb3f75f7fa43849a34240792cbc",
+   "bytes": 14736266,
+   "n_rows": 25687
+  },
+  {
+   "city": "rancagua-chile",
+   "file": "rancagua-chile.csv",
+   "sha256": "b54d80a17df15bb9b42470c48ba93f48fcad274662458bc30e1752f429b92194",
+   "bytes": 1054705,
+   "n_rows": 1995
+  },
+  {
+   "city": "santiago-chile",
+   "file": "santiago-chile.csv",
+   "sha256": "23a6dee9696f74830321e465d27e08bfbdcff2b321814f7bd20bf1c66d2b0e4a",
+   "bytes": 474409,
+   "n_rows": 866
+  },
+  {
+   "city": "sao-paulo-brazil",
+   "file": "sao-paulo-brazil.csv",
+   "sha256": "8fc7be043634d6f53f9d4116b34d3d47151362e28cef95b1d877db1bb2af0ba1",
+   "bytes": 236814,
+   "n_rows": 423
+  },
+  {
+   "city": "seattle-wa",
+   "file": "seattle-wa.csv",
+   "sha256": "4870f15fe2c47047ce698b76e1098321c349099a5f6d30760498de2f111bf075",
+   "bytes": 150062261,
+   "n_rows": 261958
+  },
+  {
+   "city": "spgg",
+   "file": "spgg.csv",
+   "sha256": "37c033f254309e56d4c6f4f6f000314858abb0c3bc55768f1ff63ef0148bc179",
+   "bytes": 55496343,
+   "n_rows": 103538
+  },
+  {
+   "city": "st-louis-mo",
+   "file": "st-louis-mo.csv",
+   "sha256": "bc872e243e0d7243e80aebf8c1cdb4db1cbf1d363a45ef042d19c73f563daf53",
+   "bytes": 35638469,
+   "n_rows": 68662
+  },
+  {
+   "city": "taichung-tw",
+   "file": "taichung-tw.csv",
+   "sha256": "1613b4359dacde3635be41ba66fbf933316fc38a0952a254071c5dc0a5fa530a",
+   "bytes": 1294037,
+   "n_rows": 2511
+  },
+  {
+   "city": "tainan-tw",
+   "file": "tainan-tw.csv",
+   "sha256": "5a9a12d8048de4ad4f5ef4efe151ea50c99ccf86e926f1f650e2bfdf4abc8496",
+   "bytes": 227736,
+   "n_rows": 427
+  },
+  {
+   "city": "taipei",
+   "file": "taipei.csv",
+   "sha256": "255cfe1d5af3747bf7c6ae33543c8ead895951a63028985a3f4fcc5194371a10",
+   "bytes": 32261920,
+   "n_rows": 49313
+  },
+  {
+   "city": "teaneck-nj",
+   "file": "teaneck-nj.csv",
+   "sha256": "ce9d40bc1fa2437f054858e7e37fb51fc40028efe86b016f90ab95009fb1cbc3",
+   "bytes": 14011453,
+   "n_rows": 23356
+  },
+  {
+   "city": "tucson-az",
+   "file": "tucson-az.csv",
+   "sha256": "0f6c896fb3938fc84f54fd8406f0d5bbf740585eb190ae06e47e64fa2f11a456",
+   "bytes": 3630280,
+   "n_rows": 5942
+  },
+  {
+   "city": "vancouver-wa",
+   "file": "vancouver-wa.csv",
+   "sha256": "d4de269cf0397e3254870a19df321a35941c8bee21c76865ce3965fe81f782b8",
+   "bytes": 27896702,
+   "n_rows": 64910
+  },
+  {
+   "city": "virden-il",
+   "file": "virden-il.csv",
+   "sha256": "ab095090e9db2243940544df095bbbc2e0c071d97d4f43dbb8fafc3ccb234dd5",
+   "bytes": 453941,
+   "n_rows": 641
+  },
+  {
+   "city": "walla-walla-wa",
+   "file": "walla-walla-wa.csv",
+   "sha256": "54a3de0c1bdf0f586fbeab579417b3239b86d2b52c3361a3c12c6daa044245f3",
+   "bytes": 3976480,
+   "n_rows": 6306
+  },
+  {
+   "city": "waltham-ma",
+   "file": "waltham-ma.csv",
+   "sha256": "f821a78c49edd2828f3f0106dc06863ff9b76ca71369e300f13ed14cd9e9adcb",
+   "bytes": 2128249,
+   "n_rows": 3822
+  },
+  {
+   "city": "west-chester-pa",
+   "file": "west-chester-pa.csv",
+   "sha256": "12edec97d74b12ed7aede8363ed7b6679f9dd7ad075ad9a9baa7ea91df99e1d3",
+   "bytes": 683976,
+   "n_rows": 1214
+  },
+  {
+   "city": "zurich",
+   "file": "zurich.csv",
+   "sha256": "9795a2fcda0b1ae5cf90c8a246d7274fb7b944f6936258bbf85e91909caf8ad4",
+   "bytes": 6491077,
+   "n_rows": 9769
+  }
+ ],
+ "excluded_deployments": [
+  {
+   "city": "la-piedad-old",
+   "rig": null,
+   "n_rows": 4391,
+   "reason": "not a population"
+  },
+  {
+   "city": "richmond-va",
+   "rig": "mapillary",
+   "n_rows": 267,
+   "reason": "different rig (drawing gsv)"
+  },
+  {
+   "city": "validation-study",
+   "rig": null,
+   "n_rows": 10809,
+   "reason": "not a population"
+  },
+  {
+   "city": "zurich-infra3d",
+   "rig": "infra3d",
+   "n_rows": 4791,
+   "reason": "different rig (drawing gsv)"
+  }
+ ],
+ "frame": {
+  "n_labels": 1376851,
+  "n_corpus_eligible": 1348743,
+  "n_measurable": 922936,
+  "n_panos": 556775,
+  "n_panos_corpus_eligible": 549351,
+  "n_cities": 49,
+  "by_quality": {
+   "legacy": 193729,
+   "mid": 293535,
+   "window": 236520,
+   "post_fix": 624959
+  },
+  "by_band": {
+   "<5": 48166,
+   "5-15": 638508,
+   "15-30": 584822,
+   ">30": 77247
+  },
+  "by_label_type": {
+   "CurbRamp": 407665,
+   "NoSidewalk": 304353,
+   "SurfaceProblem": 201724,
+   "Obstacle": 176662,
+   "Crosswalk": 115849,
+   "NoCurbRamp": 107836,
+   "Signal": 31877,
+   "Other": 2777
+  },
+  "n_nonstandard_height": 160669,
+  "n_replay_mismatch": 54293,
+  "n_contrast_panos_available": 207100
+ },
+ "frame_comparison": {
+  "applicable": true,
+  "reference_cities": [
+   "amsterdam",
+   "cdmx",
+   "columbus-oh",
+   "newberg-or",
+   "oradell-nj",
+   "seattle-wa"
+  ],
+  "population": "corpus_eligible",
+  "n_reference_corpus_eligible": 431276,
+  "n_frame_corpus_eligible": 1348743,
+  "reference_share_pct": 31.976143713072098,
+  "total_variation_pct": {
+   "label_type": 11.058608812687613,
+   "band": 3.345622079666083,
+   "quality": 43.15885027173698,
+   "band_x_type": 11.337947584387452
+  },
+  "by_label_type": {
+   "Crosswalk": {
+    "reference_pct": 3.358174347749469,
+    "frame_pct": 8.589405097931927,
+    "ratio": 2.5577603210769104
+   },
+   "CurbRamp": {
+    "reference_pct": 34.50296329960396,
+    "frame_pct": 30.225550753553495,
+    "ratio": 0.8760276759735717
+   },
+   "NoCurbRamp": {
+    "reference_pct": 14.139437390441389,
+    "frame_pct": 7.995296361130326,
+    "ratio": 0.5654607139132244
+   },
+   "NoSidewalk": {
+    "reference_pct": 18.9361337055621,
+    "frame_pct": 22.565677820014635,
+    "ratio": 1.1916729238865922
+   },
+   "Obstacle": {
+    "reference_pct": 12.476233316947848,
+    "frame_pct": 13.098270018824936,
+    "ratio": 1.0498577323840286
+   },
+   "Other": {
+    "reference_pct": 0.3858318107198175,
+    "frame_pct": 0.20589541521253493,
+    "ratio": 0.5336403310769303
+   },
+   "Signal": {
+    "reference_pct": 0.7876626568601082,
+    "frame_pct": 2.363459903035641,
+    "ratio": 3.0005991555537213
+   },
+   "SurfaceProblem": {
+    "reference_pct": 15.413563472115305,
+    "frame_pct": 14.956444630296506,
+    "ratio": 0.9703430785070711
+   }
+  },
+  "by_band": {
+   "15-30": {
+    "reference_pct": 45.50774909802539,
+    "frame_pct": 43.360521611604284,
+    "ratio": 0.9528162229734567
+   },
+   "5-15": {
+    "reference_pct": 44.61806360659995,
+    "frame_pct": 47.3409685907545,
+    "ratio": 1.0610269645084234
+   },
+   "<5": {
+    "reference_pct": 2.9484599189382203,
+    "frame_pct": 3.5711770144497508,
+    "ratio": 1.2112008006321413
+   },
+   ">30": {
+    "reference_pct": 6.925727376436435,
+    "frame_pct": 5.727332783191461,
+    "ratio": 0.8269648041125182
+   }
+  },
+  "by_quality": {
+   "legacy": {
+    "reference_pct": 33.74776245374192,
+    "frame_pct": 14.363670469466756,
+    "ratio": 0.42561845364281703
+   },
+   "mid": {
+    "reference_pct": 45.538355948394994,
+    "frame_pct": 21.76359766093318,
+    "ratio": 0.4779179486759719
+   },
+   "post_fix": {
+    "reference_pct": 9.97644200001855,
+    "frame_pct": 46.33640359949968,
+    "ratio": 4.6445820663733155
+   },
+   "window": {
+    "reference_pct": 10.737439597844535,
+    "frame_pct": 17.536328270100384,
+    "ratio": 1.6331945907868648
+   }
+  },
+  "strata_cells": {
+   "reference": 120,
+   "frame": 120,
+   "only_in_frame": [],
+   "only_in_reference": []
+  }
+ },
+ "population_weights": {
+  "15-30|Crosswalk": 0.03160053472010606,
+  "15-30|CurbRamp": 0.11765621767823818,
+  "15-30|NoCurbRamp": 0.039286209455767336,
+  "15-30|NoSidewalk": 0.10204093737650538,
+  "15-30|Obstacle": 0.0539776666125422,
+  "15-30|Other": 0.0008897173145662294,
+  "15-30|Signal": 0.00297313869284215,
+  "15-30|SurfaceProblem": 0.08518079426547534,
+  "5-15|Crosswalk": 0.0432098628130044,
+  "5-15|CurbRamp": 0.16039749603890438,
+  "5-15|NoCurbRamp": 0.033276910426967926,
+  "5-15|NoSidewalk": 0.10477978384317843,
+  "5-15|Obstacle": 0.06294750000556074,
+  "5-15|Other": 0.0008281785336420653,
+  "5-15|Signal": 0.01494502659142624,
+  "5-15|SurfaceProblem": 0.05302492765486086,
+  "<5|Crosswalk": 0.0027099306539496407,
+  "<5|CurbRamp": 0.007066579770942277,
+  "<5|NoCurbRamp": 0.0013501460248542532,
+  "<5|NoSidewalk": 0.009081789488434787,
+  "<5|Obstacle": 0.00834406554844029,
+  "<5|Other": 0.00014087190813965298,
+  "<5|Signal": 0.005463605742532121,
+  "<5|SurfaceProblem": 0.001554781007204486,
+  ">30|Crosswalk": 0.008373722792259163,
+  ">30|CurbRamp": 0.017135214047450106,
+  ">30|NoCurbRamp": 0.006039697703713754,
+  ">30|NoSidewalk": 0.009754267492027763,
+  ">30|Obstacle": 0.005713468021706137,
+  ">30|Other": 0.0002001863957774016,
+  ">30|Signal": 0.00025282800355590354,
+  ">30|SurfaceProblem": 0.009803943375424376
+ },
+ "draw": {
+  "n_labels": 763,
+  "n_panos": 661,
+  "n_measurable": 584,
+  "labels_per_pano_max": 3,
+  "by_role": {
+   "cell": 538,
+   "contrast": 160,
+   "resolution": 50,
+   "mismatch": 20
+  },
+  "by_quality": {
+   "legacy": 144,
+   "mid": 201,
+   "window": 192,
+   "post_fix": 226
+  },
+  "by_band": {
+   "<5": 180,
+   "5-15": 198,
+   "15-30": 205,
+   ">30": 180
+  },
+  "by_band_measurable": {
+   "<5": 137,
+   "5-15": 154,
+   "15-30": 155,
+   ">30": 138
+  },
+  "by_label_type": {
+   "CurbRamp": 125,
+   "Obstacle": 101,
+   "NoSidewalk": 99,
+   "SurfaceProblem": 98,
+   "NoCurbRamp": 96,
+   "Other": 96,
+   "Crosswalk": 76,
+   "Signal": 72
+  },
+  "by_city": {
+   "seattle-wa": 161,
+   "spgg": 79,
+   "chicago-il": 67,
+   "cdmx": 62,
+   "taipei": 54,
+   "kaohsiung-tw": 46,
+   "amsterdam": 45,
+   "columbia-sc": 27,
+   "cuenca": 25,
+   "st-louis-mo": 23,
+   "columbus-oh": 21,
+   "vancouver-wa": 18,
+   "pittsburgh-pa": 15,
+   "burnaby": 14,
+   "oradell-nj": 14,
+   "teaneck-nj": 11,
+   "zurich": 11,
+   "new-taipei-tw": 10,
+   "newberg-or": 9,
+   "paterson-nj": 8,
+   "auckland": 6,
+   "keelung-tw": 6,
+   "mendota-il": 5,
+   "knox-oh": 4,
+   "gainesville-fl": 3,
+   "tucson-az": 3,
+   "chandigarh-india": 2,
+   "danville-il": 2,
+   "madison-wi": 2,
+   "maywood-nj": 2,
+   "sao-paulo-brazil": 2,
+   "walla-walla-wa": 2,
+   "west-chester-pa": 2,
+   "rancagua-chile": 1,
+   "waltham-ma": 1
+  },
+  "by_split": {
+   "tune": 388,
+   "eval": 375
+  },
+  "n_disputed": 86,
+  "shortfalls": {
+   "contrast_panos": {
+    "achieved": 81,
+    "required": 80,
+    "shortfall": 0
+   },
+   "resolution": {
+    "achieved": 122,
+    "required": 60,
+    "shortfall": 0
+   },
+   "mismatch": {
+    "achieved": 48,
+    "required": 30,
+    "shortfall": 0
+   }
+  },
+  "weight_coverage": {
+   "cells_total": 32,
+   "cells_supported": 32,
+   "cells_unsupported": 0,
+   "unsupported_population_pct": 0.0,
+   "unsupported_cells": {}
+  },
+  "strata": {
+   "15-30|legacy|CurbRamp": 6,
+   "15-30|legacy|NoCurbRamp": 6,
+   "15-30|legacy|NoSidewalk": 6,
+   "15-30|legacy|Obstacle": 6,
+   "15-30|legacy|Other": 6,
+   "15-30|legacy|SurfaceProblem": 6,
+   "15-30|mid|Crosswalk": 6,
+   "15-30|mid|CurbRamp": 6,
+   "15-30|mid|NoCurbRamp": 6,
+   "15-30|mid|NoSidewalk": 6,
+   "15-30|mid|Obstacle": 8,
+   "15-30|mid|Other": 6,
+   "15-30|mid|Signal": 6,
+   "15-30|mid|SurfaceProblem": 6,
+   "15-30|post_fix|Crosswalk": 10,
+   "15-30|post_fix|CurbRamp": 20,
+   "15-30|post_fix|NoCurbRamp": 6,
+   "15-30|post_fix|NoSidewalk": 9,
+   "15-30|post_fix|Obstacle": 6,
+   "15-30|post_fix|Other": 6,
+   "15-30|post_fix|Signal": 6,
+   "15-30|post_fix|SurfaceProblem": 8,
+   "15-30|window|Crosswalk": 6,
+   "15-30|window|CurbRamp": 6,
+   "15-30|window|NoCurbRamp": 6,
+   "15-30|window|NoSidewalk": 6,
+   "15-30|window|Obstacle": 6,
+   "15-30|window|Other": 6,
+   "15-30|window|Signal": 6,
+   "15-30|window|SurfaceProblem": 6,
+   "5-15|legacy|CurbRamp": 6,
+   "5-15|legacy|NoCurbRamp": 6,
+   "5-15|legacy|NoSidewalk": 6,
+   "5-15|legacy|Obstacle": 6,
+   "5-15|legacy|Other": 6,
+   "5-15|legacy|SurfaceProblem": 6,
+   "5-15|mid|Crosswalk": 6,
+   "5-15|mid|CurbRamp": 10,
+   "5-15|mid|NoCurbRamp": 6,
+   "5-15|mid|NoSidewalk": 6,
+   "5-15|mid|Obstacle": 9,
+   "5-15|mid|Other": 6,
+   "5-15|mid|Signal": 6,
+   "5-15|mid|SurfaceProblem": 6,
+   "5-15|post_fix|Crosswalk": 6,
+   "5-15|post_fix|CurbRamp": 17,
+   "5-15|post_fix|NoCurbRamp": 6,
+   "5-15|post_fix|NoSidewalk": 6,
+   "5-15|post_fix|Obstacle": 6,
+   "5-15|post_fix|Other": 6,
+   "5-15|post_fix|Signal": 6,
+   "5-15|post_fix|SurfaceProblem": 6,
+   "5-15|window|Crosswalk": 6,
+   "5-15|window|CurbRamp": 6,
+   "5-15|window|NoCurbRamp": 6,
+   "5-15|window|NoSidewalk": 6,
+   "5-15|window|Obstacle": 6,
+   "5-15|window|Other": 6,
+   "5-15|window|Signal": 6,
+   "5-15|window|SurfaceProblem": 6,
+   "<5|legacy|CurbRamp": 6,
+   "<5|legacy|NoCurbRamp": 6,
+   "<5|legacy|NoSidewalk": 6,
+   "<5|legacy|Obstacle": 6,
+   "<5|legacy|Other": 6,
+   "<5|legacy|SurfaceProblem": 6,
+   "<5|mid|Crosswalk": 6,
+   "<5|mid|CurbRamp": 6,
+   "<5|mid|NoCurbRamp": 6,
+   "<5|mid|NoSidewalk": 6,
+   "<5|mid|Obstacle": 6,
+   "<5|mid|Other": 6,
+   "<5|mid|Signal": 6,
+   "<5|mid|SurfaceProblem": 6,
+   "<5|post_fix|Crosswalk": 6,
+   "<5|post_fix|CurbRamp": 6,
+   "<5|post_fix|NoCurbRamp": 6,
+   "<5|post_fix|NoSidewalk": 6,
+   "<5|post_fix|Obstacle": 6,
+   "<5|post_fix|Other": 6,
+   "<5|post_fix|Signal": 6,
+   "<5|post_fix|SurfaceProblem": 6,
+   "<5|window|Crosswalk": 6,
+   "<5|window|CurbRamp": 6,
+   "<5|window|NoCurbRamp": 6,
+   "<5|window|NoSidewalk": 6,
+   "<5|window|Obstacle": 6,
+   "<5|window|Other": 6,
+   "<5|window|Signal": 6,
+   "<5|window|SurfaceProblem": 6,
+   ">30|legacy|CurbRamp": 6,
+   ">30|legacy|NoCurbRamp": 6,
+   ">30|legacy|NoSidewalk": 6,
+   ">30|legacy|Obstacle": 6,
+   ">30|legacy|Other": 6,
+   ">30|legacy|SurfaceProblem": 6,
+   ">30|mid|Crosswalk": 6,
+   ">30|mid|CurbRamp": 6,
+   ">30|mid|NoCurbRamp": 6,
+   ">30|mid|NoSidewalk": 6,
+   ">30|mid|Obstacle": 6,
+   ">30|mid|Other": 6,
+   ">30|mid|Signal": 6,
+   ">30|mid|SurfaceProblem": 6,
+   ">30|post_fix|Crosswalk": 6,
+   ">30|post_fix|CurbRamp": 6,
+   ">30|post_fix|NoCurbRamp": 6,
+   ">30|post_fix|NoSidewalk": 6,
+   ">30|post_fix|Obstacle": 6,
+   ">30|post_fix|Other": 6,
+   ">30|post_fix|Signal": 6,
+   ">30|post_fix|SurfaceProblem": 6,
+   ">30|window|Crosswalk": 6,
+   ">30|window|CurbRamp": 6,
+   ">30|window|NoCurbRamp": 6,
+   ">30|window|NoSidewalk": 6,
+   ">30|window|Obstacle": 6,
+   ">30|window|Other": 6,
+   ">30|window|Signal": 6,
+   ">30|window|SurfaceProblem": 6
+  }
+ }
+}

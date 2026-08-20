@@ -19,7 +19,10 @@ python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-
     [--max-runtime MINUTES] [--min-depth-runtime MINUTES] [--max-depth-requests N]
 
 # Cropper (exits 1 if any label errored; missing/untrusted panos alone are not an error)
-python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) [-s <pano-dir>] [-o <crop-dir>] [--mark-label]
+python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <crop-dir> [--mark-label]
+
+# flag_panos JSON -> CSV, for one city (one-off tool; see flag_panos/README.md)
+python3 flag_panos/json_to_csv.py --city <city> [--dir <dir>]
 
 # Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see docs/log-analyzer.md)
 python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days N]
@@ -70,12 +73,15 @@ The README is a front door only; the reference material lives in `docs/` and eac
 
 **downloaders/** — per-source download logic; `download_pano()` dispatches on `pano_info['source']`.
 - `gsv.py` stitches 512×512 tiles from Google's undocumented `cbk?output=tile` endpoint into one equirectangular JPEG. Determines a working zoom level (5 preferred, falling back to 3; a fully-black tile at both means no imagery), fans the tiles out concurrently via `aiohttp` with `backoff` retries, pastes them into a blank canvas sized per the server's width/height, and upscales zoom-3 panos with LANCZOS.
+  - **`fallback_success` is "the stitch was upscaled", not "zoom == 3".** `download_single_pano` returns it when `_dims_at_zoom(w, h, zoom) != final_im_dimension`, which is exactly when `_stitch_tiles` had to LANCZOS the frame up to the reported dims. Those two rules disagree on the panos that matter: an old four-level pano (3328×1664) has max zoom 3, so zoom 3 *is* its native resolution and nothing was lost. Two tests hold that split apart and both kill a `zoom == 3` implementation. Nothing returned this verdict at all until #52, so `log.csv` column 8 was a constant `0` for every run before it — and `log_analyzer` sums that column into `daily_success`, so it was adding a permanent zero.
 - `gsv.py` also owns the **depth phase** (`download_depth_maps`), which fetches depth via the `streetlevel` library's photometa call — one metadata request per unresolved pano.
 - `mapillary.py` resolves `thumb_original_url` via the Graph API and downloads it. Requires `MAPILLARY_ACCESS_TOKEN`.
 
 **CropRunner.py** — extracts per-label crops from downloaded panos.
-1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake additionally dtype-pins `pano_id` to `str` (the #46 bug class) and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
-2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 16384×8192 pano is 384 MB decoded (`16384 × 8192 × 3` bytes). Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, size, shifted)` centered at `(pano_x, pano_y)` where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Size comes from `predict_crop_size()` — an experimentally-fit formula mapping pano-y to distance to crop size, clamped to `[50, 1500]` (replacement tracked in #32/#54).
+1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake reads with `csv.DictReader`, not pandas (#72), so no field's type can depend on what the values happen to look like (the #46 bug class), and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
+2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 16384×8192 pano is ~250 MB decoded. Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, width, height, shifted)` centered at `(pano_x, pano_y)`, **3:2**, where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Width comes from `crop_window_width()` — **sizing rule v2**: `predict_crop_size()` normalised into the 6656-px frame its constants were fit on, ×`CROP_SIZE_SCALE`, clamped to `CROP_MIN_FOV_DEG`–`CROP_MAX_FOV_DEG` **as an angle** rather than as pixels. `downscale_for_storage()` then caps the cut window at `CROP_MAX_STORED_WIDTH` without ever upscaling it. Every constant is one measured number — see `reports/2026-08-19-crop-sizing-v2.md`; the residual (a y-only rule cannot know how large a ramp actually is) is RampNet #83.
+   - **The rule version lives in the store, not in the run summary.** `write_rule_marker()` writes `<crop-dir>/crop_rule.json` (`CROP_RULE_VERSION` plus every constant) *before* cutting anything, and warns — never refuses — when it disagrees with what is there. A mixed store is the **ordinary** result of changing the rule, since existing crops are the resume marker and are never re-cut: run v2 over a v1 store and the new crops are 3:2 while the old stay square, with nothing on disk to say so. Stdout was where this used to go, which on a cron run is nowhere.
+   - **`reports/scripts/crop_rule_v1.py` is the one frozen copy of the old rule**, used by the sizing study and by the two census tests whose reports were *measured* under v1. It is a record, not a rule anyone runs — the resolution defect in it is the subject of the v2 report and must not be "fixed".
 3. Two preflights skip a label rather than emit a quietly wrong crop: a metadata/image **dims mismatch** (`dims_mismatch`) and a `pano_y` **outside the image** (`out_of_frame`).
 4. Writes to `<crop-dir>/<label_type_id>/<label_id>.jpg` through `atomic_output_path`. Existing crops are the resume marker (`skipped_existing`) and are **never re-cut**, so a store cropped before #47 keeps its black-padded crops — delete them to pick the fix up. Rotating `crop.log` lands next to the crops, not the CWD.
 5. `--mark-label` draws a dot at the label position **inside the crop**, never on the shared pano, and follows the label through both transforms. It is **off by default**: it was a `MARK_LABEL = True` module constant until #48, so every crop this tool produced before then has a (128, 0, 0) dot burned over the feature of interest.
@@ -122,6 +128,25 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 
 ## Things that are easy to get wrong
 
+- **The three file intakes read with `csv`/`json`, and must not go back to pandas (#72).** `pandas` is a
+  dev/ops dependency now (`requirements-dev.txt`, for `log_analyzer/` and `reports/scripts/`), and a test
+  asserts no production module imports it. The battery in `tests/test_csv_intake.py` was **measured**
+  against `pd.read_csv` before the swap, and three of those measurements are the reason it happened: a row
+  with **one surplus field** made pandas consume the first column as the frame's index, so every field
+  shifted and the real `pano_id` vanished — silently; **`has_labels` had no fixed type** (bool, int64,
+  float64, or `str` for junk *and* for `' True '` with padding), and `select_image_panos` is a plain
+  truthiness test, so the `str` cases silently defeated `--all-panos`; and **one blank cell retyped a whole
+  column**, so a single missing `width` made every other row's width a float and the blank itself a `NaN`
+  that `gsv`'s `is not None` guard cannot see. Blank cells become `None` in `DownloadRunner` and stay `''`
+  in `CropRunner` — deliberate, and explained at both seams.
+- **`print` and `logging` are two channels with different jobs — do not "unify" them.** `print` is the
+  operator-facing run narrative and the warnings **cron mails**; `logging` is the durable per-item detail in
+  `scrape.log` / `crop.log`. **A warning that matters goes to both**, which is the depth phase's pattern
+  (`logging.error(...)` then `print(...)`), because stdout is how someone hears about it tonight and the log
+  is what is still there next week. #52 item 6 read the mixture as inconsistency; it is mostly deliberate,
+  `docs/downloader.md` leans on a `WARNING` reaching cron mail, and ~15 tests assert on `capsys`. A print-to-logging sweep
+  would break all three. The one real violation — `filter_supported_sources` warning on stdout only — is
+  fixed; `caplog` assertions now sit beside its `capsys` ones so a revert fails.
 - **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in `docs/ops.md`; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
 - **The depth failure count is not an alert signal.** It includes `unavailable`, a permanent and expected outcome, so early backfill runs show large, entirely normal failure numbers. The success/failure/unavailable split goes to stdout and `scrape.log`.
 - **Depth artifacts are un-mirrored on write.** `streetlevel`'s decoder x-mirrors the payload relative to the pano JPEG; `_write_depth_artifact` flips it back (#58), so a consumer can index the stored array with `pano_x`/`pano_y` scaled by width/height, no correction needed. `tests/test_streetlevel_api.py` pins the decode's end-to-end column order so a streetlevel change fails CI rather than silently re-mirroring new artifacts.
@@ -173,6 +198,69 @@ These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11
   (`comparable_only`) rather than leaving a reader to assume the difference is the estimator — here it
   mostly was, but that was a measurement, not a given.
 
+## The gold-standard annotation tool (`corpus_sample.py` → `annotation_tiles.py` → `annotation_subset.py` → `annotate_server.py`)
+
+Four scripts feed each other, and the seams between them are load-bearing:
+
+- **`corpus_sample.py`** draws the study corpus from a rawLabels frame. **Label identity is
+  `(city, label_id)`, carried as `label_uid`** — `label_id` restarts at 1 in every deployment, and keying
+  on it silently cost 314 labels of a 763-label draw. `pano_id` does *not* collide across cities, which is
+  why the per-pano cap and the pano-wise tune/eval split are sound on it.
+- **`annotation_tiles.py`** cuts one tile per label and emits **two** files. `tasks.json` is
+  annotator-facing and carries no stored coordinate, no jitter, no tile origin and **no seed** — each of
+  those recovers the answer, since the tile origin is `stored + jitter - size/2`. `geometry.json` carries
+  all of them and is what the analysis uses to map a tile-space annotation back to pano coordinates.
+  Tiles are cut at **60°** and the view opens at the whole cut: a tile of angular width F can only
+  measure a displacement up to F/2, so a tight tile converts gross errors into `object-absent` and
+  deletes the largest errors from the distribution being estimated.
+- **Everything angular on that instrument must be angular, including the jitter.** It was `±40–80 px`
+  until 2026-08-19, which is 1.5–2.9% of the tile on the 8192-height panos 641 of the 763 drawn labels
+  sit on and 7.2–14.4% on the 1664s — so the one device whose job is to keep the stored point off the
+  tile centre varied ~5× with resolution and was weakest on 84% of the corpus. It is now
+  `JITTER_MIN_FRAC`/`JITTER_MAX_FRAC` of the tile (§4's numbers at the 20° cut §4 was written for),
+  which also means changing `CUT_FOV_DEG` can no longer dilute it.
+- **`measurable` has exactly one definition, `rawlabels.study_measurable`,** and **no script may read
+  the corpus CSV's `measurable` column** — that is a snapshot of the rule at draw time and says 584
+  where the live rule says 368. `annotation_subset.py --measurable-only` and
+  `annotation_tiles.py --measurable-only` both call it; the latter used to read the column, which is
+  the failure the former was written to prevent, one script upstream.
+- **Protocol fields come from code, pixel fields come from the rendered file.** `FLAGS`, `FLAG_HELP`,
+  `BOX_RULE` and `initial_view_fraction` are properties of the instrument, so
+  `annotate_server.tasks_payload` sends them from `annotation_tiles` on every request and
+  `annotation_subset.write_subset` refreshes them in the copies it writes. `cut_fov_deg` is the one
+  exception: it describes the pixels, so it comes from whatever produced them. Taking the flag *list*
+  from the file while taking its *help text* from code is the specific half-measure that shipped a
+  queue offering three flags to a server that accepted four — the annotator had no key to press.
+- **`annotation_subset.py`** narrows an already-rendered tile set, and is where the *current* referent
+  rule is applied. Both its filters fail silently: a queue drawn from the wrong population or missing a
+  flag looks perfectly well-formed.
+- **`annotate_server.py`** serves tiles to `annotate.html` on loopback and writes one JSON per label per
+  annotator. It refuses `geometry.json` **by name** — it sits beside the file that is served, and the
+  natural static-file handler would publish the answer key at a guessable URL.
+
+Amendment 1(e) forbids porting the webpage's render path into any of this: Study 1 compares stored
+`pano_x`/`pano_y` against gold *in pano coordinates*, so a mapping sharing the projection under test would
+make the study measure zero by construction. The tile transform is verified by round-trip against
+directly-indexed pixels, never against another implementation.
+
+**The corpus is 8 types; Study 1's measurable set is 4.** The referent rule (2026-08-13) excludes
+Occlusion, Crosswalk, NoSidewalk, **Signal** and **Other** by type, plus eleven `(label_type, tag)`
+pairs — leaving CurbRamp, NoCurbRamp, Obstacle and SurfaceProblem, 368 of the 763-label corpus. It is a
+**placement-measurability** rule, not a corpus rule: the excluded types have real crop consumers and
+Study 2 still sizes crops for them. What changed on 2026-08-13 is that they are no longer *annotated* —
+if a referent has no located centre it has no tight extent either, so a gold box on one is as arbitrary
+as a gold point. The rule is keyed on **pairs, not tags**: `height difference` is excluded under
+SurfaceProblem (a run of pavement) and kept under Obstacle (a discrete step). Tags are optional, so the
+rule is leaky by construction — 14% of Obstacle labels carry none — which is what the `no-extent` flag
+is for, and that flag is **reported as its own bucket, never dropped from a denominator**.
+
+The prereg's §7 is a **decision log**, not an amendment log — plain dated entries recording what changed
+and *what was known at the time*, since the ordering (a filter fixed before any gold existed) is the only
+part that cannot be reconstructed later. Old references resolve as Amendment 1/2/3 = 2026-08-11/12/13.
+Note that changing the referent rule invalidates published artifacts computed under the old one: the
+Mapillary census is deliberately **not** regenerated, and `TestTheCommittedRuleIsCurrentOrSuperseded`
+fails if the live rule diverges from a committed artifact's recorded rule without the report saying so.
+
 ## Label Type IDs
 
 Used in both APIs and as the crop output subdirectory name. Note 8 is intentionally skipped.
@@ -193,7 +281,7 @@ See `docs/api-fields.md` for the full field glossary for `/adminapi/panos` and `
 
 ## Other directories
 
-- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), the README's hero figure (`test_make_banner.py`), and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
+- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), the README's hero figure (`test_make_banner.py`), the three file intakes as one contract (`test_csv_intake.py`), and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
 - `log_analyzer/` — the log analyzer plus `cities.csv`; `log_analyzer/logs/` is a gitignored local cache.
 - `flag_panos/` — one-off web tool (HTML/JS) from the 2022 depth-endpoint outage. Not wired into the Python scripts; keep unless asked.
 - `samples/` — reference CSV/JSON/XML and a sample pano+crop used for manual testing and as examples for the `-c`/`-f` flags.

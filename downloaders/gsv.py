@@ -36,11 +36,6 @@ except ImportError:
     # leave it behind). Don't take the whole scraper down over a throttle that defaults to off anyway.
     depth_min_request_interval = 0.0
 
-try:
-    from xml.etree import cElementTree as ET
-except ImportError:
-    from xml.etree import ElementTree as ET
-
 from .common import DownloadResult, atomic_output_path
 
 
@@ -338,65 +333,44 @@ def download_single_pano(storage_path, pano_info):
 
     final_image_width = int(pano_dims[0]) if pano_dims[0] is not None else None
     final_image_height = int(pano_dims[1]) if pano_dims[1] is not None else None
-    zoom = None
 
     # Session scoped to the zoom/dimension probes below; the tile fan-out uses its own aiohttp session. This
     # runs once per pano, so leaving it unclosed would pile up connection pools until GC (#51).
     with _request_session() as session:
-        # Check XML metadata for image width/height max zoom if its downloaded.
-        xml_metadata_path = os.path.join(destination_dir, pano_id + ".xml")
-        if os.path.isfile(xml_metadata_path):
-            print(xml_metadata_path)
-            with open(xml_metadata_path, 'rb') as pano_xml:
-                try:
-                    tree = ET.parse(pano_xml)
-                    root = tree.getroot()
+        # There is no legacy-XML path here any more (#52 items 3/4/5). It read a `<pano_id>.xml` for dims and
+        # zoom; #39 removed the downloader that wrote those (cbk?output=xml died in 2022), so the files on the
+        # store are frozen 2022 metadata. It could only ever run for a pano with an .xml and NO .jpg - the
+        # skip check above returns first - which is 1 of the 1,025 .xml files sampled across dc, columbus-oh,
+        # amsterdam and newberg-or. On that one pano it did harm: a declared num_zoom_levels was trusted over
+        # the probe and test-fetched, and a black tile returned DownloadResult.failure, which is PERMANENT
+        # under the #41 ledger. So stale 2022 metadata could blacklist a pano Google still serves.
 
-                    # Get the number of zoom levels.
-                    for child in root:
-                        if child.tag == 'data_properties':
-                            zoom = int(child.attrib['num_zoom_levels'])
-                            if final_image_width is None:
-                                final_image_width = int(child.attrib['width'])
-                            if final_image_height is None:
-                                final_image_height = int(child.attrib['height'])
-
-                    # If there is no zoom in the XML, then we skip this and try some zoom levels below.
-                    if zoom is not None:
-                        # Check if the image exists (occasionally we will have XML but no JPG).
-                        test_url = f'{base_url}&zoom={zoom}&x=0&y=0&panoid={pano_id}'
-                        test_request = _get_response(test_url, session, stream=True)
-                        test_tile = Image.open(test_request)
-                        if test_tile.convert("L").getextrema() == (0, 0):
-                            return DownloadResult.failure
-                except Exception:
-                    pass
-
-        # If we did not find image width/height from API or XML, then set download to failure.
+        # Without dims we cannot size the tile grid. Permanent, hence failure: /adminapi/panos is the only
+        # source for them, so re-attempting the same row tomorrow asks the same question again.
         if final_image_width is None or final_image_height is None:
             return DownloadResult.failure
 
-        # If we did not find a zoom level in the XML above, then try a couple zoom level options here.
-        if zoom is None:
-            url_zoom_3 = f'{base_url}&zoom=3&x=0&y=0&panoid={pano_id}'
-            url_zoom_5 = f'{base_url}&zoom=5&x=0&y=0&panoid={pano_id}'
+        # The probe is now the only thing that picks a zoom, so it is unconditional - it used to sit behind
+        # `if zoom is None:` because the legacy XML could have set one already.
+        url_zoom_3 = f'{base_url}&zoom=3&x=0&y=0&panoid={pano_id}'
+        url_zoom_5 = f'{base_url}&zoom=5&x=0&y=0&panoid={pano_id}'
 
-            req_zoom_3 = _get_response(url_zoom_3, session, stream=True)
-            im_zoom_3 = Image.open(req_zoom_3)
-            req_zoom_5 = _get_response(url_zoom_5, session, stream=True)
-            im_zoom_5 = Image.open(req_zoom_5)
+        req_zoom_3 = _get_response(url_zoom_3, session, stream=True)
+        im_zoom_3 = Image.open(req_zoom_3)
+        req_zoom_5 = _get_response(url_zoom_5, session, stream=True)
+        im_zoom_5 = Image.open(req_zoom_5)
 
-            # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a transparent
-            # image. This means we need to set the zoom level to 3. Google also returns a transparent image if
-            # there is no imagery. So check at both zoom levels. How to check:
-            # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
-            if im_zoom_5.convert("L").getextrema() != (0, 0):
-                zoom = 5
-            elif im_zoom_3.convert("L").getextrema() != (0, 0):
-                zoom = 3
-            else:
-                # Can't determine zoom.
-                return DownloadResult.failure
+        # In some cases (e.g., old GSV images), we don't have zoom level 5, so Google returns a transparent
+        # image. This means we need to set the zoom level to 3. Google also returns a transparent image if
+        # there is no imagery. So check at both zoom levels. How to check:
+        # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
+        if im_zoom_5.convert("L").getextrema() != (0, 0):
+            zoom = 5
+        elif im_zoom_3.convert("L").getextrema() != (0, 0):
+            zoom = 3
+        else:
+            # Can't determine zoom.
+            return DownloadResult.failure
 
     final_im_dimension = (final_image_width, final_image_height)
 
@@ -423,12 +397,23 @@ def download_single_pano(storage_path, pano_info):
                         "stitching at reduced resolution - check the CBK request parameters (#73)",
                         pano_id, degraded, len(ok), TILE_SIZE)
 
-    image = _stitch_tiles(ok, _dims_at_zoom(final_image_width, final_image_height, zoom), final_im_dimension)
+    zoom_dims = _dims_at_zoom(final_image_width, final_image_height, zoom)
+    image = _stitch_tiles(ok, zoom_dims, final_im_dimension)
     _reject_mostly_black_stitch(image, pano_id, zoom)
     # atomic_output_path, not a direct save: an image on disk IS the resume marker, so a mid-write crash
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:
         image.save(tmp_path, 'jpeg')
+
+    # log.csv column 8 (#52 item 2). The test is whether the grid we could actually download covers the
+    # pano's reported frame; if it doesn't, _stitch_tiles LANCZOS-upscaled to reach it, and the JPEG on disk
+    # holds less imagery than its dimensions advertise. Deliberately NOT `zoom == 3`: an old four-level pano
+    # (3328x1664) has max zoom 3, so zoom 3 IS its native resolution and nothing was lost - calling that
+    # degraded would put a permanent false positive in front of ops on the oldest imagery in the store.
+    if zoom_dims != final_im_dimension:
+        logging.info("IMAGEDOWNLOAD: pano %s: only zoom %s was available for a %dx%d frame; stitched %dx%d "
+                     "and upscaled", pano_id, zoom, final_image_width, final_image_height, *zoom_dims)
+        return DownloadResult.fallback_success
     return DownloadResult.success
 
 

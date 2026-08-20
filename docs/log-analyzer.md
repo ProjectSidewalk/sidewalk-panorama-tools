@@ -4,7 +4,10 @@ Monitors the nightly scrape across every city. It pulls each city's `log.csv` of
 flags the ones that look broken. This is an ops tool you run from a workstation or a cron box — the scraper
 neither knows nor needs it, and it shares no code with the runners.
 
-It needs only `pandas` (already in `requirements.txt`) plus the `sftp` client binary (`openssh-client`).
+It needs only `pandas` plus the `sftp` client binary (`openssh-client`). `pandas` lives in
+`requirements-dev.txt`, not `requirements.txt` — nothing the scraper or cropper runs imports it
+([#72](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/72)) — so a box running only the
+analyzer wants `pip3 install pandas`, not the whole dev file.
 
 ## Connection settings
 

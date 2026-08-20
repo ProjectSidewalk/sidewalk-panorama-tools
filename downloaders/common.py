@@ -1,16 +1,27 @@
 import contextlib
+import enum
 import os
 
 
-class Enum(object):
-    def __init__(self, tuplelist):
-        self.tuplelist = tuplelist
+class DownloadResult(enum.Enum):
+    """What a downloader decided about one pano. See downloaders/__init__.py for the ledger contract.
 
-    def __getattr__(self, name):
-        return self.tuplelist.index(name)
+    enum.Enum, not IntEnum, and deliberately (#52 item 2). This was a hand-rolled class whose members were
+    indices into a tuple, which made `skipped` == 0 and therefore FALSY - one `if result:` anywhere would
+    have silently misclassified an already-downloaded pano - and turned a typo'd member into a ValueError
+    raised from inside __getattr__, so hasattr() raised instead of answering and the message never named
+    the attribute. Nothing compares these to ints or does arithmetic on them (every call site is `==`
+    against a symbol), so there is no reason to keep them int-like and every reason not to.
+    """
 
-
-DownloadResult = Enum(('skipped', 'success', 'fallback_success', 'failure'))
+    skipped = 'skipped'
+    success = 'success'
+    #: The pano was downloaded, but only zoom 3 was available while its reported dimensions need zoom 5, so
+    #: the stitch was LANCZOS-upscaled to reach them. Real imagery, materially less of it. This is NOT
+    #: simply `zoom == 3`: an old pano whose max zoom IS 3 is downloaded at its native resolution and is a
+    #: plain success. See gsv.download_single_pano for the predicate, and log.csv column 8.
+    fallback_success = 'fallback_success'
+    failure = 'failure'
 
 
 @contextlib.contextmanager

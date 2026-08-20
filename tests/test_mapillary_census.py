@@ -413,20 +413,32 @@ class TestReferentExclusion:
         assert got['n_excluded'] == 4 and got['n_comparable'] == 0
 
     def test_widening_the_rule_moves_the_filter_and_the_report_together(self, monkeypatch):
-        """The drift the finding names, run end to end: add the `SurfaceProblem + bumpy` pair the
-        REGION_TAGS comment says is deliberately out, and the published arm count and the corpus
-        filter must agree afterwards — which is exactly what `pool_referent_exclusion`'s asserts
-        cannot detect, since two different rules still sum to their own total.
+        """The drift the finding names, run end to end: add a pair the rule deliberately omits, and the
+        published arm count and the corpus filter must agree afterwards — which is exactly what
+        `pool_referent_exclusion`'s asserts cannot detect, since two different rules still sum to their
+        own total.
+
+        The added pair is `SurfaceProblem + cracks`, and picking it is not arbitrary. This test used to
+        add `SurfaceProblem + bumpy`, which Amendment 3 then moved *into* the rule — leaving the
+        monkeypatch a no-op and the test green while verifying nothing, since a patched set identical
+        to the real one cannot show that the filter follows it. So the pair here has to be one the live
+        rule excludes on purpose, and `cracks` is Jon's most deliberate keep: 75,040 labels, the single
+        largest SurfaceProblem tag, kept because a crack is a thing you can point at.
         """
-        widened = frozenset(rawlabels.REGION_TAGS | {('SurfaceProblem', 'bumpy')})
+        assert ('SurfaceProblem', 'cracks') not in rawlabels.REGION_TAGS, \
+            'this test is only meaningful while the pair it adds is genuinely absent'
+        widened = frozenset(rawlabels.REGION_TAGS | {('SurfaceProblem', 'cracks')})
         monkeypatch.setattr(rawlabels, 'REGION_TAGS', widened)
         df = _frame(label_type=['SurfaceProblem', 'SurfaceProblem', 'CurbRamp'],
-                    tags=['[bumpy]', '[brick/cobblestone]', '[]'])
+                    tags=['[cracks]', '[brick/cobblestone]', '[]'])
         got = mc.referent_exclusion(df)
-        assert got['excluded_region_tag'] == 2
+        assert got['excluded_region_tag'] == 2, 'the patched pair must reach the filter'
         assert got['n_excluded'] == 2 and got['n_comparable'] == 1
-        assert got['rule']['region_tags'] == ['SurfaceProblem+brick/cobblestone',
-                                              'SurfaceProblem+bumpy']
+        # Derived from `widened` rather than written out, so this keeps testing the thing it is for as
+        # the rule grows: that the reporting path reads the live constant. A `referent_exclusion`
+        # holding its own transcription fails here no matter how long the list gets.
+        assert got['rule']['region_tags'] == sorted('+'.join(p) for p in widened)
+        assert 'SurfaceProblem+cracks' in got['rule']['region_tags']
 
     def test_the_crossed_block_applies_the_rule_before_pairing(self):
         """Code-level for the same reason. Two labellers on one region-tagged SurfaceProblem must yield
@@ -551,7 +563,7 @@ class TestGsvReferentExclusion:
         got = mc.gsv_contrast(str(tmp_path))['somecity']
         assert got['n_labels'] == 10
         assert got['referent_exclusion']['n_labels'] == 10, 'measured over the whole city, not a head'
-        assert got['referent_exclusion']['n_excluded'] == 5
+        assert got['referent_exclusion']['n_excluded'] == 6
         assert got['referent_exclusion']['excluded_by_type'] == {'Crosswalk': 2, 'Occlusion': 1}
 
     def test_every_city_referent_count_covers_its_whole_label_count(self, doc):
@@ -914,3 +926,73 @@ class TestDocstringCountsMatchTheArtifact:
         """The specific confusion: 7 panos yield 6 pairs, and 7 was quoted as the pair count."""
         c = pooled['crossed_block']
         assert c['n_panos_shared_by_two_users'] != c['matched']['n_pairs']
+
+
+class TestTheCommittedRuleIsCurrentOrSuperseded:
+    """The gap that let a published artifact quietly stop describing the code.
+
+    Amendment 3 widened the referent rule on 2026-08-13. Every `referent_exclusion` block in the
+    committed census was computed under the narrower 2026-08-11 rule, and the whole suite stayed green
+    through the change — because the artifact tests read the artifact, the code tests read the code, and
+    nothing compared the two. That is this repo's own "committed-artifact tests do not test code" hazard
+    running in the other direction: not a test that cannot fail, but a *staleness* nothing was watching.
+
+    Regenerating the census is the wrong repair. It is a dated measurement, and recomputing it under a
+    rule invented two days later would rewrite a published finding rather than record that the rule
+    moved. So the artifact keeps its numbers, keeps the `rule` block naming what produced them, and this
+    class makes the divergence impossible to leave undeclared.
+    """
+
+    @pytest.fixture(scope='class')
+    def report_text(self):
+        with open(REPORT, encoding='utf-8') as f:
+            return f.read()
+
+    @staticmethod
+    def _artifact_rule(doc):
+        return doc['pooled']['referent_exclusion']['rule']
+
+    @staticmethod
+    def _live_rule():
+        return {'no_referent_types': sorted(rawlabels.NO_REFERENT_TYPES),
+                'region_tags': sorted('+'.join(p) for p in rawlabels.REGION_TAGS)}
+
+    def test_the_artifact_records_the_rule_it_was_computed_under(self, doc):
+        """Without this block the artifact is undatable and the rest of the class has nothing to
+        compare against — the numbers would be a rule-less measurement."""
+        rule = self._artifact_rule(doc)
+        assert set(rule) == {'no_referent_types', 'region_tags'}
+        assert rule['no_referent_types'], 'a recorded rule with an empty type arm is not a record'
+
+    def test_a_moved_rule_is_declared_in_the_report(self, doc, report_text):
+        """The load-bearing one. If the live rule has drifted from the committed one, §6 must say so —
+        and must name every type the rule gained, so a reader of the old numbers learns what they now
+        exclude rather than merely that something changed."""
+        artifact, live = self._artifact_rule(doc), self._live_rule()
+        if artifact == live:
+            return
+        assert 'Superseded by Amendment 3' in report_text, \
+            'the committed census was computed under a rule the code no longer implements, and §6 ' \
+            'does not say so'
+        for label_type in set(live['no_referent_types']) - set(artifact['no_referent_types']):
+            assert label_type in report_text, \
+                f'§6 claims supersession but never names {label_type}, which the rule gained'
+
+    def test_the_supersession_note_does_not_outlive_the_divergence(self, doc, report_text):
+        """The other direction, and why this is two tests rather than one: a note saying the numbers are
+        stale is itself wrong once they are not. If the census is ever regenerated under the current
+        rule, this fails and the note has to come out with it."""
+        if self._artifact_rule(doc) == self._live_rule():
+            assert 'Superseded by Amendment 3' not in report_text, \
+                'the artifact matches the live rule, so the supersession note is now the stale thing'
+
+    def test_the_obsolete_sentence_is_corrected_rather_than_silently_left(self, doc, report_text):
+        """§6 says `SurfaceProblem + {bumpy, uneven/slanted}` are deliberately left out. Amendment 3
+        moved `bumpy` in and kept `uneven/slanted` out, so half that sentence is now false. It stays —
+        the report is dated — but the note above it has to carry the correction, because a reader who
+        takes it at face value gets the current rule wrong in one specific, checkable way."""
+        if ('SurfaceProblem', 'bumpy') not in rawlabels.REGION_TAGS:
+            return
+        note = report_text[report_text.find('Superseded by Amendment 3'):]
+        assert 'obsolete' in note.split('###')[0], \
+            'the bumpy/uneven-slanted sentence is now half wrong and the note must say so'

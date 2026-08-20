@@ -186,7 +186,14 @@ From the six-city rawLabels fetch of 2026-08-09 (era study provenance):
   Phase 2 corpus store (§3), never fetched live from Google — so an annotation can never be made
   against different pixels than the analysis reads.
 * **Task**: per label — (a) mark the object's **canonical point** per the type rubric below;
-  (b) drag a **tight bounding box**; (c) flag {object-absent, ambiguous, occluded}.
+  (b) drag a box round the **whole object**, ordinary CV convention (the entire hydrant, pole or tree,
+  not the part of it blocking the path); (c) flag {object-absent, ambiguous, occluded, no-extent}.
+  The point and the box do different jobs and that is why the box convention has to be stated: the
+  **point** carries Project Sidewalk's semantics — every rubric below puts it at ground contact,
+  because what the project cares about is how a thing impedes a path — while the **box** is a scale
+  reference for the sizing rule and the only mark here a future detector could train on. Keeping
+  impedance out of the box is deliberate: how much of an object blocks a path is a modelling decision,
+  and gold that bakes one answer into its geometry can never be used to compare another.
 * **Rubric (canonical points)**: CurbRamp/NoCurbRamp — centre of the ramp (or would-be ramp)
   where it meets the gutter line; Obstacle — centroid of the obstruction at ground contact;
   SurfaceProblem — centroid of the defect; Crosswalk — centre of the marked area; Signal — the
@@ -259,11 +266,34 @@ label-latlng-estimation's #7); shifted-crop stratum (retired by the clamp census
 exactly zero across 436,348 labels, and analytically the wanted crop cannot reach the bottom edge
 below 53° of depression against a corpus p99 of 43.5°).
 
-## 7 · Amendment log
+## 7 · Decision log
 
-### Amendment 1 — 2026-08-11 · Study 1's estimand boundary, and two registered secondaries
+Every entry below records a change to this spec, when it was made, and **what was known at the time**.
+That last part is the only thing here that cannot be reconstructed later, and it is the whole reason the
+log exists.
 
-Registered after the merge of this document (PR #79, 2026-08-11 03:29 UTC) and **before any Phase 2
+Study 1 is estimating a bias of order 0.5°. Several of the choices recorded below move the estimate by
+more than that — dropping `Signal` removed labels carrying 30–40° of convention mismatch, and the
+referent rule moved the measurable set by 216 labels. When the knobs are larger than the signal,
+"we measured a 0.5° bias" and "we filtered until a 0.5° bias appeared" produce identical-looking output,
+and the only thing separating them is whether the filter was fixed before anyone saw a gold annotation.
+Recording the ordering costs a paragraph now and is unrecoverable in a week.
+
+This log is not a submission artifact. It was written in pre-registration style through
+2026-08-12 — lettered clauses, "registered", "not adopted" — and that vocabulary exists to satisfy
+reviewers who were not in the room. There are none. From 2026-08-13 the entries are plain: what
+changed, what we knew, what it moved. The earlier entries keep their structure because their content is
+genuinely multi-part, not because the form is worth preserving.
+
+**The old names still resolve.** Around thirty references across the code, tests and reports point at
+"Amendment 1(e)", "Amendment 2(c)" and so on, and rewriting them all to dates would be churn with a
+transcription error in it. The mapping is: **Amendment 1 = 2026-08-11**, **Amendment 2 = 2026-08-12**,
+**Amendment 3 = 2026-08-13**. Lettered sub-clauses are unchanged within each entry. New references
+should use the date.
+
+### 2026-08-11 · Study 1's estimand boundary, and two added secondaries
+
+Decided after the merge of this document (PR #79, 2026-08-11 03:29 UTC) and **before any Phase 2
 corpus or annotation exists**. Prompted by
 [SidewalkWebpage#4842](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4842) and the
 [record-staleness study](2026-08-10-off-target-markers-validate.md) (PR #80, pending merge — this link
@@ -324,6 +354,206 @@ selection on the outcome.
 equirectangular raster with its own tested transform, and Study 3's rectilinear re-projection must be
 written fresh — never ported from the webpage's render path. Porting it would import the mechanism
 under test into the gold standard, and Study 1 would measure zero by construction.
+
+### 2026-08-12 · The sampling frame, a Mapillary arm, and the corpus/measurable split
+
+Decided during Phase 2 assembly and **before any annotation exists**. Prompted by a direct
+challenge to §3's frame: why six deployments when the project has 49 GSV ones, and why is Richmond —
+the only Mapillary deployment — absent. Evidence for everything below is the
+[corpus assembly report](2026-08-12-corpus-assembly.md) and the `frame_comparison` block of
+[the GSV manifest](data/2026-08-12-crop-corpus-gsv.json). §§1–2 and §§4–5 are untouched: the
+endpoints, decision rules, annotation protocol and power table all stand.
+
+**(a) The frame widens from six deployments to all 49 GSV deployments, and corpus-level claims
+reweight to that population.** §3 drew from six cities and reweighted to "the label population"; the
+six turn out to be **31.98%** of it (431,276 of 1,348,743 corpus-eligible labels) and to misdescribe
+its shape. Total-variation distance between the six-city and 49-deployment populations:
+**43.16 pp on era-quality**, 11.34 pp on band × type (§3's own reweighting key), 11.06 pp on label
+type, 3.35 pp on depression band.
+
+| stratum | six-city | 49 GSV | ratio |
+|---|---|---|---|
+| post_fix (≥ 2024-09-26) | 9.98% | 46.34% | **4.64×** |
+| window | 10.74% | 17.54% | 1.63× |
+| mid | 45.54% | 21.76% | 0.48× |
+| legacy | 33.75% | 14.36% | 0.43× |
+| PedestrianSignal | 0.79% | 2.36% | **3.00×** |
+| Crosswalk | 3.36% | 8.59% | **2.56×** |
+| NoSidewalk | 18.94% | 22.57% | 1.19× |
+| Obstacle | 12.48% | 13.10% | 1.05× |
+| SurfaceProblem | 15.41% | 14.96% | 0.97× |
+| CurbRamp | 34.50% | 30.23% | 0.88× |
+| NoCurbRamp | 14.14% | 8.00% | **0.57×** |
+| Other | 0.39% | 0.21% | 0.53× |
+
+The era-quality row is the substantive one. The six cities were chosen in Phase 1 *to span* the era
+boundaries, which necessarily loaded them with old data; nearly half the label population is now
+post-fix, and that is the stratum the old frame represents worst. Reweighting on six-city weights puts
+79% of the mass on legacy+mid where the population carries 31%. Since this study's consumers are the
+project's own AI training and human-validation workflows, which run on every deployment, the estimand
+has to be the population those workflows serve.
+
+Widening the *draw* as well costs nothing and is not the point: the six cities already occupy **120 of
+120** strata cells, so no cell carrying population weight lacked reference support and the wider
+reweighting would have been licensed either way. What the wider draw buys is that all 120 cells reach
+the §3 target (the six-city frame left four cells at 2–5 labels, including `>30|window|Signal` at 2
+carrying a 3.00× weight).
+
+Deployments excluded from the frame, with reasons recorded in the manifest: **validation-study**
+(10,809 labels — a research deployment, not a city), **la-piedad-old** (4,391 — superseded by
+la-piedad, would double-count one city), **winterthur-infra3d** (a 0-label export).
+
+**This is gated on pixel availability.** The 99.2%/97.8% store-coverage figures in §1 and §3 were
+measured on the six cities only. The corpus does **not** freeze until a store probe covers the drawn
+panos; panos unreachable on both the store and Google are logged and their cells re-drawn.
+
+**(b) A Mapillary arm is registered, replacing §6's blanket exclusion of Mapillary.** It is drawn by
+the same code path with the same seed, and **reported beside the GSV arm, never pooled into it** —
+two rigs in one estimate is the hazard the separate cache trees exist to prevent. The reason to add it
+is endpoint 2: `camera_roll` is present for **0 of 1,376,851** GSV rows and for **267 of 267**
+Richmond rows, so Richmond is the only place in Project Sidewalk where rig roll is measured rather
+than fetched from photometa — and photometa answers only for the 47.9% of panos still alive, which
+selects on era. Richmond's arm is unselected.
+
+Its stated limits: the arm draws **97 labels over 44 panos** from 264 eligible, and carries **40**
+panos with a separated bearing pair — below §2.3's 60-pano gate, so **the within-pano contrast column
+is *not estimable* on this arm** and its endpoint-2 fit is pooled-only. It has **0** replay-mismatch
+rows (every Richmond record replays exactly), so §3's mismatch stratum is empty here, and 0.38% of its
+population sits in a cell the draw did not reach.
+
+**(c) The corpus is 8 label types; Study 1's measurable set is 6.** The referent rule
+(`rawlabels.NO_REFERENT_TYPES` plus the region-tag pairs) was established *after* registration, in the
+Mapillary census, and it removes Crosswalk, NoSidewalk and region-tagged SurfaceProblem from any
+stored-vs-gold *displacement* — a label correctly placed anywhere along an extended feature has no
+point to be displaced from. It is **not** a corpus rule: those types have real crop consumers and
+Study 2 sizes crops for them. So the corpus carries all 8 types (763 labels) and Study 1 reads the
+measurable subset (**584** of them). Reading the referent rule as "types to drop" would remove 31.2%
+of the label population from the sizing study.
+
+**(d) The corpus is 763 labels, not ≈650.** §3's estimate assumed some cells would be empty; 120 are
+occupied, so cell fill alone is 720 and the forced strata add the rest. Annotation cost rises ~17%.
+
+Its effect on §5 has to be stated under both filters, because the two studies read different
+populations and the corpus number is the flattering one. Per depression band: **190.8 on average
+(180–205) for the 763-label corpus**, which is Study 2's population, but **146.0 on average (137–155)
+for the 584 measurable labels**, which is Study 1's. So Study 1's bands land *below* the ≈160/band §5
+assumed, not above it. The conclusion is unchanged — §5 needs 44 per stratum for δ = 0.25° at
+σ_gold = 0.30°, or ~57 after its stated design effect of ~1.3 for pano clustering, and the thinnest
+band carries 137 — but "power only improves" would have been a corpus-filter claim quoted about a
+measurable-filter study.
+
+**(e) Label identity is (city, label_id).** Not a spec change but recorded because §3 and §2 are
+written in terms of label and pano identity: `label_id` restarts at 1 in every deployment, and across
+three cities alone 90,369 of 316,735 rows share one with another city. `pano_id` does **not** collide
+(0 cases), so the per-pano cap and the pano-wise tune/eval split are sound as written.
+
+**(f) Not adopted.** `zurich-infra3d` (4,791 labels) stays out of scope: it is a **third rig**
+(infra3d), not GSV or Mapillary, and it is the sole source of the 8032-px served height the GSV frame
+lacks entirely. Recorded here because §3's resolution stratum would otherwise look under-provisioned
+for a reason that is really a scope boundary.
+
+### 2026-08-13 · The referent rule widens, and extended referents stop being annotated
+
+**What we knew when.** Tiles were rendered and the tool was running, but **no gold annotation existed** —
+the only two written were QA scribbles made while checking the tool, and they were discarded rather than
+kept. The trigger was Jon opening the tool and landing on an `Obstacle` tagged `stairs`, whose centre and
+extent are both a function of viewing angle. Nothing about the study's estimates was visible to anyone.
+
+**Signal leaves the measurable set.** §4's rubric says "the centre of the pedestrian signal head", but
+**45 of the 72 drawn Signal labels sit at 10° or more of depression** (10.0–42.1°, median 15.2° over all
+72) — on the pole base, where the button is, not on the head. That is two incompatible conventions inside
+one arm, and gold-vs-stored would book the 30–40° difference as placement error against a 0.5° effect.
+Even a 60° tile does not reach the head from a pole-base click, so this is not fixable by re-cutting. The
+underlying property is Crosswalk's: a signal *installation* is one vertically extended object, so "the"
+point on it is a convention rather than a fact.
+
+**`Other` leaves too**, for a blunter reason: it is a residual category, 73% untagged, and an untagged
+`Other` can be anything the other eight types are not. No rubric can name its referent because the type
+does not name one.
+
+**Eleven (type, tag) pairs join the tag arm.** The full tag vocabulary of the five surviving types was
+tabulated with population and corpus counts and ruled on pair by pair, rather than derived from a
+principle. Excluded: `SurfaceProblem` + {brick/cobblestone, bumpy, construction, height difference,
+narrow sidewalk, rail/tram track, sand/gravel, very broken} and `Obstacle` + {construction, outdoor
+dining area, stairs}. The calls that went *against* the first proposal are the boundary of the rule and
+are recorded because they will otherwise be re-litigated: `Obstacle` + {vegetation, narrow, garage
+entrance, height difference, litter/garbage} and `SurfaceProblem` + {cracks, grass, uneven/slanted,
+debris} are all **kept**. Nothing is excluded for CurbRamp or NoCurbRamp under any tag — those tags
+describe a property *of* the ramp, and a narrow curb ramp still has a gutter line to be centred on.
+
+The rule is (type, tag) **pairs**, and `height difference` is why: excluded under SurfaceProblem where it
+names a run of pavement, kept under Obstacle where it names a discrete step. A flat tag blacklist cannot
+express that and would take 3,707 measurable Obstacle labels with it.
+
+**Extended referents stop being annotated at all.** Amendment 2(c) kept Crosswalk and NoSidewalk in the
+annotation set on the grounds that Study 2 needs a gold *box* even where Study 1 has no gold *point*.
+That does not hold: if the referent has no located centre it has no tight extent either, so those boxes
+were arbitrary in exactly the way the excluded points are. Study 2 sizes their crops from the distance
+prior instead. **They stay in the drawn corpus** — 2(c)'s corpus-vs-measurable distinction is unchanged —
+they are simply not put in front of an annotator.
+
+**A fourth flag, `no-extent`.** The tag rule is leaky by construction: tags are optional, and 14% of
+Obstacle and 10% of SurfaceProblem labels carry none, so an untagged unboundable referent reaches the
+annotator with nothing to catch it. It is deliberately distinct from `ambiguous` — that one means "I
+cannot tell which thing this is about", this one means "I know exactly what it is and it has no
+particular centre". **It is reported as its own bucket and never silently dropped from a denominator**:
+excluding on annotator judgement removes precisely the labels where placement error is largest, which is
+the same undetectable bias direction that cutting tiles at 20° would have introduced.
+
+**What it moved.** Measurable set **584 → 368** of the 763-label corpus (CurbRamp 125, NoCurbRamp 96,
+Obstacle 95, SurfaceProblem 52); of the 742 tiles already rendered, **358** survive, so nothing was
+re-cut. Power holds: the thinnest depression band carries **81** against the ~57 §5 requires after its
+1.3 design effect. Cell fill *improves* — 16 occupied cells, none below the target of 6, minimum 10 —
+because the 12 deficient cells flagged on 2026-08-12 were all in the types just dropped, so the top-up
+draw contemplated then is no longer needed. Jon's n = 50 is drawn from the 358 (seed 20260813; CurbRamp
+16, NoCurbRamp 14, Obstacle 13, SurfaceProblem 7).
+
+**What it invalidated.** §6 of the [Mapillary census](2026-08-11-mapillary-census.md) reports the
+referent exclusion under the old rule, and those numbers are **not** regenerated — it is a dated
+measurement, and recomputing it under a rule invented two days later would rewrite a published finding
+rather than record that the rule moved. The artifact records the rule it was computed under, and
+`TestTheCommittedRuleIsCurrentOrSuperseded` now fails if the live rule ever diverges from it without the
+report saying so. The whole suite was green across this change until that test existed, because the
+artifact tests read the artifact and the code tests read the code.
+
+### 2026-08-19 · The jitter becomes an angle, and the tiles have to be re-cut
+
+Found in review of the Phase 2 tooling, not by anything failing.
+
+§4 wrote the viewport jitter as **±40–80 px per axis**, and that was the one resolution-dependent
+quantity left on an instrument whose entire design argument is that a fixed *pixel* window shows an
+annotator different amounts of world on different panoramas. The tile is a fixed 60° angular window
+for exactly that reason; the jitter, whose whole job is to stop the stored point sitting at the tile
+centre, was not.
+
+**What it cost, measured on the drawn corpus.** 40–80 px is a different fraction of the tile on every
+pano height, weakest where the corpus actually is:
+
+| pano height | labels | tile | 40–80 px as a fraction of the tile |
+|---|---:|---:|---|
+| 8192 | **641** | 2730 px | 1.5% – 2.9% |
+| 6656 | 116 | 2218 px | 1.8% – 3.6% |
+| 1664 | 6 | 554 px | 7.2% – 14.4% |
+
+So the anti-anchor varied ~5× across the corpus, correlated with resolution — which is a covariate
+Study 1 estimates against — and on 84% of it the stored point sat within 3% of the tile centre, which
+to the eye is the middle. That is the anchoring §4 exists to remove, still present.
+
+**Where the dilution came from.** §4's numbers were written when the cut was 20°, which is 910 px on
+the 8192-height pano the corpus is mostly made of — so 40–80 px *was* 4.4%–8.8% of the tile. The cut
+later tripled to 60° (2026-08-13, above) and the pixel constant did not move.
+
+**What changes.** `JITTER_MIN_PX`/`JITTER_MAX_PX` become `JITTER_MIN_FRAC`/`JITTER_MAX_FRAC` =
+40/910 and 80/910 of the tile, i.e. **2.64°–5.27°** on every panorama at the current cut. This is §4's
+design point restored rather than a new number, and stating it as a fraction makes the same drift
+impossible: change the cut again and the jitter tracks it.
+
+**What it invalidates.** Every tile already rendered was cut at a different origin, so **tiles must be
+re-cut before any further annotation**, and annotations already collected remain valid only against
+the `geometry.json` they were recorded under — which is why that file carries the jitter per label and
+why `jitter_for` derives from the label's own uid rather than a shared stream. `geometry.json` now
+records `jitter_tile_fraction` and `jitter_deg` in place of `jitter_px`, so a geometry file says which
+convention produced it. Nothing about the corpus draw, the referent rule or the split moves.
 
 **Pre-registration revisions (before registration, so not amendments).**
 

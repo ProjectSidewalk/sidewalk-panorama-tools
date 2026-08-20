@@ -1,12 +1,11 @@
 """Tests for reports/scripts/clamp_census.py — the crop-size clamp/truncation census.
 
-The census replicates CropRunner.predict_crop_size (CropRunner has no import guard, so importing
-it would run a download). The replica is pinned against the REAL function, ast-extracted from
-CropRunner.py source — if the deployed formula ever changes, the census fails here rather than
-silently measuring a stale formula.
+The census replicates the crop-size formula as it stood when the census ran (sizing rule v1). That
+replica is pinned against a frozen copy of v1 below rather than against CropRunner, which now ships
+rule v2 — see the note above _real_predict_crop_size for why, and for which of this report's
+findings survive the change.
 """
 
-import ast
 import os
 import sys
 
@@ -21,17 +20,27 @@ for p in (REPO_ROOT, SCRIPTS):
         sys.path.insert(0, p)
 
 import clamp_census as cc  # noqa: E402
+import crop_rule_v1  # noqa: E402
+
 
 
 def _real_predict_crop_size():
-    """Extract predict_crop_size from CropRunner.py without importing the module."""
-    with open(os.path.join(REPO_ROOT, 'CropRunner.py')) as f:
-        tree = ast.parse(f.read())
-    fn = next(n for n in tree.body
-              if isinstance(n, ast.FunctionDef) and n.name == 'predict_crop_size')
-    ns = {}
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), 'CropRunner.py', 'exec'), ns)
-    return ns['predict_crop_size']
+    """Rule v1's predict_crop_size, from the one frozen copy in reports/scripts/crop_rule_v1.py.
+
+    This census was run under rule v1 - raw pixels into constants fit on 6656-px panos, square window.
+    CropRunner has since shipped rule v2, so pinning against the deployed function would compare this
+    report's numbers to a formula that did not produce them. That pin did its job: it failed the moment
+    the rule changed, which is how this note came to be written instead of the census quietly
+    describing geometry nobody cuts any more. What replaces it is the same guard against a different
+    target - the vectorized replica must still faithfully reproduce the rule the corpus was measured
+    under, which is now a historical constant rather than a live one.
+
+    Imported rather than transcribed. Three files needed a frozen v1 and each had its own copy, which
+    is the arrangement `studyfmt` and `region_tag_mask` exist to prevent: copies of a constant agree
+    until one is edited, and nothing fails. See crop_rule_v1's docstring for what does and does not
+    carry over from a v1 finding.
+    """
+    return crop_rule_v1.predict_crop_size
 
 
 class TestReplicaFidelity:

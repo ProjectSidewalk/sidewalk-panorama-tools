@@ -4,9 +4,11 @@ pano, and nothing ran it.
 That matters because the figure's whole claim is that it shows what the code currently does - "re-run this
 script and the numbers in the captions move with the code". Three things can quietly falsify that:
 
-1. **The script stops running at all.** It calls `predict_crop_size`, `compute_crop_box` and `extract_crop`
+1. **The script stops running at all.** It calls `crop_window_width`, `compute_crop_box` and `extract_crop`
    directly, so a signature change to any of them breaks the documented regeneration path (`CLAUDE.md` tells
-   the next person to run it after a crop-geometry change) with no signal until someone tries.
+   the next person to run it after a crop-geometry change) with no signal until someone tries. Sizing rule v2
+   is exactly that case: it renamed the window rule and gave `CropBox` a `width`/`height` in place of `size`,
+   and this file is what said so.
 2. **The geometry moves and the committed image doesn't.** Then `assets/banner.jpg` is a picture of the old
    behaviour, captioned as the new one - the exact failure the script was written to prevent.
 3. **The sample data goes missing**, which turns the figure into a broken image on the front page.
@@ -57,8 +59,17 @@ def test_the_script_still_runs_against_the_current_cropper(make_banner, tmp_path
     with Image.open(str(out)) as im:
         assert im.format == 'JPEG'
         expected = (make_banner.PAD * 3 + make_banner.PANO_W + make_banner.CROP_W,
-                    make_banner.PAD * 2 + max(make_banner.PANO_H, make_banner.CROP_W) + make_banner.CAPTION_H)
+                    make_banner.PAD * 2 + max(make_banner.PANO_H, make_banner.CROP_H) + make_banner.CAPTION_H)
         assert im.size == expected
+
+
+def test_the_crop_panel_carries_the_croppers_aspect_ratio(make_banner):
+    """The panel is 3:2 because the cropper is, and it reads that from CROP_ASPECT_W_OVER_H rather than
+    hardcoding it — a hardcoded square panel would letterbox a 3:2 crop and the figure would misdescribe the
+    geometry it exists to show."""
+    import CropRunner
+
+    assert make_banner.CROP_H == round(make_banner.CROP_W / CropRunner.CROP_ASPECT_W_OVER_H)
 
 
 def test_it_does_not_write_to_the_committed_path_when_given_one(make_banner, tmp_path):
@@ -72,18 +83,22 @@ def test_it_does_not_write_to_the_committed_path_when_given_one(make_banner, tmp
 def test_the_committed_figure_is_not_stale(make_banner):
     """The geometry the committed image was drawn from, pinned to the label position the script uses.
 
-    This is the staleness guard: if predict_crop_size or compute_crop_box changes, assets/banner.jpg is now a
+    This is the staleness guard: if crop_window_width or compute_crop_box changes, assets/banner.jpg is now a
     picture of the old behaviour and the fix is to re-run `python3 assets/make_banner.py` and commit the
     result - not to edit these numbers.
+
+    These are the sizing rule v2 numbers. Under v1 the same label gave a square 398 px window; the figure was
+    regenerated when the rule changed, which is the whole point of pinning them here.
     """
     import CropRunner
 
     with Image.open(SAMPLE_PANO) as im:
         pano_w, pano_h = im.size
 
-    size = CropRunner.predict_crop_size(make_banner.LABEL_Y, pano_h)
-    box = CropRunner.compute_crop_box(make_banner.LABEL_X, make_banner.LABEL_Y, size, pano_w, pano_h)
+    crop_width = CropRunner.crop_window_width(make_banner.LABEL_Y, pano_h)
+    box = CropRunner.compute_crop_box(make_banner.LABEL_X, make_banner.LABEL_Y, crop_width, pano_w, pano_h)
 
     assert (pano_w, pano_h) == (13312, 6656)
-    assert size == pytest.approx(398.2, abs=0.1)
-    assert (box.left, box.top, box.size, box.shifted) == (1405, 3554, 398, False)
+    assert crop_width == pytest.approx(995.4, abs=0.1)
+    assert (box.left, box.top, box.width, box.height, box.shifted) == (1106, 3422, 995, 663, False)
+    assert box.width / box.height == pytest.approx(CropRunner.CROP_ASPECT_W_OVER_H, abs=0.01)
