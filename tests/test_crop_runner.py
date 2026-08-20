@@ -13,6 +13,7 @@ into a tmp store with the production <pano_id[:2]>/<pano_id>.jpg sharding.
 import csv
 import json
 import logging
+import logging.handlers  # not implied by `import logging`; asserted on below
 import os
 import subprocess
 import sys
@@ -1295,3 +1296,127 @@ class TestCoordinateBounds:
         counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
         assert counts['success'] == 1
         assert counts['shifted_vertically'] == 0
+
+
+# ---------------------------------------------------------------------------
+# Process setup and the single-crop entry point
+# ---------------------------------------------------------------------------
+
+class TestAnUnopenableLogFallsBackToStderr:
+    """crop.log is the run's only record under cron. Not being able to open it must cost the log, not the
+    run - a store whose crops are already cut is exactly when the log is least worth failing over.
+
+    DownloadRunner's twin of this is already covered by its subprocess test; CropRunner's had nothing.
+    """
+
+    def test_the_run_falls_back_to_a_stream_handler(self, crop_runner, tmp_path, caplog):
+        # A directory cannot be opened as a file on any OS, which is how test_download_runner provokes the
+        # same branch without needing permissions that differ between platforms.
+        log_path = tmp_path / 'crop.log'
+        log_path.mkdir()
+        root = logging.getLogger()
+        before = list(root.handlers)
+
+        crop_runner.configure_logging(str(log_path))
+
+        added = [h for h in root.handlers if h not in before]
+        assert len(added) == 1
+        assert isinstance(added[0], logging.StreamHandler)
+        assert not isinstance(added[0], logging.handlers.RotatingFileHandler)
+        assert list(log_path.iterdir()) == [], 'nothing should have been written into the directory'
+
+    def test_the_operator_is_told_where_the_log_went(self, crop_runner, tmp_path, caplog):
+        """Silently redirecting to stderr is worse than the failure: under cron stderr goes to mail and then
+        nowhere, so a run whose log 'just stopped appearing' has no explanation on disk."""
+        log_path = tmp_path / 'crop.log'
+        log_path.mkdir()
+
+        with caplog.at_level(logging.WARNING):
+            crop_runner.configure_logging(str(log_path))
+
+        assert 'logging to stderr' in caplog.text
+        assert str(log_path) in caplog.text
+
+    def test_a_writable_path_still_gets_a_rotating_file_handler(self, crop_runner, tmp_path):
+        """Guard the guard: the fallback must be a fallback, not what every run gets."""
+        root = logging.getLogger()
+        before = list(root.handlers)
+
+        crop_runner.configure_logging(str(tmp_path / 'crop.log'))
+
+        added = [h for h in root.handlers if h not in before]
+        assert [type(h) for h in added] == [logging.handlers.RotatingFileHandler]
+
+
+class TestMetadataSourceDispatch:
+    """load_label_metadata's -d arm. The .csv, .json and unknown-extension arms are pinned elsewhere in this
+    file; the server arm is the one nothing reached."""
+
+    def test_no_file_means_the_server(self, crop_runner, monkeypatch):
+        asked = []
+        monkeypatch.setattr(crop_runner, 'fetch_cvMetadata_from_server',
+                            lambda fqdn: asked.append(fqdn) or [{'label_id': 1}])
+        for name in ('fetch_label_ids_csv', 'fetch_cvMetadata_from_file'):
+            monkeypatch.setattr(crop_runner, name, lambda *a, **k: pytest.fail('wrong intake: ' + name))
+
+        rows = crop_runner.load_label_metadata('sidewalk-test.invalid', None)
+
+        assert asked == ['sidewalk-test.invalid']
+        assert rows == [{'label_id': 1}]
+
+
+class TestMakeSingleCropAcceptsAPath:
+    """make_single_crop's path form, kept for one-off use outside the pano-grouped bulk loop.
+
+    bulk_extract_crops always hands it an already-open Image, so the two lines that open a path and the one
+    that closes it were never executed by anything.
+    """
+
+    def test_a_path_and_an_open_image_produce_the_same_crop(self, crop_runner, tmp_path):
+        store = tmp_path / 'store'
+        put_pano(store, 'testpano0001', square_at=(200, INTERIOR_Y))
+        pano_path = os.path.join(str(store), 'te', 'testpano0001.jpg')
+
+        from_path = str(tmp_path / 'from_path.jpg')
+        from_image = str(tmp_path / 'from_image.jpg')
+        box_a = crop_runner.make_single_crop(pano_path, 200, INTERIOR_Y, from_path)
+        with Image.open(pano_path) as pano:
+            box_b = crop_runner.make_single_crop(pano, 200, INTERIOR_Y, from_image)
+
+        assert box_a == box_b
+        assert open(from_path, 'rb').read() == open(from_image, 'rb').read()
+
+    def test_an_image_opened_from_a_path_is_closed_again(self, crop_runner, tmp_path, monkeypatch):
+        """A 16384x8192 pano is a few hundred MB decoded. Leaking one per call is survivable in a one-off
+        script and is not survivable in a loop, which is precisely what this form invites."""
+        store = tmp_path / 'store'
+        put_pano(store, 'testpano0001')
+        pano_path = os.path.join(str(store), 'te', 'testpano0001.jpg')
+
+        opened = []
+        real_open = Image.open
+
+        def recording_open(fp, *args, **kwargs):
+            image = real_open(fp, *args, **kwargs)
+            opened.append(image)
+            return image
+
+        monkeypatch.setattr(Image, 'open', recording_open)
+        crop_runner.make_single_crop(pano_path, 200, INTERIOR_Y, str(tmp_path / 'crop.jpg'))
+
+        assert len(opened) == 1
+        assert opened[0].fp is None, 'the pano this call opened was left open'
+
+    def test_an_image_handed_in_is_left_open_for_its_other_labels(self, crop_runner, tmp_path):
+        """The other half of the same branch: the bulk loop decodes each pano once and cuts every label on
+        it, so closing a caller's image would break the label after this one."""
+        store = tmp_path / 'store'
+        put_pano(store, 'testpano0001')
+        pano_path = os.path.join(str(store), 'te', 'testpano0001.jpg')
+
+        with Image.open(pano_path) as pano:
+            crop_runner.make_single_crop(pano, 200, INTERIOR_Y, str(tmp_path / 'first.jpg'))
+            # Still usable: this is what the second label on the same pano depends on.
+            crop_runner.make_single_crop(pano, 400, INTERIOR_Y, str(tmp_path / 'second.jpg'))
+
+        assert os.path.exists(str(tmp_path / 'second.jpg'))

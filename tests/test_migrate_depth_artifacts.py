@@ -185,3 +185,64 @@ def test_unreadable_artifact_is_counted_failed_and_does_not_stop_the_run(tmp_pat
     assert read_bytes(corrupt) == b'this is not an npz'  # left for a human, not clobbered
     with np.load(good) as d:
         np.testing.assert_allclose(d['depth'], [[100.0, 2.0], [200.0, 3.0]])
+
+
+class TestAFailedRewriteLeavesTheOriginalArtifactIntact:
+    """The migrator rewrites in place, over a store this repo cannot regenerate cheaply - a depth artifact
+    costs one metadata request to Google and the backfill is a multi-month job. So the write goes through a
+    .part and a rename, and the cleanup has to hold for a failure at either side of the first byte.
+
+    Nothing exercised the failure path: every existing test writes successfully.
+    """
+
+    @staticmethod
+    def fail_during_save(monkeypatch, when):
+        """Make savez_compressed fail either after writing bytes, or before writing any."""
+        def failing(file, **kwargs):
+            if when == 'after':
+                file.write(b'\x50\x4b\x03\x04 truncated')
+            raise OSError(28, 'No space left on device')
+
+        monkeypatch.setattr(migrate_depth_artifacts.np, 'savez_compressed', failing)
+
+    @pytest.mark.parametrize('when', ['after', 'before'])
+    def test_the_v1_artifact_survives_byte_for_byte(self, tmp_path, monkeypatch, when):
+        storage = str(tmp_path)
+        path = write_v1(storage, 'abcdef')
+        original = read_bytes(path)
+
+        self.fail_during_save(monkeypatch, when)
+        summary = migrate_depth_artifacts.migrate_store(storage)
+
+        assert (summary.scanned, summary.migrated, summary.failed) == (1, 0, 1)
+        assert read_bytes(path) == original, 'a half-written rewrite replaced the artifact'
+        assert not os.path.exists(path + '.part'), 'debris left behind for the next run to trip over'
+
+    def test_the_original_error_is_what_migrate_store_counts(self, tmp_path, monkeypatch):
+        """Failing before the first byte means the cleanup's own os.remove fails too. If that
+        FileNotFoundError escaped it would replace the real cause - here, a full disk - with a message about
+        a temp file, and migrate_store's per-artifact report would send the operator the wrong way."""
+        storage = str(tmp_path)
+        write_v1(storage, 'abcdef')
+        self.fail_during_save(monkeypatch, 'before')
+
+        with pytest.raises(OSError) as excinfo:
+            migrate_depth_artifacts._migrate_artifact(v1_path(storage, 'abcdef'))
+
+        assert excinfo.value.errno == 28
+
+    def test_a_part_path_that_cannot_be_removed_does_not_mask_the_real_error(self, tmp_path):
+        """The cleanup's own os.remove can fail too - here because undeletable debris is sitting at the .part
+        path, which is also why the write failed. Letting that second error replace the first would report a
+        temp-file problem instead of whatever actually stopped the rewrite."""
+        storage = str(tmp_path)
+        path = write_v1(storage, 'abcdef')
+        original = read_bytes(path)
+        # A directory cannot be opened for writing, and cannot be os.remove'd either.
+        os.mkdir(path + '.part')
+
+        with pytest.raises(OSError):
+            migrate_depth_artifacts._migrate_artifact(path)
+
+        assert read_bytes(path) == original
+        assert os.path.isdir(path + '.part'), 'the cleanup should not have half-removed the debris'
