@@ -9,6 +9,13 @@ venv
 crop.log.bak.txt
 .idea
 cropsbak
+# Coverage data. The .coverage.* forms are the per-process files `parallel = True` produces - one per test
+# subprocess - which are combined into .coverage and would otherwise pile up after an interrupted run.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
 # Logs the analyzer pulls off the pano store - a local cache, re-downloadable on every run.
 log_analyzer/logs/
 

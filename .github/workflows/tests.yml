@@ -18,4 +18,14 @@ jobs:
           python-version: '3.10'
           cache: pip
       - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: python -m pytest tests -v
+      # Bare --cov takes its source and omissions from .coveragerc, so there is one place to change them.
+      # skip-covered keeps the (already -v, 1400-test) log readable; the step summary below is not skipped,
+      # so the PR view still shows every file including the ones at 100%.
+      - run: python -m pytest tests -v --cov --cov-report=term-missing:skip-covered
+      # always(), so a run that trips the fail_under gate still shows WHERE it lost coverage rather than
+      # just failing. --fail-under=0 because the pytest step above is the gate; this step only reports.
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo '## Coverage' >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report --format=markdown --fail-under=0 >> "$GITHUB_STEP_SUMMARY"
