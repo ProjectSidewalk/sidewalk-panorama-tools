@@ -32,7 +32,6 @@ try/except that counts a bad row, where `''` and `None` are equally well handled
 
 import ast
 import csv
-import io
 import json
 import os
 import sys
@@ -106,13 +105,18 @@ class TestPanoCsvParsesLikeACsv:
 
         assert [r['pano_id'] for r in records] == ['pano,id']
 
-    def test_a_quoted_field_containing_a_newline_stays_whole(self, tmp_path):
-        path = write_pano_csv(tmp_path,
-                              PANO_HEADER + '"pano\nid",16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n')
+    @pytest.mark.parametrize('embedded', ['\n', '\r\n', '\r'])
+    def test_a_quoted_field_containing_a_newline_stays_whole(self, tmp_path, embedded):
+        """The \\r cases are what newline='' on the reader buys, and they are pandas parity, not an
+        invention: measured, read_csv also returns 'pano\\r\\nid' intact. Without newline='' the file
+        object's universal-newline translation rewrites both to '\\n' before csv ever sees them, so the
+        reader silently edits the data it was asked to read."""
+        path = write_pano_csv(tmp_path, PANO_HEADER
+                              + '"pano%sid",16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % embedded)
 
         records = DownloadRunner.fetch_pano_ids_csv(path)
 
-        assert [r['pano_id'] for r in records] == ['pano\nid']
+        assert [r['pano_id'] for r in records] == ['pano%sid' % embedded]
 
     def test_crlf_line_endings_parse(self, tmp_path):
         text = (PANO_HEADER + pano_row()).replace('\n', '\r\n')
@@ -362,6 +366,17 @@ class TestLabelCsvIntake:
 
         assert len(CropRunner.fetch_label_ids_csv(path)) == 1
 
+    @pytest.mark.parametrize('embedded', ['\n', '\r\n', '\r'])
+    def test_a_quoted_field_containing_a_newline_stays_whole(self, tmp_path, embedded):
+        """newline='' on the reader, same as the downloader's. cvMetadata carries free text (copyright),
+        so a field with a line break in it is not hypothetical here."""
+        path = write_label_csv(tmp_path, 'pano_id,pano_x,pano_y,label_type_id,label_id,copyright\n'
+                               + 'abcdefgh0001,100,200,1,1,"a%sb"\n' % embedded)
+
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert labels[0]['copyright'] == 'a%sb' % embedded
+
     def test_a_surplus_field_does_not_shift_the_named_columns(self, tmp_path):
         path = write_label_csv(tmp_path, LABEL_HEADER + label_csv_row().rstrip('\n') + ',extra\n')
 
@@ -545,7 +560,7 @@ class TestPandasStaysOutOfProduction:
         with open(os.path.join(REPO_ROOT, module), encoding='utf-8') as f:
             assert 'pandas' not in imported_names(f.read())
 
-    def test_the_module_list_matches_what_is_on_disk(self, module=None):
+    def test_the_module_list_matches_what_is_on_disk(self):
         """A new production module added without a line here would be silently unguarded."""
         on_disk = {name for name in os.listdir(REPO_ROOT) if name.endswith('.py')}
         on_disk |= {'downloaders/' + name for name in os.listdir(os.path.join(REPO_ROOT, 'downloaders'))

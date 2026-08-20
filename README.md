@@ -321,7 +321,7 @@ The depth map is Google's plane-based encoding decoded to a per-pixel distance g
 * **Building geometry drifts between captures** (facades from re-captures of the same street differ by a couple of meters), so don't treat facade distances as survey-grade.
 
 ## Tests
-A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract shared by the writer and the [log analyzer](#log-analyzer), and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need only the packages in `requirements.txt` plus `pytest`:
+A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract shared by the writer and the [log analyzer](#log-analyzer), and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need `requirements.txt` plus `requirements-dev.txt` — the latter carries `pytest`, and the `matplotlib`/`pandas` that the `reports/` scripts and their tests use but the scraper and cropper do not:
 
 ```bash
 pip3 install -r requirements.txt -r requirements-dev.txt
