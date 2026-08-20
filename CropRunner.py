@@ -120,10 +120,13 @@ def raise_decompression_bomb_ceiling():
 def build_parser():
     parser = argparse.ArgumentParser()
     group_parser = parser.add_mutually_exclusive_group(required=True)
-    group_parser.add_argument('-d', help='sidewalk_server_domain (preferred over metadata_file) - FDQN of SidewalkWebpage server to fetch label list from, i.e. sidewalk-columbus.cs.washington.edu')
+    group_parser.add_argument('-d', help='sidewalk_server_domain (preferred over metadata_file) - FQDN of SidewalkWebpage server to fetch label list from, i.e. sidewalk-columbus.cs.washington.edu')
     group_parser.add_argument('-f', help='metadata_file - path to file containing label_ids and their properties. It may be CSV or JSON. i.e. samples/labeldata.csv')
-    parser.add_argument('-s', default='/tmp/download_dest/', help='pano_storage_directory - path to directory containing panoramas downloaded using DownloadRunner.py. default=/tmp/download_dest/')
-    parser.add_argument('-o', default='/crops/', help='crop_output_directory - path to location for saving the crops. default=/crops/')
+    # Required, with no defaults (#52 item 6). -o used to default to the filesystem root and -s to the
+    # Docker container's scratch path - and the container runs DownloadRunner, not this script. A forgotten
+    # flag should name itself, not quietly put an ML training corpus somewhere nobody thinks to look.
+    parser.add_argument('-s', required=True, help='pano_storage_directory - path to directory containing panoramas downloaded using DownloadRunner.py')
+    parser.add_argument('-o', required=True, help='crop_output_directory - path to location for saving the crops')
     parser.add_argument('--mark-label', action='store_true', help='Draw a dot at the label position in every crop. Debugging aid - deliberately OFF by default, because these crops are ML training data and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.')
     return parser
 
@@ -217,7 +220,7 @@ def fetch_cvMetadata_from_file(metadata_json_path):
     return json_to_list(json_meta)
 
 
-def fetch_cvMetadata_from_server(server_fdqn):
+def fetch_cvMetadata_from_server(server_fqdn):
     """
     Fetch cvMetadata over HTTP and transform it into a list of dicts, one per label.
 
@@ -225,7 +228,7 @@ def fetch_cvMetadata_from_server(server_fdqn):
     text and exits 1. (The old handler pair missed ConnectionError entirely and logged a placeholder-less
     'Retries: '.format(e) that dropped the exception, #48.)
     """
-    url = 'https://' + server_fdqn + '/adminapi/labels/cvMetadata'
+    url = 'https://' + server_fqdn + '/adminapi/labels/cvMetadata'
     try:
         print("Getting metadata from web server")
         with request_session() as session:
@@ -261,7 +264,7 @@ def _metadata_dims(row):
     return int(width), int(height)
 
 
-def load_label_metadata(sidewalk_server_fdqn, label_metadata_file):
+def load_label_metadata(sidewalk_server_fqdn, label_metadata_file):
     """Dispatch to the right intake for -d / -f, with a clear error for an unrecognized -f extension
     (which used to fall through to a NameError, #48)."""
     if label_metadata_file is not None:
@@ -272,7 +275,7 @@ def load_label_metadata(sidewalk_server_fdqn, label_metadata_file):
             return fetch_cvMetadata_from_file(label_metadata_file)
         sys.exit("CropRunner: unrecognized metadata file extension %r (expected .csv or .json): %s"
                  % (extension, label_metadata_file))
-    return fetch_cvMetadata_from_server(sidewalk_server_fdqn)
+    return fetch_cvMetadata_from_server(sidewalk_server_fqdn)
 
 
 def _reference_crop_size(ref_y_offset):

@@ -69,13 +69,13 @@ Panos with any other `source` value are skipped with a warning.
 
 Usage:
 ```python
-python CropRunner.py [-h] (-d D | -f F) [-s S] [-o O] [--mark-label]
+python CropRunner.py [-h] (-d D | -f F) -s S -o O [--mark-label]
 ```
 * To fetch label metadata from webserver or a file, use respectively (mutually exclusive, required):
   * ``-d <project-sidewalk-url>``
   * ``-f <path-to-label-metadata-file>`` (`.csv` or `.json`)
-* ``-s <path-to-panoramas-dir>`` (optional). Specify if using a different directory containing panoramas. Panoramas are used to crop the labels.
-* ``-o <path-of-crop-dir>`` (optional). Specify if want to set a different directory for crops to be stored. `crop.log` is written here too.
+* ``-s <path-to-panoramas-dir>`` (**required**). The directory containing panoramas downloaded by `DownloadRunner.py`; they are what the labels are cropped out of.
+* ``-o <path-of-crop-dir>`` (**required**). Where crops are written. `crop.log` is written here too. Both paths used to have defaults — `/crops/` and `/tmp/download_dest/` — which were the filesystem root and a Docker-only scratch path respectively, so forgetting one wrote an ML training corpus somewhere nobody would look for it. Since [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) a missing flag is an argparse error naming it.
 * ``--mark-label`` (optional, debugging aid). Draws a dot at the label position in every crop. Off by default — the crops are ML training data, and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.
 
 Crops are **3:2**, centered on the label, sized by **crop sizing rule v2** and written to `<crop-dir>/<label_type_id>/<label_id>.jpg` at `min(window, 1440)` px wide — never upscaled. The window is an *angle*: the camera-to-label distance formula is evaluated in the 6656-px pano height its constants were fit on, scaled back to the pano's own pixels, scaled up ×2.5 and clamped to 8°–90°. Before v2 it was fed native pixels, so the same ramp asked for a window 1.86–4.09× different depending only on the panorama's resolution, and the largest panoramas got the tightest crops — see [the rule v2 report](reports/2026-08-19-crop-sizing-v2.md). Which rule cut a store is recorded in `<crop-dir>/crop_rule.json`; **check it before training on a directory.** Existing crops are never re-cut, so a store cropped before v2 keeps its square v1 crops and silently accretes 3:2 ones alongside them — the run warns when it notices, but deleting the store is the only way to get one geometry. Crop windows wrap across the equirectangular seam (the left and right image edges are the same place in the world) and shift to stay inside the image at the top and bottom, so a crop never contains synthetic black padding. In a six-city census of 438,410 labels, 1.52% cross the seam; before this was fixed every one of those crops carried a black bar.
@@ -294,7 +294,7 @@ The phase is serial — one metadata request in flight at a time, unlike the ima
   | 5 | metadata total processed | count of image-eligible panos (stub) |
   | 6 | metadata phase duration | effectively `0` (stub) |
   | 7 | image successes | |
-  | 8 | image fallback successes | downloaded, but at a fallback resolution |
+  | 8 | image fallback successes | downloaded, but at a fallback resolution — only zoom 3 was available for a frame whose reported dimensions need zoom 5, so the stitch was upscaled to reach them. Real imagery, materially less of it. **Not** simply "downloaded at zoom 3": an old pano whose own max zoom is 3 is at its native resolution and counts in field 7. Was a constant `0` before [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) because nothing ever returned the verdict, so runs before that show every fallback inside field 7 |
   | 9 | image failures | includes prior runs' permanent failures, seeded from `pano_id_log.csv`; a transient failure is not ledgered, so it is counted again if it fails again next run |
   | 10 | image skipped | includes panos already downloaded on previous runs, seeded likewise |
   | 11 | image total processed | sum of fields 7–10 |

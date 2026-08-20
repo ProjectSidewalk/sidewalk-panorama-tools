@@ -36,7 +36,10 @@ python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-
     [--max-runtime MINUTES] [--min-depth-runtime MINUTES] [--max-depth-requests N]
 
 # Cropper (exits 1 if any label errored; missing/untrusted panos alone are not an error)
-python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) [-s <pano-dir>] [-o <crop-dir>] [--mark-label]
+python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <crop-dir> [--mark-label]
+
+# flag_panos JSON -> CSV, for one city (one-off tool; see flag_panos/README.md)
+python3 flag_panos/json_to_csv.py --city <city> [--dir <dir>]
 
 # Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see README's "Log analyzer")
 python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days N]
@@ -67,6 +70,7 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 
 **downloaders/** — per-source download logic; `download_pano()` dispatches on `pano_info['source']`.
 - `gsv.py` stitches 512×512 tiles from Google's undocumented `cbk?output=tile` endpoint into one equirectangular JPEG. Determines a working zoom level (5 preferred, falling back to 3; a fully-black tile at both means no imagery), fans the tiles out concurrently via `aiohttp` with `backoff` retries, pastes them into a blank canvas sized per the server's width/height, and upscales zoom-3 panos with LANCZOS.
+  - **`fallback_success` is "the stitch was upscaled", not "zoom == 3".** `download_single_pano` returns it when `_dims_at_zoom(w, h, zoom) != final_im_dimension`, which is exactly when `_stitch_tiles` had to LANCZOS the frame up to the reported dims. Those two rules disagree on the panos that matter: an old four-level pano (3328×1664) has max zoom 3, so zoom 3 *is* its native resolution and nothing was lost. Two tests hold that split apart and both kill a `zoom == 3` implementation. Nothing returned this verdict at all until #52, so `log.csv` column 8 was a constant `0` for every run before it — and `log_analyzer` sums that column into `daily_success`, so it was adding a permanent zero.
 - `gsv.py` also owns the **depth phase** (`download_depth_maps`), which fetches depth via the `streetlevel` library's photometa call — one metadata request per unresolved pano.
 - `mapillary.py` resolves `thumb_original_url` via the Graph API and downloads it. Requires `MAPILLARY_ACCESS_TOKEN`.
 
@@ -121,6 +125,14 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 
 ## Things that are easy to get wrong
 
+- **`print` and `logging` are two channels with different jobs — do not "unify" them.** `print` is the
+  operator-facing run narrative and the warnings **cron mails**; `logging` is the durable per-item detail in
+  `scrape.log` / `crop.log`. **A warning that matters goes to both**, which is the depth phase's pattern
+  (`logging.error(...)` then `print(...)`), because stdout is how someone hears about it tonight and the log
+  is what is still there next week. #52 item 6 read the mixture as inconsistency; it is mostly deliberate,
+  README leans on a `WARNING` reaching cron mail, and ~15 tests assert on `capsys`. A print-to-logging sweep
+  would break all three. The one real violation — `filter_supported_sources` warning on stdout only — is
+  fixed; `caplog` assertions now sit beside its `capsys` ones so a revert fails.
 - **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in README's "Ops notes"; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
 - **The depth failure count is not an alert signal.** It includes `unavailable`, a permanent and expected outcome, so early backfill runs show large, entirely normal failure numbers. The success/failure/unavailable split goes to stdout and `scrape.log`.
 - **Depth artifacts are un-mirrored on write.** `streetlevel`'s decoder x-mirrors the payload relative to the pano JPEG; `_write_depth_artifact` flips it back (#58), so a consumer can index the stored array with `pano_x`/`pano_y` scaled by width/height, no correction needed. `tests/test_streetlevel_api.py` pins the decode's end-to-end column order so a streetlevel change fails CI rather than silently re-mirroring new artifacts.
