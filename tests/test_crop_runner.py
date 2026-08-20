@@ -1393,19 +1393,34 @@ class TestMakeSingleCropAcceptsAPath:
         put_pano(store, 'testpano0001')
         pano_path = os.path.join(str(store), 'te', 'testpano0001.jpg')
 
+        # A proxy that records close(), rather than inspecting the image afterwards: PIL drops `.fp` as soon
+        # as the pixels are loaded, which crop() forces, so `fp is None` is true whether or not anything
+        # ever called close(). It reads like a leak check and is not one.
+        class RecordingImage:
+            def __init__(self, image):
+                self._image = image
+                self.closed = False
+
+            def __getattr__(self, name):
+                return getattr(self._image, name)
+
+            def close(self):
+                self.closed = True
+                self._image.close()
+
         opened = []
         real_open = Image.open
 
         def recording_open(fp, *args, **kwargs):
-            image = real_open(fp, *args, **kwargs)
-            opened.append(image)
-            return image
+            proxy = RecordingImage(real_open(fp, *args, **kwargs))
+            opened.append(proxy)
+            return proxy
 
         monkeypatch.setattr(Image, 'open', recording_open)
         crop_runner.make_single_crop(pano_path, 200, INTERIOR_Y, str(tmp_path / 'crop.jpg'))
 
         assert len(opened) == 1
-        assert opened[0].fp is None, 'the pano this call opened was left open'
+        assert opened[0].closed, 'the pano this call opened was left open'
 
     def test_an_image_handed_in_is_left_open_for_its_other_labels(self, crop_runner, tmp_path):
         """The other half of the same branch: the bulk loop decodes each pano once and cuts every label on

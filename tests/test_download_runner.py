@@ -1113,19 +1113,23 @@ class TestEveryDownloadResultLandsInItsOwnCounter:
     def test_each_verdict_is_counted_in_its_own_slot(self, monkeypatch, tmp_path):
         storage = tmp_path / 'storage'
         storage.mkdir()
-        ids = ['pano-success', 'pano-fallback', 'pano-skipped', 'pano-failure']
-        monkeypatch.setattr(DownloadRunner, 'download_pano', self.scripted_download_pano({
-            'pano-success': downloaders.DownloadResult.success,
-            'pano-fallback': downloaders.DownloadResult.fallback_success,
-            'pano-skipped': downloaders.DownloadResult.skipped,
-            'pano-failure': downloaders.DownloadResult.failure,
-        }))
+        # A DIFFERENT number of each verdict, deliberately. One of each would make every transposition
+        # invisible - all four counters would read 1 and the tuple would be (1, 1, 1, 1, 4) whichever way
+        # they were wired. These multiplicities make the returned tuple unique to the correct wiring.
+        verdicts, panos = {}, []
+        for verdict, count in ((downloaders.DownloadResult.success, 1),
+                               (downloaders.DownloadResult.fallback_success, 2),
+                               (downloaders.DownloadResult.skipped, 3),
+                               (downloaders.DownloadResult.failure, 4)):
+            for n in range(count):
+                pano_id = 'pano-%s-%d' % (verdict, n)
+                verdicts[pano_id] = verdict
+                panos.append({'pano_id': pano_id, 'source': 'gsv'})
+        monkeypatch.setattr(DownloadRunner, 'download_pano', self.scripted_download_pano(verdicts))
 
-        result = DownloadRunner.download_panorama_images(
-            str(storage), [{'pano_id': p, 'source': 'gsv'} for p in ids])
+        result = DownloadRunner.download_panorama_images(str(storage), panos)
 
-        # One of each, so any pair of counters swapped in the returned tuple shows up here.
-        assert result == (1, 1, 1, 1, 4), \
+        assert result == (1, 2, 4, 3, 10), \
             'expected (success, fallback_success, fail, skipped, total)'
 
     def test_a_transient_error_is_counted_but_left_out_of_the_ledger(self, monkeypatch, tmp_path):
