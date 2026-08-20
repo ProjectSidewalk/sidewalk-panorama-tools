@@ -75,7 +75,7 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 - `mapillary.py` resolves `thumb_original_url` via the Graph API and downloads it. Requires `MAPILLARY_ACCESS_TOKEN`.
 
 **CropRunner.py** — extracts per-label crops from downloaded panos.
-1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake additionally dtype-pins `pano_id` to `str` (the #46 bug class) and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
+1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake reads with `csv.DictReader`, not pandas (#72), so no field's type can depend on what the values happen to look like (the #46 bug class), and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
 2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 16384×8192 pano is ~250 MB decoded. Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, width, height, shifted)` centered at `(pano_x, pano_y)`, **3:2**, where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Width comes from `crop_window_width()` — **sizing rule v2**: `predict_crop_size()` normalised into the 6656-px frame its constants were fit on, ×`CROP_SIZE_SCALE`, clamped to `CROP_MIN_FOV_DEG`–`CROP_MAX_FOV_DEG` **as an angle** rather than as pixels. `downscale_for_storage()` then caps the cut window at `CROP_MAX_STORED_WIDTH` without ever upscaling it. Every constant is one measured number — see `reports/2026-08-19-crop-sizing-v2.md`; the residual (a y-only rule cannot know how large a ramp actually is) is RampNet #83.
    - **The rule version lives in the store, not in the run summary.** `write_rule_marker()` writes `<crop-dir>/crop_rule.json` (`CROP_RULE_VERSION` plus every constant) *before* cutting anything, and warns — never refuses — when it disagrees with what is there. A mixed store is the **ordinary** result of changing the rule, since existing crops are the resume marker and are never re-cut: run v2 over a v1 store and the new crops are 3:2 while the old stay square, with nothing on disk to say so. Stdout was where this used to go, which on a cron run is nowhere.
    - **`reports/scripts/crop_rule_v1.py` is the one frozen copy of the old rule**, used by the sizing study and by the two census tests whose reports were *measured* under v1. It is a record, not a rule anyone runs — the resolution defect in it is the subject of the v2 report and must not be "fixed".
@@ -125,6 +125,17 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 
 ## Things that are easy to get wrong
 
+- **The three file intakes read with `csv`/`json`, and must not go back to pandas (#72).** `pandas` is a
+  dev/ops dependency now (`requirements-dev.txt`, for `log_analyzer/` and `reports/scripts/`), and a test
+  asserts no production module imports it. The battery in `tests/test_csv_intake.py` was **measured**
+  against `pd.read_csv` before the swap, and three of those measurements are the reason it happened: a row
+  with **one surplus field** made pandas consume the first column as the frame's index, so every field
+  shifted and the real `pano_id` vanished — silently; **`has_labels` had no fixed type** (bool, int64,
+  float64, or `str` for junk *and* for `' True '` with padding), and `select_image_panos` is a plain
+  truthiness test, so the `str` cases silently defeated `--all-panos`; and **one blank cell retyped a whole
+  column**, so a single missing `width` made every other row's width a float and the blank itself a `NaN`
+  that `gsv`'s `is not None` guard cannot see. Blank cells become `None` in `DownloadRunner` and stay `''`
+  in `CropRunner` — deliberate, and explained at both seams.
 - **`print` and `logging` are two channels with different jobs — do not "unify" them.** `print` is the
   operator-facing run narrative and the warnings **cron mails**; `logging` is the durable per-item detail in
   `scrape.log` / `crop.log`. **A warning that matters goes to both**, which is the depth phase's pattern

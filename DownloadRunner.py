@@ -13,7 +13,6 @@ import time
 from datetime import datetime
 from os.path import exists
 
-import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -108,7 +107,11 @@ def _normalize_pano_records(records):
     kept = []
     for record in records:
         raw = record.get('pano_id')
-        # A blank CSV cell arrives as float nan, which str() would keep as the id 'nan'.
+        # The float-nan case is the JSON path, not the CSV one: Python's json parses a bare NaN literal by
+        # default, so response.json() can hand us one, and str() would keep it as the id 'nan' - a real
+        # shard path, na/nan.jpg. (It used to be the CSV path too: pd.read_csv returned nan for a blank
+        # cell even under dtype={'pano_id': str}. csv.DictReader returns '', which falls through to the
+        # empty check below.)
         if raw is None or (isinstance(raw, float) and math.isnan(raw)):
             pano_id = ''
         else:
@@ -124,24 +127,73 @@ def _normalize_pano_records(records):
     return kept
 
 
+# has_labels spellings a hand-made CSV may reasonably use. Everything else raises, because
+# select_image_panos tests the value for truth and every non-empty string is true - so an unrecognised
+# spelling would silently mean 'labelled' and quietly undo the --all-panos split.
+_TRUE_SPELLINGS = frozenset(('true', 't', 'yes', 'y', '1'))
+_FALSE_SPELLINGS = frozenset(('false', 'f', 'no', 'n', '0'))
+
+
+def _parse_has_labels(raw, metadata_csv_path):
+    """Coerce a CSV has_labels cell to a real bool. Blank or absent counts as labelled.
+
+    pd.read_csv typed this column from its contents: bool for True/False, int64 for 1/0, float64 (nan) for
+    a blank, and str for anything else - INCLUDING ' True ' with padding. The two str cases were silently
+    truthy, so a padded or typo'd cell downloaded the pano and said nothing.
+    """
+    if raw is None:
+        return True
+    text = raw.strip().lower()
+    if not text:
+        return True
+    if text in _TRUE_SPELLINGS:
+        return True
+    if text in _FALSE_SPELLINGS:
+        return False
+    raise ValueError("%s has an unreadable has_labels value %r; expected one of %s"
+                     % (metadata_csv_path, raw,
+                        ', '.join(sorted(_TRUE_SPELLINGS | _FALSE_SPELLINGS))))
+
+
 def fetch_pano_ids_csv(metadata_csv_path):
     """
     Loads pano metadata from a CSV file (downloaded from the server). Dedupes on pano_id.
     Expected to include the same columns as /adminapi/panos, notably `source`.
 
-    pano_id is dtype-pinned to str: an all-numeric (Mapillary) column otherwise infers int64 (#46), and one
-    with a single blank cell would infer float64 - whose str() would mint ids like '1.23e+14' - so both the
-    pin here and the normalisation are needed.
+    Read with csv, not pandas (#72), so no field's type depends on what the values happen to look like -
+    the inference that caused #46 and #55. Every cell is a str; the two exceptions below are the fields
+    whose consumers need something else.
+
+    utf-8-sig because a hand-made CSV out of Excel carries a BOM, which would otherwise glue itself to the
+    first fieldname and fire the column guard on a perfectly good file.
     """
-    df_meta = pd.read_csv(metadata_csv_path, dtype={'pano_id': str})
-    # Fail loudly on a header typo. -c exists for hand-made CSVs, and _normalize_pano_records would
-    # otherwise read every row's missing id as blank and filter the whole file out - a run that downloads
-    # nothing, prints one 'empty string or tutorial' line per row, and exits 0. pd.read_csv ignores dtype
-    # keys for absent columns, so the pin above doesn't catch this either.
-    if 'pano_id' not in df_meta.columns:
-        raise ValueError("%s has no 'pano_id' column; found %r"
-                         % (metadata_csv_path, list(df_meta.columns)))
-    return _normalize_pano_records(df_meta.to_dict('records'))
+    with open(metadata_csv_path, newline='', encoding='utf-8-sig') as csv_file:
+        reader = csv.DictReader(csv_file)
+        # Fail loudly on a header typo. -c exists for hand-made CSVs, and _normalize_pano_records would
+        # otherwise read every row's missing id as blank and filter the whole file out - a run that
+        # downloads nothing, prints one 'empty string or tutorial' line per row, and exits 0. fieldnames is
+        # None for an empty file, and `'pano_id' not in None` is a TypeError, so check that first.
+        if not reader.fieldnames or 'pano_id' not in reader.fieldnames:
+            raise ValueError("%s has no 'pano_id' column; found %r"
+                             % (metadata_csv_path, reader.fieldnames))
+        records = [_normalize_csv_row(row, metadata_csv_path) for row in reader]
+    return _normalize_pano_records(records)
+
+
+def _normalize_csv_row(row, metadata_csv_path):
+    """One DictReader row as the rest of the pipeline expects it.
+
+    Blank cells become None because that is what the consumers test for: gsv.download_single_pano reads the
+    dims as `int(v) if v is not None else None`, and a '' walks past that guard into int('').
+
+    Surplus fields are dropped. DictReader files them under the key None; pandas did something far worse
+    with the same input - it consumed the first column as the frame's index, so every field shifted by one
+    and the real pano_id vanished out of the record entirely, without raising.
+    """
+    record = {key: (value if value else None) for key, value in row.items() if key is not None}
+    if 'has_labels' in record:
+        record['has_labels'] = _parse_has_labels(record['has_labels'], metadata_csv_path)
+    return record
 
 
 def fetch_pano_ids_from_webserver(sidewalk_server_fqdn):

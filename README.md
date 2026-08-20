@@ -108,7 +108,9 @@ The run writes a rotating `crop.log` into the crop directory, prints a per-outco
 
 `log_analyzer/analyze.py` monitors the nightly scrape across every city. It pulls each city's `log.csv` off the pano store over SFTP and flags the ones that look broken. Nothing is downloaded by the scraper itself — this is an ops tool you run from a workstation or a cron box, not something the Docker image needs.
 
-It needs only `pandas` (already in `requirements.txt`) plus the `sftp` client binary (`openssh-client`).
+It needs only `pandas` plus the `sftp` client binary (`openssh-client`). `pandas` is in
+`requirements-dev.txt` rather than `requirements.txt` — nothing the scraper or cropper runs imports it (#72) — so
+a box running only the analyzer wants `pip3 install pandas`, not the whole dev file.
 
 Connection settings are read from the environment, or the matching flag. Host and base path are required and have no defaults — a wrong default would silently analyze the wrong store:
 
@@ -319,7 +321,7 @@ The depth map is Google's plane-based encoding decoded to a per-pixel distance g
 * **Building geometry drifts between captures** (facades from re-captures of the same street differ by a couple of meters), so don't treat facade distances as survey-grade.
 
 ## Tests
-A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract shared by the writer and the [log analyzer](#log-analyzer), and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need only the packages in `requirements.txt` plus `pytest`:
+A `pytest` suite covers the depth phase (ledger semantics, error taxonomy, artifact format, budget flags), the positional `log.csv` contract shared by the writer and the [log analyzer](#log-analyzer), and the Docker entrypoint's flag forwarding. The tests are network-free (streetlevel is mocked) and need `requirements.txt` plus `requirements-dev.txt` — the latter carries `pytest`, and the `matplotlib`/`pandas` that the `reports/` scripts and their tests use but the scraper and cropper do not:
 
 ```bash
 pip3 install -r requirements.txt -r requirements-dev.txt
