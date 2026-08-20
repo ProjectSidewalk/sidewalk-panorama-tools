@@ -235,6 +235,16 @@ class TestHasLabelsIsParsedNotGuessedAt:
 
         assert records[0]['has_labels'] is True
 
+    def test_a_whitespace_only_cell_counts_as_labelled(self, tmp_path):
+        """A cell of spaces is truthy, so it never becomes the blank cell's None and reaches the
+        parser as a string — the same padding that made pandas type ' True ' as str, with the value
+        taken out. It has to land on 'labelled' with the genuinely blank cell, not opposite it."""
+        path = write_pano_csv(tmp_path, PANO_HEADER + pano_row(has_labels='   '))
+
+        records = DownloadRunner.fetch_pano_ids_csv(path)
+
+        assert records[0]['has_labels'] is True
+
     def test_an_absent_column_counts_as_labelled(self, tmp_path):
         path = write_pano_csv(tmp_path, 'pano_id,source\ntestPanoIdAAAAAAAAAAAA,gsv\n')
 
@@ -431,6 +441,15 @@ class TestMetadataDimsTreatsBlankAsAbsent:
         assert CropRunner._metadata_dims(
             {'pano_id': 'a', 'pano_width': '', 'pano_height': '',
              'width': '16384', 'height': '8192'}) == (16384, 8192)
+
+    def test_blanks_in_both_column_pairs_are_absent_not_an_error(self):
+        """The other half a naive fix misses: the check after the fallback needs the blank rule too.
+        A CSV carrying both column pairs, all four blank, falls back to '' — and a bare `is None`
+        there hands that '' to float(), so the row is a counted error rather than one that simply
+        does not claim dimensions."""
+        assert CropRunner._metadata_dims(
+            {'pano_id': 'a', 'pano_width': '', 'pano_height': '',
+             'width': '', 'height': ''}) is None
 
     def test_absent_keys_are_still_absent(self):
         assert CropRunner._metadata_dims({'pano_id': 'a'}) is None
