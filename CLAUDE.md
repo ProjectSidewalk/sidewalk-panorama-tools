@@ -8,27 +8,10 @@ Python tooling that works with data from [Project Sidewalk](https://github.com/P
 
 ## Common Commands
 
-Build and run the downloader via Docker (the supported path):
+Everything runs from a virtualenv — **there is no Docker in this repo**. The image and its sshfs entrypoint were retired in Aug 2026 (`docs/history.md`); production is a crontab line per city calling `.venv/bin/python` directly, with the pano store mounted on the host.
 
 ```bash
-docker build --no-cache --pull -t projectsidewalk/scraper:v6 .
-
-# Basic: download to a tmp dir inside the container
-docker run --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined \
-  projectsidewalk/scraper:v6 <sidewalk-server-fqdn>
-
-# The entrypoint (DownloadRunnerDockerEntrypoint.sh) also supports:
-#   <fqdn> <user@host:/remote/path> <port>     # sshfs-mount remote dest
-#   ... --all-panos                            # include panos with no labels (images only)
-#   ... --skip-depth                           # skip the depth phase
-#   ... --max-runtime MINUTES                  # stop starting work after MINUTES
-#   ... --min-depth-runtime MINUTES            # reserve the tail of --max-runtime for depth
-#   ... --max-depth-requests N                 # cap depth metadata requests
-```
-
-Run scripts directly (outside Docker, Linux recommended):
-
-```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip3 install -r requirements.txt
 
 # Downloader
@@ -41,11 +24,14 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <cr
 # flag_panos JSON -> CSV, for one city (one-off tool; see flag_panos/README.md)
 python3 flag_panos/json_to_csv.py --city <city> [--dir <dir>]
 
-# Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see README's "Log analyzer")
+# Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see docs/log-analyzer.md)
 python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days N]
 
 # One-off migrator for pre-v2 depth artifacts
 python3 migrate_depth_artifacts.py <storage-dir> [--dry-run]
+
+# Regenerate the README's hero figure after a crop-geometry change
+python3 assets/make_banner.py
 ```
 
 Tests:
@@ -55,7 +41,24 @@ pip3 install -r requirements.txt -r requirements-dev.txt
 python3 -m pytest tests
 ```
 
-CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10, matching the Docker image. There is no linter configured.
+CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10, the production baseline. There is no linter configured.
+
+## Documentation layout
+
+The README is a front door only; the reference material lives in `docs/` and each page is linked from the README's documentation map. **When behaviour changes, the relevant `docs/` page and this file both need the edit.**
+
+| Page | Covers |
+|---|---|
+| `docs/downloader.md` | install, options, runtime budgets, imagery sources, `config.py`, nightly cron |
+| `docs/cropper.md` | crop geometry, preflights, outcome taxonomy, consumer warnings |
+| `docs/depth.md` | artifact format, plane fields, ledger, migration, rate-limit behaviour, what depth is/isn't |
+| `docs/ops.md` | storage layout, resume ledgers, the 18-column `log.csv`, crashed-run semantics |
+| `docs/log-analyzer.md` | SFTP settings and the per-city checks |
+| `docs/api-fields.md` | `/adminapi/panos` and `/adminapi/labels/cvMetadata` glossaries, label type IDs |
+| `docs/testing.md` | what the suite covers |
+| `docs/history.md` | removed code, and why |
+
+`tests/test_docs.py` fails if a relative link or an anchor (cross-page **or** same-page) stops resolving, if a docs page is not linked from the README, or if a `docs/*.md` path cited in a Python comment **or in this file** goes missing — so the pointers above are checked, not decorative. Links are scanned over the joined page text, so one that hard-wraps across a newline is still checked.
 
 ## Architecture
 
@@ -66,7 +69,7 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 2. `select_image_panos()` applies `--all-panos`. **This gates images only** — the depth phase always gets the full corpus, since depth is wanted for unlabelled panos too and costs the same either way.
 3. Runs the image phase, then the depth phase, then appends one `log.csv` row in a `finally`. Both phases share `--max-runtime`; `--min-depth-runtime` carves a reservation out of the image phase's share so an image backlog can't starve the depth backfill (only taken when `count_unresolved_depth()` shows work pending).
 4. Budgets use `time.monotonic()`, never the wall clock, so an NTP step or DST transition can't stretch or shrink them.
-5. `SIGTERM` is translated into `sys.exit(143)` so `docker stop` runs `finally` blocks instead of discarding the evidence row. Logging goes to `scrape.log` **on the pano store**, not the CWD — in Docker the CWD is `/app` inside the container and would vanish on exit.
+5. `SIGTERM` is translated into `sys.exit(143)` so a stop (`systemctl stop`, a cron timeout wrapper, an operator's kill) runs `finally` blocks instead of discarding the evidence row. Logging goes to `scrape.log` **on the pano store**, not the CWD — under cron the CWD is wherever the process happened to start, which is nowhere anyone looks.
 
 **downloaders/** — per-source download logic; `download_pano()` dispatches on `pano_info['source']`.
 - `gsv.py` stitches 512×512 tiles from Google's undocumented `cbk?output=tile` endpoint into one equirectangular JPEG. Determines a working zoom level (5 preferred, falling back to 3; a fully-black tile at both means no imagery), fans the tiles out concurrently via `aiohttp` with `backoff` retries, pastes them into a blank canvas sized per the server's width/height, and upscales zoom-3 panos with LANCZOS.
@@ -76,7 +79,7 @@ CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10,
 
 **CropRunner.py** — extracts per-label crops from downloaded panos.
 1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake reads with `csv.DictReader`, not pandas (#72), so no field's type can depend on what the values happen to look like (the #46 bug class), and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
-2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 16384×8192 pano is ~250 MB decoded. Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, width, height, shifted)` centered at `(pano_x, pano_y)`, **3:2**, where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Width comes from `crop_window_width()` — **sizing rule v2**: `predict_crop_size()` normalised into the 6656-px frame its constants were fit on, ×`CROP_SIZE_SCALE`, clamped to `CROP_MIN_FOV_DEG`–`CROP_MAX_FOV_DEG` **as an angle** rather than as pixels. `downscale_for_storage()` then caps the cut window at `CROP_MAX_STORED_WIDTH` without ever upscaling it. Every constant is one measured number — see `reports/2026-08-19-crop-sizing-v2.md`; the residual (a y-only rule cannot know how large a ramp actually is) is RampNet #83.
+2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 13312×6656 pano is ~250 MB decoded and a 16384×8192 one 384 MB (`w × h × 3` bytes). Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, width, height, shifted)` centered at `(pano_x, pano_y)`, **3:2**, where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Width comes from `crop_window_width()` — **sizing rule v2**: `predict_crop_size()` normalised into the 6656-px frame its constants were fit on, ×`CROP_SIZE_SCALE`, clamped to `CROP_MIN_FOV_DEG`–`CROP_MAX_FOV_DEG` **as an angle** rather than as pixels. `downscale_for_storage()` then caps the cut window at `CROP_MAX_STORED_WIDTH` without ever upscaling it. Every constant is one measured number — see `reports/2026-08-19-crop-sizing-v2.md`; the residual (a y-only rule cannot know how large a ramp actually is) is RampNet #83.
    - **The rule version lives in the store, not in the run summary.** `write_rule_marker()` writes `<crop-dir>/crop_rule.json` (`CROP_RULE_VERSION` plus every constant) *before* cutting anything, and warns — never refuses — when it disagrees with what is there. A mixed store is the **ordinary** result of changing the rule, since existing crops are the resume marker and are never re-cut: run v2 over a v1 store and the new crops are 3:2 while the old stay square, with nothing on disk to say so. Stdout was where this used to go, which on a cron run is nowhere.
    - **`reports/scripts/crop_rule_v1.py` is the one frozen copy of the old rule**, used by the sizing study and by the two census tests whose reports were *measured* under v1. It is a record, not a rule anyone runs — the resolution defect in it is the subject of the v2 report and must not be "fixed".
 3. Two preflights skip a label rather than emit a quietly wrong crop: a metadata/image **dims mismatch** (`dims_mismatch`) and a `pano_y` **outside the image** (`out_of_frame`).
@@ -104,7 +107,7 @@ Everything lives under the storage root, with two-char pano-id prefix sharding:
 | `log.csv` | One 18-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
 
-**`pano_id_log.csv` gates the image phase** — ids already in it are skipped on later runs. Note the caveat in the README: a network failure is logged as a failure and won't be retried.
+**`pano_id_log.csv` gates the image phase** — ids already in it are skipped on later runs. Note the caveat in `docs/ops.md`: a permanent verdict is ledgered and never retried, while a transient failure leaves no row.
 
 **`depth_log.csv` gates the depth phase**, but only for permanent outcomes: `saved` and `unavailable` are ledgered and never retried; transient errors (including storage failures) are counted but **not** ledgered, so they retry next run. The artifact on disk is ground truth — deleting the ledger just makes the next run re-stat artifacts and re-request unresolved panos.
 
@@ -141,13 +144,13 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
   `scrape.log` / `crop.log`. **A warning that matters goes to both**, which is the depth phase's pattern
   (`logging.error(...)` then `print(...)`), because stdout is how someone hears about it tonight and the log
   is what is still there next week. #52 item 6 read the mixture as inconsistency; it is mostly deliberate,
-  README leans on a `WARNING` reaching cron mail, and ~15 tests assert on `capsys`. A print-to-logging sweep
+  `docs/downloader.md` leans on a `WARNING` reaching cron mail, and ~15 tests assert on `capsys`. A print-to-logging sweep
   would break all three. The one real violation — `filter_supported_sources` warning on stdout only — is
   fixed; `caplog` assertions now sit beside its `capsys` ones so a revert fails.
-- **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in README's "Ops notes"; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
+- **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in `docs/ops.md`; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
 - **The depth failure count is not an alert signal.** It includes `unavailable`, a permanent and expected outcome, so early backfill runs show large, entirely normal failure numbers. The success/failure/unavailable split goes to stdout and `scrape.log`.
 - **Depth artifacts are un-mirrored on write.** `streetlevel`'s decoder x-mirrors the payload relative to the pano JPEG; `_write_depth_artifact` flips it back (#58), so a consumer can index the stored array with `pano_x`/`pano_y` scaled by width/height, no correction needed. `tests/test_streetlevel_api.py` pins the decode's end-to-end column order so a streetlevel change fails CI rather than silently re-mirroring new artifacts.
-- **Depth is not a measurement of the scene.** It's Google's plane-based model: vehicles, people, and vegetation are absent, `-1` means "no plane" (sky *or* anything unmodeled), and curb ramps sit ~0.15 m above the modeled road surface. See README's "What the depth product is (and isn't)" before building anything on it.
+- **Depth is not a measurement of the scene.** It's Google's plane-based model: vehicles, people, and vegetation are absent, `-1` means "no plane" (sky *or* anything unmodeled), and curb ramps sit ~0.15 m above the modeled road surface. See `docs/depth.md`'s "What the depth product is (and isn't)" before building anything on it.
 - **Labels may have `disagree_count > agree_count`;** the cropper does **not** filter these by default. For stricter filtering, intersect `label_id` with `/v2/access/attributesWithLabels`.
 - **There is small but real Y-axis error in label positions** on the pano — diagnosed as uncorrected per-pano camera tilt in the click→pano mapping (SidewalkWebpage#4784); #54 tracks measuring it at crop level here, with a correction to follow if confirmed.
 - **The cropper's dims preflight checks the store, not the label's frame.** `pano_width`/`pano_height` is a per-pano value joined from current pano metadata, not a click-time snapshot — measured over 438,410 labels / 172,790 panos, *no* pano carries two frames (`reports/2026-08-10-crop-geometry-review.md`). So it catches a stale image on disk, and cannot catch a label whose `pano_x`/`pano_y` went stale under a re-served pano. Don't let a study assume otherwise: that separation needs the POV replay (#54).
@@ -274,11 +277,11 @@ Used in both APIs and as the crop output subdirectory name. Note 8 is intentiona
 | 9 | Crosswalk |
 | 10 | Pedestrian Signal |
 
-See README.md for the full field glossary for `/adminapi/panos` and `/adminapi/labels/cvMetadata`.
+See `docs/api-fields.md` for the full field glossary for `/adminapi/panos` and `/adminapi/labels/cvMetadata`.
 
 ## Other directories
 
-- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the Docker entrypoint's flag forwarding, and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
+- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), the README's hero figure (`test_make_banner.py`), the three file intakes as one contract (`test_csv_intake.py`), and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
 - `log_analyzer/` — the log analyzer plus `cities.csv`; `log_analyzer/logs/` is a gitignored local cache.
 - `flag_panos/` — one-off web tool (HTML/JS) from the 2022 depth-endpoint outage. Not wired into the Python scripts; keep unless asked.
 - `samples/` — reference CSV/JSON/XML and a sample pano+crop used for manual testing and as examples for the `-c`/`-f` flags.

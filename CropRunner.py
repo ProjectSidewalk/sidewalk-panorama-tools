@@ -491,8 +491,8 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     crop is real imagery edge to edge (#47).
 
     :param pano: an open PIL.Image, or a path to one. bulk_extract_crops opens each pano once and passes
-                 the image (a 16384x8192 pano is ~250 MB decoded; re-opening per label decoded it once per
-                 label); the path form is kept for one-off use.
+                 the image (a 13312x6656 pano is ~250 MB decoded and a 16384x8192 one 384 MB; re-opening
+                 per label decoded it once per label); the path form is kept for one-off use.
     :param pano_x: x-pixel of label on the GSV image
     :param pano_y: y-pixel of label on the GSV image
     :param output_filename: name of file for saving
@@ -621,7 +621,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
         # Not `with pano:` - Image.__exit__ has been a no-op since Pillow 11, so the `with` form silently
         # stopped closing anything while requirements.txt still allows the older Pillow where it did.
         # close() is what actually releases the decoded buffer, which is the whole cost decode-once
-        # accepts (~250 MB for a 16384x8192 pano).
+        # accepts (~250 MB for a 13312x6656 pano, 384 MB for a 16384x8192 one).
         try:
             for pano_x, pano_y, label_type, label_id, meta_dims in labels:
                 processed += 1
@@ -740,8 +740,8 @@ def main(argv=None):
     # <label_id>.jpg.part, so concurrent runs over the same labels would fight over that temp path.
     os.makedirs(args.o, exist_ok=True)
 
-    # crop.log lives next to the crops it describes, NOT the CWD (which under Docker/cron is wherever the
-    # process happened to start and dies with it - the DownloadRunner #49 lesson).
+    # crop.log lives next to the crops it describes, NOT the CWD (which under cron is wherever the process
+    # happened to start - the DownloadRunner #49 lesson).
     configure_logging(os.path.join(args.o, 'crop.log'))
 
     raise_decompression_bomb_ceiling()

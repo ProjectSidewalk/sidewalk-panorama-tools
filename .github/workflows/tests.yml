@@ -8,7 +8,7 @@ on:
 
 jobs:
   pytest:
-    # Matches the Docker image: Ubuntu 22.04 / Python 3.10. Installing requirements.txt here also verifies that
+    # Matches the production baseline: Ubuntu 22.04 / Python 3.10. Installing requirements.txt here also verifies that
     # streetlevel's dependency tree still pip-installs cleanly on that baseline.
     runs-on: ubuntu-22.04
     steps:
