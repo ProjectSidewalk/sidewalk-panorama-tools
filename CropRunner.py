@@ -711,8 +711,8 @@ def main(argv=None):
     # <label_id>.jpg.part, so concurrent runs over the same labels would fight over that temp path.
     os.makedirs(args.o, exist_ok=True)
 
-    # crop.log lives next to the crops it describes, NOT the CWD (which under Docker/cron is wherever the
-    # process happened to start and dies with it - the DownloadRunner #49 lesson).
+    # crop.log lives next to the crops it describes, NOT the CWD (which under cron is wherever the process
+    # happened to start - the DownloadRunner #49 lesson).
     configure_logging(os.path.join(args.o, 'crop.log'))
 
     raise_decompression_bomb_ceiling()

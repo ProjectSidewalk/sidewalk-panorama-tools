@@ -8,7 +8,7 @@ Downloads each city's log.csv from the pano store and analyzes it for potential 
   🔵 INFO     - low-priority observations
 
 Connection settings come from the environment (or the matching flags); nothing about the pano store is
-hardcoded here. See the "Log analyzer" section of README.md.
+hardcoded here. See docs/log-analyzer.md.
 
   PS_SFTP_HOST  required  host, or an ~/.ssh/config Host alias
   PS_SFTP_BASE  required  directory containing the per-city folders
@@ -44,7 +44,7 @@ CITIES_FILE = SCRIPT_DIR / "cities.csv"
 # log.csv format
 # ---------------------------------------------------------------------------
 # DownloadRunner appends 18 positional fields per run and never writes a header (see write_log_csv_row and
-# README's "Ops notes" table). Production files carry a header only because it is added by hand when a city is
+# the column table in docs/ops.md). Production files carry a header only because it is added by hand when a city is
 # set up, so parsing must work either way - a forgotten header should not turn into a confusing parse error.
 LOG_COLUMNS = [
     "start_time",
@@ -88,7 +88,7 @@ def resolve_sftp(args) -> dict:
         sys.exit(
             "Missing pano store settings: {}.\n"
             "Set PS_SFTP_HOST / PS_SFTP_BASE (or pass --host / --base). "
-            "See the \"Log analyzer\" section of README.md.".format(
+            "See docs/log-analyzer.md.".format(
                 ", ".join("PS_SFTP_" + name.upper() for name in missing))
         )
     if settings["key"]:

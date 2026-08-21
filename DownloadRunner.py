@@ -346,7 +346,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
 
 
 # Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration. Positional, parsed by
-# our log-analyzer tooling. The full column table lives in README.md's "Ops notes".
+# our log-analyzer tooling. The full column table lives in docs/ops.md.
 LOG_CSV_FIELD_COUNT = 18
 
 
@@ -526,15 +526,17 @@ def main(argv=None):
     # exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
     os.makedirs(args.s, exist_ok=True)
 
-    # scrape.log lives on the pano store next to log.csv, NOT the CWD: in Docker the CWD is /app inside the
-    # container, so a relative path would discard the log - and every per-pano failure detail - when the
-    # container exits (#49). Configured once here at startup so every part of the run logs to the same file -
-    # including a crash in the pano-list fetch, which happens before any phase's own code gets a chance to run.
+    # scrape.log lives on the pano store next to log.csv, NOT the CWD: cron runs this from whatever directory
+    # it likes, so a relative path scatters the log - and every per-pano failure detail - somewhere nobody
+    # looks (#49; it was worse under the old Docker image, where the CWD died with the container). Configured
+    # once here at startup so every part of the run logs to the same file - including a crash in the pano-list
+    # fetch, which happens before any phase's own code gets a chance to run.
     configure_logging(os.path.join(args.s, 'scrape.log'))
 
-    # docker stop sends SIGTERM, which CPython by default dies from without running finally blocks - taking the
-    # log.csv evidence row with it (#49). Translate it into a SystemExit carrying the conventional 128+15 code,
-    # so cleanup runs and the exit still reads as a signal death.
+    # A stop - `systemctl stop`, a cron timeout wrapper, an operator's kill - sends SIGTERM, which CPython by
+    # default dies from without running finally blocks, taking the log.csv evidence row with it (#49).
+    # Translate it into a SystemExit carrying the conventional 128+15 code, so cleanup runs and the exit still
+    # reads as a signal death.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
     print("Starting run with pano list fetched from %s and destination path %s" % (args.d, args.s))
