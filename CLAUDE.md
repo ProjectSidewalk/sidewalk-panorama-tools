@@ -30,6 +30,11 @@ python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days
 # One-off migrator for pre-v2 depth artifacts
 python3 migrate_depth_artifacts.py <storage-dir> [--dry-run]
 
+# One-off repair pass for fover-era panos (#73). Never backfills, never downgrades; see docs/ops.md
+python3 reports/scripts/pano_y_histogram.py <city-fqdn> --write-worklist --no-analysis
+python3 refetch_panos.py <storage-dir> (--worklist <csv.gz> | --from-store) [--dry-run] \
+    [--fixed-after YYYY-MM-DD] [--max-runtime MINUTES] [--min-pano-interval SECONDS] [--measure]
+
 # Regenerate the README's hero figure after a crop-geometry change
 python3 assets/make_banner.py
 ```
@@ -52,7 +57,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 | `docs/downloader.md` | install, options, runtime budgets, imagery sources, `config.py`, nightly cron |
 | `docs/cropper.md` | crop geometry, preflights, outcome taxonomy, consumer warnings |
 | `docs/depth.md` | artifact format, plane fields, ledger, migration, rate-limit behaviour, what depth is/isn't |
-| `docs/ops.md` | storage layout, resume ledgers, the 18-column `log.csv`, crashed-run semantics |
+| `docs/ops.md` | storage layout, resume ledgers, the 18-column `log.csv`, crashed-run semantics, the `fover` repair pass |
 | `docs/log-analyzer.md` | SFTP settings and the per-city checks |
 | `docs/api-fields.md` | `/adminapi/panos` and `/adminapi/labels/cvMetadata` glossaries, label type IDs |
 | `docs/testing.md` | what the suite covers |
@@ -73,6 +78,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 
 **downloaders/** — per-source download logic; `download_pano()` dispatches on `pano_info['source']`.
 - `gsv.py` stitches 512×512 tiles from Google's undocumented `cbk?output=tile` endpoint into one equirectangular JPEG. Determines a working zoom level (5 preferred, falling back to 3; a fully-black tile at both means no imagery), fans the tiles out concurrently via `aiohttp` with `backoff` retries, pastes them into a blank canvas sized per the server's width/height, and upscales zoom-3 panos with LANCZOS.
+  - **The imagery and the verdict are two seams (#73).** `resolve_zoom_and_dims(pano_info)` → `(w, h, zoom)` or `None`, and `fetch_pano_image(pano_id, w, h, zoom)` → `StitchedPano(image, undersized_tiles, upscaled)`; `download_single_pano` is their composition plus the exists check and the atomic save. `refetch_panos.py` composes the same two with different gates, so a repair pass cannot become a second stitcher — which is the #73 failure mode one level up, and would be just as invisible, since both would still produce a plausible JPEG at the reported dims.
   - **`fallback_success` is "the stitch was upscaled", not "zoom == 3".** `download_single_pano` returns it when `_dims_at_zoom(w, h, zoom) != final_im_dimension`, which is exactly when `_stitch_tiles` had to LANCZOS the frame up to the reported dims. Those two rules disagree on the panos that matter: an old four-level pano (3328×1664) has max zoom 3, so zoom 3 *is* its native resolution and nothing was lost. Two tests hold that split apart and both kill a `zoom == 3` implementation. Nothing returned this verdict at all until #52, so `log.csv` column 8 was a constant `0` for every run before it — and `log_analyzer` sums that column into `daily_success`, so it was adding a permanent zero.
 - `gsv.py` also owns the **depth phase** (`download_depth_maps`), which fetches depth via the `streetlevel` library's photometa call — one metadata request per unresolved pano.
 - `mapillary.py` resolves `thumb_original_url` via the Graph API and downloads it. Requires `MAPILLARY_ACCESS_TOKEN`.
@@ -93,6 +99,13 @@ The README is a front door only; the reference material lives in `docs/` and eac
 3. Prints per-city issues at CRITICAL/WARNING/INFO and exits `1` if anything is CRITICAL, so cron's mail-on-failure alerts. Thresholds are module constants near the top.
 
 **migrate_depth_artifacts.py** — offline, idempotent one-off that rewrites pre-v2 (x-mirrored, unversioned) depth artifacts into v2 column order. The scraper never revisits an existing artifact, so a store scraped before #58 keeps mirrored artifacts forever without this.
+
+**refetch_panos.py** — offline, idempotent one-off that re-fetches panos downloaded while the CBK URL carried `fover` (#73), recovering the polar-band resolution it cost. Same problem shape as the depth migrator — the scraper short-circuits on file existence, so nothing on the store is ever revisited — but with an inverted risk: the depth migrator rewrites an artifact it can fully reconstruct, while this one **replaces imagery that may be irreplaceable**, since ~52% of labelled panos no longer exist at Google.
+1. Work-list in, from `reports/scripts/pano_y_histogram.py --write-worklist` (panos with a label in a half-res band, ~7.5% of Seattle's labelled panos) or `--from-store`. Read with `csv`+`gzip`, never pandas — same #46 reasoning as `progress_check`.
+2. `decide_without_fetching()` resolves `absent`/`unreadable`/`not_affected`/`already_clean`/`dims_changed` from the store alone, at **zero requests**. That is what makes a pass affordable, and it makes a re-run after a finished sweep free even if the ledger is lost: a repaired file's mtime is past `--fixed-after`.
+3. `refetch_pano()` fetches through the same `gsv.resolve_zoom_and_dims` / `gsv.fetch_pano_image` seams `download_single_pano` uses, then refuses to swap on **`frame_grew`** (Google now serves the pano larger, so this grid would return the top-left corner of it — checked by `gsv.frame_covers_pano` *before* the fan-out), **`upscaled`** (a fallback zoom would be a 4× downgrade), **`undersized`** (nothing gained), or **`too_black`**. The swap goes through `atomic_output_path`; every other path leaves the stored bytes byte-for-byte untouched, and a test asserts that on the bytes rather than on the return value.
+4. `refetch_log.csv` carries the outcomes with the ledger semantics the two nightly ledgers use — a row is permanent, transient failures are unledgered and retry. It writes **nothing** to `pano_id_log.csv`, `depth_log.csv`, `log.csv`, or any `.depth.npz`, and a test asserts that too.
+5. `--measure` writes per-pano recovery to `refetch_measurements.jsonl`: bottom-band MAE old-vs-new, that band's own halve-and-restore cost, and the **horizon band as a control** — CBK served those rows at full size in both eras, so their MAE is our own JPEG round-trip and the difference is the recovered detail.
 
 ## Storage layout
 
@@ -137,6 +150,7 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
   would break all three. The one real violation — `filter_supported_sources` warning on stdout only — is
   fixed; `caplog` assertions now sit beside its `capsys` ones so a revert fails.
 - **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in `docs/ops.md`; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
+- **`refetch_panos.py` can destroy imagery Google no longer has, so its refusals are the feature.** ~52% of labelled panos are already retired at Google, so the file on disk is often the only copy that will ever exist. Four gates stand between a fetch and a swap — `frame_grew` (the store is a scrape-time archive and Google re-serves panos larger, so a grid sized from a stored 13312x6656 file returns the top-left 81% of a 16384x8192 pano *at the stored file's exact dimensions*, with no undersized tile and no black — the only silent-corruption path in the tool, and `gsv.frame_covers_pano` probes two tiles past the grid edge to rule it out before spending 512 requests), `upscaled` (a fallback-zoom stitch would be a 4x downgrade at the same reported dims, and nothing in either image can tell them apart afterwards), `undersized` (a tile still came back at 256, so there is nothing to gain), and `too_black` (a reported frame larger than what Google serves fills the out-of-range tiles with black, which at 13312-in-16384 is 34% and sails under the stitcher's own 50% limit). Adding a fourth means adding it to `PERMANENT_OUTCOMES` and to the byte-for-byte "original survives" test; the mutation battery in `tests/test_refetch_panos.py` exists because a gate that returns the right word after already overwriting the file is the one failure this tool cannot have.
 - **The depth failure count is not an alert signal.** It includes `unavailable`, a permanent and expected outcome, so early backfill runs show large, entirely normal failure numbers. The success/failure/unavailable split goes to stdout and `scrape.log`.
 - **Depth artifacts are un-mirrored on write.** `streetlevel`'s decoder x-mirrors the payload relative to the pano JPEG; `_write_depth_artifact` flips it back (#58), so a consumer can index the stored array with `pano_x`/`pano_y` scaled by width/height, no correction needed. `tests/test_streetlevel_api.py` pins the decode's end-to-end column order so a streetlevel change fails CI rather than silently re-mirroring new artifacts.
 - **Depth is not a measurement of the scene.** It's Google's plane-based model: vehicles, people, and vegetation are absent, `-1` means "no plane" (sky *or* anything unmodeled), and curb ramps sit ~0.15 m above the modeled road surface. See `docs/depth.md`'s "What the depth product is (and isn't)" before building anything on it.
@@ -270,7 +284,7 @@ See `docs/api-fields.md` for the full field glossary for `/adminapi/panos` and `
 
 ## Other directories
 
-- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), the README's hero figure (`test_make_banner.py`), and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
+- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), the README's hero figure (`test_make_banner.py`), and the `fover` repair pass (`test_refetch_panos.py`: the decision table, the byte-for-byte survival of every refusal, ledger semantics, and the recovery metric against the committed tile pair), the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
 - `log_analyzer/` — the log analyzer plus `cities.csv`; `log_analyzer/logs/` is a gitignored local cache.
 - `flag_panos/` — one-off web tool (HTML/JS) from the 2022 depth-endpoint outage. Not wired into the Python scripts; keep unless asked.
 - `samples/` — reference CSV/JSON/XML and a sample pano+crop used for manual testing and as examples for the `-c`/`-f` flags.

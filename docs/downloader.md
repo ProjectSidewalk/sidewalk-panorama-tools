@@ -183,4 +183,5 @@ measured in [reports/2026-08-11-mapillary-census.md](../reports/2026-08-11-mapil
 
 * [Depth maps](depth.md) — the depth phase, the artifact format, and what the depth product is and isn't.
 * [Ops](ops.md) — storage layout, the resume ledgers, the `log.csv` columns, and what a crashed run looks like.
+* [Repairing `fover`-era panoramas](ops.md#repairing-fover-era-panoramas) — the downloader never revisits an image it already has, so a store scraped before the `fover` fix needs a deliberate pass.
 * [Log analyzer](log-analyzer.md) — monitoring the nightly run across all cities.
