@@ -309,51 +309,53 @@ def _reject_mostly_black_stitch(image, pano_id, zoom):
             'pano %s: stitched frame at zoom %s is %.0f%% black' % (pano_id, zoom, 100 * black))
 
 
-def download_single_pano(storage_path, pano_info):
+# What fetch_pano_image got, beyond the frame itself. Both extra fields are verdicts about the imagery rather
+# than about the request, and both are invisible in the saved JPEG - which is at the reported dims either way -
+# so anything that has to judge a download needs them handed back explicitly.
+#
+#   undersized_tiles - bodies that came back below the nominal 512px tile, i.e. how much of this frame is at
+#                      half resolution. Expected to be 0 now that `fover` is gone; it is the tripwire (#73).
+#   upscaled         - the grid we could download did not cover the pano's reported frame, so _stitch_tiles
+#                      LANCZOS'd it up to reach those dims and the JPEG holds less imagery than it advertises.
+StitchedPano = collections.namedtuple('StitchedPano', ['image', 'undersized_tiles', 'upscaled'])
+
+
+def resolve_zoom_and_dims(pano_info):
+    """(width, height, zoom) for `pano_info`, or None when there is nothing to download.
+
+    None is a PERMANENT verdict about the pano, and covers both of its causes: no reported dimensions (there
+    is no other source for them, so asking again tomorrow asks the same question), and a black tile at both
+    zoom 5 and zoom 3, which is what Google answers for a pano id it no longer serves. Neither is a transient
+    condition, so callers ledger it rather than retrying. A network failure here still RAISES, and stays
+    transient.
+
+    Costs up to two HTTP requests, and none at all when the dimensions are missing.
+    """
     pano_id = pano_info['pano_id']
     pano_dims = (pano_info.get('width'), pano_info.get('height'))
-
-    base_url = _CBK_BASE_URL
-
-    destination_dir = os.path.join(storage_path, pano_id[:2])
-    if not os.path.isdir(destination_dir):
-        # exist_ok: concurrent city runs (and the depth phase) race on shard dirs.
-        os.makedirs(destination_dir, exist_ok=True)
-        try:
-            os.chmod(destination_dir, 0o775 | stat.S_ISGID)
-        except PermissionError:
-            pass  # lost the race to another user's process; their dir, their modes — must not fail the pano
-
-    filename = pano_id + ".jpg"
-    out_image_name = os.path.join(destination_dir, filename)
-
-    # Skip download if image already exists.
-    if os.path.isfile(out_image_name):
-        return DownloadResult.skipped
-
     final_image_width = int(pano_dims[0]) if pano_dims[0] is not None else None
     final_image_height = int(pano_dims[1]) if pano_dims[1] is not None else None
 
-    # Session scoped to the zoom/dimension probes below; the tile fan-out uses its own aiohttp session. This
-    # runs once per pano, so leaving it unclosed would pile up connection pools until GC (#51).
+    # There is no legacy-XML path here any more (#52 items 3/4/5). It read a `<pano_id>.xml` for dims and
+    # zoom; #39 removed the downloader that wrote those (cbk?output=xml died in 2022), so the files on the
+    # store are frozen 2022 metadata. It could only ever run for a pano with an .xml and NO .jpg - the
+    # caller's skip check returns first - which is 1 of the 1,025 .xml files sampled across dc, columbus-oh,
+    # amsterdam and newberg-or. On that one pano it did harm: a declared num_zoom_levels was trusted over
+    # the probe and test-fetched, and a black tile returned DownloadResult.failure, which is PERMANENT
+    # under the #41 ledger. So stale 2022 metadata could blacklist a pano Google still serves.
+
+    # Without dims we cannot size the tile grid. Checked before the session is opened, so this case costs
+    # nothing.
+    if final_image_width is None or final_image_height is None:
+        return None
+
+    # Session scoped to the zoom/dimension probes; the tile fan-out uses its own aiohttp session. This runs
+    # once per pano, so leaving it unclosed would pile up connection pools until GC (#51).
     with _request_session() as session:
-        # There is no legacy-XML path here any more (#52 items 3/4/5). It read a `<pano_id>.xml` for dims and
-        # zoom; #39 removed the downloader that wrote those (cbk?output=xml died in 2022), so the files on the
-        # store are frozen 2022 metadata. It could only ever run for a pano with an .xml and NO .jpg - the
-        # skip check above returns first - which is 1 of the 1,025 .xml files sampled across dc, columbus-oh,
-        # amsterdam and newberg-or. On that one pano it did harm: a declared num_zoom_levels was trusted over
-        # the probe and test-fetched, and a black tile returned DownloadResult.failure, which is PERMANENT
-        # under the #41 ledger. So stale 2022 metadata could blacklist a pano Google still serves.
-
-        # Without dims we cannot size the tile grid. Permanent, hence failure: /adminapi/panos is the only
-        # source for them, so re-attempting the same row tomorrow asks the same question again.
-        if final_image_width is None or final_image_height is None:
-            return DownloadResult.failure
-
         # The probe is now the only thing that picks a zoom, so it is unconditional - it used to sit behind
         # `if zoom is None:` because the legacy XML could have set one already.
-        url_zoom_3 = f'{base_url}&zoom=3&x=0&y=0&panoid={pano_id}'
-        url_zoom_5 = f'{base_url}&zoom=5&x=0&y=0&panoid={pano_id}'
+        url_zoom_3 = f'{_CBK_BASE_URL}&zoom=3&x=0&y=0&panoid={pano_id}'
+        url_zoom_5 = f'{_CBK_BASE_URL}&zoom=5&x=0&y=0&panoid={pano_id}'
 
         req_zoom_3 = _get_response(url_zoom_3, session, stream=True)
         im_zoom_3 = Image.open(req_zoom_3)
@@ -370,11 +372,59 @@ def download_single_pano(storage_path, pano_info):
             zoom = 3
         else:
             # Can't determine zoom.
-            return DownloadResult.failure
+            return None
 
-    final_im_dimension = (final_image_width, final_image_height)
+    return final_image_width, final_image_height, zoom
 
-    tiles = _generate_tile_urls(pano_id, final_image_width, final_image_height, zoom)
+
+def frame_covers_pano(pano_id, width, height, zoom):
+    """Does a (width, height) grid at `zoom` cover everything Google serves for this pano?
+
+    Asked by requesting the two tiles just past the assumed grid - one column right, one row down - and
+    checking both come back blank. An out-of-range tile is answered 200 OK with an all-black body (pinned
+    on real bytes in tests/test_gsv_tile_contract.py), so imagery there means the real pano is larger than
+    the frame we were about to fetch.
+
+    The nightly downloader never needs this: it sizes the grid from /adminapi/panos, which is Google's own
+    number for a pano Google is currently serving. refetch_panos.py does, because it fetches at the frame
+    the STORED file has, which is a scrape-time archive - and Google re-serves panos larger (measured at
+    4.6% of a sampled store, reports/2026-08-10-store-coverage.md). Fetching a 26x13 grid for a pano Google
+    now holds at 32x16 does not return a smaller version of the pano; it returns the top-left 81% of it, at
+    the stored file's exact dimensions, with no undersized tile and no black to give it away. That is a
+    silently cropped panorama saved over a correct one, and this is the only cheap thing that catches it.
+
+    Two requests, spent BEFORE the 512-tile fan-out so a bad frame costs two rather than 514. Errs toward
+    False - a dark-enough real tile reads as blank here, which costs a refused repair rather than a
+    corrupted one.
+    """
+    tiles_x, tiles_y = _tile_grid(width, height, zoom)
+    with _request_session() as session:
+        for x, y in ((tiles_x, 0), (0, tiles_y)):
+            url = f'{_CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}'
+            probe = Image.open(_get_response(url, session, stream=True))
+            if probe.convert('L').getextrema() != (0, 0):
+                logging.warning("IMAGEDOWNLOAD: pano %s: tile (%d, %d) past a %dx%d grid at zoom %s has "
+                                "imagery; Google serves this pano larger than %dx%d",
+                                pano_id, x, y, tiles_x, tiles_y, zoom, width, height)
+                return False
+    return True
+
+
+def fetch_pano_image(pano_id, width, height, zoom):
+    """Download every tile of `pano_id`'s grid at `zoom` and stitch one frame at (width, height).
+
+    The seam between "get the imagery" and "decide what to do with it" (#52.1's shape, applied one level
+    down). download_single_pano composes it with the store's skip check and an atomic save; refetch_panos.py
+    composes it with its own acceptance gates, so a repair pass cannot become a second, drifting stitcher.
+
+    Raises rather than returning a verdict for everything transient - a failed tile, a mostly-black stitch -
+    because under the #41 ledger semantics both callers must re-attempt those rather than remember them.
+
+    @return StitchedPano(image, undersized_tiles, upscaled).
+    """
+    final_im_dimension = (width, height)
+
+    tiles = _generate_tile_urls(pano_id, width, height, zoom)
     results = asyncio.run(_download_tiles(tiles))
     ok, failed = _partition_tile_results(tiles, results)
     if failed:
@@ -397,22 +447,57 @@ def download_single_pano(storage_path, pano_info):
                         "stitching at reduced resolution - check the CBK request parameters (#73)",
                         pano_id, degraded, len(ok), TILE_SIZE)
 
-    zoom_dims = _dims_at_zoom(final_image_width, final_image_height, zoom)
+    zoom_dims = _dims_at_zoom(width, height, zoom)
     image = _stitch_tiles(ok, zoom_dims, final_im_dimension)
     _reject_mostly_black_stitch(image, pano_id, zoom)
+
+    # The upscaled test is whether the grid we could actually download covers the pano's reported frame; if
+    # it doesn't, _stitch_tiles LANCZOS-upscaled to reach it. Deliberately NOT `zoom == 3`: an old four-level
+    # pano (3328x1664) has max zoom 3, so zoom 3 IS its native resolution and nothing was lost - calling that
+    # degraded would put a permanent false positive in front of ops on the oldest imagery in the store.
+    upscaled = zoom_dims != final_im_dimension
+    if upscaled:
+        logging.info("IMAGEDOWNLOAD: pano %s: only zoom %s was available for a %dx%d frame; stitched %dx%d "
+                     "and upscaled", pano_id, zoom, width, height, *zoom_dims)
+    return StitchedPano(image, degraded, upscaled)
+
+
+def download_single_pano(storage_path, pano_info):
+    pano_id = pano_info['pano_id']
+
+    destination_dir = os.path.join(storage_path, pano_id[:2])
+    if not os.path.isdir(destination_dir):
+        # exist_ok: concurrent city runs (and the depth phase) race on shard dirs.
+        os.makedirs(destination_dir, exist_ok=True)
+        try:
+            os.chmod(destination_dir, 0o775 | stat.S_ISGID)
+        except PermissionError:
+            pass  # lost the race to another user's process; their dir, their modes — must not fail the pano
+
+    filename = pano_id + ".jpg"
+    out_image_name = os.path.join(destination_dir, filename)
+
+    # Skip download if image already exists. Before the probe on purpose: an image on disk is the resume
+    # marker, so a pano already downloaded must cost zero requests.
+    if os.path.isfile(out_image_name):
+        return DownloadResult.skipped
+
+    resolved = resolve_zoom_and_dims(pano_info)
+    if resolved is None:
+        # No dims, or no imagery at any zoom - both permanent properties of the pano, so the #41 ledger
+        # writes downloaded=0 and never re-attempts it.
+        return DownloadResult.failure
+    final_image_width, final_image_height, zoom = resolved
+
+    stitched = fetch_pano_image(pano_id, final_image_width, final_image_height, zoom)
     # atomic_output_path, not a direct save: an image on disk IS the resume marker, so a mid-write crash
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:
-        image.save(tmp_path, 'jpeg')
+        stitched.image.save(tmp_path, 'jpeg')
 
-    # log.csv column 8 (#52 item 2). The test is whether the grid we could actually download covers the
-    # pano's reported frame; if it doesn't, _stitch_tiles LANCZOS-upscaled to reach it, and the JPEG on disk
-    # holds less imagery than its dimensions advertise. Deliberately NOT `zoom == 3`: an old four-level pano
-    # (3328x1664) has max zoom 3, so zoom 3 IS its native resolution and nothing was lost - calling that
-    # degraded would put a permanent false positive in front of ops on the oldest imagery in the store.
-    if zoom_dims != final_im_dimension:
-        logging.info("IMAGEDOWNLOAD: pano %s: only zoom %s was available for a %dx%d frame; stitched %dx%d "
-                     "and upscaled", pano_id, zoom, final_image_width, final_image_height, *zoom_dims)
+    # log.csv column 8 (#52 item 2): the JPEG on disk holds less imagery than its dimensions advertise. See
+    # fetch_pano_image for why the test is not `zoom == 3`.
+    if stitched.upscaled:
         return DownloadResult.fallback_success
     return DownloadResult.success
 

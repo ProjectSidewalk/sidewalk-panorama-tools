@@ -521,3 +521,26 @@ def test_live_download_fills_the_frame(tmp_path, label, pano_id, width, height):
         assert image.size == (width, height)
         black = gsv._black_fraction(image)
         assert black < 0.01, '%s: saved frame is %.1f%% black' % (label, 100 * black)
+
+
+@live_only
+@pytest.mark.parametrize('label,pano_id,width,height', LIVE_PANOS)
+def test_live_frame_probe_agrees_with_the_real_grid(label, pano_id, width, height):
+    """The frame probe refetch_panos.py refuses on, against live tiles.
+
+    Two directions, and both matter. A pano probed at its own frame must come back True, or the repair
+    pass refuses every panorama and does nothing. A 16384x8192 pano probed at 13312x6656 must come back
+    False, because that is precisely the fetch that would return the top-left 81% of it at the smaller
+    frame's exact dimensions - no undersized tile, no black, nothing else in the tool able to see it.
+
+    The second half is skipped for a pano that is already 13312 or smaller: there is no larger grid to
+    mistake it for.
+    """
+    zoom = gsv._pano_max_zoom(width)
+
+    assert gsv.frame_covers_pano(pano_id, width, height, zoom) is True, \
+        '%s: its own frame must cover it' % label
+
+    if (width, height) == (16384, 8192):
+        assert gsv.frame_covers_pano(pano_id, 13312, 6656, zoom) is False, \
+            '%s: a short grid must be caught, or a re-fetch silently crops it' % label

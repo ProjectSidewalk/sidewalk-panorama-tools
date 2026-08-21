@@ -223,3 +223,38 @@ class TestCommittedFindings:
         assert m['16384x8192->13312x6656'] >= 50
         assert m['16384x8192->13312x6656'] > sum(
             v for k, v in m.items() if k != '16384x8192->13312x6656')
+
+
+class TestOneDefinitionOfTheHeaderReader:
+    """`jpeg_dimensions` started here and now has two callers, so it lives in downloaders/common.py.
+
+    refetch_panos.py (#73) asks the same question of every pano in a work-list: what are the stored
+    file's dimensions, without paying a 384 MB decode to find out. The obvious way to get that into a
+    root-level tool is to copy the marker scanner, which is how this repo ended up with four local
+    copies of `num()` (see tests/test_studyfmt.py's TestOneDefinition). One definition, asserted.
+    """
+
+    def test_store_coverage_imports_it_rather_than_declaring_it(self):
+        from downloaders import common
+        assert sc.jpeg_dimensions is common.jpeg_dimensions
+
+    def test_nothing_else_in_the_repo_declares_its_own(self):
+        """Discovered from the tree, not from a list of filenames — the hardcoded-list version of the
+        studyfmt test went stale on the very next script added."""
+        from downloaders import common
+
+        roots = [REPO_ROOT, SCRIPTS, os.path.join(REPO_ROOT, 'downloaders')]
+        checked = 0
+        for root in roots:
+            for name in sorted(os.listdir(root)):
+                path = os.path.join(root, name)
+                if not name.endswith('.py') or not os.path.isfile(path):
+                    continue
+                if os.path.samefile(path, common.__file__):
+                    continue
+                with open(path, encoding='utf-8') as f:
+                    text = f.read()
+                checked += 1
+                for decl in ('def jpeg_dimensions(', 'def _jpeg_dimensions(', 'SOF_MARKERS = '):
+                    assert decl not in text, '%s declares its own %s' % (name, decl)
+        assert checked >= 20, 'expected to have scanned the repo scripts, scanned %d' % checked

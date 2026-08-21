@@ -27,58 +27,16 @@ import argparse
 import collections
 import json
 import os
-import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))   # repo root, for downloaders.common
 from studyfmt import fmt  # noqa: E402
-
-# Start-of-frame markers whose payload carries the image dimensions. DHT/DAC/RST/SOS are excluded;
-# 0xC4/0xC8/0xCC look like SOF numerically and are not.
-SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
-                         0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
-
-# Markers that stand alone: no length field follows, so the scanner must not try to skip a segment.
-STANDALONE = frozenset({0x01, 0xD8, 0xD9}) | frozenset(range(0xD0, 0xD8))
-
-
-def jpeg_dimensions(path):
-    """(width, height) from a JPEG's SOF header, or None if the file is not a readable JPEG.
-
-    Header-only: a 10 MB equirectangular pano costs a few reads instead of a full decode, which is
-    what makes a whole-store sweep practical. Returns None rather than raising, because a census
-    must survive a truncated file at pano 1300 of 1400.
-    """
-    try:
-        with open(path, 'rb') as f:
-            if f.read(2) != b'\xff\xd8':
-                return None
-            while True:
-                byte = f.read(1)
-                while byte and byte != b'\xff':
-                    byte = f.read(1)
-                while byte == b'\xff':          # fill bytes: 0xFF may repeat before the marker
-                    byte = f.read(1)
-                if not byte:
-                    return None
-                marker = byte[0]
-                if marker in STANDALONE:
-                    continue
-                header = f.read(2)
-                if len(header) < 2:
-                    return None
-                seglen = struct.unpack('>H', header)[0]
-                if marker in SOF_MARKERS:
-                    body = f.read(5)
-                    if len(body) < 5:
-                        return None
-                    height, width = struct.unpack('>HH', body[1:5])
-                    return width, height
-                if seglen < 2:
-                    return None
-                f.seek(seglen - 2, os.SEEK_CUR)
-    except OSError:
-        return None
+# One definition of the header-only JPEG reader, shared with refetch_panos.py (#73). It started here; it
+# moved to downloaders/common.py when a second caller appeared, and a test asserts this name is still that
+# function rather than a re-grown local copy.
+from downloaders.common import jpeg_dimensions  # noqa: E402,F401
 
 
 def sample_from_census(census):
