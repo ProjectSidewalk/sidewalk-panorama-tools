@@ -1,4 +1,10 @@
 pytest>=7
+# Coverage is measured and gated in CI (#57); see .coveragerc. pytest-cov drives it; coverage is named
+# directly because the CI summary step calls `coverage report` on its own. >=7.4 for `exclude_also` (7.2)
+# and `coverage report --format=markdown` (7.0); tests/conftest.py relies on the .pth that ships with it to
+# reach the subprocesses the runner tests spawn.
+pytest-cov>=5
+coverage>=7.4
 # The reports/ figure generators, and tests/test_off_target_markers_figures.py which drives them.
 # Not in requirements.txt: nothing the scraper or cropper runs in production imports it.
 matplotlib>=3.5

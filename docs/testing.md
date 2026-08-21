@@ -3,10 +3,34 @@
 ```bash
 pip3 install -r requirements.txt -r requirements-dev.txt
 python3 -m pytest tests
+
+# ... with the coverage report CI publishes and gates on
+python3 -m pytest tests --cov --cov-report=term-missing
 ```
 
 CI runs exactly this on Ubuntu 22.04 / Python 3.10 for every push to `master` and every pull request
 ([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)). There is no linter configured.
+
+## Coverage
+
+CI reports coverage on every run and fails the build below the `fail_under` floor in
+[`.coveragerc`](../.coveragerc) ([#57](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/57)).
+The measured set is the production tree only — the nine modules at the repo root, in `downloaders/` and in
+`log_analyzer/`. `reports/` is deliberately outside it: a large body of frozen one-off analysis with its own
+dense tests, and averaging it in would let the scraper's number move several points unnoticed. `flag_panos/`
+is out because its module scope writes files at import, and `assets/` is out because building the hero
+figure is tooling about the repo rather than part of the scraper. `tests/test_coverage_config.py` pins that set exactly,
+so adding a module is a deliberate measure-or-omit decision rather than silently either.
+
+Two settings there are load-bearing, and losing either shows up as a *lower number* rather than as an error:
+
+- **`branch = True`** — the gap that motivated the gate was an `if` that only ever went one way (three of the
+  log analyzer's six alert rules never fired while every line around them was green).
+- **`source = ${SIDEWALK_COVERAGE_ROOT-.}`, not `.`** — coverage resolves a relative source against each
+  *process's* CWD, and the runner tests spawn subprocesses with `cwd=tmp_path`. That variable, plus
+  `COVERAGE_PROCESS_START` and `COVERAGE_FILE`, is set by `tests/conftest.py`'s `pytest_configure`, and only
+  when the parent is itself being measured. Break any of the three and `main()`, the argparse `type=`
+  validators and the budget carve-out all read as dead code while nothing fails.
 
 ## What the suite covers
 

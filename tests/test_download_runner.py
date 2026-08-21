@@ -1088,3 +1088,132 @@ def test_runtime_budget_arguments_are_passed_by_keyword():
         keywords = {kw.arg for kw in call.keywords}
         assert 'run_start_monotonic' in keywords, name
         assert 'max_runtime_minutes' in keywords, name
+
+
+class TestEveryDownloadResultLandsInItsOwnCounter:
+    """The five-tuple download_panorama_images returns, and which verdicts get a terminal ledger row.
+
+    That tuple is written straight into log.csv fields 7-11, which log_analyzer reads *positionally* - its
+    failure-growth check reads image_fail and its zero-progress check sums image_success and
+    image_fallback_success. So a transposition here is invisible in the scraper (the totals still add up)
+    and silently corrupts the ops signal for every city. The trap is real: the counters are initialised in
+    one order and returned in another.
+    """
+
+    @staticmethod
+    def scripted_download_pano(verdicts):
+        """Return a download_pano stand-in that answers by pano_id, with no network and no disk."""
+        def fake(storage_path, pano_info):
+            verdict = verdicts[pano_info['pano_id']]
+            if isinstance(verdict, Exception):
+                raise verdict
+            return verdict
+        return fake
+
+    def test_each_verdict_is_counted_in_its_own_slot(self, monkeypatch, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        # A DIFFERENT number of each verdict, deliberately. One of each would make every transposition
+        # invisible - all four counters would read 1 and the tuple would be (1, 1, 1, 1, 4) whichever way
+        # they were wired. These multiplicities make the returned tuple unique to the correct wiring.
+        verdicts, panos = {}, []
+        for verdict, count in ((downloaders.DownloadResult.success, 1),
+                               (downloaders.DownloadResult.fallback_success, 2),
+                               (downloaders.DownloadResult.skipped, 3),
+                               (downloaders.DownloadResult.failure, 4)):
+            for n in range(count):
+                pano_id = 'pano-%s-%d' % (verdict, n)
+                verdicts[pano_id] = verdict
+                panos.append({'pano_id': pano_id, 'source': 'gsv'})
+        monkeypatch.setattr(DownloadRunner, 'download_pano', self.scripted_download_pano(verdicts))
+
+        result = DownloadRunner.download_panorama_images(str(storage), panos)
+
+        assert result == (1, 2, 4, 3, 10), \
+            'expected (success, fallback_success, fail, skipped, total)'
+
+    def test_a_transient_error_is_counted_but_left_out_of_the_ledger(self, monkeypatch, tmp_path):
+        """The #41 split. A permanent failure writes a terminal downloaded=0 row and is never retried; a
+        raised exception writes no row at all, so the pano comes back next run."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        monkeypatch.setattr(DownloadRunner, 'download_pano', self.scripted_download_pano({
+            'pano-permanent': downloaders.DownloadResult.failure,
+            'pano-transient': ConnectionError('connection reset'),
+        }))
+
+        result = DownloadRunner.download_panorama_images(
+            str(storage), [{'pano_id': p, 'source': 'gsv'} for p in ('pano-permanent', 'pano-transient')])
+
+        assert result == (0, 0, 2, 0, 2), 'both are this run’s failures'
+        ledger = (storage / 'pano_id_log.csv').read_text()
+        assert 'pano-permanent,0' in ledger
+        assert 'pano-transient' not in ledger, 'a transient failure must not be ledgered'
+
+    def test_a_duplicate_id_is_attempted_and_ledgered_once(self, monkeypatch, tmp_path):
+        """candidates is already filtered against the ledger, so this guard only catches a duplicate that
+        survived intake - which would otherwise be downloaded twice and written to the ledger twice, making
+        the ledger's own counts disagree with the store."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+
+        result = DownloadRunner.download_panorama_images(
+            str(storage), [{'pano_id': 'pano-twice', 'source': 'gsv'}] * 2)
+
+        assert calls == ['pano-twice']
+        assert result == (1, 0, 0, 0, 1)
+        assert (storage / 'pano_id_log.csv').read_text().count('pano-twice') == 1
+
+
+class TestAServerFetchIsCheckedAndNormalised:
+    """fetch_pano_ids_from_webserver's two failure-shaped responses.
+
+    test_pano_list_fetch_session_configuration above stops the request before it returns, so nothing
+    exercised what happens to a response that actually arrives.
+    """
+
+    @staticmethod
+    def respond(monkeypatch, status_code, payload=None):
+        class _Response:
+            def __init__(self):
+                self.status_code = status_code
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise requests.HTTPError('%s' % self.status_code, response=self)
+
+            def json(self):
+                return payload
+
+        monkeypatch.setattr(requests.Session, 'get', lambda self, url, **kwargs: _Response())
+
+    def test_a_server_error_raises_rather_than_returning_an_empty_corpus(self, monkeypatch):
+        """A 500 or a proxy error page must not read as "this city has no panos". The run would report a
+        clean night with zero work, and the log.csv row would be indistinguishable from a finished city.
+        """
+        self.respond(monkeypatch, 500)
+
+        with pytest.raises(requests.HTTPError):
+            DownloadRunner.fetch_pano_ids_from_webserver('sidewalk-test.invalid')
+
+    def test_numeric_and_duplicate_ids_are_normalised_on_the_server_path_too(self, monkeypatch):
+        """The #46 bug class. Mapillary ids are all-numeric, and JSON has no string/number distinction to
+        lean on - an int id here would be compared against the ledger's strings and never match, so the
+        pano would be re-downloaded every night forever.
+        """
+        self.respond(monkeypatch, 200, payload=[
+            {'pano_id': 123456789012345, 'source': 'mapillary'},
+            {'pano_id': '123456789012345', 'source': 'mapillary'},
+            {'pano_id': 'gsvPanoIdAAAAAAAAAAAAA', 'source': 'gsv'},
+            {'pano_id': '', 'source': 'gsv'},
+            {'pano_id': 'tutorial', 'source': 'gsv'},
+        ])
+
+        records = DownloadRunner.fetch_pano_ids_from_webserver('sidewalk-test.invalid')
+
+        ids = [r['pano_id'] for r in records]
+        assert all(isinstance(i, str) for i in ids), ids
+        assert ids == ['123456789012345', 'gsvPanoIdAAAAAAAAAAAAA'], \
+            'the numeric duplicate, the empty id and the tutorial pano should all be gone'

@@ -24,6 +24,38 @@ if REPO_ROOT not in sys.path:
 posix_only = pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes are unavailable on Windows')
 
 
+def pytest_configure(config):
+    """Extend coverage into the subprocesses several test modules spawn (#57).
+
+    The runners are driven as real subprocesses - `main()`, the argparse `type=` validators, the budget
+    carve-out prints and both `__main__` guards only ever execute in a child - so without this the coverage
+    report calls a few hundred well-tested lines dead and sends the next person off writing tests that
+    already exist. That is a worse failure than having no number at all.
+
+    coverage ships a .pth that measures any interpreter it starts in, but only when COVERAGE_PROCESS_START
+    names a config file; pytest-cov does not set it. So set it here, and only when this process is itself
+    being measured - otherwise every subprocess in an ordinary run would litter .coverage.* files. The
+    children inherit it because the helpers spawn with `dict(os.environ, ...)` rather than a scrubbed env.
+
+    `parallel = True` in .coveragerc is the other half: without it each child would overwrite the parent's
+    data file instead of adding to it.
+    """
+    if os.environ.get('COVERAGE_PROCESS_START'):
+        return
+    try:
+        import coverage
+    except ImportError:
+        return
+    if coverage.Coverage.current() is not None:
+        os.environ['COVERAGE_PROCESS_START'] = os.path.join(REPO_ROOT, '.coveragerc')
+        # The other two halves of the same CWD problem, because every one of these helpers spawns with
+        # cwd=tmp_path: coverage resolves both the data file and a relative `source` against the running
+        # process's CWD. Without the first the children measure correctly and then drop their data in a
+        # directory pytest deletes; without the second they measure the temp directory instead of the repo.
+        os.environ['COVERAGE_FILE'] = os.path.join(REPO_ROOT, '.coverage')
+        os.environ['SIDEWALK_COVERAGE_ROOT'] = REPO_ROOT
+
+
 @pytest.fixture
 def fake_streetview(monkeypatch):
     """Install a stub streetlevel.streetview module and return it for per-test find_panorama_by_id stubbing.

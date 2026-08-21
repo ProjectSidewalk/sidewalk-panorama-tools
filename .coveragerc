@@ -1,0 +1,77 @@
+# Coverage settings for `pytest --cov` (#57). See .github/workflows/tests.yml and the README's "Tests".
+#
+# Not pyproject.toml: adding one changes pytest's rootdir anchoring for nothing, and coverage reads a
+# pyproject only when a TOML parser is importable - which on the CI Python (3.10) arrives as a transitive
+# dependency rather than a guarantee, so a bare `coverage report` could ignore the config with no error.
+# Not setup.cfg either: conftest.py opens by saying the repo is not an installed package, and a setup.cfg
+# invites `pip install -e .`, which would break the sys.path-insert import model every test file relies on.
+
+[run]
+# The whole tree minus the omissions below, NOT a hand-listed set of files: a new production module has to
+# show up at 0%, not be invisible. That invisibility is the defect #57 was filed about.
+#
+# Written as an env substitution with `.` as the default because coverage resolves a relative source against
+# each process's CWD, and the subprocesses the runner tests spawn all run with cwd=tmp_path - a bare `.`
+# there means "measure the temp directory", which silently measures nothing of ours. tests/conftest.py sets
+# the variable to the repo root when, and only when, it is propagating coverage into those children; a
+# plain `coverage run` from the repo root is unaffected and still gets `.`.
+source = ${SIDEWALK_COVERAGE_ROOT-.}
+
+# Branch coverage, not just lines. The motivating finding here was an `if` that only ever goes one way -
+# three of the log analyzer's six alert rules never fired in any test while every line around them was
+# green. It lowers the headline number; that is the point.
+branch = True
+
+# tests/test_download_runner.py and tests/test_crop_runner.py drive the runners as real subprocesses, and
+# tests/test_log_analyzer.py runs a copy of analyze.py the same way. pytest-cov starts coverage inside those
+# children via its own .pth; parallel keeps their data files from clobbering the parent's, and pytest-cov
+# combines them before reporting. Without it, main(), the argparse type= validators and the budget
+# carve-out all read as dead code and the number sends you off writing tests that already exist.
+parallel = True
+
+omit =
+    tests/*
+    # Study/report tooling: a large body of frozen one-off analysis, densely tested in its own right
+    # (tests/test_*_study.py, test_*_census.py, ...). Measuring it here would let the nightly scraper's
+    # number move several points without anyone seeing it.
+    reports/*
+    # A 2022 one-off from the depth-endpoint outage whose module scope opens files and writes CSVs at
+    # import. It cannot be imported, let alone measured.
+    flag_panos/*
+    # Builds the README's hero figure (assets/make_banner.py). Tooling about the repo rather than part
+    # of the scraper, tested in its own right by tests/test_make_banner.py, and averaging it in would
+    # move the production number for a reason no operator cares about.
+    assets/*
+    # Agent worktrees live under .claude/worktrees/<branch>/ inside the primary checkout - without this a
+    # `pytest --cov` run from there would walk a full second copy of the repo.
+    .claude/*
+    venv/*
+    .venv/*
+
+[report]
+show_missing = True
+precision = 1
+
+# exclude_also, not exclude_lines: exclude_lines REPLACES coverage's own default list (`# pragma: no
+# cover`), and silently dropping that default is exactly the quiet misconfiguration a gate exists to stop.
+exclude_also =
+    if __name__ == .__main__.:
+
+# A ratchet, not a target. It exists to catch a deleted test file or a new unmeasured module, not to turn
+# every PR into a coverage negotiation. Set from the measured number, never lowered, raised only by the PR
+# that earns it. 98 against a measured 99.4% on a Windows dev box - and 99.4% on CI too: three posix_only
+# file-mode assertions skip here and run there, so CI's figure is never the lower of the two, but they
+# assert modes on files other tests already wrote, so they reach no new lines and it is not higher either.
+# (The eight SIDEWALK_LIVE_TILE_TESTS skips are opt-in everywhere, CI included.)
+#
+# The remainder is enumerable rather than unknown, and nothing here carries a `# pragma: no cover`, because
+# a pragma is a claim:
+#   - gsv.py's `except ImportError` fallback for depth_min_request_interval. Real deployment behaviour (the
+#     scraper box carries local edits to config.py), but gsv uses relative imports, so it cannot be
+#     re-executed against a stub config the way analyze.py can.
+#   - gsv.py's `_get_response(stream=False)` arm: a dead affordance whose fix is deletion, not a test.
+#   - gsv.py's photometa early return for a message carrying no depth planes.
+#   - DownloadRunner's fallback_success counter arm: no code path in the suite produces that verdict.
+#   - three partial branches that need an input no caller produces - mapillary's falsy-chunk skip, and
+#     analyze.py's two loop guards.
+fail_under = 98
