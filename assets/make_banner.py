@@ -2,10 +2,11 @@
 """Regenerate `assets/banner.jpg`, the README's hero figure.
 
 The figure is the repo's own pipeline applied to committed sample data: the equirectangular panorama in
-`samples/sample_pano.jpg`, with the crop window that `CropRunner.predict_crop_size` +
+`samples/sample_pano.jpg`, with the crop window that `CropRunner.crop_window_width` +
 `CropRunner.compute_crop_box` produce for one label position drawn on it, beside the crop those functions
 actually cut. Nothing in it is mocked up - re-run this script and the numbers in the captions move with the
-code.
+code. It shows the window as cut, before `downscale_for_storage` caps it for disk: the figure is about the
+geometry, and that cap is a storage decision taken after the geometry is settled.
 
     python3 assets/make_banner.py
 
@@ -46,7 +47,10 @@ MUTED = (150, 156, 166)
 
 PAD = 22
 PANO_W, PANO_H = 1000, 500   # the pano is 2:1 by construction (equirectangular)
+# The crop panel is 3:2, matching CROP_ASPECT_W_OVER_H - the rule cuts by width and derives the height, so
+# the panel is derived the same way rather than hardcoded, and a change to the aspect moves both together.
 CROP_W = 400
+CROP_H = int(round(CROP_W / CropRunner.CROP_ASPECT_W_OVER_H))
 CAPTION_H = 30
 
 
@@ -77,12 +81,12 @@ def build(out_path=OUT_PATH):
     pano = Image.open(PANO_PATH).convert('RGB')
     pano_w, pano_h = pano.size
 
-    crop_size = CropRunner.predict_crop_size(LABEL_Y, pano_h)
+    crop_size = CropRunner.crop_window_width(LABEL_Y, pano_h)
     box = CropRunner.compute_crop_box(LABEL_X, LABEL_Y, crop_size, pano_w, pano_h)
-    crop = CropRunner.extract_crop(pano, box.left, box.top, box.size)
+    crop = CropRunner.extract_crop(pano, box.left, box.top, box.width, box.height)
 
     width = PAD + PANO_W + PAD + CROP_W + PAD
-    height = PAD + max(PANO_H, CROP_W) + CAPTION_H + PAD
+    height = PAD + max(PANO_H, CROP_H) + CAPTION_H + PAD
     banner = Image.new('RGB', (width, height), BG)
     draw = ImageDraw.Draw(banner)
 
@@ -91,7 +95,7 @@ def build(out_path=OUT_PATH):
     banner.paste(pano.resize((PANO_W, PANO_H), Image.LANCZOS), (PAD, PAD))
     sx, sy = PANO_W / pano_w, PANO_H / pano_h
     x0, y0 = PAD + box.left * sx, PAD + box.top * sy
-    x1, y1 = x0 + box.size * sx, y0 + box.size * sy
+    x1, y1 = x0 + box.width * sx, y0 + box.height * sy
     draw.rectangle([x0 - 3, y0 - 3, x1 + 3, y1 + 3], outline=BG, width=2)
     draw.rectangle([x0 - 1, y0 - 1, x1 + 1, y1 + 1], outline=ACCENT, width=2)
     # Crosshair on the label position itself: the window is centred on it, and that is the whole geometry.
@@ -101,21 +105,21 @@ def build(out_path=OUT_PATH):
 
     # Right panel: the crop those coordinates actually produce.
     crop_x, crop_y = PAD + PANO_W + PAD, PAD
-    draw.rectangle([crop_x - 2, crop_y - 2, crop_x + CROP_W + 1, crop_y + CROP_W + 1], fill=PANEL)
-    banner.paste(crop.resize((CROP_W, CROP_W), Image.LANCZOS), (crop_x, crop_y))
-    draw.rectangle([crop_x - 2, crop_y - 2, crop_x + CROP_W + 1, crop_y + CROP_W + 1], outline=ACCENT, width=2)
+    draw.rectangle([crop_x - 2, crop_y - 2, crop_x + CROP_W + 1, crop_y + CROP_H + 1], fill=PANEL)
+    banner.paste(crop.resize((CROP_W, CROP_H), Image.LANCZOS), (crop_x, crop_y))
+    draw.rectangle([crop_x - 2, crop_y - 2, crop_x + CROP_W + 1, crop_y + CROP_H + 1], outline=ACCENT, width=2)
     # No leader line between the two: any route from that window to this panel crosses the panorama itself.
     # The shared accent colour does the linking.
 
     small, small_b = _font(17), _font(17, bold=True)
-    cap_y = PAD + max(PANO_H, CROP_W) + 7
+    cap_y = PAD + max(PANO_H, CROP_H) + 7
 
     def caption(x, bold_part, rest):
         draw.text((x, cap_y), bold_part, font=small_b, fill=TEXT)
         draw.text((x + draw.textlength(bold_part + '  ', font=small_b), cap_y), rest, font=small, fill=MUTED)
 
     caption(PAD, 'DownloadRunner.py', f'stitched panorama - {pano_w} x {pano_h}')
-    caption(crop_x, 'CropRunner.py', f'crop - {box.size} px')
+    caption(crop_x, 'CropRunner.py', f'crop - {box.width} x {box.height} px')
 
     banner.save(out_path, quality=88, optimize=True, progressive=True)
     print(f'wrote {out_path}  ({banner.size[0]}x{banner.size[1]}, '

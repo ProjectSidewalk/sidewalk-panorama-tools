@@ -72,18 +72,27 @@ def test_it_does_not_write_to_the_committed_path_when_given_one(make_banner, tmp
 def test_the_committed_figure_is_not_stale(make_banner):
     """The geometry the committed image was drawn from, pinned to the label position the script uses.
 
-    This is the staleness guard: if predict_crop_size or compute_crop_box changes, assets/banner.jpg is now a
+    This is the staleness guard: if crop_window_width or compute_crop_box changes, assets/banner.jpg is now a
     picture of the old behaviour and the fix is to re-run `python3 assets/make_banner.py` and commit the
     result - not to edit these numbers.
+
+    Both sizing functions are pinned, not just the one the figure calls: predict_crop_size is the regression
+    on its own and crop_window_width is what the cropper actually cuts (scaled by CROP_SIZE_SCALE, clamped as
+    an angle). The figure draws the second. Pinning only that would let the 2.5x scale and the regression
+    move in opposite directions with the product unchanged, which is exactly the kind of drift a hero figure
+    should not be able to hide.
     """
     import CropRunner
 
     with Image.open(SAMPLE_PANO) as im:
         pano_w, pano_h = im.size
 
-    size = CropRunner.predict_crop_size(make_banner.LABEL_Y, pano_h)
-    box = CropRunner.compute_crop_box(make_banner.LABEL_X, make_banner.LABEL_Y, size, pano_w, pano_h)
+    predicted = CropRunner.predict_crop_size(make_banner.LABEL_Y, pano_h)
+    width = CropRunner.crop_window_width(make_banner.LABEL_Y, pano_h)
+    box = CropRunner.compute_crop_box(make_banner.LABEL_X, make_banner.LABEL_Y, width, pano_w, pano_h)
 
     assert (pano_w, pano_h) == (13312, 6656)
-    assert size == pytest.approx(398.2, abs=0.1)
-    assert (box.left, box.top, box.size, box.shifted) == (1405, 3554, 398, False)
+    assert predicted == pytest.approx(398.2, abs=0.1)
+    assert width == pytest.approx(995.4, abs=0.1)
+    # 3:2, per CROP_ASPECT_W_OVER_H - a square box here would mean the v1 rule came back.
+    assert (box.left, box.top, box.width, box.height, box.shifted) == (1106, 3422, 995, 663, False)
