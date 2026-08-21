@@ -86,6 +86,60 @@ class TestJpegDimensions:
         assert sc.jpeg_dimensions(path) == (640, 480)
 
 
+class TestJpegDimensionsSurvivesEveryMalformedHeader:
+    """The scanner walks arbitrary bytes, so each way out of its loop needs its own case.
+
+    Its contract is "return None rather than raise", and that wording is load-bearing rather than defensive
+    habit: every caller is a sweep over a whole store, so a path that raises takes the pass down at pano 1300
+    of 1400 instead of counting one file unreadable and moving on.
+
+    Written as literal bytes rather than by truncating a real JPEG, because each case has to reach one
+    specific branch and "cut a real file somewhere" reaches whichever branch the offset happens to land in.
+    """
+
+    # A minimal but well-formed SOF0: marker, length 17, 8-bit precision, height 400, width 800, 3 components.
+    SOF = b'\xff\xc0\x00\x11\x08\x01\x90\x03\x20\x03\x01\x11\x00\x02\x11\x01\x03\x11\x01'
+
+    def read(self, tmp_path, blob):
+        p = tmp_path / 'p.jpg'
+        p.write_bytes(blob)
+        return sc.jpeg_dimensions(str(p))
+
+    def test_junk_between_segments_is_stepped_over_to_the_next_marker(self, tmp_path):
+        """The resync loop. A byte that is not 0xFF where a marker was expected must be skipped, not read
+        as a marker - otherwise one stray byte turns an otherwise readable pano into a counted-corrupt one.
+        """
+        assert self.read(tmp_path, b'\xff\xd8' + b'stray bytes, no marker here' + self.SOF) == (800, 400)
+
+    def test_standalone_markers_carry_no_length_and_are_stepped_past(self, tmp_path):
+        """TEM (0x01) and the eight RST markers have no length field. Reading two bytes as a length there
+        would eat the start of the next segment and desynchronise every offset after it."""
+        assert self.read(tmp_path, b'\xff\xd8\xff\x01\xff\xd0\xff\xd7' + self.SOF) == (800, 400)
+
+    def test_a_marker_whose_length_field_is_not_in_the_file(self, tmp_path):
+        """Distinct from the committed b'\\xff\\xd8\\xff' case: there the marker byte itself never arrived,
+        here it did and its length field did not."""
+        assert self.read(tmp_path, b'\xff\xd8\xff\xc0') is None
+
+    def test_an_sof_body_truncated_before_the_dimensions(self, tmp_path):
+        """The length field promises 17 bytes and the file ends after two. Unpacking anyway is a
+        struct.error - the one way this function could still raise at a caller."""
+        assert self.read(tmp_path, b'\xff\xd8\xff\xc0\x00\x11\x08\x00') is None
+
+    def test_a_segment_declaring_an_impossible_length_does_not_rewind(self, tmp_path):
+        """seglen counts its own two bytes, so anything under 2 is nonsense. Seeking seglen - 2 on it would
+        move the cursor backwards and re-scan the same bytes forever."""
+        assert self.read(tmp_path, b'\xff\xd8\xff\xe0\x00\x00' + self.SOF) is None
+
+    def test_a_directory_where_a_file_was_expected_returns_none(self, tmp_path):
+        """The OSError arm, which a sweep hits for real: shard dirs sit beside the panos it walks. open()
+        on one raises IsADirectoryError on Linux and PermissionError on Windows - both OSError, which is why
+        the except names the base class rather than either leaf."""
+        d = tmp_path / 'shard.jpg'
+        d.mkdir()
+        assert sc.jpeg_dimensions(str(d)) is None
+
+
 class TestProbe:
 
     @staticmethod

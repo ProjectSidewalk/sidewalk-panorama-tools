@@ -43,7 +43,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
-| The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal, ledger semantics, and the recovery metric | `test_refetch_panos.py` |
+| The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal, ledger semantics, the recovery metric, and the CLI surface | `test_refetch_panos.py` |
 | The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
 | That the docs' internal links and anchors resolve, and that cited `docs/` paths exist | `test_docs.py` |
 | That the README's hero figure still builds against the current cropper, and isn't stale | `test_make_banner.py` |

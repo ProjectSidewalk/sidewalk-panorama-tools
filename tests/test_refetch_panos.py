@@ -14,6 +14,7 @@ The one place real bytes are used is the recovery measurement, which is pinned a
 import csv
 import gzip
 import json
+import logging
 import os
 import sys
 
@@ -166,6 +167,14 @@ class TestReadWorklist:
         path = self.write(tmp_path / 'w.csv', [',13312,6656', 'abc,13312,6656'])
 
         assert [r['pano_id'] for r in rp.read_worklist(path)] == ['abc']
+
+    def test_an_unparseable_dim_is_dropped_rather_than_failing_the_row(self, tmp_path):
+        """The dims are an optimisation - `decide_without_fetching` reads the real frame off the stored
+        file's header regardless. So a junk width costs this row its hint, not its repair; failing the
+        whole work-list over one bad cell would strand every panorama after it."""
+        path = self.write(tmp_path / 'w.csv', ['abc,wide,6656'])
+
+        assert rp.read_worklist(path) == [{'pano_id': 'abc', 'height': 6656}]
 
 
 class TestWalkStore:
@@ -776,3 +785,227 @@ class TestBandTableMatchesTheSweep:
             (bottom_top, bottom_end), (_h_top, horizon_end) = rp.band_pixel_rows(height)
             assert bottom_top == horizon_end
             assert bottom_end == height
+
+
+# --- the command line -------------------------------------------------------------------------------------
+#
+# Everything above drives refetch_store() and the decision functions directly, which is the right level for
+# the gates. It leaves the whole CLI surface - build_parser, configure_logging, _print_summary, main -
+# unexecuted by any test, and that is not a cosmetic gap on a tool of this shape: an operator only ever
+# reaches the gates THROUGH main, so a flag wired to the wrong keyword, or a default that does not match its
+# help text, produces a confident run that repairs the wrong thing. `main(argv)` exists precisely so this can
+# be driven in-process (#52.1); nothing here shells out.
+
+class TestTheCommandLineSurface:
+
+    def worklist(self, tmp_path, rows=(PANO + ',13312,6656',)):
+        path = tmp_path / 'work.csv'
+        path.write_text('pano_id,width,height\n' + '\n'.join(rows) + '\n', encoding='utf8')
+        return str(path)
+
+    def test_a_source_is_required(self, capsys):
+        """--worklist and --from-store are a required mutually exclusive group. Without the `required`,
+        a forgotten flag would walk nothing and report a clean run over zero panoramas."""
+        with pytest.raises(SystemExit) as excinfo:
+            rp.build_parser().parse_args(['/store'])
+
+        assert excinfo.value.code == 2
+        assert 'required' in capsys.readouterr().err
+
+    def test_the_two_sources_are_mutually_exclusive(self, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            rp.build_parser().parse_args(['/store', '--worklist', 'w.csv', '--from-store'])
+
+        assert excinfo.value.code == 2
+        assert 'not allowed with' in capsys.readouterr().err
+
+    def test_the_defaults_are_the_conservative_ones(self):
+        """Every default here is a refusal to do something surprising, so a silent change to one is a
+        behaviour change on a tool that overwrites irreplaceable imagery."""
+        args = rp.build_parser().parse_args(['/store', '--from-store'])
+
+        assert args.dry_run is False           # not a dry-run tool by default, but every gate still applies
+        assert args.allow_dims_change is False  # re-framing is a different decision from recovering detail
+        assert args.measure is False
+        assert args.sample is None and args.max_panos is None and args.max_runtime is None
+        assert args.min_pano_interval == 0.0
+        assert args.max_black == rp.MAX_BLACK_FRACTION
+        assert args.fixed_after == rp._parse_fixed_after(rp.DEFAULT_FIXED_AFTER)
+
+    def test_a_malformed_fixed_after_is_rejected_at_parse_time(self, capsys):
+        """--fixed-after decides which stored files are considered already repaired, so a value argparse
+        cannot read must stop the run rather than fall back to a default that sweeps the wrong set."""
+        with pytest.raises(SystemExit) as excinfo:
+            rp.build_parser().parse_args(['/store', '--from-store', '--fixed-after', '19th of August'])
+
+        assert excinfo.value.code == 2
+        assert 'YYYY-MM-DD' in capsys.readouterr().err
+
+    def test_a_missing_store_stops_before_anything_is_opened(self, tmp_path, monkeypatch):
+        no_seams(monkeypatch)
+
+        with pytest.raises(SystemExit) as excinfo:
+            rp.main([str(tmp_path / 'not-a-store'), '--from-store'])
+
+        assert 'No such store' in str(excinfo.value)
+
+    def test_a_dry_run_reports_and_writes_nothing(self, tmp_path, monkeypatch, capsys):
+        """The end-to-end path an operator uses first, through main rather than around it."""
+        no_seams(monkeypatch)
+        stored = store_with_pano(tmp_path)
+        before = open(stored, 'rb').read()
+
+        assert rp.main([str(tmp_path), '--worklist', self.worklist(tmp_path), '--dry-run']) == 0
+
+        out = capsys.readouterr().out
+        assert 'Considering 1 panorama(s)' in out
+        assert 'would_fetch' in out
+        assert open(stored, 'rb').read() == before
+        assert not os.path.exists(os.path.join(str(tmp_path), rp.LEDGER_FILENAME))
+
+    def test_from_store_walks_the_store_instead_of_a_worklist(self, tmp_path, monkeypatch, capsys):
+        no_seams(monkeypatch)
+        store_with_pano(tmp_path)
+
+        assert rp.main([str(tmp_path), '--from-store', '--dry-run']) == 0
+
+        assert 'Considering 1 panorama(s) from the store' in capsys.readouterr().out
+
+    def test_it_exits_zero_when_every_outcome_is_permanent(self, tmp_path, monkeypatch, capsys):
+        """`gone` and friends are this tool working correctly, not a failure - exiting nonzero on them
+        would make a cron run cry wolf for the expected case."""
+        no_seams(monkeypatch)
+        # No image on disk: `absent`, which is permanent and costs zero requests.
+        assert rp.main([str(tmp_path), '--worklist', self.worklist(tmp_path)]) == 0
+        assert 'absent' in capsys.readouterr().out
+
+    def test_it_exits_one_when_a_failure_was_transient(self, tmp_path, monkeypatch, capsys):
+        """The other half of the same rule: a transient failure is unledgered and will retry, so cron
+        should say something is wrong with the network or the store."""
+        store_with_pano(tmp_path)
+
+        def explode(pano_info):
+            raise OSError('connection reset')
+
+        stub_seams(monkeypatch, resolve=explode)
+
+        assert rp.main([str(tmp_path), '--worklist', self.worklist(tmp_path)]) == 1
+
+        out = capsys.readouterr().out
+        assert 'transient_failures' in out
+        assert 'no panorama was lost' in out
+
+    def test_the_summary_names_an_early_stop(self, capsys):
+        rp._print_summary({'replaced': 3, 'absent': 1, 'would_fetch': 2, 'skipped_ledgered': 4,
+                           'stop_reason': 'max-runtime'})
+
+        out = capsys.readouterr().out
+        assert 'replaced' in out and 'absent' in out
+        assert 'would_fetch' in out and 'skipped_ledgered' in out
+        assert 'stopped early: max-runtime' in out
+
+    def test_the_summary_omits_outcomes_that_did_not_happen(self, capsys):
+        """A column of zeroes reads as "we checked and it was fine" for gates that never ran."""
+        rp._print_summary({'replaced': 1})
+
+        out = capsys.readouterr().out
+        assert 'replaced' in out
+        assert 'too_black' not in out and 'frame_grew' not in out
+
+    def test_the_pano_interval_throttles_between_fetches(self, tmp_path, monkeypatch):
+        """One panorama is ~512 tile requests, so this is the only throttle that matters on a sweep that
+        would otherwise ask Google for 4.0M tiles as fast as it can. Asserted on the sleep that is
+        requested rather than by wall clock, so the test costs nothing and cannot flake."""
+        slept = []
+        monkeypatch.setattr(rp.time, 'sleep', slept.append)
+        store_with_pano(tmp_path, 'aaBBccDDeeFFggHHiiJJ')
+        store_with_pano(tmp_path, 'zzYYxxWWvvUUttSSrrQQ')
+        stub_seams(monkeypatch)
+
+        rp.refetch_store(str(tmp_path), rp.walk_store(str(tmp_path)), min_pano_interval=30)
+
+        # One gap for two panoramas: the interval is between fetch STARTS, so the first does not wait.
+        assert len(slept) == 1
+        assert 0 < slept[0] <= 30
+
+    def test_a_generous_runtime_budget_does_not_stop_the_run(self, tmp_path, monkeypatch):
+        """The other side of the max-runtime branch: a budget that is set but not spent must not read as
+        expired, or every budgeted run would repair exactly nothing and report a clean stop."""
+        store_with_pano(tmp_path)
+        stub_seams(monkeypatch)
+
+        counts = rp.refetch_store(str(tmp_path), rp.walk_store(str(tmp_path)), max_runtime_minutes=10_000)
+
+        assert counts['replaced'] == 1
+        assert not counts.get('stop_reason')
+
+    def test_a_ledger_it_cannot_chmod_is_still_written(self, tmp_path, monkeypatch):
+        """A concurrent run on the shared store may own the ledger file; their file, their modes. Losing
+        that race must not cost this run its record of what it just did."""
+        real_chmod = os.chmod
+
+        def refuse_only_the_ledger(path, mode, *args, **kwargs):
+            # Narrow on purpose: atomic_output_path chmods the swapped file too, and refusing that as well
+            # would make this pass for the wrong reason - the swap failing, not the chmod being tolerated.
+            if os.path.basename(str(path)) == rp.LEDGER_FILENAME:
+                raise OSError('not the owner')
+            return real_chmod(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(rp.os, 'chmod', refuse_only_the_ledger)
+        store_with_pano(tmp_path)
+        stub_seams(monkeypatch)
+
+        counts = rp.refetch_store(str(tmp_path), rp.walk_store(str(tmp_path)))
+
+        assert counts['replaced'] == 1
+        assert 'replaced' in (tmp_path / rp.LEDGER_FILENAME).read_text(encoding='utf8')
+
+    def test_an_unmeasurable_swap_still_happens(self, tmp_path, monkeypatch):
+        """measure_recovery returns None when the frame has no band to compare (an unrecognised height).
+        --measure is instrumentation, so a panorama it cannot measure must still be repaired - the
+        alternative silently narrows a pilot to the shapes the metric happens to understand."""
+        monkeypatch.setattr(rp, 'measure_recovery', lambda old, new: None)
+        stored = store_with_pano(tmp_path)
+        before = open(stored, 'rb').read()
+        stub_seams(monkeypatch)
+
+        counts = rp.refetch_store(str(tmp_path), rp.walk_store(str(tmp_path)), measure=True)
+
+        assert counts['replaced'] == 1
+        assert open(stored, 'rb').read() != before
+        assert not os.path.exists(os.path.join(str(tmp_path), rp.MEASUREMENTS_FILENAME))
+
+    def test_logging_lands_on_the_store_not_the_cwd(self, tmp_path):
+        """Same reason DownloadRunner puts scrape.log on the store: under cron the CWD is wherever the
+        process happened to start, which is nowhere anyone looks."""
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            rp.configure_logging(os.path.join(str(tmp_path), rp.LOG_FILENAME))
+            logging.error('a line that must be findable later')
+            for handler in root.handlers:
+                handler.flush()
+
+            assert 'findable later' in (tmp_path / rp.LOG_FILENAME).read_text(encoding='utf8')
+        finally:
+            for handler in list(root.handlers):
+                if handler not in before:
+                    handler.close()
+                    root.removeHandler(handler)
+
+    def test_an_unopenable_log_falls_back_to_stderr_rather_than_killing_the_run(self, tmp_path, capsys):
+        """A read-only store must not cost a repair pass. The warning has to reach stderr, though - a
+        silent fallback is how someone later concludes the run never happened."""
+        root = logging.getLogger()
+        before = list(root.handlers)
+        unopenable = tmp_path / 'refetch.log'
+        unopenable.mkdir()    # a directory where the handler wants a file
+        try:
+            rp.configure_logging(str(unopenable))
+
+            assert 'logging to stderr' in capsys.readouterr().err
+        finally:
+            for handler in list(root.handlers):
+                if handler not in before:
+                    handler.close()
+                    root.removeHandler(handler)
