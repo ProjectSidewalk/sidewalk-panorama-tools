@@ -1,4 +1,18 @@
 pytest>=7
+# Coverage is measured and gated in CI (#57); see .coveragerc. pytest-cov drives it; coverage is named
+# directly because the CI summary step calls `coverage report` on its own. >=7.4 for `exclude_also` (7.2)
+# and `coverage report --format=markdown` (7.0); tests/conftest.py relies on the .pth that ships with it to
+# reach the subprocesses the runner tests spawn.
+pytest-cov>=5
+coverage>=7.4
 # The reports/ figure generators, and tests/test_off_target_markers_figures.py which drives them.
 # Not in requirements.txt: nothing the scraper or cropper runs in production imports it.
 matplotlib>=3.5
+# The reports/scripts/ desk studies and log_analyzer/analyze.py. Moved out of requirements.txt by #72:
+# the three intakes that used it now read with csv/json, and its dtype inference was the direct cause of
+# #46 and #55. An ops box running only the log analyzer wants `pip3 install pandas`, not this whole file.
+#
+# 2.0 for to_datetime(format="ISO8601"): read_log needs it to parse a log.csv whose rows differ in
+# timestamp width without silently discarding every row of one width. Inference cannot - it locks onto
+# the first width it sees. So an ops box wants `pip3 install 'pandas>=2.0'` specifically.
+pandas>=2.0

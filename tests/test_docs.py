@@ -160,6 +160,22 @@ def test_every_docs_page_is_linked_from_the_readme(doc):
     assert f'docs/{doc}' in targets, f'docs/{doc} is not linked from README.md'
 
 
+def test_the_ops_log_csv_table_has_one_row_per_field():
+    """`docs/ops.md` is now the third copy of the `log.csv` column list, after `LOG_CSV_FIELD_COUNT` and the
+    analyzer's `LOG_COLUMNS` — and it is the copy an operator reads while deciding whether a run is broken.
+
+    The other two are pinned to each other by `test_log_analyzer`; this pins the prose to them. `log.csv` is
+    positional and headerless, so a table that has drifted by one row misnumbers every field after the drift
+    and there is nothing in the file itself to catch it against.
+    """
+    import DownloadRunner
+
+    with open(os.path.join(REPO_ROOT, 'docs', 'ops.md'), encoding='utf-8') as f:
+        numbers = [int(n) for n in re.findall(r'^\|\s*(\d+)\s*\|', f.read(), re.M)]
+
+    assert numbers == list(range(1, DownloadRunner.LOG_CSV_FIELD_COUNT + 1))
+
+
 @pytest.mark.parametrize('source', CITING_SOURCES)
 def test_docs_paths_cited_in_code_exist(source):
     # Asserted, not skipped: skipping on a missing file meant a rename silently retired the check instead of

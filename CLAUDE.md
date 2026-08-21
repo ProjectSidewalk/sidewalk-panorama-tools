@@ -44,6 +44,7 @@ Tests:
 ```bash
 pip3 install -r requirements.txt -r requirements-dev.txt
 python3 -m pytest tests
+python3 -m pytest tests --cov --cov-report=term-missing   # what CI reports and gates on
 ```
 
 CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10, the production baseline. There is no linter configured.
@@ -65,6 +66,12 @@ The README is a front door only; the reference material lives in `docs/` and eac
 
 `tests/test_docs.py` fails if a relative link or an anchor (cross-page **or** same-page) stops resolving, if a docs page is not linked from the README, or if a `docs/*.md` path cited in a Python comment **or in this file** goes missing — so the pointers above are checked, not decorative. Links are scanned over the joined page text, so one that hard-wraps across a newline is still checked.
 
+**Coverage** is configured in `.coveragerc` (#57) and gated by its `fail_under`. Three things about it are load-bearing and easy to break by "simplifying":
+
+- **The measured set is the production tree only** — the nine top-level/`downloaders/`/`log_analyzer/` modules. `reports/*` and `flag_panos/*` are omitted, the first because averaging a large body of frozen study tooling in would let the scraper's number move several points unnoticed, the second because its module scope writes files at import. `tests/test_coverage_config.py` asserts the resolved set exactly, so adding a module is a deliberate measure-or-omit decision.
+- **`source` is written as `${SIDEWALK_COVERAGE_ROOT-.}`, not `.`** — coverage resolves a relative source against each *process's* CWD, and the runner tests spawn subprocesses with `cwd=tmp_path`. `tests/conftest.py`'s `pytest_configure` sets that variable (plus `COVERAGE_PROCESS_START` and `COVERAGE_FILE`) only when the parent is itself being measured. Break any of the three and `main()`, the argparse `type=` validators and the budget carve-out all read as dead: `DownloadRunner.py` drops from 97.6% to 87.9% with nothing failing.
+- **`branch = True`** — the gap that motivated the gate was an `if` that only ever went one way (three of the log analyzer's six alert rules never fired while every line around them was green).
+
 ## Architecture
 
 `DownloadRunner.py` (#52) and `CropRunner.py` (#48) both follow the same extracted #52.1 shape: `build_parser()` / `configure_logging()` / `run(...)` / `main(argv=None)` behind an `if __name__ == '__main__'` guard, so **importing either has no side effects** and tests can drive the real flow in-process. (`tests/test_log_analyzer.py` still lifts `LOG_CSV_FIELD_COUNT` out of `DownloadRunner.py` with `ast`, but that is now just avoiding the import cost, not a workaround for a module-scope `parse_args`.) Per-source download logic lives in the `downloaders/` package, which is also safe to import.
@@ -84,8 +91,8 @@ The README is a front door only; the reference material lives in `docs/` and eac
 - `mapillary.py` resolves `thumb_original_url` via the Graph API and downloads it. Requires `MAPILLARY_ACCESS_TOKEN`.
 
 **CropRunner.py** — extracts per-label crops from downloaded panos.
-1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake additionally dtype-pins `pano_id` to `str` (the #46 bug class) and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
-2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 16384×8192 pano is ~250 MB decoded. Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, width, height, shifted)` centered at `(pano_x, pano_y)`, **3:2**, where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Width comes from `crop_window_width()` — **sizing rule v2**: `predict_crop_size()` normalised into the 6656-px frame its constants were fit on, ×`CROP_SIZE_SCALE`, clamped to `CROP_MIN_FOV_DEG`–`CROP_MAX_FOV_DEG` **as an angle** rather than as pixels. `downscale_for_storage()` then caps the cut window at `CROP_MAX_STORED_WIDTH` without ever upscaling it. Every constant is one measured number — see `reports/2026-08-19-crop-sizing-v2.md`; the residual (a y-only rule cannot know how large a ramp actually is) is RampNet #83.
+1. Loads label metadata from `/adminapi/labels/cvMetadata` (`-d`), or a `.csv`/`.json` file (`-f`, case-insensitive extension). Both intakes dedupe on `label_id`; the CSV intake reads with `csv.DictReader`, not pandas (#72), so no field's type can depend on what the values happen to look like (the #46 bug class), and requires `REQUIRED_LABEL_COLUMNS` up front, so a header typo is one error naming the file rather than a `KeyError` 200k labels in.
+2. Labels are **grouped by pano**, so each `<pano-dir>/<pano_id[:2]>/<pano_id>.jpg` is decoded exactly once for all its labels — a 13312×6656 pano is ~250 MB decoded and a 16384×8192 one 384 MB (`w × h × 3` bytes). Each label's window comes from `compute_crop_box()`: an integer `CropBox(left, top, width, height, shifted)` centered at `(pano_x, pano_y)`, **3:2**, where **x wraps at the equirectangular seam and y clamps by shifting**, so no crop ever contains synthetic black (#47). Width comes from `crop_window_width()` — **sizing rule v2**: `predict_crop_size()` normalised into the 6656-px frame its constants were fit on, ×`CROP_SIZE_SCALE`, clamped to `CROP_MIN_FOV_DEG`–`CROP_MAX_FOV_DEG` **as an angle** rather than as pixels. `downscale_for_storage()` then caps the cut window at `CROP_MAX_STORED_WIDTH` without ever upscaling it. Every constant is one measured number — see `reports/2026-08-19-crop-sizing-v2.md`; the residual (a y-only rule cannot know how large a ramp actually is) is RampNet #83.
    - **The rule version lives in the store, not in the run summary.** `write_rule_marker()` writes `<crop-dir>/crop_rule.json` (`CROP_RULE_VERSION` plus every constant) *before* cutting anything, and warns — never refuses — when it disagrees with what is there. A mixed store is the **ordinary** result of changing the rule, since existing crops are the resume marker and are never re-cut: run v2 over a v1 store and the new crops are 3:2 while the old stay square, with nothing on disk to say so. Stdout was where this used to go, which on a cron run is nowhere.
    - **`reports/scripts/crop_rule_v1.py` is the one frozen copy of the old rule**, used by the sizing study and by the two census tests whose reports were *measured* under v1. It is a record, not a rule anyone runs — the resolution defect in it is the subject of the v2 report and must not be "fixed".
 3. Two preflights skip a label rather than emit a quietly wrong crop: a metadata/image **dims mismatch** (`dims_mismatch`) and a `pano_y` **outside the image** (`out_of_frame`).
@@ -141,12 +148,23 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 
 ## Things that are easy to get wrong
 
+- **The three file intakes read with `csv`/`json`, and must not go back to pandas (#72).** `pandas` is a
+  dev/ops dependency now (`requirements-dev.txt`, for `log_analyzer/` and `reports/scripts/`), and a test
+  asserts no production module imports it. The battery in `tests/test_csv_intake.py` was **measured**
+  against `pd.read_csv` before the swap, and three of those measurements are the reason it happened: a row
+  with **one surplus field** made pandas consume the first column as the frame's index, so every field
+  shifted and the real `pano_id` vanished — silently; **`has_labels` had no fixed type** (bool, int64,
+  float64, or `str` for junk *and* for `' True '` with padding), and `select_image_panos` is a plain
+  truthiness test, so the `str` cases silently defeated `--all-panos`; and **one blank cell retyped a whole
+  column**, so a single missing `width` made every other row's width a float and the blank itself a `NaN`
+  that `gsv`'s `is not None` guard cannot see. Blank cells become `None` in `DownloadRunner` and stay `''`
+  in `CropRunner` — deliberate, and explained at both seams.
 - **`print` and `logging` are two channels with different jobs — do not "unify" them.** `print` is the
   operator-facing run narrative and the warnings **cron mails**; `logging` is the durable per-item detail in
   `scrape.log` / `crop.log`. **A warning that matters goes to both**, which is the depth phase's pattern
   (`logging.error(...)` then `print(...)`), because stdout is how someone hears about it tonight and the log
   is what is still there next week. #52 item 6 read the mixture as inconsistency; it is mostly deliberate,
-  README leans on a `WARNING` reaching cron mail, and ~15 tests assert on `capsys`. A print-to-logging sweep
+  `docs/downloader.md` leans on a `WARNING` reaching cron mail, and ~15 tests assert on `capsys`. A print-to-logging sweep
   would break all three. The one real violation — `filter_supported_sources` warning on stdout only — is
   fixed; `caplog` assertions now sit beside its `capsys` ones so a revert fails.
 - **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in `docs/ops.md`; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
@@ -284,7 +302,7 @@ See `docs/api-fields.md` for the full field glossary for `/adminapi/panos` and `
 
 ## Other directories
 
-- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), the README's hero figure (`test_make_banner.py`), and the `fover` repair pass (`test_refetch_panos.py`: the decision table, the byte-for-byte survival of every refusal, ledger semantics, and the recovery metric against the committed tile pair), the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed.
+- `tests/` — pytest suite (network-free; `streetlevel` is stubbed). Covers the depth phase, the `log.csv` contract, the log analyzer, the depth migrator, the docs' internal links (`test_docs.py`), the README's hero figure (`test_make_banner.py`), the three file intakes as one contract (`test_csv_intake.py`), the `fover` repair pass (`test_refetch_panos.py`: the decision table, the byte-for-byte survival of every refusal, ledger semantics, and the recovery metric against the committed tile pair), and the cropper (`test_crop_runner.py`: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins). `test_streetlevel_api.py` imports the real `streetlevel` to pin API details and skips itself if it isn't installed. `test_coverage_config.py` pins `.coveragerc` itself — the measured set, and the settings whose loss shows up as a lower number rather than an error.
 - `log_analyzer/` — the log analyzer plus `cities.csv`; `log_analyzer/logs/` is a gitignored local cache.
 - `flag_panos/` — one-off web tool (HTML/JS) from the 2022 depth-endpoint outage. Not wired into the Python scripts; keep unless asked.
 - `samples/` — reference CSV/JSON/XML and a sample pano+crop used for manual testing and as examples for the `-c`/`-f` flags.

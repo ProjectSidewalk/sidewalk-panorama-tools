@@ -81,8 +81,10 @@ relevant `docs/` page need the edit.
 
 * **Multi-core cropping.** `CropRunner.py` runs on a single core. Most machines have more, and cropping tens
   of thousands of objects is embarrassingly parallel per pano.
-* **A resolution-independent crop-size formula** ([#32](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/32)) —
-  the deployed one has a pixel-linear distance term that inflates crops on tall panos; measured in
-  [reports/2026-08-09-clamp-census.md](reports/2026-08-09-clamp-census.md).
+* **A better distance estimator for `predict_crop_size`** ([#32](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/32)).
+  Sizing rule v2 made the *window* resolution-independent by normalising into the frame the 2013 constants
+  were fit on and clamping as an angle ([the v2 report](reports/2026-08-19-crop-sizing-v2.md)), but the
+  estimator underneath is still pano-y → distance → size, and a y-only rule cannot know how large the
+  referent actually is. That residual is the open part.
 
 Browse the [open issues](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues) for the rest.

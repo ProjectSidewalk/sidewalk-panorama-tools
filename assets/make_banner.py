@@ -5,8 +5,9 @@ The figure is the repo's own pipeline applied to committed sample data: the equi
 `samples/sample_pano.jpg`, with the crop window that `CropRunner.crop_window_width` +
 `CropRunner.compute_crop_box` produce for one label position drawn on it, beside the crop those functions
 actually cut. Nothing in it is mocked up - re-run this script and the numbers in the captions move with the
-code. It shows the window as cut, before `downscale_for_storage` caps it for disk: the figure is about the
-geometry, and that cap is a storage decision taken after the geometry is settled.
+code. The window is 3:2 because the cropper's is: the right-hand panel takes its aspect from
+`CropRunner.CROP_ASPECT_W_OVER_H` rather than hardcoding one, so a change to the rule reshapes the figure
+instead of quietly letterboxing the crop inside a stale panel.
 
     python3 assets/make_banner.py
 
@@ -47,10 +48,8 @@ MUTED = (150, 156, 166)
 
 PAD = 22
 PANO_W, PANO_H = 1000, 500   # the pano is 2:1 by construction (equirectangular)
-# The crop panel is 3:2, matching CROP_ASPECT_W_OVER_H - the rule cuts by width and derives the height, so
-# the panel is derived the same way rather than hardcoded, and a change to the aspect moves both together.
 CROP_W = 400
-CROP_H = int(round(CROP_W / CropRunner.CROP_ASPECT_W_OVER_H))
+CROP_H = round(CROP_W / CropRunner.CROP_ASPECT_W_OVER_H)   # 3:2, from the cropper's own constant
 CAPTION_H = 30
 
 
@@ -81,8 +80,8 @@ def build(out_path=OUT_PATH):
     pano = Image.open(PANO_PATH).convert('RGB')
     pano_w, pano_h = pano.size
 
-    crop_size = CropRunner.crop_window_width(LABEL_Y, pano_h)
-    box = CropRunner.compute_crop_box(LABEL_X, LABEL_Y, crop_size, pano_w, pano_h)
+    crop_width = CropRunner.crop_window_width(LABEL_Y, pano_h)
+    box = CropRunner.compute_crop_box(LABEL_X, LABEL_Y, crop_width, pano_w, pano_h)
     crop = CropRunner.extract_crop(pano, box.left, box.top, box.width, box.height)
 
     width = PAD + PANO_W + PAD + CROP_W + PAD
@@ -104,7 +103,10 @@ def build(out_path=OUT_PATH):
         draw.line([(lx + dx * 4, ly + dy * 4), (lx + dx * 9, ly + dy * 9)], fill=ACCENT, width=2)
 
     # Right panel: the crop those coordinates actually produce.
-    crop_x, crop_y = PAD + PANO_W + PAD, PAD
+    # Centred against the pano panel rather than top-aligned: a 3:2 crop is shorter than the 2:1 pano, and
+    # hanging it from the top leaves the dead space in one lump at the bottom.
+    crop_x = PAD + PANO_W + PAD
+    crop_y = PAD + (max(PANO_H, CROP_H) - CROP_H) // 2
     draw.rectangle([crop_x - 2, crop_y - 2, crop_x + CROP_W + 1, crop_y + CROP_H + 1], fill=PANEL)
     banner.paste(crop.resize((CROP_W, CROP_H), Image.LANCZOS), (crop_x, crop_y))
     draw.rectangle([crop_x - 2, crop_y - 2, crop_x + CROP_W + 1, crop_y + CROP_H + 1], outline=ACCENT, width=2)
@@ -124,7 +126,7 @@ def build(out_path=OUT_PATH):
     banner.save(out_path, quality=88, optimize=True, progressive=True)
     print(f'wrote {out_path}  ({banner.size[0]}x{banner.size[1]}, '
           f'{os.path.getsize(out_path) / 1024:.0f} KB)\n'
-          f'  label ({LABEL_X}, {LABEL_Y}) -> predicted {crop_size:.1f} px -> {box}')
+          f'  label ({LABEL_X}, {LABEL_Y}) -> window {crop_width:.1f} px wide -> {box}')
 
 
 if __name__ == '__main__':

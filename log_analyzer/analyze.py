@@ -152,8 +152,20 @@ def read_log(log_path: Path) -> pd.DataFrame:
         log_path,
         header=0 if has_header else None,
         names=LOG_COLUMNS,
-        parse_dates=["start_time"],
     )
+
+    # Parsed here rather than with read_csv's parse_dates=, which gives up on a column it cannot read
+    # *uniformly* and hands back the raw strings - no exception, no NaT. The notna() filter below then keeps
+    # the junk, and analyze_city dies on `.dt` a few lines later with "Can only use .dt accessor with
+    # datetimelike values". main() has no per-city try/except, so one bad row ends the report for every city
+    # after it, and those cities stop being monitored with nothing to say so.
+    #
+    # format="ISO8601" rather than leaving pandas to infer: str(datetime.now()) omits the ".ffffff" when the
+    # microsecond lands on exactly 0, so a long-lived log holds both widths eventually. Inference locks onto
+    # the first width it sees and coerces every row of the other one to NaT - silently discarding real runs,
+    # which is worse than the crash it replaces. ISO8601 accepts both, and coerces only genuine garbage.
+    df["start_time"] = pd.to_datetime(df["start_time"], errors="coerce", format="ISO8601")
+
     # A run whose timestamp is unparseable can't be placed in time; nothing below can use it.
     df = df[df["start_time"].notna()]
     return df.sort_values("start_time").reset_index(drop=True)
@@ -321,7 +333,13 @@ def city_stats(df: pd.DataFrame) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def main(argv=None) -> int:
+    """Download (unless --no-download), analyze every city, print the report; return the process exit code.
+
+    Takes argv and returns a status rather than calling sys.exit, so the whole report can be driven in a
+    test - the same shape CropRunner and migrate_depth_artifacts already use. The usage errors below stay as
+    sys.exit(str): that prints the message to stderr and exits 1, which a return value cannot do.
+    """
     parser = argparse.ArgumentParser(
         description="Download and analyze scraper logs for all cities.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -345,7 +363,7 @@ def main() -> None:
     conn.add_argument("--user", help="SSH user; omit if the ssh config supplies it. [PS_SFTP_USER]")
     conn.add_argument("--port", help="SSH port; omit for 22. [PS_SFTP_PORT]")
     conn.add_argument("--key", help="Identity file; omit to let ssh choose. [PS_SFTP_KEY]")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     sftp = resolve_sftp(args) if args.download else None
 
@@ -417,10 +435,10 @@ def main() -> None:
     print(f"  ✅ OK       : {ok_count:>3}")
     print(f"{'━'*70}\n")
 
-    # Exit with non-zero status if there are critical issues (useful for cron/CI)
-    if critical:
-        sys.exit(1)
+    # Non-zero status if there are critical issues - this is what cron's mail-on-failure keys on, and for
+    # most of the fleet it is the only thing that ever reports a city going dark.
+    return 1 if critical else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -11,10 +11,10 @@ traceback naming one filename and neither the city nor the directory it had look
 """
 
 import argparse
+import csv
+import json
 import os
 import sys
-
-import pandas as pd
 
 # The two artifacts the web tool produces. Suffixes, not whole names, because the city is a parameter now.
 INPUT_SUFFIXES = ('_pano_image_data', '_unretrievable_panos')
@@ -43,12 +43,29 @@ def convert(directory, city):
             continue
         csv_path = os.path.join(directory, '%s%s.csv' % (city, suffix))
         with open(json_path, encoding='utf-8') as f:
-            df = pd.read_json(f)
-        # index=False: pandas would otherwise write a nameless leading index column, shifting every field by
-        # one for anything reading the result positionally.
-        df.to_csv(csv_path, encoding='utf-8', index=False)
+            records = json.load(f)
+        write_csv(csv_path, records)
         written.append(csv_path)
     return written
+
+
+def write_csv(csv_path, records):
+    """Write a list of dicts as a CSV whose columns are the union of their keys, in first-seen order.
+
+    The union, rather than the first record's keys, because the web tool writes one object shape per file
+    today but nothing enforces that, and a DictWriter fed a key it doesn't know about raises.
+
+    Written with csv rather than pandas (#72), which had two failure modes here. read_json inferred each
+    column's type from the values, so one record missing `image_width` retyped the whole column and the
+    records that did carry 16384 were written as 16384.0; and an all-numeric pano_id column inferred int64
+    (the #46 class - this site never had the dtype pin the two runners did). newline='' because the writer
+    emits \\r\\n itself, and letting the file object translate that again doubles every line ending.
+    """
+    fieldnames = list(dict.fromkeys(key for record in records for key in record))
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
 
 
 def main(argv=None):

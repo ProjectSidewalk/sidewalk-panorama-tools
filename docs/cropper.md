@@ -1,7 +1,7 @@
 # Cropper — `CropRunner.py`
 
-Cuts one image per Project Sidewalk label out of the downloaded panoramas: a 3:2 window centered on the
-label, sized by an estimated camera-to-label distance, written to `<crop-dir>/<label_type_id>/<label_id>.jpg`.
+Cuts one image per Project Sidewalk label out of the downloaded panoramas: **3:2**, centered on the label,
+sized by an estimated camera-to-label distance, written to `<crop-dir>/<label_type_id>/<label_id>.jpg`.
 
 `CropRunner.py` still works but is being replaced, so bugs may linger longer here than in the downloader.
 Consumer requirements and the open geometry questions are tracked in
@@ -18,7 +18,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 |---|---|
 | `-d <fqdn>` | Fetch label metadata from a Project Sidewalk server's `/adminapi/labels/cvMetadata`. Mutually exclusive with `-f`; one is required. |
 | `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. |
-| `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`. |
+| `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
 | `-o <dir>` | **Required.** Where crops are written. `crop.log` goes here too. |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
 
@@ -29,15 +29,40 @@ python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu \
   -s /sidewalk/columbus/panos/ -o /sidewalk/columbus/crops/
 ```
 
-Both intakes dedupe on `label_id`, and the CSV intake dtype-pins `pano_id` to `str` and checks the required
-columns up front — so a header typo is one error naming the file, not a `KeyError` 200k labels in. Labels are
-grouped by pano so each pano JPEG is decoded exactly once for all of its labels.
+Both paths used to have defaults — `/crops/` and `/tmp/download_dest/`, the filesystem root and a Docker-only
+scratch path — so forgetting one wrote an ML training corpus somewhere nobody would look for it. Since
+[#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) a missing flag is an argparse
+error naming it.
+
+Both intakes dedupe on `label_id`, and the CSV intake reads with `csv.DictReader` rather than pandas
+([#72](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/72)), so no field's type depends on
+what the values happen to look like — the inference that gave an all-numeric Mapillary `pano_id` column
+`int64` and crashed every shard slice. It checks the required columns up front, so a header typo is one error
+naming the file, not a `KeyError` 200k labels in. Labels are grouped by pano so each pano JPEG is decoded
+exactly once for all of its labels.
 
 ## Crop geometry
 
-Crop size comes from `predict_crop_size()`, an experimentally fit formula mapping pano-y to distance to crop
-size, clamped to `[50, 1500]` px. The window itself comes from `compute_crop_box()`, an integer
-`CropBox(left, top, size, shifted)`:
+Crops are **3:2** (`CROP_ASPECT_W_OVER_H = 1.5`), and their width comes from `crop_window_width()` —
+**sizing rule v2**. `predict_crop_size()`, the experimentally fit formula mapping pano-y to distance to crop
+size, is evaluated in the 6656-px pano height its constants were fit on, scaled back into the pano's own
+pixels, scaled up by `CROP_SIZE_SCALE = 2.5`, and clamped to `CROP_MIN_FOV_DEG = 8°`–`CROP_MAX_FOV_DEG = 90°`
+**as an angle** rather than as pixels. `downscale_for_storage()` then caps what is written at
+`CROP_MAX_STORED_WIDTH = 1440` px, never upscaling.
+
+Under v1 the formula was fed native pixels and clamped in pixels, so the same ramp asked for a window
+1.86–4.09× different depending only on the panorama's resolution — and the largest panoramas got the
+tightest crops. Every v2 constant is one measured number:
+[reports/2026-08-19-crop-sizing-v2.md](../reports/2026-08-19-crop-sizing-v2.md).
+
+**Which rule cut a store is recorded in `<crop-dir>/crop_rule.json` — check it before training on a
+directory.** `write_rule_marker()` writes `CROP_RULE_VERSION` plus every constant before anything is cut, and
+*warns* rather than refusing when the marker disagrees with the running rule. A mixed store is the ordinary
+result of changing the rule: existing crops are the resume marker and are never re-cut, so running v2 over a
+v1 store leaves square v1 crops accreting 3:2 ones beside them. Deleting the store is the only way to get one
+geometry throughout.
+
+The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top, width, height, shifted)`:
 
 * **x wraps at the equirectangular seam.** The left and right image edges are the same place in the world, so
   a window overlapping the seam is assembled from both edges. In a six-city census of 438,410 labels, 1.52%

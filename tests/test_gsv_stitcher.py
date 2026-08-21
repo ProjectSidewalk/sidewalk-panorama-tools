@@ -903,3 +903,111 @@ class TestFrameCoversPano:
         monkeypatch.setattr(gsv, '_get_response', lambda url, session, stream=False: BytesIO(edge))
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
+
+class TestTheTileFanOutContract:
+    """`_download_tiles` itself - the aiohttp session and gather that every stitch runs through.
+
+    Everything else in this file stubs it out, so its own three promises had nothing holding them: the
+    concurrency cap comes from config, failures arrive as objects rather than propagating, and results stay
+    in the order they were asked for. The last two are what `_partition_tile_results` is built on (#45), and
+    the first is the only thing bounding how hard the fleet hits Google.
+    """
+
+    @pytest.fixture
+    def fake_aiohttp(self, monkeypatch):
+        """Stand-ins for TCPConnector and ClientSession that record their construction and open no socket."""
+        built = {}
+
+        class FakeConnector:
+            def __init__(self, limit=None):
+                built['limit'] = limit
+                built['connector_built'] = self
+
+        class FakeClientSession:
+            def __init__(self, raise_for_status=None, connector=None):
+                built['raise_for_status'] = raise_for_status
+                built['connector'] = connector
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', FakeConnector)
+        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
+        return built
+
+    @staticmethod
+    def stub_tile_fetch(monkeypatch, outcomes):
+        """Answer each (x, y, url) from `outcomes`, keyed by x. An Exception value is raised, not returned.
+
+        _download_tile is patched, not _fetch_tile: the backoff wrapper is built at import time and closed
+        over the original function, so patching _fetch_tile would leave the real one running (and retrying).
+        """
+        async def fake_download_tile(session, tile):
+            x, y, _url = tile
+            outcome = outcomes[x]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return (x, y, outcome)
+
+        monkeypatch.setattr(gsv, '_download_tile', fake_download_tile)
+
+    def tiles(self, count):
+        return [(x, 0, 'https://example.invalid/tile?x=%d' % x) for x in range(count)]
+
+    def test_the_connector_carries_the_configured_concurrency_cap(self, monkeypatch, fake_aiohttp):
+        """gsv binds thread_count by value at import (`from config import ...`), so the patch point is
+        gsv.thread_count - patching config.thread_count changes nothing here."""
+        monkeypatch.setattr(gsv, 'thread_count', 3)
+        self.stub_tile_fetch(monkeypatch, {0: b'a', 1: b'b'})
+
+        asyncio.run(gsv._download_tiles(self.tiles(2)))
+
+        assert fake_aiohttp['limit'] == 3
+        assert fake_aiohttp['raise_for_status'] is True
+        # The capped connector is the one the session actually got - built and then not passed would leave
+        # the fan-out running on aiohttp's default limit of 100.
+        assert fake_aiohttp['connector'] is fake_aiohttp['connector_built']
+
+    def test_results_come_back_in_the_order_they_were_requested(self, monkeypatch, fake_aiohttp):
+        """_partition_tile_results zips the request list against this one, so position is what pairs a
+        failure with its grid cell. A successful tile carries its own (x, y) and would still paste in the
+        right place, but a failed one would be reported at another cell's coordinates - and those
+        coordinates are the whole content of the scrape.log line an operator has to act on.
+
+        asyncio.gather promises this; the test is here because _download_tiles is free to stop using it.
+        """
+        self.stub_tile_fetch(monkeypatch, {0: b'zero', 1: b'one', 2: b'two'})
+
+        results = asyncio.run(gsv._download_tiles(self.tiles(3)))
+
+        assert results == [(0, 0, b'zero'), (1, 0, b'one'), (2, 0, b'two')]
+
+    def test_a_failing_tile_arrives_as_an_object_and_the_rest_survive(self, monkeypatch, fake_aiohttp):
+        """The #45 invariant, at its own seam. One tile raising must not abort the gather: 511 good tiles
+        would be discarded and the pano retried in full, every night, for one bad cell.
+        """
+        boom = aiohttp.ClientError('tile 1 died')
+        self.stub_tile_fetch(monkeypatch, {0: b'zero', 1: boom, 2: b'two'})
+        tiles = self.tiles(3)
+
+        results = asyncio.run(gsv._download_tiles(tiles))
+
+        assert results[0] == (0, 0, b'zero')
+        assert results[2] == (2, 0, b'two')
+        assert results[1] is boom, 'the exception must be a value in the list, not raised'
+
+        # ... and the partitioner downstream reads it as a failure at the right cell rather than as a tile.
+        ok, failed = gsv._partition_tile_results(tiles, results)
+        assert [x for x, _y, _data in ok] == [0, 2]
+        assert failed == [((1, 0), boom)]
+
+
+class TestAnEmptyFanOutStillHasACellSize:
+
+    def test_no_tiles_yields_the_nominal_tile_size(self):
+        """`max()` over an empty sequence raises, which would turn a zero-tile fan-out from "mostly black,
+        refused by the black guard" into an unexplained ValueError with no pano id attached."""
+        assert gsv._stitch_cell_size([]) == (gsv.TILE_SIZE, gsv.TILE_SIZE)
