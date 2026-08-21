@@ -5,4 +5,8 @@ matplotlib>=3.5
 # The reports/scripts/ desk studies and log_analyzer/analyze.py. Moved out of requirements.txt by #72:
 # the three intakes that used it now read with csv/json, and its dtype inference was the direct cause of
 # #46 and #55. An ops box running only the log analyzer wants `pip3 install pandas`, not this whole file.
-pandas>=1.2.3
+#
+# 2.0 for to_datetime(format="ISO8601"): read_log needs it to parse a log.csv whose rows differ in
+# timestamp width without silently discarding every row of one width. Inference cannot - it locks onto
+# the first width it sees. So an ops box wants `pip3 install 'pandas>=2.0'` specifically.
+pandas>=2.0
