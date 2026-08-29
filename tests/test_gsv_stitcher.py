@@ -12,6 +12,7 @@ import aiohttp
 import numpy as np
 import pytest
 from PIL import Image
+from requests.adapters import HTTPAdapter
 
 from downloaders import gsv
 from downloaders.common import DownloadResult
@@ -784,3 +785,45 @@ class TestAnEmptyFanOutStillHasACellSize:
         """`max()` over an empty sequence raises, which would turn a zero-tile fan-out from "mostly black,
         refused by the black guard" into an unexplained ValueError with no pano id attached."""
         assert gsv._stitch_cell_size([]) == (gsv.TILE_SIZE, gsv.TILE_SIZE)
+
+
+class TestRequestSessionCannotHangForever:
+    """The image path's session, which the zoom probes ride on (#65 item 5).
+
+    `requests` applies NO default timeout, so a hung connection here stalls a nightly cron run
+    indefinitely - not for a long time, forever. The depth phase fixed exactly this hazard for itself with
+    _TimeoutHTTPAdapter; the image path never got it, even though the zoom probe runs once per pano
+    (~183k times a night on Seattle alone).
+
+    The tile fan-out is not exposed the same way - aiohttp's ClientSession carries its own default total
+    timeout - so the probe is the whole of it.
+    """
+
+    def test_mounts_the_timeout_adapter_on_both_schemes(self):
+        session = gsv._request_session()
+        for prefix in ('http://', 'https://'):
+            adapter = session.get_adapter(prefix + 'example.com')
+            assert isinstance(adapter, gsv._TimeoutHTTPAdapter)
+
+    def test_keeps_the_retry_policy_it_already_had(self):
+        """The timeout is additive: #65 item 5 is about a missing timeout, not about retries."""
+        adapter = gsv._request_session().get_adapter('https://example.com')
+        assert adapter.max_retries.total == 5
+        assert adapter.max_retries.connect == 5
+        assert 429 in adapter.max_retries.status_forcelist
+
+    def test_the_mounted_adapter_actually_injects_a_timeout(self, monkeypatch):
+        """Behavioural, not just isinstance: a mounted adapter configured `timeout=None` would satisfy the
+        type check and still hang. Session.send always passes timeout explicitly, as None when the caller
+        set nothing, which is exactly what _get_response does."""
+        captured = {}
+
+        def fake_send(self, request, **kwargs):
+            captured.update(kwargs)
+            return 'response'
+
+        monkeypatch.setattr(HTTPAdapter, 'send', fake_send)
+        adapter = gsv._request_session().get_adapter('https://example.com')
+        adapter.send('request', timeout=None)
+        assert captured['timeout'] is not None
+        assert captured['timeout'] > 0
