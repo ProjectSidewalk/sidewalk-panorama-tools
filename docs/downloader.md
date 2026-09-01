@@ -122,6 +122,29 @@ user@store.example.edu:/panos  /mnt/panostore  fuse.sshfs
     _netdev,IdentityFile=/root/.ssh/id_rsa,reconnect,ServerAliveInterval=15,allow_other  0 0
 ```
 
+A systemd `.mount` unit is the version running in production since 2026-09-01. The unit's filename must match
+the mount point (`/mnt/panostore` becomes `mnt-panostore.mount`) or systemd refuses it, and `allow_other` needs
+`user_allow_other` uncommented in `/etc/fuse.conf`. systemd mounts as root, so the key and the host's
+`known_hosts` entry have to be readable by root, not just by the cron user; `uid=`/`gid=` then hand the files to
+whoever cron runs as:
+
+```ini
+[Unit]
+Description=Pano store (sshfs)
+After=network-online.target
+Wants=network-online.target
+
+[Mount]
+What=user@store.example.edu:/panos
+Where=/mnt/panostore
+Type=fuse.sshfs
+Options=_netdev,IdentityFile=/root/.ssh/id_rsa,port=22,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,allow_other,default_permissions,uid=1000,gid=1000
+TimeoutSec=90
+
+[Install]
+WantedBy=multi-user.target
+```
+
 A store that is unmounted or full shows up as counted, retried per-pano failures — never as a crash and never
 as a ledgered permanent verdict — so the next run picks the work back up once the mount is fixed. The depth
 phase's circuit breaker prints the failure breakdown by cause, which is how you tell a full disk from Google
@@ -140,6 +163,14 @@ To migrate: create the venv as above, mount the store on the host, replace each 
 the form above, and drop the `id_rsa` that used to be baked into the image. Flags and semantics are unchanged.
 Nothing about the store's on-disk layout changes, so a store the image has been writing to since 2022 is
 picked up as-is.
+
+**Done on the production box 2026-09-01**, and two things about it are worth passing on. The old host could not
+be migrated in place — its Python was 3.5 and the image's was 3.8, so both were below this page's 3.10 baseline
+and the move had to be to a new machine rather than a new virtualenv. And the per-flag promise above held, but
+the *sizing* did not transfer: the retired crontab gave every city `--max-runtime 1320` on a 15-minute stagger,
+which is harmless only while runs finish in seconds because they have nothing to download. Re-check
+`--max-runtime` against the slot spacing when a run starts doing real work, rather than copying the old numbers
+across.
 
 ## Imagery sources
 
