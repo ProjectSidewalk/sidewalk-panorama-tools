@@ -195,12 +195,20 @@ class TestMapillaryTransientConditions:
     """These are properties of the RUN. Returning failure would ledger them permanently - an expired token
     for one night would blacklist every Mapillary pano in the city - so they must raise instead (#41)."""
 
-    # 400 is not hypothetical. richmond-va's token stopped working and graph.mapillary.com answered every
-    # request with one; the pre-#41 code ledgered each as permanent, writing off 162 panos as "Mapillary has
-    # no image" and never re-attempting them. Recovering them meant hand-editing pano_id_log.csv on the store
-    # (2026-09-01). The status the incident actually produced was the one status this list omitted, so it is
-    # first here.
-    @pytest.mark.parametrize('status', [400, 401, 403, 500])
+    # Only 404 is permanent; every other non-200 must raise. Parametrised over a SPREAD rather than the
+    # statuses we happen to have seen, because the last gap here was exactly that kind of omission. The list
+    # was [401, 403, 500] on the reasoning that those are what a bad token produces; when richmond-va's token
+    # stopped working, graph.mapillary.com answered 400 - the one status not covered. The code deployed then
+    # predated this contract and ledgered any non-200 as permanent, so it wrote off 162 panos as "Mapillary
+    # has no image" (161 of them wrongly - the 162nd was an id that had since left the corpus). The city sat
+    # at 21 of 182 until pano_id_log.csv was hand-edited on the store (2026-09-01), because replacing the
+    # token recovered nothing on its own. Pinning the rule rather than the observed instances is what stops
+    # the next unanticipated status - 402, 410, 451 - from being another gap.
+    #
+    # 500 is a contract case, not a wire case: _session()'s status_forcelist retries 429/500/502/503/504, so
+    # in production those surface as RetryError rather than HTTPError. FakeSession bypasses the adapter.
+    # 400/401/403 are the ones that reach raise_for_status() for real.
+    @pytest.mark.parametrize('status', [400, 401, 402, 403, 410, 422, 451, 500])
     def test_metadata_http_errors_raise(self, monkeypatch, tmp_path, mapillary_token, status):
         monkeypatch.setattr(downloaders.mapillary, '_session',
                             lambda: FakeSession(FakeResponse(status_code=status)))
