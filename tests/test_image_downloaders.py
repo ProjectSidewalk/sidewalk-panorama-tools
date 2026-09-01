@@ -195,7 +195,12 @@ class TestMapillaryTransientConditions:
     """These are properties of the RUN. Returning failure would ledger them permanently - an expired token
     for one night would blacklist every Mapillary pano in the city - so they must raise instead (#41)."""
 
-    @pytest.mark.parametrize('status', [401, 403, 500])
+    # 400 is not hypothetical. richmond-va's token stopped working and graph.mapillary.com answered every
+    # request with one; the pre-#41 code ledgered each as permanent, writing off 162 panos as "Mapillary has
+    # no image" and never re-attempting them. Recovering them meant hand-editing pano_id_log.csv on the store
+    # (2026-09-01). The status the incident actually produced was the one status this list omitted, so it is
+    # first here.
+    @pytest.mark.parametrize('status', [400, 401, 403, 500])
     def test_metadata_http_errors_raise(self, monkeypatch, tmp_path, mapillary_token, status):
         monkeypatch.setattr(downloaders.mapillary, '_session',
                             lambda: FakeSession(FakeResponse(status_code=status)))
