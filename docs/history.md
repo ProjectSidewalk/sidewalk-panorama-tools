@@ -10,8 +10,15 @@ virtualenv, per [Downloader → Install](downloader.md#install).
 
 **The repo and production retired it a month apart.** The files came out in Aug 2026, but the scraper box kept
 running `projectsidewalk/scraper:v6` on one crontab line per city until **2026-09-01**, when it moved to a new
-Ubuntu 22.04 host running the venv. So for that month the docs described a deployment that did not exist — worth
-remembering the next time a "retired" note is written before the box it describes has been touched.
+Ubuntu 22.04 host running the venv.
+
+The specific thing that was wrong is worth naming, because it is the kind of claim that is easy to make and
+hard to check: the retiring commit's own message said "Production has been a crontab line per city calling
+`.venv/bin/python` against a host mount **for a while now**", and used that as part of its justification for
+the delete. Production was in fact still running the image, from a checkout 183 commits behind `master`. The
+delete was still right — the image bought nothing the venv doesn't — but the reason given for it was not true
+yet, and nothing in CI could have caught that. A claim about what a machine is doing needs to come from the
+machine.
 
 The image existed to pin Ubuntu 22.04 / Python 3.10 and to sshfs-mount the pano store from inside the
 container — the reason the documented `docker run` needed `--cap-add SYS_ADMIN --device=/dev/fuse
