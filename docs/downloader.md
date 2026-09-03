@@ -226,8 +226,32 @@ export MAPILLARY_ACCESS_TOKEN='MLY|...'
 python3 DownloadRunner.py <sidewalk-fqdn> <storage-dir>
 ```
 
-Without the token, Mapillary panos are filtered out of the run rather than failed. Under cron, set it in the
-crontab or an `EnvironmentFile` — not in a shell profile cron never reads. The first Mapillary city is
+The downloader sends it as an `Authorization: OAuth` header, never as an `access_token` query parameter, so
+it cannot reach a URL — and `requests` puts the full URL into an `HTTPError`'s message, which
+`DownloadRunner` logs verbatim for a failed pano. That is not a hypothetical: production's `scrape.log`
+held a live token in cleartext, on the shared store, after a night of Mapillary 400s.
+
+Without the token, Mapillary panos are filtered out of the run rather than failed — **silently enough to
+miss**, so a city that should have Mapillary imagery and downloads none is the symptom of a token that never
+arrived.
+
+**Under cron, keep it out of the crontab body.** `crontab -l` output lands in backups, screenshots and
+pastes, and the file itself outlives the person who wrote it. Put it in a mode-`600` file and let bash source
+it for every line — cron sets `BASH_ENV` in the child's environment, and non-interactive bash reads it:
+
+```cron
+SHELL=/bin/bash
+BASH_ENV=/home/ubuntu/.scraper.env
+```
+
+```bash
+# /home/ubuntu/.scraper.env — mode 600, owned by the cron user
+export MAPILLARY_ACCESS_TOKEN='MLY|...'
+```
+
+`SHELL=/bin/bash` is load-bearing: under `/bin/sh` (dash) `BASH_ENV` is ignored and the token is simply
+unset, which fails as a *quiet* filtering-out rather than an error. Verify with a throwaway crontab line
+that echoes `${#MAPILLARY_ACCESS_TOKEN}` to a file — the length, never the value. The first Mapillary city is
 measured in [reports/2026-08-11-mapillary-census.md](../reports/2026-08-11-mapillary-census.md).
 
 ## `config.py`
