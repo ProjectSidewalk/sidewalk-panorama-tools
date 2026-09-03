@@ -157,8 +157,8 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 - **The Mapillary token rides in an `Authorization` header, never `params`.** `params={'access_token': ...}`
   is what Mapillary's own docs and every LLM completion suggest, and it's silently wrong: `requests` puts
   the full URL into an `HTTPError`'s message, and `DownloadRunner.py:376` logs `str(e)` for every failed
-  pano straight into `scrape.log` — which lives on the SHARED pano store. Not hypothetical: richmond-va's
-  `scrape.log` held a live token in cleartext after a night of Mapillary 400s (#100).
+  pano straight into `scrape.log` — which lives on the SHARED pano store. Not hypothetical: a production
+  city's `scrape.log` held a live token in cleartext after a night of Mapillary 400s (#100).
   `downloaders/mapillary.py`'s `TokenRedactionFilter`, wired into `DownloadRunner.configure_logging`, is a
   backstop for *this* secret specifically — it isn't a substitute for keeping every secret out of a URL in
   the first place, since a filter can only scrub a value it already knows to look for.

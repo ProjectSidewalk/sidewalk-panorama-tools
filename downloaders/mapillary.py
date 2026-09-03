@@ -122,8 +122,8 @@ def download_single_pano(storage_path, pano_info):
             # The token travels in the header, never the query string. requests puts the full URL in an
             # HTTPError's message and DownloadRunner logs str(e) for a failed pano, so a token in params
             # is a token in cleartext in scrape.log - which lives on the SHARED pano store, readable by
-            # every lab user. Not hypothetical: richmond-va's scrape.log held a live token after the
-            # 2026-09-01 400s. Graph API v4 accepts either form; only this one keeps the secret out of
+            # every lab user. Not hypothetical: a production city's scrape.log held a live token after
+            # the 2026-09-01 400s. Graph API v4 accepts either form; only this one keeps the secret out of
             # URLs, logs, and any intermediary's access log.
             headers={'Authorization': 'OAuth %s' % token},
             timeout=30,

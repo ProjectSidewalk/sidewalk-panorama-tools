@@ -319,8 +319,8 @@ class TestTheTokenStaysOutOfURLs:
 
     `scrape.log` is written to the SHARED pano store, and DownloadRunner logs `str(e)` for every failed
     pano. requests puts the full URL into an HTTPError's message, so `params={'access_token': ...}` writes
-    the live secret into that file in cleartext. Not hypothetical: richmond-va's `scrape.log` carried a
-    working token after the 2026-09-01 run whose own token had expired. Header auth is the form Graph API
+    the live secret into that file in cleartext. Not hypothetical: a production city's `scrape.log`
+    carried a live token after the 2026-09-01 run whose own token had expired. Header auth is the form Graph API
     v4 documents, and was confirmed against the live API (HTTP 200, thumb_original_url returned) before
     this change landed.
     """
