@@ -10,6 +10,7 @@ Network-free: the Mapillary tests install a fake session, and the GSV tests stub
 """
 
 import io
+import logging
 import os
 import sys
 
@@ -151,16 +152,25 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Returns queued responses in order; records the URLs asked for, and the whole call.
+    """Returns queued responses in order; records the whole call, headers merged the way a real
+    requests.Session merges them.
 
-    `calls` carries the kwargs as well, because WHERE a secret rides - params or headers - is the thing
+    `calls` carries the kwargs, because WHERE a secret rides - params or headers - is the thing
     TestTheTokenStaysOutOfURLs has to see, and the url argument alone cannot show it.
+
+    `headers` mirrors requests.Session.headers: a real session merges its own session-level defaults with
+    whatever headers a call passes, request headers winning on conflict. Without this, the natural DRY-up of
+    download_single_pano's two identical-shaped `session.get(...)` calls - `_session()` setting
+    `session.headers['Authorization']` once instead of passing `headers=` per call - would send the token to
+    the CDN on every image request while TestTheTokenStaysOutOfURLs kept passing, because nothing here would
+    ever see a session-level default; only its sibling's `kwargs['headers']` assertion happened to catch it,
+    incidentally (2026-09 PR #100 review, finding 6).
     """
 
     def __init__(self, *responses):
         self.responses = list(responses)
-        self.urls = []
         self.calls = []
+        self.headers = {}
 
     def __enter__(self):
         return self
@@ -169,7 +179,9 @@ class FakeSession:
         return False
 
     def get(self, url, **kwargs):
-        self.urls.append(url)
+        merged_headers = {**self.headers, **(kwargs.get('headers') or {})}
+        if merged_headers:
+            kwargs = {**kwargs, 'headers': merged_headers}
         self.calls.append((url, kwargs))
         return self.responses.pop(0)
 
@@ -269,6 +281,39 @@ class TestMapillaryTransientConditions:
         assert os.listdir(tmp_path / '12') == ['%s.jpg' % MAPILLARY_PANO['pano_id']]
 
 
+class TestTheTokenIsNormalisedOnRead:
+    """`_token()` strips the raw environment value once, so is_token_set() and the header build can never
+    disagree about what counts as "set" (2026-09 PR #100 review, findings 1 and 12).
+    """
+
+    def test_a_trailing_newline_is_stripped_before_it_reaches_the_header(self, monkeypatch, tmp_path):
+        """Left unstripped, this exact value makes requests.Session.get() raise InvalidHeader, whose
+        message embeds the header value VERBATIM - the malformed-token leak finding 1 exists to close."""
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token\n')
+        session = FakeSession(FakeResponse(payload={'thumb_original_url': 'https://cdn/x.jpg'}),
+                              FakeResponse(chunks=[jpeg_bytes(120)]))
+        monkeypatch.setattr(downloaders.mapillary, '_session', lambda: session)
+
+        downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert session.calls[0][1]['headers'] == {'Authorization': 'OAuth test-token'}
+
+    def test_a_whitespace_only_token_counts_as_unset(self, monkeypatch):
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, '   ')
+
+        assert downloaders.mapillary.is_token_set() is False
+
+    def test_a_whitespace_only_token_raises_rather_than_401ing_every_pano_all_night(self, monkeypatch,
+                                                                                    tmp_path):
+        """Finding 12: bool(' ') is True, so without the strip filter_supported_sources would keep the
+        city's Mapillary panos in the run and every one would 401 nightly forever with nothing permanent
+        ever ledgered."""
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, '   ')
+
+        with pytest.raises(RuntimeError, match=downloaders.mapillary.TOKEN_ENV_VAR):
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+
 class TestTheTokenStaysOutOfURLs:
     """A token in the query string is a token in the logs, and these logs are not private.
 
@@ -326,6 +371,87 @@ class TestTheTokenStaysOutOfURLs:
         downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
 
         assert 'test-token' not in str(session.calls[1])
+
+
+class TestFakeSessionModelsSessionLevelHeaderDefaults:
+    """FakeSession.headers itself (2026-09 PR #100 review, finding 6) - not download_single_pano, which
+    never sets it today. This pins the fake's own merge behaviour so a later change to FakeSession.get()
+    can't silently drop it and defang TestTheTokenStaysOutOfURLs against the DRY-up finding 6 describes.
+    """
+
+    def test_a_session_level_default_is_merged_into_the_call(self):
+        session = FakeSession(FakeResponse(status_code=200))
+        session.headers['Authorization'] = 'OAuth session-level-token'
+
+        session.get('https://example.invalid')
+
+        assert session.calls[0][1]['headers'] == {'Authorization': 'OAuth session-level-token'}
+
+    def test_a_per_call_header_overrides_the_session_default(self):
+        session = FakeSession(FakeResponse(status_code=200))
+        session.headers['Authorization'] = 'OAuth session-level-token'
+
+        session.get('https://example.invalid', headers={'Authorization': 'OAuth per-call-token'})
+
+        assert session.calls[0][1]['headers'] == {'Authorization': 'OAuth per-call-token'}
+
+
+class TestTokenRedactionFilter:
+    """`downloaders.mapillary.TokenRedactionFilter`, wired onto DownloadRunner's one log handler in
+    configure_logging (2026-09 PR #100 review, finding 2). Exercised here directly against LogRecord, not
+    through caplog: caplog captures records via its OWN handler, so a filter added only to the production
+    RotatingFileHandler would never touch what caplog sees, and testing through caplog would silently prove
+    nothing about this filter. tests/test_download_runner.py's
+    test_configure_logging_redacts_the_token_from_scrape_log covers the wiring, by reading scrape.log itself
+    back after a real configure_logging() call - this class covers the filter's own behaviour.
+    """
+
+    @staticmethod
+    def _record(msg, args=()):
+        return logging.LogRecord('test', logging.ERROR, __file__, 1, msg, args, None)
+
+    def test_the_token_is_redacted_out_of_a_bare_message(self, monkeypatch):
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'secret123')
+        record = self._record('token leaked: secret123')
+
+        assert downloaders.mapillary.TokenRedactionFilter().filter(record) is True
+        assert record.getMessage() == 'token leaked: <redacted>'
+
+    def test_the_token_is_redacted_out_of_a_percent_style_argument(self, monkeypatch):
+        """The DownloadRunner.py:376 shape this exists for: logging.error('... %s', pano_id, str(e))."""
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'secret123')
+        record = self._record('Failed to download pano %s due to error %s',
+                              args=('123456789012345', "InvalidHeader: ...'OAuth secret123\\n'"))
+
+        assert downloaders.mapillary.TokenRedactionFilter().filter(record) is True
+        assert 'secret123' not in record.getMessage()
+        assert record.args[0] == '123456789012345'  # the non-secret argument is untouched
+
+    def test_a_dict_style_argument_is_also_redacted(self, monkeypatch):
+        """logging accepts a single Mapping argument for %(name)s-style formatting; LogRecord unwraps a
+        one-element args tuple holding a Mapping into that Mapping directly, so record.args isn't a tuple
+        at all in this case - the filter has to handle both shapes."""
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'secret123')
+        record = self._record('token: %(token)s', args=({'token': 'secret123'},))
+
+        assert downloaders.mapillary.TokenRedactionFilter().filter(record) is True
+        assert record.getMessage() == 'token: <redacted>'
+
+    def test_no_token_set_is_a_no_op(self, monkeypatch):
+        monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
+        record = self._record('nothing to redact here')
+
+        assert downloaders.mapillary.TokenRedactionFilter().filter(record) is True
+        assert record.getMessage() == 'nothing to redact here'
+
+    def test_a_whitespace_only_token_does_not_corrupt_every_message(self, monkeypatch):
+        """The other half of the .strip() fix (finding 12): '' must never reach str.replace, or it would
+        insert '<redacted>' between every character of every log line in the process."""
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, '   ')
+        record = self._record('an ordinary message')
+
+        assert downloaders.mapillary.TokenRedactionFilter().filter(record) is True
+        assert record.getMessage() == 'an ordinary message'
 
 
 class TestGsvAtomicSave:

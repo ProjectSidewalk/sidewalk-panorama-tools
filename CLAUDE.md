@@ -154,6 +154,14 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
   `docs/downloader.md` leans on a `WARNING` reaching cron mail, and ~15 tests assert on `capsys`. A print-to-logging sweep
   would break all three. The one real violation — `filter_supported_sources` warning on stdout only — is
   fixed; `caplog` assertions now sit beside its `capsys` ones so a revert fails.
+- **The Mapillary token rides in an `Authorization` header, never `params`.** `params={'access_token': ...}`
+  is what Mapillary's own docs and every LLM completion suggest, and it's silently wrong: `requests` puts
+  the full URL into an `HTTPError`'s message, and `DownloadRunner.py:376` logs `str(e)` for every failed
+  pano straight into `scrape.log` — which lives on the SHARED pano store. Not hypothetical: richmond-va's
+  `scrape.log` held a live token in cleartext after a night of Mapillary 400s (#100).
+  `downloaders/mapillary.py`'s `TokenRedactionFilter`, wired into `DownloadRunner.configure_logging`, is a
+  backstop for *this* secret specifically — it isn't a substitute for keeping every secret out of a URL in
+  the first place, since a filter can only scrub a value it already knows to look for.
 - **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in `docs/ops.md`; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
 - **The depth failure count is not an alert signal.** It includes `unavailable`, a permanent and expected outcome, so early backfill runs show large, entirely normal failure numbers. The success/failure/unavailable split goes to stdout and `scrape.log`.
 - **Depth artifacts are un-mirrored on write.** `streetlevel`'s decoder x-mirrors the payload relative to the pano JPEG; `_write_depth_artifact` flips it back (#58), so a consumer can index the stored array with `pano_x`/`pano_y` scaled by width/height, no correction needed. `tests/test_streetlevel_api.py` pins the decode's end-to-end column order so a streetlevel change fails CI rather than silently re-mirroring new artifacts.
