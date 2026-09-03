@@ -50,7 +50,8 @@ for the nightly cron form.
 > **Requirements:** Python 3.10+ and ~2 GB RAM (a 16384×8192 panorama is 384 MB decoded). Linux is the
 > supported production platform; macOS and Windows are fine for development, though the depth phase's
 > `pyfrpc` dependency ships wheels for Linux only. **No Docker** — the image and its sshfs entrypoint were
-> [retired in Aug 2026](docs/history.md#the-docker-image-aug-2026).
+> [retired from the repo in Aug 2026](docs/history.md#the-docker-image-aug-2026), and from the production box
+> in Sep 2026.
 
 ## Documentation
 

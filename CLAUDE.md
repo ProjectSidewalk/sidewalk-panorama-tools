@@ -8,7 +8,7 @@ Python tooling that works with data from [Project Sidewalk](https://github.com/P
 
 ## Common Commands
 
-Everything runs from a virtualenv — **there is no Docker in this repo**. The image and its sshfs entrypoint were retired in Aug 2026 (`docs/history.md`); production is a crontab line per city calling `.venv/bin/python` directly, with the pano store mounted on the host.
+Everything runs from a virtualenv — **there is no Docker in this repo**. The image and its sshfs entrypoint were retired from the repo in Aug 2026 and from the production box on 2026-09-01 (`docs/history.md`); production is a crontab line per city calling `.venv/bin/python` directly, with the pano store mounted on the host.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
