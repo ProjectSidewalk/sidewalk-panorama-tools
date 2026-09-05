@@ -415,13 +415,18 @@ def frame_covers_pano(pano_id, width, height, zoom):
     the stored file's exact dimensions, with no undersized tile and no black to give it away. That is a
     silently cropped panorama saved over a correct one, and this is the only cheap thing that catches it.
 
-    Two requests, spent BEFORE the 512-tile fan-out so a bad frame costs two rather than 514. Errs toward
-    False - a dark-enough real tile reads as blank here, which costs a refused repair rather than a
-    corrupted one.
+    Two requests, spent BEFORE the 512-tile fan-out so a bad frame costs two rather than 514.
+
+    The one way this can err is toward ACCEPTANCE: an out-of-range tile is recognised by being exactly black,
+    so a real tile past the grid that happened to decode to all-zero luma would read as blank, and the fetch
+    would proceed. That is why the x probe is taken on the grid's middle row rather than on row 0. Row 0 is
+    the zenith cap - the one strip of a panorama where a uniformly black real tile is plausible - while the
+    middle row is horizon-adjacent imagery, which never is. The y probe lands on ground rows for the same
+    reason. Both probes must come back blank for the frame to pass.
     """
     tiles_x, tiles_y = _tile_grid(width, height, zoom)
     with _request_session() as session:
-        for x, y in ((tiles_x, 0), (0, tiles_y)):
+        for x, y in ((tiles_x, tiles_y // 2), (0, tiles_y)):
             url = f'{_CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}'
             probe = Image.open(_get_response(url, session, stream=True))
             if probe.convert('L').getextrema() != (0, 0):

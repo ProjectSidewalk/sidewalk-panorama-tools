@@ -848,14 +848,18 @@ class TestFrameCoversPano:
         return asked
 
     def test_a_grid_whose_edges_are_blank_covers_the_pano(self, monkeypatch):
+        """One column past 26 and one row past 13 are the two positions that discriminate. The column probe
+        is taken on the MIDDLE row, not row 0: the probe reads exact-zero luma as "out of range", so if the
+        pano has grown, the tile past the right edge is real imagery that must not be uniformly black. Row 0
+        is the zenith cap, the one strip of a panorama where it can be. A probe at (26, 0) would pass a
+        grown pano with a black zenith straight through to a cropped swap."""
         asked = self.probe_responses(monkeypatch)
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is True
-        # One column past 26, one row past 13 - the two positions that discriminate.
-        assert asked == [(26, 0), (0, 13)]
+        assert asked == [(26, 6), (0, 13)]
 
     def test_imagery_one_column_past_the_grid_means_the_pano_is_wider(self, monkeypatch):
-        self.probe_responses(monkeypatch, imagery_at=[(26, 0)])
+        self.probe_responses(monkeypatch, imagery_at=[(26, 6)])
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
 
@@ -865,10 +869,20 @@ class TestFrameCoversPano:
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
 
     def test_it_stops_at_the_first_disagreement(self, monkeypatch):
-        asked = self.probe_responses(monkeypatch, imagery_at=[(26, 0), (0, 13)])
+        asked = self.probe_responses(monkeypatch, imagery_at=[(26, 6), (0, 13)])
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
-        assert asked == [(26, 0)]
+        assert asked == [(26, 6)]
+
+    def test_a_black_zenith_past_the_grid_is_not_where_the_probe_looks(self, monkeypatch):
+        """The failure direction the middle-row choice exists for. A grown pano whose zenith cap decodes to
+        exact black at (26, 0) but carries imagery on its horizon rows must still be caught - a probe on row
+        0 would read that pano as covered and the fetch would save its top-left 81% over the original."""
+        self.probe_responses(monkeypatch, imagery_at=[(26, 1), (26, 2), (26, 3), (26, 4), (26, 5), (26, 6),
+                                                      (26, 7), (26, 8), (26, 9), (26, 10), (26, 11),
+                                                      (26, 12), (0, 13)])
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
 
     def test_a_full_16384_frame_probes_its_own_edges(self, monkeypatch):
         """Discrimination: the probe positions must come from the frame asked about, not be constants.
@@ -876,7 +890,7 @@ class TestFrameCoversPano:
         asked = self.probe_responses(monkeypatch)
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 16384, 8192, 5) is True
-        assert asked == [(32, 0), (0, 16)]
+        assert asked == [(32, 8), (0, 16)]
 
     def test_it_probes_the_zoom_it_was_given(self, monkeypatch):
         """At zoom 3 a 13312x6656 pano is served at 3328x1664, i.e. a 7x4 grid, so the edges that
@@ -885,7 +899,7 @@ class TestFrameCoversPano:
         asked = self.probe_responses(monkeypatch)
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 3) is True
-        assert asked == [(7, 0), (0, 4)]
+        assert asked == [(7, 2), (0, 4)]
 
     def test_it_reports_the_real_out_of_range_body_as_blank(self, monkeypatch):
         """Against the committed bytes of a genuine out-of-range CBK response, rather than a synthesised
