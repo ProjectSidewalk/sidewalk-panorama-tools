@@ -1,6 +1,6 @@
 """How many labels fall in the polar bands that `fover` served at half resolution?
 
-    python reports/scripts/pano_y_histogram.py [city-fqdn ...]
+    python reports/scripts/pano_y_histogram.py [city-fqdn ...] [--write-worklist]
 
 Answers the open question on #73: whether the panoramas already in the store need re-downloading. Pulls
 /adminapi/labels/cvMetadata (public, no auth - the same endpoint CropRunner uses) and bins every label's
@@ -11,14 +11,22 @@ Writes reports/data/2026-08-07-pano-y-histogram.json and reports/figures/2026-08
 The raw cvMetadata dumps are ~100 MB per city and are NOT committed; they are cached next to this script
 (gitignored) so re-runs are cheap.
 
+--write-worklist additionally emits the panorama ids behind the "panoramas to re-fetch" count, as
+reports/data/<WORKLIST_DATE>-fover-refetch-worklist-<city>.csv.gz, which refetch_panos.py consumes directly.
+That list is the whole reason the re-download question is tractable: affected LABELS are identifiable by
+geometry even though affected PANORAMAS are not identifiable by image analysis (findings 6 and 7 of
+reports/2026-08-07-cbk-tile-resolution.md), so the work-list can be computed rather than detected.
+
 Band edges come from the full-grid sweeps in tests/fixtures/tiles/fover_band_map.json, and
 tests/test_gsv_tile_contract.py asserts the two agree - if the sweep is ever re-captured and the band moves,
 that test fails rather than this analysis silently going stale.
 """
 
+import argparse
+import csv
+import gzip
 import json
 import os
-import sys
 from collections import Counter
 
 import requests
@@ -29,6 +37,11 @@ REPO = os.path.dirname(REPORTS)
 CACHE = os.path.join(HERE, '.cache')
 DATA = os.path.join(REPORTS, 'data', '2026-08-07-pano-y-histogram.json')
 FIGURE = os.path.join(REPORTS, 'figures', '2026-08-07-pano-y-histogram.png')
+
+# Work-lists carry their own date because they are a later artifact than the histogram above and are meant to
+# be regenerated when a city's labelling has moved on - the histogram's findings are fixed at the date they
+# were measured, a work-list is an instruction to go and do something now.
+WORKLIST_DATE = '2026-08-19'
 
 DEFAULT_CITIES = ['sidewalk-seattle.cs.washington.edu', 'sidewalk-columbus.cs.washington.edu']
 
@@ -63,9 +76,12 @@ def fetch(city):
 
 
 def analyse(rows):
+    # panos_with_bottom_band_label is keyed by pano_id rather than being a bare set: the count is the
+    # histogram's finding, and the keys plus their frame are the work-list refetch_panos.py consumes.
+    # len() reads the same either way, so summarise() below is unchanged.
     out = {'labels_binned': 0, 'zones': Counter(), 'rows_past_edge': Counter(),
            'bottom_band_by_label_type': Counter(), 'pano_shapes': Counter(),
-           'panos': set(), 'panos_with_bottom_band_label': set(),
+           'panos': set(), 'panos_with_bottom_band_label': {},
            'skipped_no_pano_dimensions': 0}
     for r in rows:
         y, height, pano = r.get('pano_y'), r.get('pano_height'), r.get('pano_id')
@@ -83,7 +99,15 @@ def analyse(rows):
         out['labels_binned'] += 1
         if y >= bottom:
             out['zones']['bottom band (half-res)'] += 1
-            out['panos_with_bottom_band_label'].add(pano)
+            entry = out['panos_with_bottom_band_label'].setdefault(
+                pano, {'pano_id': pano, 'width': r.get('pano_width'), 'height': height,
+                       'band_labels': 0, 'min_pano_y': y})
+            entry['band_labels'] += 1
+            # The shallowest band label on this panorama - the one whose crop reaches furthest up into the
+            # full-resolution band. Carried so a study can stratify by depth into the band without
+            # re-pulling 100 MB of cvMetadata, and to give the committed work-list a deterministic order.
+            # It is NOT a processing priority: refetch_panos.py shuffles its candidates.
+            entry['min_pano_y'] = min(entry['min_pano_y'], y)
             out['rows_past_edge'][(y - bottom) // TILE] += 1
             out['bottom_band_by_label_type'][r.get('label_type_id')] += 1
         elif y < top:
@@ -149,8 +173,72 @@ def figure(results, per_city_y):
     print('  wrote %s' % os.path.relpath(FIGURE, REPO))
 
 
-def main():
-    cities = sys.argv[1:] or DEFAULT_CITIES
+def city_slug(city):
+    """A filename-safe city name from its FQDN: sidewalk-seattle.cs.washington.edu -> seattle.
+
+    Deliberately derived rather than mapped onto the log analyzer's `city_id` (seattle-wa, columbus-oh):
+    log_analyzer/cities.csv carries no hostname, so any mapping between the two would be a hand-maintained
+    table that goes stale the first time a city is deployed without someone remembering it. A derived slug
+    can be wrong about house style but cannot be wrong about which city it came from.
+    """
+    return city.split('.')[0].replace('sidewalk-', '')
+
+
+def worklist_path(city):
+    return os.path.join(REPORTS, 'data',
+                        '%s-fover-refetch-worklist-%s.csv.gz' % (WORKLIST_DATE, city_slug(city)))
+
+
+def write_worklist(path, entries):
+    """The panoramas behind the "would need re-fetching" count, as refetch_panos.py's intake format.
+
+    Gzipped CSV, following the 2026-08-10-repairs-*.csv.gz precedent: ~8k ids per city is too much to read
+    in a diff but small enough to commit, and committing it is what makes the pass reproducible - the
+    alternative is a work-list that lives in whoever ran the script's home directory.
+
+    Sorted deepest-first by min_pano_y, then by pano_id, so the committed file is deterministic and diffs
+    cleanly between regenerations. That is all the order is for. refetch_panos.py shuffles its candidates -
+    a stable order would let a persistently failing head block stall every run against its breaker - so a
+    pass cut short by a budget did a random slice of this list, not its head, and nothing about processing
+    priority should be read into the ordering here.
+    """
+    ordered = sorted(entries.values(), key=lambda e: (-e['min_pano_y'], e['pano_id']))
+    with gzip.open(path, 'wt', newline='', encoding='utf8') as f:
+        writer = csv.DictWriter(f, fieldnames=['pano_id', 'width', 'height', 'band_labels', 'min_pano_y'])
+        writer.writeheader()
+        for entry in ordered:
+            writer.writerow(entry)
+    return len(ordered)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description='Bin every label\'s pano_y against the half-resolution bands `fover` produced (#73).')
+    parser.add_argument('cities', nargs='*', default=None, metavar='CITY-FQDN',
+                        help='Project Sidewalk hostnames. Default: %s.' % ', '.join(DEFAULT_CITIES))
+    parser.add_argument('--write-worklist', action='store_true',
+                        help='Write the affected panorama ids per city, as '
+                             'reports/data/%s-fover-refetch-worklist-<city>.csv.gz, for refetch_panos.py. '
+                             'Implies --no-analysis: a work-list is an instruction to act now, while the '
+                             'histogram is a measurement dated %s.'
+                             % (WORKLIST_DATE, os.path.basename(DATA)[:10]))
+    parser.add_argument('--no-analysis', action='store_true',
+                        help='Do not rewrite the dated histogram artifact or its figure. The histogram is a '
+                             'measurement taken on %s and quoted by date in '
+                             'reports/2026-08-07-cbk-tile-resolution.md, so re-running the script months '
+                             'later would silently restate a finding under a label saying it was measured '
+                             'then. Implied by --write-worklist.'
+                             % os.path.basename(DATA)[:10])
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.write_worklist:
+        # A work-list run is never also a re-measurement: the two flags were always paired in the docs, and
+        # forgetting the second one rewrote a dated artifact with today's data under yesterday's date.
+        args.no_analysis = True
+    cities = args.cities or DEFAULT_CITIES
     os.makedirs(os.path.dirname(DATA), exist_ok=True)
     results, per_city_y = [], {}
     for city in cities:
@@ -165,6 +253,10 @@ def main():
               '%d of %d panos would need re-fetching (%.2f%%)'
               % (s['labels_binned'], s['pct_full_resolution'], s['pct_bottom_band'],
                  s['panos_with_bottom_band_label'], s['distinct_panos'], s['pct_panos_to_refetch']))
+        if args.write_worklist:
+            path = worklist_path(city)
+            n = write_worklist(path, a['panos_with_bottom_band_label'])
+            print('  wrote %s (%d panoramas)' % (os.path.relpath(path, REPO), n))
 
     payload = {
         'question': 'Do the panoramas already in the store need re-downloading after the fover fix (#73)?',
@@ -177,11 +269,15 @@ def main():
                   '(base64-style ids) that never went through the CBK tile path.',
         'cities': results,
     }
+    if args.no_analysis:
+        print('\n(--no-analysis: left %s and its figure as measured)' % os.path.relpath(DATA, REPO))
+        return 0
     with open(DATA, 'w') as f:
         json.dump(payload, f, indent=1)
     print('\nwrote %s' % os.path.relpath(DATA, REPO))
     figure(results, per_city_y)
+    return 0
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    raise SystemExit(main())

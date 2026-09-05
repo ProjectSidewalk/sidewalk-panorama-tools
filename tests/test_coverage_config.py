@@ -27,6 +27,7 @@ PRODUCTION_MODULES = {
     'downloaders/mapillary.py',
     'log_analyzer/analyze.py',
     'migrate_depth_artifacts.py',
+    'refetch_panos.py',
     'scrape_queue.py',
 }
 

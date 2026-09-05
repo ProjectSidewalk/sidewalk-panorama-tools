@@ -13,7 +13,6 @@ The three properties that are cheap to break and expensive to notice:
 
 import logging
 import os
-import signal
 import subprocess
 import sys
 import textwrap
@@ -27,21 +26,9 @@ from conftest import posix_only
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-
-@pytest.fixture(autouse=True)
-def _isolate_process_state():
-    """main() configures logging and installs a SIGTERM handler process-wide; snapshot and restore both so
-    these tests cannot leak handlers into each other or into the rest of the suite."""
-    root = logging.getLogger()
-    prior_handlers, prior_level = list(root.handlers), root.level
-    prior_sigterm = signal.getsignal(signal.SIGTERM)
-    yield
-    for handler in list(root.handlers):
-        if handler not in prior_handlers:
-            root.removeHandler(handler)
-            handler.close()
-    root.setLevel(prior_level)
-    signal.signal(signal.SIGTERM, prior_sigterm)
+# scrape_queue.main() adds a handler to the root logger and installs a SIGTERM handler, both process-wide.
+# conftest's autouse _isolate_process_state snapshots and restores exactly that around every test in the
+# suite, so this module does not carry its own copy - which is the point of it having been lifted there.
 
 
 # --- Stand-in runner ---------------------------------------------------------------------------------------

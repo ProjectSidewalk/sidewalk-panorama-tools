@@ -368,24 +368,9 @@ def test_all_panos_widens_the_image_phase_only(tmp_path):
     assert 'Panos: 2 supported, 2 eligible for image download, 2 GSV panos eligible for depth' in stdout
 
 
-@pytest.fixture(autouse=True)
-def _isolate_process_state():
-    """Calling DownloadRunner.main() (or configure_logging directly) mutates process-wide state - root logger
-    handlers, urllib3's level, the SIGTERM handler; snapshot and restore it around every test so the
-    in-process calls below can't leak into each other or into the rest of the suite."""
-    root = logging.getLogger()
-    prior_handlers = list(root.handlers)
-    prior_level = root.level
-    prior_urllib3_level = logging.getLogger('urllib3').level
-    prior_sigterm = signal.getsignal(signal.SIGTERM)
-    yield
-    for handler in list(root.handlers):
-        if handler not in prior_handlers:
-            root.removeHandler(handler)
-            handler.close()
-    root.setLevel(prior_level)
-    logging.getLogger('urllib3').setLevel(prior_urllib3_level)
-    signal.signal(signal.SIGTERM, prior_sigterm)
+# The in-process main() calls below mutate process-wide state - root logger handlers, urllib3's level, the
+# SIGTERM handler. conftest.py's autouse _isolate_process_state fixture snapshots and restores it around
+# every test in the suite; it started life here and moved when refetch_panos.py grew the same tests.
 
 
 # --- Image-phase runtime budget -------------------------------------------------------------------------------

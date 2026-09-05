@@ -74,6 +74,8 @@ exclude_also =
 #   - gsv.py's `_get_response(stream=False)` arm: a dead affordance whose fix is deletion, not a test.
 #   - gsv.py's photometa early return for a message carrying no depth planes.
 #   - DownloadRunner's fallback_success counter arm: no code path in the suite produces that verdict.
+#   - refetch_panos.py's measurements flush on the ledger-close path, and its --min-pano-interval sleep
+#     branch, which needs a fetch fast enough to still owe time when the next one starts.
 #   - three partial branches that need an input no caller produces - mapillary's falsy-chunk skip, and
 #     analyze.py's two loop guards.
 fail_under = 98
