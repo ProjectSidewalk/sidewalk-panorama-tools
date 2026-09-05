@@ -123,6 +123,21 @@ def summarise(counts, records):
     def rate(n, d):
         return num(100.0 * n / d) if d else None
 
+    # Per frame size, because the two zoom-5 geometries are not the same experiment: the half-resolution
+    # band is rows 11-15 of 16 on a 16384x8192 panorama and rows 9-12 of 13 on a 13312x6656 one, so the
+    # smaller frame has proportionally more of its height in the band and is where any real gain would
+    # concentrate. Keyed by 'WxH'; a pilot drawn at the corpus's own mix has few of the smaller frame, and
+    # the n is reported so that a reader does not read a five-panorama median as a finding.
+    by_frame = {}
+    for frame in sorted({'%sx%s' % (r.get('width'), r.get('height')) for r in records}):
+        subset = [r['recovered_above_noise'] for r in records
+                  if '%sx%s' % (r.get('width'), r.get('height')) == frame and 'recovered_above_noise' in r]
+        by_frame[frame] = {
+            'n': len(subset),
+            'median': num(percentile(subset, 0.50)) if subset else None,
+            'n_positive': sum(1 for v in subset if v > 0),
+        }
+
     return {
         'panoramas_considered': considered,
         'outcomes': dict(counts.most_common()),
@@ -144,6 +159,7 @@ def summarise(counts, records):
         'bottom_band_mae_median': num(percentile(bottom, 0.50)) if bottom else None,
         'horizon_band_mae_median': num(percentile(horizon, 0.50)) if horizon else None,
         'bottom_band_halving_cost_median': num(percentile(halving, 0.50)) if halving else None,
+        'by_frame': by_frame,
     }
 
 

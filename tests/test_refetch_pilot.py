@@ -27,9 +27,9 @@ import refetch_pilot as rf  # noqa: E402
 import studyfmt  # noqa: E402
 
 
-def record(pano_id, bottom_mae, horizon_mae, halving=0.5):
+def record(pano_id, bottom_mae, horizon_mae, halving=0.5, width=13312, height=6656):
     return {
-        'pano_id': pano_id, 'zoom': 5, 'width': 13312, 'height': 6656, 'old_bytes': 1,
+        'pano_id': pano_id, 'zoom': 5, 'width': width, 'height': height, 'old_bytes': 1,
         'bottom': {'rows_px': [4608, 6656], 'mae_old_vs_new': bottom_mae,
                    'halve_restore_new': halving},
         'horizon': {'rows_px': [2048, 4608], 'mae_old_vs_new': horizon_mae,
@@ -145,6 +145,27 @@ class TestSummarise:
         s = rf.summarise(counts, [])
 
         assert s['undersized_pct'] == 20.0
+
+    def test_recovery_is_also_broken_down_by_frame_with_its_n(self):
+        """The two zoom-5 geometries put different fractions of their height in the half-res band, so the
+        headline is also reported per frame - with n, so a handful of the smaller frame is not read as a
+        finding. Each side must be computed on its own records, not on the pool."""
+        records = [record('a', 1.0, 0.4, width=16384, height=8192),
+                   record('b', 1.4, 0.4, width=16384, height=8192),
+                   record('d', 1.8, 0.4, width=16384, height=8192),
+                   record('c', 0.3, 0.5, width=13312, height=6656)]
+
+        s = rf.summarise(__import__('collections').Counter({'replaced': 4}), records)
+
+        assert set(s['by_frame']) == {'16384x8192', '13312x6656'}
+        # The 13312 side is the discrimination: its own median is -0.2, while any pooled figure (nearest-rank
+        # median of -0.2, 0.6, 1.0, 1.4 is 1.0) would read as recovery.
+        assert s['by_frame']['16384x8192'] == {'n': 3, 'median': pytest.approx(1.0), 'n_positive': 3}
+        assert s['by_frame']['13312x6656'] == {'n': 1, 'median': pytest.approx(-0.2), 'n_positive': 0}
+        assert s['recovered_above_noise']['median'] == pytest.approx(1.0)
+
+    def test_an_empty_pilot_has_no_frames(self):
+        assert rf.summarise(__import__('collections').Counter({'gone': 3}), [])['by_frame'] == {}
 
 
 class TestMain:
