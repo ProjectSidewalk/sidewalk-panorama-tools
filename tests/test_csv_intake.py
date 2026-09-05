@@ -554,7 +554,7 @@ class TestJsonToCsvConversion:
 # Everything the scraper or the cropper runs. log_analyzer/ and reports/scripts/ are deliberately
 # absent: both still use pandas, and both are dev/ops tools rather than production code.
 PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py',
-                      'migrate_depth_artifacts.py', 'flag_panos/json_to_csv.py',
+                      'migrate_depth_artifacts.py', 'refetch_panos.py', 'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
                       'downloaders/gsv.py', 'downloaders/mapillary.py']
 

@@ -678,6 +678,247 @@ class TestDownloadSinglePano:
         assert gsv.download_single_pano(str(tmp_path), self.pano_info()) == DownloadResult.failure
 
 
+# --- the extracted seams (#73) --------------------------------------------------------------------------------
+#
+# download_single_pano was one function: shard dir, skip check, zoom probe, tile fan-out, stitch, atomic save.
+# refetch_panos.py needs the middle of that - the imagery - without the skip check and without saving to the
+# same path, and it must not become a second stitcher that drifts from the nightly one. So the middle is now
+# resolve_zoom_and_dims + fetch_pano_image, and these tests hold both the seams and the composition.
+
+class TestResolveZoomAndDims:
+    def pano_info(self, **kw):
+        base = {'pano_id': 'stitchPanoAAAAAAAAAAAA', 'width': 1024, 'height': 512}
+        base.update(kw)
+        return base
+
+    def test_it_reports_the_reported_dims_and_the_zoom_the_probe_found(self, monkeypatch):
+        stub_probe(monkeypatch, pick_zoom=5)
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) == (1024, 512, 5)
+
+    def test_it_falls_back_to_zoom_3_when_zoom_5_comes_back_blank(self, monkeypatch):
+        stub_probe(monkeypatch, pick_zoom=3)
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) == (1024, 512, 3)
+
+    def test_blank_at_both_zooms_is_none(self, monkeypatch):
+        stub_probe(monkeypatch, pick_zoom=-1)
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) is None
+
+    def test_missing_dims_are_none_without_spending_a_request(self, monkeypatch):
+        """The dims check is deliberately before the session is opened. refetch_panos.py leans on this: it
+        walks a store of ~10^5 panos and must not pay two requests to learn a row was unusable."""
+        def no_network(*args, **kwargs):
+            raise AssertionError('a pano with no dims must not touch the network')
+
+        monkeypatch.setattr(gsv, '_get_response', no_network)
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info(width=None, height=None)) is None
+
+    def test_string_dims_are_coerced(self, monkeypatch):
+        """/adminapi/panos and a hand-made CSV both hand these over as strings often enough."""
+        stub_probe(monkeypatch, pick_zoom=5)
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info(width='1024', height='512')) == (1024, 512, 5)
+
+
+class TestFetchPanoImage:
+    def test_it_returns_the_frame_at_the_reported_dims_with_nothing_undersized(self, monkeypatch):
+        stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], jpeg_bytes(RED)))
+
+        stitched = gsv.fetch_pano_image('stitchPanoAAAAAAAAAAAA', 1024, 512, 1)
+
+        assert stitched.image.size == (1024, 512)
+        assert stitched.undersized_tiles == 0
+        assert stitched.upscaled is False
+
+    def test_it_counts_undersized_bodies_without_failing_the_pano(self, monkeypatch):
+        """The `fover` tripwire (#73). A half-size body is the same cell at half scale, so the stitch is
+        still correct - the count is what tells a caller the imagery is softer than its dims advertise, and
+        it is the gate refetch_panos.py refuses to swap on."""
+        stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1],
+                                              jpeg_bytes(RED, (256, 256) if tile[1] == 0 else (512, 512))))
+
+        stitched = gsv.fetch_pano_image('stitchPanoAAAAAAAAAAAA', 1024, 512, 1)
+
+        assert stitched.undersized_tiles == 2      # the whole top row of a 2x1 grid
+        assert stitched.image.size == (1024, 512)
+
+    def test_upscaled_is_set_when_the_grid_cannot_cover_the_reported_frame(self, monkeypatch):
+        """The same predicate log.csv column 8 reports, and the second gate refetch_panos.py refuses on:
+        replacing a full-resolution stored pano with an upscaled zoom-3 stitch would be a 4x downgrade."""
+        stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], jpeg_bytes(RED)))
+
+        stitched = gsv.fetch_pano_image('stitchPanoAAAAAAAAAAAA', 16384, 8192, 3)
+
+        assert stitched.upscaled is True
+        assert stitched.image.size == (16384, 8192)
+
+    def test_a_failed_tile_raises_rather_than_returning_a_partial_frame(self, monkeypatch):
+        boom = aiohttp.ClientError('tile exploded')
+        stub_tiles(monkeypatch,
+                   lambda tile: (tile[0], tile[1], jpeg_bytes(RED)) if tile[0] == 0 else boom)
+
+        with pytest.raises(aiohttp.ClientError):
+            gsv.fetch_pano_image('stitchPanoAAAAAAAAAAAA', 1024, 512, 1)
+
+    def test_a_mostly_black_stitch_raises(self, monkeypatch):
+        stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], jpeg_bytes((0, 0, 0))))
+
+        with pytest.raises(gsv.StitchedPanoMostlyBlackError):
+            gsv.fetch_pano_image('stitchPanoAAAAAAAAAAAA', 1024, 512, 1)
+
+
+class TestDownloadSinglePanoComposesTheSeams:
+    """download_single_pano must stay a composition of the two seams, not a parallel copy of them.
+
+    If it is ever re-inlined, refetch_panos.py keeps working against the seams while the nightly run drifts
+    away from them - and the drift would be invisible, because both would still produce a plausible JPEG at
+    the reported dims. That is the #73 failure mode exactly, one level up.
+    """
+
+    def test_it_calls_both_seams_and_saves_what_the_second_returned(self, tmp_path, monkeypatch):
+        calls = {}
+        frame = Image.new('RGB', (1024, 512), RED)
+
+        def fake_resolve(pano_info):
+            calls['resolve'] = pano_info['pano_id']
+            return 1024, 512, 5
+
+        def fake_fetch(pano_id, width, height, zoom):
+            calls['fetch'] = (pano_id, width, height, zoom)
+            return gsv.StitchedPano(frame, 0, False)
+
+        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', fake_resolve)
+        monkeypatch.setattr(gsv, 'fetch_pano_image', fake_fetch)
+
+        result = gsv.download_single_pano(str(tmp_path), {'pano_id': 'stitchPanoAAAAAAAAAAAA',
+                                                          'width': 1024, 'height': 512})
+
+        assert result == DownloadResult.success
+        assert calls['resolve'] == 'stitchPanoAAAAAAAAAAAA'
+        assert calls['fetch'] == ('stitchPanoAAAAAAAAAAAA', 1024, 512, 5)
+        with Image.open(tmp_path / 'st' / 'stitchPanoAAAAAAAAAAAA.jpg') as saved:
+            assert saved.size == (1024, 512)
+
+    def test_a_none_from_the_probe_seam_is_the_permanent_failure_verdict(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', lambda pano_info: None)
+
+        def never(*args, **kwargs):
+            raise AssertionError('no imagery means no tile fan-out')
+
+        monkeypatch.setattr(gsv, 'fetch_pano_image', never)
+
+        assert gsv.download_single_pano(str(tmp_path), {'pano_id': 'stitchPanoAAAAAAAAAAAA',
+                                                        'width': 1024, 'height': 512}) == DownloadResult.failure
+
+    def test_upscaled_from_the_fetch_seam_becomes_fallback_success(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', lambda pano_info: (1024, 512, 3))
+        monkeypatch.setattr(gsv, 'fetch_pano_image',
+                            lambda *a: gsv.StitchedPano(Image.new('RGB', (1024, 512), RED), 0, True))
+
+        assert gsv.download_single_pano(str(tmp_path), {'pano_id': 'stitchPanoAAAAAAAAAAAA',
+                                                        'width': 1024, 'height': 512}) \
+            == DownloadResult.fallback_success
+
+
+class TestFrameCoversPano:
+    """The frame probe refetch_panos.py leans on: does the grid we are about to request cover everything
+    Google serves for this pano?
+
+    The nightly downloader never needs this - it sizes the grid from Google's own current number. A repair
+    pass sizes it from a stored file, which is a scrape-time archive, and Google re-serves panos larger.
+    Fetching the smaller grid then returns the top-left corner of the larger pano at the smaller pano's
+    exact dimensions: no undersized tile, no black, nothing downstream can see it.
+    """
+
+    def probe_responses(self, monkeypatch, imagery_at=()):
+        """Answer probe requests with imagery at the listed (x, y) and Google's all-black otherwise."""
+        asked = []
+
+        def fake_get_response(url, session, stream=False):
+            x = int(url.split('&x=')[1].split('&')[0])
+            y = int(url.split('&y=')[1].split('&')[0])
+            asked.append((x, y))
+            color = RED if (x, y) in imagery_at else (0, 0, 0)
+            return BytesIO(jpeg_bytes(color, (16, 16)))
+
+        monkeypatch.setattr(gsv, '_get_response', fake_get_response)
+        return asked
+
+    def test_a_grid_whose_edges_are_blank_covers_the_pano(self, monkeypatch):
+        """One column past 26 and one row past 13 are the two positions that discriminate. The column probe
+        is taken on the MIDDLE row, not row 0: the probe reads exact-zero luma as "out of range", so if the
+        pano has grown, the tile past the right edge is real imagery that must not be uniformly black. Row 0
+        is the zenith cap, the one strip of a panorama where it can be. A probe at (26, 0) would pass a
+        grown pano with a black zenith straight through to a cropped swap."""
+        asked = self.probe_responses(monkeypatch)
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is True
+        assert asked == [(26, 6), (0, 13)]
+
+    def test_imagery_one_column_past_the_grid_means_the_pano_is_wider(self, monkeypatch):
+        self.probe_responses(monkeypatch, imagery_at=[(26, 6)])
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
+
+    def test_imagery_one_row_past_the_grid_means_the_pano_is_taller(self, monkeypatch):
+        self.probe_responses(monkeypatch, imagery_at=[(0, 13)])
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
+
+    def test_it_stops_at_the_first_disagreement(self, monkeypatch):
+        asked = self.probe_responses(monkeypatch, imagery_at=[(26, 6), (0, 13)])
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
+        assert asked == [(26, 6)]
+
+    def test_a_black_zenith_past_the_grid_is_not_where_the_probe_looks(self, monkeypatch):
+        """The failure direction the middle-row choice exists for. A grown pano whose zenith cap decodes to
+        exact black at (26, 0) but carries imagery on its horizon rows must still be caught - a probe on row
+        0 would read that pano as covered and the fetch would save its top-left 81% over the original."""
+        self.probe_responses(monkeypatch, imagery_at=[(26, 1), (26, 2), (26, 3), (26, 4), (26, 5), (26, 6),
+                                                      (26, 7), (26, 8), (26, 9), (26, 10), (26, 11),
+                                                      (26, 12), (0, 13)])
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
+
+    def test_a_full_16384_frame_probes_its_own_edges(self, monkeypatch):
+        """Discrimination: the probe positions must come from the frame asked about, not be constants.
+        A 32x16 grid is exactly the case where a 26x13 answer would be a crop."""
+        asked = self.probe_responses(monkeypatch)
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 16384, 8192, 5) is True
+        assert asked == [(32, 8), (0, 16)]
+
+    def test_it_probes_the_zoom_it_was_given(self, monkeypatch):
+        """At zoom 3 a 13312x6656 pano is served at 3328x1664, i.e. a 7x4 grid, so the edges that
+        discriminate are somewhere else entirely - the probe has to come from _tile_grid, not from the
+        full-size grid with the zoom ignored."""
+        asked = self.probe_responses(monkeypatch)
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 3) is True
+        assert asked == [(7, 2), (0, 4)]
+
+    def test_it_reports_the_real_out_of_range_body_as_blank(self, monkeypatch):
+        """Against the committed bytes of a genuine out-of-range CBK response, rather than a synthesised
+        black square - the whole probe rests on what Google actually answers there."""
+        blank = fixture_bytes('z3_blank_out_of_range.jpg')
+
+        monkeypatch.setattr(gsv, '_get_response', lambda url, session, stream=False: BytesIO(blank))
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is True
+
+    def test_a_real_edge_tile_is_not_mistaken_for_out_of_range(self, monkeypatch):
+        """The other direction, and the one that would make the probe useless: a genuine bottom-edge tile
+        is black-PADDED but not black, so it must read as imagery."""
+        edge = fixture_bytes('z3_edge_bottom.jpg')
+
+        monkeypatch.setattr(gsv, '_get_response', lambda url, session, stream=False: BytesIO(edge))
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
+
 class TestTheTileFanOutContract:
     """`_download_tiles` itself - the aiohttp session and gather that every stitch runs through.
 

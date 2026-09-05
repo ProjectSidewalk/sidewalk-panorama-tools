@@ -89,16 +89,24 @@ def test_the_committed_figure_is_not_stale(make_banner):
 
     These are the sizing rule v2 numbers. Under v1 the same label gave a square 398 px window; the figure was
     regenerated when the rule changed, which is the whole point of pinning them here.
+
+    Both sizing functions are pinned, not just the one the figure calls: predict_crop_size is the regression
+    on its own, and crop_window_width is what the cropper actually cuts (that regression scaled by
+    CROP_SIZE_SCALE, then clamped as an angle). The figure draws the second. Pinning only it would let the
+    scale and the regression drift in opposite directions with the product unchanged - exactly the kind of
+    move a hero figure should not be able to hide.
     """
     import CropRunner
 
     with Image.open(SAMPLE_PANO) as im:
         pano_w, pano_h = im.size
 
+    predicted = CropRunner.predict_crop_size(make_banner.LABEL_Y, pano_h)
     crop_width = CropRunner.crop_window_width(make_banner.LABEL_Y, pano_h)
     box = CropRunner.compute_crop_box(make_banner.LABEL_X, make_banner.LABEL_Y, crop_width, pano_w, pano_h)
 
     assert (pano_w, pano_h) == (13312, 6656)
+    assert predicted == pytest.approx(398.2, abs=0.1)
     assert crop_width == pytest.approx(995.4, abs=0.1)
     assert (box.left, box.top, box.width, box.height, box.shifted) == (1106, 3422, 995, 663, False)
     assert box.width / box.height == pytest.approx(CropRunner.CROP_ASPECT_W_OVER_H, abs=0.01)

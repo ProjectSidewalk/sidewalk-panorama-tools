@@ -45,6 +45,15 @@ maps now come from the `streetlevel` library instead; see [Depth maps](depth.md)
 The XML phase's *columns* survive in `log.csv` as a fixed-value stub, so that positions 7–18 never shift under
 the log analyzer. See [Ops → The `log.csv` columns](ops.md#the-logcsv-columns).
 
+The *reader* outlived the writer by a release. `download_single_pano` still parsed any `<pano_id>.xml` left on
+the store, and [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) removed it because
+it was not merely dead: those files are frozen 2022 metadata, and the block sat after the "image already
+exists" return, so it could only run for a pano with an `.xml` and no `.jpg` — 1 of the 1,025 `.xml` files
+sampled across dc, columbus-oh, amsterdam and newberg-or. On that one it trusted the declared
+`num_zoom_levels` over the live probe, and a black tile at that zoom returned a **permanent** failure verdict.
+Stale 2022 metadata could therefore blacklist a pano Google still serves. The zoom probe is now the only
+thing that picks a zoom.
+
 ## Tohme and depth-based cropping (Apr 2023)
 
 In PR [#26](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/26) we removed some old code: some
