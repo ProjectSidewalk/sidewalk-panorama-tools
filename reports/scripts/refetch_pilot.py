@@ -50,6 +50,10 @@ FETCHED_OUTCOMES = ('replaced', 'upscaled', 'undersized', 'too_black')
 # is the one figure the retirement argument rests on. It just never reached a fan-out.
 SERVED_OUTCOMES = FETCHED_OUTCOMES + ('frame_grew',)
 
+# A horizon-band old-vs-new MAE above this means Google re-rendered the panorama since it was scraped, not
+# that we re-encoded it: see summarise() for the gap in the first pilot's distribution this sits in.
+RERENDERED_HORIZON_MAE = 3.0
+
 
 def _display_path(path):
     """`path` relative to the repo when it is inside it, absolute otherwise.
@@ -138,6 +142,18 @@ def summarise(counts, records):
             'n_positive': sum(1 for v in subset if v > 0),
         }
 
+    # The horizon band's old-vs-new MAE has two populations, not one. Two encodes of the same imagery differ
+    # by about a luma level; a panorama Google has RE-RENDERED since it was scraped - re-stitched, re-blurred,
+    # re-graded, at the same dimensions - differs by several. The first pilot's horizon MAEs were 0.5-1.8 for
+    # three quarters of the panoramas and 7.6-24 for the rest, with nothing in between, so the threshold sits
+    # in that gap. Reported separately because a re-rendered panorama's recovery figure compares two different
+    # pictures, and the like-for-like core is the population the fover question is actually about.
+    rerendered = [r for r in records if 'horizon' in r
+                  and r['horizon']['mae_old_vs_new'] > RERENDERED_HORIZON_MAE]
+    same = [r for r in records if 'horizon' in r
+            and r['horizon']['mae_old_vs_new'] <= RERENDERED_HORIZON_MAE]
+    same_recovered = [r['recovered_above_noise'] for r in same if 'recovered_above_noise' in r]
+
     return {
         'panoramas_considered': considered,
         'outcomes': dict(counts.most_common()),
@@ -159,7 +175,23 @@ def summarise(counts, records):
         'bottom_band_mae_median': num(percentile(bottom, 0.50)) if bottom else None,
         'horizon_band_mae_median': num(percentile(horizon, 0.50)) if horizon else None,
         'bottom_band_halving_cost_median': num(percentile(halving, 0.50)) if halving else None,
+        'horizon_band_halving_cost_median': num(percentile(
+            [r['horizon']['halve_restore_new'] for r in records if 'horizon' in r], 0.50)) if records else None,
         'by_frame': by_frame,
+        'rerendered': {
+            'threshold_horizon_mae': RERENDERED_HORIZON_MAE,
+            'n': len(rerendered),
+            'pct_of_measured': rate(len(rerendered), len(records)),
+        },
+        'same_rendering': {
+            'n': len(same),
+            'recovered_above_noise_median': num(percentile(same_recovered, 0.50)) if same_recovered else None,
+            'n_positive': sum(1 for v in same_recovered if v > 0),
+            'bottom_band_mae_median': num(percentile(
+                [r['bottom']['mae_old_vs_new'] for r in same], 0.50)) if same else None,
+            'horizon_band_mae_median': num(percentile(
+                [r['horizon']['mae_old_vs_new'] for r in same], 0.50)) if same else None,
+        },
     }
 
 

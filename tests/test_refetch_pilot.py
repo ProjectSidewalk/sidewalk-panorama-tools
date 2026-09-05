@@ -167,6 +167,32 @@ class TestSummarise:
     def test_an_empty_pilot_has_no_frames(self):
         assert rf.summarise(__import__('collections').Counter({'gone': 3}), [])['by_frame'] == {}
 
+    def test_rerendered_panoramas_are_split_out_by_their_horizon_mae(self):
+        """A horizon band that differs by several luma levels is not two encodes of one picture, it is two
+        pictures - Google re-rendered the panorama. Those are counted, and the headline is also given over
+        the like-for-like remainder, whose recovery figure is the one the fover question is about."""
+        records = [record('a', 1.0, 0.4), record('b', 0.9, 1.2), record('c', 12.0, 9.0), record('d', 30.0, 24.0)]
+
+        s = rf.summarise(__import__('collections').Counter({'replaced': 4}), records)
+
+        assert s['rerendered'] == {'threshold_horizon_mae': 3.0, 'n': 2, 'pct_of_measured': 50.0}
+        assert s['same_rendering']['n'] == 2
+        assert s['same_rendering']['n_positive'] == 1                          # a: +0.6; b: -0.3
+        assert s['same_rendering']['recovered_above_noise_median'] == pytest.approx(-0.3)   # nearest rank
+        assert s['same_rendering']['bottom_band_mae_median'] == pytest.approx(0.9)
+        assert s['same_rendering']['horizon_band_mae_median'] == pytest.approx(0.4)
+        assert s['horizon_band_halving_cost_median'] == pytest.approx(1.3)
+
+    def test_the_rerendered_threshold_is_a_named_constant_recorded_in_the_artifact(self):
+        s = rf.summarise(__import__('collections').Counter({'replaced': 1}), [record('a', 1.0, 0.4)])
+        assert s['rerendered']['threshold_horizon_mae'] == rf.RERENDERED_HORIZON_MAE
+
+    def test_an_empty_pilot_has_undefined_rerendered_rates(self):
+        s = rf.summarise(__import__('collections').Counter({'gone': 3}), [])
+        assert s['rerendered'] == {'threshold_horizon_mae': 3.0, 'n': 0, 'pct_of_measured': None}
+        assert s['same_rendering']['recovered_above_noise_median'] is None
+        assert s['horizon_band_halving_cost_median'] is None
+
 
 class TestMain:
     def write_pilot(self, tmp_path, ledger_rows, records):
