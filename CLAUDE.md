@@ -14,9 +14,14 @@ Everything runs from a virtualenv — **there is no Docker in this repo**. The i
 python3 -m venv .venv && source .venv/bin/activate
 pip3 install -r requirements.txt
 
-# Downloader
+# Downloader (one city)
 python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-depth] \
     [--max-runtime MINUTES] [--min-depth-runtime MINUTES] [--max-depth-requests N]
+
+# Nightly queue (the whole fleet, one cron line). --dry-run prints the plan and takes no lock.
+python3 scrape_queue.py --cities <manifest.csv> --store-root <dir> \
+    [--max-runtime MINUTES] [--city-max-runtime MINUTES] [--only CITY_ID] [--no-rotate] [--dry-run] \
+    -- [DownloadRunner args...]
 
 # Cropper (exits 1 if any label errored; missing/untrusted panos alone are not an error)
 python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <crop-dir> [--mark-label]
@@ -50,7 +55,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 
 | Page | Covers |
 |---|---|
-| `docs/downloader.md` | install, options, runtime budgets, imagery sources, `config.py`, nightly cron |
+| `docs/downloader.md` | install, options, runtime budgets, imagery sources, `config.py`, the nightly queue and its cron line |
 | `docs/cropper.md` | crop geometry, preflights, outcome taxonomy, consumer warnings |
 | `docs/depth.md` | artifact format, plane fields, ledger, migration, rate-limit behaviour, what depth is/isn't |
 | `docs/ops.md` | storage layout, resume ledgers, the 18-column `log.csv`, crashed-run semantics |
@@ -63,7 +68,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 
 **Coverage** is configured in `.coveragerc` (#57) and gated by its `fail_under`. Three things about it are load-bearing and easy to break by "simplifying":
 
-- **The measured set is the production tree only** — the nine top-level/`downloaders/`/`log_analyzer/` modules. `reports/*` and `flag_panos/*` are omitted, the first because averaging a large body of frozen study tooling in would let the scraper's number move several points unnoticed, the second because its module scope writes files at import. `tests/test_coverage_config.py` asserts the resolved set exactly, so adding a module is a deliberate measure-or-omit decision.
+- **The measured set is the production tree only** — the ten top-level/`downloaders/`/`log_analyzer/` modules. `reports/*` and `flag_panos/*` are omitted, the first because averaging a large body of frozen study tooling in would let the scraper's number move several points unnoticed, the second because its module scope writes files at import. `tests/test_coverage_config.py` asserts the resolved set exactly, so adding a module is a deliberate measure-or-omit decision.
 - **`source` is written as `${SIDEWALK_COVERAGE_ROOT-.}`, not `.`** — coverage resolves a relative source against each *process's* CWD, and the runner tests spawn subprocesses with `cwd=tmp_path`. `tests/conftest.py`'s `pytest_configure` sets that variable (plus `COVERAGE_PROCESS_START` and `COVERAGE_FILE`) only when the parent is itself being measured. Break any of the three and `main()`, the argparse `type=` validators and the budget carve-out all read as dead: `DownloadRunner.py` drops from 97.6% to 87.9% with nothing failing.
 - **`branch = True`** — the gap that motivated the gate was an `if` that only ever went one way (three of the log analyzer's six alert rules never fired while every line around them was green).
 
@@ -93,6 +98,14 @@ The README is a front door only; the reference material lives in `docs/` and eac
 4. Writes to `<crop-dir>/<label_type_id>/<label_id>.jpg` through `atomic_output_path`. Existing crops are the resume marker (`skipped_existing`) and are **never re-cut**, so a store cropped before #47 keeps its black-padded crops — delete them to pick the fix up. Rotating `crop.log` lands next to the crops, not the CWD.
 5. `--mark-label` draws a dot at the label position **inside the crop**, never on the shared pano, and follows the label through both transforms. It is **off by default**: it was a `MARK_LABEL = True` module constant until #48, so every crop this tool produced before then has a (128, 0, 0) dot burned over the feature of interest.
 6. **Nothing in the crop loop is fatal.** The counts reconcile on every path including re-runs — `success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total` (`shifted_vertically` annotates a success, so it is deliberately *not* in that sum). A corrupt pano, malformed row, or failed write is one counted, logged error and retries next run. `main()` exits 1 if `errors` is nonzero — **not** on `missing_pano`/`dims_mismatch`/`out_of_frame`, which are metadata the run refused to trust rather than work it got wrong.
+
+**scrape_queue.py** (#101) — the nightly driver: one cron line that walks a city manifest and starts each city as soon as the last one exits, replacing 53 hand-picked crontab slots. Same extracted shape as the runners (`build_parser()` / `configure_logging()` / `main(argv=None)` behind a `__main__` guard), so it imports inertly and tests drive `main()` in-process against a stand-in runner script.
+1. **It replaced a ring, not a schedule.** Slots were staggered across the whole UTC day and had wrapped, so 32 of 53 cities ran 07:00–19:00 Pacific — the working day on the store and the app hosts, which are in Seattle regardless of where the city is. The cron line carries `CRON_TZ=America/Los_Angeles` so the fleet follows DST instead of drifting an hour against it twice a year.
+2. **Two budgets that compose, and the composition is the point.** `--max-runtime` is the window and gates *starting* a city (never interrupts one, same rule as the image phase, #51); `--city-max-runtime` is passed through as the runner's own `--max-runtime` and hard-killed `--kill-grace` minutes later. The city gets `min(the two)`: the city cap alone lets the last city run past the window, and the remaining window alone lets the *first* city eat the whole night — the head-of-line problem serialising introduces.
+3. **The kill is the backstop, not the mechanism.** SIGTERM first, because `DownloadRunner` translates it into `sys.exit(143)` and its `finally` still writes the `log.csv` row (#49); `SIGKILL` only if that is ignored.
+4. **The lock is advisory (`flock`/`msvcrt.locking`), never an `O_EXCL` file**, and defaults to local disk rather than the store. The OS releases it when the holder dies — a lock that outlived a crash would silently stop the whole fleet, which is worse than the overlap it prevents — and the store is a network mount whose lock semantics are not guaranteed.
+5. **A city the window never reached exits nonzero**, like a failure. cron's mail-on-failure is the only unattended alarm, and a fleet quietly completing 40 of 53 cities a night is exactly the silent failure #101 is about.
+6. `--cities` has no default (deployment fact, same reasoning as `resolve_sftp`'s host/base), a `#`-prefixed row is skipped (replacing "comment the crontab line out"), and the manifest carries `fqdn` next to `city_id` because **there is no rule that derives one from the other** — `seattle-wa` is served by `sidewalk-sea`.
 
 **log_analyzer/analyze.py** — ops monitoring for the nightly scrape; shares no code with the runners.
 1. Reads `log_analyzer/cities.csv`, pulls each city's `log.csv` off the pano store with `sftp -b -` (the store's restricted SFTP subsystem doesn't speak the SCP wire protocol), and caches it in the gitignored `log_analyzer/logs/`. Connection settings come from `PS_SFTP_*` env vars or matching flags — host and base path are required with no defaults, since a wrong default would silently analyze the wrong store.
@@ -154,6 +167,7 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
   `docs/downloader.md` leans on a `WARNING` reaching cron mail, and ~15 tests assert on `capsys`. A print-to-logging sweep
   would break all three. The one real violation — `filter_supported_sources` warning on stdout only — is
   fixed; `caplog` assertions now sit beside its `capsys` ones so a revert fails.
+- **`log.csv` column 1 is a wall-clock stamp WITH its offset; every duration is `time.monotonic()`. Don't merge the two clocks (#101).** It was `str(datetime.now())` — a bare local reading, harmless only while every scraper host ran UTC, which is the assumption pinning the schedule to `America/Los_Angeles` removes. `log_analyzer` compares it against `datetime.now(timezone.utc)`, so a bare row on a non-UTC host is silently 7–8 h out, and `.days` floors, so that moves a city across the staleness threshold in *both* directions. `read_log` parses `format="ISO8601", utc=True`, which is also what lets one file hold both eras — without `utc=True` a mixed column comes back as object dtype and `analyze_city` dies on `.dt`, ending the report for every city after it. Symmetrically, the phase durations were wall-clock differences: the Pacific night window contains 02:00 local, so twice a year every city would report a run an hour longer than it was, and rule 4 warns at 3× the median.
 - **`log.csv` is positional and headerless.** 18 comma-separated fields, blank-padded. Fields 2–6 are an XML-metadata stub kept at fixed values purely so column positions never shift (that endpoint died in 2022). Blank ≠ 0: blank means the phase never finished. The full table is in `docs/ops.md`; `LOG_CSV_FIELD_COUNT` and `log_analyzer/analyze.py`'s `LOG_COLUMNS` must move together, and a test asserts they do.
 - **The depth failure count is not an alert signal.** It includes `unavailable`, a permanent and expected outcome, so early backfill runs show large, entirely normal failure numbers. The success/failure/unavailable split goes to stdout and `scrape.log`.
 - **Depth artifacts are un-mirrored on write.** `streetlevel`'s decoder x-mirrors the payload relative to the pano JPEG; `_write_depth_artifact` flips it back (#58), so a consumer can index the stored array with `pano_x`/`pano_y` scaled by width/height, no correction needed. `tests/test_streetlevel_api.py` pins the decode's end-to-end column order so a streetlevel change fails CI rather than silently re-mirroring new artifacts.

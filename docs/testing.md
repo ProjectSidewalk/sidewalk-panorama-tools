@@ -41,6 +41,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | GSV stitching and the tile endpoint's behaviour, pinned against captured bytes | `test_gsv_stitcher.py`, `test_gsv_tile_contract.py`, `test_image_downloaders.py` |
 | Cropper: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins | `test_crop_runner.py` |
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
+| The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes | `test_scrape_queue.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
 | The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
