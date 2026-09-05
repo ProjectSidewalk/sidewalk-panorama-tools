@@ -29,8 +29,10 @@ permanent.** Transient failures leave no row and retry automatically on the next
 **`pano_id_log.csv` gates the image phase** (`pano_id,downloaded`):
 
 * `1` — image on disk, or a prior success.
-* `0` — the source has nothing for this pano: no imagery at any zoom, or unknowable dimensions. A permanent
-  verdict.
+* `0` — the source has nothing for this pano: no imagery at any zoom, or unknowable dimensions; for
+  Mapillary, a 404 or a record that names the image and carries no original-resolution rendition. A
+  permanent verdict. A Mapillary error envelope on a 200, or a body that does not name the image, is not a
+  verdict and leaves no row.
 * **no row** — never attempted, or the last attempt failed transiently (a network blip, a failed tile, a full
   store). Retried next run.
 
