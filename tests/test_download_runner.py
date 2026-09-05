@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -1217,3 +1218,125 @@ class TestAServerFetchIsCheckedAndNormalised:
         assert all(isinstance(i, str) for i in ids), ids
         assert ids == ['123456789012345', 'gsvPanoIdAAAAAAAAAAAAA'], \
             'the numeric duplicate, the empty id and the tutorial pano should all be gone'
+
+
+# --- log.csv's clock (#101) -------------------------------------------------------------------------------
+#
+# start_time was `str(datetime.now())`: the scraper host's local wall reading with nothing to say which clock
+# that is. Harmless only while every host runs UTC, which is precisely the assumption #101 removes by pinning
+# the schedule to America/Los_Angeles. The durations beside it were wall-clock differences, which a DST
+# transition inside the new night window would move by an hour.
+
+class TestTheLogTimestampSaysWhichClockItIsOn:
+
+    def test_a_real_runs_row_carries_a_utc_offset(self, tmp_path):
+        """The end-to-end claim, through the real script: field 0 parses as an AWARE datetime.
+
+        This is the assertion `str(datetime.now())` cannot pass, so it is the one that pins the change.
+        """
+        storage, result = run_downloader(tmp_path, '--skip-depth')
+        assert result.returncode == 0, result.stderr
+
+        parsed = datetime.fromisoformat(last_log_fields(storage)[0])
+        assert parsed.tzinfo is not None, \
+            'log.csv start_time must carry an offset; a bare local reading is only unambiguous on a UTC host'
+        assert parsed.utcoffset() is not None
+
+    def test_the_crash_path_timestamp_carries_one_too(self, tmp_path, monkeypatch):
+        """A run that dies before the scrape starts writes its own timestamp down a separate code path (#49).
+
+        Two call sites, one contract - and this is the row that matters most, since a crashed run is exactly
+        when someone reads the log to work out *when* it happened.
+        """
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        def explode(_fqdn):
+            raise requests.exceptions.ConnectionError('no network')
+
+        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_from_webserver', explode)
+        with pytest.raises(requests.exceptions.ConnectionError):
+            DownloadRunner.run('sidewalk-test.invalid', str(storage))
+
+        parsed = datetime.fromisoformat(last_log_fields(storage)[0])
+        assert parsed.tzinfo is not None
+
+    def test_it_names_an_instant_rather_than_a_wall_reading(self):
+        """Given an aware time, the string must denote the same INSTANT when read back.
+
+        An implementation that formats the wall part and drops the offset passes every "does it look like a
+        date" check and fails this one, which is the whole difference the column is being changed for.
+        """
+        moment = datetime(2026, 3, 8, 1, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        assert datetime.fromisoformat(DownloadRunner.log_timestamp(moment)) == moment
+
+    def test_a_naive_argument_is_stamped_with_the_hosts_own_offset(self):
+        """The production call passes the naive datetime.now() the run already took. Rendering that without
+        an offset is the defect; rendering it with the host's offset is the fix, and it must denote the same
+        instant the host meant."""
+        naive = datetime(2026, 9, 5, 20, 30, 4, 277106)
+        stamped = datetime.fromisoformat(DownloadRunner.log_timestamp(naive))
+        assert stamped.tzinfo is not None
+        assert stamped == naive.astimezone()
+
+    def test_every_row_is_the_same_width(self):
+        """str(datetime) omits ".ffffff" when the microsecond lands on exactly 0, so a long-lived log grew
+        two timestamp widths and read_log had to pin format="ISO8601" to survive them. Nothing forced that
+        variability - it was free to remove while replacing the call."""
+        on_the_second = DownloadRunner.log_timestamp(datetime(2026, 9, 5, 20, 30, 4, 0))
+        with_micros = DownloadRunner.log_timestamp(datetime(2026, 9, 5, 20, 30, 4, 277106))
+        assert '.000000' in on_the_second
+        assert len(on_the_second) == len(with_micros)
+
+    def test_the_timestamp_is_one_csv_field(self):
+        """log.csv is positional and comma-joined by hand (write_log_csv_row). A separator that introduced a
+        comma would shift all 17 columns after it and the analyzer would parse silently-wrong counts."""
+        assert ',' not in DownloadRunner.log_timestamp(datetime(2026, 9, 5, 20, 30, 4, 277106))
+
+
+class _WallClockThatJumpsAnHour:
+    """A stand-in for DownloadRunner's `datetime` whose now() moves an hour forward on every call.
+
+    That is the shape of a DST transition (or an NTP step) landing mid-run. It is not hypothetical under
+    #101: the queue's Pacific night window contains 02:00 local, which is exactly when the transition fires.
+    """
+
+    def __init__(self, first):
+        self._next = first
+
+    def now(self):
+        value = self._next
+        self._next = value + timedelta(hours=1)
+        return value
+
+
+class TestDurationsAreMeasuredOnAClockThatCannotJump:
+
+    def test_a_wall_clock_jump_does_not_invent_an_hour_of_runtime(self, monkeypatch, tmp_path):
+        """Every duration column must stay 0 for a run that took no time, however far the wall clock moves.
+
+        With durations computed as differences of datetime.now() readings, this run records 60 in each of the
+        four duration columns. log_analyzer's rule 4 warns at 3x the median runtime, so a DST transition
+        inside the night window produced a fleet-wide burst of "abnormally long run" warnings with nothing
+        actually wrong - and, worse, one real long run per city that nobody would look at twice afterwards.
+        """
+        monkeypatch.setattr(DownloadRunner, 'datetime', _WallClockThatJumpsAnHour(datetime(2026, 11, 1, 1, 30)))
+
+        storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        fields = last_log_fields(storage)
+        assert len(calls) == len(GSV_PANO_IDS), 'the run itself should be unaffected'
+        # Columns 5 (xml), 11 (image), 16 (depth) and 17 (total) are the durations; see docs/ops.md.
+        assert [fields[5], fields[11], fields[16], fields[17]] == ['0', '0', '0', '0'], \
+            'a wall-clock jump reached the duration columns: %r' % (fields,)
+
+    def test_the_timestamp_still_comes_from_the_wall_clock(self, monkeypatch, tmp_path):
+        """The other half of the same split, so nobody "fixes" this by putting a monotonic reading in
+        column 0. time.monotonic()'s zero is arbitrary - it says nothing about when the run happened."""
+        monkeypatch.setattr(DownloadRunner, 'datetime', _WallClockThatJumpsAnHour(datetime(2026, 11, 1, 1, 30)))
+
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        parsed = datetime.fromisoformat(last_log_fields(storage)[0])
+        assert parsed.replace(tzinfo=None) == datetime(2026, 11, 1, 1, 30)
+        assert parsed.tzinfo is not None
