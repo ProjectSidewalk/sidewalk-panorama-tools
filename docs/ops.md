@@ -58,6 +58,14 @@ picks them up.
 
 ## Repairing `fover`-era panoramas
 
+> **Decided 2026-09-05: the `fover` pass does not run.** The [pilot](../reports/2026-09-05-fover-refetch-pilot.md)
+> re-fetched 200 Seattle panoramas against a copy of the store and found nothing to recover: the 512-px polar
+> bodies CBK serves without `fover` are server-side upscales of the same data it served at 256 px with it, so
+> the stored files already hold everything Google has for those rows. It also found that Google has re-rendered
+> about a quarter of the panoramas it still serves, so a bulk re-fetch would have replaced those with a
+> different picture, not a sharper one. The tool stays, as a tested, non-destructive repair pass for whatever
+> next needs one; the section below describes it as built.
+
 `refetch_panos.py` re-fetches panoramas that were downloaded while the CBK URL still carried `fover`, which
 made Google serve the polar rows of a zoom-5 grid at half size — 320 of 512 tiles on a 16384×8192 frame. The
 parameter is gone ([#68](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/68)), so new
