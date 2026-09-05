@@ -21,6 +21,11 @@ reversed: is re-fetching the `fover`-era panoramas worth doing?
 >     --probed 2026-09-05 --write reports/data/2026-09-05-fover-refetch-pilot.json
 > python reports/scripts/refetch_pilot_sharpness.py --old-store <production city dir> --new-store <copy> \
 >     --ledger <copy>/refetch_log.csv --write reports/data/2026-09-05-fover-refetch-pilot-sharpness.json
+> # the figure. Its window origin was chosen by eye during the run and never recorded, so this reproduces
+> # the recipe, not the committed bytes:
+> python reports/scripts/refetch_pilot_figure.py --old-store <production city dir> --new-store <copy> \
+>     --pano-id CkUrdiulTbw482CMAkrKyg --x <col> --y <row> --probed 2026-09-05 \
+>     --write reports/figures/2026-09-05-fover-refetch-pilot-CkUrdiulTbw482CMAkrKyg.png
 > ```
 
 ## Summary
@@ -52,8 +57,8 @@ earlier. And **Google has re-rendered a quarter of the survivors** - 19 of 78 di
 re-fetch would have replaced a quarter of what it touched with a different picture, not a sharper one.
 
 The tool itself behaved: 196 panoramas probed, 78 swapped, zero `undersized`, zero `frame_grew`, zero
-`too_black`, zero transient failures, about 40,500 tile requests in under half an hour, and the production
-store untouched throughout because the pass ran against a copy.
+`too_black`, zero transient failures, about 40,500 tile requests, and the production store untouched
+throughout because the pass ran against a copy.
 
 ## 1. What ran
 
@@ -90,9 +95,9 @@ come from the run's own summary, committed beside the ledger.
 | transient failures | 0 |
 | measured (`--measure` records) | 78 |
 
-At the tool's per-outcome costs that is 118 × 2 + 78 × 516 = **40,484** tile requests, and the run took
-about twenty minutes at a two-second pano interval. Scaled to the full work-list (7,826 would fetch) the pass
-would be roughly 1.6 M requests for about 3,100 swaps, not the 4.0 M / 7,826 the sizing note assumed, because
+At the tool's per-outcome costs that is 118 × 2 + 78 × 516 = **40,484** tile requests, at a two-second pano
+interval. Scaled to the full work-list ([7,826 would fetch](../docs/ops.md#sizing-a-pass)) the pass
+would be roughly 1.6 M requests for about 3,100 swaps, not the 4.0 M / 7,826 that note assumed, because
 survival is lower than it planned for.
 
 ## 2. Survival, and what "served" turned out to include
@@ -142,12 +147,17 @@ that nobody reads it as a difference.
 Two things about this metric are worth recording, because the pilot is the first time it was run on real
 frames.
 
-The control over-corrects. JPEG re-encode error scales with texture, and the horizon band carries about six
-times the texture of the road-surface bottom band (halving cost 2.572 against 0.441). So the "noise" read at
-the horizon is larger than the noise actually present in the band being measured, and subtracting it pushes
-the headline negative even where the bands are otherwise identical. The control is like-for-like for the
-*encoder* but not for the *content*. That is why the direct measurement in §4 uses a within-band ratio
-instead.
+The control over-corrects. JPEG re-encode error scales with texture, and the horizon band carries an order of
+magnitude more of it than the road-surface bottom band: Laplacian variance **382.9** against **35.2** on the
+stored frames (§4), about 11×. So the "noise" read at the horizon is larger than the noise actually present
+in the band being measured, and subtracting it pushes the headline negative even where the bands are
+otherwise identical. The control is like-for-like for the *encoder* but not for the *content*. That is why
+the direct measurement in §4 uses a within-band ratio instead.
+
+The two halving costs in the table say the same thing, but they cannot be read as a texture measure on their
+own: halve-and-restore cost is exactly the statistic §5 uses to identify an upscale, and the fresh bottom
+band *is* built from upscaled bodies, so its **0.441** is partly smooth asphalt and partly the upscale. The
+Laplacian variances carry no such confound, which is why the ratio quoted above is theirs.
 
 And whole-band MAE cannot see a resolution change well in the first place. A 2× upscale changes pixels only
 near edges; averaged over a smooth road surface, the ceiling on the whole effect is the halving cost - 0.441
@@ -168,9 +178,21 @@ like-for-like: a ratio within a band does not depend on the band's texture level
 | horizon band | 1.000 | **1.000** | 1.679 | 44 of 78 |
 
 Every one of the 78 bottom bands lost high-frequency energy on re-fetch, and none of them gained more than
-its own horizon band did (**0** of 78). The horizon's median is 1.000 to three places: two encodes of the
-same imagery leave this statistic alone, which is what makes the bottom band's 0.591 a real change. The
-horizon's p90 of 1.679 is the re-rendered quarter, whose horizon ratio is **1.633** at the median against
+its own horizon band did (**0** of 78). The horizon's median is 1.000 to three places, and for **25** of the
+78 it is 1 exactly — those two frames give the *same float32 variance to the last bit*, over a band of forty
+million pixels, which means the band came back pixel-identical: Google returned the same tile bodies, the
+stitch is a paste, and our JPEG encode is deterministic. In the bottom band that happens **0** times.
+
+Read the control for what that makes it. Where it is an identity it is the strongest available statement
+about the *other* band — no encoder difference can be hiding in a bottom-band ratio measured on the same
+pair of files, so 0.591 is the tile bodies and nothing else. It is not, however, a measurement of what a
+JPEG re-encode alone would do to a low-texture band, and it cannot be, because for a third of the sample no
+re-encode took place. §5 is what settles that; §4 on its own does not. (This is also why §3 and §4 can
+report the same band of the same panorama as differing by 1.358 luma and as bit-identical: `--measure`
+compares the stored file against the fresh stitch **before** it is saved, while §4 compares it against the
+**saved** file. One JPEG encode apart.)
+
+The horizon's p90 of 1.679 is the re-rendered quarter, whose horizon ratio is **1.633** at the median against
 **1.000** for the rest; their bottom bands read **0.583** and **0.595**, the same as everyone else's. In
 absolute terms the bottom band's Laplacian variance falls from **35.2** to **15.1** at the median while the
 horizon's goes from **382.9** to **400.1**; per frame, 0.544 for the 71 at 16384×8192 and 0.693 for the 7 at
@@ -208,7 +230,8 @@ ones lack, and it is why §4 reads the way it does: the re-fetch did not add det
 
 ![Stored and re-fetched bottom band of one pilot panorama, at 1:1 and at 4×](figures/2026-09-05-fover-refetch-pilot-CkUrdiulTbw482CMAkrKyg.png)
 
-*`CkUrdiulTbw482CMAkrKyg`, the median same-rendering panorama by bottom-band ratio (0.591). Top: the same
+*`CkUrdiulTbw482CMAkrKyg`, the median of the 71 same-rendering 16384x8192 panoramas by bottom-band ratio
+(0.591; the same-rendering median over both frames is 0.595). Top: the same
 640×320 window of the bottom band, stored (left) and re-fetched (right), at 1:1. Bottom: the red 160×80 patch
 at 4× with nearest-neighbour scaling so pixel structure is visible. The stored patch shows the blockier texture
 of an upscaled JPEG; the re-fetched one is smoother. Neither has detail the other lacks.*
@@ -243,6 +266,10 @@ own recommendation, not to re-download on quality grounds, stands, now with the 
   looked like the fresh tiles were blurrier than the old ones, which would have been a finding against the
   fix. The fixture pair (§5) was the check that turned it into the right finding, and it was available all
   along - the August report measured the pair by MAE and stopped.
+* **The §4 control is an identity for a third of the sample**, not a measurement: 25 of 78 horizon bands came
+  back bit-identical, so nothing there bounds what our own JPEG encode does to a low-texture band's Laplacian
+  variance. §5's tile pair is the evidence that carries that weight, and it is one cell of one panorama — the
+  agreement of 78 band-level measurements with it is what generalises it.
 * **n = 7 at 13312×6656.** The corpus's own mix gives few of the smaller frame; nothing here distinguishes the
   two geometries, and nothing needs to, since the mechanism in §5 is not geometry-specific.
 * **One city.** Seattle's store, Seattle's survival. The mechanism is Google's tile service, not Seattle's,

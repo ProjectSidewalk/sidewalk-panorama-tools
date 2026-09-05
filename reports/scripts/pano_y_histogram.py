@@ -27,6 +27,7 @@ import csv
 import gzip
 import json
 import os
+import sys
 from collections import Counter
 
 import requests
@@ -34,6 +35,9 @@ import requests
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPORTS = os.path.dirname(HERE)
 REPO = os.path.dirname(REPORTS)
+sys.path.insert(0, HERE)
+from studyfmt import display_path  # noqa: E402
+
 CACHE = os.path.join(HERE, '.cache')
 DATA = os.path.join(REPORTS, 'data', '2026-08-07-pano-y-histogram.json')
 FIGURE = os.path.join(REPORTS, 'figures', '2026-08-07-pano-y-histogram.png')
@@ -170,7 +174,7 @@ def figure(results, per_city_y):
     ax.legend(loc='upper left', fontsize=9)
     fig.tight_layout()
     fig.savefig(FIGURE, dpi=120)
-    print('  wrote %s' % os.path.relpath(FIGURE, REPO))
+    print('  wrote %s' % display_path(FIGURE, REPO))
 
 
 def city_slug(city):
@@ -256,7 +260,7 @@ def main(argv=None):
         if args.write_worklist:
             path = worklist_path(city)
             n = write_worklist(path, a['panos_with_bottom_band_label'])
-            print('  wrote %s (%d panoramas)' % (os.path.relpath(path, REPO), n))
+            print('  wrote %s (%d panoramas)' % (display_path(path, REPO), n))
 
     payload = {
         'question': 'Do the panoramas already in the store need re-downloading after the fover fix (#73)?',
@@ -270,11 +274,11 @@ def main(argv=None):
         'cities': results,
     }
     if args.no_analysis:
-        print('\n(--no-analysis: left %s and its figure as measured)' % os.path.relpath(DATA, REPO))
+        print('\n(--no-analysis: left %s and its figure as measured)' % display_path(DATA, REPO))
         return 0
     with open(DATA, 'w') as f:
         json.dump(payload, f, indent=1)
-    print('\nwrote %s' % os.path.relpath(DATA, REPO))
+    print('\nwrote %s' % display_path(DATA, REPO))
     figure(results, per_city_y)
     return 0
 

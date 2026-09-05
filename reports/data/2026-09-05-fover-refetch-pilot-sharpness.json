@@ -1,19 +1,21 @@
 {
  "question": "Did re-fetching a fover-era panorama make its polar band sharper, measured directly rather than through a mean absolute difference? (#73)",
- "method": "Variance of the 4-neighbour Laplacian over each band, stored frame vs re-fetched frame, as a new/old ratio. The horizon band, served at full size in both eras, is the control: its ratio is what two JPEG encodes of unchanged imagery do to the statistic.",
+ "method": "Variance of the 4-neighbour Laplacian over each band, stored frame vs re-fetched frame, as a new/old ratio. The horizon band, served at full size in both eras, is the control. n_equal_lap_var says how much of that control is an identity rather than a measurement: where it counts a panorama, the band came back bit-identical, so no encoder difference can be hiding in the same pair's bottom-band ratio - and nothing here bounds what an encode alone would do to a low-texture band. Both frames are files on disk, one JPEG encode further on than the pair refetch_panos --measure compares.",
  "summary": {
   "measured": 78,
   "bottom": {
    "ratio_p10": 0.15896927406445813,
    "ratio_median": 0.5911680985872989,
    "ratio_p90": 0.7232041126623677,
-   "n_sharper": 0
+   "n_sharper": 0,
+   "n_equal_lap_var": 0
   },
   "horizon": {
    "ratio_p10": 0.9999999248463973,
    "ratio_median": 1.000072494188016,
    "ratio_p90": 1.6790850968260533,
-   "n_sharper": 44
+   "n_sharper": 44,
+   "n_equal_lap_var": 25
   },
   "n_bottom_sharper_than_horizon": 0,
   "bottom_over_horizon_ratio_median": 0.4399209659507767

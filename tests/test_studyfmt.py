@@ -108,6 +108,55 @@ class TestNum:
         assert json.dumps({'x': studyfmt.num(float('nan'))}, allow_nan=False) == '{"x": null}'
 
 
+class TestPercentile:
+    """It moved here from two study scripts that held character-identical copies of it. Same decision as
+    `num`: a percentile of an empty group is undefined, and 0.0 would read as a measurement."""
+
+    def test_an_empty_series_is_undefined_not_zero(self):
+        assert studyfmt.percentile([], 0.5) is None
+
+    @pytest.mark.parametrize('q,expected', [(0.0, 1), (0.1, 1), (0.5, 3), (0.9, 5), (1.0, 5)])
+    def test_it_is_nearest_rank_over_the_sorted_series(self, q, expected):
+        assert studyfmt.percentile([5, 1, 3, 2, 4], q) == expected
+
+    def test_it_returns_a_value_that_is_in_the_series(self):
+        """Nearest rank rather than an interpolated quantile: every caller reports the figure as one of
+        the panoramas it measured, and half-way between two of them is not one of them."""
+        values = [1.0, 2.0]
+        assert studyfmt.percentile(values, 0.5) in values
+
+    def test_one_value_is_every_percentile_of_itself(self):
+        assert studyfmt.percentile([7.5], 0.0) == studyfmt.percentile([7.5], 1.0) == 7.5
+
+    def test_its_undefined_answer_is_printable_and_writable(self):
+        """The pairing that motivates keeping it beside the other two: its None goes straight into `fmt`
+        on a summary line and into `num` in an allow_nan=False artifact."""
+        assert studyfmt.fmt(studyfmt.percentile([], 0.5), '.3f') == 'n/a'
+
+
+class TestDisplayPath:
+    """The same crash in a different disguise: `os.path.relpath` raises across Windows drives, which kills
+    a run on its last line with the artifact already on disk."""
+
+    def test_a_path_inside_the_root_prints_relative(self):
+        root = os.path.join('C:' + os.sep if os.name == 'nt' else os.sep, 'repo')
+        assert studyfmt.display_path(os.path.join(root, 'reports', 'data', 'x.json'), root) == \
+            os.path.join('reports', 'data', 'x.json')
+
+    def test_a_path_outside_the_root_prints_absolute_rather_than_a_pile_of_dotdots(self):
+        root = os.path.join(os.sep, 'repo')
+        got = studyfmt.display_path(os.path.join(os.sep, 'mnt', 'store', 'x.json'), root)
+        assert os.path.isabs(got) and os.pardir not in got
+
+    def test_a_relpath_that_raises_falls_back_instead_of_killing_the_run(self, monkeypatch):
+        """The cross-drive case, simulated: the suite cannot assume two drives exist, and on POSIX
+        relpath never raises at all — so the behaviour is pinned at the seam that does."""
+        monkeypatch.setattr(studyfmt.os.path, 'relpath',
+                            lambda *a, **k: (_ for _ in ()).throw(ValueError('different mounts')))
+        assert studyfmt.display_path(os.path.join('somewhere', 'x.json'), 'root') == \
+            os.path.abspath(os.path.join('somewhere', 'x.json'))
+
+
 def _rawlabels_csv(tmp_path, rows, name='city.csv'):
     """Write a rawLabels-shaped CSV carrying only the columns the shared loader reads."""
     df = pd.DataFrame(rows)
@@ -339,5 +388,7 @@ class TestOneDefinition:
         for name in scripts:
             with open(os.path.join(SCRIPTS, name), encoding='utf-8') as f:
                 text = f.read()
-            for decl in ('def _fmt(', 'def _num(', 'def fmt(', 'def num('):
+            for decl in ('def _fmt(', 'def _num(', 'def fmt(', 'def num(',
+                         'def percentile(', 'def _percentile(',
+                         'def display_path(', 'def _display_path('):
                 assert decl not in text, f'{name} declares its own {decl}'

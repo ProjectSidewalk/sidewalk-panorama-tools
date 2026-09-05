@@ -21,6 +21,13 @@ import csv
 import gzip
 import os
 import random
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPORTS = os.path.dirname(HERE)
+REPO = os.path.dirname(REPORTS)
+sys.path.insert(0, HERE)
+from studyfmt import display_path  # noqa: E402
 
 
 def read_rows(path):
@@ -77,7 +84,7 @@ def main(argv=None):
              ', '.join('%s=%d' % kv for kv in frame_breakdown(subset).most_common())))
     if args.write:
         write_rows(args.write, subset, fieldnames)
-        print('wrote %s' % os.path.relpath(args.write) if not os.path.isabs(args.write) else args.write)
+        print('wrote %s' % display_path(args.write, REPO))
     return 0
 
 

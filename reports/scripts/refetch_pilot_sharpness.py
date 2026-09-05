@@ -16,8 +16,22 @@ so measure that directly: the variance of a 4-neighbour Laplacian over each band
 the re-fetched one. An upscaled-from-256 band has had its highest octave removed, so its Laplacian variance
 is lower than a native band's; a native band re-encoded at the same JPEG quality should have about the same.
 The horizon band is again the control - both eras served it at full size, so its ratio is what "no change"
-looks like under the same two encodes - and this time the control IS like-for-like, because a ratio within
-a band does not depend on the band's texture level.
+looks like - and this time it is like-for-like in the way the MAE control was not, because a ratio within a
+band does not depend on that band's texture level.
+
+Read what the control actually is, though, before leaning on it. This script compares two files on disk,
+and `n_horizon_identical` counts the panoramas whose horizon band came back **bit-identical**: Google
+returned the same tile bodies, the stitch is a paste, and our JPEG encode is deterministic, so the stored
+file's horizon rows are reproduced exactly. For those panoramas the control is an identity rather than a
+measurement - which is the strongest possible statement about the OTHER band (no encoder difference can be
+hiding in a bottom-band ratio measured on the same pair) and no statement at all about how much a JPEG
+re-encode on its own would move a low-texture band's Laplacian variance. The committed tile pair
+(tests/test_refetch_pilot_report.py, section 5) is what settles that second question; this script does not.
+
+Note also that this metric and `refetch_panos --measure` are not computed on the same pair. `--measure`
+compares the stored file against the fresh stitch held in memory, BEFORE the save; this compares it against
+the saved file. One JPEG encode apart, which is why the same band on the same panorama can read 1.36 luma
+of difference there and bit-identical here.
 
 Reported per panorama, in pixels as stored, and summarised as the median new/old ratio per band. Needs both
 stores on the same machine and decodes two full frames per panorama, so it runs where the pilot ran.
@@ -38,7 +52,7 @@ REPO = os.path.dirname(REPORTS)
 for _p in (HERE, REPO):
     if _p not in sys.path:
         sys.path.insert(0, _p)
-from studyfmt import fmt, num  # noqa: E402
+from studyfmt import display_path, fmt, num, percentile  # noqa: E402
 from refetch_panos import band_pixel_rows  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None       # a real pano is past Pillow's decompression-bomb ceiling
@@ -87,20 +101,20 @@ def stored_path(store, pano_id):
     return os.path.join(store, pano_id[:2], pano_id + '.jpg')
 
 
-def percentile(values, q):
-    if not values:
-        return None
-    ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, max(0, int(round(q * (len(ordered) - 1)))))]
-
-
 def summarise(records):
     """Median and p10/p90 of the new/old ratio per band, and how many panoramas moved in each direction.
 
-    The decision-relevant comparison is bottom against horizon: the horizon ratio is what two encodes of the
-    same full-resolution imagery do to this statistic, so the bottom ratio net of it is the sharpening the
-    re-fetch actually delivered. `n_bottom_sharper_than_horizon` counts panoramas where the band that was
-    halved gained more than the band that was not.
+    The decision-relevant comparison is bottom against horizon: the horizon ratio is what the re-fetch does
+    to a band whose imagery did not change, so the bottom ratio net of it is the sharpening the re-fetch
+    actually delivered. `n_bottom_sharper_than_horizon` counts panoramas where the band that was halved
+    gained more than the band that was not.
+
+    `n_equal_lap_var` per band is what keeps that reading honest, and is reported rather than left to a
+    ratio rounded to 1.000: it counts the panoramas whose two frames give the same float32 variance to the
+    last bit. Over a band of tens of millions of pixels that is not a coincidence - it means the band's
+    pixels are identical - so those ratios are 1 by construction. A horizon `n_equal_lap_var` that is a
+    large share of `measured` says the tile bodies came back unchanged and our encode is deterministic, NOT
+    that an encode leaves the statistic alone. See the module docstring.
     """
     out = {'measured': len(records)}
     for band in ('bottom', 'horizon'):
@@ -110,6 +124,7 @@ def summarise(records):
             'ratio_median': num(percentile(ratios, 0.50)) if ratios else None,
             'ratio_p90': num(percentile(ratios, 0.90)) if ratios else None,
             'n_sharper': sum(1 for v in ratios if v > 1.0),
+            'n_equal_lap_var': sum(1 for r in records if r[band]['lap_var_old'] == r[band]['lap_var_new']),
         }
     paired = [(r['bottom']['ratio_new_over_old'], r['horizon']['ratio_new_over_old']) for r in records
               if r['bottom']['ratio_new_over_old'] is not None and r['horizon']['ratio_new_over_old'] is not None]
@@ -141,23 +156,30 @@ def main(argv=None):
         print('%s bottom %.3f horizon %.3f' % (pano_id, measured['bottom']['ratio_new_over_old'] or float('nan'),
                                               measured['horizon']['ratio_new_over_old'] or float('nan')))
     s = summarise(records)
-    print('\n%d measured | Laplacian variance new/old, median: bottom %s  horizon %s | bottom sharper than horizon in %d'
+    print('\n%d measured | Laplacian variance new/old, median: bottom %s  horizon %s | bottom sharper than '
+          'horizon in %d | band unchanged (equal variance): bottom %d, horizon %d'
           % (s['measured'], fmt(s['bottom']['ratio_median'], '.3f'), fmt(s['horizon']['ratio_median'], '.3f'),
-             s['n_bottom_sharper_than_horizon']))
+             s['n_bottom_sharper_than_horizon'],
+             s['bottom']['n_equal_lap_var'], s['horizon']['n_equal_lap_var']))
     if args.write:
         payload = {
             'question': 'Did re-fetching a fover-era panorama make its polar band sharper, measured directly '
                         'rather than through a mean absolute difference? (#73)',
             'method': 'Variance of the 4-neighbour Laplacian over each band, stored frame vs re-fetched frame, '
-                      'as a new/old ratio. The horizon band, served at full size in both eras, is the control: '
-                      'its ratio is what two JPEG encodes of unchanged imagery do to the statistic.',
+                      'as a new/old ratio. The horizon band, served at full size in both eras, is the '
+                      'control. n_equal_lap_var says how much of that control is an identity rather than a '
+                      'measurement: where it counts a panorama, the band came back bit-identical, so no '
+                      'encoder difference can be hiding in the same pair\'s bottom-band ratio - and nothing '
+                      'here bounds what an encode alone would do to a low-texture band. Both frames are '
+                      'files on disk, one JPEG encode further on than the pair refetch_panos --measure '
+                      'compares.',
             'summary': s,
             'records': records,
         }
         os.makedirs(os.path.dirname(os.path.abspath(args.write)), exist_ok=True)
         with open(args.write, 'w') as f:
             json.dump(payload, f, indent=1, allow_nan=False)
-        print('wrote %s' % args.write)
+        print('wrote %s' % display_path(args.write, REPO))
     return 0
 
 

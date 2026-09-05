@@ -1,5 +1,6 @@
-"""Two one-line helpers every study script needs, in one place: `num` for the artifact, `fmt` for
-stdout. Both exist because these studies report *undefined* quantities, and undefined is not zero.
+"""The small helpers every study script needs, in one place: `num` for the artifact, `fmt` for
+stdout, `percentile` for the quantity behind both, `display_path` for naming a file in a summary line.
+All four exist because these studies report *undefined* quantities, and undefined is not zero.
 
 The pattern that keeps producing bugs: an analysis function correctly returns `None` for a quantity
 that is undefined on its input -- a percentage with a zero denominator, a sample sd of one value, a
@@ -16,11 +17,17 @@ Each of those files was already internally inconsistent about it -- click_noise_
 block format-specs two values on one line and prints three more bare on the next -- which is what
 made the defect invisible. A shared helper makes the safe form the shorter one to type.
 
-Deliberately not a general utility module: these two functions are the whole surface, and both are
-about the same single decision (how a study represents "undefined").
+Deliberately not a general utility module: every function here is about one decision, how a study
+represents something it cannot print. `percentile` is the producer of the `None`s the other two
+consume - "a percentile of an empty group" is the third item in the list above, and it was defined
+twice, character for character, in `refetch_pilot.py` and `refetch_pilot_sharpness.py` before it moved
+here. `display_path` is the same crash in a different disguise: `os.path.relpath` raises outright when
+the two paths are on different Windows drives, which kills a run on its last line after the artifact
+has already been written, exactly as `format(None, '.1f')` does.
 """
 
 import math
+import os
 
 
 def num(x):
@@ -49,3 +56,35 @@ def fmt(value, spec='', missing='n/a'):
     if isinstance(value, float) and not math.isfinite(value):
         return missing
     return format(value, spec)
+
+
+def percentile(values, q):
+    """The q-th percentile of `values` by nearest rank, or None for an empty series.
+
+    None rather than 0.0 deliberately: a pilot that swapped nothing has an undefined median recovery,
+    and reporting it as zero would read as "we measured no recovery" rather than "we measured
+    nothing". Nearest rank rather than an interpolated quantile because every caller reports the
+    figure as one of the measurements it made, and half-way between two panoramas is not one.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, max(0, int(round(q * (len(ordered) - 1)))))
+    return ordered[idx]
+
+
+def display_path(path, start):
+    """`path` relative to `start` when it is inside it, absolute otherwise.
+
+    Study scripts print "wrote <path>" on their last line, and several take an arbitrary `--write`
+    destination: a pilot's raw output lives on the pano store, so the natural invocation reduces from
+    there. `os.path.relpath` raises ValueError when the two are on different Windows drives, which
+    would kill the run after the artifact had already been written - the studyfmt failure mode, in a
+    different disguise. A path outside `start` prints absolute rather than as a pile of `..`, which is
+    what a reader can actually act on.
+    """
+    try:
+        relative = os.path.relpath(path, start)
+    except ValueError:
+        return os.path.abspath(path)
+    return path if relative.startswith(os.pardir) else relative

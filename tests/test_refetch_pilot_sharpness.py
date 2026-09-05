@@ -122,9 +122,30 @@ class TestSummarise:
         assert s['bottom']['ratio_median'] is None and s['horizon']['ratio_median'] is None
         assert s['n_bottom_sharper_than_horizon'] == 0
 
-    def test_it_uses_the_shared_formatters(self):
+    def test_a_band_that_came_back_unchanged_is_counted_as_such(self):
+        """A ratio of 1.000 has two very different causes - the band was re-encoded and the statistic did
+        not move, or the band is the same pixels - and the second says the control is an identity rather
+        than a measurement. Equal variance to the last bit is how the second is recognised, so it is
+        reported rather than left for a reader to infer from a rounded ratio."""
+        same = {'pano_id': 'a', 'width': 16384, 'height': 8192,
+                'bottom': {'lap_var_old': 30.0, 'lap_var_new': 18.0, 'ratio_new_over_old': 0.6},
+                'horizon': {'lap_var_old': 400.0, 'lap_var_new': 400.0, 'ratio_new_over_old': 1.0}}
+        # Discrimination: a band that merely rounds to 1.000 must NOT be counted as unchanged.
+        nearly = {'pano_id': 'b', 'width': 16384, 'height': 8192,
+                  'bottom': {'lap_var_old': 30.0, 'lap_var_new': 18.0, 'ratio_new_over_old': 0.6},
+                  'horizon': {'lap_var_old': 400.0, 'lap_var_new': 400.02, 'ratio_new_over_old': 1.00005}}
+
+        s = sh.summarise([same, nearly])
+
+        assert s['horizon']['n_equal_lap_var'] == 1
+        assert s['bottom']['n_equal_lap_var'] == 0
+        assert s['horizon']['ratio_median'] == pytest.approx(1.0, abs=1e-4), 'both still round to 1.000'
+
+    def test_it_uses_the_shared_helpers(self):
         import studyfmt
         assert sh.fmt is studyfmt.fmt and sh.num is studyfmt.num
+        assert sh.percentile is studyfmt.percentile
+        assert sh.display_path is studyfmt.display_path
 
 
 class TestMain:

@@ -137,7 +137,9 @@ re-running.
 
 **`--fixed-after` is the one flag you must set deliberately.** It defaults to `2026-08-07`, the date the fix
 was merged, which is the earliest defensible answer. The right value is the date the scraper box actually
-picked the fix up: setting it late costs a wasted re-fetch, setting it early skips files that do need repair —
+picked the fix up — **`2026-09-01` for the current production box**, which ran a checkout 183 commits behind
+until the cutover ([history](history.md)), so everything it scraped between those two dates is `fover`-era
+and the default would skip it. Setting it late costs a wasted re-fetch, setting it early skips files that do need repair —
 but because `already_clean` is not ledgered, correcting it later and re-running picks those files up. The
 gate reads the file's mtime, and nothing else can tell a clean file from a `fover`-era one (finding 6 of the
 report), so mtime is load-bearing: a copy or restore that did not preserve mtimes makes every pano

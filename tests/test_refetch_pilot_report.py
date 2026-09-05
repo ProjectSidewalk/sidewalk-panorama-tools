@@ -11,6 +11,7 @@ markdown. The fixture-derived figures are recomputed from the bytes rather than 
 makes this file the artifact for section 5.
 """
 
+import collections
 import json
 import os
 import re
@@ -31,6 +32,7 @@ for _p in (REPO_ROOT, SCRIPTS):
 
 import refetch_pilot as rf  # noqa: E402
 import refetch_pilot_sharpness as sh  # noqa: E402
+from refetch_panos import _halve_and_restore  # noqa: E402
 
 REPORT = os.path.join(REPO_ROOT, 'reports', '2026-09-05-fover-refetch-pilot.md')
 
@@ -66,7 +68,7 @@ def has(report, value, spec='.3f'):
 class TestTheArtifactsAreWhatTheReportSaysTheyAre:
     def test_the_pilot_artifact_is_the_reducers_own_output(self, pilot):
         """The summary block must be recomputable from the records and outcome counts it sits beside."""
-        counts = __import__('collections').Counter(pilot['summary']['outcomes'])
+        counts = collections.Counter(pilot['summary']['outcomes'])
         assert rf.summarise(counts, pilot['records']) == pilot['summary']
         assert pilot['probed'] == '2026-09-05'
 
@@ -82,7 +84,7 @@ class TestTheArtifactsAreWhatTheReportSaysTheyAre:
         import gzip
         with gzip.open(os.path.join(DATA, '2026-09-05-fover-refetch-pilot-ledger.csv.gz'), 'rt', newline='') as f:
             rows = [r for r in csv.reader(f) if len(r) == 2 and r[0] != 'pano_id']
-        counted = __import__('collections').Counter(r[1] for r in rows)
+        counted = collections.Counter(r[1] for r in rows)
         assert dict(counted) == pilot['summary']['outcomes']
         assert re.search(r'absent\s+1\b', run_stdout) and re.search(r'dims_changed\s+3\b', run_stdout)
         assert re.search(r'gone\s+118\b', run_stdout) and re.search(r'replaced\s+78\b', run_stdout)
@@ -142,10 +144,17 @@ class TestSection3TheMaeMetric:
         assert f['16384x8192']['n'] == 71 and has(report, f['16384x8192']['median'])
         assert f['13312x6656']['n'] == 7 and has(report, f['13312x6656']['median']) and f['13312x6656']['n_positive'] == 4
 
-    def test_the_six_times_texture_claim_is_the_two_halving_costs(self, pilot, report):
-        s = pilot['summary']
-        assert 5.5 < s['horizon_band_halving_cost_median'] / s['bottom_band_halving_cost_median'] < 6.5
-        assert 'six' in report
+    def test_the_texture_claim_is_the_two_laplacian_variances_not_the_halving_costs(self, sharpness, report):
+        """§3 says the horizon carries an order of magnitude more texture. The evidence has to be the
+        Laplacian variances: halve-and-restore cost is the statistic §5 uses to *identify* an upscale, and
+        the fresh bottom band is one, so reading it as texture in §3 and as an upscale in §5 would be the
+        same number doing two incompatible jobs. The report says so explicitly; this holds it to it."""
+        stored = {band: statistics.median(r[band]['lap_var_old'] for r in sharpness['records'])
+                  for band in ('bottom', 'horizon')}
+
+        assert 10 < stored['horizon'] / stored['bottom'] < 12
+        assert 'about 11×' in report or '11×' in report
+        assert 'partly smooth asphalt and partly the upscale' in report
 
 
 class TestSection4Sharpness:
@@ -157,6 +166,23 @@ class TestSection4Sharpness:
         assert s['bottom']['n_sharper'] == 0 and '0 of 78' in report
         assert s['horizon']['n_sharper'] == 44 and '44 of 78' in report
         assert s['n_bottom_sharper_than_horizon'] == 0
+
+    def test_the_horizon_control_is_an_identity_for_a_third_of_the_sample(self, sharpness, report):
+        """The claim §4 rests on, stated as what it is. 25 of 78 horizon bands give the same float32
+        variance to the last bit across a 40-million-pixel band, which is pixel identity, not a coincidence
+        and not a re-encode: those ratios are 1 by construction. Reported because the difference matters
+        both ways - it removes any encoder confound from the same pair's bottom-band ratio, and it means
+        §4 measures nothing at all about what an encode does to a low-texture band. 0 of 78 in the bottom
+        band is the discrimination: the two stores are not the same directory."""
+        s = sharpness['summary']
+
+        assert s['horizon']['n_equal_lap_var'] == 25 and s['bottom']['n_equal_lap_var'] == 0
+        assert '**25** of the' in report and 'bit-identical' in report
+        assert 'before** it is saved' in report, 'the two metrics compare different pairs; say so'
+        identical = [r for r in sharpness['records']
+                     if r['horizon']['lap_var_old'] == r['horizon']['lap_var_new']]
+        assert len(identical) == 25
+        assert all(r['horizon']['ratio_new_over_old'] == 1.0 for r in identical)
 
     def test_the_rerendered_split_and_the_absolute_medians(self, sharpness, pilot, report):
         mae = {r['pano_id']: r['horizon']['mae_old_vs_new'] for r in pilot['records']}
@@ -201,11 +227,10 @@ class TestSection5TheTilePair:
                (('lanczos', Image.LANCZOS), ('bicubic', Image.BICUBIC), ('bilinear', Image.BILINEAR))}
         return f256, g512, h512, ups
 
-    @staticmethod
-    def halve_and_restore(a):
-        im = Image.fromarray(a.astype('uint8'))
-        return np.asarray(im.resize((a.shape[1] // 2, a.shape[0] // 2), Image.LANCZOS)
-                          .resize((a.shape[1], a.shape[0]), Image.LANCZOS), dtype=np.float32)
+    # The pass's own filter, imported rather than re-implemented: section 5's halving costs are a claim
+    # about what `refetch_panos --measure` measures, so a local copy here would let _halve_and_restore
+    # change to another resampling filter with the report's numbers going stale and this test still green.
+    halve_and_restore = staticmethod(_halve_and_restore)
 
     def test_the_laplacian_table(self, tiles, report):
         _f256, g512, h512, ups = tiles

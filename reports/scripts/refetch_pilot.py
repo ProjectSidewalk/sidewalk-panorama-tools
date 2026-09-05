@@ -39,7 +39,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPORTS = os.path.dirname(HERE)
 REPO = os.path.dirname(REPORTS)
 sys.path.insert(0, HERE)
-from studyfmt import fmt, num  # noqa: E402
+from studyfmt import display_path, fmt, num, percentile  # noqa: E402
 
 # The outcomes that cost a full tile fan-out - i.e. the panoramas whose imagery we actually saw. The
 # undersized and clean-refetch rates are about the tiles, so they are measured over these.
@@ -53,21 +53,6 @@ SERVED_OUTCOMES = FETCHED_OUTCOMES + ('frame_grew',)
 # A horizon-band old-vs-new MAE above this means Google re-rendered the panorama since it was scraped, not
 # that we re-encoded it: see summarise() for the gap in the first pilot's distribution this sits in.
 RERENDERED_HORIZON_MAE = 3.0
-
-
-def _display_path(path):
-    """`path` relative to the repo when it is inside it, absolute otherwise.
-
-    Unlike the other study scripts, --write here takes an arbitrary destination: the pilot's raw output
-    lives on the pano store, so the natural invocation reduces from there. os.path.relpath raises
-    outright when the two are on different Windows drives, which would kill the run on its last line
-    after the artifact had already been written - the studyfmt failure mode, in a different disguise.
-    """
-    try:
-        relative = os.path.relpath(path, REPO)
-    except ValueError:
-        return os.path.abspath(path)
-    return path if relative.startswith(os.pardir) else relative
 
 
 def read_outcomes(ledger_path):
@@ -97,19 +82,6 @@ def read_measurements(path):
     return records
 
 
-def percentile(values, q):
-    """The q-th percentile by nearest rank, or None for an empty series.
-
-    None rather than 0.0 deliberately: a pilot that swapped nothing has an undefined median recovery,
-    and reporting it as zero would read as "we measured no recovery" rather than "we measured nothing".
-    """
-    if not values:
-        return None
-    ordered = sorted(values)
-    idx = min(len(ordered) - 1, max(0, int(round(q * (len(ordered) - 1)))))
-    return ordered[idx]
-
-
 def summarise(counts, records):
     """The artifact's summary block. Every rate is None when its denominator is zero."""
     considered = sum(counts.values())
@@ -123,6 +95,7 @@ def summarise(counts, records):
     bottom = [r['bottom']['mae_old_vs_new'] for r in records if 'bottom' in r]
     horizon = [r['horizon']['mae_old_vs_new'] for r in records if 'horizon' in r]
     halving = [r['bottom']['halve_restore_new'] for r in records if 'bottom' in r]
+    horizon_halving = [r['horizon']['halve_restore_new'] for r in records if 'horizon' in r]
 
     def rate(n, d):
         return num(100.0 * n / d) if d else None
@@ -153,6 +126,8 @@ def summarise(counts, records):
     same = [r for r in records if 'horizon' in r
             and r['horizon']['mae_old_vs_new'] <= RERENDERED_HORIZON_MAE]
     same_recovered = [r['recovered_above_noise'] for r in same if 'recovered_above_noise' in r]
+    same_bottom = [r['bottom']['mae_old_vs_new'] for r in same if 'bottom' in r]
+    same_horizon = [r['horizon']['mae_old_vs_new'] for r in same]
 
     return {
         'panoramas_considered': considered,
@@ -175,22 +150,25 @@ def summarise(counts, records):
         'bottom_band_mae_median': num(percentile(bottom, 0.50)) if bottom else None,
         'horizon_band_mae_median': num(percentile(horizon, 0.50)) if horizon else None,
         'bottom_band_halving_cost_median': num(percentile(halving, 0.50)) if halving else None,
-        'horizon_band_halving_cost_median': num(percentile(
-            [r['horizon']['halve_restore_new'] for r in records if 'horizon' in r], 0.50)) if records else None,
+        # Guarded on its own series, not on `records`: a measurements file whose rows carry no horizon
+        # band would reach num(None) here and die on the run's last line, which is the one failure
+        # studyfmt exists to prevent. Every sibling figure in this dict guards the same way.
+        'horizon_band_halving_cost_median': num(percentile(horizon_halving, 0.50)) if horizon_halving else None,
         'by_frame': by_frame,
         'rerendered': {
             'threshold_horizon_mae': RERENDERED_HORIZON_MAE,
             'n': len(rerendered),
-            'pct_of_measured': rate(len(rerendered), len(records)),
+            # Denominator is the records the split actually saw, not every record: a row with no
+            # horizon band lands in neither arm, and counting it below would report a rate against a
+            # population the threshold was never applied to.
+            'pct_of_measured': rate(len(rerendered), len(rerendered) + len(same)),
         },
         'same_rendering': {
             'n': len(same),
             'recovered_above_noise_median': num(percentile(same_recovered, 0.50)) if same_recovered else None,
             'n_positive': sum(1 for v in same_recovered if v > 0),
-            'bottom_band_mae_median': num(percentile(
-                [r['bottom']['mae_old_vs_new'] for r in same], 0.50)) if same else None,
-            'horizon_band_mae_median': num(percentile(
-                [r['horizon']['mae_old_vs_new'] for r in same], 0.50)) if same else None,
+            'bottom_band_mae_median': num(percentile(same_bottom, 0.50)) if same_bottom else None,
+            'horizon_band_mae_median': num(percentile(same_horizon, 0.50)) if same_horizon else None,
         },
     }
 
@@ -243,7 +221,7 @@ def main(argv=None):
             # allow_nan=False: a NaN reaching the artifact aborts the write rather than shipping a token
             # no JSON reader accepts - the 4,916-bare-NaN lesson from the photometa census.
             json.dump(payload, f, indent=1, allow_nan=False)
-        print('\nwrote %s' % _display_path(args.write))
+        print('\nwrote %s' % display_path(args.write, REPO))
     return 0
 
 
