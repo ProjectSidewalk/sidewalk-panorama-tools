@@ -151,11 +151,16 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Returns queued responses in order; records the URLs asked for."""
+    """Returns queued responses in order; records the URLs asked for, and the whole call.
+
+    `calls` carries the kwargs as well, because WHERE a secret rides - params or headers - is the thing
+    TestTheTokenStaysOutOfURLs has to see, and the url argument alone cannot show it.
+    """
 
     def __init__(self, *responses):
         self.responses = list(responses)
         self.urls = []
+        self.calls = []
 
     def __enter__(self):
         return self
@@ -165,6 +170,7 @@ class FakeSession:
 
     def get(self, url, **kwargs):
         self.urls.append(url)
+        self.calls.append((url, kwargs))
         return self.responses.pop(0)
 
 
@@ -195,7 +201,20 @@ class TestMapillaryTransientConditions:
     """These are properties of the RUN. Returning failure would ledger them permanently - an expired token
     for one night would blacklist every Mapillary pano in the city - so they must raise instead (#41)."""
 
-    @pytest.mark.parametrize('status', [401, 403, 500])
+    # Only 404 is permanent; every other non-200 must raise. Parametrised over a SPREAD rather than the
+    # statuses we happen to have seen, because the last gap here was exactly that kind of omission. The list
+    # was [401, 403, 500] on the reasoning that those are what a bad token produces; when richmond-va's token
+    # stopped working, graph.mapillary.com answered 400 - the one status not covered. The code deployed then
+    # predated this contract and ledgered any non-200 as permanent, so it wrote off 162 panos as "Mapillary
+    # has no image" (161 of them wrongly - the 162nd was an id that had since left the corpus). The city sat
+    # at 21 of 182 until pano_id_log.csv was hand-edited on the store (2026-09-01), because replacing the
+    # token recovered nothing on its own. Pinning the rule rather than the observed instances is what stops
+    # the next unanticipated status - 402, 410, 451 - from being another gap.
+    #
+    # 500 is a contract case, not a wire case: _session()'s status_forcelist retries 429/500/502/503/504, so
+    # in production those surface as RetryError rather than HTTPError. FakeSession bypasses the adapter.
+    # 400/401/403 are the ones that reach raise_for_status() for real.
+    @pytest.mark.parametrize('status', [400, 401, 402, 403, 410, 422, 451, 500])
     def test_metadata_http_errors_raise(self, monkeypatch, tmp_path, mapillary_token, status):
         monkeypatch.setattr(downloaders.mapillary, '_session',
                             lambda: FakeSession(FakeResponse(status_code=status)))
@@ -248,6 +267,65 @@ class TestMapillaryTransientConditions:
         assert downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO) \
             == DownloadResult.success
         assert os.listdir(tmp_path / '12') == ['%s.jpg' % MAPILLARY_PANO['pano_id']]
+
+
+class TestTheTokenStaysOutOfURLs:
+    """A token in the query string is a token in the logs, and these logs are not private.
+
+    `scrape.log` is written to the SHARED pano store, and DownloadRunner logs `str(e)` for every failed
+    pano. requests puts the full URL into an HTTPError's message, so `params={'access_token': ...}` writes
+    the live secret into that file in cleartext. Not hypothetical: richmond-va's `scrape.log` carried a
+    working token after the 2026-09-01 run whose own token had expired. Header auth is the form Graph API
+    v4 documents, and was confirmed against the live API (HTTP 200, thumb_original_url returned) before
+    this change landed.
+    """
+
+    @staticmethod
+    def _url_on_the_wire(call):
+        """Build the URL through requests' OWN machinery, so this test cannot pass by construction.
+
+        Asserting on the bare `url` argument would be vacuous - it never holds the token either way,
+        since params are merged in at prepare() time. Preparing the request is precisely what makes
+        putting access_token back into params fail here.
+        """
+        url, kwargs = call
+        return requests.Request('GET', url, params=kwargs.get('params')).prepare().url
+
+    def _healthy_session(self, monkeypatch):
+        session = FakeSession(FakeResponse(payload={'thumb_original_url': 'https://cdn/x.jpg'}),
+                              FakeResponse(chunks=[jpeg_bytes(120)]))
+        monkeypatch.setattr(downloaders.mapillary, '_session', lambda: session)
+        return session
+
+    def test_the_metadata_url_never_carries_the_token(self, monkeypatch, tmp_path, mapillary_token):
+        session = self._healthy_session(monkeypatch)
+
+        downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        wire_url = self._url_on_the_wire(session.calls[0])
+        assert 'test-token' not in wire_url
+        # The request still has to ask for the field it needs, or "no token in the URL" is trivially
+        # satisfiable by sending no params at all.
+        assert 'fields=thumb_original_url' in wire_url
+
+    def test_the_token_is_still_sent_as_an_oauth_header(self, monkeypatch, tmp_path, mapillary_token):
+        """The other half: dropping the token entirely would also pass the test above, and would take
+        every Mapillary pano in the city down with a 401 the next night."""
+        session = self._healthy_session(monkeypatch)
+
+        downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert session.calls[0][1]['headers'] == {'Authorization': 'OAuth test-token'}
+
+    def test_the_signed_image_url_is_fetched_with_no_credentials_of_ours(self, monkeypatch, tmp_path,
+                                                                        mapillary_token):
+        """The CDN URL is already signed and short-lived; sending our token to it would widen the blast
+        radius of a leak from one metadata URL to every image request."""
+        session = self._healthy_session(monkeypatch)
+
+        downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert 'test-token' not in str(session.calls[1])
 
 
 class TestGsvAtomicSave:

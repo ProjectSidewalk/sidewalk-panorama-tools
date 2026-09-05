@@ -57,10 +57,32 @@ def _random_header():
     return random.choice(headers_list)
 
 
+class _TimeoutHTTPAdapter(HTTPAdapter):
+    """HTTPAdapter that applies a default timeout to every request.
+
+    `requests` sets no default timeout of its own, so without this one hung connection stalls a nightly cron
+    run indefinitely - not for a long time, forever. Both sessions below need it, for the same reason from
+    opposite ends: streetlevel's photometa requests carry no timeout and expose no per-request hook to add
+    one, and the image path's zoom probes never set one either (#65 item 5).
+    """
+
+    def __init__(self, *args, timeout=30, **kwargs):
+        self._timeout = timeout
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):
+        # Session.send always passes timeout as a kwarg (None when the caller set nothing), so a plain
+        # setdefault would never fire.
+        if kwargs.get('timeout') is None:
+            kwargs['timeout'] = self._timeout
+        return super().send(request, **kwargs)
+
+
 def _request_session():
+    """The session the zoom probes ride on: retries, plus the default timeout _TimeoutHTTPAdapter adds."""
     session = requests.Session()
     retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
-    adapter = HTTPAdapter(max_retries=retry)
+    adapter = _TimeoutHTTPAdapter(max_retries=retry, timeout=30)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
     return session
@@ -568,30 +590,11 @@ def _raise_if_blocked(response, *args, **kwargs):
                 raise DepthBlockedError("redirected to %s" % (url))
 
 
-class _TimeoutHTTPAdapter(HTTPAdapter):
-    """HTTPAdapter that applies a default timeout to every request.
-
-    streetlevel's internal requests carry no timeout, so without this a single hung connection would stall a
-    nightly cron run indefinitely.
-    """
-
-    def __init__(self, *args, timeout=30, **kwargs):
-        self._timeout = timeout
-        super().__init__(*args, **kwargs)
-
-    def send(self, request, **kwargs):
-        # Session.send always passes timeout as a kwarg (None when the caller set nothing), so a plain
-        # setdefault would never fire.
-        if kwargs.get('timeout') is None:
-            kwargs['timeout'] = self._timeout
-        return super().send(request, **kwargs)
-
-
 def _depth_session():
     """Build the requests.Session handed to streetlevel for photometa requests.
 
-    Same retry policy as _request_session(), plus a default timeout (streetlevel never sets one), backoff jitter,
-    and the block-detection hook.
+    Same retry policy and default timeout as _request_session(), plus backoff jitter and the
+    block-detection hook.
 
     Deliberately does NOT borrow config.headers_list the way the tile downloader does. streetlevel sends its own
     Accept/Host/Referer/User-Agent on every photometa request, and in requests a request-level header beats a
