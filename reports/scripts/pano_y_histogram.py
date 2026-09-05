@@ -103,9 +103,10 @@ def analyse(rows):
                 pano, {'pano_id': pano, 'width': r.get('pano_width'), 'height': height,
                        'band_labels': 0, 'min_pano_y': y})
             entry['band_labels'] += 1
-            # The shallowest label on this panorama - the one whose crop reaches furthest up into the
-            # full-resolution band, and so the one with the least to gain. Carried so a pass can be
-            # prioritised by it without re-pulling 100 MB of cvMetadata.
+            # The shallowest band label on this panorama - the one whose crop reaches furthest up into the
+            # full-resolution band. Carried so a study can stratify by depth into the band without
+            # re-pulling 100 MB of cvMetadata, and to give the committed work-list a deterministic order.
+            # It is NOT a processing priority: refetch_panos.py shuffles its candidates.
             entry['min_pano_y'] = min(entry['min_pano_y'], y)
             out['rows_past_edge'][(y - bottom) // TILE] += 1
             out['bottom_band_by_label_type'][r.get('label_type_id')] += 1
@@ -195,9 +196,11 @@ def write_worklist(path, entries):
     in a diff but small enough to commit, and committing it is what makes the pass reproducible - the
     alternative is a work-list that lives in whoever ran the script's home directory.
 
-    Sorted by min_pano_y, deepest first, so the head of the file is the panoramas with most to gain: a label
-    further past the band edge has more of its crop inside the half-resolution region. A pass cut short by
-    a budget therefore stops having done the most valuable part, not a random part.
+    Sorted deepest-first by min_pano_y, then by pano_id, so the committed file is deterministic and diffs
+    cleanly between regenerations. That is all the order is for. refetch_panos.py shuffles its candidates -
+    a stable order would let a persistently failing head block stall every run against its breaker - so a
+    pass cut short by a budget did a random slice of this list, not its head, and nothing about processing
+    priority should be read into the ordering here.
     """
     ordered = sorted(entries.values(), key=lambda e: (-e['min_pano_y'], e['pano_id']))
     with gzip.open(path, 'wt', newline='', encoding='utf8') as f:
@@ -214,21 +217,27 @@ def build_parser():
     parser.add_argument('cities', nargs='*', default=None, metavar='CITY-FQDN',
                         help='Project Sidewalk hostnames. Default: %s.' % ', '.join(DEFAULT_CITIES))
     parser.add_argument('--write-worklist', action='store_true',
-                        help='Also write the affected panorama ids per city, as '
-                             'reports/data/%s-fover-refetch-worklist-<city>.csv.gz, for refetch_panos.py.'
-                             % WORKLIST_DATE)
+                        help='Write the affected panorama ids per city, as '
+                             'reports/data/%s-fover-refetch-worklist-<city>.csv.gz, for refetch_panos.py. '
+                             'Implies --no-analysis: a work-list is an instruction to act now, while the '
+                             'histogram is a measurement dated %s.'
+                             % (WORKLIST_DATE, os.path.basename(DATA)[:10]))
     parser.add_argument('--no-analysis', action='store_true',
-                        help='Do not rewrite the dated histogram artifact or its figure. Use this with '
-                             '--write-worklist: the histogram is a measurement taken on %s and quoted by '
-                             'date in reports/2026-08-07-cbk-tile-resolution.md, so re-running the script '
-                             'months later to build a work-list would silently restate a finding under a '
-                             'label saying it was measured then.'
+                        help='Do not rewrite the dated histogram artifact or its figure. The histogram is a '
+                             'measurement taken on %s and quoted by date in '
+                             'reports/2026-08-07-cbk-tile-resolution.md, so re-running the script months '
+                             'later would silently restate a finding under a label saying it was measured '
+                             'then. Implied by --write-worklist.'
                              % os.path.basename(DATA)[:10])
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.write_worklist:
+        # A work-list run is never also a re-measurement: the two flags were always paired in the docs, and
+        # forgetting the second one rewrote a dated artifact with today's data under yesterday's date.
+        args.no_analysis = True
     cities = args.cities or DEFAULT_CITIES
     os.makedirs(os.path.dirname(DATA), exist_ok=True)
     results, per_city_y = [], {}

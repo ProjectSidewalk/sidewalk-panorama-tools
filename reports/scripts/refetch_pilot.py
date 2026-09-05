@@ -12,8 +12,11 @@ decision has been waiting on since 2026-08-07:
    re-fetched, and it is the argument the report could not dismiss - for a panorama Google has dropped,
    the choice is half resolution now or nothing later.
 
-2. **Whether the re-fetch is clean.** How many came back with zero undersized tiles, i.e. whether
-   dropping `fover` still holds against the live endpoint.
+2. **Whether the re-fetch is clean.** Whether dropping `fover` still holds against the live endpoint.
+   `refetch_panos.py` does not ledger `undersized` - it stops the run after three in a row and exits 1 -
+   so a pilot that ran to completion and exited 0 is itself the evidence, and its ledger holds no
+   undersized rows. `undersized_pct` below stays for ledgers written before that rule, when every outcome
+   was ledgered.
 
 3. **Whether the recovered detail survives our own JPEG.** This is the one nobody has measured, and the
    reason `--measure` reports two bands. CBK served the horizon rows at full size in BOTH eras, so their
@@ -64,7 +67,12 @@ def _display_path(path):
 
 
 def read_outcomes(ledger_path):
-    """Outcome counts from a refetch_log.csv, ignoring the header and any torn line."""
+    """Outcome counts from a refetch_log.csv, ignoring the header and any torn line.
+
+    The ledger holds only the outcomes that cost requests (refetch_panos.LEDGERED_OUTCOMES); the five
+    zero-request ones are recomputed every run and printed, never written. So `panoramas_considered` in the
+    summary is the panoramas that reached Google, plus whatever zero-request rows an older ledger carries.
+    """
     counts = collections.Counter()
     with open(ledger_path, newline='') as f:
         for row in csv.reader(f):

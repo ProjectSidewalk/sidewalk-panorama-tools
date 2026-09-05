@@ -176,6 +176,13 @@ class TestReadWorklist:
 
         assert rp.read_worklist(path) == [{'pano_id': 'abc', 'height': 6656}]
 
+    def test_an_infinite_dim_is_junk_too_not_a_crash(self, tmp_path):
+        """int(float('inf')) is an OverflowError, not a ValueError - a different exception from the same
+        junk cell, and one that would otherwise take the whole work-list down."""
+        path = self.write(tmp_path / 'w.csv', ['abc,inf,6656'])
+
+        assert rp.read_worklist(path) == [{'pano_id': 'abc', 'height': 6656}]
+
 
 class TestWalkStore:
     def test_it_finds_every_stored_panorama_and_ignores_everything_else(self, tmp_path):
@@ -187,13 +194,37 @@ class TestWalkStore:
         assert sorted(r['pano_id'] for r in rp.walk_store(str(tmp_path))) == \
             ['aaBBccDDeeFFggHHiiJJ', 'zzYYxxWWvvUUttSSrrQQ']
 
+    def test_a_jpg_outside_the_shard_layout_is_not_a_panorama(self, tmp_path):
+        """A crops tree under the store root holds one <label_id>.jpg per label; a stray file at the top
+        level or a file in the wrong shard is not a pano either. Each would come back `absent` - the
+        reconstructed <id[:2]>/<id>.jpg path does not exist - which is a summary line of noise per file."""
+        store_with_pano(tmp_path, 'aaBBccDDeeFFggHHiiJJ')
+        crops = tmp_path / 'crops' / '1'
+        crops.mkdir(parents=True)
+        (crops / '12345.jpg').write_bytes(b'\xff\xd8')
+        (tmp_path / 'stray.jpg').write_bytes(b'\xff\xd8')
+        (tmp_path / 'aa' / 'zzWrongShardXXXXXXXX.jpg').write_bytes(b'\xff\xd8')
+
+        assert [r['pano_id'] for r in rp.walk_store(str(tmp_path))] == ['aaBBccDDeeFFggHHiiJJ']
+
 
 class TestLoadLedger:
-    def test_it_reads_permanent_outcomes_and_skips_the_header(self, tmp_path):
+    def test_it_reads_ledgered_outcomes_and_skips_the_header(self, tmp_path):
         path = tmp_path / rp.LEDGER_FILENAME
         path.write_text('pano_id,status\nabc,replaced\ndef,gone\n')
 
         assert rp.load_ledger(str(path)) == {'abc', 'def'}
+
+    def test_zero_request_and_undersized_rows_are_re_examined_not_honoured(self, tmp_path):
+        """An earlier version of this script ledgered every outcome. Those rows must not settle anything:
+        `already_clean` and `dims_changed` were decided under that run's flags, the other three cost nothing
+        to re-decide, and `undersized` is a verdict on the request rather than the panorama."""
+        path = tmp_path / rp.LEDGER_FILENAME
+        path.write_text('pano_id,status\n' + ''.join(
+            '%s,%s\n' % (status, status) for status in
+            ('absent', 'unreadable', 'not_affected', 'already_clean', 'dims_changed', 'undersized')))
+
+        assert rp.load_ledger(str(path)) == set()
 
     def test_a_torn_line_costs_one_re_examined_panorama_not_a_crash(self, tmp_path):
         """The #55 lesson: a ledger damaged by a crash mid-append must degrade, not take every future run
@@ -405,7 +436,7 @@ class TestRefetchPanoRefusals:
 # --- the run loop ---------------------------------------------------------------------------------------
 
 class TestRefetchStore:
-    def test_permanent_outcomes_are_ledgered_and_transient_ones_are_not(self, tmp_path, monkeypatch):
+    def test_request_spending_outcomes_are_ledgered_and_transient_ones_are_not(self, tmp_path, monkeypatch):
         store_with_pano(tmp_path, 'aaAAAAAAAAAAAAAAAAAA')
         store_with_pano(tmp_path, 'bbBBBBBBBBBBBBBBBBBB')
 
@@ -445,6 +476,104 @@ class TestRefetchStore:
         counts = rp.refetch_store(str(tmp_path), [{'pano_id': PANO}])
 
         assert counts['already_clean'] == 1
+
+    def test_zero_request_outcomes_are_not_ledgered_so_a_flag_can_be_corrected_later(self, tmp_path,
+                                                                                    monkeypatch):
+        """The scenario docs/ops.md walks the operator into: run with the default --fixed-after, learn the
+        box only picked the fix up two weeks later, re-run with the right date. A ledgered `already_clean`
+        would have locked the first run's wrong date in for every file in that window."""
+        store_with_pano(tmp_path, mtime='2026-08-10')
+        no_seams(monkeypatch)
+        first = rp.refetch_store(str(tmp_path), [{'pano_id': PANO}],
+                                 fixed_after=rp._parse_fixed_after('2026-08-07'))
+        assert first['already_clean'] == 1
+        assert rp.load_ledger(str(tmp_path / rp.LEDGER_FILENAME)) == set()
+
+        fetched = stub_seams(monkeypatch)
+        second = rp.refetch_store(str(tmp_path), [{'pano_id': PANO}],
+                                  fixed_after=rp._parse_fixed_after('2026-08-20'))
+
+        assert second['replaced'] == 1
+        assert len(fetched) == 1
+
+    def test_dims_changed_is_re_decided_when_allow_dims_change_is_turned_on_later(self, tmp_path,
+                                                                                  monkeypatch):
+        """Same rule, the other flag: 72 of Seattle's 7,914 stop at dims_changed under the default, and a
+        later pass that opts into re-framing must reach them."""
+        store_with_pano(tmp_path)
+        record = {'pano_id': PANO, 'width': 16384, 'height': 8192}
+        no_seams(monkeypatch)
+        assert rp.refetch_store(str(tmp_path), [record])['dims_changed'] == 1
+
+        fetched = stub_seams(monkeypatch)
+        counts = rp.refetch_store(str(tmp_path), [record], allow_dims_change=True)
+
+        assert counts['replaced'] == 1
+        assert fetched == [(PANO, 16384, 8192, 5)]
+
+    def test_undersized_is_not_ledgered_and_three_in_a_row_stop_the_run(self, tmp_path, monkeypatch):
+        """#73's tripwire, made to trip. If `fover` or an equivalent ever comes back, every fan-out returns
+        undersized bodies; a per-pano permanent row would burn the whole work-list against a bug in the URL
+        and exit 0 while doing it. So: unledgered, and the run stops after MAX_CONSECUTIVE_UNDERSIZED."""
+        n = rp.MAX_CONSECUTIVE_UNDERSIZED + 3
+        ids = ['p%02d%s' % (i, 'X' * 17) for i in range(n)]
+        for pano_id in ids:
+            store_with_pano(tmp_path, pano_id)
+        fetched = stub_seams(
+            monkeypatch, fetch=lambda p, w, h, z: gsv.StitchedPano(Image.new('RGB', (w, h), (1, 2, 3)),
+                                                                   320, False))
+
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': p} for p in ids])
+
+        assert counts['stop_reason'] == 'undersized'
+        assert counts['undersized'] == rp.MAX_CONSECUTIVE_UNDERSIZED
+        assert len(fetched) == rp.MAX_CONSECUTIVE_UNDERSIZED
+        assert rp.load_ledger(str(tmp_path / rp.LEDGER_FILENAME)) == set()
+        assert 'undersized' not in (tmp_path / rp.LEDGER_FILENAME).read_text()
+
+    def test_a_clean_fan_out_resets_the_undersized_count_but_gone_does_not(self, tmp_path, monkeypatch):
+        """Half of any work-list is `gone`, and those never fetched a tile - so they must not break up a
+        run of undersized fan-outs, or the breaker could never trip on a real work-list. A fan-out that
+        came back clean is evidence the other way, and does reset it."""
+        ids = ['p%02d%s' % (i, 'X' * 17) for i in range(7)]
+        for pano_id in ids:
+            store_with_pano(tmp_path, pano_id)
+        # Order is shuffled, so script the verdicts by call number rather than by id.
+        script = iter(['undersized', 'gone', 'undersized', 'replaced', 'undersized', 'gone', 'undersized'])
+        state = {}
+
+        def resolve(pano_info):
+            state['verdict'] = next(script)
+            return None if state['verdict'] == 'gone' else (int(pano_info['width']),
+                                                             int(pano_info['height']), 5)
+
+        def fetch(p, w, h, z):
+            return gsv.StitchedPano(Image.new('RGB', (w, h), (1, 2, 3)),
+                                    320 if state['verdict'] == 'undersized' else 0, False)
+
+        stub_seams(monkeypatch, resolve=resolve, fetch=fetch)
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': p} for p in ids])
+
+        # undersized, (gone), undersized = 2 in a row; replaced resets; undersized, (gone), undersized = 2.
+        assert 'stop_reason' not in counts
+        assert counts['undersized'] == 4 and counts['gone'] == 2 and counts['replaced'] == 1
+
+    def test_candidates_are_shuffled_so_a_failing_head_block_cannot_stall_every_run(self, tmp_path,
+                                                                                     monkeypatch):
+        """A transient failure leaves no ledger row, and the breaker stops the run after five in a row. On a
+        stable order, five persistently failing panoramas at the head would therefore stop every run before
+        it reached new work. The shuffle is what breaks that up, and it deliberately discards the order a
+        work-list was written in - so this pins that it happens."""
+        shuffled = []
+        monkeypatch.setattr(rp.random, 'shuffle', lambda seq: shuffled.append(list(seq)))
+        ids = ['p%02d%s' % (i, 'X' * 17) for i in range(3)]
+        for pano_id in ids:
+            store_with_pano(tmp_path, pano_id)
+        stub_seams(monkeypatch)
+
+        rp.refetch_store(str(tmp_path), [{'pano_id': p} for p in ids])
+
+        assert shuffled == [[{'pano_id': p} for p in ids]]
 
     def test_dry_run_makes_no_requests_and_writes_no_ledger(self, tmp_path, monkeypatch):
         store_with_pano(tmp_path)
@@ -674,6 +803,56 @@ class TestMeasureRecovery:
         assert record['recovered_above_noise'] == expected['recovered_above_noise']
         assert record['bottom']['mae_old_vs_new'] == expected['bottom']['mae_old_vs_new']
 
+    def test_a_swap_that_fails_after_measuring_leaves_no_record(self, tmp_path, monkeypatch):
+        """The record is computed before the swap (it needs the old bytes) but must be kept only if the
+        swap lands. A save that raises - a full store, the case atomic_output_path exists for - leaves the
+        panorama unledgered, so the next run fetches and measures it again; a record kept from the failed
+        attempt would make that panorama count twice in the pilot."""
+        store_with_pano(tmp_path)
+        old, new = self.synthetic_pair()
+
+        def half_written_save(target, *args, **kwargs):
+            with open(target, 'wb') as f:
+                f.write(b'\xff\xd8truncated')
+            raise OSError('store went away mid-write')
+
+        new.save = half_written_save
+        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', lambda info: (64, 6656, 5))
+        monkeypatch.setattr(gsv, 'frame_covers_pano', lambda *a: True)
+        monkeypatch.setattr(gsv, 'fetch_pano_image', lambda p, w, h, z: gsv.StitchedPano(new, 0, False))
+        monkeypatch.setattr(Image, 'open', lambda *a, **k: old)
+
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': PANO}], measure=True)
+
+        assert counts['transient_failures'] == 1
+        assert not (tmp_path / rp.MEASUREMENTS_FILENAME).exists()
+
+    def test_measurements_are_written_as_each_swap_lands_not_at_the_end(self, tmp_path, monkeypatch):
+        """--measure is the mode that doubles peak memory, so an OOM kill is the likeliest way a pilot dies,
+        and a record held until the run's `finally` dies with it. Asserted from inside the second panorama's
+        fetch: by then the first one's line must already be on disk."""
+        ids = ['aaBBccDDeeFFggHHiiJJ', 'zzYYxxWWvvUUttSSrrQQ']
+        for pano_id in ids:
+            store_with_pano(tmp_path, pano_id)
+        old, new = self.synthetic_pair()
+        lines_seen_by_second_fetch = []
+
+        def fetch(p, w, h, z):
+            path = tmp_path / rp.MEASUREMENTS_FILENAME
+            lines_seen_by_second_fetch.append(len(path.read_text().splitlines()) if path.exists() else 0)
+            return gsv.StitchedPano(new.copy(), 0, False)
+
+        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', lambda info: (64, 6656, 5))
+        monkeypatch.setattr(gsv, 'frame_covers_pano', lambda *a: True)
+        monkeypatch.setattr(gsv, 'fetch_pano_image', fetch)
+        monkeypatch.setattr(Image, 'open', lambda *a, **k: old.copy())   # one per `with`, so each closes its own
+
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': p} for p in ids], measure=True)
+
+        assert counts['replaced'] == 2
+        assert lines_seen_by_second_fetch == [0, 1]
+        assert len((tmp_path / rp.MEASUREMENTS_FILENAME).read_text().splitlines()) == 2
+
 
 # --- the band table, against the sweep it came from --------------------------------------------------------
 
@@ -722,7 +901,10 @@ class TestWorklistGeneration:
         assert entry['band_labels'] == 3
         assert entry['min_pano_y'] == 5700
 
-    def test_it_is_ordered_deepest_first_so_a_truncated_pass_did_the_valuable_part(self, tmp_path):
+    def test_it_is_written_in_a_deterministic_order(self, tmp_path):
+        """Deepest-first by min_pano_y, then pano_id, so the committed artifact is stable and diffs cleanly
+        between regenerations. That is all the order is for: refetch_panos.py shuffles its candidates (see
+        TestRefetchStore), so nothing about processing priority follows from it."""
         import pano_y_histogram as h
 
         a = h.analyse([self.cvmetadata('shallowAAAAAAAAAAAAAA', 5700),
@@ -746,6 +928,25 @@ class TestWorklistGeneration:
 
         assert a['skipped_no_pano_dimensions'] == 1
         assert a['panos_with_bottom_band_label'] == {}
+
+    def test_write_worklist_leaves_the_dated_histogram_artifact_untouched(self, tmp_path, monkeypatch):
+        """--write-worklist implies --no-analysis. The histogram is a measurement dated 2026-08-07 and quoted
+        by date in the report; a work-list is regenerated whenever a city's labelling moves on. Before the
+        implication, the two flags had to be remembered together, and forgetting the second rewrote the
+        dated artifact with today's data."""
+        import pano_y_histogram as h
+
+        monkeypatch.setattr(h, 'fetch', lambda city: [self.cvmetadata('inTheBandAAAAAAAAAAAA', 6000)])
+        monkeypatch.setattr(h, 'DATA', str(tmp_path / 'histogram.json'))
+        monkeypatch.setattr(h, 'FIGURE', str(tmp_path / 'histogram.png'))
+        monkeypatch.setattr(h, 'worklist_path', lambda city: str(tmp_path / 'w.csv.gz'))
+
+        assert h.main(['sidewalk-test.example.edu', '--write-worklist']) == 0
+
+        assert [r['pano_id'] for r in rp.read_worklist(str(tmp_path / 'w.csv.gz'))] == \
+            ['inTheBandAAAAAAAAAAAA']
+        assert not (tmp_path / 'histogram.json').exists()
+        assert not (tmp_path / 'histogram.png').exists()
 
     def test_the_count_the_histogram_reports_is_the_length_of_the_worklist(self):
         """The report's headline (7,914 of Seattle's 105,181) and the file a pass consumes must be the same
@@ -862,6 +1063,8 @@ class TestTheCommandLineSurface:
         assert 'would_fetch' in out
         assert open(stored, 'rb').read() == before
         assert not os.path.exists(os.path.join(str(tmp_path), rp.LEDGER_FILENAME))
+        # "writes nothing" includes the log file: a RotatingFileHandler creates its file on construction.
+        assert not os.path.exists(os.path.join(str(tmp_path), rp.LOG_FILENAME))
 
     def test_from_store_walks_the_store_instead_of_a_worklist(self, tmp_path, monkeypatch, capsys):
         no_seams(monkeypatch)
@@ -871,13 +1074,35 @@ class TestTheCommandLineSurface:
 
         assert 'Considering 1 panorama(s) from the store' in capsys.readouterr().out
 
-    def test_it_exits_zero_when_every_outcome_is_permanent(self, tmp_path, monkeypatch, capsys):
-        """`gone` and friends are this tool working correctly, not a failure - exiting nonzero on them
-        would make a cron run cry wolf for the expected case."""
+    def test_it_exits_zero_when_nothing_went_wrong(self, tmp_path, monkeypatch, capsys):
+        """`gone`, `absent` and friends are this tool working correctly, not a failure - exiting nonzero on
+        them would make a cron run cry wolf for the expected case."""
         no_seams(monkeypatch)
-        # No image on disk: `absent`, which is permanent and costs zero requests.
+        # No image on disk: `absent`, which costs zero requests.
         assert rp.main([str(tmp_path), '--worklist', self.worklist(tmp_path)]) == 0
         assert 'absent' in capsys.readouterr().out
+
+    def test_it_exits_one_when_a_fetch_came_back_undersized(self, tmp_path, monkeypatch, capsys):
+        """The tripwire has to reach cron: an undersized body means the CBK request is costing resolution
+        again, which is a bug to fix before the pass is worth running."""
+        store_with_pano(tmp_path)
+        stub_seams(monkeypatch, fetch=lambda p, w, h, z: gsv.StitchedPano(
+            Image.new('RGB', (w, h), (1, 2, 3)), 320, False))
+
+        assert rp.main([str(tmp_path), '--worklist', self.worklist(tmp_path)]) == 1
+
+        out = capsys.readouterr().out
+        assert 'undersized' in out
+        assert 'check the CBK request parameters' in out
+
+    def test_a_dry_run_logs_to_stderr_without_opening_a_file(self, tmp_path, capsys):
+        rp.configure_logging(None)
+        logging.error('dry-run line')
+
+        err = capsys.readouterr().err
+        assert 'dry-run line' in err
+        assert 'logging to stderr' not in err   # not the fallback path, so no warning either
+        assert list(tmp_path.iterdir()) == []
 
     def test_it_exits_one_when_a_failure_was_transient(self, tmp_path, monkeypatch, capsys):
         """The other half of the same rule: a transient failure is unledgered and will retry, so cron

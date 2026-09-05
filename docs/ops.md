@@ -103,26 +103,50 @@ rule it out.
 | `dims_changed` | the work-list's frame disagrees with the stored one — see below | 0 |
 | `gone` | Google no longer serves this pano at any zoom | ≤2 |
 | `frame_grew` | Google now serves this pano **larger**, so this frame would fetch a crop of it | ≤4 |
-| `upscaled` | only a fallback zoom was available; swapping would be a 4× **downgrade** | full |
-| `undersized` | a tile still came back below 512 px, so there is nothing to gain | full |
+| `upscaled` | only a fallback zoom was available; swapping would be a 4× **downgrade** | zoom-3 grid (≤32) |
+| `undersized` | a tile still came back below 512 px: the CBK request is costing resolution again. Not swapped, **not ledgered**, and three in a row stop the run with exit 1 | full |
 | `too_black` | the fresh stitch has more black than a real panorama does | full |
 | `replaced` | swapped in | full |
 
-Every one of those is remembered in `<storage-dir>/refetch_log.csv`, with the same rule the two nightly
-ledgers use: **a row means the outcome is permanent.** Anything transient — a failed tile, a mostly-black
-stitch, a full store — is counted, logged, and left unledgered, so it retries on the next run. The four
-zero-request outcomes are what keep a pass affordable, and they also mean a re-run after a finished sweep
-costs nothing even if the ledger is deleted: a repaired file's mtime is newer than `--fixed-after`.
+The outcomes that cost requests — every one except `undersized` — are remembered in
+`<storage-dir>/refetch_log.csv`, with the same rule the two nightly ledgers use: **a row means the outcome is
+permanent.** Anything transient — a failed tile, a mostly-black stitch, a full store — is counted, logged, and
+left unledgered, so it retries on the next run.
+
+The five zero-request outcomes are **not** ledgered, on purpose. Each is recomputed from the store in
+microseconds, so a row would buy nothing — and two of them are properties of the flags rather than of the
+pano: `already_clean` moves with `--fixed-after`, `dims_changed` with `--allow-dims-change` and whichever
+work-list was passed. Ledgering them would lock one run's flag values in. Not ledgering them is also what makes
+a re-run after a finished sweep cost nothing even if the ledger is deleted: a repaired file's mtime is newer
+than `--fixed-after`, so it comes back `already_clean`.
+
+`undersized` is the other exception, in the other direction. With `fover` gone no tile should ever come back
+below 512 px, so one that does means the request is costing resolution again — a property of the URL, not of
+the pano. A permanent row per pano would burn the whole work-list against a bug in the request and exit 0
+while doing it. Instead the run stops after three consecutive undersized fetches, exits 1 if it saw any, and
+ledgers none of them; fix the request (`tests/test_gsv_tile_contract.py` pins the parameters) before
+re-running.
 
 **`--fixed-after` is the one flag you must set deliberately.** It defaults to `2026-08-07`, the date the fix
 was merged, which is the earliest defensible answer. The right value is the date the scraper box actually
-picked the fix up: setting it late costs a wasted re-fetch, setting it early skips files that do need repair.
+picked the fix up: setting it late costs a wasted re-fetch, setting it early skips files that do need repair —
+but because `already_clean` is not ledgered, correcting it later and re-running picks those files up. The
+gate reads the file's mtime, and nothing else can tell a clean file from a `fover`-era one (finding 6 of the
+report), so mtime is load-bearing: a copy or restore that did not preserve mtimes makes every pano
+`already_clean`, which is the safe direction but means the pass silently does nothing. A dry run's
+`already_clean` count is the tell.
 
 **`--allow-dims-change` is off, and re-framing is a separate decision.** By default the fetch uses the
 *stored* file's frame, not the work-list's. Where the two disagree — [4.6% of a sampled
 store](../reports/2026-08-10-store-coverage.md), nearly all of it the store holding an older, smaller frame —
 the pano stops at `dims_changed` rather than being silently re-framed, because changing a pano's dimensions
 moves every label's pixel coordinates relative to the image.
+
+**Replacing a pano does not refresh crops already cut from it.** [Existing crops are the cropper's resume
+marker and are never re-cut](cropper.md#outcomes-exit-code-and-re-runs), so after a pass every crop cut from a `replaced` pano's
+polar band is still the half-resolution one, and nothing on disk says so. The ledger is the list: delete the
+crops of every pano with a `replaced` row (`grep ,replaced refetch_log.csv`) and re-run the cropper to pick the
+repair up. The crops are the point of the pass, so plan that step with it.
 
 ### Getting a work-list
 
@@ -131,9 +155,12 @@ analysis, which is what makes this tractable. `reports/scripts/pano_y_histogram.
 every label's `pano_y` against the measured bands and writes the panos with a label in one:
 
 ```bash
-python3 reports/scripts/pano_y_histogram.py sidewalk-seattle.cs.washington.edu \
-    --write-worklist --no-analysis
+python3 reports/scripts/pano_y_histogram.py sidewalk-seattle.cs.washington.edu --write-worklist
 ```
+
+`--write-worklist` leaves the dated histogram artifact and its figure alone (it implies `--no-analysis`): the
+histogram is a measurement dated 2026-08-07 and quoted by date in the report, while a work-list is regenerated
+whenever a city's labelling has moved on.
 
 That is ~7.5% of Seattle's labelled panoramas and ~4.5% of Columbus's. `--from-store` is the escape hatch for
 a wider pass — every stored pano, which for the full store is several orders of magnitude more traffic, so
@@ -158,9 +185,11 @@ that pass is ~78 GB and ~4.0M tile requests — and about half of it will return
 One 16384×8192 pano is 512 tile requests and ~10 MB, so bandwidth is roughly the size of the slice being
 repaired, and about half of it buys nothing because the pano is gone. `--min-pano-interval` is the throttle
 that matters (it paces whole panos, not tiles), `--max-runtime` and `--max-panos` bound a session, and the
-run stops itself after five consecutive transient failures rather than spending the rest of the budget on a
-wall. `--measure` records what each re-fetch actually recovered to `refetch_measurements.jsonl`; it decodes
-the stored frame as well as the fresh one, so it roughly doubles peak memory and is meant for a pilot.
+run stops itself after five consecutive transient failures — or three consecutive undersized fetches — rather
+than spending the rest of the budget on a wall. Candidates are shuffled before the run, so a session that hits
+its budget did a random slice of the work-list, not its head. `--measure` records what each re-fetch actually
+recovered to `refetch_measurements.jsonl`, one line per swap as it lands; it decodes the stored frame as well
+as the fresh one, so it roughly doubles peak memory and is meant for a pilot.
 
 ## The `log.csv` columns
 
