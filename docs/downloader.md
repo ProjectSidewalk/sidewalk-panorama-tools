@@ -93,7 +93,99 @@ Three consequences worth knowing:
 
 ## Nightly deployment
 
-One crontab line per city, calling the venv's interpreter directly — no wrapper script:
+The fleet runs as **one queue, from one crontab line**, pinned to one named timezone. `scrape_queue.py` walks
+a manifest of cities and starts the next one as soon as the previous one exits.
+
+```cron
+# Vixie/Debian cron reads CRON_TZ; a systemd timer takes Timezone= instead. Without it the schedule is UTC
+# and drifts an hour against Seattle every March and November.
+CRON_TZ=America/Los_Angeles
+SHELL=/bin/bash
+BASH_ENV=/home/ubuntu/.scraper.env
+
+0 20 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
+              /srv/sidewalk-panorama-tools/scrape_queue.py \
+              --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
+              --max-runtime 540 --city-max-runtime 240 \
+              -- --all-panos --skip-depth
+```
+
+**Why a queue rather than 53 slots**
+([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The old shape was one line
+per city, staggered every 15–30 minutes across the whole UTC day. Each city took the next free slot at
+onboarding and the ring wrapped, so **32 of 53 cities ran between 07:00 and 19:00 Pacific** — the working day
+on the hosts the runs actually load, which are the pano store and the app servers, both in Seattle whatever
+timezone the city itself is in. The fleet's measured work is ~16 minutes a day in steady state, so the whole
+ring fits comfortably in one night; the cases that are *not* steady state — a newly-onboarded city, a depth
+backfill, a large new batch of labels — are exactly the ones you do not want landing mid-afternoon. A queue
+also serialises **by construction**, which is what the stagger was for, and cannot develop the gaps and
+collisions that 53 hand-picked slot numbers do as cities come and go.
+
+**Pin a real timezone, not an offset.** `America/Los_Angeles`, not `UTC-7`: the point is to follow DST rather
+than re-derive the hour by hand twice a year. Not per-city local time either — Project Sidewalk is global and
+there is no shared night, but the load is not in the city.
+
+### The manifest
+
+Two required columns, `city_id` and `fqdn`:
+
+```csv
+city_id,fqdn
+seattle-wa,sidewalk-sea.cs.washington.edu
+columbus-oh,sidewalk-columbus.cs.washington.edu
+#richmond-va,sidewalk-richmond.cs.washington.edu
+```
+
+* Each city is scraped into `<store-root>/<city_id>`.
+* **The fqdn cannot be derived from the city_id** — `seattle-wa` is served by `sidewalk-sea`, `columbus-oh` by
+  `sidewalk-columbus` — so the two travel together.
+* **A row whose `city_id` starts with `#` is skipped**, which is how a city is taken out for a night now that
+  it has no crontab line of its own to comment out.
+* `--cities` has no default on purpose: which cities a host scrapes is a deployment fact, and a wrong default
+  would quietly scrape the wrong fleet. There is a worked example at
+  [`samples/scrape_queue_cities.csv`](../samples/scrape_queue_cities.csv); the real one lives on the host,
+  next to the crontab.
+
+To generate it from the per-city crontab it replaces:
+
+```bash
+{ echo 'city_id,fqdn'
+  crontab -l | grep -oP 'DownloadRunner\.py \K\S+ \S+' \
+    | sed -E 's#(\S+) .*/([^/ ]+)$#\2,\1#' | sort
+} > /etc/sidewalk/cities.csv
+```
+
+### Options that matter in production
+
+| flag | what it does |
+|---|---|
+| `--max-runtime` | The **window**. Stops *starting* new cities once spent; a city already running is never interrupted. Size it to the night, not to the work. |
+| `--city-max-runtime` | Passed to each city as `DownloadRunner`'s own `--max-runtime`, then hard-killed `--kill-grace` minutes later (default 5). **Always set it** — without it one hung city holds the whole queue open, which is the head-of-line cost of serialising. |
+| `--only CITY_ID` | Re-run one city through the same machinery — the lock, the budgets, the summary — rather than by hand. Repeatable. |
+| `--no-rotate` | Keep manifest order. By default the starting point rotates daily, so a night that truncates does not always drop the same tail cities. |
+| `--dry-run` | Print the order and the exact command per city. Takes no lock, so it is safe to run while the queue is running. |
+| `-- ...` | Everything after `--` is passed to every city verbatim. |
+
+**Exit codes**, since cron's mail-on-failure is the alert channel: `0` every city ran and succeeded, `1`
+something failed, timed out, **or was never reached**, `2` usage, `3` another queue run holds the lock. A city
+the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53 cities a night
+is the silent failure this design exists to surface. If a night's truncation is expected and accepted, the
+window is the wrong size.
+
+**One queue at a time.** The queue takes an advisory lock (default: the system temp directory, *not* the store
+— the store is a network mount whose lock semantics are not guaranteed, and the overlap being prevented is
+between runs on this host). The OS releases it when the holding process dies, so a killed run does not wedge
+the fleet the way a leftover lock file would. Nothing in this repo had a lock before: with 53 unsynchronised
+slots, a slow run and the next slot could put two processes on one city's `pano_id_log.csv`, `log.csv` and
+`scrape.log`.
+
+The queue writes its own rotating `scrape_queue.log` at the **store root**, beside the per-city directories.
+It answers "what ran last night, in what order, and how long did each city take" — which no per-city log can,
+because none of them can see the ring.
+
+### One city, by hand
+
+The queue is a driver, not a replacement for the runner. A single city is still just:
 
 ```cron
 0 1 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
@@ -219,17 +311,18 @@ upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
 equirectangular image. Requires a token:
 
 1. Create one at <https://www.mapillary.com/dashboard/developers> (default read scopes are enough).
-2. Export it as `MAPILLARY_ACCESS_TOKEN` before running:
+2. Export it as `MAPILLARY_ACCESS_TOKEN` before running — read it rather than typing it on the command line,
+   so it never lands in `~/.bash_history`:
 
 ```bash
-export MAPILLARY_ACCESS_TOKEN='MLY|...'
+read -rs MAPILLARY_ACCESS_TOKEN && export MAPILLARY_ACCESS_TOKEN
 python3 DownloadRunner.py <sidewalk-fqdn> <storage-dir>
 ```
 
 The downloader sends it as an `Authorization: OAuth` header, never as an `access_token` query parameter, so
-it cannot reach a URL — and `requests` puts the full URL into an `HTTPError`'s message, which
-`DownloadRunner` logs verbatim for a failed pano. That is not a hypothetical: production's `scrape.log`
-held a live token in cleartext, on the shared store, after a night of Mapillary 400s.
+it cannot reach a URL — which matters because `requests` puts the full URL into an `HTTPError`'s message,
+and `DownloadRunner` logs that verbatim for a failed pano. That is not a hypothetical: production's
+`scrape.log` held a live token in cleartext, on the shared store, after a night of Mapillary 400s.
 
 **What the ledger learns from Mapillary.** Two answers are permanent and write a `downloaded=0` row: a 404,
 and a 200 whose body names the image and carries no `thumb_original_url`. Everything else raises and leaves
@@ -247,7 +340,11 @@ arrived.
 
 **Under cron, keep it out of the crontab body.** `crontab -l` output lands in backups, screenshots and
 pastes, and the file itself outlives the person who wrote it. Put it in a mode-`600` file and let bash source
-it for every line — cron sets `BASH_ENV` in the child's environment, and non-interactive bash reads it:
+it for every line — the crontab sets `BASH_ENV`, cron propagates that into each job's environment, and
+non-interactive bash then reads it. **These two lines have to sit above every job line**: Vixie/Debian cron
+accumulates environment assignments as it parses the crontab top to bottom, so a `SHELL=`/`BASH_ENV=` placed
+after the job lines takes effect for none of them — the same kind of silent no-op as a token that never
+arrived, above.
 
 ```cron
 SHELL=/bin/bash

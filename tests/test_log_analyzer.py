@@ -775,3 +775,117 @@ class TestTheWholeReport:
         assert status == 1
         assert 'Seattle' in out
         assert 'Could not parse log' in out
+
+
+# --- Two eras of start_time in one file (#101) ------------------------------------------------------------
+#
+# Rows written before #101 are `str(datetime.now())`: a bare local reading. Rows written after carry a UTC
+# offset. Production log.csv files are append-only and years old, so every real file will hold both for as
+# long as it exists, and read_log has to place both on the same timeline. `utc=True` is what does that: it
+# converts an offset-carrying row and reads a bare one as UTC, which is correct because every scraper host
+# has run UTC.
+
+def aware_days_ago(n, offset_hours, extra_hours=0):
+    """A timestamp exactly n days (plus extra_hours) before the analyzer's clock, rendered in a zone
+    offset_hours from UTC - i.e. the same INSTANT the naive helper above would produce, written the way a
+    non-UTC host writes it.
+
+    The point of the offset is that the wall reading and the instant disagree. A parser that keeps the wall
+    reading and drops the offset places the row offset_hours away from where it belongs.
+    """
+    instant = datetime.now(timezone.utc) - timedelta(days=n, hours=extra_hours)
+    return instant.astimezone(timezone(timedelta(hours=offset_hours))).isoformat(sep=' ',
+                                                                                timespec='microseconds')
+
+
+class TestARowThatNamesItsOffsetIsPlacedByItsInstant:
+    """Staleness is `(now_utc - start_time).days > stale_days`, and `.days` floors - so misreading the clock
+    by 7 hours moves a city across the threshold whenever the run sits within 7 hours of a day boundary.
+    Both directions have a cost, and both are here.
+    """
+
+    def test_a_recent_run_written_west_of_utc_is_not_reported_stale(self, tmp_path):
+        """3 days 20 hours old is 3 days, and 3 is not > 3. Read as a bare local time from a -07:00 host it
+        looks 4 days 3 hours old, and the city is reported CRITICAL for a scrape that ran last night."""
+        log = write_log(tmp_path / 'log.csv',
+                        [make_row(aware_days_ago(3, offset_hours=-7, extra_hours=20))])
+
+        issues = analyze.analyze_city('richmond-va', log, stale_days=3)
+
+        assert not [i for i in issues if 'days old' in i['msg']], issues
+
+    def test_an_old_run_written_east_of_utc_is_still_reported_stale(self, tmp_path):
+        """The missed-alert direction, which is the more expensive one: a city that has not run for over
+        four days must not read as three because its host is +02:00. A monitor that under-reports is worse
+        than no monitor, because it is trusted."""
+        log = write_log(tmp_path / 'log.csv',
+                        [make_row(aware_days_ago(4, offset_hours=2, extra_hours=1))])
+
+        issues = analyze.analyze_city('zurich', log, stale_days=3)
+
+        assert [i for i in issues if i['level'] == 'CRITICAL' and 'days old' in i['msg']], issues
+
+
+class TestALogHoldingBothErasStillParses:
+
+    def test_naive_and_offset_rows_land_on_one_timeline(self, tmp_path):
+        """The migration case, and the one that breaks loudest: without utc=True a column mixing the two
+        shapes comes back as object dtype, and analyze_city dies on `.dt` a few lines later. main() has no
+        per-city try/except, so that ends the report for every city after this one."""
+        rows = [make_row(days_ago(4)),                                   # pre-#101 row
+                make_row(days_ago(3)),
+                make_row(aware_days_ago(1, offset_hours=-7)),            # post-#101 row
+                make_row(aware_days_ago(0, offset_hours=-7))]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        df = analyze.read_log(log)
+
+        assert len(df) == 4, 'no row of either era may be dropped'
+        assert df["start_time"].dt.tz is not None, 'the column must be tz-aware for the comparisons below'
+        assert df["start_time"].is_monotonic_increasing, \
+            'sorting must order the two eras by instant, not by their raw text'
+
+    def test_a_mixed_era_log_still_reaches_the_alert_rules(self, tmp_path):
+        """Parsing is not the whole contract: the rules downstream have to keep working on the parsed frame.
+        A bare `.dropna()`-style fix would satisfy the test above and still leave this one dead."""
+        rows = [make_row(days_ago(6 - i), image_fail=100 * i) for i in range(4)]
+        rows += [make_row(aware_days_ago(2 - i, offset_hours=-7), image_fail=100 * (4 + i)) for i in range(3)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        issues = analyze.analyze_city('seattle-wa', log, stale_days=3)
+
+        assert [i for i in issues if 'failures growing fast' in i['msg']], issues
+
+    def test_a_genuinely_unparseable_timestamp_is_still_dropped(self, tmp_path):
+        """utc=True must not soften errors="coerce" into accepting junk."""
+        log = write_log(tmp_path / 'log.csv',
+                        [make_row('not-a-timestamp'), make_row(aware_days_ago(0, offset_hours=-7))])
+
+        assert len(analyze.read_log(log)) == 1
+
+
+class TestTheAnalyzerParsesWhatTheRunnerWrites:
+    """The coupling #101 is actually about. Nothing else in either suite reads column 0 of one module with
+    the other module's parser, which is how "written local, compared against UTC" survived unnoticed.
+    """
+
+    def test_a_timestamp_from_the_runner_round_trips_through_read_log(self, tmp_path):
+        import DownloadRunner
+
+        written = DownloadRunner.log_timestamp()
+        log = write_log(tmp_path / 'log.csv', [make_row(written)])
+
+        parsed = analyze.read_log(log)["start_time"].iloc[0]
+
+        assert parsed.tz is not None
+        # Same instant, not merely the same characters: this is what makes staleness arithmetic correct.
+        assert parsed.to_pydatetime() == datetime.fromisoformat(written)
+
+    def test_a_fresh_run_from_the_runner_is_not_stale(self, tmp_path):
+        """The end-to-end statement in the units operators care about: a city that just ran is clean, on a
+        host at any offset. This is the assertion that fails if either half of the pair regresses."""
+        import DownloadRunner
+
+        log = write_log(tmp_path / 'log.csv', [make_row(DownloadRunner.log_timestamp())])
+
+        assert analyze.analyze_city('seattle-wa', log, stale_days=3) == []

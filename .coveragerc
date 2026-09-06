@@ -59,9 +59,11 @@ exclude_also =
 
 # A ratchet, not a target. It exists to catch a deleted test file or a new unmeasured module, not to turn
 # every PR into a coverage negotiation. Set from the measured number, never lowered, raised only by the PR
-# that earns it. 98 against a measured 99.4% on a Windows dev box - and 99.4% on CI too: three posix_only
-# file-mode assertions skip here and run there, so CI's figure is never the lower of the two, but they
-# assert modes on files other tests already wrote, so they reach no new lines and it is not higher either.
+# that earns it. 98 against a measured 99.5% on a Windows dev box - and 99.5% on CI too: five posix_only
+# tests skip here and run there, so CI's figure is never the lower of the two, but none of them reaches a
+# line the rest of the suite does not, so it is not higher either. Three assert file modes on files other
+# tests already wrote; the two in test_scrape_queue.py cover POSIX signal behaviour whose logic is also
+# driven, platform-independently, through a Popen-shaped stand-in.
 # (The eight SIDEWALK_LIVE_TILE_TESTS skips are opt-in everywhere, CI included.)
 #
 # The remainder is enumerable rather than unknown, and nothing here carries a `# pragma: no cover`, because
@@ -72,6 +74,8 @@ exclude_also =
 #   - gsv.py's `_get_response(stream=False)` arm: a dead affordance whose fix is deletion, not a test.
 #   - gsv.py's photometa early return for a message carrying no depth planes.
 #   - DownloadRunner's fallback_success counter arm: no code path in the suite produces that verdict.
+#   - refetch_panos.py's measurements flush on the ledger-close path, and its --min-pano-interval sleep
+#     branch, which needs a fetch fast enough to still owe time when the next one starts.
 #   - three partial branches that need an input no caller produces - mapillary's falsy-chunk skip, and
 #     analyze.py's two loop guards.
 fail_under = 98
