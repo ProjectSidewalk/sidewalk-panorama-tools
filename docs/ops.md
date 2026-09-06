@@ -33,8 +33,10 @@ permanent.** Transient failures leave no row and retry automatically on the next
 **`pano_id_log.csv` gates the image phase** (`pano_id,downloaded`):
 
 * `1` — image on disk, or a prior success.
-* `0` — the source has nothing for this pano: no imagery at any zoom, or unknowable dimensions. A permanent
-  verdict.
+* `0` — the source has nothing for this pano: no imagery at any zoom, or unknowable dimensions; for
+  Mapillary, a 404 or a record that names the image and carries no original-resolution rendition. A
+  permanent verdict. A Mapillary error envelope on a 200, or a body that does not name the image, is not a
+  verdict and leaves no row.
 * **no row** — never attempted, or the last attempt failed transiently (a network blip, a failed tile, a full
   store). Retried next run.
 
@@ -61,6 +63,14 @@ picks them up.
   reason.
 
 ## Repairing `fover`-era panoramas
+
+> **Decided 2026-09-05: the `fover` pass does not run.** The [pilot](../reports/2026-09-05-fover-refetch-pilot.md)
+> re-fetched 200 Seattle panoramas against a copy of the store and found nothing to recover: the 512-px polar
+> bodies CBK serves without `fover` are server-side upscales of the same data it served at 256 px with it, so
+> the stored files already hold everything Google has for those rows. It also found that Google has re-rendered
+> about a quarter of the panoramas it still serves, so a bulk re-fetch would have replaced those with a
+> different picture, not a sharper one. The tool stays, as a tested, non-destructive repair pass for whatever
+> next needs one; the section below describes it as built.
 
 `refetch_panos.py` re-fetches panoramas that were downloaded while the CBK URL still carried `fover`, which
 made Google serve the polar rows of a zoom-5 grid at half size — 320 of 512 tiles on a 16384×8192 frame. The
@@ -133,7 +143,9 @@ re-running.
 
 **`--fixed-after` is the one flag you must set deliberately.** It defaults to `2026-08-07`, the date the fix
 was merged, which is the earliest defensible answer. The right value is the date the scraper box actually
-picked the fix up: setting it late costs a wasted re-fetch, setting it early skips files that do need repair —
+picked the fix up — **`2026-09-01` for the current production box**, which ran a checkout 183 commits behind
+until the cutover ([history](history.md)), so everything it scraped between those two dates is `fover`-era
+and the default would skip it. Setting it late costs a wasted re-fetch, setting it early skips files that do need repair —
 but because `already_clean` is not ledgered, correcting it later and re-running picks those files up. The
 gate reads the file's mtime, and nothing else can tell a clean file from a `fover`-era one (finding 6 of the
 report), so mtime is load-bearing: a copy or restore that did not preserve mtimes makes every pano

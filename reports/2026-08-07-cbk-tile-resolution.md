@@ -270,6 +270,15 @@ imagery.
   and undetectable after the fact, the pass refuses to swap unless the replacement is strictly better, and
   `--measure` records what each swap actually recovered against the horizon band as a control — which is
   the one number this report never had, and the thing a pilot is for.
+
+  **Measured 2026-09-05, and the pass does not run.** The [pilot](2026-09-05-fover-refetch-pilot.md)
+  re-fetched 200 Seattle panoramas against a copy of the store: the pre-specified metric read below its own
+  noise floor, the re-fetched polar band had *less* high-frequency energy than the stored one (0 of 78
+  sharper), and this report's own tile pair explains why — the 512-px body served without `fover` is within
+  0.232 luma of a bilinear upscale of the 256-px body served with it, and loses 0.027 luma when halved.
+  `fover` skipped a server-side upscale; it never cost resolution. So the title finding above should be read
+  as "recovered full-size zoom-5 *bodies*", and findings 5 and 6 — small, undetectable — were right for a
+  reason this report did not have: there was nothing to detect. The original recommendation stands.
 * **Whether the trigger is "zoom index 5" or "any level wider than ~8192"**. The two make identical
   predictions for every panorama Project Sidewalk holds, and the only live panorama found with a max zoom of
   4 no longer serves through CBK. Unresolved, and operationally irrelevant.
