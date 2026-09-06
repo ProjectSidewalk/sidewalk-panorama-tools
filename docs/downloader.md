@@ -219,17 +219,18 @@ upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
 equirectangular image. Requires a token:
 
 1. Create one at <https://www.mapillary.com/dashboard/developers> (default read scopes are enough).
-2. Export it as `MAPILLARY_ACCESS_TOKEN` before running:
+2. Export it as `MAPILLARY_ACCESS_TOKEN` before running — read it rather than typing it on the command line,
+   so it never lands in `~/.bash_history`:
 
 ```bash
-export MAPILLARY_ACCESS_TOKEN='MLY|...'
+read -rs MAPILLARY_ACCESS_TOKEN && export MAPILLARY_ACCESS_TOKEN
 python3 DownloadRunner.py <sidewalk-fqdn> <storage-dir>
 ```
 
 The downloader sends it as an `Authorization: OAuth` header, never as an `access_token` query parameter, so
-it cannot reach a URL — and `requests` puts the full URL into an `HTTPError`'s message, which
-`DownloadRunner` logs verbatim for a failed pano. That is not a hypothetical: production's `scrape.log`
-held a live token in cleartext, on the shared store, after a night of Mapillary 400s.
+it cannot reach a URL — which matters because `requests` puts the full URL into an `HTTPError`'s message,
+and `DownloadRunner` logs that verbatim for a failed pano. That is not a hypothetical: production's
+`scrape.log` held a live token in cleartext, on the shared store, after a night of Mapillary 400s.
 
 **What the ledger learns from Mapillary.** Two answers are permanent and write a `downloaded=0` row: a 404,
 and a 200 whose body names the image and carries no `thumb_original_url`. Everything else raises and leaves
@@ -247,7 +248,11 @@ arrived.
 
 **Under cron, keep it out of the crontab body.** `crontab -l` output lands in backups, screenshots and
 pastes, and the file itself outlives the person who wrote it. Put it in a mode-`600` file and let bash source
-it for every line — cron sets `BASH_ENV` in the child's environment, and non-interactive bash reads it:
+it for every line — the crontab sets `BASH_ENV`, cron propagates that into each job's environment, and
+non-interactive bash then reads it. **These two lines have to sit above every job line**: Vixie/Debian cron
+accumulates environment assignments as it parses the crontab top to bottom, so a `SHELL=`/`BASH_ENV=` placed
+after the job lines takes effect for none of them — the same kind of silent no-op as a token that never
+arrived, above.
 
 ```cron
 SHELL=/bin/bash

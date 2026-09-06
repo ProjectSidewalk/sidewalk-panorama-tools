@@ -57,6 +57,12 @@ def configure_logging(log_path):
     container; each DEBUG record is a synchronous write over sshfs, which is also why urllib3's per-request
     chatter is capped at WARNING. If the log file itself can't be opened, fall back to stderr with one loud
     warning rather than killing the scrape: the log is evidence, not cargo.
+
+    mapillary.TokenRedactionFilter is added to the HANDLER, not the root logger: a Logger's own filters run
+    only for records it originates itself, while a Handler's filters run for every record that reaches it
+    regardless of which logger (root, 'urllib3', anything a future dependency adds) produced it. This is the
+    one handler every record in the process funnels through, so it's the only place a filter added here is
+    guaranteed to see a leak no matter which module's message carries it (2026-09 PR #100 review, finding 2).
     """
     try:
         handler = logging.handlers.RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
@@ -65,6 +71,7 @@ def configure_logging(log_path):
         handler = logging.StreamHandler()
         fallback_error = e
     handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+    handler.addFilter(mapillary.TokenRedactionFilter())
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
     root.addHandler(handler)
