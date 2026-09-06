@@ -16,6 +16,7 @@ out of the panorama. It runs unattended every night, per city, across ~50 deploy
 |---|---|
 | [`DownloadRunner.py`](docs/downloader.md) | Downloads panoramas and depth maps for one city into a pano store. Actively maintained; this is the one in production. |
 | [`CropRunner.py`](docs/cropper.md) | Cuts one 3:2 crop per label out of the downloaded panoramas. Works, but is being replaced — bugs may linger. |
+| [`scrape_queue.py`](docs/downloader.md#nightly-deployment) | Runs the whole fleet as one serialised queue from a single cron line, instead of a crontab slot per city. |
 | [`log_analyzer/analyze.py`](docs/log-analyzer.md) | Watches the nightly run across every city and exits nonzero when one looks broken. |
 | [`migrate_depth_artifacts.py`](docs/depth.md#migrating-a-pre-v2-store) | One-off, idempotent rewrite of depth artifacts written before the v2 format. |
 | [`refetch_panos.py`](docs/ops.md#repairing-fover-era-panoramas) | One-off, idempotent re-fetch of panoramas downloaded at half resolution, replacing one only when the replacement is strictly better. |
@@ -58,7 +59,7 @@ for the nightly cron form.
 
 | | |
 |---|---|
-| [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, nightly deployment |
+| [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, and the nightly queue |
 | [Cropper](docs/cropper.md) | Crop geometry, the two preflights, outcome taxonomy, and what to know before training on the crops |
 | [Depth maps](docs/depth.md) | The `.npz` artifact format, the plane fields, migration — and **what the depth product is and isn't** |
 | [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 18-column `log.csv`, and how a crashed run reads |

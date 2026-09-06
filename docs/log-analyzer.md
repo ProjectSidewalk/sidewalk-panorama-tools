@@ -42,6 +42,21 @@ logs are cached in `log_analyzer/logs/` (gitignored).
 `log_analyzer/cities.csv` maps `city_id` → display name; each `city_id` must match that city's folder name on
 the pano store **exactly**. Add a row when a new city is deployed.
 
+**A city missing from this file is not monitored, and nothing says so** — the analyzer reports on the cities it
+is given and has no way to know the fleet is larger. `newport-ky` sat outside it while being scraped nightly,
+and was found only by diffing this list against the production crontab in Sep 2026. Nothing in CI can catch
+that drift, because the fleet is a deployment fact and this file is in the repo, so it is worth diffing by hand
+whenever the two are both in front of you:
+
+```bash
+# on the scraper host: which scheduled cities is the analyzer not watching?
+comm -23 <(cut -d, -f1 /etc/sidewalk/cities.csv | tail -n +2 | sort) \
+         <(cut -d, -f1 log_analyzer/cities.csv | tail -n +2 | sort)
+```
+
+Once the [nightly queue](downloader.md#nightly-deployment) is deployed, its manifest is the authoritative list
+to diff against; before then it is the crontab.
+
 ## Checks
 
 | Level | Condition |
