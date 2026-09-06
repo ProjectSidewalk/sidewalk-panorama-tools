@@ -206,9 +206,12 @@ def download_single_pano(storage_path, pano_info):
         if meta_resp.status_code == 404:
             # The Graph API doesn't know this id: a permanent property of the pano, so it ledgers (#41) -
             # unless the body says the TOKEN is what cannot see it. Read for the auth signature only, not
-            # for any envelope: a Meta-style 404 for a retired image carries an envelope too, and refusing
-            # those would re-request every retired image nightly forever. Not JSON, no envelope, or an
-            # envelope of another kind keeps the verdict; the real 404 body is on the pre-merge check list.
+            # for any envelope: a Meta-style "does not exist" carries an envelope too (code 100, subcode 33,
+            # measured 2026-09-06 - OBSERVED_MAPILLARY_NOT_FOUND_2026_09_06 in tests/test_image_downloaders.py),
+            # and refusing those would re-request every retired image nightly forever. Not JSON, no envelope,
+            # or an envelope of another kind keeps the verdict. This is the DOCUMENTED shape, not the observed
+            # one: Mapillary answered an id it does not have with a 400, which raise_for_status() below
+            # refuses, deliberately unledgered - see the comment there.
             try:
                 payload = meta_resp.json()
             except ValueError:
@@ -222,6 +225,14 @@ def download_single_pano(storage_path, pano_info):
         # revoked token, and 429/5xx have already exhausted the retry adapter above. Raising retries the
         # pano next run; returning failure would ledger it permanently, so one night with a bad token
         # would blacklist every Mapillary pano in the city (#41).
+        #
+        # That includes Mapillary's measured answer for an id it does not have (2026-09-06): a 400, code 100,
+        # error_subcode 33, whose message itself reads "does not exist, cannot be loaded due to missing
+        # permissions, or does not support this operation". A token lacking scope would produce that body
+        # for every pano in the city, which is the 2026-09-01 incident by another route, so it stays a
+        # condition of the run. The cost is one metadata request per retired image per night; writing
+        # 100/33 off as permanent needs a run-level breaker first, the shape refetch_panos.py uses for
+        # undersized, and that is a follow-up, not this function.
         meta_resp.raise_for_status()
 
         try:
