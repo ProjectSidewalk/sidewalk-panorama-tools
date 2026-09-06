@@ -1622,10 +1622,11 @@ class TestTheTwoWindowDerivationsAgree:
     """CropRunner and the gold-annotation instrument derive the same window independently, and #78's
     item 3 says that if the implementations are to stay several, something has to assert they agree.
 
-    They stay several on purpose: reports/scripts/annotation_tiles.py may not import the cropper
-    (prereg Amendment 1(e) — a gold standard sharing a transform with the thing under study measures
-    zero by construction), and its module docstring says so. This class compares; it does not couple.
-    If the two ever disagree, that is the finding.
+    They stay several on purpose: reports/scripts/annotation_tiles.py may not share the cropper's
+    transform (prereg Amendment 1(e) — a gold standard sharing a transform with the thing under study
+    measures zero by construction), and its module docstring says so. It does import CropRunner, for
+    raise_decompression_bomb_ceiling only: the constraint is on the geometry, not on the import. This
+    class compares; it does not couple. If the two ever disagree, that is the finding.
     """
 
     @pytest.fixture
