@@ -20,7 +20,9 @@ import subprocess
 import sys
 import time
 
+import io
 import requests
+from PIL import Image
 
 import downloaders
 import DownloadRunner
@@ -1204,6 +1206,12 @@ class TestAServerFetchIsCheckedAndNormalised:
             'the numeric duplicate, the empty id and the tutorial pano should all be gone'
 
 
+def _small_jpeg():
+    buf = io.BytesIO()
+    Image.new('RGB', (8, 8), (120, 120, 120)).save(buf, 'jpeg')
+    return buf.getvalue()
+
+
 class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
     """#99's second half: the composition nothing else drives.
 
@@ -1248,7 +1256,8 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
             return self.routes[url]
 
     IMAGE_URL = 'https://cdn.example/rendition.jpg'
-    IMAGE_BYTES = b'jpeg bytes; nothing in the image loop decodes them'
+    # A real JPEG: the downloader checks the SOF header before the rename, so a placeholder would be refused.
+    IMAGE_BYTES = _small_jpeg()
     # The #99 shape: a 200 that carries Meta's error envelope rather than the record asked for.
     ENVELOPE = {'error': {'message': 'Invalid OAuth 2.0 Access Token', 'type': 'MLYApiException', 'code': 190}}
 
@@ -1261,7 +1270,7 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
         monkeypatch.setattr(downloaders.mapillary, '_session', lambda: self._Wire(routes, asked))
         return asked
 
-    def _five_shapes(self):
+    def _shapes(self):
         return {
             '100000000000001': self._Response(payload={'id': '100000000000001',
                                                        'thumb_original_url': self.IMAGE_URL}),
@@ -1269,6 +1278,8 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
             '100000000000003': self._Response(payload={'id': '100000000000003'}),
             '100000000000004': self._Response(payload=self.ENVELOPE),
             '100000000000005': self._Response(status_code=401),
+            # The envelope at the one status whose body used to be trusted without being read.
+            '100000000000006': self._Response(status_code=404, payload=self.ENVELOPE),
         }
 
     @staticmethod
@@ -1278,36 +1289,37 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
     def test_only_a_verdict_on_the_pano_writes_a_row(self, monkeypatch, tmp_path):
         storage = tmp_path / 'storage'
         storage.mkdir()
-        shapes = self._five_shapes()
+        shapes = self._shapes()
         self._wire_up(monkeypatch, shapes)
 
         result = DownloadRunner.download_panorama_images(
             str(storage), [{'pano_id': pano_id, 'source': 'mapillary'} for pano_id in shapes])
 
-        assert result == (1, 0, 4, 0, 5), '(success, fallback_success, fail, skipped, total)'
-        assert self._ledger_rows(storage) == ['100000000000001,1', '100000000000002,0', '100000000000003,0'],             'the envelope and the 401 are conditions of the RUN and must leave no row'
+        assert result == (1, 0, 5, 0, 6), '(success, fallback_success, fail, skipped, total)'
+        assert self._ledger_rows(storage) == ['100000000000001,1', '100000000000002,0', '100000000000003,0'], \
+            'the two envelopes and the 401 are conditions of the RUN and must leave no row'
         assert os.listdir(storage / '10') == ['100000000000001.jpg']
         assert (storage / '10' / '100000000000001.jpg').read_bytes() == self.IMAGE_BYTES
 
     def test_the_next_run_re_attempts_exactly_the_unledgered_panos(self, monkeypatch, tmp_path):
         """The other half of "no row": the pano comes back. A run with the token fixed picks up precisely the
-        two that were written off by the run's condition, and touches none of the three that were decided."""
+        three that were written off by the run's condition, and touches none of the three that were decided."""
         storage = tmp_path / 'storage'
         storage.mkdir()
-        shapes = self._five_shapes()
+        shapes = self._shapes()
         panos = [{'pano_id': pano_id, 'source': 'mapillary'} for pano_id in shapes]
         self._wire_up(monkeypatch, shapes)
         DownloadRunner.download_panorama_images(str(storage), panos)
 
         healed = {pano_id: self._Response(payload={'id': pano_id, 'thumb_original_url': self.IMAGE_URL})
-                  for pano_id in ('100000000000004', '100000000000005')}
+                  for pano_id in ('100000000000004', '100000000000005', '100000000000006')}
         asked = self._wire_up(monkeypatch, healed)
         result = DownloadRunner.download_panorama_images(str(storage), panos)
 
         # Counters are seeded from the ledger (progress_check): the two 0-rows are prior failures and the
-        # 1-row a prior success reported as skipped. The two downloads are the whole of tonight's work.
-        assert result == (2, 0, 2, 1, 5), '(success, fallback_success, fail, skipped, total)'
+        # 1-row a prior success reported as skipped. The three downloads are the whole of tonight's work.
+        assert result == (3, 0, 2, 1, 6), '(success, fallback_success, fail, skipped, total)'
         metadata_asked = sorted(url.rsplit('/', 1)[1] for url in asked if url != self.IMAGE_URL)
-        assert metadata_asked == ['100000000000004', '100000000000005']
+        assert metadata_asked == ['100000000000004', '100000000000005', '100000000000006']
         assert self._ledger_rows(storage) == ['100000000000001,1', '100000000000002,0', '100000000000003,0',
-                                              '100000000000004,1', '100000000000005,1']
+                                              '100000000000004,1', '100000000000005,1', '100000000000006,1']

@@ -234,12 +234,20 @@ held a live token in cleartext, on the shared store, after a night of Mapillary 
 **What the ledger learns from Mapillary.** Two answers are permanent and write a `downloaded=0` row: a 404,
 and a 200 whose body names the image and carries no `thumb_original_url`. Everything else raises and leaves
 no row, so the pano is retried next run: any other status, a body that is not JSON, a JSON body that is not
-the record asked for, and a 200 carrying Meta's `{"error": {...}}` envelope. That last check is the
-defensive one. Every auth failure measured on 2026-09-05 was a non-200 wearing that envelope, and a real
-expiry answered 400, so no observed condition reaches it; it covers the one condition nobody can measure
-without a live token, a token lacking the needed scope. The stakes are the same either way: one night of
-bad auth read as a verdict on the panos wrote 161 false rows into a city's ledger on 2026-09-01, and
-replacing the token recovered none of them until the file was hand-edited on the store.
+the record asked for, a 200 carrying Meta's `{"error": {...}}` envelope, a 404 whose envelope carries the
+auth signature (code 190, or type `OAuthException`), and an image body that is not a JPEG. The envelope
+checks are the defensive ones. Every auth failure measured on 2026-09-05 was a non-200 wearing that
+envelope, and a real expiry answered 400, so no observed condition reaches them; they cover the one
+condition nobody can measure without a live token, a token lacking the needed scope. The 404 check is keyed
+on the auth signature rather than on any envelope because a Meta-style 404 for a retired image carries an
+envelope too, and refusing those would re-request every retired image nightly forever. The stakes are the
+same either way: one night of bad auth read as a verdict on the panos wrote 161 false rows into a city's
+ledger on 2026-09-01, and replacing the token recovered none of them until the file was hand-edited on the
+store.
+
+Where the reason lands: cron mail carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
+else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
+`code` and `message` are in `scrape.log` on the store, one line per pano.
 
 Without the token, Mapillary panos are filtered out of the run rather than failed — **silently enough to
 miss**, so a city that should have Mapillary imagery and downloads none is the symptom of a token that never

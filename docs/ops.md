@@ -31,8 +31,9 @@ permanent.** Transient failures leave no row and retry automatically on the next
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano: no imagery at any zoom, or unknowable dimensions; for
   Mapillary, a 404 or a record that names the image and carries no original-resolution rendition. A
-  permanent verdict. A Mapillary error envelope on a 200, or a body that does not name the image, is not a
-  verdict and leaves no row.
+  permanent verdict. A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
+  (code 190 / `OAuthException`), a body that does not name the image, or an image body that is not a JPEG
+  is not a verdict and leaves no row.
 * **no row** — never attempted, or the last attempt failed transiently (a network blip, a failed tile, a full
   store). Retried next run.
 
