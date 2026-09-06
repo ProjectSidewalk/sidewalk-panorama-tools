@@ -177,10 +177,29 @@ fan-out — and on top of that:
   * **Every ambiguous latch resolves towards scraping.** Missing, unparseable, or dated implausibly far in the
     future all mean "not blocked" — a latch nobody can read must never be able to stand the whole fleet's
     depth phase down indefinitely.
-* **Sizing, for context.** A photometa request measured **0.077 s median** from the production box, and the
-  corpus is 1,433,104 GSV panos, so at the default floor the backfill is on the order of a fortnight of
-  nights. This page used to say it was "inherently a multi-month job" and used that to argue for leaving
-  pacing off; both halves of that were wrong.
+* **Sizing, and the thing that actually decides it.** A photometa request measures **0.077 s median** from
+  the production box, so the raw request cost of the 1,433,104-pano corpus is nothing like the "inherently
+  multi-month job" this page used to claim — and that claim was the stated reason for leaving pacing off.
+  But **the floor is not what sets the backfill's length**, because the pacer is per-process and every city
+  run starts a fresh one. Ramping 1.0 s down to 0.25 s takes seven decay steps — **1,400 requests, about 20
+  minutes of continuous depth work** — so a city whose slot is shorter than that never reaches the floor,
+  and the fleet's effective rate sits nearer `depth_start_interval` than the floor. Sizing the whole 52-city
+  ring at one city at a time:
+
+  | per-city slot | window for all 52 | requests/city | requests/night | nights for 1.43 M |
+  |---|---:|---:|---:|---:|
+  | 10 min | 8.7 h | 463 | 24,076 | 60 |
+  | 12 min | 10.4 h | 588 | 30,576 | 47 |
+  | 15 min | 13.0 h | 824 | 42,848 | 33 |
+
+  Longer slots win disproportionately because the ramp amortises, but a 15-minute slot needs 13 hours, which
+  puts the fleet back into the working day that [#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)
+  moved it out of. **This is an operational trade, not a default**, and it is cheap to get wrong slowly:
+  panorama retirement was measured at ~0.3% of survivors per 28 days
+  ([2026-09-06 decay report](../reports/2026-09-06-photometa-decay.md)), so an extra month of backfill costs
+  about a third of a percent of the depth still reachable. If the ramp ever becomes the binding cost, the fix
+  is to persist the learned interval across runs the way the block latch persists a refusal — at the floor
+  with no ramp, a 12-minute slot would be ~14 nights rather than 47.
 
 ## Ops notes specific to depth
 
