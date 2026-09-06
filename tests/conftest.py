@@ -6,7 +6,9 @@ streetlevel's heavy dependency tree.
 """
 
 import base64
+import logging
 import os
+import signal
 import struct
 import sys
 import types
@@ -22,6 +24,32 @@ if REPO_ROOT not in sys.path:
 # The scraper only ever runs on Linux in production, but the suite should stay usable on a Windows dev box, so
 # assertions about POSIX file modes are skipped rather than failed there.
 posix_only = pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes are unavailable on Windows')
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_state():
+    """Snapshot and restore the process-wide state a runner's main() mutates, around every test.
+
+    DownloadRunner.main(), refetch_panos.main() and their configure_logging() all add a handler to the root
+    logger, set its level, cap urllib3's, and install a SIGTERM handler. Nothing removes any of it, so a test
+    that drives main() in-process would otherwise leak a RotatingFileHandler pointed into a tmp_path pytest
+    is about to delete - measured at four such handlers after one module - into every test that follows.
+    Suite-wide rather than per module, because the next module to grow a main() test would otherwise have to
+    rediscover this.
+    """
+    root = logging.getLogger()
+    prior_handlers = list(root.handlers)
+    prior_level = root.level
+    prior_urllib3_level = logging.getLogger('urllib3').level
+    prior_sigterm = signal.getsignal(signal.SIGTERM)
+    yield
+    for handler in list(root.handlers):
+        if handler not in prior_handlers:
+            root.removeHandler(handler)
+            handler.close()
+    root.setLevel(prior_level)
+    logging.getLogger('urllib3').setLevel(prior_urllib3_level)
+    signal.signal(signal.SIGTERM, prior_sigterm)
 
 
 def pytest_configure(config):

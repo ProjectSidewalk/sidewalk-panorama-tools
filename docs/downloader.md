@@ -232,6 +232,16 @@ it cannot reach a URL — which matters because `requests` puts the full URL int
 and `DownloadRunner` logs that verbatim for a failed pano. That is not a hypothetical: production's
 `scrape.log` held a live token in cleartext, on the shared store, after a night of Mapillary 400s.
 
+**What the ledger learns from Mapillary.** Two answers are permanent and write a `downloaded=0` row: a 404,
+and a 200 whose body names the image and carries no `thumb_original_url`. Everything else raises and leaves
+no row, so the pano is retried next run: any other status, a body that is not JSON, a JSON body that is not
+the record asked for, and a 200 carrying Meta's `{"error": {...}}` envelope. That last check is the
+defensive one. Every auth failure measured on 2026-09-05 was a non-200 wearing that envelope, and a real
+expiry answered 400, so no observed condition reaches it; it covers the one condition nobody can measure
+without a live token, a token lacking the needed scope. The stakes are the same either way: one night of
+bad auth read as a verdict on the panos wrote 161 false rows into a city's ledger on 2026-09-01, and
+replacing the token recovered none of them until the file was hand-edited on the store.
+
 Without the token, Mapillary panos are filtered out of the run rather than failed — **silently enough to
 miss**, so a city that should have Mapillary imagery and downloads none is the symptom of a token that never
 arrived.
@@ -272,4 +282,5 @@ measured in [reports/2026-08-11-mapillary-census.md](../reports/2026-08-11-mapil
 
 * [Depth maps](depth.md) — the depth phase, the artifact format, and what the depth product is and isn't.
 * [Ops](ops.md) — storage layout, the resume ledgers, the `log.csv` columns, and what a crashed run looks like.
+* [Repairing `fover`-era panoramas](ops.md#repairing-fover-era-panoramas) — the downloader never revisits an image it already has, so a store scraped before the `fover` fix needs a deliberate pass.
 * [Log analyzer](log-analyzer.md) — monitoring the nightly run across all cities.

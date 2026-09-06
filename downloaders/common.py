@@ -1,6 +1,60 @@
 import contextlib
 import enum
 import os
+import struct
+
+# Start-of-frame markers whose payload carries the image dimensions. DHT/DAC/RST/SOS are excluded;
+# 0xC4/0xC8/0xCC look like SOF numerically and are not.
+SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                         0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
+
+# Markers that stand alone: no length field follows, so the scanner must not try to skip a segment.
+STANDALONE_JPEG_MARKERS = frozenset({0x01, 0xD8, 0xD9}) | frozenset(range(0xD0, 0xD8))
+
+
+def jpeg_dimensions(path):
+    """(width, height) from a JPEG's SOF header, or None if the file is not a readable JPEG.
+
+    Header-only: a 10 MB equirectangular pano costs a few reads instead of a full decode, which is what
+    makes sweeping a whole store practical - Pillow would decode 16384 x 8192 x 3 = 384 MB to answer the
+    same question. Returns None rather than raising, because every caller is a sweep that must survive a
+    truncated file at pano 1300 of 1400 rather than dying on it.
+
+    Lives here rather than in the script that first needed it (reports/scripts/store_coverage.py, which
+    now imports it) because refetch_panos.py needs the same answer for every pano it considers, and a
+    second copy of a hand-rolled marker scanner is exactly the kind of duplicate this repo has been bitten
+    by before.
+    """
+    try:
+        with open(path, 'rb') as f:
+            if f.read(2) != b'\xff\xd8':
+                return None
+            while True:
+                byte = f.read(1)
+                while byte and byte != b'\xff':
+                    byte = f.read(1)
+                while byte == b'\xff':          # fill bytes: 0xFF may repeat before the marker
+                    byte = f.read(1)
+                if not byte:
+                    return None
+                marker = byte[0]
+                if marker in STANDALONE_JPEG_MARKERS:
+                    continue
+                header = f.read(2)
+                if len(header) < 2:
+                    return None
+                seglen = struct.unpack('>H', header)[0]
+                if marker in SOF_MARKERS:
+                    body = f.read(5)
+                    if len(body) < 5:
+                        return None
+                    height, width = struct.unpack('>HH', body[1:5])
+                    return width, height
+                if seglen < 2:
+                    return None
+                f.seek(seglen - 2, os.SEEK_CUR)
+    except OSError:
+        return None
 
 
 class DownloadResult(enum.Enum):

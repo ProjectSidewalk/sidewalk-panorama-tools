@@ -27,6 +27,7 @@ PRODUCTION_MODULES = {
     'downloaders/mapillary.py',
     'log_analyzer/analyze.py',
     'migrate_depth_artifacts.py',
+    'refetch_panos.py',
 }
 
 # Walked but never measured, and not worth listing in .coveragerc's omit: no .py lives under them.

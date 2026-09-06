@@ -28,6 +28,29 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 MAPILLARY_PANO = {'pano_id': '123456789012345', 'source': 'mapillary'}
+HEALTHY_MAPILLARY_METADATA = {'id': MAPILLARY_PANO['pano_id'], 'thumb_original_url': 'https://cdn/x.jpg'}
+
+# Every response graph.mapillary.com gave `GET /<image id>?fields=thumb_original_url` under bad auth, measured
+# 2026-09-05 for #99, as (HTTP status, JSON body). None is a 200, so raise_for_status() already refuses all
+# of them; what is worth pinning is the ENVELOPE. It is Meta's Graph-style {"error": {...}}: its `type`
+# varies (MLYApiException without a header, OAuthException with a bad one) while its `code` is 190, Meta's
+# invalid-token code, throughout. A real expiry answered 400 with the same envelope (#98, 2026-09-01). The one
+# auth failure not measurable without a live token - a token lacking the needed scope - is the case the
+# envelope check exists for.
+OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05 = {
+    'no Authorization header': (500, {
+        'error': {'message': 'Invalid OAuth 2.0 Access Token', 'type': 'MLYApiException', 'code': 190,
+                  'error_data': {}, 'fbtrace_id': 'AVClUCSPotDOO7MhX8oji1w'}}),
+    'malformed token (MLY|bogus)': (401, {
+        'error': {'message': 'Failed to decode', 'type': 'OAuthException', 'code': 190,
+                  'fbtrace_id': 'A8OIotiwZ1Hh3WMPzG6jHGd'}}),
+    'well-formed token that was never issued': (401, {
+        'error': {'message': 'Error validating application', 'type': 'OAuthException', 'code': 190,
+                  'fbtrace_id': 'AAf3CgtCoTPgu45pnemNL6U'}}),
+    'that token as an access_token query param instead': (400, {
+        'error': {'message': 'Error validating application', 'type': 'OAuthException', 'code': 190,
+                  'fbtrace_id': 'A-54WSA6X3o82B7YOvzkWIz'}}),
+}
 GSV_PANO = {'pano_id': 'gsvPanoIdAAAAAAAAAAAAA', 'source': 'gsv', 'width': 512, 'height': 512}
 
 
@@ -201,9 +224,15 @@ class TestMapillaryPermanentVerdicts:
         assert downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO) \
             == DownloadResult.failure
 
-    def test_missing_original_rendition_is_permanent(self, monkeypatch, tmp_path, mapillary_token):
+    @pytest.mark.parametrize('body', [{'id': MAPILLARY_PANO['pano_id']},
+                                      {'id': MAPILLARY_PANO['pano_id'], 'thumb_original_url': ''}],
+                             ids=['field absent', 'field empty'])
+    def test_missing_original_rendition_is_permanent(self, monkeypatch, tmp_path, mapillary_token, body):
+        """Mapillary names the image we asked about and publishes no original-resolution rendition for it.
+        The body used to be a bare {} here; since #99 the verdict needs the record to name the image, and a
+        {} raises instead - see TestMapillaryErrorEnvelopes."""
         monkeypatch.setattr(downloaders.mapillary, '_session',
-                            lambda: FakeSession(FakeResponse(payload={})))
+                            lambda: FakeSession(FakeResponse(payload=body)))
 
         assert downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO) \
             == DownloadResult.failure
@@ -243,7 +272,7 @@ class TestMapillaryTransientConditions:
             downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
 
     def test_an_expired_signed_image_url_raises(self, monkeypatch, tmp_path, mapillary_token):
-        session = FakeSession(FakeResponse(payload={'thumb_original_url': 'https://cdn/x.jpg'}),
+        session = FakeSession(FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
                               FakeResponse(status_code=403))
         monkeypatch.setattr(downloaders.mapillary, '_session', lambda: session)
 
@@ -261,7 +290,7 @@ class TestMapillaryTransientConditions:
         """The regression this guards: with no ledger row written (#41), the NEXT run reaches the
         os.path.isfile() check - so a truncated .jpg left here would be reported as a completed download."""
         session = FakeSession(
-            FakeResponse(payload={'thumb_original_url': 'https://cdn/x.jpg'}),
+            FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
             FakeResponse(chunks=[b'\xff\xd8\xff\xe0 partial',
                                  requests.ConnectionError('connection reset mid-stream')]))
         monkeypatch.setattr(downloaders.mapillary, '_session', lambda: session)
@@ -272,7 +301,7 @@ class TestMapillaryTransientConditions:
         assert os.listdir(tmp_path / '12') == []
 
     def test_a_healthy_download_still_lands(self, monkeypatch, tmp_path, mapillary_token):
-        session = FakeSession(FakeResponse(payload={'thumb_original_url': 'https://cdn/x.jpg'}),
+        session = FakeSession(FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
                               FakeResponse(chunks=[jpeg_bytes(120)]))
         monkeypatch.setattr(downloaders.mapillary, '_session', lambda: session)
 
@@ -290,7 +319,10 @@ class TestTheTokenIsNormalisedOnRead:
         """Left unstripped, this exact value makes requests.Session.get() raise InvalidHeader, whose
         message embeds the header value VERBATIM - the malformed-token leak finding 1 exists to close."""
         monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token\n')
-        session = FakeSession(FakeResponse(payload={'thumb_original_url': 'https://cdn/x.jpg'}),
+        # The shared healthy body, not a bare {'thumb_original_url': ...}: since #99 a metadata body has to
+        # name the image it describes, so a hand-rolled one without `id` is refused before the header this
+        # test is about can be asserted on.
+        session = FakeSession(FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
                               FakeResponse(chunks=[jpeg_bytes(120)]))
         monkeypatch.setattr(downloaders.mapillary, '_session', lambda: session)
 
@@ -312,6 +344,97 @@ class TestTheTokenIsNormalisedOnRead:
 
         with pytest.raises(RuntimeError, match=downloaders.mapillary.TOKEN_ENV_VAR):
             downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+
+class TestMapillaryErrorEnvelopes:
+    """#99. A permanent verdict has to rest on Mapillary AFFIRMING it knows the image, never on a field being
+    absent from whatever came back.
+
+    The 2026-09-01 incident wrote 161 false downloaded=0 rows through a 400, and every auth failure measured
+    since (OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05) is likewise a non-200 that already raises. What was
+    still open was the other branch: a 200 whose body lacked thumb_original_url was read as "no rendition
+    exists" and ledgered. Any condition that ever answers 200 with an error envelope, or with a body that is
+    not the record asked for, would therefore write off every pano attempted that night - and richmond-va is
+    9,229 panos on one token. None of these bodies is a property of the pano, so all of them raise (#41).
+    """
+
+    @pytest.mark.parametrize('condition', sorted(OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05))
+    def test_an_error_envelope_raises_even_on_a_200(self, monkeypatch, tmp_path, mapillary_token, condition):
+        _, envelope = OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05[condition]
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=200, payload=envelope)))
+
+        with pytest.raises(downloaders.mapillary.MapillaryErrorResponse) as excinfo:
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        # scrape.log gets str(e), so the line has to say what Mapillary said: type and code are what a
+        # reader would search the API docs for.
+        assert envelope['error']['type'] in str(excinfo.value)
+        assert '190' in str(excinfo.value)
+
+    @pytest.mark.parametrize('condition', sorted(OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05))
+    def test_every_measured_auth_failure_is_refused_as_measured(self, monkeypatch, tmp_path, mapillary_token,
+                                                                condition):
+        """As measured, each one is a non-200, refused at the status before the body is read. The test above
+        is what covers the shape nobody has measured."""
+        status, envelope = OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05[condition]
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=status, payload=envelope)))
+
+        with pytest.raises(requests.HTTPError):
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+    @pytest.mark.parametrize('body', [{}, {'thumb_original_url': None}, {'id': '999999999999999'},
+                                      {'data': []}], ids=['empty', 'null url, no id', 'another image', 'a list'])
+    def test_a_body_that_does_not_name_this_image_cannot_ledger_it(self, monkeypatch, tmp_path,
+                                                                   mapillary_token, body):
+        """An empty {} used to be THE permanent case. "No rendition" now needs the record to name the image
+        it describes; a body that names none, or a different one, is not evidence about this pano."""
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=200, payload=body)))
+
+        with pytest.raises(downloaders.mapillary.MapillaryErrorResponse) as excinfo:
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert MAPILLARY_PANO['pano_id'] in str(excinfo.value)
+
+    def test_an_envelope_whose_error_is_not_an_object_still_raises_and_still_says_why(
+            self, monkeypatch, tmp_path, mapillary_token):
+        """The envelope's shape is Mapillary's to change. `error` being present is the signal; what is inside
+        it only decides what scrape.log says."""
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=200, payload={'error': 'Invalid token'})))
+
+        with pytest.raises(downloaders.mapillary.MapillaryErrorResponse) as excinfo:
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert 'Invalid token' in str(excinfo.value)
+
+    @pytest.mark.parametrize('body', [[], 'a string', 42, True], ids=['list', 'string', 'number', 'bool'])
+    def test_a_json_body_that_is_not_an_object_raises(self, monkeypatch, tmp_path, mapillary_token, body):
+        """Valid JSON is not the same as the record asked for: a proxy or a CDN error page can be either."""
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=200, payload=body)))
+
+        with pytest.raises(downloaders.mapillary.MapillaryErrorResponse):
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+    def test_a_refused_body_leaves_nothing_on_disk(self, monkeypatch, tmp_path, mapillary_token):
+        """No image was fetched, so there is nothing for the next run to mistake for a completed download."""
+        _, envelope = OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05['malformed token (MLY|bogus)']
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=200, payload=envelope)))
+
+        with pytest.raises(downloaders.mapillary.MapillaryErrorResponse):
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert os.listdir(tmp_path / MAPILLARY_PANO['pano_id'][:2]) == []
+
+    def test_the_error_is_transient_under_the_dispatcher_contract(self):
+        """download_panorama_images treats any Exception as transient; a BaseException would escape that
+        contract, and an HTTPError would read in scrape.log as a status failure it is not."""
+        assert issubclass(downloaders.mapillary.MapillaryErrorResponse, Exception)
+        assert not issubclass(downloaders.mapillary.MapillaryErrorResponse, requests.HTTPError)
 
 
 class TestTheTokenStaysOutOfURLs:
@@ -337,7 +460,7 @@ class TestTheTokenStaysOutOfURLs:
         return requests.Request('GET', url, params=kwargs.get('params')).prepare().url
 
     def _healthy_session(self, monkeypatch):
-        session = FakeSession(FakeResponse(payload={'thumb_original_url': 'https://cdn/x.jpg'}),
+        session = FakeSession(FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
                               FakeResponse(chunks=[jpeg_bytes(120)]))
         monkeypatch.setattr(downloaders.mapillary, '_session', lambda: session)
         return session
@@ -349,9 +472,10 @@ class TestTheTokenStaysOutOfURLs:
 
         wire_url = self._url_on_the_wire(session.calls[0])
         assert 'test-token' not in wire_url
-        # The request still has to ask for the field it needs, or "no token in the URL" is trivially
-        # satisfiable by sending no params at all.
-        assert 'fields=thumb_original_url' in wire_url
+        # The request still has to ask for the fields it needs, or "no token in the URL" is trivially
+        # satisfiable by sending no params at all. `id` is asked for so that a "no rendition" verdict can
+        # require the record to name the image it describes (#99); requests percent-encodes the comma.
+        assert 'fields=id%2Cthumb_original_url' in wire_url
 
     def test_the_token_is_still_sent_as_an_oauth_header(self, monkeypatch, tmp_path, mapillary_token):
         """The other half: dropping the token entirely would also pass the test above, and would take
@@ -623,7 +747,7 @@ class TestALostShardDirRaceDoesNotFailThePano:
 
     def test_mapillary_still_downloads(self, monkeypatch, tmp_path, mapillary_token):
         self.deny_chmod_on_directories(monkeypatch)
-        session = FakeSession(FakeResponse(payload={'thumb_original_url': 'https://cdn/x.jpg'}),
+        session = FakeSession(FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
                               FakeResponse(chunks=[jpeg_bytes(120)]))
         monkeypatch.setattr(downloaders.mapillary, '_session', lambda: session)
 

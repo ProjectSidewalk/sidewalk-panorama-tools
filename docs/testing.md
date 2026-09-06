@@ -15,7 +15,7 @@ CI runs exactly this on Ubuntu 22.04 / Python 3.10 for every push to `master` an
 
 CI reports coverage on every run and fails the build below the `fail_under` floor in
 [`.coveragerc`](../.coveragerc) ([#57](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/57)).
-The measured set is the production tree only — the nine modules at the repo root, in `downloaders/` and in
+The measured set is the production tree only — the ten modules at the repo root, in `downloaders/` and in
 `log_analyzer/`. `reports/` is deliberately outside it: a large body of frozen one-off analysis with its own
 dense tests, and averaging it in would let the scraper's number move several points unnoticed. `flag_panos/`
 is out because its module scope writes files at import, and `assets/` is out because building the hero
@@ -39,10 +39,12 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | Downloader: run flow, budgets, ledgers, crash/`SIGTERM` behaviour, the positional `log.csv` contract | `test_download_runner.py` |
 | Depth phase: ledger semantics, error taxonomy, artifact format, budget flags | `test_depth_phase.py`, `test_depth_helpers.py` |
 | GSV stitching and the tile endpoint's behaviour, pinned against captured bytes | `test_gsv_stitcher.py`, `test_gsv_tile_contract.py`, `test_image_downloaders.py` |
+| The image ledger contract at both ends: which downloader answers are permanent and which raise, the Mapillary error-envelope shapes measured on 2026-09-05, and a real Mapillary response driven through the dispatcher into `pano_id_log.csv` | `test_image_downloaders.py`, `test_download_runner.py` |
 | Cropper: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins | `test_crop_runner.py` |
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
+| The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal, ledger semantics, the recovery metric, and the CLI surface | `test_refetch_panos.py` |
 | The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
 | That the docs' internal links and anchors resolve, and that cited `docs/` paths exist | `test_docs.py` |
 | That the README's hero figure still builds against the current cropper, and isn't stale | `test_make_banner.py` |
