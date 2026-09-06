@@ -344,9 +344,20 @@ a 404, carrying `code` 100 / `error_subcode` 33 and a message that itself confla
 "cannot be loaded due to missing permissions". That answer raises like every other 400 and is not ledgered:
 a token lacking the needed scope would produce the same body for every pano in the city, which is the
 2026-09-01 incident by another route. The cost is one metadata request per retired image per night. A 404
-has never been observed, so the 404 branch is the documented shape rather than the measured one. Writing
-100/33 off as permanent needs a run-level breaker first (N consecutive in one run stop ledgering, the shape
-`refetch_panos.py` uses for `undersized`), which is a follow-up.
+has never been observed, so the 404 branch is the documented shape rather than the measured one.
+
+That leaves **one permanent-verdict path reachable in production**: a 200 that names the image and carries no
+`thumb_original_url`. It is also the only one with no run-level breaker, which is [#113]. The scope-less
+token — the one auth condition nobody can measure without a live token — need not arrive as an envelope at
+all: Meta's Graph family commonly answers a permission-denied field by *omitting* it from an otherwise
+healthy 200 record, which is exactly that shape, and it would ledger every pano in the city. So the breaker
+that follow-up needs is keyed on **N consecutive no-rendition verdicts**, not on N consecutive 404s: a 404
+breaker would guard a status that has never occurred, and the measured 400 already raises unledgered. The
+depth phase (`DEPTH_MAX_CONSECUTIVE_FAILURES`) and `refetch_panos.py` both have such a breaker; the image
+loop does not, and it is the only one of the three that writes a permanent row an operator has to hand-edit
+off the store to undo.
+
+[#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
 
 Where the reason lands: cron mail carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,

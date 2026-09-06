@@ -107,10 +107,18 @@ AUTH_ERROR_TYPE = 'OAuthException'
 
 def _envelope_detail(error):
     """What scrape.log gets for an error envelope: type and code, which a reader would search the API docs
-    for, and the message - capped, because DownloadRunner logs str(e) per pano into a 10 MB x 3 rotation,
-    and 9,229 panos times an uncapped HTML blob in `message` would rotate the night's own diagnosis away."""
+    for, and the message. ALL THREE are capped, because DownloadRunner logs str(e) per pano into a 10 MB x 3
+    rotation, and 9,229 panos times an uncapped blob would rotate the night's own diagnosis away.
+
+    Only `message` was capped at first, which left the likelier shape open: every field here comes from the
+    same untrusted place - any JSON body carrying an `error` object - and a proxy that stuffs a class name or
+    an HTML fragment into `type` is more plausible than Mapillary sending a 100 KB `message`. Measured before
+    this cap, a `type` alone produced a 100,080-character line for one pano. Cap the channel, not the field
+    you happened to think of.
+    """
     if isinstance(error, dict):
-        return 'type=%s code=%s message=%.200s' % (error.get('type'), error.get('code'), error.get('message'))
+        return 'type=%.80s code=%.40s message=%.200s' % (error.get('type'), error.get('code'),
+                                                         error.get('message'))
     return '%.200r' % (error,)
 
 
@@ -246,6 +254,15 @@ def download_single_pano(storage_path, pano_info):
         # Mapillary affirms it knows the image and publishes no original-resolution rendition: permanent.
         image_url = original_rendition_url(payload, pano_id)
         if image_url is None:
+            # THE one permanent verdict this function still reaches in production, and it has no breaker
+            # (#113). Every other permanent path is a 404, and the 2026-09-06 live check found that Mapillary
+            # answers an id it does not have with a 400: no 404 has ever been observed, so this branch alone
+            # decides what gets a downloaded=0 row. That matters because the scope-less token - the one auth
+            # condition nobody can measure - need not arrive as an envelope at all: Meta's Graph family
+            # commonly answers a permission-denied field by OMITTING it from an otherwise-healthy 200 record,
+            # which is exactly this shape. A run-level breaker (N consecutive of these stop ledgering, the
+            # shape refetch_panos.py uses for undersized) is the defence that does not depend on knowing
+            # which way that goes; the depth phase and refetch_panos both have one and this loop does not.
             logging.error("Mapillary knows image %s but publishes no original-resolution rendition", pano_id)
             return DownloadResult.failure
 
@@ -273,8 +290,12 @@ def download_single_pano(storage_path, pano_info):
             # A 200 from the CDN is no more proof the body is the image than a 200 from the Graph API is
             # proof the body is the record: a signed-URL edge can answer 200 with an HTML error page. Saved
             # as .jpg, that page IS the resume marker - permanent with no ledger row to edit, and an error
-            # per label in the cropper every night. gsv decodes every tile; this is the same check at the
-            # same point, before the rename, so the .part is discarded and the pano retries (#41).
+            # per label in the cropper every night. Same point in the flow as gsv's per-tile decode - before
+            # the rename, so the .part is discarded and the pano retries (#41) - but a weaker test: this
+            # parses the SOF header, where gsv's Image.open decodes. It refuses a body that is not a JPEG at
+            # all (an error page, an empty body, a PNG), and NOT a JPEG truncated after its header, which
+            # still reports its full dimensions from 5% of its bytes. That gap is covered upstream instead:
+            # a short read raises out of iter_content before this line, and the .part never lands.
             if jpeg_dimensions(tmp_path) is None:
                 raise MapillaryErrorResponse("Mapillary image response for %s was not a JPEG" % pano_id)
     return DownloadResult.success

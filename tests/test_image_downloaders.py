@@ -540,12 +540,19 @@ class TestMapillaryErrorEnvelopes:
 
     @pytest.mark.parametrize('payload', [
         {'error': {'type': 'OAuthException', 'code': 190, 'message': 'M' * 100_000}},
+        {'error': {'type': 'T' * 100_000, 'code': 190, 'message': 'Invalid OAuth 2.0 Access Token'}},
+        {'error': {'type': 'OAuthException', 'code': 'C' * 100_000, 'message': 'Invalid OAuth 2.0 Access Token'}},
         {'id': '9' * 100_000},
-    ], ids=['message', 'id'])
+    ], ids=['message', 'type', 'code', 'id'])
     def test_what_reaches_scrape_log_is_bounded(self, payload):
         """DownloadRunner logs str(e) per raised pano into a 10 MB x 3 rotation. 9,229 panos times an uncapped
-        HTML blob in `message` is ~900 MB into a 40 MB window: the night's own diagnosis rotates away. The
-        list and string-error branches were already capped; these two are the ones production will hit."""
+        HTML blob is ~900 MB into a 40 MB window: the night's own diagnosis rotates away.
+
+        EVERY field of the envelope, not just `message`. The first cap covered `message` and `id` and left
+        `type` and `code` formatted with a bare %s - measured at 100,080 characters for one pano - even
+        though all four arrive by the same route, an untrusted JSON body. A `type` carrying a class name or
+        an HTML fragment from a proxy is if anything likelier than a 100 KB `message` from Mapillary itself.
+        """
         with pytest.raises(downloaders.mapillary.MapillaryErrorResponse) as excinfo:
             downloaders.mapillary.original_rendition_url(payload, MAPILLARY_PANO['pano_id'])
 

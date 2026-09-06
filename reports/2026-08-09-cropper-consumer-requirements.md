@@ -86,7 +86,7 @@ stitch = 17.9–21.1 render px = **2.24–2.64 heatmap px = 0.19–0.22 σ** (σ
 
 ### What a switch requires
 
-Per #113's scope ("consume the canonical cropper … keep what is genuinely RampNet-specific (the
+Per [RampNet#113](https://github.com/ProjectSidewalk/RampNet/issues/113)'s scope ("consume the canonical cropper … keep what is genuinely RampNet-specific (the
 fixed-pitch strip convention) as a thin layer over that cropper's projection"):
 
 1. Canonical equirectangular fetch at a deterministic, documented resolution with the
