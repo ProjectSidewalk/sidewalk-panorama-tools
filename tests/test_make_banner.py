@@ -102,7 +102,7 @@ def test_the_committed_figure_is_not_stale(make_banner):
         pano_w, pano_h = im.size
 
     predicted = CropRunner.predict_crop_size(make_banner.LABEL_Y, pano_h)
-    crop_width = CropRunner.crop_window_width(make_banner.LABEL_Y, pano_h)
+    crop_width = CropRunner.crop_window_width(make_banner.LABEL_Y, pano_w, pano_h)
     box = CropRunner.compute_crop_box(make_banner.LABEL_X, make_banner.LABEL_Y, crop_width, pano_w, pano_h)
 
     assert (pano_w, pano_h) == (13312, 6656)

@@ -307,6 +307,49 @@ def load_label_metadata(sidewalk_server_fqdn, label_metadata_file):
     return fetch_cvMetadata_from_server(sidewalk_server_fqdn)
 
 
+# ---------------------------------------------------------------------------
+# Equirectangular units. Every conversion between angles and pixels in this module goes through the
+# four functions below, and the anisotropy is written here and nowhere else.
+#
+# The confusion these exist to prevent is not hypothetical. On an equirectangular raster a fraction of
+# WIDTH and a fraction of HEIGHT are different units - 1.0 of width is 360 deg of azimuth, 1.0 of
+# height is 180 deg of elevation - and production panos are 2:1 (W = 2H), which makes degrees-per-pixel
+# equal on the two axes and therefore makes a wrong axis look right. #78 records a live instance in
+# label-latlng-estimation: a depth panel captioned "the same window" as the photo beside it was
+# stretched by exactly 2, because the correction was written twice and the two factors cancelled.
+# Nothing threw, and the figure was published.
+#
+# So the axis is in the name. `azimuth_deg_to_px(deg, pano_height)` is visibly the wrong call rather
+# than an answer that is quietly half or double; and because these are the only place the constants
+# 360 and 180 appear (a test walks the token stream), a call site cannot write the conversion itself.
+# What that guard does not see is a bare factor of two: `azimuth_deg_to_px(deg, 2 * pano_height)`
+# passes it, and on a 2:1 pano is even correct. It is a tripwire for the common slip, not a proof -
+# the axis in the name and the tests on a non-2:1 pano are what carry the rest.
+#
+# Not a projection. Cutting an axis-aligned window out of an equirectangular raster involves no
+# reprojection - these are unit conversions along one axis each, which is what makes them this small.
+
+
+def azimuth_deg_to_px(deg, pano_width):
+    """Degrees of azimuth -> horizontal pixels on a pano `pano_width` wide (1.0 of width = 360 deg)."""
+    return deg / 360.0 * pano_width
+
+
+def azimuth_px_to_deg(px, pano_width):
+    """Horizontal pixels -> degrees of azimuth. The exact inverse of `azimuth_deg_to_px`."""
+    return px / pano_width * 360.0
+
+
+def elevation_deg_to_px(deg, pano_height):
+    """Degrees of elevation -> vertical pixels on a pano `pano_height` high (1.0 of height = 180 deg)."""
+    return deg / 180.0 * pano_height
+
+
+def elevation_px_to_deg(px, pano_height):
+    """Vertical pixels -> degrees of elevation. The exact inverse of `elevation_deg_to_px`."""
+    return px / pano_height * 180.0
+
+
 def _reference_crop_size(ref_y_offset):
     """The 2013 regression evaluated in the 6656-px-high space it was fit in.
 
@@ -352,28 +395,50 @@ def predict_crop_size(pano_y, pano_height):
     return _reference_crop_size(ref_offset) * (pano_height / V1_REF_HEIGHT)
 
 
-def crop_window_width(pano_y, pano_height):
-    """The window width rule v2 actually cuts, in native pixels: predict_crop_size scaled and clamped.
+def crop_window_fov_deg(pano_y, pano_height):
+    """The sizing rule as what it actually is: an ANGLE. Degrees of the sphere the window spans.
 
-    Three steps, each of which is one measured number from reports/2026-08-19-crop-sizing-v2.md:
+    Two steps, each one measured number from reports/2026-08-19-crop-sizing-v2.md:
 
     1. **Scale by CROP_SIZE_SCALE.** The regression predicts something close to the ramp's own extent,
        which as a crop reads as "too tight" - it is a size estimate, not a framing decision.
-    2. **Clamp as an angle.** Converting to degrees is what makes the clamp resolution-independent;
-       a fixed pixel clamp is the defect this rule exists to fix, one level up. Production panos are
-       2:1, where degrees-per-pixel is the same on both axes, so `width / pano_height * 180` and
-       `width / pano_width * 360` agree; the height form is used because the size it clamps is a
-       vertical quantity all the way back to the regression's y-offset.
-    3. **Return a width.** The 3:2 window is cut by width (compute_crop_box derives the height), because
-       the ramp against the window's width is what decides whether a crop reads as too tight.
+    2. **Clamp between CROP_MIN_FOV_DEG and CROP_MAX_FOV_DEG.** Clamping in degrees is what makes the
+       rule resolution-independent; a fixed pixel clamp is the defect v2 exists to fix.
+
+    Split out of crop_window_width (#78) so the angular quantity has a name and can be asserted on
+    directly. Everything the rule decides happens here, in degrees; converting to this pano's pixels
+    is one call to azimuth_deg_to_px in crop_window_width and nothing else.
+
+    The conversion IN is the elevation one: predict_crop_size is a height-normalised length (its
+    constants were fit on 6656-px-high panos and it scales by pano_height), so its pixels are vertical
+    pixels and elevation_px_to_deg is the honest reading of them. The angle is then a span of the
+    sphere, and crop_window_width turns it back into pixels on the axis the window actually lies
+    along - the horizontal one - with azimuth_deg_to_px. Production panos are 2:1, where the two
+    conversions agree to the bit, which is how the elevation form served as the width unnoticed until
+    #106's review.
+
+    :return: the window's angular span in degrees, in [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG].
+    """
+    deg = elevation_px_to_deg(predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE, pano_height)
+    return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
+
+
+def crop_window_width(pano_y, pano_width, pano_height):
+    """The window width rule v2 actually cuts, in native pixels: crop_window_fov_deg as an azimuthal span.
+
+    A width is horizontal, so the conversion is azimuth_deg_to_px against pano_width. The elevation
+    form gives the same number on a 2:1 pano and half of it on a square one - the axis slip the unit
+    primitives exist to make visible, and the one #106's review caught in this function. The angle
+    itself comes from the regression through the elevation conversion; crop_window_fov_deg says why.
+
+    The 3:2 window is cut by WIDTH (compute_crop_box derives the height), because the ramp against the
+    window's width is what decides whether a crop reads as too tight.
 
     Not clamped to the pano here: compute_crop_box owns the "a window cannot exceed the image" cap,
     because that is a property of the image rather than of the rule, and keeping it there means the
     reported window is the one that was cut.
     """
-    deg = predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE / pano_height * 180.0
-    deg = min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
-    return deg / 180.0 * pano_height
+    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height), pano_width)
 
 
 def compute_crop_box(pano_x, pano_y, crop_width, pano_width, pano_height):
@@ -410,6 +475,46 @@ def compute_crop_box(pano_x, pano_y, crop_width, pano_width, pano_height):
     ideal_top = int(round(pano_y - height / 2))
     top = max(0, min(ideal_top, pano_height - height))
     return CropBox(left, top, width, height, top != ideal_top)
+
+
+def label_position_in_crop(pano_x, pano_y, box, pano_width, scale=1.0):
+    """Where the labelled pixel lands inside the crop cut at `box`. The registration, as a function.
+
+    This is the inverse of compute_crop_box, and #78 is why it is a named function rather than three
+    lines at the one call site that needed them. A crop is derived data whose only claim to be "about"
+    a label is this mapping; the mapping was previously re-derived inside the --mark-label branch, so
+    the code that DEMONSTRATED registration was also the only code that computed it, and a caption is
+    not a test. Anything that wants to know where in a crop the click was - the mark, a consumer
+    plotting the click, the regression test for #54's tilt correction - asks here.
+
+    Three things it carries, each of which is wrong by default if a caller rolls its own:
+
+    * **the seam.** `left` is normalized into [0, pano_width) and the window may run past the far edge,
+      so a label at x = 20 in a window starting at 13000 is at 20 - 13000 + pano_width, not at -12980.
+      The modulo is the correct reading of any finite x (column 0 and column pano_width are the same
+      place in the world), which is also why x is never bounds-checked upstream.
+    * **the vertical shift.** compute_crop_box slides a window that would run off a pole back inside,
+      so the label is NOT at the crop's centre on those - `box.top`, not `pano_y - height / 2`. The
+      point marks the label, not the middle of the picture.
+    * **the storage rescale.** downscale_for_storage caps a wide window at CROP_MAX_STORED_WIDTH, so a
+      position in cut-window pixels is not a position in the stored file. Pass
+      `scale = stored_width / box.width` to get file pixels; the default 1.0 is cut-window pixels.
+      One scale for both axes, knowingly: downscale_for_storage rounds the stored height on its own,
+      so the file's true y scale is stored_height / box.height, which differs from `scale` by at most
+      half a pixel at the bottom edge. That is inside the mark's radius and beside the point for #54,
+      whose comparison is in pano coordinates - but it is a rounding, not an exact inverse, and a
+      consumer that wants the exact file row should scale y by the stored height itself.
+
+    Float, deliberately: the caller decides how to round, and a mark that rounds is not a measurement
+    that rounds. Not bounds-checked either - a caller that hands in a label the window does not contain
+    gets a position outside the crop, which is the honest answer and is what the out_of_frame preflight
+    exists to prevent reaching here.
+
+    :param box: the CropBox compute_crop_box returned for this label.
+    :param scale: stored width / box.width, when asking about a downscaled crop.
+    :return: (x, y) in pixels of the crop, as floats.
+    """
+    return (((pano_x - box.left) % pano_width) * scale, (pano_y - box.top) * scale)
 
 
 def extract_crop(pano, left, top, width, height):
@@ -507,22 +612,21 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     try:
         pano_width, pano_height = pano.size
 
-        box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_height),
+        box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_width, pano_height),
                                pano_width, pano_height)
         cropped = downscale_for_storage(extract_crop(pano, box.left, box.top, box.width, box.height))
 
         if draw_mark:
             # Draw on the crop, never the source pano: the pano image is shared by every label on it, so a
-            # mark on the source would leak this label's dot into its neighbours' crops. The label's x is
-            # recovered modulo the seam, and its y deliberately follows any vertical shift - the dot marks
-            # the label, not the crop centre. Drawn after the downscale, and its centre carried across by
-            # the same factor, so the dot is a fixed size in the file rather than shrinking with the
-            # window it happened to be cut from.
-            scale = cropped.size[0] / box.width
+            # mark on the source would leak this label's dot into its neighbours' crops. Where the dot
+            # goes is label_position_in_crop's answer and not this branch's - the seam modulo and the
+            # vertical shift are properties of the geometry, not of drawing. Drawn after the downscale
+            # with the scale passed through, so the dot is a fixed size in the file rather than shrinking
+            # with the window it happened to be cut from.
             draw = ImageDraw.Draw(cropped)
             r = 10
-            centre_x = ((pano_x - box.left) % pano_width) * scale
-            centre_y = (pano_y - box.top) * scale
+            centre_x, centre_y = label_position_in_crop(pano_x, pano_y, box, pano_width,
+                                                        scale=cropped.size[0] / box.width)
             draw.ellipse((centre_x - r, centre_y - r, centre_x + r, centre_y + r), fill=128)
 
         # The crop file is its own resume marker (bulk_extract_crops skips existing ones), so a mid-write

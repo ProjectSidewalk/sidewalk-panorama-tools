@@ -80,7 +80,7 @@ def build(out_path=OUT_PATH):
     pano = Image.open(PANO_PATH).convert('RGB')
     pano_w, pano_h = pano.size
 
-    crop_width = CropRunner.crop_window_width(LABEL_Y, pano_h)
+    crop_width = CropRunner.crop_window_width(LABEL_Y, pano_w, pano_h)
     box = CropRunner.compute_crop_box(LABEL_X, LABEL_Y, crop_width, pano_w, pano_h)
     crop = CropRunner.extract_crop(pano, box.left, box.top, box.width, box.height)
 

@@ -70,7 +70,7 @@ def v1_box(pano_x, pano_y, side, pano_width, pano_height):
 
 def v2_box(pano_x, pano_y, pano_width, pano_height):
     box = CropRunner.compute_crop_box(pano_x, pano_y,
-                                      CropRunner.crop_window_width(pano_y, pano_height),
+                                      CropRunner.crop_window_width(pano_y, pano_width, pano_height),
                                       pano_width, pano_height)
     return box.left, box.top, box.width, box.height
 
@@ -200,7 +200,8 @@ def resolution_invariance(pano_heights):
         for h in pano_heights:
             y = h / 2 + dep / 180.0 * h
             v1_degs.append(v1_side(y, h) / h * 180.0)
-            v2_degs.append(CropRunner.crop_window_width(y, h) / h * 180.0)
+            w = 2 * h                                          # every corpus pano is 2:1
+            v2_degs.append(CropRunner.crop_window_width(y, w, h) / h * 180.0)
         rows.append({'depression_deg': dep, 'pano_heights': list(pano_heights),
                      'v1_window_deg': v1_degs, 'v2_window_deg': v2_degs,
                      'v1_spread': max(v1_degs) / min(v1_degs),
