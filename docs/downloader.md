@@ -328,12 +328,40 @@ and `DownloadRunner` logs that verbatim for a failed pano. That is not a hypothe
 **What the ledger learns from Mapillary.** Two answers are permanent and write a `downloaded=0` row: a 404,
 and a 200 whose body names the image and carries no `thumb_original_url`. Everything else raises and leaves
 no row, so the pano is retried next run: any other status, a body that is not JSON, a JSON body that is not
-the record asked for, and a 200 carrying Meta's `{"error": {...}}` envelope. That last check is the
-defensive one. Every auth failure measured on 2026-09-05 was a non-200 wearing that envelope, and a real
-expiry answered 400, so no observed condition reaches it; it covers the one condition nobody can measure
-without a live token, a token lacking the needed scope. The stakes are the same either way: one night of
-bad auth read as a verdict on the panos wrote 161 false rows into a city's ledger on 2026-09-01, and
-replacing the token recovered none of them until the file was hand-edited on the store.
+the record asked for, a 200 carrying Meta's `{"error": {...}}` envelope, a 404 whose envelope carries the
+auth signature (code 190, or type `OAuthException`), and an image body that is not a JPEG. The envelope
+checks are the defensive ones. Every auth failure measured on 2026-09-05 was a non-200 wearing that
+envelope, and a real expiry answered 400, so no observed condition reaches them; they cover the one
+condition nobody can measure without a live token, a token lacking the needed scope. The 404 check is keyed
+on the auth signature rather than on any envelope because a Meta-style 404 for a retired image carries an
+envelope too, and refusing those would re-request every retired image nightly forever. The stakes are the
+same either way: one night of bad auth read as a verdict on the panos wrote 161 false rows into a city's
+ledger on 2026-09-01, and replacing the token recovered none of them until the file was hand-edited on the
+store.
+
+Measured 2026-09-06 with the production token: Mapillary answers an id it does not have with a **400**, not
+a 404, carrying `code` 100 / `error_subcode` 33 and a message that itself conflates "does not exist" with
+"cannot be loaded due to missing permissions". That answer raises like every other 400 and is not ledgered:
+a token lacking the needed scope would produce the same body for every pano in the city, which is the
+2026-09-01 incident by another route. The cost is one metadata request per retired image per night. A 404
+has never been observed, so the 404 branch is the documented shape rather than the measured one.
+
+That leaves **one permanent-verdict path reachable in production**: a 200 that names the image and carries no
+`thumb_original_url`. It is also the only one with no run-level breaker, which is [#113]. The scope-less
+token — the one auth condition nobody can measure without a live token — need not arrive as an envelope at
+all: Meta's Graph family commonly answers a permission-denied field by *omitting* it from an otherwise
+healthy 200 record, which is exactly that shape, and it would ledger every pano in the city. So the breaker
+that follow-up needs is keyed on **N consecutive no-rendition verdicts**, not on N consecutive 404s: a 404
+breaker would guard a status that has never occurred, and the measured 400 already raises unledgered. The
+depth phase (`DEPTH_MAX_CONSECUTIVE_FAILURES`) and `refetch_panos.py` both have such a breaker; the image
+loop does not, and it is the only one of the three that writes a permanent row an operator has to hand-edit
+off the store to undo.
+
+[#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
+
+Where the reason lands: cron mail carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
+else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
+`code` and `message` are in `scrape.log` on the store, one line per pano.
 
 Without the token, Mapillary panos are filtered out of the run rather than failed — **silently enough to
 miss**, so a city that should have Mapillary imagery and downloads none is the symptom of a token that never
