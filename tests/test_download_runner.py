@@ -538,6 +538,28 @@ def test_urllib3_is_quieted_and_scrape_log_rotates(tmp_path):
     assert rotating[0].backupCount == 3
 
 
+def test_configure_logging_redacts_the_token_from_scrape_log(tmp_path, monkeypatch):
+    """The wiring half of TokenRedactionFilter (tests/test_image_downloaders.py covers the filter's own
+    behaviour): the filter has to be attached to the REAL handler configure_logging builds, not just
+    exist somewhere, or it protects nothing. Reads scrape.log back off disk rather than using caplog -
+    caplog captures through its own handler, so it would never see a filter attached only to this one
+    (2026-09 PR #100 review, finding 2).
+    """
+    monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token-xyz')
+    log_path = tmp_path / 'scrape.log'
+    DownloadRunner.configure_logging(str(log_path))
+
+    logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s",
+                  '123456789012345', "InvalidHeader: ...'OAuth test-token-xyz\\n'")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    contents = log_path.read_text()
+    assert 'test-token-xyz' not in contents
+    assert '<redacted>' in contents
+    assert '123456789012345' in contents  # redaction must not eat the rest of the line
+
+
 def test_sigterm_is_translated_to_systemexit_so_the_evidence_row_still_lands(tmp_path, monkeypatch):
     """A stop sends SIGTERM; CPython's default dies without running finally blocks, losing the row (#49).
 
@@ -692,6 +714,53 @@ class TestRetrySemantics:
         DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
 
         assert attempts == []
+
+
+class TestMapillaryTokenNeverReachesScrapeLog:
+    """The regression test for the incident #100 fixed: download_panorama_images catches every pano's
+    exception and logs str(e) (DownloadRunner.py:376) straight into scrape.log, which lives on the shared
+    pano store. Every Mapillary test in tests/test_image_downloaders.py drives FakeResponse, whose
+    raise_for_status() raises requests.HTTPError('400') - the bare string '400', never a URL - so none of
+    them can exhibit the incident either way (2026-09 PR #100 review, finding 4).
+
+    This one builds the failing response's .url the same way requests itself would - Request(...).prepare()
+    - fed the SAME kwargs download_single_pano actually passed, so a revert to
+    params={'access_token': token} puts the token in a real HTTPError's message here too, and it goes
+    through DownloadRunner's real error-logging call site rather than asserting on mapillary.py's exception
+    directly.
+    """
+
+    class _WireFaithfulSession:
+        """get() returns a real requests.Response whose .url reflects the real request that would go on
+        the wire - built from the call's own kwargs, not a canned string - so this test cannot pass by
+        construction the way a fixed error message would."""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, **kwargs):
+            resp = requests.Response()
+            resp.status_code = 400
+            resp.reason = 'Bad Request'
+            resp.url = requests.Request('GET', url, params=kwargs.get('params')).prepare().url
+            return resp
+
+    def test_a_400_never_puts_the_token_in_scrape_log(self, monkeypatch, tmp_path, caplog):
+        monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token-xyz')
+        monkeypatch.setattr(downloaders.mapillary, '_session', lambda: self._WireFaithfulSession())
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        pano = {'pano_id': '123456789012345', 'source': 'mapillary'}
+
+        with caplog.at_level(logging.ERROR):
+            DownloadRunner.download_panorama_images(str(storage), [pano])
+
+        assert 'test-token-xyz' not in caplog.text
+        # The error really was logged - a test that passed because nothing ran would prove nothing.
+        assert 'Failed to download pano 123456789012345' in caplog.text
 
 
 class TestFallbackResolutionReachesTheLog:
