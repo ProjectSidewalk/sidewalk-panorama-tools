@@ -496,6 +496,11 @@ def label_position_in_crop(pano_x, pano_y, box, pano_width, scale=1.0):
     * **the storage rescale.** downscale_for_storage caps a wide window at CROP_MAX_STORED_WIDTH, so a
       position in cut-window pixels is not a position in the stored file. Pass
       `scale = stored_width / box.width` to get file pixels; the default 1.0 is cut-window pixels.
+      One scale for both axes, knowingly: downscale_for_storage rounds the stored height on its own,
+      so the file's true y scale is stored_height / box.height, which differs from `scale` by at most
+      half a pixel at the bottom edge. That is inside the mark's radius and beside the point for #54,
+      whose comparison is in pano coordinates - but it is a rounding, not an exact inverse, and a
+      consumer that wants the exact file row should scale y by the stored height itself.
 
     Float, deliberately: the caller decides how to round, and a mark that rounds is not a measurement
     that rounds. Not bounds-checked either - a caller that hands in a label the window does not contain
