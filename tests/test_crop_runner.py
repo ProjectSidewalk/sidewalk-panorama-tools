@@ -1496,9 +1496,14 @@ class TestEquirectUnits:
 
         Careful people wrote both halves of the bug the issue records, so "be careful with aspect
         ratios" is not a fix. What is a fix is that 360 and 180 appear in this module ONLY inside the
-        four unit functions — a call site cannot introduce a factor of two because there is nothing
-        there to get wrong. Read off the token stream rather than the text, so prose in a docstring
-        saying "360 deg" is not mistaken for arithmetic, and a comment cannot satisfy it either.
+        four unit functions — a call site cannot write the conversion itself. Read off the token
+        stream rather than the text, so prose in a docstring saying "360 deg" is not mistaken for
+        arithmetic, and a comment cannot satisfy it either.
+
+        What this does not catch, stated so nobody leans on it: a bare `2 *` at a call site. Measured
+        on #106's review, `azimuth_deg_to_px(fov, 2 * pano_height)` passes this test and every other
+        one in the file, because on a 2:1 pano it is correct. This is a tripwire for the common slip;
+        the non-2:1 assertion in TestTheWindowWidthIsAnAzimuthalSpan is what holds the axis itself.
         """
         import ast
         import io

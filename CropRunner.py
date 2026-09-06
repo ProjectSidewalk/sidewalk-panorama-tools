@@ -321,7 +321,10 @@ def load_label_metadata(sidewalk_server_fqdn, label_metadata_file):
 #
 # So the axis is in the name. `azimuth_deg_to_px(deg, pano_height)` is visibly the wrong call rather
 # than an answer that is quietly half or double; and because these are the only place the constants
-# 360 and 180 appear, a factor of two cannot be introduced at a call site at all.
+# 360 and 180 appear (a test walks the token stream), a call site cannot write the conversion itself.
+# What that guard does not see is a bare factor of two: `azimuth_deg_to_px(deg, 2 * pano_height)`
+# passes it, and on a 2:1 pano is even correct. It is a tripwire for the common slip, not a proof -
+# the axis in the name and the tests on a non-2:1 pano are what carry the rest.
 #
 # Not a projection. Cutting an axis-aligned window out of an equirectangular raster involves no
 # reprojection - these are unit conversions along one axis each, which is what makes them this small.
