@@ -269,8 +269,32 @@ Field 14 includes `unavailable` — a permanent, expected, non-actionable outcom
 show large failure numbers that are entirely normal. The success/failure/unavailable split goes to stdout and
 `scrape.log`; `log.csv` keeps its fixed 18-column shape, so there was no room for a separate column.
 
+## When the depth phase stands itself down
+
+Two mechanisms stop depth without stopping the run, and they look identical from `log.csv` (all five depth
+columns are `0`), so read stdout or `scrape.log` rather than the row:
+
+| what you see | what happened | what to do |
+|---|---|---|
+| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
+| `WARNING - the depth phase stopped early because Google stopped answering` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer will also have backed off, and each new city process starts fresh at `depth_start_interval`. |
+
+The latch is a file in the system temp directory, **not on the store** — it records this host's standing
+with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
+moves it. To clear one by hand, delete the file; a missing, unparseable or implausibly future-dated latch
+all mean "not blocked", because a latch nobody can read must never be able to stand the whole fleet's depth
+phase down indefinitely.
+
+**Do not read a stood-down phase as lost work.** Nothing is ledgered on either path, so every unresolved
+panorama is retried on the next run. See
+[Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers).
+
 ## What healthy looks like
 
 A mature city settles into: `image_success` small or zero most nights, stable `image_fail`, and
 `image_skip ≈ image_total`. The [log analyzer](log-analyzer.md) encodes the rest of the heuristics, including
 what "stale" and "ended early" mean in practice.
+
+During the depth backfill, add: `depth_success` climbing night over night, and `depth_fail` large but
+*stable* — it counts `unavailable`, which is permanent and expected, so it is not an alert signal. The split
+goes to stdout and `scrape.log`.
