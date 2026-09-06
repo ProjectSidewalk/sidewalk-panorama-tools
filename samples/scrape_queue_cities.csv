@@ -1,0 +1,17 @@
+city_id,fqdn
+# An EXAMPLE manifest for scrape_queue.py --cities, not the deployed fleet. The real one lists every city the
+# host scrapes and lives on the host, next to the crontab: which cities a box owns is a deployment fact, and a
+# copy in the repo would rot silently against it. docs/downloader.md has the one-liner that generates it from
+# the crontab it replaces.
+#
+# Two columns, both required. The fqdn cannot be derived from the city_id - seattle-wa is served by
+# sidewalk-sea, columbus-oh by sidewalk-columbus - so they travel together.
+#
+# A row whose city_id starts with # is skipped, which is how a city is taken out for a night now that it has
+# no crontab line of its own to comment out. The rows below are real, and in the order the queue would run
+# them (manifest order, rotated nightly unless --no-rotate).
+seattle-wa,sidewalk-sea.cs.washington.edu
+columbus-oh,sidewalk-columbus.cs.washington.edu
+cdmx,sidewalk-cdmx.cs.washington.edu
+chicago-il,sidewalk-chicago.cs.washington.edu
+richmond-va,sidewalk-richmond.cs.washington.edu

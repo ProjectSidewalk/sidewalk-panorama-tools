@@ -18,6 +18,10 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `refetch_log.csv` | Ledger for the [`fover` repair pass](#repairing-fover-era-panoramas), if one has run here |
 | `refetch.log` | That pass's rotating log |
 
+One file lives at the **store root** rather than inside a city: `scrape_queue.log`, the
+[queue driver](downloader.md#nightly-deployment)'s own rotating log. It records what ran last night, in what
+order, and how long each city took — which no per-city log can, because none of them can see the ring.
+
 `scrape.log` lives here rather than in the working directory on purpose: cron runs the scraper from whatever
 directory it likes, and a relative path scatters every per-pano failure detail somewhere nobody looks.
 
@@ -212,7 +216,7 @@ never shift.
 
 | # | field | notes |
 |---|-------|-------|
-| 1 | run start timestamp | `str(datetime.now())`, e.g. `2026-08-06 01:00:00.123456` |
+| 1 | run start timestamp | ISO-8601 **with an explicit UTC offset**, e.g. `2026-09-05 20:30:04.277106+00:00`. Rows written before [#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101) are `str(datetime.now())` — the same shape without the offset, and without the `.ffffff` on the rare run whose microsecond landed on exactly 0. Read a bare one as UTC: every scraper host has run UTC, which is why the omission was survivable for as long as it was |
 | 2 | metadata successes | always `0` (stub) |
 | 3 | metadata failures | always `0` (stub) |
 | 4 | metadata skipped | count of image-eligible panos (stub) |
@@ -233,6 +237,16 @@ never shift.
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
+
+### Which clock each field is on
+
+Field 1 is the **wall clock, stamped with its offset** — the one thing a wall clock is good for, namely
+*when* the run happened. Every duration (fields 6, 12, 17, 18) is measured on `time.monotonic()` instead, so
+neither an NTP step nor a DST transition can invent or delete an hour of runtime. That distinction stopped
+being academic when the schedule moved into a named timezone: the Pacific night window the
+[queue](downloader.md#nightly-deployment) runs in contains 02:00 local, so a wall-clock duration would be an
+hour out twice a year — and the log analyzer warns at 3× the median runtime, so the whole fleet would have
+reported an abnormally long run on the same night, with nothing actually wrong.
 
 ### Blank fields mark a crashed or stopped run
 

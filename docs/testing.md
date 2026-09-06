@@ -43,6 +43,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | The image ledger contract at both ends: which downloader answers are permanent and which raise, the Mapillary error-envelope shapes measured on 2026-09-05, and a real Mapillary response driven through the dispatcher into `pano_id_log.csv` | `test_image_downloaders.py`, `test_download_runner.py` |
 | Cropper: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins | `test_crop_runner.py` |
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
+| The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes | `test_scrape_queue.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
 | The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal, ledger semantics, the recovery metric, and the CLI surface | `test_refetch_panos.py` |
