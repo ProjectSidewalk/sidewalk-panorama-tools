@@ -1435,3 +1435,248 @@ class TestMakeSingleCropAcceptsAPath:
             crop_runner.make_single_crop(pano, 400, INTERIOR_Y, str(tmp_path / 'second.jpg'))
 
         assert os.path.exists(str(tmp_path / 'second.jpg'))
+
+
+# ---------------------------------------------------------------------------
+# #78: the crop window has one derivation, and registration is measured rather than captioned
+# ---------------------------------------------------------------------------
+
+def plant(size, at, planted=(255, 0, 0), base=(0, 0, 255)):
+    """A pano of `size` in `base`, with exactly one pixel of `planted` at `at`.
+
+    One pixel, and a colour that appears nowhere else, so "the label is at (px, py)" is decided by the
+    raster rather than by a tolerance: the tests below assert both that the computed position holds the
+    planted colour AND that the crop contains exactly one such pixel, which a mapping that is right by
+    coincidence on a uniform image cannot satisfy. In memory and never through JPEG — quantisation
+    smears a single pixel across its block, and the quantity under test is exact.
+    """
+    img = Image.new('RGB', size, base)
+    img.putpixel(at, planted)
+    return img
+
+
+class TestEquirectUnits:
+    """1.0 of width is 360 deg, 1.0 of height is 180 deg. Written once, and pinned here (#78)."""
+
+    @pytest.mark.parametrize('pano_width', [1024, 2048, 13312, 16384])
+    def test_a_full_turn_of_azimuth_is_the_whole_width(self, crop_runner, pano_width):
+        """The absolute anchor. No factor of two survives an equality against the frame itself."""
+        assert crop_runner.azimuth_deg_to_px(360.0, pano_width) == pano_width
+        assert crop_runner.azimuth_deg_to_px(180.0, pano_width) == pano_width / 2
+
+    @pytest.mark.parametrize('pano_height', [1024, 1664, 6656, 8192])
+    def test_pole_to_pole_of_elevation_is_the_whole_height(self, crop_runner, pano_height):
+        assert crop_runner.elevation_deg_to_px(180.0, pano_height) == pano_height
+        assert crop_runner.elevation_deg_to_px(90.0, pano_height) == pano_height / 2
+
+    def test_the_two_axes_are_the_same_only_because_panos_are_two_to_one(self, crop_runner):
+        """The pin that kills a swapped axis.
+
+        On a 2:1 pano the two conversions agree, which is the whole reason the confusion is invisible
+        in production. On a square one they differ by exactly 2 — the factor #78's live instance lost.
+        A module that wrote `pano_width / 180` anywhere passes the first assertion and fails the second.
+        """
+        assert (crop_runner.azimuth_deg_to_px(30.0, 2048)
+                == crop_runner.elevation_deg_to_px(30.0, 1024))
+
+        side = 1024
+        assert (crop_runner.elevation_deg_to_px(30.0, side)
+                == 2 * crop_runner.azimuth_deg_to_px(30.0, side))
+
+    @pytest.mark.parametrize('deg', [0.0, 8.0, 25.0, 90.0, 179.0])
+    def test_each_axis_round_trips(self, crop_runner, deg):
+        w, h = 13312, 6656
+        assert crop_runner.azimuth_px_to_deg(
+            crop_runner.azimuth_deg_to_px(deg, w), w) == pytest.approx(deg)
+        assert crop_runner.elevation_px_to_deg(
+            crop_runner.elevation_deg_to_px(deg, h), h) == pytest.approx(deg)
+
+    def test_the_module_states_the_anisotropy_in_exactly_one_place(self, crop_runner):
+        """#78's actual proposal, as a test: the correct derivation has to be the only reachable one.
+
+        Careful people wrote both halves of the bug the issue records, so "be careful with aspect
+        ratios" is not a fix. What is a fix is that 360 and 180 appear in this module ONLY inside the
+        four unit functions — a call site cannot introduce a factor of two because there is nothing
+        there to get wrong. Read off the token stream rather than the text, so prose in a docstring
+        saying "360 deg" is not mistaken for arithmetic, and a comment cannot satisfy it either.
+        """
+        import ast
+        import io
+        import tokenize
+
+        with open(crop_runner.__file__, encoding='utf-8') as f:
+            source = f.read()
+        allowed = {'azimuth_deg_to_px', 'azimuth_px_to_deg',
+                   'elevation_deg_to_px', 'elevation_px_to_deg'}
+        spans = [(n.lineno, n.end_lineno) for n in ast.parse(source).body
+                 if isinstance(n, ast.FunctionDef) and n.name in allowed]
+        assert len(spans) == len(allowed), 'the unit primitives moved or were renamed'
+
+        offenders = []
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.NUMBER and tok.string.replace('_', '') in (
+                    '180', '360', '180.0', '360.0'):
+                if not any(lo <= tok.start[0] <= hi for lo, hi in spans):
+                    offenders.append((tok.start[0], tok.string))
+        assert offenders == [], (
+            'the equirectangular conversion is written outside the unit primitives at %s — route it '
+            'through azimuth_*/elevation_* instead' % offenders)
+
+
+class TestRegistration:
+    """Where the labelled pixel lands in the crop, measured against the raster (#78).
+
+    The failure this guards against is a picture captioned as covering a window that does not: nothing
+    throws, the crop looks reasonable, and the surrounding correct machinery lends it credibility. So
+    every assertion here reads a pixel out of the cut image; none compares one derivation to another.
+    """
+
+    @pytest.mark.parametrize('label', ['interior', 'near-top', 'near-bottom',
+                                       'seam-left', 'seam-right', 'first-column'])
+    def test_the_planted_pixel_is_where_the_geometry_says(self, crop_runner, label):
+        w, h = PANO_SIZE
+        x, y = {'interior': (1000, INTERIOR_Y),
+                'near-top': (1000, NEAR_TOP_Y),
+                'near-bottom': (1000, NEAR_BOTTOM_Y),
+                'seam-left': (5, INTERIOR_Y),
+                'seam-right': (w - 5, INTERIOR_Y),
+                'first-column': (0, INTERIOR_Y)}[label]
+
+        pano = plant((w, h), (x, y))
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, h), w, h)
+        crop = crop_runner.extract_crop(pano, box.left, box.top, box.width, box.height)
+
+        px, py = crop_runner.label_position_in_crop(x, y, box, w)
+        assert crop.getpixel((int(px), int(py))) == (255, 0, 0)
+        assert (1, (255, 0, 0)) in crop.getcolors(maxcolors=1 << 24), \
+            'the landmark must be unique in the crop, or this assertion proves nothing'
+
+    def test_a_shifted_crop_puts_the_label_off_centre_and_the_mapping_follows(self, crop_runner):
+        """The case a "the label is at the crop's centre" shortcut gets wrong, and the reason
+        label_position_in_crop takes a CropBox rather than recomputing the window from pano_y."""
+        w, h = PANO_SIZE
+        x, y = 1000, NEAR_BOTTOM_Y
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, h), w, h)
+        assert box.shifted, 'this fixture is only meaningful on a window that had to move'
+
+        px, py = crop_runner.label_position_in_crop(x, y, box, w)
+        assert py != pytest.approx(box.height / 2)
+        crop = crop_runner.extract_crop(plant((w, h), (x, y)), box.left, box.top,
+                                        box.width, box.height)
+        assert crop.getpixel((int(px), int(py))) == (255, 0, 0)
+
+    def test_the_seam_is_carried_rather_than_producing_a_negative_offset(self, crop_runner):
+        """A window that starts near the far edge and wraps: the naive `pano_x - box.left` is negative
+        by nearly a whole pano width, which as an index reads from the wrong end of the crop."""
+        w, h = PANO_SIZE
+        x, y = 3, INTERIOR_Y
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, h), w, h)
+        assert box.left + box.width > w, 'this fixture needs a window that crosses the seam'
+
+        px, _ = crop_runner.label_position_in_crop(x, y, box, w)
+        assert 0 <= px < box.width
+        assert x - box.left < 0, 'without the modulo this case would index from the wrong end'
+
+    def test_the_position_scales_into_the_stored_file(self, crop_runner, monkeypatch):
+        """Registration has to survive downscale_for_storage, because the stored crop is what every
+        consumer holds. Measured through the resize with a landmark large enough to survive it — the
+        quantity under test is the position, not LANCZOS's treatment of one pixel."""
+        monkeypatch.setattr(crop_runner, 'CROP_MAX_STORED_WIDTH', 64)
+        w, h = PANO_SIZE
+        x, y = 1000, NEAR_BOTTOM_Y
+
+        pano = Image.new('RGB', (w, h), (0, 0, 255))
+        for dx in range(-12, 12):
+            for dy in range(-12, 12):
+                pano.putpixel((x + dx, y + dy), (255, 0, 0))
+
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, h), w, h)
+        stored = crop_runner.downscale_for_storage(
+            crop_runner.extract_crop(pano, box.left, box.top, box.width, box.height))
+        assert stored.size[0] == 64, 'this fixture needs the storage cap to actually bind'
+
+        px, py = crop_runner.label_position_in_crop(x, y, box, w,
+                                                    scale=stored.size[0] / box.width)
+        r, g, b = stored.getpixel((int(px), int(py)))
+        assert r > b, 'the label does not land inside the landmark once the crop is stored'
+
+    @pytest.mark.parametrize('pano_y', [NEAR_TOP_Y, INTERIOR_Y, 700, NEAR_BOTTOM_Y])
+    def test_two_views_of_one_window_share_an_aspect(self, crop_runner, monkeypatch, pano_y):
+        """The issue's second registration ask. The live instance was a depth panel captioned "the same
+        window" as the photo beside it at an aspect of 2.018 against 1.011 — the caption was the only
+        thing asserting it. Here the cut window and the stored file are those two views, and the
+        tolerance is one pixel of rounding, so a factor of two cannot hide inside it."""
+        monkeypatch.setattr(crop_runner, 'CROP_MAX_STORED_WIDTH', 40)
+        w, h = PANO_SIZE
+        box = crop_runner.compute_crop_box(1000, pano_y, crop_runner.crop_window_width(pano_y, h),
+                                           w, h)
+        assert box.height == round(box.width / crop_runner.CROP_ASPECT_W_OVER_H)
+
+        stored = crop_runner.downscale_for_storage(Image.new('RGB', (box.width, box.height)))
+        assert stored.size[0] == 40, 'this fixture needs the storage cap to actually bind'
+        assert stored.size[0] / stored.size[1] == pytest.approx(box.width / box.height,
+                                                               rel=1.0 / stored.size[1])
+
+
+class TestTheTwoWindowDerivationsAgree:
+    """CropRunner and the gold-annotation instrument derive the same window independently, and #78's
+    item 3 says that if the implementations are to stay several, something has to assert they agree.
+
+    They stay several on purpose: reports/scripts/annotation_tiles.py may not import the cropper
+    (prereg Amendment 1(e) — a gold standard sharing a transform with the thing under study measures
+    zero by construction), and its module docstring says so. This class compares; it does not couple.
+    If the two ever disagree, that is the finding.
+    """
+
+    @pytest.fixture
+    def tiles(self):
+        scripts = os.path.join(REPO_ROOT, 'reports', 'scripts')
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import annotation_tiles
+        return annotation_tiles
+
+    @pytest.mark.parametrize('pano_x', [0, 5, 1000, 2043, 2047])
+    @pytest.mark.parametrize('width', [96, 300, 600])
+    def test_the_left_edge_lands_in_the_same_place(self, crop_runner, tiles, pano_x, width):
+        """Matched on width, since that is all `left` depends on. Includes both sides of the seam,
+        where the two normalisations could differ and a negative or out-of-range origin would show."""
+        w, h = PANO_SIZE
+        fov = crop_runner.azimuth_px_to_deg(width, w)
+        window = tiles.tile_window(pano_x, INTERIOR_Y, w, h, 0, 0, fov_deg=fov)
+        assert window.width == width, 'the fixture failed to match the two window widths'
+
+        box = crop_runner.compute_crop_box(pano_x, INTERIOR_Y, width, w, h)
+        assert box.left == window.left
+
+    @pytest.mark.parametrize('pano_y', [0, NEAR_TOP_Y, INTERIOR_Y, NEAR_BOTTOM_Y, 1023])
+    @pytest.mark.parametrize('width', [96, 300, 600])
+    def test_the_vertical_clamp_agrees_including_which_windows_moved(self, crop_runner, tiles,
+                                                                    pano_y, width):
+        """Matched on height, which is what the pole clamp depends on. Both slide a window that would
+        run off a pole back inside rather than padding it, and both report that they did — so
+        `shifted` is compared too, not just where the window ended up."""
+        w, h = PANO_SIZE
+        box = crop_runner.compute_crop_box(1000, pano_y, width, w, h)
+        assert box.height % 2 == 0, 'the fixture needs an even height to match tile_extent_px'
+
+        fov = crop_runner.elevation_px_to_deg(box.height, h)
+        window = tiles.tile_window(1000, pano_y, w, h, 0, 0, fov_deg=fov)
+        assert window.height == box.height, 'the fixture failed to match the two window heights'
+
+        assert (box.top, box.shifted) == (window.top, window.shifted)
+
+    @pytest.mark.parametrize('pano_x', [0, 3, 1000, 2045])
+    @pytest.mark.parametrize('pano_y', [NEAR_TOP_Y, INTERIOR_Y, NEAR_BOTTOM_Y])
+    def test_the_two_registrations_agree(self, crop_runner, tiles, pano_x, pano_y):
+        """The mapping itself: pano pixel -> window pixel, by two implementations that share no code.
+        `pano_to_tile` rounds to integers because an annotation is a click; label_position_in_crop
+        returns floats because a measurement should not. Compared after the same rounding."""
+        w, h = PANO_SIZE
+        box = crop_runner.compute_crop_box(pano_x, pano_y, crop_runner.crop_window_width(pano_y, h),
+                                           w, h)
+        window = tiles.TileWindow(left=box.left, top=box.top, width=box.width, height=box.height,
+                                  shifted=box.shifted, wraps=box.left + box.width > w)
+
+        px, py = crop_runner.label_position_in_crop(pano_x, pano_y, box, w)
+        assert (int(round(px)), int(round(py))) == tiles.pano_to_tile(window, pano_x, pano_y, w)

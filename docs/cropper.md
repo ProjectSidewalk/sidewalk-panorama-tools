@@ -75,6 +75,38 @@ A shifted crop still contains its label, but not at the center. Those are counte
 summary (`shifted_vertically`) and logged with their offset, so a consumer that assumes centering can see how
 many it got. In that same census only two labels needed a shift, and both turned out to be corrupt rows.
 
+### Angles, pixels, and the factor of two
+
+Every conversion between degrees and pixels in `CropRunner.py` goes through four one-line functions —
+`azimuth_deg_to_px` / `azimuth_px_to_deg` (1.0 of width = 360°) and `elevation_deg_to_px` /
+`elevation_px_to_deg` (1.0 of height = 180°) — and the constants `360` and `180` appear nowhere else in the
+module. A test asserts that by walking the token stream, so a new call site cannot quietly reintroduce them.
+
+This is not fussiness about naming. A fraction of width and a fraction of height are different units, and
+production panoramas are 2:1, which makes degrees-per-pixel equal on the two axes and therefore makes a
+wrong-axis conversion return the right answer for the wrong reason — until it meets a pano that is not 2:1,
+or until the correction gets written twice and cancels. That second case shipped: a published figure in
+`label-latlng-estimation` put a depth panel beside a photo crop, captioned as the same window, stretched
+vertically by exactly 2. Nothing threw
+([#78](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/78)).
+
+`crop_window_fov_deg()` is the sizing rule expressed as what it is — an angle — and `crop_window_width()` is
+that angle in this pano's pixels, one `elevation_deg_to_px` call and nothing else.
+
+### Where the label is inside the crop
+
+`label_position_in_crop(pano_x, pano_y, box, pano_width, scale=1.0)` answers it, and is the only place that
+does. It carries the three things a hand-rolled `pano_x - left` gets wrong: the **seam** (a window that wraps
+puts a low x near the right of the crop, not at a large negative offset), the **vertical shift** (on a
+clamped window the label is not at the center, so it comes off `box.top` rather than off the window's
+midpoint), and the **storage rescale** (pass `scale = stored_width / box.width` to ask about the stored file
+rather than the cut window). It returns floats — the caller decides how to round.
+
+`--mark-label` draws its dot there, and the registration tests assert it by planting a uniquely coloured
+pixel in a synthetic pano and reading it back out of the cut crop, at the horizon, at both poles and across
+the seam. That matters because the alternative is a caption: the panel above was *labelled* "the same
+window" while being twice the height, and nothing but the label said otherwise.
+
 Details and measurements: [reports/2026-08-10-crop-geometry-review.md](../reports/2026-08-10-crop-geometry-review.md)
 and [reports/2026-08-09-clamp-census.md](../reports/2026-08-09-clamp-census.md).
 
