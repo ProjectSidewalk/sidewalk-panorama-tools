@@ -7,12 +7,29 @@ proxies = {
     "https": "http://",
 }
 
-# Minimum seconds between GSV depth-map metadata requests; 0 disables the throttle. The depth phase is already
-# serial (one request in flight at a time, unlike the image phase's `thread_count` fan-out), so this is a further,
-# deliberate slowdown. Leave it at 0 unless a canary run shows Google pushing back: the backfill is inherently a
-# multi-month job, so pacing costs real weeks. Raise it if several cities scrape concurrently from one box - the
-# throttle is per-process, so the rate Google sees is this multiplied by however many runs overlap.
-depth_min_request_interval = 0.0
+# --- Depth request pacing (#43) -----------------------------------------------------------------------------
+#
+# The depth phase paces itself ADAPTIVELY between the floor and the ceiling below: it opens a run at
+# `depth_start_interval`, doubles on any sign of push-back, and earns its way back down towards the floor only
+# after a long clean streak. The gap actually slept is drawn uniformly from [interval, 2 x interval], so there
+# is no fixed cadence for a rate limiter to key on.
+#
+# Read the floor as the one setting that decides how aggressive this host can ever get: nothing draws a gap
+# shorter than it. 0.25 s is the pace the 2026-08-09 photometa census ran 1,360 requests at with no push-back
+# at all, so it is the fastest rate this repo has live evidence for - which is exactly why it is the default
+# rather than 0. The backfill is ~1.4 M requests and a measured 0.077 s median round trip, so at this floor it
+# is on the order of a fortnight of nights, not the "multi-month" job this comment used to claim.
+#
+# NB the throttle is PER PROCESS. That is safe only because scrape_queue.py runs one city at a time; going back
+# to concurrent per-city cron lines would multiply the rate Google sees by however many overlap.
+depth_min_request_interval = 0.25
+
+# Where a run opens, before it has sampled the endpoint's mood. Careful first, fast later.
+depth_start_interval = 1.0
+
+# The slowest the adaptive backoff will go. Past this the circuit breaker and the block latch are the right
+# tools, not an ever-longer sleep inside a bounded --max-runtime window.
+depth_max_request_interval = 30.0
 
 # -------------------------------
 # Windows Headers

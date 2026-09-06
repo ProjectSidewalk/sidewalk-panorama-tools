@@ -160,11 +160,18 @@ def read_log(log_path: Path) -> pd.DataFrame:
     # datetimelike values". main() has no per-city try/except, so one bad row ends the report for every city
     # after it, and those cities stop being monitored with nothing to say so.
     #
-    # format="ISO8601" rather than leaving pandas to infer: str(datetime.now()) omits the ".ffffff" when the
-    # microsecond lands on exactly 0, so a long-lived log holds both widths eventually. Inference locks onto
-    # the first width it sees and coerces every row of the other one to NaT - silently discarding real runs,
-    # which is worse than the crash it replaces. ISO8601 accepts both, and coerces only genuine garbage.
-    df["start_time"] = pd.to_datetime(df["start_time"], errors="coerce", format="ISO8601")
+    # format="ISO8601" rather than leaving pandas to infer, for two reasons that both end in silently
+    # discarded runs. Historic rows were written as str(datetime.now()), which omits the ".ffffff" when the
+    # microsecond lands on exactly 0, so a long-lived log holds both widths; and rows written since #101
+    # carry a UTC offset the older ones do not, so a long-lived log holds both shapes as well. Inference
+    # locks onto the first form it sees and coerces every row of the other to NaT. ISO8601 accepts all four
+    # combinations, and coerces only genuine garbage.
+    #
+    # utc=True is what makes those two eras comparable. It converts an offset-carrying row to UTC and reads a
+    # bare one as UTC, which is exactly right: every scraper host has run UTC (docs/downloader.md), so a
+    # legacy naive row IS a UTC row. Without it a file holding both shapes comes back as object dtype and
+    # every comparison below raises on the mixture. The column is tz-aware from here on, so `now` is too.
+    df["start_time"] = pd.to_datetime(df["start_time"], errors="coerce", format="ISO8601", utc=True)
 
     # A run whose timestamp is unparseable can't be placed in time; nothing below can use it.
     df = df[df["start_time"].notna()]
@@ -194,13 +201,17 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     if df.empty:
         return [{"level": "CRITICAL", "msg": "Log file is empty"}]
 
-    # Convenience: calendar date column
+    # Convenience: calendar date column, in UTC. Rule 6 below is the one that depends on where the day
+    # boundary falls, and it is safe under the Pacific night window the queue runs in (#101): 20:00-05:00 PT
+    # is 03:00-12:00 UTC (04:00-13:00 under PST), so a night sits entirely inside one UTC day and a city
+    # still gets exactly one row per date.
     df["date"] = df["start_time"].dt.normalize()
 
     # --- 1. Staleness ---
-    # NB: start_time is written as str(datetime.now()) on the scraper host, i.e. that host's local time, so
-    # this comparison is off by the host's UTC offset. It doesn't matter at a multi-day threshold.
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Both sides are tz-aware UTC: read_log normalises the column, so this is an exact comparison rather
+    # than one that was off by the scraper host's UTC offset and got away with it at a multi-day threshold
+    # (#101). It stays exact if the fleet moves to a Pacific-pinned schedule, or to a host that isn't on UTC.
+    now = datetime.now(timezone.utc)
     last_ts  = df["start_time"].iloc[-1]
     days_old = (now - last_ts).days
 
@@ -375,7 +386,9 @@ def main(argv=None) -> int:
         if not cities:
             sys.exit(f"City '{args.city}' not found in {CITIES_FILE}")
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # %Z so the report header says which clock it is on - the same omission, one level up, that let a
+    # 13:30-Pacific slot read as "runs at 20:30, seems fine" for months (#101).
+    now_str = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     print(f"\n{'━'*70}")
     print(f"  Scraper Log Analysis — {now_str}")
     print(f"  Cities: {len(cities)}  |  Stale threshold: {args.stale_days} days")

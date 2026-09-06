@@ -6,6 +6,7 @@ fields the repo already pins in test_streetlevel_api.py, and the summarizer's dr
 accounting is checked on synthetic records. The live fetch itself is a thin loop over these.
 """
 
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -416,3 +417,265 @@ class TestSummarize:
         t = pc.summarize(recs)['tilt']
         assert t['abs_roll_p50_deg'] == pytest.approx(0.2, abs=0.01)
         assert t['abs_pitch_p90_deg'] < 0.3 + 1e-6
+
+
+# --- re-fetching a committed census to measure decay (#43) --------------------------------------------------
+#
+# The 2026-08-09 census embedded its full manifest for exactly this: the same panos, re-requested later, give
+# a death rate on ONE population with no strata confounds. That number is what sizes the cost of every further
+# week production runs with --skip-depth, since a depth map exists only for a pano Google still serves and
+# 100% of that census's alive panos returned one.
+#
+# The trap confirm_deaths exists for: run_census records a request that ERRORED as found=False. That is the
+# right conservative call for an alive-rate, and the wrong one for a decay rate - it books a transient network
+# blip as a permanent death and inflates the headline in the direction the study wants to believe. So every
+# alive -> dead transition is asked a second time before it is counted.
+
+
+def _census_json(tmp_path, records, name='census.json'):
+    path = tmp_path / name
+    pc.write_json({'source': 's', 'rawlabels_fetched': '2026-08-09', 'seed': pc.SEED,
+                   'summary': {}, 'records': records}, str(path))
+    return str(path)
+
+
+def _rec(pano_id, found=True, has_depth=True, city='A', era='mid', error=None):
+    return {'pano_id': pano_id, 'city': city, 'era': era, 'found': found,
+            'served_width': 16384 if found else None, 'served_height': 8192 if found else None,
+            'pitch_deg': 1.0 if found else None, 'roll_deg': 0.5 if found else None,
+            'has_depth': has_depth if found else None, 'capture_date': '2021-05',
+            'stored_width': 16384, 'stored_height': 8192, 'error': error}
+
+
+def _found(frame, pano_id, column='found'):
+    return bool(frame.loc[frame['pano_id'] == pano_id, column].item())
+
+
+class TestSampleFromCensus:
+    """The re-fetch draws no new sample: it replays the committed manifest verbatim."""
+
+    def test_it_rebuilds_the_columns_run_census_iterates(self, tmp_path):
+        path = _census_json(tmp_path, [_rec('a'), _rec('b', found=False)])
+
+        sample, prior = pc.sample_from_census(path)
+
+        # run_census reads exactly these five off each row; a missing one is an AttributeError 1,300
+        # requests into a live run.
+        assert list(sample.columns) == ['pano_id', 'city', 'era', 'stored_width', 'stored_height']
+        assert list(sample['pano_id']) == ['a', 'b']
+        assert list(prior['pano_id']) == ['a', 'b']
+
+    def test_dead_panos_are_replayed_too_not_dropped(self, tmp_path):
+        """A dead id can come back, and 'resurrected' is only measurable if the dead half is asked again."""
+        path = _census_json(tmp_path, [_rec('alive'), _rec('dead', found=False)])
+
+        sample, _ = pc.sample_from_census(path)
+
+        assert len(sample) == 2
+
+    def test_the_sample_survives_a_json_round_trip_of_nulls(self, tmp_path):
+        """A not-found record stores None for every served field; those must not turn pano ids into NaN."""
+        path = _census_json(tmp_path, [_rec('dead', found=False)])
+
+        sample, _ = pc.sample_from_census(path)
+
+        assert sample['pano_id'].tolist() == ['dead']
+        assert sample['stored_width'].tolist() == [16384]
+
+
+class TestDecay:
+
+    def test_it_counts_the_four_transitions(self):
+        before = pd.DataFrame([_rec('stays'), _rec('dies'), _rec('gone', found=False),
+                               _rec('returns', found=False)])
+        after = pd.DataFrame([_rec('stays'), _rec('dies', found=False), _rec('gone', found=False),
+                              _rec('returns')])
+
+        d = pc.decay(before, after)
+
+        assert (d['still_alive'], d['died'], d['still_dead'], d['resurrected']) == (1, 1, 1, 1)
+        assert d['n_matched'] == 4
+
+    def test_the_death_rate_is_a_share_of_what_was_alive_not_of_the_sample(self):
+        """Dividing by the whole sample would halve the number and describe nothing: a pano already dead
+        cannot die again, so it does not belong in the denominator."""
+        before = pd.DataFrame([_rec('a'), _rec('b'), _rec('d1', found=False), _rec('d2', found=False)])
+        after = pd.DataFrame([_rec('a'), _rec('b', found=False), _rec('d1', found=False),
+                              _rec('d2', found=False)])
+
+        d = pc.decay(before, after)
+
+        assert d['alive_before'] == 2
+        assert d['died_pct_of_alive_before'] == pytest.approx(50.0)
+
+    def test_it_counts_depth_lost_with_the_panos_that_carried_it(self):
+        """The quantity #43 turns on is not 'panos that died' but 'depth maps now unobtainable', so a pano
+        that died without depth must not be counted as a depth loss."""
+        before = pd.DataFrame([_rec('a', has_depth=True), _rec('b', has_depth=False)])
+        after = pd.DataFrame([_rec('a', found=False), _rec('b', found=False)])
+
+        d = pc.decay(before, after)
+
+        assert d['died'] == 2
+        assert d['depth_lost'] == 1
+
+    def test_a_pano_missing_from_the_second_run_is_excluded_not_counted_dead(self):
+        """An interrupted re-fetch must shrink the denominator, never manufacture deaths."""
+        before = pd.DataFrame([_rec('a'), _rec('b')])
+        after = pd.DataFrame([_rec('a')])
+
+        d = pc.decay(before, after)
+
+        assert d['n_matched'] == 1
+        assert d['died'] == 0
+        assert d['n_unfetched'] == 1
+
+    def test_it_reports_errors_on_both_sides(self):
+        """An errored request is recorded found=False, so the error count bounds how much of the death
+        count could be the network rather than Google."""
+        before = pd.DataFrame([_rec('a')])
+        after = pd.DataFrame([_rec('a', found=False, error='ConnectionError: boom')])
+
+        d = pc.decay(before, after)
+
+        assert d['errors_after'] == 1
+        assert d['died'] == 1
+
+
+class TestDeathsAreConfirmedBeforeTheyAreBelieved:
+
+    def test_a_death_the_second_probe_finds_is_recorded_as_alive(self, monkeypatch):
+        before = pd.DataFrame([_rec('flaky')])
+        after = pd.DataFrame([_rec('flaky', found=False, error='ReadTimeout: boom')])
+        monkeypatch.setattr(pc, 'run_census',
+                            lambda sample, interval_s, **kw: pd.DataFrame([_rec('flaky')]))
+
+        confirmed = pc.confirm_deaths(before, after, interval_s=0)
+
+        assert _found(confirmed, 'flaky') is True
+        assert _found(confirmed, 'flaky', 'reprobe_recovered') is True
+        assert pc.decay(before, confirmed)['died'] == 0
+
+    def test_a_death_the_second_probe_also_misses_stands(self, monkeypatch):
+        before = pd.DataFrame([_rec('really-dead')])
+        after = pd.DataFrame([_rec('really-dead', found=False)])
+        monkeypatch.setattr(pc, 'run_census',
+                            lambda sample, interval_s, **kw: pd.DataFrame([_rec('really-dead', found=False)]))
+
+        confirmed = pc.confirm_deaths(before, after, interval_s=0)
+
+        assert _found(confirmed, 'really-dead') is False
+        assert pc.decay(before, confirmed)['died'] == 1
+
+    def test_only_the_alive_to_dead_panos_are_re_requested(self, monkeypatch):
+        """A correction, not a second census: re-asking the already-dead would nearly double the run's
+        request cost for a transition nobody is claiming."""
+        before = pd.DataFrame([_rec('stays'), _rec('dies'), _rec('was-dead', found=False)])
+        after = pd.DataFrame([_rec('stays'), _rec('dies', found=False), _rec('was-dead', found=False)])
+        asked = []
+
+        def spy(sample, interval_s, **kw):
+            asked.extend(sample['pano_id'])
+            return pd.DataFrame([_rec(p, found=False) for p in sample['pano_id']])
+
+        monkeypatch.setattr(pc, 'run_census', spy)
+        pc.confirm_deaths(before, after, interval_s=0)
+
+        assert asked == ['dies']
+
+    def test_nothing_is_requested_when_nothing_died(self, monkeypatch):
+        before = pd.DataFrame([_rec('a')])
+        after = pd.DataFrame([_rec('a')])
+        monkeypatch.setattr(pc, 'run_census',
+                            lambda *a, **k: pytest.fail('no deaths, so no re-probe should happen'))
+
+        confirmed = pc.confirm_deaths(before, after, interval_s=0)
+
+        assert len(confirmed) == 1
+
+    def test_a_recovered_death_keeps_the_second_probes_fields_not_the_first_probes_nulls(self, monkeypatch):
+        """The recovered row has to be the observation that actually found the pano - carrying the first
+        probe's None dims forward would book it as alive with nothing measurable on it."""
+        before = pd.DataFrame([_rec('flaky')])
+        after = pd.DataFrame([_rec('flaky', found=False, error='ReadTimeout: boom')])
+        monkeypatch.setattr(pc, 'run_census',
+                            lambda sample, interval_s, **kw: pd.DataFrame([_rec('flaky')]))
+
+        confirmed = pc.confirm_deaths(before, after, interval_s=0)
+
+        row = confirmed.loc[confirmed['pano_id'] == 'flaky'].iloc[0]
+        assert row['served_width'] == 16384
+        assert bool(row['has_depth']) is True
+        assert row['error'] is None
+
+
+class TestTheRefetchCLI:
+
+    def _prior(self, tmp_path):
+        return _census_json(tmp_path, [_rec('lives'), _rec('dies'), _rec('flaky'),
+                                       _rec('was-dead', found=False)], name='prior.json')
+
+    def _second_pass(self):
+        """First probe: 'dies' and 'flaky' both miss. Re-probe: only 'flaky' comes back."""
+        calls = []
+
+        def fake(sample, interval_s, **kw):
+            ids = list(sample['pano_id'])
+            calls.append(ids)
+            if len(calls) == 1:
+                return pd.DataFrame([_rec('lives'), _rec('dies', found=False),
+                                     _rec('flaky', found=False, error='ReadTimeout: boom'),
+                                     _rec('was-dead', found=False)])
+            return pd.DataFrame([_rec(p) if p == 'flaky' else _rec(p, found=False) for p in ids])
+
+        return fake, calls
+
+    def test_it_writes_a_decay_block_and_re_probes_only_the_deaths(self, tmp_path, monkeypatch, capsys):
+        fake, calls = self._second_pass()
+        monkeypatch.setattr(pc, 'run_census', fake)
+        out = tmp_path / 'after.json'
+
+        pc.main(['--refetch', self._prior(tmp_path), '--write', str(out), '--interval', '0',
+                 '--since-days', '28'])
+
+        written = json.loads(out.read_text(encoding='utf-8'))
+        assert calls[0] == ['lives', 'dies', 'flaky', 'was-dead'], 'first pass replays the whole manifest'
+        assert sorted(calls[1]) == ['dies', 'flaky'], 'only alive -> dead is re-probed'
+        d = written['decay']
+        assert (d['died'], d['resurrected'], d['reprobe_recovered']) == (1, 0, 1)
+        assert d['depth_lost'] == 1
+        assert written['refetch_of'] == 'prior.json'
+        assert '28' in capsys.readouterr().out or d['died'] == 1
+
+    def test_the_written_artifact_is_strict_json_with_no_nan_tokens(self, tmp_path, monkeypatch):
+        """Same trap resummarize repairs: a not-found row is all-None, and NaN is not valid JSON."""
+        fake, _ = self._second_pass()
+        monkeypatch.setattr(pc, 'run_census', fake)
+        out = tmp_path / 'after.json'
+
+        pc.main(['--refetch', self._prior(tmp_path), '--write', str(out), '--interval', '0'])
+
+        text = out.read_text(encoding='utf-8')
+        assert 'NaN' not in text
+        json.loads(text)
+
+    def test_it_carries_the_prior_censuss_provenance_forward(self, tmp_path, monkeypatch):
+        """Which rawLabels snapshot the manifest was drawn from is a property of the prior file, not of
+        this run, so it has to be read from there rather than re-typed on the command line."""
+        fake, _ = self._second_pass()
+        monkeypatch.setattr(pc, 'run_census', fake)
+        out = tmp_path / 'after.json'
+
+        pc.main(['--refetch', self._prior(tmp_path), '--write', str(out), '--interval', '0'])
+
+        written = json.loads(out.read_text(encoding='utf-8'))
+        assert written['rawlabels_fetched'] == '2026-08-09'
+        assert written['seed'] == pc.SEED
+
+    def test_refetch_needs_no_csv_dir(self, tmp_path, monkeypatch):
+        """The manifest is the sample, so the rawLabels cache the original draw needed is not required --
+        and demanding it would make the decay measurement un-runnable on the scraper box."""
+        fake, _ = self._second_pass()
+        monkeypatch.setattr(pc, 'run_census', fake)
+
+        pc.main(['--refetch', self._prior(tmp_path), '--interval', '0'])

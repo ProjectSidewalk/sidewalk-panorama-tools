@@ -777,30 +777,21 @@ class TestRaiseIfBlocked:
 
 
 class TestPace:
-    @pytest.fixture
-    def slept(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(gsv.time, 'sleep', lambda seconds: calls.append(seconds))
-        return calls
+    """The sleeping itself moved to DepthPacer (#43) and is covered in tests/test_depth_pacing.py.
 
-    def test_no_sleep_when_throttle_disabled(self, slept, monkeypatch):
-        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.0)
-        gsv._pace(gsv.time.monotonic())
-        assert slept == []
+    What stays here is the seam this module is about: the phase must have no module-level `_pace` left,
+    because a surviving one would be a second, non-adaptive pacer that a future call site could reach for --
+    and it would pass every test in this file while quietly ignoring the backoff the adaptive one exists to
+    apply.
+    """
 
-    def test_no_sleep_on_the_first_request(self, slept, monkeypatch):
-        monkeypatch.setattr(gsv, 'depth_min_request_interval', 5.0)
-        gsv._pace(None)
-        assert slept == []
+    def test_the_old_non_adaptive_pacer_is_gone(self):
+        assert not hasattr(gsv, '_pace')
 
-    def test_sleeps_the_remainder_of_the_interval(self, slept, monkeypatch):
-        monkeypatch.setattr(gsv, 'depth_min_request_interval', 5.0)
-        gsv._pace(gsv.time.monotonic() - 1.0)
-        assert len(slept) == 1
-        # ~4s left of the 5s floor, plus up to 25% jitter.
-        assert 3.9 <= slept[0] <= 5.3
+    def test_the_pacer_reads_its_floor_from_config_at_construction(self, monkeypatch):
+        """config.depth_min_request_interval is the operator's one lever over how fast this host can ever
+        get, so it has to be read when a run starts rather than bound at import."""
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 3.0)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 3.0)
 
-    def test_no_sleep_when_the_interval_already_elapsed(self, slept, monkeypatch):
-        monkeypatch.setattr(gsv, 'depth_min_request_interval', 1.0)
-        gsv._pace(gsv.time.monotonic() - 60.0)
-        assert slept == []
+        assert gsv.DepthPacer().floor == 3.0

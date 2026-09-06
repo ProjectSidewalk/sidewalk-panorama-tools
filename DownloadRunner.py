@@ -45,6 +45,7 @@ def build_parser():
     parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
     parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
     parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
+    parser.add_argument('--depth-block-latch', default=None, metavar='PATH', help='Where to remember that Google refused this host, so the next city in the queue stands down instead of rediscovering the block with fresh requests. Defaults to a file in the system temp directory - LOCAL disk, not the pano store, because it is a fact about this host and because the storage dir given to a run belongs to a single city. A latch younger than 6 hours skips the depth phase entirely; images are unaffected.')
     # Deprecated no-op, kept for one release so existing invocations don't crash argparse.
     parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
     return parser
@@ -57,6 +58,12 @@ def configure_logging(log_path):
     container; each DEBUG record is a synchronous write over sshfs, which is also why urllib3's per-request
     chatter is capped at WARNING. If the log file itself can't be opened, fall back to stderr with one loud
     warning rather than killing the scrape: the log is evidence, not cargo.
+
+    mapillary.TokenRedactionFilter is added to the HANDLER, not the root logger: a Logger's own filters run
+    only for records it originates itself, while a Handler's filters run for every record that reaches it
+    regardless of which logger (root, 'urllib3', anything a future dependency adds) produced it. This is the
+    one handler every record in the process funnels through, so it's the only place a filter added here is
+    guaranteed to see a leak no matter which module's message carries it (2026-09 PR #100 review, finding 2).
     """
     try:
         handler = logging.handlers.RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
@@ -65,6 +72,7 @@ def configure_logging(log_path):
         handler = logging.StreamHandler()
         fallback_error = e
     handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+    handler.addFilter(mapillary.TokenRedactionFilter())
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
     root.addHandler(handler)
@@ -402,6 +410,44 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
 LOG_CSV_FIELD_COUNT = 18
 
 
+def log_timestamp(now=None):
+    """This run's start_time for log.csv: ISO-8601 local time carrying an explicit UTC offset.
+
+    It was `str(datetime.now())` - host-local time with nothing to say which clock that is (#101). That was
+    only harmless while every scraper host ran UTC. The moment the schedule is pinned to a real timezone, or
+    a host moves, every consumer that treats the column as UTC is silently off by the offset:
+    log_analyzer.analyze compares it against `datetime.now(timezone.utc)`, and a 7-8 hour error is invisible
+    at a multi-day staleness threshold right up until it isn't. A log line that does not say which clock it
+    is on is also the direct reason a 13:30-Pacific slot read as "runs at 20:30, seems fine" for months.
+
+    Always rendered through .astimezone(), so a naive argument picks up the host's offset and an aware one is
+    converted rather than silently written without one - there is no way to call this and get a timestamp
+    that omits the clock.
+
+    Two deliberate details of the format:
+      - space separator, not 'T', so the column stays byte-compatible with every `cut -d, -f1` and eyeball
+        that reads it today. pandas' format="ISO8601" accepts either, and so does datetime.fromisoformat.
+      - timespec='microseconds', so every row is the same width. str(datetime) omits ".ffffff" when the
+        microsecond lands on exactly 0, which is why a long-lived log holds two widths and why read_log has
+        to pin format="ISO8601" rather than let pandas infer. Fixing that at the source costs nothing here.
+    """
+    return (datetime.now() if now is None else now).astimezone().isoformat(sep=' ', timespec='microseconds')
+
+
+def _duration_minutes(start_monotonic, end_monotonic):
+    """A phase's log.csv duration, in whole minutes, measured on the monotonic clock.
+
+    These were differences of wall-clock datetime.now() readings. That is safe on a UTC host, and stops being
+    safe the moment the schedule is pinned to a DST-observing timezone (#101): the Pacific night window the
+    queue runs in contains 02:00 local, so twice a year a run that spans the transition records a duration an
+    hour out. log_analyzer's rule 4 flags a run over 3x the median, so the November transition would have
+    produced a fleet-wide burst of "abnormally long run" warnings with nothing actually wrong. The budgets
+    already moved to time.monotonic() for exactly this reason (#51); the durations they are compared against
+    had not.
+    """
+    return int(round((end_monotonic - start_monotonic) / 60.0))
+
+
 def write_log_csv_row(storage_location, fields):
     """Append one run's row to <storage_location>/log.csv, blank-padded to the full 18 columns.
 
@@ -422,7 +468,8 @@ def write_log_csv_row(storage_location, fields):
 
 
 def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_infos, skip_depth,
-                                max_runtime_minutes=None, max_depth_requests=None, min_depth_runtime=0.0):
+                                max_runtime_minutes=None, max_depth_requests=None, min_depth_runtime=0.0,
+                                depth_block_latch=None):
     """Run the image and depth phases and append this run's row to log.csv.
 
     Fields are accumulated as each phase completes and the row is written once, in a finally, padded to the
@@ -435,8 +482,11 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     @param depth_pano_infos Every supported pano; the depth phase filters this to source == 'gsv' itself.
     @param min_depth_runtime Minutes of max_runtime_minutes reserved for the depth phase (see the flag's help).
     """
+    # The wall clock supplies the one thing it is good for - when this run happened, stamped with its offset
+    # so a reader knows which clock that is (#101). Everything measuring an INTERVAL - the budgets (#51) and
+    # every duration column - reads time.monotonic() instead, so an NTP step or a DST transition can neither
+    # stretch a budget nor invent an hour of runtime.
     start_time = datetime.now()
-    # Wall-clock datetimes feed the log; the runtime budget gets a monotonic reference instead (#51).
     run_start_monotonic = time.monotonic()
 
     # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
@@ -467,16 +517,16 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
             print("Budget: no unresolved depth work; image phase gets the full %.1f min"
                   % (max_runtime_minutes,))
 
-    fields = [str(start_time)]
+    fields = [log_timestamp(start_time)]
     try:
         # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below),
         # but its log.csv columns are stubbed with the values every production run has always written so the
         # positional 18-column format parsed by scraper-log-analyzer doesn't shift. Deliberately the image
         # list's length, which is what this counted before depth stopped honouring --all-panos.
         xml_res = (0, 0, len(image_pano_infos), len(image_pano_infos))
-        xml_end_time = datetime.now()
-        xml_duration = int(round((xml_end_time - start_time).total_seconds() / 60.0))
-        fields += [xml_res[0], xml_res[1], xml_res[2], xml_res[3], xml_duration]
+        xml_end_monotonic = time.monotonic()
+        fields += [xml_res[0], xml_res[1], xml_res[2], xml_res[3],
+                   _duration_minutes(run_start_monotonic, xml_end_monotonic)]
 
         # The budget arguments are passed by keyword deliberately: several changes have rewritten these call
         # sites, and a positional resolution can put a datetime where a monotonic float belongs — a TypeError
@@ -484,9 +534,9 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
         im_res = download_panorama_images(storage_location, image_pano_infos,
                                           run_start_monotonic=run_start_monotonic,
                                           max_runtime_minutes=image_max_runtime)
-        im_end_time = datetime.now()
-        im_duration = int(round((im_end_time - xml_end_time).total_seconds() / 60.0))
-        fields += [im_res[0], im_res[1], im_res[2], im_res[3], im_res[4], im_duration]
+        im_end_monotonic = time.monotonic()
+        fields += [im_res[0], im_res[1], im_res[2], im_res[3], im_res[4],
+                   _duration_minutes(xml_end_monotonic, im_end_monotonic)]
 
         # The depth phase runs after the image phase and ends at the shared --max-runtime, so it gets the
         # reserved tail (when one was taken) plus whatever slack the image phase left. It iterates the full
@@ -498,18 +548,19 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
             depth_res = gsv.download_depth_maps(storage_location, gsv_panos,
                                                 run_start_monotonic=run_start_monotonic,
                                                 max_runtime_minutes=max_runtime_minutes,
-                                                max_requests=max_depth_requests)
-        depth_end_time = datetime.now()
-        depth_duration = int(round((depth_end_time - im_end_time).total_seconds() / 60.0))
-        fields += [depth_res[0], depth_res[1], depth_res[2], depth_res[3], depth_duration]
+                                                max_requests=max_depth_requests,
+                                                block_latch_path=depth_block_latch)
+        depth_end_monotonic = time.monotonic()
+        fields += [depth_res[0], depth_res[1], depth_res[2], depth_res[3],
+                   _duration_minutes(im_end_monotonic, depth_end_monotonic)]
 
-        fields.append(int(round((depth_end_time - start_time).total_seconds() / 60.0)))
+        fields.append(_duration_minutes(run_start_monotonic, depth_end_monotonic))
     finally:
         write_log_csv_row(storage_location, fields)
 
 
 def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_panos=False, skip_depth=False,
-        max_runtime_minutes=None, min_depth_runtime=0.0, max_depth_requests=None):
+        max_runtime_minutes=None, min_depth_runtime=0.0, max_depth_requests=None, depth_block_latch=None):
     """Fetch the pano list, narrow it, and run the scrape - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, logging, and signal handling; this seam takes plain
@@ -531,7 +582,7 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
         # must still leave both kinds of evidence (#49): the traceback in scrape.log, and a blank-padded
         # log.csv row whose real timestamp shows a run started and produced nothing.
         logging.exception("Run crashed before the scrape started")
-        write_log_csv_row(storage_location, [str(datetime.now())])
+        write_log_csv_row(storage_location, [log_timestamp()])
         raise
 
     # Uncomment this to test on a smaller subset of the pano_info.
@@ -548,7 +599,8 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
     try:
         run_scraper_and_log_results(storage_location, image_pano_infos, pano_infos, skip_depth,
                                     max_runtime_minutes=max_runtime_minutes,
-                                    max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime)
+                                    max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime,
+                                    depth_block_latch=depth_block_latch)
     except BaseException:
         # run_scraper_and_log_results's own finally has already written the evidence row; this puts the
         # traceback - otherwise stderr-only, the exact channel that dies with the container - into scrape.log
@@ -595,7 +647,8 @@ def main(argv=None):
 
     run(sidewalk_server_fqdn=args.d, storage_location=args.s, pano_metadata_csv=args.c,
         all_panos=args.all_panos, skip_depth=args.skip_depth, max_runtime_minutes=args.max_runtime,
-        min_depth_runtime=args.min_depth_runtime, max_depth_requests=args.max_depth_requests)
+        min_depth_runtime=args.min_depth_runtime, max_depth_requests=args.max_depth_requests,
+        depth_block_latch=args.depth_block_latch)
 
 
 if __name__ == '__main__':

@@ -18,6 +18,10 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `refetch_log.csv` | Ledger for the [`fover` repair pass](#repairing-fover-era-panoramas), if one has run here |
 | `refetch.log` | That pass's rotating log |
 
+One file lives at the **store root** rather than inside a city: `scrape_queue.log`, the
+[queue driver](downloader.md#nightly-deployment)'s own rotating log. It records what ran last night, in what
+order, and how long each city took — which no per-city log can, because none of them can see the ring.
+
 `scrape.log` lives here rather than in the working directory on purpose: cron runs the scraper from whatever
 directory it likes, and a relative path scatters every per-pano failure detail somewhere nobody looks.
 
@@ -212,7 +216,7 @@ never shift.
 
 | # | field | notes |
 |---|-------|-------|
-| 1 | run start timestamp | `str(datetime.now())`, e.g. `2026-08-06 01:00:00.123456` |
+| 1 | run start timestamp | ISO-8601 **with an explicit UTC offset**, e.g. `2026-09-05 20:30:04.277106+00:00`. Rows written before [#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101) are `str(datetime.now())` — the same shape without the offset, and without the `.ffffff` on the rare run whose microsecond landed on exactly 0. Read a bare one as UTC: every scraper host has run UTC, which is why the omission was survivable for as long as it was |
 | 2 | metadata successes | always `0` (stub) |
 | 3 | metadata failures | always `0` (stub) |
 | 4 | metadata skipped | count of image-eligible panos (stub) |
@@ -233,6 +237,16 @@ never shift.
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
+
+### Which clock each field is on
+
+Field 1 is the **wall clock, stamped with its offset** — the one thing a wall clock is good for, namely
+*when* the run happened. Every duration (fields 6, 12, 17, 18) is measured on `time.monotonic()` instead, so
+neither an NTP step nor a DST transition can invent or delete an hour of runtime. That distinction stopped
+being academic when the schedule moved into a named timezone: the Pacific night window the
+[queue](downloader.md#nightly-deployment) runs in contains 02:00 local, so a wall-clock duration would be an
+hour out twice a year — and the log analyzer warns at 3× the median runtime, so the whole fleet would have
+reported an abnormally long run on the same night, with nothing actually wrong.
 
 ### Blank fields mark a crashed or stopped run
 
@@ -255,8 +269,32 @@ Field 14 includes `unavailable` — a permanent, expected, non-actionable outcom
 show large failure numbers that are entirely normal. The success/failure/unavailable split goes to stdout and
 `scrape.log`; `log.csv` keeps its fixed 18-column shape, so there was no room for a separate column.
 
+## When the depth phase stands itself down
+
+Two mechanisms stop depth without stopping the run, and they look identical from `log.csv` (all five depth
+columns are `0`), so read stdout or `scrape.log` rather than the row:
+
+| what you see | what happened | what to do |
+|---|---|---|
+| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
+| `WARNING - the depth phase stopped early because Google stopped answering` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer will also have backed off, and each new city process starts fresh at `depth_start_interval`. |
+
+The latch is a file in the system temp directory, **not on the store** — it records this host's standing
+with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
+moves it. To clear one by hand, delete the file; a missing, unparseable or implausibly future-dated latch
+all mean "not blocked", because a latch nobody can read must never be able to stand the whole fleet's depth
+phase down indefinitely.
+
+**Do not read a stood-down phase as lost work.** Nothing is ledgered on either path, so every unresolved
+panorama is retried on the next run. See
+[Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers).
+
 ## What healthy looks like
 
 A mature city settles into: `image_success` small or zero most nights, stable `image_fail`, and
 `image_skip ≈ image_total`. The [log analyzer](log-analyzer.md) encodes the rest of the heuristics, including
 what "stale" and "ended early" mean in practice.
+
+During the depth backfill, add: `depth_success` climbing night over night, and `depth_fail` large but
+*stable* — it counts `unavailable`, which is permanent and expected, so it is not an alert signal. The split
+goes to stdout and `scrape.log`.

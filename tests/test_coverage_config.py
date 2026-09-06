@@ -28,6 +28,7 @@ PRODUCTION_MODULES = {
     'log_analyzer/analyze.py',
     'migrate_depth_artifacts.py',
     'refetch_panos.py',
+    'scrape_queue.py',
 }
 
 # Walked but never measured, and not worth listing in .coveragerc's omit: no .py lives under them.
