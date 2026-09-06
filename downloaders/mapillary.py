@@ -22,6 +22,48 @@ def is_token_set():
     return bool(os.environ.get(TOKEN_ENV_VAR))
 
 
+class MapillaryErrorResponse(RuntimeError):
+    """A 200 from the Graph API whose body is not the image record that was asked for (#99).
+
+    Meta-style APIs can answer with 200 and an {"error": {...}} envelope in the body, and a proxy can answer
+    200 with anything at all. Neither is a property of the pano, so this is a condition of the RUN: it
+    raises, the image loop counts it among tonight's failures and ledgers nothing, and the pano is
+    re-attempted next run (#41). Returning DownloadResult.failure instead would write one permanent
+    downloaded=0 row per pano attempted for as long as the condition lasted - the 2026-09-01 incident
+    (161 false rows, hand-edited out of pano_id_log.csv on the store) by another route.
+    """
+
+
+def original_rendition_url(payload, pano_id):
+    """Read the original-resolution rendition URL out of a 200 metadata body, or refuse the body.
+
+    Returns the URL, or None when Mapillary AFFIRMS it knows the image - the body names `pano_id` as its
+    `id` - and publishes no `thumb_original_url` for it. That affirmed absence is the one body shape that is
+    a permanent property of the pano, and the only one download_single_pano turns into
+    DownloadResult.failure.
+
+    Raises MapillaryErrorResponse for every other body: an error envelope (every auth failure measured on
+    2026-09-05 carried Meta's {"error": {"type": ..., "code": 190, ...}} shape - see
+    OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05 in tests/test_image_downloaders.py), a JSON value that is
+    not an object, or an object that does not name this image. The metadata request asks for `id`
+    precisely so that a permanent verdict rests on positive evidence, never on a field being absent from
+    whatever came back (#99). A body that used to be read as "no rendition exists" - a bare {} - now raises.
+    """
+    if not isinstance(payload, dict):
+        raise MapillaryErrorResponse("Mapillary metadata for %s was not a JSON object: %.80r" % (pano_id, payload))
+    error = payload.get('error')
+    if error is not None:
+        if isinstance(error, dict):
+            detail = 'type=%s code=%s message=%s' % (error.get('type'), error.get('code'), error.get('message'))
+        else:
+            detail = '%.200r' % (error,)
+        raise MapillaryErrorResponse("Mapillary answered for %s with an error envelope (%s)" % (pano_id, detail))
+    if str(payload.get('id')) != str(pano_id):
+        raise MapillaryErrorResponse("Mapillary metadata for %s does not name that image (id=%r)"
+                                     % (pano_id, payload.get('id')))
+    return payload.get('thumb_original_url') or None
+
+
 def _session():
     session = requests.Session()
     retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
@@ -59,7 +101,9 @@ def download_single_pano(storage_path, pano_info):
     with _session() as session:
         meta_resp = session.get(
             f'{GRAPH_API_BASE}/{pano_id}',
-            params={'fields': 'thumb_original_url'},
+            # `id` as well as the URL: a "no rendition" verdict is permanent, so it has to rest on the
+            # record naming this image, not on the URL being absent from whatever came back (#99).
+            params={'fields': 'id,thumb_original_url'},
             # The token travels in the header, never the query string. requests puts the full URL in an
             # HTTPError's message and DownloadRunner logs str(e) for a failed pano, so a token in params
             # is a token in cleartext in scrape.log - which lives on the SHARED pano store, readable by
@@ -80,15 +124,17 @@ def download_single_pano(storage_path, pano_info):
         meta_resp.raise_for_status()
 
         try:
-            image_url = meta_resp.json().get('thumb_original_url')
+            payload = meta_resp.json()
         except ValueError:
             # A proxy error page or a body truncated mid-flight - transient, so let it propagate (#41).
             logging.error("Mapillary metadata response for %s was not valid JSON", pano_id)
             raise
 
-        if not image_url:
-            # Mapillary knows the image but publishes no original-resolution rendition: permanent.
-            logging.error("Mapillary metadata for %s missing thumb_original_url", pano_id)
+        # Raises for an error envelope or any body that does not name this image (#99); None only when
+        # Mapillary affirms it knows the image and publishes no original-resolution rendition: permanent.
+        image_url = original_rendition_url(payload, pano_id)
+        if image_url is None:
+            logging.error("Mapillary knows image %s but publishes no original-resolution rendition", pano_id)
             return DownloadResult.failure
 
         image_resp = session.get(image_url, stream=True, timeout=120)
