@@ -16,6 +16,7 @@ import os
 import random
 import stat
 import struct
+import tempfile
 import time
 from io import BytesIO
 
@@ -35,6 +36,14 @@ except ImportError:
     # config.py predates the depth phase (the scraper box carries local edits to this file, so a `git pull` can
     # leave it behind). Don't take the whole scraper down over a throttle that defaults to off anyway.
     depth_min_request_interval = 0.0
+
+try:
+    from config import depth_start_interval, depth_max_request_interval
+except ImportError:
+    # Same reasoning, one release later. A config.py from before the adaptive pacer still names the floor, so
+    # fall back to a run that simply holds it - slower to react, never faster than the operator allowed.
+    depth_start_interval = depth_min_request_interval
+    depth_max_request_interval = 30.0
 
 from .common import DownloadResult, atomic_output_path
 
@@ -595,11 +604,11 @@ def _raise_if_blocked(response, *args, **kwargs):
                 raise DepthBlockedError("redirected to %s" % (url))
 
 
-def _depth_session():
+def _depth_session(pacer=None):
     """Build the requests.Session handed to streetlevel for photometa requests.
 
-    Same retry policy and default timeout as _request_session(), plus backoff jitter and the
-    block-detection hook.
+    Same retry policy and default timeout as _request_session(), plus backoff jitter, the
+    block-detection hook, and - when a pacer is given - the push-back observer that feeds it.
 
     Deliberately does NOT borrow config.headers_list the way the tile downloader does. streetlevel sends its own
     Accept/Host/Referer/User-Agent on every photometa request, and in requests a request-level header beats a
@@ -618,21 +627,164 @@ def _depth_session():
     session.mount('https://', adapter)
     session.proxies.update({k: v for k, v in _proxies.items() if v})
     session.hooks['response'].append(_raise_if_blocked)
+    if pacer is not None:
+        # Strictly after _raise_if_blocked: an outright refusal stops the run, which is a stronger response
+        # than slowing down, and a hook that raises means the ones behind it never run.
+        session.hooks['response'].append(_pushback_hook(pacer))
     return session
 
 
-def _pace(last_request_at):
-    """Sleep so consecutive depth requests are at least config.depth_min_request_interval apart.
+# How the adaptive pacer moves. Multiplicative both ways, but deliberately asymmetric: one sign of trouble
+# halves the rate immediately, while getting it back takes a long clean streak. Losing throughput costs nights
+# of backfill; earning a block costs the image phase too, because tiles leave the same IP.
+DEPTH_PACE_BACKOFF_FACTOR = 2.0
+DEPTH_PACE_RECOVER_FACTOR = 0.8
+DEPTH_PACE_RECOVER_AFTER = 200
 
-    @param last_request_at time.monotonic() of the previous request, or None if this is the first one.
+# The smallest interval a backoff may land on. Without it, `interval * 2` is still 0 for an operator who set
+# the floor to 0 - so the setting most likely to be in place on day one would silently disable the reaction.
+DEPTH_PACE_MIN_BACKOFF = 1.0
+
+# HTTP statuses that mean "slow down" rather than "this pano is broken". 403 and the interstitial redirects are
+# NOT here: _raise_if_blocked stops the run outright for those, which is a stronger response than pacing.
+DEPTH_PUSHBACK_STATUSES = frozenset((429, 500, 502, 503, 504))
+
+
+class DepthPacer:
+    """Adaptive spacing between depth metadata requests: careful to start, slower on trouble, faster only on
+    sustained evidence.
+
+    Three things here are load-bearing:
+
+    * **The floor is a hard floor.** `interval` only ever moves between `floor` and `ceiling`, so
+      `config.depth_min_request_interval` alone decides how aggressive this host can ever get. This is
+      bounded exploration, not a rate finder that hunts for the limit.
+    * **The gap is drawn across its whole width**, `uniform(interval, 2 x interval)`. The previous scheme was
+      `interval + uniform(0, 0.25 x interval)`, which is a near-constant cadence - the shape that most looks
+      like a machine to whatever is on the other end.
+    * **The wait is measured between requests, not added on top of them.** A photometa call that took 30 s to
+      time out has already paid the gap; sleeping the full interval after it would double the cost of exactly
+      the requests that are already going badly.
+
+    Not thread-safe, and does not need to be: the depth phase is serial by design.
     """
-    if depth_min_request_interval <= 0 or last_request_at is None:
-        return
-    # Jitter on top of the floor so overlapping city runs don't settle into a shared cadence.
-    wait = depth_min_request_interval - (time.monotonic() - last_request_at)
-    wait += random.uniform(0, depth_min_request_interval * 0.25)
-    if wait > 0:
-        time.sleep(wait)
+
+    def __init__(self, floor=None, start=None, ceiling=None, recover_after=None, min_backoff=None):
+        self.floor = depth_min_request_interval if floor is None else floor
+        self.ceiling = depth_max_request_interval if ceiling is None else ceiling
+        self.recover_after = DEPTH_PACE_RECOVER_AFTER if recover_after is None else recover_after
+        self.min_backoff = DEPTH_PACE_MIN_BACKOFF if min_backoff is None else min_backoff
+        opening = depth_start_interval if start is None else start
+        self.interval = min(max(opening, self.floor), self.ceiling)
+        self._clean_streak = 0
+        self._last_request_at = None
+
+    def wait(self):
+        """Sleep whatever is left of this request's gap, then mark the request as starting now."""
+        if self._last_request_at is not None and self.interval > 0:
+            gap = random.uniform(self.interval, self.interval * 2)
+            remaining = gap - (time.monotonic() - self._last_request_at)
+            if remaining > 0:
+                time.sleep(remaining)
+        self._last_request_at = time.monotonic()
+
+    def on_clean(self):
+        """A request completed with no sign of push-back."""
+        self._clean_streak += 1
+        if self.recover_after and self._clean_streak >= self.recover_after:
+            self._clean_streak = 0
+            self.interval = max(self.floor, self.interval * DEPTH_PACE_RECOVER_FACTOR)
+
+    def on_pushback(self, why):
+        """Google made us wait, retry, or fail. Back off now and forfeit any credit towards speeding up."""
+        self._clean_streak = 0
+        widened = max(self.interval * DEPTH_PACE_BACKOFF_FACTOR, self.min_backoff)
+        widened = min(widened, self.ceiling)
+        if widened > self.interval:
+            logging.warning("DEPTHDOWNLOAD: backing off to %.2fs between requests (%s)", widened, why)
+        self.interval = widened
+
+
+def _pushback_hook(pacer):
+    """requests response hook: tell the pacer when Google pushed back, without changing the outcome.
+
+    Reading `status_code` alone would see almost nothing. urllib3 retries 429/5xx *inside* the adapter, so a
+    retried status never reaches a hook, and one that exhausts the policy raises RetryError instead of
+    returning. The signal that does survive is the retry HISTORY on a response that eventually succeeded:
+    Google made us try again, which is the earliest warning available and the whole point of reacting before
+    the point of refusal.
+
+    Wrapped in a getattr chain because `raw.retries` is urllib3's internals, not part of the requests API this
+    repo pins - a shape change upstream must not be able to back a healthy run off permanently.
+    """
+    def hook(response, *args, **kwargs):
+        if response.status_code in DEPTH_PUSHBACK_STATUSES:
+            pacer.on_pushback('HTTP %d' % (response.status_code,))
+            return
+        history = getattr(getattr(getattr(response, 'raw', None), 'retries', None), 'history', None)
+        if history:
+            pacer.on_pushback('%d retries were needed' % (len(history),))
+    return hook
+
+
+# Where the cross-run block latch lives, and how long a refusal is remembered. Six hours is long enough to
+# cover a night's queue (one pass of the fleet) without carrying yesterday's block into a new day.
+DEPTH_BLOCK_LATCH_FILENAME = 'sidewalk-depth-blocked'
+DEPTH_BLOCK_LATCH_HOURS = 6.0
+
+
+def default_block_latch_path():
+    """Local disk, deliberately - NOT the pano store.
+
+    Two reasons. The storage path this phase is handed is ONE CITY's directory, so a latch written there could
+    not be cross-city even in principle, which is the entire point. And what is being remembered is this
+    host's standing with Google, not a property of the store, which is a network mount shared with other lab
+    users. Same reasoning as scrape_queue.default_lock_path().
+    """
+    return os.path.join(tempfile.gettempdir(), DEPTH_BLOCK_LATCH_FILENAME)
+
+
+def _block_latch_age_hours(path):
+    """Hours since Google last refused this host, or None if there is no latch worth believing.
+
+    Wall clock, not monotonic: the whole job is to outlive the process that wrote it. That means the file can
+    legitimately be dated slightly in the future - an NTP step, or simply the six decimal places the writer
+    rounds to, which rounds UP about half the time and so makes a latch read microseconds after it was written
+    look like it came from the future. A strict `age >= 0` test discards the latch in exactly that case, which
+    is the one where it matters most; this suite caught it as an intermittent failure rather than as a bug,
+    which is how it would have reached production.
+
+    So a small future offset is clamped to "just now" and still latches, while a wildly future one - the NTP
+    step that would otherwise hold the whole fleet down for years - is unbelievable and ignored. Every
+    ambiguous case here resolves towards scraping: a latch nobody can parse must never be able to stand the
+    fleet's depth phase down forever. The cost of that direction is a handful of wasted requests; the cost of
+    getting it backwards is unbounded.
+    """
+    try:
+        with open(path) as f:
+            written_at = float(f.read().strip())
+    except (OSError, ValueError):
+        return None
+    age_hours = (time.time() - written_at) / 3600.0
+    if age_hours < -DEPTH_BLOCK_LATCH_HOURS:
+        return None
+    return max(0.0, age_hours)
+
+
+def _write_block_latch(path):
+    """Record that Google refused this host, for the next city in the queue to find.
+
+    Never raises: this is called on a path where the run has already been refused, and forfeiting the log.csv
+    evidence row over a latch we could not write would trade a real diagnostic for a small optimisation.
+    """
+    try:
+        with open(path, 'w') as f:
+            # repr, not '%f': six decimal places round up half the time, which dates the latch in the future
+            # and used to make the very next read discard it (see _block_latch_age_hours).
+            f.write(repr(time.time()))
+    except OSError as e:
+        logging.error("DEPTHDOWNLOAD: could not write the block latch %s (%s); the next city will "
+                      "rediscover the block itself", path, str(e))
 
 
 def _load_depth_log(depth_log_path):
@@ -993,7 +1145,7 @@ def camera_height_from_artifact(artifact, default=None):
 
 
 def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
-                        max_requests=None):
+                        max_requests=None, block_latch_path=None):
     """Fetch GSV depth maps via the streetlevel library for every pano in pano_infos.
 
     Callers pre-filter to source == 'gsv'. Depth rides Google's photometa response, so this costs one metadata
@@ -1030,10 +1182,25 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
         logging.error("DEPTHDOWNLOAD: streetlevel is not installed (%s); skipping depth phase", str(e))
         return 0, 0, 0, 0
 
+    # Before the ledger read, and before anything is opened: a live latch means a run on this host was refused
+    # recently, and the cheapest correct response is to not ask at all. Serialised by scrape_queue, 52 cities a
+    # night would otherwise each rediscover the same block with fresh requests aimed at the endpoint that just
+    # refused us - which is how a soft refusal gets escalated into a real ban that stops the image phase too.
+    latch_path = default_block_latch_path() if block_latch_path is None else block_latch_path
+    latched_hours = _block_latch_age_hours(latch_path)
+    if latched_hours is not None and latched_hours < DEPTH_BLOCK_LATCH_HOURS:
+        logging.error("DEPTHDOWNLOAD: block latch set %.1fh ago (%s); skipping the depth phase",
+                      latched_hours, latch_path)
+        print("DEPTHDOWNLOAD: WARNING - Google refused this host %.1f hours ago, so the depth phase is "
+              "standing down (latch %s, held for %g hours). Images are unaffected; unresolved panos are "
+              "retried once it expires." % (latched_hours, latch_path, DEPTH_BLOCK_LATCH_HOURS))
+        return 0, 0, 0, 0
+
     total_panos = len(pano_infos)
     success_count, fail_count, skipped_count, unavailable_count = 0, 0, 0, 0
     request_count = 0
     consecutive_failures = 0
+    pacer = DepthPacer()
     # Why the phase stopped early, if it did - one of the DEPTH_STOP_* constants, or None if the phase worked
     # through its whole list. The breaker is fed by storage failures as well as network ones, so the cause of a
     # trip is whatever streak_classes and last_error say, not necessarily Google.
@@ -1084,7 +1251,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
         return 0, 0, skipped_count, skipped_count
 
     # Created after the ledger so an early return can't leak it; the with closes both (#51).
-    session = _depth_session()
+    session = _depth_session(pacer)
     with depth_log, session:
 
         def record(pano_id, status):
@@ -1092,7 +1259,6 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
             depth_log.flush()
             resolved_ids.add(pano_id)
 
-        last_request_at = None
         for pano_info in candidates:
             pano_id = pano_info['pano_id']
 
@@ -1123,8 +1289,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
                 print("DEPTHDOWNLOAD: Max depth requests (%d) reached. Stopping." % (max_requests))
                 break
 
-            _pace(last_request_at)
-            last_request_at = time.monotonic()
+            pacer.wait()
 
             print("DEPTHDOWNLOAD: Processing pano %s " % (pano_id))
             request_count += 1
@@ -1154,6 +1319,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
                 # Either outcome proves we're still talking to Google, so the breaker resets.
                 consecutive_failures = 0
                 streak_classes.clear()
+                pacer.on_clean()
             except (DepthBlockedError, requests.exceptions.RetryError) as e:
                 # Google is refusing us: an interstitial, or a 429/5xx that survived every retry. That's a verdict
                 # on the endpoint, not on this pano, so stop rather than spend the rest of the budget on a wall.
@@ -1171,6 +1337,9 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
                 fail_count += 1
                 consecutive_failures += 1
                 failure_class = 'network'
+                # Storage failures deliberately do NOT feed the pacer: a full disk says nothing about
+                # Google, and slowing down would only make it fill more slowly.
+                pacer.on_pushback('network failure')
                 streak_classes[failure_class] += 1
                 last_error = e
                 logging.error("DEPTHDOWNLOAD: Failed to fetch depth for pano %s due to error %s", pano_id, str(e))
@@ -1192,6 +1361,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
                 fail_count += 1
                 consecutive_failures += 1
                 failure_class = 'unexpected'
+                pacer.on_pushback('unexpected failure')
                 streak_classes[failure_class] += 1
                 last_error = e
                 logging.exception("DEPTHDOWNLOAD: Unexpected error fetching depth for pano %s: %s", pano_id, str(e))
@@ -1220,6 +1390,10 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
     # Loud on stdout because cron mails it: a phase that stopped early means nothing is progressing, and the
     # per-pano detail is buried in scrape.log.
     if stop_reason == DEPTH_STOP_BLOCKED:
+        # Only this stop reason latches. The breaker counts storage failures too, and standing the whole
+        # fleet's depth phase down because one city's mount filled would be a fault attributed to Google that
+        # Google had no part in.
+        _write_block_latch(latch_path)
         # Actionable sentence first - the error detail ends in Google's redirect URL, which can run 600+
         # characters, so it rides at the tail and is truncated.
         print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early because Google stopped answering. No panos "

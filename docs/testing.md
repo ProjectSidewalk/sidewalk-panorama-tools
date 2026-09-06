@@ -38,6 +38,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 |---|---|
 | Downloader: run flow, budgets, ledgers, crash/`SIGTERM` behaviour, the positional `log.csv` contract | `test_download_runner.py` |
 | Depth phase: ledger semantics, error taxonomy, artifact format, budget flags | `test_depth_phase.py`, `test_depth_helpers.py` |
+| Depth pacing (adaptive floor/backoff/jitter) and the cross-run block latch | `test_depth_pacing.py` |
 | GSV stitching and the tile endpoint's behaviour, pinned against captured bytes | `test_gsv_stitcher.py`, `test_gsv_tile_contract.py`, `test_image_downloaders.py` |
 | The image ledger contract at both ends: which downloader answers are permanent and which raise, the Mapillary error-envelope shapes measured on 2026-09-05, and a real Mapillary response driven through the dispatcher into `pano_id_log.csv` | `test_image_downloaders.py`, `test_download_runner.py` |
 | Cropper: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins | `test_crop_runner.py` |

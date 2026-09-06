@@ -148,7 +148,17 @@ Everything lives under the storage root, with two-char pano-id prefix sharding:
 
 ## Config
 
-`config.py` holds `thread_count` (image-phase tile fan-out, default 8), a rotating `headers_list` (randomly picked per request), `proxies` (set to the `http://`/`https://` sentinels to disable), and `depth_min_request_interval` (seconds between depth metadata requests; 0 disables — leave it there unless a canary run shows Google pushing back, since the backfill is a multi-month job).
+`config.py` holds `thread_count` (image-phase tile fan-out, default 8), a rotating `headers_list` (randomly picked per request), `proxies` (set to the `http://`/`https://` sentinels to disable), and the three depth pacing settings.
+
+**Depth pacing is adaptive, and `depth_min_request_interval` is a floor rather than a rate (#43).** A run opens at `depth_start_interval` (1.0 s), doubles on any push-back up to `depth_max_request_interval` (30 s), and decays ×0.8 back towards the floor only after 200 consecutive clean requests; the gap slept is drawn `uniform(interval, 2 × interval)`, so there is no cadence to fingerprint. Three things follow that are easy to get wrong:
+- **The floor bounds how aggressive this host can ever get** — nothing draws a shorter gap. The 0.25 s default is the pace the 2026-08-09 photometa census ran 1,360 requests at with zero push-back, i.e. the fastest rate we have live evidence for. It is deliberately *not* 0, and the old advice to leave it at 0 "because the backfill is a multi-month job" was wrong on both halves: a photometa request measures 0.077 s median from the production box.
+- **Push-back is detected via urllib3's retry history, not the status code.** Retries happen inside the adapter, so a 429 never reaches a response hook and an exhausted policy raises `RetryError`. What is observable is that a response *needed* retries — the earliest available warning.
+- **A floor of 0 disables the throttle, not the reaction:** a push-back still lands on `DEPTH_PACE_MIN_BACKOFF` (1 s), because doubling 0 stays 0.
+- **The pacer is per-process, so every city run starts a fresh one — and that, not the floor, sets how long a backfill takes.** Ramping 1.0 s down to 0.25 s costs seven decay steps: 1,400 requests, ~20 minutes of continuous depth work. A city whose queue slot is shorter than that never reaches the floor, so don't size a backfill by dividing the corpus by the floor — at a 12-minute slot the 1.43 M corpus is ~47 nights, not ~14. The table is in `docs/depth.md`.
+
+**A refusal is remembered across runs.** A `DEPTH_STOP_BLOCKED` stop writes a timestamp latch (default: system temp dir, `--depth-block-latch` overrides) and any depth phase starting within `DEPTH_BLOCK_LATCH_HOURS` (6) skips itself at **zero requests**. It is on local disk, not the store, because the storage dir a run gets belongs to one city and because what is remembered is this host's standing with Google. Only a blocked stop latches — the breaker counts storage failures, and a full disk is not Google. Every ambiguous latch (missing, unparseable, implausibly future-dated) resolves towards scraping.
+
+Both defaults are neutralised suite-wide by `tests/conftest.py`'s `_isolate_depth_host_state`: without it the pacer's real floor makes every depth test sleep, and one blocked-stop test writes a latch into the machine's temp dir that stands down every later test's depth phase.
 
 ## Artifact storage (standing rule)
 
