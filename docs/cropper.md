@@ -91,7 +91,12 @@ vertically by exactly 2. Nothing threw
 ([#78](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/78)).
 
 `crop_window_fov_deg()` is the sizing rule expressed as what it is — an angle — and `crop_window_width()` is
-that angle in this pano's pixels, one `elevation_deg_to_px` call and nothing else.
+that angle in this pano's pixels, one `azimuth_deg_to_px` call against the pano's width and nothing else. The
+axis matters even though no production pano can show it: a width is horizontal, so its pixels are azimuth
+pixels, while the angle itself is read off the regression's height-normalised size through the elevation
+conversion. On a 2:1 pano the two agree to the bit, which is how the elevation form stood in for the width
+until [#106](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/106)'s review; a square pano
+would have made the window exactly 2× too wide, and a test on one now holds the axis.
 
 ### Where the label is inside the crop
 

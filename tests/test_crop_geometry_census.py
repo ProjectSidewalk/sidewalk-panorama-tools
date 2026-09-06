@@ -123,7 +123,7 @@ class TestGeometryFlags:
 
     def test_x_at_the_seam_boundary_still_centres_the_label(self):
         """Why x is exempt from the bounds check, asserted rather than argued."""
-        width = CropRunner.crop_window_width(5010, 8192)
+        width = CropRunner.crop_window_width(5010, 16384, 8192)
         at_width = CropRunner.compute_crop_box(16384, 5010, width, 16384, 8192)
         at_zero = CropRunner.compute_crop_box(0, 5010, width, 16384, 8192)
         assert at_width == at_zero

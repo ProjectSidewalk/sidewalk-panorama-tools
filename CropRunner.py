@@ -404,21 +404,29 @@ def crop_window_fov_deg(pano_y, pano_height):
 
     Split out of crop_window_width (#78) so the angular quantity has a name and can be asserted on
     directly. Everything the rule decides happens here, in degrees; converting to this pano's pixels
-    is one call to elevation_deg_to_px and nothing else.
+    is one call to azimuth_deg_to_px in crop_window_width and nothing else.
 
-    The conversion in and out is the ELEVATION one, on both sides. Production panos are 2:1, where
-    degrees-per-pixel is equal on the two axes and the azimuth form would agree - but the size being
-    clamped is a vertical quantity all the way back to the regression's y-offset, so the vertical
-    conversion is the one that is right rather than the one that happens to match.
+    The conversion IN is the elevation one: predict_crop_size is a height-normalised length (its
+    constants were fit on 6656-px-high panos and it scales by pano_height), so its pixels are vertical
+    pixels and elevation_px_to_deg is the honest reading of them. The angle is then a span of the
+    sphere, and crop_window_width turns it back into pixels on the axis the window actually lies
+    along - the horizontal one - with azimuth_deg_to_px. Production panos are 2:1, where the two
+    conversions agree to the bit, which is how the elevation form served as the width unnoticed until
+    #106's review.
 
-    :return: the window's angular width in degrees, in [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG].
+    :return: the window's angular span in degrees, in [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG].
     """
     deg = elevation_px_to_deg(predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE, pano_height)
     return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
 
 
-def crop_window_width(pano_y, pano_height):
-    """The window width rule v2 actually cuts, in native pixels: crop_window_fov_deg in this pano's pixels.
+def crop_window_width(pano_y, pano_width, pano_height):
+    """The window width rule v2 actually cuts, in native pixels: crop_window_fov_deg as an azimuthal span.
+
+    A width is horizontal, so the conversion is azimuth_deg_to_px against pano_width. The elevation
+    form gives the same number on a 2:1 pano and half of it on a square one - the axis slip the unit
+    primitives exist to make visible, and the one #106's review caught in this function. The angle
+    itself comes from the regression through the elevation conversion; crop_window_fov_deg says why.
 
     The 3:2 window is cut by WIDTH (compute_crop_box derives the height), because the ramp against the
     window's width is what decides whether a crop reads as too tight.
@@ -427,7 +435,7 @@ def crop_window_width(pano_y, pano_height):
     because that is a property of the image rather than of the rule, and keeping it there means the
     reported window is the one that was cut.
     """
-    return elevation_deg_to_px(crop_window_fov_deg(pano_y, pano_height), pano_height)
+    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height), pano_width)
 
 
 def compute_crop_box(pano_x, pano_y, crop_width, pano_width, pano_height):
@@ -596,7 +604,7 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     try:
         pano_width, pano_height = pano.size
 
-        box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_height),
+        box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_width, pano_height),
                                pano_width, pano_height)
         cropped = downscale_for_storage(extract_crop(pano, box.left, box.top, box.width, box.height))
 

@@ -420,7 +420,7 @@ class TestPredictCropSize:
         """What the cropper actually cuts. A quarter-degree below the horizon subtends the same angle
         whatever the pano's pixel count, so the window must too."""
         y = pano_height / 2 + 10.0 / 180.0 * pano_height          # 10 degrees below the horizon
-        deg = crop_runner.crop_window_width(y, pano_height) / pano_height * 180.0
+        deg = crop_runner.crop_window_width(y, 2 * pano_height, pano_height) / pano_height * 180.0
         assert deg == pytest.approx(25.0, abs=0.05)
 
     def test_scale_and_clamps_are_applied_on_top_of_the_regression(self, crop_runner):
@@ -429,11 +429,11 @@ class TestPredictCropSize:
         far = 0                                                    # far above the horizon
         mid = h / 2 + 10.0 / 180.0 * h
 
-        assert crop_runner.crop_window_width(mid, h) == pytest.approx(
+        assert crop_runner.crop_window_width(mid, 2 * h, h) == pytest.approx(
             crop_runner.predict_crop_size(mid, h) * crop_runner.CROP_SIZE_SCALE)
-        assert crop_runner.crop_window_width(near, h) / h * 180.0 == pytest.approx(
+        assert crop_runner.crop_window_width(near, 2 * h, h) / h * 180.0 == pytest.approx(
             crop_runner.CROP_MAX_FOV_DEG)
-        assert crop_runner.crop_window_width(far, h) / h * 180.0 == pytest.approx(
+        assert crop_runner.crop_window_width(far, 2 * h, h) / h * 180.0 == pytest.approx(
             crop_runner.CROP_MIN_FOV_DEG)
 
 
@@ -1104,7 +1104,7 @@ class TestEdgeClampBehaviour:
         crop_runner.bulk_extract_crops([label_row(pano_x=300, pano_y=NEAR_BOTTOM_Y)],
                                        str(store), str(out))
         box = crop_runner.compute_crop_box(300, NEAR_BOTTOM_Y,
-                                           crop_runner.crop_window_width(NEAR_BOTTOM_Y, 1024),
+                                           crop_runner.crop_window_width(NEAR_BOTTOM_Y, 2048, 1024),
                                            2048, 1024)
         assert box.shifted is True
         with Image.open(crop_path(out, 1, 1)) as crop:
@@ -1122,7 +1122,7 @@ class TestEdgeClampBehaviour:
         crop_runner.bulk_extract_crops([label_row(pano_x=300, pano_y=NEAR_BOTTOM_Y)],
                                        str(store), str(out), mark_label=True)
         box = crop_runner.compute_crop_box(300, NEAR_BOTTOM_Y,
-                                           crop_runner.crop_window_width(NEAR_BOTTOM_Y, 1024),
+                                           crop_runner.crop_window_width(NEAR_BOTTOM_Y, 2048, 1024),
                                            2048, 1024)
         with Image.open(crop_path(out, 1, 1)) as crop:
             w, h = crop.size
@@ -1272,7 +1272,7 @@ class TestCoordinateBounds:
         """The two real rows, at their real pano dimensions. Pre-check they clamped to a pole and
         produced a clean crop of the wrong place; the geometry still would, which is why the
         rejection has to happen before the crop, not inside it."""
-        width = crop_runner.crop_window_width(pano_y, pano_height)
+        width = crop_runner.crop_window_width(pano_y, pano_width, pano_height)
         box = crop_runner.compute_crop_box(pano_x, pano_y, width, pano_width, pano_height)
         assert box.shifted is True
         assert not 0 <= pano_y - box.top < box.height  # the label is not inside its own crop
@@ -1543,7 +1543,7 @@ class TestRegistration:
                 'first-column': (0, INTERIOR_Y)}[label]
 
         pano = plant((w, h), (x, y))
-        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, h), w, h)
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
         crop = crop_runner.extract_crop(pano, box.left, box.top, box.width, box.height)
 
         px, py = crop_runner.label_position_in_crop(x, y, box, w)
@@ -1556,7 +1556,7 @@ class TestRegistration:
         label_position_in_crop takes a CropBox rather than recomputing the window from pano_y."""
         w, h = PANO_SIZE
         x, y = 1000, NEAR_BOTTOM_Y
-        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, h), w, h)
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
         assert box.shifted, 'this fixture is only meaningful on a window that had to move'
 
         px, py = crop_runner.label_position_in_crop(x, y, box, w)
@@ -1570,7 +1570,7 @@ class TestRegistration:
         by nearly a whole pano width, which as an index reads from the wrong end of the crop."""
         w, h = PANO_SIZE
         x, y = 3, INTERIOR_Y
-        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, h), w, h)
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
         assert box.left + box.width > w, 'this fixture needs a window that crosses the seam'
 
         px, _ = crop_runner.label_position_in_crop(x, y, box, w)
@@ -1590,7 +1590,7 @@ class TestRegistration:
             for dy in range(-12, 12):
                 pano.putpixel((x + dx, y + dy), (255, 0, 0))
 
-        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, h), w, h)
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
         stored = crop_runner.downscale_for_storage(
             crop_runner.extract_crop(pano, box.left, box.top, box.width, box.height))
         assert stored.size[0] == 64, 'this fixture needs the storage cap to actually bind'
@@ -1608,7 +1608,7 @@ class TestRegistration:
         tolerance is one pixel of rounding, so a factor of two cannot hide inside it."""
         monkeypatch.setattr(crop_runner, 'CROP_MAX_STORED_WIDTH', 40)
         w, h = PANO_SIZE
-        box = crop_runner.compute_crop_box(1000, pano_y, crop_runner.crop_window_width(pano_y, h),
+        box = crop_runner.compute_crop_box(1000, pano_y, crop_runner.crop_window_width(pano_y, w, h),
                                            w, h)
         assert box.height == round(box.width / crop_runner.CROP_ASPECT_W_OVER_H)
 
@@ -1673,10 +1673,43 @@ class TestTheTwoWindowDerivationsAgree:
         `pano_to_tile` rounds to integers because an annotation is a click; label_position_in_crop
         returns floats because a measurement should not. Compared after the same rounding."""
         w, h = PANO_SIZE
-        box = crop_runner.compute_crop_box(pano_x, pano_y, crop_runner.crop_window_width(pano_y, h),
+        box = crop_runner.compute_crop_box(pano_x, pano_y, crop_runner.crop_window_width(pano_y, w, h),
                                            w, h)
         window = tiles.TileWindow(left=box.left, top=box.top, width=box.width, height=box.height,
                                   shifted=box.shifted, wraps=box.left + box.width > w)
 
         px, py = crop_runner.label_position_in_crop(pano_x, pano_y, box, w)
         assert (int(round(px)), int(round(py))) == tiles.pano_to_tile(window, pano_x, pano_y, w)
+
+
+class TestTheWindowWidthIsAnAzimuthalSpan:
+    """crop_window_width returns a WIDTH, so its pixels are azimuth pixels (#106 review).
+
+    The rule's angle is derived through the elevation conversion, because predict_crop_size is a
+    height-normalised length; the window that angle sizes is horizontal, so turning it back into pixels
+    goes through the azimuth conversion against pano_width. On a 2:1 pano the two forms are the same
+    number to the bit, which is why the elevation form served as the width unnoticed and why putting
+    the axis right changed no crop. A non-2:1 pano is the only thing that tells them apart, so that is
+    what the discriminating test uses.
+    """
+
+    @pytest.mark.parametrize('pano_height', [1024, 1664, 6656, 8192])
+    @pytest.mark.parametrize('rel_y', [0.0, 0.5, 0.6, 0.999])
+    def test_the_width_spans_the_rules_angle_in_azimuth(self, crop_runner, pano_height, rel_y):
+        w, y = 2 * pano_height, rel_y * pano_height
+        fov = crop_runner.crop_window_fov_deg(y, pano_height)
+        width = crop_runner.crop_window_width(y, w, pano_height)
+        assert crop_runner.azimuth_px_to_deg(width, w) == pytest.approx(fov)
+        # Bit-identical to the elevation form the rule was measured under, on the 2:1 panos it was
+        # measured on: no crop this repo has ever cut changes size.
+        assert width == crop_runner.elevation_deg_to_px(fov, pano_height)
+
+    def test_only_a_non_two_to_one_pano_tells_the_axes_apart(self, crop_runner):
+        """The discriminating case. A square pano has half the azimuth pixels per degree that a 2:1
+        one has, so a width converted on the wrong axis comes out exactly 2x — the #78 factor. This
+        is the assertion a revert to `elevation_deg_to_px(fov, pano_height)` fails."""
+        side = 1024
+        fov = crop_runner.crop_window_fov_deg(INTERIOR_Y, side)
+        width = crop_runner.crop_window_width(INTERIOR_Y, side, side)
+        assert width == crop_runner.azimuth_deg_to_px(fov, side)
+        assert width == crop_runner.elevation_deg_to_px(fov, side) / 2
