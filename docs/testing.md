@@ -40,7 +40,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | Depth phase: ledger semantics, error taxonomy, artifact format, budget flags | `test_depth_phase.py`, `test_depth_helpers.py` |
 | GSV stitching and the tile endpoint's behaviour, pinned against captured bytes | `test_gsv_stitcher.py`, `test_gsv_tile_contract.py`, `test_image_downloaders.py` |
 | The image ledger contract at both ends: which downloader answers are permanent and which raise, the Mapillary error-envelope shapes measured on 2026-09-05, and a real Mapillary response driven through the dispatcher into `pano_id_log.csv` | `test_image_downloaders.py`, `test_download_runner.py` |
-| Cropper: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins | `test_crop_runner.py` |
+| Cropper: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins, the equirectangular unit primitives and the token-stream guard that keeps 360/180 out of the rest of the module, label registration measured against planted pixels, the window width's axis on a non-2:1 pano, and agreement with the gold-annotation instrument's independent window derivation | `test_crop_runner.py` |
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
