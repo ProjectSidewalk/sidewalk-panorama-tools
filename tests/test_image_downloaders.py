@@ -50,6 +50,20 @@ OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05 = {
         'error': {'message': 'Error validating application', 'type': 'OAuthException', 'code': 190,
                   'fbtrace_id': 'A-54WSA6X3o82B7YOvzkWIz'}}),
 }
+# Measured 2026-09-06 with the production token, against two ids Mapillary does not have. NOT a 404: the
+# "does not exist" answer is a 400, and its message conflates three conditions by Meta's design.
+OBSERVED_MAPILLARY_NOT_FOUND_2026_09_06 = {
+    'id 1': (400, {
+        'error': {'message': "Unsupported get request. Object with ID '1' does not exist, cannot be loaded due "
+                             "to missing permissions, or does not support this operation",
+                  'type': 'MLYApiException', 'code': 100, 'error_subcode': 33,
+                  'fbtrace_id': 'AE2tEGzm0HlOCoTp0HVzLMY'}}),
+    'id 999999999999999': (400, {
+        'error': {'message': "Unsupported get request. Object with ID '999999999999999' does not exist, cannot "
+                             "be loaded due to missing permissions, or does not support this operation",
+                  'type': 'MLYApiException', 'code': 100, 'error_subcode': 33,
+                  'fbtrace_id': 'Acdn89a_GGBfAGUP5ew-hl8'}}),
+}
 GSV_PANO = {'pano_id': 'gsvPanoIdAAAAAAAAAAAAA', 'source': 'gsv', 'width': 512, 'height': 512}
 
 
@@ -214,9 +228,7 @@ class TestMapillaryPermanentVerdicts:
 
     @pytest.mark.parametrize('response', [
         FakeResponse(status_code=404, payload=None, body='<html>404</html>'),
-        FakeResponse(status_code=404, payload={'error': {
-            'message': "Unsupported get request. Object with ID '123456789012345' does not exist",
-            'type': 'GraphMethodException', 'code': 100}}),
+        FakeResponse(status_code=404, payload=OBSERVED_MAPILLARY_NOT_FOUND_2026_09_06['id 1'][1]),
         FakeResponse(status_code=404, payload={}),
     ], ids=['not JSON', 'a does-not-exist envelope', 'empty object'])
     def test_a_404_stays_permanent_unless_its_body_carries_the_auth_signature(self, monkeypatch, tmp_path,
@@ -269,6 +281,24 @@ class TestMapillaryTransientConditions:
         with pytest.raises(requests.HTTPError):
             downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
 
+    @pytest.mark.parametrize('condition', sorted(OBSERVED_MAPILLARY_NOT_FOUND_2026_09_06))
+    def test_mapillarys_measured_does_not_exist_answer_raises_and_is_not_ledgered(
+            self, monkeypatch, tmp_path, mapillary_token, condition):
+        """Measured 2026-09-06: an id Mapillary does not have gets a 400, not a 404, with code 100 / subcode 33
+        and a message that itself conflates "does not exist" with "missing permissions". A token lacking
+        scope would produce that body for every pano - the 2026-09-01 incident by another route - so it is a
+        condition of the run until a run-level breaker bounds the damage of treating it as a verdict. The
+        cost of this decision is one request per retired image per night; the alternative was 9,229 false
+        rows. Pinned so that changing it is a decision, not a drift."""
+        status, envelope = OBSERVED_MAPILLARY_NOT_FOUND_2026_09_06[condition]
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=status, payload=envelope)))
+
+        with pytest.raises(requests.HTTPError):
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert os.listdir(tmp_path / MAPILLARY_PANO['pano_id'][:2]) == []
+
     @pytest.mark.parametrize('condition', sorted(OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05))
     def test_a_404_carrying_the_auth_signature_raises_instead_of_ledgering(self, monkeypatch, tmp_path,
                                                                           mapillary_token, condition):
@@ -297,6 +327,8 @@ class TestMapillaryTransientConditions:
         for condition, (_, envelope) in OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05.items():
             assert is_auth(envelope), condition
 
+        for condition, (_, envelope) in OBSERVED_MAPILLARY_NOT_FOUND_2026_09_06.items():
+            assert not is_auth(envelope), condition
         assert not is_auth({'error': {'type': 'GraphMethodException', 'code': 100,
                                       'message': "Object with ID '1' does not exist"}})
         assert not is_auth({'error': 'Invalid token'})
