@@ -12,7 +12,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .common import DownloadResult, atomic_output_path
+from .common import DownloadResult, atomic_output_path, jpeg_dimensions
 
 GRAPH_API_BASE = 'https://graph.mapillary.com'
 TOKEN_ENV_VAR = 'MAPILLARY_ACCESS_TOKEN'
@@ -82,15 +82,45 @@ class TokenRedactionFilter(logging.Filter):
 
 
 class MapillaryErrorResponse(RuntimeError):
-    """A 200 from the Graph API whose body is not the image record that was asked for (#99).
+    """A response whose body is not what was asked for, at whatever status it arrived (#99).
 
-    Meta-style APIs can answer with 200 and an {"error": {...}} envelope in the body, and a proxy can answer
-    200 with anything at all. Neither is a property of the pano, so this is a condition of the RUN: it
-    raises, the image loop counts it among tonight's failures and ledgers nothing, and the pano is
-    re-attempted next run (#41). Returning DownloadResult.failure instead would write one permanent
-    downloaded=0 row per pano attempted for as long as the condition lasted - the 2026-09-01 incident
-    (161 false rows, hand-edited out of pano_id_log.csv on the store) by another route.
+    Three shapes: a Graph API body that is not the image record - Meta-style APIs can answer 200 with an
+    {"error": {...}} envelope, and a proxy can answer 200 with anything at all; a 404 whose envelope says the
+    TOKEN is the problem rather than the image; and an image body from the signed URL that is not a JPEG.
+    None is a property of the pano, so this is a condition of the RUN: it raises, the image loop counts it
+    among tonight's failures and ledgers nothing, and the pano is re-attempted next run (#41). Returning
+    DownloadResult.failure instead would write one permanent downloaded=0 row per pano attempted for as
+    long as the condition lasted - the 2026-09-01 incident (161 false rows, hand-edited out of
+    pano_id_log.csv on the store) by another route.
     """
+
+
+# The auth signature, as measured: every auth failure on 2026-09-05 carried code 190, at every status it
+# arrived on (400, 401 and 500 - OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05 in tests/test_image_downloaders.py),
+# and Meta's Graph family files token trouble under type OAuthException. What this is keyed on matters at
+# exactly one status, 404: a Meta-style API puts an envelope on EVERY error status, a genuine "does not
+# exist" included, so "any envelope" would stop a retired image from ever ledgering, while the auth
+# signature on a 404 says the token cannot see the image - which is not a verdict on the image.
+AUTH_ERROR_CODE = 190
+AUTH_ERROR_TYPE = 'OAuthException'
+
+
+def _envelope_detail(error):
+    """What scrape.log gets for an error envelope: type and code, which a reader would search the API docs
+    for, and the message - capped, because DownloadRunner logs str(e) per pano into a 10 MB x 3 rotation,
+    and 9,229 panos times an uncapped HTML blob in `message` would rotate the night's own diagnosis away."""
+    if isinstance(error, dict):
+        return 'type=%s code=%s message=%.200s' % (error.get('type'), error.get('code'), error.get('message'))
+    return '%.200r' % (error,)
+
+
+def is_auth_envelope(payload):
+    """True when a JSON body is an error envelope carrying the measured auth signature: code 190, or type
+    OAuthException. Anything else - no envelope, an envelope of another kind, not an object - is False."""
+    if not isinstance(payload, dict) or not isinstance(payload.get('error'), dict):
+        return False
+    error = payload['error']
+    return str(error.get('code')) == str(AUTH_ERROR_CODE) or error.get('type') == AUTH_ERROR_TYPE
 
 
 def original_rendition_url(payload, pano_id):
@@ -112,13 +142,14 @@ def original_rendition_url(payload, pano_id):
         raise MapillaryErrorResponse("Mapillary metadata for %s was not a JSON object: %.80r" % (pano_id, payload))
     error = payload.get('error')
     if error is not None:
-        if isinstance(error, dict):
-            detail = 'type=%s code=%s message=%s' % (error.get('type'), error.get('code'), error.get('message'))
-        else:
-            detail = '%.200r' % (error,)
-        raise MapillaryErrorResponse("Mapillary answered for %s with an error envelope (%s)" % (pano_id, detail))
+        # Checked before the URL, not instead of it: a body that carries both is still saying the token is
+        # bad, and following its URL would store whatever that URL serves as the pano.
+        raise MapillaryErrorResponse("Mapillary answered for %s with an error envelope (%s)"
+                                     % (pano_id, _envelope_detail(error)))
+    # str() on both sides: the API quotes the id (live check 2026-09-06) and the pano list may not, and a
+    # bare != here would raise for every Mapillary pano forever with a message that looks like a match (#46).
     if str(payload.get('id')) != str(pano_id):
-        raise MapillaryErrorResponse("Mapillary metadata for %s does not name that image (id=%r)"
+        raise MapillaryErrorResponse("Mapillary metadata for %s does not name that image (id=%.80r)"
                                      % (pano_id, payload.get('id')))
     return payload.get('thumb_original_url') or None
 
@@ -173,7 +204,18 @@ def download_single_pano(storage_path, pano_info):
             timeout=30,
         )
         if meta_resp.status_code == 404:
-            # The Graph API doesn't know this id: a permanent property of the pano, so it ledgers (#41).
+            # The Graph API doesn't know this id: a permanent property of the pano, so it ledgers (#41) -
+            # unless the body says the TOKEN is what cannot see it. Read for the auth signature only, not
+            # for any envelope: a Meta-style 404 for a retired image carries an envelope too, and refusing
+            # those would re-request every retired image nightly forever. Not JSON, no envelope, or an
+            # envelope of another kind keeps the verdict; the real 404 body is on the pre-merge check list.
+            try:
+                payload = meta_resp.json()
+            except ValueError:
+                payload = None
+            if is_auth_envelope(payload):
+                raise MapillaryErrorResponse("Mapillary answered 404 for %s with an auth error envelope (%s)"
+                                             % (pano_id, _envelope_detail(payload['error'])))
             logging.error("Mapillary has no image %s (404)", pano_id)
             return DownloadResult.failure
         # Anything else non-200 is a condition of the RUN, not of this pano - 401/403 is an expired or
@@ -217,4 +259,11 @@ def download_single_pano(storage_path, pano_info):
                 for chunk in image_resp.iter_content(chunk_size=1 << 16):
                     if chunk:
                         f.write(chunk)
+            # A 200 from the CDN is no more proof the body is the image than a 200 from the Graph API is
+            # proof the body is the record: a signed-URL edge can answer 200 with an HTML error page. Saved
+            # as .jpg, that page IS the resume marker - permanent with no ledger row to edit, and an error
+            # per label in the cropper every night. gsv decodes every tile; this is the same check at the
+            # same point, before the rename, so the .part is discarded and the pano retries (#41).
+            if jpeg_dimensions(tmp_path) is None:
+                raise MapillaryErrorResponse("Mapillary image response for %s was not a JPEG" % pano_id)
     return DownloadResult.success
