@@ -148,6 +148,14 @@ class TestDisplayPath:
         got = studyfmt.display_path(os.path.join(os.sep, 'mnt', 'store', 'x.json'), root)
         assert os.path.isabs(got) and os.pardir not in got
 
+    def test_a_relative_path_outside_the_root_also_prints_absolute(self):
+        """The half the test above cannot reach: it feeds an already-absolute path, so it passes for a
+        function that returns its argument verbatim. `--write ../store/x.json` from the repo is the
+        invocation the docstring calls natural, and that is where the pile of `..` came back."""
+        got = studyfmt.display_path(os.path.join(os.pardir, 'store', 'x.json'),
+                                    os.path.join(os.sep, 'repo'))
+        assert os.path.isabs(got) and os.pardir not in got
+
     def test_a_relpath_that_raises_falls_back_instead_of_killing_the_run(self, monkeypatch):
         """The cross-drive case, simulated: the suite cannot assume two drives exist, and on POSIX
         relpath never raises at all — so the behaviour is pinned at the seam that does."""

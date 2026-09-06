@@ -87,4 +87,4 @@ def display_path(path, start):
         relative = os.path.relpath(path, start)
     except ValueError:
         return os.path.abspath(path)
-    return path if relative.startswith(os.pardir) else relative
+    return os.path.abspath(path) if relative.startswith(os.pardir) else relative

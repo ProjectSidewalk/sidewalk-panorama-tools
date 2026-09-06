@@ -58,7 +58,10 @@ def band_window(image, x, y, width, height):
     if bands is None:
         raise SystemExit('%dx%d is not a swept zoom-5 geometry' % (image.width, image.height))
     (top, bottom), _horizon = bands
-    if y + height > bottom - top or x + width > image.width:
+    # Both ends, not just the far one: `Image.crop` pads a negative origin with black rather than
+    # raising, so `--x -20` would put invented columns in the frame under discussion and a negative
+    # `--y` would sample up into the horizon band - the control - and flatter the comparison.
+    if x < 0 or y < 0 or y + height > bottom - top or x + width > image.width:
         raise SystemExit('window %dx%d at (%d, %d) does not fit the %d-row bottom band'
                          % (width, height, x, y, bottom - top))
     return image.crop((x, top + y, x + width, top + y + height)).convert('RGB')
@@ -69,6 +72,13 @@ def compose(left, right, patch_xy, patch_size, zoom, labels):
     win_w, win_h = left.size
     px, py = patch_xy
     pw, ph = patch_size
+    # Same reasoning as `band_window`'s guard, one level in: a patch that runs past the window is cropped
+    # with black padding rather than refused, and row 2 then magnifies that invented black with NEAREST and
+    # presents it as panorama pixels - in the one figure whose whole job is to let a reader check that the
+    # smoother frame is not missing anything.
+    if px < 0 or py < 0 or px + pw > win_w or py + ph > win_h:
+        raise SystemExit('%dx%d patch at (%d, %d) does not fit the %dx%d window'
+                         % (pw, ph, px, py, win_w, win_h))
     cell_w = max(win_w, pw * zoom)
     row1 = MARGIN + LABEL_H + MARGIN
     row2 = row1 + win_h + MARGIN + LABEL_H + MARGIN
@@ -81,7 +91,10 @@ def compose(left, right, patch_xy, patch_size, zoom, labels):
         outlined = image.copy()
         # Drawn on the copy, never on the crop that feeds the magnified row: an outline burnt into the
         # patch would then appear inside the 4x view as evidence of something that is not in the imagery.
-        ImageDraw.Draw(outlined).rectangle([px, py, px + pw, py + ph], outline=BOX_COLOUR)
+        # `-1` on the far corner because `ImageDraw.rectangle` includes both endpoints while `Image.crop`
+        # is half-open, so the naive `px + pw` marks a box one pixel wider and taller than the patch below
+        # it - and clips its own right edge away entirely when the patch is flush with the window.
+        ImageDraw.Draw(outlined).rectangle([px, py, px + pw - 1, py + ph - 1], outline=BOX_COLOUR)
         sheet.paste(outlined, (x0, row1))
     for column, (image, label) in enumerate(zip((left, right), labels[2:])):
         x0 = MARGIN + column * (cell_w + MARGIN)

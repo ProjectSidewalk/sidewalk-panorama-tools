@@ -33,6 +33,13 @@ def store_with(tmp_path, name, pano_id='aaPano', size=(1024, 6656), seed=1):
     return str(tmp_path / name)
 
 
+def _red(sheet):
+    """The outline's pixels. Thresholded rather than compared to BOX_COLOUR exactly, because the sheet is
+    saved and reloaded as JPEG in the end-to-end test."""
+    pixels = np.asarray(sheet)
+    return (pixels[:, :, 0] > 180) & (pixels[:, :, 1] < 60) & (pixels[:, :, 2] < 60)
+
+
 class TestBandWindow:
     def test_y_is_measured_from_the_band_top_not_the_frame_top(self):
         """The whole point of expressing the window against the band: the same --y lands in the same place
@@ -54,6 +61,17 @@ class TestBandWindow:
         with pytest.raises(SystemExit):
             fig.band_window(Image.new('RGB', (1024, 6656)), 0, 0, 8, 99999)
 
+    def test_a_negative_window_origin_is_refused(self):
+        """The near end of the same interval, which the guard above did not check: `Image.crop` pads a
+        negative origin with black rather than raising, so `--x -20` would put invented columns in the
+        frame under discussion, and a negative `--y` would sample up out of the bottom band into the
+        horizon band - the control the whole comparison is measured against."""
+        image = Image.new('RGB', (1024, 6656))
+        with pytest.raises(SystemExit):
+            fig.band_window(image, -20, 0, 8, 8)
+        with pytest.raises(SystemExit):
+            fig.band_window(image, 0, -1, 8, 8)
+
 
 class TestCompose:
     def sheet(self, zoom=4):
@@ -72,12 +90,46 @@ class TestCompose:
         """The failure this guards: outline the crop in place and the 4x row shows a red border that is not
         in the imagery, i.e. the figure invents a feature in the exact place it asks the reader to look."""
         sheet, _left = self.sheet()
-        pixels = np.asarray(sheet)
-        red = (pixels[:, :, 0] > 180) & (pixels[:, :, 1] < 60) & (pixels[:, :, 2] < 60)
+        red = _red(sheet)
         rows = np.nonzero(red.any(axis=1))[0]
 
         assert red.any(), 'the patch outline must be drawn somewhere'
         assert rows.max() < fig.MARGIN + fig.LABEL_H + fig.MARGIN + 320, 'red leaked into the magnified row'
+
+    def test_the_outline_marks_exactly_the_pixels_the_magnified_patch_takes(self):
+        """`ImageDraw.rectangle` includes both endpoints while `Image.crop` is half-open, so the naive
+        `px + pw` draws a box a pixel wider and taller than the patch below it - pointing the reader at
+        two rows and columns that are not in the thing they are being asked to look at."""
+        left = Image.new('RGB', (640, 320), (10, 200, 10))
+        px, py, pw, ph = 200, 40, 160, 80
+        sheet = fig.compose(left, left.copy(), (px, py), (pw, ph), 4, ('a', 'b', 'c', 'd'))
+        row1 = fig.MARGIN + fig.LABEL_H + fig.MARGIN
+        # The left column only, so the right-hand window's identical box cannot widen the span measured.
+        cell = _red(sheet)[row1:row1 + 320, fig.MARGIN:fig.MARGIN + 640]
+        cols = np.nonzero(cell.any(axis=0))[0]
+        rows = np.nonzero(cell.any(axis=1))[0]
+
+        assert (cols.min(), cols.max()) == (px, px + pw - 1)
+        assert (rows.min(), rows.max()) == (py, py + ph - 1)
+
+    def test_a_patch_flush_with_the_window_edge_keeps_a_closed_box(self):
+        """The clipping half of the same off-by-one: a right border at `px + pw == win_w` is out of bounds
+        and Pillow discards it silently, leaving the box open on the side the reader cannot see is open."""
+        left = Image.new('RGB', (640, 320), (10, 200, 10))
+        sheet = fig.compose(left, left.copy(), (480, 240), (160, 80), 4, ('a', 'b', 'c', 'd'))
+        row1 = fig.MARGIN + fig.LABEL_H + fig.MARGIN
+        right_edge = _red(sheet)[row1 + 240:row1 + 320, fig.MARGIN + 639]
+
+        assert right_edge.all(), 'the right border must fall inside the window rather than be clipped away'
+
+    def test_a_patch_that_runs_past_the_window_is_refused(self):
+        """Refused rather than padded: the out-of-range part of the crop comes back black, and row 2 then
+        magnifies that invented black with NEAREST and presents it as panorama pixels - in the one figure
+        whose whole job is to let a reader check that the smoother frame is not missing anything."""
+        left = Image.new('RGB', (640, 320), (10, 200, 10))
+        for patch_at in ((500, 40), (200, 260), (-1, 40), (200, -1)):
+            with pytest.raises(SystemExit):
+                fig.compose(left, left.copy(), patch_at, (160, 80), 4, ('a', 'b', 'c', 'd'))
 
     def test_the_magnified_row_is_nearest_neighbour(self):
         """A smooth resize would show the reader a smoothing artefact of our own making, in a figure whose
