@@ -535,7 +535,7 @@ class TestMapillaryErrorEnvelopes:
         with pytest.raises(downloaders.mapillary.MapillaryErrorResponse):
             downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
 
-        assert session.urls == ['%s/%s' % (downloaders.mapillary.GRAPH_API_BASE, MAPILLARY_PANO['pano_id'])], \
+        assert [url for url, _ in session.calls] == ['%s/%s' % (downloaders.mapillary.GRAPH_API_BASE, MAPILLARY_PANO['pano_id'])], \
             'the URL in an error body must not be fetched'
 
     @pytest.mark.parametrize('payload', [
