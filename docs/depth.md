@@ -144,10 +144,43 @@ fan-out — and on top of that:
   assuming a Google rate limit: `[Errno 28] No space left on device` points at the store, not the network. A
   run that stops on its `--max-runtime` or `--max-depth-requests` budget (or finishes its list) after failures
   prints a warning with the last error too, so a store that fills mid-run can't hide behind a budget stop.
-* **`depth_min_request_interval`** in `config.py` sets a floor (with jitter) on the gap between depth
-  requests. It defaults to `0.0`. Leave it there unless a canary run shows Google pushing back: the backfill is
-  inherently a multi-month job, so pacing costs real weeks. **The throttle is per-process** — if several cities
-  scrape concurrently from one box, the rate Google sees is this multiplied by however many runs overlap.
+* **The pacing is adaptive** ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)).
+  A run opens at `config.depth_start_interval` (1.0 s), **doubles** on any sign of push-back, and earns its way
+  back down towards `config.depth_min_request_interval` (0.25 s) by a factor of 0.8 only after 200 consecutive
+  clean requests. The gap actually slept is drawn `uniform(interval, 2 × interval)` — full-width, so there is
+  no fixed cadence to key on. The previous scheme was `interval + uniform(0, 0.25 × interval)`, which is a
+  near-constant rhythm.
+  * **The floor is the one knob that matters.** Nothing ever draws a gap shorter than it, so
+    `depth_min_request_interval` alone decides how aggressive this host can get. This is bounded exploration,
+    not a rate finder hunting for the limit. The 0.25 s default is the pace the
+    [2026-08-09 photometa census](../reports/2026-08-09-photometa-census.md) ran 1,360 requests at with no
+    push-back — the fastest rate this repo has live evidence for.
+  * **Push-back means more than a 429.** urllib3 retries 429/5xx *inside* the adapter, so a retried status
+    never reaches a response hook and one that exhausts the policy raises `RetryError` instead of returning.
+    What the observer actually keys on is the **retry history** of a response that eventually succeeded:
+    Google made us try again. That is the earliest warning available, and reacting to it is the whole point
+    of pacing rather than only stopping at the point of refusal.
+  * **Setting the floor to 0 disables the throttle, not the reaction.** A back-off from 0 would stay 0, so a
+    push-back always lands on at least `DEPTH_PACE_MIN_BACKOFF` (1 s).
+  * **The throttle is per-process.** That is safe only because `scrape_queue.py` runs one city at a time;
+    going back to concurrent per-city cron lines would multiply the rate Google sees by however many overlap.
+* **A refusal is remembered across runs — the block latch.** Standing down for the *run* is not enough when
+  the fleet is 52 cities through one queue: each would rediscover a live block with fresh requests aimed at
+  the endpoint that just refused us, which is how a soft refusal is escalated into a ban that stops the image
+  phase too (tiles leave the same IP). So a blocked stop writes a timestamp file, and any depth phase starting
+  within `DEPTH_BLOCK_LATCH_HOURS` (6) skips itself entirely, at zero requests, with a `WARNING` on stdout.
+  * **Only a blocked stop latches.** The circuit breaker counts storage failures too, and a full disk says
+    nothing about Google.
+  * **It lives on local disk** (`--depth-block-latch` overrides), *not* the pano store: the storage directory
+    a run is given belongs to a single city, so a latch there could not be cross-city even in principle, and
+    what is being remembered is this host's standing with Google. Same reasoning as `scrape_queue`'s lock.
+  * **Every ambiguous latch resolves towards scraping.** Missing, unparseable, or dated implausibly far in the
+    future all mean "not blocked" — a latch nobody can read must never be able to stand the whole fleet's
+    depth phase down indefinitely.
+* **Sizing, for context.** A photometa request measured **0.077 s median** from the production box, and the
+  corpus is 1,433,104 GSV panos, so at the default floor the backfill is on the order of a fortnight of
+  nights. This page used to say it was "inherently a multi-month job" and used that to argue for leaving
+  pacing off; both halves of that were wrong.
 
 ## Ops notes specific to depth
 

@@ -52,6 +52,36 @@ def _isolate_process_state():
     signal.signal(signal.SIGTERM, prior_sigterm)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
+    """Keep the depth phase's two HOST-level side effects (#43) out of the suite.
+
+    Both are correct in production and both have to be neutralised here, and neither is something an
+    individual test would think to do:
+
+    * **The pacer's floor is a real 0.25 s** in `config.py`, not the 0 it used to be, so any test driving
+      download_depth_maps would sleep a jittered gap between every pano. Measured: the depth modules alone
+      went from ~2 min to ~3m45 before this.
+    * **The block latch defaults to the machine's temp directory**, deliberately (it is a fact about the
+      host, not the store). So exactly ONE test exercising a blocked stop wrote a real latch and every
+      later test's depth phase then stood itself down - eight unrelated failures from one line of shared
+      state, in the direction that looks like a bug in the code under test.
+
+    Tests that are *about* the pacer or the latch pass their own values, so this only ever removes an
+    accidental dependency on the deployment defaults.
+    """
+    from downloaders import gsv
+
+    monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.0)
+    monkeypatch.setattr(gsv, 'depth_start_interval', 0.0)
+    # The minimum back-off too, or "pacing off" is not actually off: the pacer deliberately engages a real 1 s
+    # gap on push-back even at a zero floor, so any test that drives transient failures through the phase would
+    # sleep a second or two per pano. Measured: that alone took the suite from 2 to 7.5 minutes.
+    monkeypatch.setattr(gsv, 'DEPTH_PACE_MIN_BACKOFF', 0.0)
+    latch = tmp_path_factory.mktemp('depth-latch') / gsv.DEPTH_BLOCK_LATCH_FILENAME
+    monkeypatch.setattr(gsv, 'default_block_latch_path', lambda: str(latch))
+
+
 def pytest_configure(config):
     """Extend coverage into the subprocesses several test modules spawn (#57).
 
