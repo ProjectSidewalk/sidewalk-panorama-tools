@@ -14,6 +14,11 @@ carries for the pano's labels (what the client saw at label time / what gsv_data
 Usage:
     python photometa_census.py reports/scripts/.cache/rawlabels --fetched 2026-08-09 \
         --per-stratum 85 --interval 0.25 --write reports/data/2026-08-09-photometa-census.json
+
+    # decay: the same manifest, asked again. No rawLabels cache needed, so this runs anywhere.
+    python photometa_census.py --refetch reports/data/2026-08-09-photometa-census.json \
+        --fetched 2026-09-06 --since-days 28 --interval 0.25 \
+        --write reports/data/2026-09-06-photometa-census.json
 """
 
 import argparse
@@ -176,6 +181,148 @@ def resummarize(json_path):
     return result
 
 
+def sample_from_census(json_path):
+    """Rebuild the drawn sample from a committed census JSON, so the identical panos can be asked again.
+
+    This is what the embedded manifest was for. Re-drawing from rawLabels instead would give a *different*
+    sample, and the difference between two samples of a changing corpus is not decay — the strata themselves
+    move as labels are added. One population, asked twice, has no such confound.
+
+    Dead panos are replayed too: an id Google dropped can come back, and `resurrected` is only measurable if
+    the dead half of the manifest is asked as well.
+
+    @return (sample, prior_records) — sample carries exactly the five columns run_census iterates.
+    """
+    with open(json_path) as f:
+        result = json.load(f)
+    prior = pd.DataFrame(result['records'])
+    sample = prior[['pano_id', 'city', 'era', 'stored_width', 'stored_height']].copy()
+    return sample, prior
+
+
+def _found_flags(records):
+    """`found` as a real bool Series. JSON round-trips it through object dtype and a not-found row can carry
+    None, so `~records['found']` on the raw column is a TypeError or, worse, elementwise nonsense."""
+    return records['found'].fillna(False).astype(bool)
+
+
+def confirm_deaths(before, after, interval_s):
+    """Ask every alive -> dead transition a second time, and believe the second answer when it finds the pano.
+
+    run_census records a request that ERRORED as found=False. For an alive-rate that is the right conservative
+    call (a pano we cannot reach is not a pano we can study). For a *decay* rate it is exactly backwards: it
+    books a transient timeout as a permanent death, and it does so in the direction the study would like to
+    believe. One re-request per suspected death costs a few hundred requests at most and removes that bias.
+
+    Only the suspects are re-asked. Re-running the whole manifest would nearly double the run's cost to
+    re-confirm transitions nobody is claiming, and a second miss on an already-dead pano proves nothing new.
+
+    A miss on the second probe is NOT downgraded any further — a miss is what we already recorded. The
+    asymmetry is deliberate: a false death is the error that inflates the finding, a false survival is the
+    error that deflates it, and only the first is corrected here.
+
+    @return A copy of `after` with recovered rows replaced by the second observation, plus `reprobe_recovered`
+            / `reprobe_confirmed` flags and `reprobe_first_error` so the artifact carries the evidence.
+    """
+    out = after.copy()
+    out['reprobe_recovered'] = False
+    out['reprobe_confirmed'] = False
+    out['reprobe_first_error'] = None
+
+    joined = before[['pano_id', 'found']].merge(after[['pano_id', 'found']], on='pano_id',
+                                                suffixes=('_before', '_after'), validate='one_to_one')
+    was = joined['found_before'].fillna(False).astype(bool)
+    now = joined['found_after'].fillna(False).astype(bool)
+    suspects = set(joined.loc[was & ~now, 'pano_id'])
+    if not suspects:
+        return out
+
+    sample = out.loc[out['pano_id'].isin(suspects),
+                     ['pano_id', 'city', 'era', 'stored_width', 'stored_height']]
+    second = {rec['pano_id']: rec for rec in run_census(sample, interval_s).to_dict('records')}
+
+    rows = []
+    for rec in out.to_dict('records'):
+        pano_id = rec['pano_id']
+        probe = second.get(pano_id)
+        if probe is not None and bool(probe.get('found')):
+            first_error = rec.get('error')
+            rec = {**rec, **probe}
+            # The record IS the second observation now, so the first probe's error must not ride along as
+            # though this row had failed; it moves to its own column instead of being silently dropped.
+            rec['error'] = probe.get('error')
+            rec['reprobe_first_error'] = first_error
+            rec['reprobe_recovered'] = True
+        elif pano_id in suspects:
+            rec = {**rec, 'reprobe_confirmed': True}
+        rows.append(rec)
+    return pd.DataFrame(rows)
+
+
+def decay(before, after):
+    """Per-pano transitions between two censuses of the same manifest.
+
+    `died_pct_of_alive_before` divides by what was alive, not by the sample: a pano already gone cannot die
+    again, so including it would halve the rate and describe nothing.
+
+    `depth_lost` is the quantity #43 actually turns on. A depth map exists only for a pano Google still
+    serves, so a pano that dies takes its depth with it permanently — but only if it had one, which is why
+    this counts panos that carried depth rather than panos that died.
+
+    A pano in `before` and missing from `after` (an interrupted re-fetch) shrinks the denominator via
+    `n_unfetched`; it is never counted as a death.
+    """
+    joined = before.merge(after, on='pano_id', suffixes=('_before', '_after'), validate='one_to_one')
+    was = joined['found_before'].fillna(False).astype(bool)
+    now = joined['found_after'].fillna(False).astype(bool)
+    died = was & ~now
+    had_depth = joined['has_depth_before'].fillna(False).astype(bool)
+
+    out = {
+        'n_before': int(len(before)),
+        'n_matched': int(len(joined)),
+        'n_unfetched': int(len(before) - len(joined)),
+        'alive_before': int(was.sum()),
+        'alive_after': int(now.sum()),
+        'still_alive': int((was & now).sum()),
+        'died': int(died.sum()),
+        'still_dead': int((~was & ~now).sum()),
+        'resurrected': int((~was & now).sum()),
+        'depth_lost': int((died & had_depth).sum()),
+        'errors_before': int(before['error'].notna().sum()) if 'error' in before else 0,
+        'errors_after': int(after['error'].notna().sum()) if 'error' in after else 0,
+        'reprobe_recovered': int(after['reprobe_recovered'].fillna(False).astype(bool).sum())
+                             if 'reprobe_recovered' in after else 0,
+    }
+    alive_before = out['alive_before']
+    out['died_pct_of_alive_before'] = float(100 * out['died'] / alive_before) if alive_before else None
+    out['depth_lost_pct_of_alive_before'] = \
+        float(100 * out['depth_lost'] / alive_before) if alive_before else None
+    out['by_era'] = {
+        era: {'alive_before': int(_found_flags(g.rename(columns={'found_before': 'found'})).sum()),
+              'died': int((g['found_before'].fillna(False).astype(bool)
+                           & ~g['found_after'].fillna(False).astype(bool)).sum())}
+        for era, g in joined.groupby('era_before')}
+    return out
+
+
+def print_decay(d, days=None):
+    """The one rendering of a decay result, on print_summary's model."""
+    per_month = None
+    if days and d['died_pct_of_alive_before'] is not None and days > 0:
+        per_month = d['died_pct_of_alive_before'] * 30.0 / days
+    print(f"matched {d['n_matched']} of {d['n_before']} "
+          f"(unfetched {d['n_unfetched']}, errors {d['errors_after']}, "
+          f"reprobe-recovered {d['reprobe_recovered']})")
+    print(f"alive {d['alive_before']} -> {d['alive_after']}   "
+          f"died {d['died']} ({fmt(d['died_pct_of_alive_before'], '.1f')}% of those alive)   "
+          f"resurrected {d['resurrected']}")
+    print(f"depth maps now unobtainable: {d['depth_lost']} "
+          f"({fmt(d['depth_lost_pct_of_alive_before'], '.1f')}% of those alive)"
+          + (f"   ~= {fmt(per_month, '.1f')}%/30d" if per_month is not None else ''))
+    print('died by era:', {k: v['died'] for k, v in d['by_era'].items()})
+
+
 def print_summary(summary):
     """The one rendering of a census summary. Both entry points call it.
 
@@ -212,10 +359,38 @@ def main(argv=None):
     ap.add_argument('--write', metavar='JSON')
     ap.add_argument('--resummarize', metavar='JSON',
                     help='no network: recompute the summary from an existing census JSON')
+    ap.add_argument('--refetch', metavar='JSON',
+                    help='re-request the manifest embedded in an existing census JSON and report decay '
+                         'against it (the same panos, so no strata confound)')
+    ap.add_argument('--since-days', type=float, metavar='N',
+                    help='days between the two censuses; only used to express the death rate per 30 days')
     args = ap.parse_args(argv)
 
     if args.resummarize:
         print_summary(resummarize(args.resummarize)['summary'])
+        return
+
+    if args.refetch:
+        sample, prior = sample_from_census(args.refetch)
+        with open(args.refetch) as f:
+            prior_meta = json.load(f)
+        print(f'refetching {len(sample)} panos from {args.refetch}', flush=True)
+        records = run_census(sample, args.interval)
+        # Before anything is summarised: an errored request reads as found=False, which would book a
+        # network blip as a permanent death (see confirm_deaths).
+        records = confirm_deaths(prior, records, args.interval)
+        result = {'source': 'streetlevel photometa (find_panorama_by_id, download_depth=True)',
+                  'refetch_of': os.path.basename(args.refetch),
+                  'rawlabels_fetched': prior_meta.get('rawlabels_fetched'),
+                  'refetched': args.fetched, 'since_days': args.since_days, 'seed': prior_meta.get('seed'),
+                  'summary': summarize(records),
+                  'decay': decay(prior, records),
+                  'records': json_records(records)}
+        print_summary(result['summary'])
+        print_decay(result['decay'], days=args.since_days)
+        if args.write:
+            write_json(result, args.write)
+            print(f'wrote {args.write}')
         return
 
     if not args.csv_dir or not args.fetched:
