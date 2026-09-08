@@ -46,8 +46,8 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes | `test_scrape_queue.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
-| The display copy of a wide panorama: naming, the two writers, both downloaders' hooks, the store walkers' blindness to it, and the backfill sweep | `test_downscaled_sidecar.py` |
-| The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal, ledger semantics, the recovery metric, and the CLI surface | `test_refetch_panos.py` |
+| The display copy of a wide panorama: naming, the two writers, both downloaders' hooks, the one store walker and the guard against a second, what `sidecar_is_current` can and cannot see, the shared decompression-bomb ceiling, and the backfill sweep | `test_downscaled_sidecar.py` |
+| The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal (the display copy included), the copy being rewritten from the imagery that replaced it, ledger semantics, the recovery metric, and the CLI surface | `test_refetch_panos.py` |
 | The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
 | That the docs' internal links and anchors resolve, and that cited `docs/` paths exist | `test_docs.py` |
 | That the README's hero figure still builds against the current cropper, and isn't stale | `test_make_banner.py` |

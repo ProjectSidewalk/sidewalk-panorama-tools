@@ -9,6 +9,7 @@ copy that was resized correctly is distinguishable from one that was cropped, or
 import io
 import logging
 import os
+import re
 
 import pytest
 from PIL import Image
@@ -19,6 +20,8 @@ import downscale_panos
 import refetch_panos
 from test_gsv_stitcher import stub_probe, stub_tiles, jpeg_bytes as tile_bytes, RED, BLUE, assert_color
 from test_image_downloaders import FakeResponse, FakeSession, HEALTHY_MAPILLARY_METADATA, MAPILLARY_PANO
+# The one list of "the production tree", shared with the no-pandas rule this guard is a sibling of.
+from test_csv_intake import PRODUCTION_MODULES
 
 CAP = 1024
 
@@ -236,23 +239,88 @@ class TestTheMapillaryDownloaderWritesTheCopy:
         assert 'display copy not written' in caplog.text
 
 
-class TestTheStoreWalkersIgnoreTheCopy:
-    def test_refetch_panos_does_not_take_a_sidecar_for_a_panorama(self, tmp_path):
+class TestTheOneStoreWalker:
+    """`common.walk_store_panos` is the single definition of "this file is a panorama".
+
+    It was written twice - `refetch_panos.walk_store` and the backfill's own sweep - and the clause a third
+    copy forgets is the sidecar exclusion, whose failure mode is not an error but an invented pano id.
+    """
+
+    def cluttered_store(self, tmp_path):
+        """Everything a real shard holds beside the panorama, and two things that are not in a shard at all."""
         two_tone_jpeg(str(tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.jpg'), 16, 8)
         two_tone_jpeg(str(tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.w8192.jpg'), 16, 8)
-
-        assert [r['pano_id'] for r in refetch_panos.walk_store(str(tmp_path))] == ['aaBBccDDeeFFggHHiiJJ']
-
-    def test_the_sweep_does_not_either(self, tmp_path):
-        two_tone_jpeg(str(tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.jpg'), 16, 8)
-        two_tone_jpeg(str(tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.w8192.jpg'), 16, 8)
+        two_tone_jpeg(str(tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.w1024.jpg'), 16, 8)
+        (tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.depth.npz').write_bytes(b'PK')
         (tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.jpg.part').write_bytes(b'\xff\xd8')
+        (tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.w8192.jpg.part').write_bytes(b'\xff\xd8')
         (tmp_path / 'aa' / 'zzWrongShardXXXXXXXX.jpg').write_bytes(b'\xff\xd8')
+        two_tone_jpeg(str(tmp_path / 'bb' / 'bbSecondPanoAAAAAAAA.jpg'), 16, 8)
         (tmp_path / 'stray.jpg').write_bytes(b'\xff\xd8')
         (tmp_path / 'log.csv').write_text('a,b\n')
+        (tmp_path / 'crops').mkdir()
+        (tmp_path / 'crops' / '12345.jpg').write_bytes(b'\xff\xd8')
+        return str(tmp_path)
 
-        assert list(downscale_panos.find_panos(str(tmp_path))) == \
-            [str(tmp_path / 'aa' / 'aaBBccDDeeFFggHHiiJJ.jpg')]
+    def test_it_yields_the_panoramas_and_nothing_else(self, tmp_path):
+        store = self.cluttered_store(tmp_path)
+
+        assert list(common.walk_store_panos(store)) == [
+            os.path.join(store, 'aa', 'aaBBccDDeeFFggHHiiJJ.jpg'),
+            os.path.join(store, 'bb', 'bbSecondPanoAAAAAAAA.jpg'),
+        ]
+
+    def test_a_sidecar_at_any_cap_is_never_a_panorama(self, tmp_path):
+        """The clause with no error to announce it: `<id>.w8192.jpg` shares the panorama's first two
+        characters and its .jpg suffix, so a walker that drops it hands on the pano id `<real id>.w8192`."""
+        two_tone_jpeg(str(tmp_path / 'aa' / 'aaOnlySidecarsAAAAAA.w8192.jpg'), 16, 8)
+        two_tone_jpeg(str(tmp_path / 'aa' / 'aaOnlySidecarsAAAAAA.w4096.jpg'), 16, 8)
+
+        assert list(common.walk_store_panos(str(tmp_path))) == []
+
+    def test_the_order_is_stable_across_calls_and_shards(self, tmp_path):
+        """Both callers rely on it: the sweep's --max-runtime resumes where the last run stopped, and the
+        repair pass shuffles a list it needs to have drawn identically each time."""
+        for shard, pano in (('cc', 'ccThirdAAAAAAAAAAAAA'), ('aa', 'aaFirstAAAAAAAAAAAAA'),
+                            ('bb', 'bbSecondAAAAAAAAAAAA')):
+            two_tone_jpeg(str(tmp_path / shard / (pano + '.jpg')), 16, 8)
+
+        first = list(common.walk_store_panos(str(tmp_path)))
+
+        assert [os.path.basename(p) for p in first] == \
+            ['aaFirstAAAAAAAAAAAAA.jpg', 'bbSecondAAAAAAAAAAAA.jpg', 'ccThirdAAAAAAAAAAAAA.jpg']
+        assert list(common.walk_store_panos(str(tmp_path))) == first
+
+    def test_refetch_panos_reads_its_ids_through_it(self, tmp_path):
+        store = self.cluttered_store(tmp_path)
+
+        assert [r['pano_id'] for r in refetch_panos.walk_store(store)] == \
+            ['aaBBccDDeeFFggHHiiJJ', 'bbSecondPanoAAAAAAAA']
+
+    def test_the_sweep_examines_exactly_those_panoramas(self, tmp_path):
+        """Through downscale_store rather than a walker of its own: find_panos was the second copy."""
+        store = self.cluttered_store(tmp_path)
+
+        summary = downscale_panos.downscale_store(store, dry_run=True, max_width=CAP)
+
+        assert summary.scanned == 2, 'the sweep must examine the two panoramas and neither sidecar'
+        assert (summary.narrow, summary.failed) == (2, 0)
+
+    def test_no_production_module_re_derives_the_predicate(self):
+        """The guard the two tests above cannot give: they pin the walkers that exist today.
+
+        A hand-rolled `filename.endswith('.jpg')` over a shard listing is the shape that forgets the sidecar
+        clause, so exactly one file in the production tree may contain it - the one defining
+        walk_store_panos. Same standing rule as the no-pandas assertion in test_csv_intake.py.
+        """
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        pattern = re.compile(r"""endswith\(\s*['"]\.jpg['"]""")
+        offenders = [m for m in PRODUCTION_MODULES
+                     if pattern.search(open(os.path.join(repo_root, m), encoding='utf-8').read())]
+
+        assert offenders == ['downloaders/common.py'], (
+            'a second store walker: call downloaders.common.walk_store_panos() instead, or it will take a '
+            '<id>.w8192.jpg sidecar for a panorama named <id>.w8192 -- silently. Offenders: %s' % offenders)
 
 
 class TestTheSweep:
@@ -342,8 +410,9 @@ class TestTheSweep:
 
         out = capsys.readouterr().out
         assert 'Examined 5 panorama(s): 2 written, 1 under the cap, 1 already had a copy, 1 failed, 0 unreached.' in out
-        # The process-level policy CropRunner.main sets too: this script opens 134 MP files on purpose.
-        assert Image.MAX_IMAGE_PIXELS is None
+        # The process-level policy every entry point that opens a stored panorama sets; see
+        # TestTheDecompressionBombCeiling for why it is a ceiling and not None.
+        assert Image.MAX_IMAGE_PIXELS == common.MAX_PANO_PIXELS
 
     def test_main_exits_zero_on_a_clean_store(self, tmp_path, monkeypatch, capsys):
         two_tone_jpeg(str(tmp_path / 'aa' / 'aaMissingCopyAAAAAAA.jpg'), 2048, 1024)
@@ -353,3 +422,118 @@ class TestTheSweep:
 
         assert '1 would be written' in capsys.readouterr().out
         assert os.listdir(tmp_path / 'aa') == ['aaMissingCopyAAAAAAA.jpg']
+
+
+class TestSidecarIsCurrent:
+    """The sweep's whole affordability rests on this answering from two headers. It must therefore be exact
+    about what it can and cannot see, because a false 'current' is permanent: the copy is never revisited."""
+
+    def pano(self, tmp_path, width=2048, height=1024):
+        return two_tone_jpeg(str(tmp_path / 'aa' / 'aaPanoAAAAAAAAAAAAAA.jpg'), width, height)
+
+    def sidecar(self, pano, width, height, max_width=CAP):
+        return two_tone_jpeg(common.downscaled_sidecar_path(pano, max_width), width, height)
+
+    def test_the_copy_the_rule_would_write_is_current(self, tmp_path):
+        pano = self.pano(tmp_path)
+        common.write_downscaled_sidecar_from_file(pano, max_width=CAP)
+
+        assert downscale_panos.sidecar_is_current(pano, (2048, 1024), CAP) is True
+
+    def test_a_missing_copy_is_not(self, tmp_path):
+        pano = self.pano(tmp_path)
+
+        assert downscale_panos.sidecar_is_current(pano, (2048, 1024), CAP) is False
+
+    def test_a_copy_at_the_cap_with_the_WRONG_HEIGHT_is_not_current(self, tmp_path):
+        """The case a width-only check called current, for ever.
+
+        The name already promises the width, so checking only the width proves the file is not truncated and
+        says nothing about which panorama the copy belongs to. A copy written under an older aspect rule, or
+        beside a panorama that has since been re-framed, keeps the cap width and is silently wrong.
+        """
+        pano = self.pano(tmp_path)
+        self.sidecar(pano, CAP, 999)
+
+        assert downscale_panos.sidecar_is_current(pano, (2048, 1024), CAP) is False
+
+    def test_a_copy_at_another_cap_entirely_is_not_current(self, tmp_path):
+        pano = self.pano(tmp_path)
+        self.sidecar(pano, 512, 256)
+
+        assert downscale_panos.sidecar_is_current(pano, (2048, 1024), CAP) is False
+
+    def test_an_unreadable_copy_is_rewritten_rather_than_trusted(self, tmp_path):
+        pano = self.pano(tmp_path)
+        with open(common.downscaled_sidecar_path(pano, CAP), 'wb') as f:
+            f.write(b'\xff\xd8 truncated before any SOF')
+
+        assert downscale_panos.sidecar_is_current(pano, (2048, 1024), CAP) is False
+
+    def test_it_reads_two_headers_and_decodes_nothing(self, tmp_path, monkeypatch):
+        pano = self.pano(tmp_path)
+        common.write_downscaled_sidecar_from_file(pano, max_width=CAP)
+        monkeypatch.setattr(Image, 'open', lambda *a, **k: pytest.fail('the check must not decode'))
+
+        assert downscale_panos.sidecar_is_current(pano, (2048, 1024), CAP) is True
+
+    def test_it_cannot_see_a_copy_that_is_stale_only_in_CONTENT(self, tmp_path):
+        """Named so nobody mistakes this check for the guarantee. The panorama's bytes can be replaced under
+        an unchanged frame - refetch_panos does exactly that - and no header can tell. The copy is kept
+        honest at the moment of the swap (refetch_panos._refresh_display_copy), not here.
+        """
+        pano = self.pano(tmp_path)
+        common.write_downscaled_sidecar_from_file(pano, max_width=CAP)
+        Image.new('RGB', (2048, 1024), BLUE).save(pano, 'jpeg')   # same frame, different imagery
+
+        assert downscale_panos.sidecar_is_current(pano, (2048, 1024), CAP) is True
+        with Image.open(common.downscaled_sidecar_path(pano, CAP)) as copy:
+            assert_color(copy.getpixel((CAP // 4, 256)), RED)     # still the old imagery
+
+
+class TestTheDecompressionBombCeiling:
+    """One definition of the policy, because the list of entry points that open a 134 MP panorama stopped
+    being one script's concern when #115 put an Image.open on the Mapillary download path."""
+
+    def test_it_raises_pillows_default_to_our_largest_panorama(self, monkeypatch):
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
+
+        common.raise_decompression_bomb_ceiling()
+
+        assert Image.MAX_IMAGE_PIXELS == common.MAX_PANO_PIXELS == 16384 * 8192
+
+    def test_it_is_a_ceiling_and_not_None(self):
+        """None would also swallow a genuinely corrupt header claiming absurd dimensions, and the sweep is
+        the one caller that opens whatever the store happens to hold."""
+        assert common.MAX_PANO_PIXELS is not None
+
+    def test_it_never_lowers_a_ceiling_somebody_else_raised(self, monkeypatch):
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 10 ** 12)
+        common.raise_decompression_bomb_ceiling()
+        assert Image.MAX_IMAGE_PIXELS == 10 ** 12
+
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', None)
+        common.raise_decompression_bomb_ceiling()
+        assert Image.MAX_IMAGE_PIXELS is None, 'an explicit "no limit" is a caller decision, not ours'
+
+    def test_croprunner_still_exports_the_name_its_callers_reach_for(self):
+        """reports/scripts/annotation_tiles.py and crop_sizing_v2.py call CropRunner.raise_...()."""
+        import CropRunner
+
+        assert CropRunner.raise_decompression_bomb_ceiling is common.raise_decompression_bomb_ceiling
+
+    def test_the_mapillary_display_copy_can_open_a_pano_over_pillows_default(self, tmp_path, monkeypatch):
+        """The reason DownloadRunner needs the policy at all: this path re-opens the file it just wrote.
+
+        Pillow only hard-fails above 2x its threshold, so this drives the ceiling down far enough that a
+        modest test image trips the error rather than allocating a real 134 MP one.
+        """
+        pano = two_tone_jpeg(str(tmp_path / 'aa' / 'aaPanoAAAAAAAAAAAAAA.jpg'), 2048, 1024)
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 1000)
+        with pytest.raises(Image.DecompressionBombError):
+            common.write_downscaled_sidecar_from_file(pano, max_width=CAP)
+
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
+        common.raise_decompression_bomb_ceiling()
+
+        assert common.write_downscaled_sidecar_from_file(pano, max_width=CAP) is not None

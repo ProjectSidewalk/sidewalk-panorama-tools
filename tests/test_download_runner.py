@@ -26,6 +26,7 @@ import requests
 from PIL import Image
 
 import downloaders
+import downloaders.common
 import DownloadRunner
 
 import pytest
@@ -560,6 +561,33 @@ def test_configure_logging_redacts_the_token_from_scrape_log(tmp_path, monkeypat
     assert 'test-token-xyz' not in contents
     assert '<redacted>' in contents
     assert '123456789012345' in contents  # redaction must not eat the rest of the line
+
+
+def test_main_raises_the_decompression_bomb_ceiling(tmp_path, monkeypatch):
+    """#115 put an Image.open on the Mapillary download path: it re-opens the panorama to cut the display
+    copy. Pillow warns above 89 MP and hard-fails above 2x that, and _write_display_copy swallows the
+    failure - so without this the widest Mapillary images would be the ones that silently never get a copy.
+
+    Process-level, so main() sets it and no library function does; the same shared policy CropRunner sets.
+    """
+    monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
+    monkeypatch.chdir(tmp_path)
+
+    DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', write_pano_csv(tmp_path),
+                         '--skip-depth'])
+
+    assert Image.MAX_IMAGE_PIXELS == downloaders.common.MAX_PANO_PIXELS == 16384 * 8192
+
+
+def test_importing_the_module_does_not_touch_the_ceiling(monkeypatch):
+    """The other half of the #52.1 seam: importing DownloadRunner must not rewrite a PIL global belonging to
+    whoever imported it."""
+    monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 12345)
+    import importlib
+
+    importlib.reload(DownloadRunner)
+
+    assert Image.MAX_IMAGE_PIXELS == 12345
 
 
 def test_sigterm_is_translated_to_systemexit_so_the_evidence_row_still_lands(tmp_path, monkeypatch):

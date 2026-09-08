@@ -60,6 +60,29 @@ def jpeg_dimensions(path):
         return None
 
 
+# The largest panoramas our own downloader writes are 16384 x 8192 = 134 MP, over Pillow's 89 MP
+# DecompressionBombWarning default. A named ceiling rather than None: the store is trusted, but "no limit at
+# all" would also swallow a genuinely corrupt header claiming absurd dimensions - and Pillow only hard-fails
+# above 2x its threshold, so the untouched default turns a routine modern pano into a warning per file.
+MAX_PANO_PIXELS = 16384 * 8192
+
+
+def raise_decompression_bomb_ceiling():
+    """Let Pillow decode our own 134 MP panoramas without a DecompressionBombWarning on every one.
+
+    Process-level policy, so a `main()` calls it and no library function does: this rewrites a PIL global
+    that belongs to whoever imported us, and since #52.1 that can be another program. A library caller who
+    wants the ceiling calls this itself; one who doesn't gets a warning, not a failure.
+
+    Every entry point that opens a stored panorama needs it - CropRunner, downscale_panos, refetch_panos'
+    --measure, and (since #115 put an Image.open on the Mapillary download path) DownloadRunner. It lives
+    here rather than in CropRunner, where it was written, because that list stopped being one script's
+    concern; CropRunner re-exports the name for the two reports/scripts callers that reach for it there.
+    """
+    if Image.MAX_IMAGE_PIXELS is not None and Image.MAX_IMAGE_PIXELS < MAX_PANO_PIXELS:
+        Image.MAX_IMAGE_PIXELS = MAX_PANO_PIXELS
+
+
 class DownloadResult(enum.Enum):
     """What a downloader decided about one pano. See downloaders/__init__.py for the ledger contract.
 
@@ -124,6 +147,13 @@ def atomic_output_path(final_path, mode=0o664):
 DOWNSCALED_MAX_WIDTH = 8192
 
 #: Display copies are looked at in a viewer, never cut from: crops always come from the native file.
+#:
+#: 85 rather than the 75 the native pano is saved at, and that choice costs real bytes: measured on
+#: samples/sample_pano.jpg (13312 x 6656, 6.08 MB), the 8192-wide copy is 3.82 MB at q85 and 2.82 MB at q75 -
+#: 63% of the native file against 46%. Some of that extra is spent re-encoding the SOURCE's own q75 artifacts
+#: rather than detail, so it is a deliberate trade and not a free one; docs/ops.md carries the store-growth
+#: number a backfill across ~50 cities has to budget for. Lower it only together with a re-run of the sweep,
+#: since an existing sidecar is its own resume marker and is never re-encoded.
 DOWNSCALED_JPEG_QUALITY = 85
 
 _SIDECAR_SUFFIX = re.compile(r'\.w(\d+)\.jpg$')
@@ -140,6 +170,30 @@ def downscaled_sidecar_path(pano_path, max_width=None):
 def is_downscaled_sidecar(filename):
     """Whether a store filename is a display copy rather than a panorama."""
     return _SIDECAR_SUFFIX.search(os.path.basename(filename)) is not None
+
+
+def walk_store_panos(storage_path):
+    """Yield the path of every stored panorama under `storage_path`, in a stable order.
+
+    Only `<storage_path>/<2 chars>/<id>.jpg` with the shard matching id[:2] is a panorama - the layout
+    gsv.download_single_pano writes. Anything else carrying a .jpg suffix is not: a crops tree, a stray file
+    at the top level, a `.part` left by a crashed writer (not a .jpg at all), and above all a `.w8192.jpg`
+    display copy, whose name shares the pano's first two characters and whose stem would otherwise be handed
+    on as a pano id like `<real id>.w8192`.
+
+    ONE definition, deliberately (#115). This predicate was written twice - refetch_panos.walk_store and the
+    backfill's own sweep - and the sidecar exclusion is the kind of clause a third copy forgets: a walker
+    that skips it does not fail, it invents pano ids, which is silent everywhere it matters. Same reasoning
+    as jpeg_dimensions above, which moved here the moment it had a second caller. A new store walker calls
+    this rather than re-deriving the filter, and shapes the result however it likes.
+    """
+    for shard in sorted(os.listdir(storage_path)):
+        shard_path = os.path.join(storage_path, shard)
+        if len(shard) != 2 or not os.path.isdir(shard_path):
+            continue
+        for filename in sorted(os.listdir(shard_path)):
+            if filename.endswith('.jpg') and filename[:2] == shard and not is_downscaled_sidecar(filename):
+                yield os.path.join(shard_path, filename)
 
 
 def downscaled_size(width, height, max_width):

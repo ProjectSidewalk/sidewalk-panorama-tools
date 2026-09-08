@@ -18,14 +18,12 @@ Usage:
 """
 
 import argparse
-import os
 import time
 from collections import namedtuple
 
-from PIL import Image
-
-from downloaders.common import (DOWNSCALED_MAX_WIDTH, downscaled_sidecar_path, is_downscaled_sidecar,
-                                jpeg_dimensions, write_downscaled_sidecar_from_file)
+from downloaders.common import (DOWNSCALED_MAX_WIDTH, downscaled_sidecar_path, downscaled_size,
+                                jpeg_dimensions, raise_decompression_bomb_ceiling, walk_store_panos,
+                                write_downscaled_sidecar_from_file)
 
 # 'written' counts sidecars written - or, under --dry-run, sidecars that would have been. 'current' is a
 # sidecar already at the cap, 'narrow' a pano the viewer can take as it is, 'unreached' a pano the runtime
@@ -33,27 +31,21 @@ from downloaders.common import (DOWNSCALED_MAX_WIDTH, downscaled_sidecar_path, i
 Summary = namedtuple('Summary', ['scanned', 'written', 'narrow', 'current', 'failed', 'unreached'])
 
 
-def find_panos(storage_path):
-    """Yield every stored panorama's path, in a stable order.
+def sidecar_is_current(pano_path, pano_dims, max_width):
+    """Whether the pano's sidecar exists and is exactly the copy downscaled_size would produce of THIS pano.
 
-    Same shape as refetch_panos.walk_store: only `<2 chars>/<id>.jpg` with the shard matching id[:2] is a
-    pano. A sidecar beside it carries the same prefix and suffix, so it is excluded by name, and a `.part`
-    left by a crashed writer is not a JPEG at all.
+    Both numbers, not just the width. The name promises the width, so checking it alone only proves the file
+    is not truncated - it says nothing about which panorama the copy belongs to. A 1024x999 sidecar beside a
+    2048x1024 panorama passed that test, and so did any sidecar whose aspect was written by an older rule.
+    The height is free: jpeg_dimensions already returned it.
+
+    It still cannot see a sidecar that is stale in CONTENT at the right size - the panorama's bytes replaced
+    under an unchanged frame. Nothing on disk can, short of a decode per pano, which is the whole cost this
+    sweep exists to avoid. The one thing that does that is refetch_panos._refresh_display_copy, which rewrites
+    the copy at the moment of the swap; this check is not a substitute for it.
     """
-    for shard in sorted(os.listdir(storage_path)):
-        shard_path = os.path.join(storage_path, shard)
-        if len(shard) != 2 or not os.path.isdir(shard_path):
-            continue
-        for filename in sorted(os.listdir(shard_path)):
-            if filename.endswith('.jpg') and filename[:2] == shard and not is_downscaled_sidecar(filename):
-                yield os.path.join(shard_path, filename)
-
-
-def sidecar_is_current(pano_path, max_width):
-    """Whether the pano's sidecar exists and is at the cap. The name promises the width; the header proves it,
-    so a truncated or mis-sized copy is rewritten rather than trusted."""
-    dims = jpeg_dimensions(downscaled_sidecar_path(pano_path, max_width))
-    return dims is not None and dims[0] == max_width
+    expected = downscaled_size(pano_dims[0], pano_dims[1], max_width)
+    return jpeg_dimensions(downscaled_sidecar_path(pano_path, max_width)) == expected
 
 
 def downscale_store(storage_path, dry_run=False, max_width=None, max_runtime_minutes=None):
@@ -68,7 +60,7 @@ def downscale_store(storage_path, dry_run=False, max_width=None, max_runtime_min
     max_width = DOWNSCALED_MAX_WIDTH if max_width is None else max_width
     started = time.monotonic()
     scanned = written = narrow = current = failed = unreached = 0
-    for path in find_panos(storage_path):
+    for path in walk_store_panos(storage_path):
         if max_runtime_minutes is not None and time.monotonic() - started >= max_runtime_minutes * 60:
             unreached += 1
             continue
@@ -83,7 +75,7 @@ def downscale_store(storage_path, dry_run=False, max_width=None, max_runtime_min
         if dims[0] <= max_width:
             narrow += 1
             continue
-        if sidecar_is_current(path, max_width):
+        if sidecar_is_current(path, dims, max_width):
             current += 1
             continue
         try:
@@ -118,9 +110,11 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    # Process-level policy, as in CropRunner.main: a 16384 x 8192 pano is 134 MP, over Pillow's 89 MP
-    # decompression-bomb warning threshold, and this script exists to open exactly those files.
-    Image.MAX_IMAGE_PIXELS = None
+    # Process-level policy, the shared one every entry point that opens a stored panorama sets: 16384 x 8192
+    # is 134 MP, over Pillow's 89 MP decompression-bomb warning threshold, and this script exists to open
+    # exactly those files. A ceiling rather than None, so a corrupt header claiming absurd dimensions is
+    # still refused - this sweep, unlike the others, opens whatever the store happens to hold.
+    raise_decompression_bomb_ceiling()
 
     summary = downscale_store(args.storage_path, dry_run=args.dry_run, max_width=args.max_width,
                               max_runtime_minutes=args.max_runtime)
