@@ -93,9 +93,8 @@ permanent.** Transient failures leave no row and retry automatically on the next
 * `0` — the source has nothing for this pano: no imagery at any zoom, or unknowable dimensions; for
   Mapillary, a 404 or a record that names the image and carries no original-resolution rendition. A
   permanent verdict. No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured
-  2026-09-06 — so on that source the record with no rendition is the one that fires in practice, and it is
-  the only permanent verdict anything writes with no run-level breaker behind it
-  ([#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113)).
+  2026-09-06 — so on that source the record with no rendition is the one that fires in practice, and three
+  of them in a row stop the run writing any more (see *When the image phase stops trusting a source*).
   A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
   (code 190 / `OAuthException`), a body that does not name the image, or an image body that is not a JPEG
   is not a verdict and leaves no row.
@@ -350,6 +349,36 @@ phase down indefinitely.
 **Do not read a stood-down phase as lost work.** Nothing is ledgered on either path, so every unresolved
 panorama is retried on the next run. See
 [Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers).
+
+## When the image phase stops trusting a source
+
+A `downloaded=0` row is permanent and is only undone by hand-editing `pano_id_log.csv` on the store, so the
+image loop stops writing them once one source produces three in a row
+([#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113)):
+
+```
+IMAGEDOWNLOAD: WARNING - 3 consecutive permanent failures from source mapillary. That is a condition of the
+run, not of the panos, so nothing more from this source is ledgered tonight.
+IMAGEDOWNLOAD: WARNING - breaker tripped for mapillary; 214 pano(s) were left unattempted and nothing was
+ledgered for them, so they retry next run. Check that source's credentials before the next run, then look
+for false downloaded=0 rows in pano_id_log.csv.
+```
+
+**What to do.** Check the source's credentials first — the condition this guards is a token that has lost
+the scope it needs, which Mapillary can answer by omitting the image URL from an otherwise healthy record
+rather than by erroring. Then look at the last rows of `pano_id_log.csv`: **two** false `downloaded=0` rows
+are written before the breaker has enough evidence to fire, and those two are the only damage. Delete them,
+fix the credentials, and the next run picks up everything the breaker skipped, because none of it was
+ledgered.
+
+The run **exits nonzero**, so `scrape_queue.py` books the city as `failed` and cron mails the queue summary.
+Only the tripped source stops: a city carrying both GSV and Mapillary panos keeps downloading GSV. `log.csv`
+is unchanged — the row is 18 positional fields and the breaker is not one of them, so stdout, `scrape.log`
+and the exit code are where this lives.
+
+GSV has no breaker, deliberately: 8.0–8.4% of a large GSV city's ledger is a permanent verdict (retired
+imagery), so three in a row is routine there rather than evidence. The table is per source, in
+`DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`.
 
 ## What healthy looks like
 

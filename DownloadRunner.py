@@ -299,7 +299,42 @@ def filter_supported_sources(pano_infos):
     return [p for p in pano_infos if p.get('source') in supported]
 
 
-def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None):
+# Consecutive permanent (downloaded=0) verdicts from ONE source that stop this run ledgering that source
+# (#113). A source absent from this table has no breaker, which is the default and the common case.
+#
+# The failure this guards is not a property of any pano: a Mapillary token that has lost the needed scope
+# would be answered the way Meta's Graph family commonly answers a permission-denied field - by OMITTING it
+# from an otherwise-healthy 200 record - which is byte-for-byte the shape original_rendition_url is required
+# to read as a permanent verdict (#99). No body check can separate the two, so the defence cannot be one; a
+# breaker does not depend on knowing which way it goes. The cost of being wrong is asymmetric and measured:
+# a permanent row is never revisited, and undoing 161 of them on 2026-09-01 meant hand-editing
+# pano_id_log.csv on the shared store.
+#
+# Keyed on source rather than on the no-rendition verdict because the base rates differ by three orders of
+# magnitude. Measured over the production ledgers 2026-09-06: richmond-va, the only Mapillary city, has 0
+# permanent verdicts in 9,229 rows - the whole corpus, after the 2026-09-05 catch-up - while the large GSV
+# cities run 8.0-8.4% (seattle-wa 14,603/183,682, chicago-il 22,985/272,755), because retired imagery is
+# permanent and ordinary. At 8.4% three in a row arrives about every 1,700 panos, so a source-blind breaker
+# would stop a healthy GSV city most nights. Keying it this way also means a new source (#110) declares its
+# own threshold rather than growing a second bespoke breaker.
+#
+# Three rather than one, for MAX_CONSECUTIVE_UNDERSIZED's reason (refetch_panos.py): one image legitimately
+# without a rendition is not impossible, three in a row is not that. The loop shuffles its candidates, so
+# even at a rate the measurement cannot rule out (under 0.033%, rule of three on 0/9,229) three adjacent
+# legitimate verdicts is not a run this fleet will see.
+MAX_CONSECUTIVE_PERMANENT_FAILURES = {'mapillary': 3}
+
+
+def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
+                             tripped_sources=None):
+    """Download every eligible pano, ledgering each permanent verdict, and return the log.csv counters.
+
+    @param tripped_sources An optional set the phase adds each breaker-tripped source to. An out-parameter
+        rather than a sixth return value on purpose: the returned tuple IS log.csv fields 7-11 and
+        log_analyzer reads those positionally, so widening it with a field that is not a log column is how a
+        transposition gets introduced - the trap TestEveryDownloadResultLandsInItsOwnCounter exists for.
+        (refetch_panos.refetch_pano takes `measurements` the same way, for the same reason.)
+    """
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
     # The attempted-pano ledger, in 'storage' alongside the pano results (see progress_check for semantics).
@@ -325,6 +360,11 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # Denominator = previously logged + panos we'll attempt this run, so it can never be exceeded.
     total_panos = prior_total + len(candidates)
     random.shuffle(candidates)
+
+    # Breaker state, per source and per run (#113). `tripped` is shared with the caller when it passed a set.
+    consecutive_permanent = {}
+    tripped = set() if tripped_sources is None else tripped_sources
+    breaker_skipped = 0
 
     # One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
     # The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that,
@@ -353,6 +393,12 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             # candidates is already filtered against the ledger; this still catches a duplicate id surviving
             # intake, which would otherwise be downloaded and ledgered twice.
             if pano_id in df_id_set:
+                continue
+            source = pano_info.get('source')
+            if source in tripped:
+                # Not attempted, not counted, not ledgered: the breaker's whole point is that this source's
+                # answers are not trustworthy tonight, so the pano comes back next run untouched (#41).
+                breaker_skipped += 1
                 continue
             if max_runtime_minutes is not None and run_start_monotonic is not None:
                 # time.monotonic, not the wall clock: an NTP step or DST transition must not stretch or shrink
@@ -383,6 +429,30 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 fail_count += 1
                 downloaded = None
                 logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
+
+            limit = MAX_CONSECUTIVE_PERMANENT_FAILURES.get(source)
+            if limit is not None:
+                # `downloaded == 0` is exactly the permanent verdict; 1 is any success or skip and None a
+                # transient failure, and both of those reset - a source still answering with anything else is
+                # not the wholesale-false-verdict condition this watches for.
+                if downloaded == 0:
+                    consecutive_permanent[source] = consecutive_permanent.get(source, 0) + 1
+                    if consecutive_permanent[source] >= limit:
+                        tripped.add(source)
+                        # Withheld deliberately, so tripping at 3 costs 2 false rows rather than 3: this
+                        # verdict is the evidence that the source has stopped answering honestly, and writing
+                        # off the pano that proved it is the one thing that must not happen.
+                        downloaded = None
+                        # Both channels, the depth phase's pattern: stdout is what cron mails tonight,
+                        # scrape.log is what is still there next week when the ledger is being repaired.
+                        logging.error("IMAGEDOWNLOAD: %d consecutive permanent failures from source %s. "
+                                      "Stopping ledgering it for the rest of this run; its remaining panos "
+                                      "are left unattempted and retry next run (#113).", limit, source)
+                        print("IMAGEDOWNLOAD: WARNING - %d consecutive permanent failures from source %s. "
+                              "That is a condition of the run, not of the panos, so nothing more from this "
+                              "source is ledgered tonight." % (limit, source))
+                else:
+                    consecutive_permanent[source] = 0
             total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
             if downloaded is not None:
@@ -393,6 +463,12 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
                   % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
             print("--- %s seconds ---" % (time.time() - start_time))
+
+    if tripped:
+        print("IMAGEDOWNLOAD: WARNING - breaker tripped for %s; %d pano(s) were left unattempted and nothing "
+              "was ledgered for them, so they retry next run. Check that source's credentials before the "
+              "next run, then look for false downloaded=0 rows in pano_id_log.csv."
+              % (', '.join(sorted(tripped)), breaker_skipped))
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -482,6 +558,10 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
     @param depth_pano_infos Every supported pano; the depth phase filters this to source == 'gsv' itself.
     @param min_depth_runtime Minutes of max_runtime_minutes reserved for the depth phase (see the flag's help).
+    @return The set of sources whose breaker tripped this run (#113), empty when none did. It rides back
+        rather than into log.csv: the row is 18 positional fields that log_analyzer parses by position, so a
+        19th would have to move LOG_COLUMNS and every production file's hand-written header in step, for an
+        alarm the exit code already delivers through scrape_queue and cron mail.
     """
     # The wall clock supplies the one thing it is good for - when this run happened, stamped with its offset
     # so a reader knows which clock that is (#101). Everything measuring an INTERVAL - the budgets (#51) and
@@ -519,6 +599,7 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
                   % (max_runtime_minutes,))
 
     fields = [log_timestamp(start_time)]
+    tripped_sources = set()
     try:
         # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below),
         # but its log.csv columns are stubbed with the values every production run has always written so the
@@ -534,7 +615,8 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
         # that only fires when --max-runtime is set, i.e. in the nightly cron and never in the suite.
         im_res = download_panorama_images(storage_location, image_pano_infos,
                                           run_start_monotonic=run_start_monotonic,
-                                          max_runtime_minutes=image_max_runtime)
+                                          max_runtime_minutes=image_max_runtime,
+                                          tripped_sources=tripped_sources)
         im_end_monotonic = time.monotonic()
         fields += [im_res[0], im_res[1], im_res[2], im_res[3], im_res[4],
                    _duration_minutes(xml_end_monotonic, im_end_monotonic)]
@@ -558,6 +640,7 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
         fields.append(_duration_minutes(run_start_monotonic, depth_end_monotonic))
     finally:
         write_log_csv_row(storage_location, fields)
+    return tripped_sources
 
 
 def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_panos=False, skip_depth=False,
@@ -567,6 +650,9 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
     main() owns argv parsing, directory creation, logging, and signal handling; this seam takes plain
     arguments (defaults mirror the flags') so tests can drive the real fetch -> filter -> phase orchestration
     in-process (#52.1).
+
+    @return run_scraper_and_log_results' set of breaker-tripped sources, which main() turns into its exit
+        code (#113).
     """
     # Access Project Sidewalk API to get Pano IDs for city
     print("Fetching pano-ids")
@@ -598,16 +684,18 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
     # Use pano_id list and associated info to gather panos from respective APIs
     print("Fetching Panoramas")
     try:
-        run_scraper_and_log_results(storage_location, image_pano_infos, pano_infos, skip_depth,
-                                    max_runtime_minutes=max_runtime_minutes,
-                                    max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime,
-                                    depth_block_latch=depth_block_latch)
+        tripped_sources = run_scraper_and_log_results(
+            storage_location, image_pano_infos, pano_infos, skip_depth,
+            max_runtime_minutes=max_runtime_minutes,
+            max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime,
+            depth_block_latch=depth_block_latch)
     except BaseException:
         # run_scraper_and_log_results's own finally has already written the evidence row; this puts the
         # traceback - otherwise stderr-only, the exact channel that dies with the container - into scrape.log
         # too (#49).
         logging.exception("Run failed")
         raise
+    return tripped_sources
 
 
 def main(argv=None):
@@ -615,6 +703,11 @@ def main(argv=None):
 
     Exceptions propagate (the interpreter prints the traceback and exits 1) and argparse errors exit 2,
     exactly as the pre-#52 module-scope script behaved.
+
+    Returns 1 when an image-source breaker tripped (#113) and 0 otherwise, so a run that stopped trusting a
+    source reads as a failed city to scrape_queue.py and reaches cron's mail-on-failure. Returned rather
+    than exited, so tests can drive the whole flow in-process - the shape scrape_queue.main and
+    CropRunner.main already use.
     """
     args = build_parser().parse_args(argv)
 
@@ -652,11 +745,13 @@ def main(argv=None):
 
     print("Starting run with pano list fetched from %s and destination path %s" % (args.d, args.s))
 
-    run(sidewalk_server_fqdn=args.d, storage_location=args.s, pano_metadata_csv=args.c,
-        all_panos=args.all_panos, skip_depth=args.skip_depth, max_runtime_minutes=args.max_runtime,
-        min_depth_runtime=args.min_depth_runtime, max_depth_requests=args.max_depth_requests,
-        depth_block_latch=args.depth_block_latch)
+    tripped_sources = run(sidewalk_server_fqdn=args.d, storage_location=args.s, pano_metadata_csv=args.c,
+                          all_panos=args.all_panos, skip_depth=args.skip_depth,
+                          max_runtime_minutes=args.max_runtime, min_depth_runtime=args.min_depth_runtime,
+                          max_depth_requests=args.max_depth_requests,
+                          depth_block_latch=args.depth_block_latch)
+    return 1 if tripped_sources else 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
