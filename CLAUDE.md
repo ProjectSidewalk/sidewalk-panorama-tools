@@ -35,6 +35,9 @@ python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days
 # One-off migrator for pre-v2 depth artifacts
 python3 migrate_depth_artifacts.py <storage-dir> [--dry-run]
 
+# One-off backfill of the display copy beside every wide pano (#115); idempotent, resumable. See docs/ops.md
+python3 downscale_panos.py <storage-dir> [--dry-run] [--max-runtime MINUTES] [--max-width PX]
+
 # One-off repair pass for fover-era panos (#73). Never backfills, never downgrades; see docs/ops.md
 python3 reports/scripts/pano_y_histogram.py <city-fqdn> --write-worklist
 python3 refetch_panos.py <storage-dir> (--worklist <csv.gz> | --from-store) [--dry-run] \
@@ -123,6 +126,8 @@ The README is a front door only; the reference material lives in `docs/` and eac
 
 **migrate_depth_artifacts.py** — offline, idempotent one-off that rewrites pre-v2 (x-mirrored, unversioned) depth artifacts into v2 column order. The scraper never revisits an existing artifact, so a store scraped before #58 keeps mirrored artifacts forever without this.
 
+**downscale_panos.py** (#115) — offline, idempotent, resumable backfill of the display copy `downloaders.common.write_downscaled_sidecar*` writes: `<pano_id>.w8192.jpg` beside every pano wider than the viewer's cap. Judges each pano from two JPEG headers (its own and its sidecar's), so a finished store decodes nothing; `--max-runtime` leaves the rest counted as `unreached`. The web app serves the sidecar in place of the native file and never cuts one itself — doing so OOM-killed prod JVMs (SidewalkWebpage#5239). Never fatal in the downloaders: a failed sidecar is logged and the native pano stays a success, because the native file is already the resume marker.
+
 **refetch_panos.py** — offline, idempotent one-off that re-fetches panos downloaded while the CBK URL carried `fover` (#73), recovering the polar-band resolution it cost. Same problem shape as the depth migrator — the scraper short-circuits on file existence, so nothing on the store is ever revisited — but with an inverted risk: the depth migrator rewrites an artifact it can fully reconstruct, while this one **replaces imagery that may be irreplaceable**, since ~52% of labelled panos no longer exist at Google. **The `fover` pass itself does not run** (decided 2026-09-05, `reports/2026-09-05-fover-refetch-pilot.md`): the 512-px polar bodies CBK serves without `fover` are server-side upscales of the 256-px ones, so there was never resolution to recover, and a quarter of the panos Google still serves have been re-rendered since scrape. The tool stays as a general, tested repair pass.
 1. Work-list in, from `reports/scripts/pano_y_histogram.py --write-worklist` (panos with a label in a half-res band, ~7.5% of Seattle's labelled panos) or `--from-store`. Read with `csv`+`gzip`, never pandas — same #46 reasoning as `progress_check`.
 2. `decide_without_fetching()` resolves `absent`/`unreadable`/`not_affected`/`already_clean`/`dims_changed` from the store alone, at **zero requests**, on every run — none of the five is ledgered. That is what makes a pass affordable, makes a re-run after a finished sweep free even if the ledger is lost (a repaired file's mtime is past `--fixed-after`), and means a wrong `--fixed-after` or a later `--allow-dims-change` can be corrected by re-running rather than by scrubbing rows. The `already_clean` gate is mtime-only, so it is load-bearing: a copy that reset mtimes makes every pano `already_clean`.
@@ -139,6 +144,7 @@ Everything lives under the storage root, with two-char pano-id prefix sharding:
 |------|------|
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | Depth artifact (see below) |
+| `<pano_id[:2]>/<pano_id>.w8192.jpg` | Display copy of a pano wider than 8192 px (#115): the viewer's one-texture cap. Written by both downloaders beside the pano, backfilled by `downscale_panos.py`, and excluded by name from every walker that lists `*.jpg` |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded` |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 18-column row per run |

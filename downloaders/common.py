@@ -1,7 +1,10 @@
 import contextlib
 import enum
 import os
+import re
 import struct
+
+from PIL import Image
 
 # Start-of-frame markers whose payload carries the image dimensions. DHT/DAC/RST/SOS are excluded;
 # 0xC4/0xC8/0xCC look like SOF numerically and are not.
@@ -103,3 +106,92 @@ def atomic_output_path(final_path, mode=0o664):
         except OSError:
             pass
         raise
+
+
+# --- Display copies of wide panoramas (#115) -------------------------------------------------------------
+#
+# The Project Sidewalk web app shows a stored pano through Pannellum, which renders an equirectangular image
+# as ONE WebGL texture, and 8192 px is a common MAX_TEXTURE_SIZE. A wider pano - newer GSV is 16384 x 8192,
+# Richmond's Mapillary imagery 11000 - is therefore displayable only through a copy at this width. The copy
+# is written here, beside the native file, because this is where the full raster already is: the web app
+# tried cutting it nightly from the stored JPEG and OOM-killed its own JVMs (SidewalkWebpage#5239). ImageIO
+# has no DCT-domain scaling and re-decodes the file once per strip, ~10 s and ~400 MB of heap per pano,
+# inside a 1.5 GB web-app heap; Pillow's draft() decodes straight to half size in 0.8 s and ~150 MB.
+#
+# The width is in the file name, so a change of cap is a new sidecar rather than an ambiguous overwrite,
+# and the web app looks for exactly the name its own configured cap produces. Every walker that lists the
+# store's `*.jpg` has to ask is_downscaled_sidecar(), or a sidecar's stem is taken for a pano id.
+DOWNSCALED_MAX_WIDTH = 8192
+
+#: Display copies are looked at in a viewer, never cut from: crops always come from the native file.
+DOWNSCALED_JPEG_QUALITY = 85
+
+_SIDECAR_SUFFIX = re.compile(r'\.w(\d+)\.jpg$')
+
+
+def downscaled_sidecar_path(pano_path, max_width=None):
+    """'<pano stem>.w<max_width>.jpg', beside the pano."""
+    if max_width is None:
+        max_width = DOWNSCALED_MAX_WIDTH
+    stem, _ = os.path.splitext(pano_path)
+    return '%s.w%d.jpg' % (stem, max_width)
+
+
+def is_downscaled_sidecar(filename):
+    """Whether a store filename is a display copy rather than a panorama."""
+    return _SIDECAR_SUFFIX.search(os.path.basename(filename)) is not None
+
+
+def downscaled_size(width, height, max_width):
+    """The size of a `max_width`-wide copy of a width x height image: aspect kept, never upscaled."""
+    if width <= max_width:
+        return width, height
+    return max_width, max(1, int(round(height * max_width / float(width))))
+
+
+def _write_reduced(image, size, path, quality):
+    reduced = image if image.size == size else image.resize(size, Image.BOX)
+    with atomic_output_path(path) as tmp_path:
+        reduced.save(tmp_path, 'jpeg', quality=quality)
+    return path
+
+
+def write_downscaled_sidecar(image, pano_path, max_width=None, quality=None):
+    """Write the display copy of an in-memory pano, or nothing when it is already narrow enough.
+
+    Area-averaged (Image.BOX): each output pixel is the mean of the source pixels it covers - the right
+    filter for a large reduction and, at the 2:1 GSV case, exactly the 2 x 2 block mean.
+
+    @return The sidecar's path, or None when no copy was needed.
+    """
+    max_width = DOWNSCALED_MAX_WIDTH if max_width is None else max_width
+    quality = DOWNSCALED_JPEG_QUALITY if quality is None else quality
+    if image.width <= max_width:
+        return None
+    return _write_reduced(image, downscaled_size(image.width, image.height, max_width),
+                          downscaled_sidecar_path(pano_path, max_width), quality)
+
+
+def write_downscaled_sidecar_from_file(pano_path, max_width=None, quality=None):
+    """The same copy, from a pano on disk: what the backfill and the Mapillary path use.
+
+    `Image.draft` asks libjpeg to decode in the DCT domain at the largest power-of-two reduction that still
+    meets the target, so a 16384-wide pano is decoded straight to 8192 and the full raster never exists -
+    measured on a real 16384 x 8192 pano at 0.8 s and ~150 MB, against 2.3 s and ~900 MB for a full decode.
+    BOX then covers whatever draft could not reach exactly (11000 -> 8192 decodes at full size).
+
+    @return The sidecar's path, or None when the pano is not wider than the cap.
+    @raise  ValueError when the file is not a readable JPEG; the caller decides what that means.
+    """
+    max_width = DOWNSCALED_MAX_WIDTH if max_width is None else max_width
+    quality = DOWNSCALED_JPEG_QUALITY if quality is None else quality
+    dims = jpeg_dimensions(pano_path)
+    if dims is None:
+        raise ValueError('%s is not a readable JPEG' % pano_path)
+    if dims[0] <= max_width:
+        return None
+    size = downscaled_size(dims[0], dims[1], max_width)
+    with Image.open(pano_path) as image:
+        image.draft('RGB', size)
+        image.load()
+        return _write_reduced(image, size, downscaled_sidecar_path(pano_path, max_width), quality)

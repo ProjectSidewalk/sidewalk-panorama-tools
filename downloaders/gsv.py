@@ -45,7 +45,7 @@ except ImportError:
     depth_start_interval = depth_min_request_interval
     depth_max_request_interval = 30.0
 
-from .common import DownloadResult, atomic_output_path
+from .common import DownloadResult, atomic_output_path, write_downscaled_sidecar
 
 
 def _normalize_proxies(raw):
@@ -498,6 +498,19 @@ def fetch_pano_image(pano_id, width, height, zoom):
     return StitchedPano(image, degraded, upscaled)
 
 
+def _write_display_copy(image, out_image_name, pano_id):
+    """The viewer's copy of a pano too wide for one WebGL texture (#115), beside the native file.
+
+    Never fatal. The native file is already in place and IS the resume marker, so raising here would turn a
+    downloaded pano into a transient failure: re-attempted next run, skipped at the exists() check, and no
+    sidecar ever written. Logged instead, and downscale_panos.py's sweep heals the gap.
+    """
+    try:
+        write_downscaled_sidecar(image, out_image_name)
+    except Exception as e:
+        logging.error("IMAGEDOWNLOAD: pano %s: display copy not written: %r", pano_id, e)
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
 
@@ -530,6 +543,7 @@ def download_single_pano(storage_path, pano_info):
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:
         stitched.image.save(tmp_path, 'jpeg')
+    _write_display_copy(stitched.image, out_image_name, pano_id)
 
     # log.csv column 8 (#52 item 2): the JPEG on disk holds less imagery than its dimensions advertise. See
     # fetch_pano_image for why the test is not `zoom == 3`.

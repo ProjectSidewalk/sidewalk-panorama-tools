@@ -12,7 +12,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .common import DownloadResult, atomic_output_path, jpeg_dimensions
+from .common import DownloadResult, atomic_output_path, jpeg_dimensions, write_downscaled_sidecar_from_file
 
 GRAPH_API_BASE = 'https://graph.mapillary.com'
 TOKEN_ENV_VAR = 'MAPILLARY_ACCESS_TOKEN'
@@ -298,4 +298,11 @@ def download_single_pano(storage_path, pano_info):
             # a short read raises out of iter_content before this line, and the .part never lands.
             if jpeg_dimensions(tmp_path) is None:
                 raise MapillaryErrorResponse("Mapillary image response for %s was not a JPEG" % pano_id)
+    # The display copy for a pano wider than one WebGL texture (#115). From the file rather than a raster -
+    # this path never decodes the image - and never fatal, for the reason gsv._write_display_copy gives:
+    # the native file is already the resume marker, and downscale_panos.py heals a missing sidecar.
+    try:
+        write_downscaled_sidecar_from_file(out_image_name)
+    except Exception as e:
+        logging.error("Mapillary pano %s: display copy not written: %r", pano_id, e)
     return DownloadResult.success
