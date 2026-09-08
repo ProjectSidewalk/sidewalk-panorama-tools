@@ -59,7 +59,7 @@ import time
 from collections import Counter
 
 from downloaders import gsv
-from downloaders.common import atomic_output_path, jpeg_dimensions
+from downloaders.common import atomic_output_path, jpeg_dimensions, is_downscaled_sidecar
 
 # The band was only ever a zoom-5 effect: a panorama whose own max zoom is 3 or 4 was served at full size at
 # every level (measured on a 2007 DC panorama in reports/2026-08-07-cbk-tile-resolution.md, finding 1). So a
@@ -265,9 +265,9 @@ def walk_store(storage_path):
 
     Only `<storage_path>/<2 chars>/<id>.jpg` with the shard matching id[:2] counts - the layout
     download_single_pano writes and _stored_path reads back. Anything else carrying a .jpg suffix under the
-    root (a crops tree, a stray file at the top level) is not a panorama, and listing it would hand
-    decide_without_fetching an id whose reconstructed path does not exist: an `absent` for something that
-    was never a pano, one summary line of noise per file.
+    root (a crops tree, a stray file at the top level, a `.w8192.jpg` display copy beside its pano, #115) is
+    not a panorama, and listing it would hand decide_without_fetching an id whose reconstructed path does
+    not exist: an `absent` for something that was never a pano, one summary line of noise per file.
     """
     rows = []
     for shard in sorted(os.listdir(storage_path)):
@@ -275,7 +275,7 @@ def walk_store(storage_path):
         if len(shard) != 2 or not os.path.isdir(shard_path):
             continue
         for filename in sorted(os.listdir(shard_path)):
-            if filename.endswith('.jpg') and filename[:2] == shard:
+            if filename.endswith('.jpg') and filename[:2] == shard and not is_downscaled_sidecar(filename):
                 rows.append({'pano_id': filename[:-len('.jpg')]})
     return rows
 

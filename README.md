@@ -20,6 +20,7 @@ out of the panorama. It runs unattended every night, per city, across ~50 deploy
 | [`log_analyzer/analyze.py`](docs/log-analyzer.md) | Watches the nightly run across every city and exits nonzero when one looks broken. |
 | [`migrate_depth_artifacts.py`](docs/depth.md#migrating-a-pre-v2-store) | One-off, idempotent rewrite of depth artifacts written before the v2 format. |
 | [`refetch_panos.py`](docs/ops.md#repairing-fover-era-panoramas) | One-off, idempotent re-fetch of panoramas downloaded at half resolution, replacing one only when the replacement is strictly better. |
+| [`downscale_panos.py`](docs/ops.md#display-copies-of-wide-panoramas) | One-off, idempotent backfill of the 8192 px display copy the scraper now writes beside every wider panorama. |
 
 ## Quick start
 
@@ -77,6 +78,7 @@ One directory per city, sharded by the first two characters of the pano id:
 |---|---|
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | Depth artifact |
+| `<pano_id[:2]>/<pano_id>.w8192.jpg` | Display copy of a panorama wider than 8192 px |
 | `pano_id_log.csv` | Image ledger — a row means the outcome is permanent |
 | `depth_log.csv` | Depth ledger — likewise |
 | `log.csv` | One 18-column row per run |

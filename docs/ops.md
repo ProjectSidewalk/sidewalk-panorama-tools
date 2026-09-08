@@ -11,6 +11,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 |---|---|
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | [Depth artifact](depth.md#the-artifact) |
+| `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded` |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 18-column row per run |
@@ -24,6 +25,40 @@ order, and how long each city took — which no per-city log can, because none o
 
 `scrape.log` lives here rather than in the working directory on purpose: cron runs the scraper from whatever
 directory it likes, and a relative path scatters every per-pano failure detail somewhere nobody looks.
+
+### Display copies of wide panoramas
+
+The Project Sidewalk web app shows a stored panorama through Pannellum, which renders it as **one WebGL
+texture**, and 8192 px is a common `MAX_TEXTURE_SIZE`. A wider panorama — newer GSV imagery is 16384 × 8192,
+Richmond's Mapillary imagery 11000 — is therefore displayable only through a copy at that width. Both
+downloaders write it as a sidecar beside every wider panorama they store, `<pano_id>.w8192.jpg`, through the
+same `.part`-and-rename path as the panorama itself; a store that predates the sidecar is backfilled with
+
+```bash
+python3 downscale_panos.py <storage-dir> --dry-run          # count the missing copies, write nothing
+python3 downscale_panos.py <storage-dir>                    # write them
+python3 downscale_panos.py <storage-dir> --max-runtime 240  # a nightly-sized slice; the rest report as unreached
+```
+
+The copy is written here, not by the web app, because this is where the full raster already is. The app
+tried cutting it nightly from the stored JPEG and OOM-killed its own JVMs
+([SidewalkWebpage#5239](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5239)): Java's ImageIO has
+no DCT-domain scaling and re-decodes the file once per strip, ~10 s and ~400 MB of heap per panorama inside a
+1.5 GB web-app heap. Pillow's `draft()` decodes a 16384-wide JPEG straight to half size in 0.8 s and ~150 MB,
+which is what the backfill uses; the downloaders resize the raster they already hold.
+
+Three things about the sidecar are load-bearing:
+
+* **The width is in the name.** The web app looks for exactly the name its own configured cap produces
+  (`pano.downscaled.max-width`, 8192), and checks the header before serving it, so a change of cap is a new
+  sidecar rather than an ambiguous overwrite — change `DOWNSCALED_MAX_WIDTH` in `downloaders/common.py` and
+  the app's setting together, then re-run the backfill.
+* **A sidecar is never a panorama.** Everything that lists `*.jpg` in a shard — `refetch_panos.py
+  --from-store`, the backfill's own walk — excludes it by name (`is_downscaled_sidecar`). The cropper never
+  sees one: crops are always cut from the native file, by exact path.
+* **A failed sidecar never fails the panorama.** By the time it is written the native file is in place and is
+  the [resume marker](#resume-ledgers); raising would re-attempt the pano every night, skip it at the exists()
+  check, and never write the copy. The failure is logged to `scrape.log`, and the backfill heals it.
 
 ## Resume ledgers
 
