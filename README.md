@@ -20,7 +20,7 @@ out of the panorama. It runs unattended every night, per city, across ~50 deploy
 | [`log_analyzer/analyze.py`](docs/log-analyzer.md) | Watches the nightly run across every city and exits nonzero when one looks broken. |
 | [`migrate_depth_artifacts.py`](docs/depth.md#migrating-a-pre-v2-store) | One-off, idempotent rewrite of depth artifacts written before the v2 format. |
 | [`refetch_panos.py`](docs/ops.md#repairing-fover-era-panoramas) | One-off, idempotent re-fetch of panoramas downloaded at half resolution, replacing one only when the replacement is strictly better. |
-| [`downscale_panos.py`](docs/ops.md#display-copies-of-wide-panoramas) | One-off, idempotent backfill of the 8192 px display copy the scraper now writes beside every wider panorama. |
+| [`downscale_panos.py`](docs/ops.md#display-copies-of-wide-panoramas) | Idempotent repair pass for the 8192 px display copy the scraper writes beside every wider panorama: backfills a store that predates it, and heals any copy a night failed to write. |
 
 ## Quick start
 

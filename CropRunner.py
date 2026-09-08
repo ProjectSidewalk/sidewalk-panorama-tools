@@ -28,13 +28,12 @@ from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from downloaders.common import atomic_output_path
+from downloaders.common import atomic_output_path, raise_decompression_bomb_ceiling  # noqa: F401
 
-# The largest panos our own downloader writes are 16384x8192 = 134 MP, over Pillow's 89 MP
-# DecompressionBombWarning default; bulk_extract_crops raises the ceiling to this rather than warning once
-# per modern pano (or hard-failing at 2x the threshold). Kept as a named constant, not None: the store is
-# trusted, but "no limit at all" would also swallow a genuinely corrupt header claiming absurd dimensions.
-_MAX_PANO_PIXELS = 16384 * 8192
+# raise_decompression_bomb_ceiling is imported, not defined here, and re-exported under this module's name so
+# `CropRunner.raise_decompression_bomb_ceiling()` keeps working for reports/scripts/annotation_tiles.py and
+# crop_sizing_v2.py. It moved to downloaders/common.py with #115, when DownloadRunner needed the same policy
+# for the Mapillary display copy and CropRunner stopped being the only entry point that opens a 134 MP file.
 
 # What the crop loop actually reads off every label row. Only the CSV intake enforces them up front (a
 # header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake keeps
@@ -103,18 +102,6 @@ CROP_MAX_STORED_WIDTH = 1440
 
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
-
-
-def raise_decompression_bomb_ceiling():
-    """Let Pillow decode our own 134 MP panos without a DecompressionBombWarning on every one.
-
-    Process-level policy, so main() calls it and bulk_extract_crops does not: this rewrites a PIL global
-    that belongs to whoever imported us, and since #52.1 that can be another program. A library caller
-    who wants the ceiling calls this itself; one who doesn't gets a warning, not a failure (Pillow only
-    hard-fails above 2x the threshold, and 134 MP is under 2x the 89 MP default).
-    """
-    if Image.MAX_IMAGE_PIXELS is not None and Image.MAX_IMAGE_PIXELS < _MAX_PANO_PIXELS:
-        Image.MAX_IMAGE_PIXELS = _MAX_PANO_PIXELS
 
 
 def build_parser():

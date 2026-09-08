@@ -18,6 +18,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from downloaders import DownloadResult, download_pano, gsv, mapillary
+from downloaders.common import raise_decompression_bomb_ceiling
 
 
 def _reservation_minutes(value):
@@ -626,6 +627,12 @@ def main(argv=None):
     if args.min_depth_runtime > 0 and (args.max_runtime is None or args.skip_depth):
         print("WARNING: --min-depth-runtime has no effect %s; no time will be reserved for the depth phase."
               % ("with --skip-depth" if args.skip_depth else "without --max-runtime"))
+
+    # Process-level policy, the same one CropRunner sets: the Mapillary display copy (#115) re-opens the
+    # panorama it just wrote, and a Mapillary equirect over Pillow's 89 MP default would otherwise warn on
+    # every one - or, past 2x that, raise, which _write_display_copy swallows into "no sidecar, ever" for
+    # exactly the widest images. The GSV path never needs it (its raster is built in memory, not decoded).
+    raise_decompression_bomb_ceiling()
 
     # exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
     os.makedirs(args.s, exist_ok=True)

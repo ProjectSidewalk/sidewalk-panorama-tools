@@ -59,7 +59,8 @@ import time
 from collections import Counter
 
 from downloaders import gsv
-from downloaders.common import atomic_output_path, jpeg_dimensions, is_downscaled_sidecar
+from downloaders.common import (atomic_output_path, jpeg_dimensions, walk_store_panos,
+                                write_downscaled_sidecar)
 
 # The band was only ever a zoom-5 effect: a panorama whose own max zoom is 3 or 4 was served at full size at
 # every level (measured on a 2007 DC panorama in reports/2026-08-07-cbk-tile-resolution.md, finding 1). So a
@@ -263,21 +264,14 @@ def read_worklist(path):
 def walk_store(storage_path):
     """Every stored panorama, as work-list records with no dims (the stored header is the source).
 
-    Only `<storage_path>/<2 chars>/<id>.jpg` with the shard matching id[:2] counts - the layout
-    download_single_pano writes and _stored_path reads back. Anything else carrying a .jpg suffix under the
-    root (a crops tree, a stray file at the top level, a `.w8192.jpg` display copy beside its pano, #115) is
-    not a panorama, and listing it would hand decide_without_fetching an id whose reconstructed path does
-    not exist: an `absent` for something that was never a pano, one summary line of noise per file.
+    The filter itself is downloaders.common.walk_store_panos - one definition, shared with the #115 backfill,
+    because what it excludes is easy for a second copy to forget. Anything carrying a .jpg suffix under the
+    root that is not `<2 chars>/<id>.jpg` (a crops tree, a stray file at the top level, a `.w8192.jpg`
+    display copy beside its pano) is not a panorama, and listing it would hand decide_without_fetching an id
+    whose reconstructed path does not exist: an `absent` for something that was never a pano, one summary
+    line of noise per file.
     """
-    rows = []
-    for shard in sorted(os.listdir(storage_path)):
-        shard_path = os.path.join(storage_path, shard)
-        if len(shard) != 2 or not os.path.isdir(shard_path):
-            continue
-        for filename in sorted(os.listdir(shard_path)):
-            if filename.endswith('.jpg') and filename[:2] == shard and not is_downscaled_sidecar(filename):
-                rows.append({'pano_id': filename[:-len('.jpg')]})
-    return rows
+    return [{'pano_id': os.path.basename(path)[:-len('.jpg')]} for path in walk_store_panos(storage_path)]
 
 
 def load_ledger(ledger_path):
@@ -393,6 +387,27 @@ def decide_without_fetching(storage_path, record, fixed_after, allow_dims_change
     return None, stored_dims
 
 
+def _refresh_display_copy(storage_path, pano_id, image):
+    """Rewrite the #115 display copy from the imagery that just replaced the panorama's.
+
+    Without this the sidecar is silently stale FOREVER, and nothing on the store can tell: every gate above
+    refuses a swap that changes the frame (`frame_grew`, `dims_changed`), so the replacement has exactly the
+    stored file's dimensions, so the sidecar keeps the width its name promises and downscale_panos' sweep
+    reads it as current on every later pass. The viewer would go on serving a copy cut from precisely the
+    imagery this pass was run to replace. Same shape as the crops this tool does not re-cut - but a crop is
+    a separate artifact a human decides to re-cut, while the sidecar is a pure function of the panorama, and
+    the raster it is a function of is in hand right here for nothing.
+
+    Never fatal, and for a sharper reason than in the downloaders: the swap has ALREADY landed. Raising here
+    would leave the panorama unledgered, so the next run would spend another ~512 tile requests to redo a
+    replacement that is already on disk. A stale sidecar the sweep can heal is much the cheaper failure.
+    """
+    try:
+        write_downscaled_sidecar(image, _stored_path(storage_path, pano_id))
+    except Exception as e:
+        logging.error("REFETCH: pano %s: display copy not rewritten after the swap: %r", pano_id, e)
+
+
 def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measurements):
     """Fetch one panorama and swap it in if the replacement is strictly better.
 
@@ -456,6 +471,7 @@ def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measureme
 
     with atomic_output_path(_stored_path(storage_path, pano_id)) as tmp_path:
         stitched.image.save(tmp_path, 'jpeg')
+    _refresh_display_copy(storage_path, pano_id, stitched.image)
     if recovery is not None:
         measurements.append(recovery)
     return 'replaced'

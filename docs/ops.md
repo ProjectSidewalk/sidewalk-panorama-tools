@@ -40,6 +40,13 @@ python3 downscale_panos.py <storage-dir>                    # write them
 python3 downscale_panos.py <storage-dir> --max-runtime 240  # a nightly-sized slice; the rest report as unreached
 ```
 
+**Budget the disk before the sweep, per city.** A display copy is not a thumbnail: measured on the committed
+`samples/sample_pano.jpg` (13312 × 6656, 6.08 MB), the 8192-wide copy is **3.82 MB — 63% of the native file**
+at the `DOWNSCALED_JPEG_QUALITY` of 85 (2.82 MB, 46%, at 75). Nearly every modern panorama is over the cap, so
+running the backfill across the fleet is close to a **+60% commitment on the whole store**, taken all at once
+and never given back. `--dry-run` prints the count of copies it would write, which is the number to multiply
+before starting; check `df` on the store first.
+
 The copy is written here, not by the web app, because this is where the full raster already is. The app
 tried cutting it nightly from the stored JPEG and OOM-killed its own JVMs
 ([SidewalkWebpage#5239](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5239)): Java's ImageIO has
@@ -59,6 +66,21 @@ Three things about the sidecar are load-bearing:
 * **A failed sidecar never fails the panorama.** By the time it is written the native file is in place and is
   the [resume marker](#resume-ledgers); raising would re-attempt the pano every night, skip it at the exists()
   check, and never write the copy. The failure is logged to `scrape.log`, and the backfill heals it.
+
+**The backfill is a repair pass, not a one-off.** `download_single_pano` returns `skipped` at its `exists()`
+check *before* the sidecar code, so a copy that failed to write tonight — a full disk, a dropped mount — is
+never retried by the scraper: the panorama is already there next run. That is the right trade (a `stat` per
+panorama per night over sshfs is not free), but it means a `display copy not written` line in `scrape.log` is
+only ever cleared by running `downscale_panos.py` again. Re-run it after any night that logged one, and after
+any [`fover` repair pass](#repairing-fover-era-panoramas).
+
+**A repaired panorama's copy is rewritten with it.** `refetch_panos.py` swaps the native bytes only under an
+unchanged frame, so a stale sidecar would keep the width its name promises and read as current to the sweep
+for ever — the viewer would go on serving a copy of exactly the imagery the repair replaced. The repair
+therefore rewrites the copy from the raster it already holds (`_refresh_display_copy`), and never fails the
+swap over it: the panorama is already on disk at that point, and re-fetching it would cost ~512 requests to
+redo work that has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
+`refetch_log.csv`.
 
 ## Resume ledgers
 

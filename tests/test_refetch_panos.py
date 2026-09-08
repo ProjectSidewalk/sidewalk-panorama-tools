@@ -28,8 +28,9 @@ for _p in (REPO_ROOT, SCRIPTS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import downscale_panos  # noqa: E402
 import refetch_panos as rp  # noqa: E402
-from downloaders import gsv  # noqa: E402
+from downloaders import common, gsv  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
 
@@ -1234,3 +1235,178 @@ class TestTheCommandLineSurface:
                 if handler not in before:
                     handler.close()
                     root.removeHandler(handler)
+
+
+# --- the #115 display copy across a repair ----------------------------------------------------------------
+
+class TestTheDisplayCopyFollowsTheSwap:
+    """A swap that leaves the sidecar behind is silently wrong FOR EVER, and that is the whole point.
+
+    Every gate above refuses a swap that changes the frame, so a stale copy keeps exactly the width its name
+    promises, and downscale_panos' sweep - which judges from headers, because a decode per panorama is the
+    cost it exists to avoid - reads it as current on every later pass. The viewer would go on serving a copy
+    cut from precisely the imagery this pass was run to replace. Asserted on the copy's PIXELS, not on its
+    size or its mtime: at the right size with the wrong content is the only failure that can happen here.
+    """
+
+    CAP = 1024
+    DIMS = (2048, 1024)
+    OLD = (200, 20, 20)
+    NEW = (10, 200, 10)      # what stub_seams' default fetch returns
+
+    @pytest.fixture
+    def small_cap(self, monkeypatch):
+        """The production cap, read at call time, so refetch_panos sees it without threading a parameter."""
+        monkeypatch.setattr(common, 'DOWNSCALED_MAX_WIDTH', self.CAP)
+
+    def sidecar_path(self, pano_path):
+        return common.downscaled_sidecar_path(pano_path, self.CAP)
+
+    def store(self, tmp_path, dims=None, with_sidecar=True):
+        """A fover-era panorama plus the display copy a nightly run or the sweep would have left beside it."""
+        dims = dims or self.DIMS
+        path = store_with_pano(tmp_path, dims=dims, color=self.OLD)
+        sidecar = self.sidecar_path(path)
+        if with_sidecar and dims[0] > self.CAP:
+            Image.new('RGB', (self.CAP, self.CAP * dims[1] // dims[0]), self.OLD).save(sidecar, 'JPEG')
+        return path, sidecar
+
+    def swap(self, tmp_path, monkeypatch, dims=None, **kwargs):
+        stub_seams(monkeypatch, **kwargs)
+        return rp.refetch_pano(str(tmp_path), {'pano_id': PANO}, dims or self.DIMS,
+                               rp.MAX_BLACK_FRACTION, False, [])
+
+    def assert_copy_shows(self, sidecar, color):
+        with Image.open(sidecar) as copy:
+            assert copy.size == (self.CAP, self.CAP // 2)
+            for xy in ((10, 10), (self.CAP // 2, self.CAP // 4), (self.CAP - 10, self.CAP // 2 - 10)):
+                assert copy.getpixel(xy) == pytest.approx(color, abs=8)
+
+    def test_a_swap_rewrites_the_copy_from_the_NEW_imagery(self, tmp_path, monkeypatch, small_cap):
+        pano, sidecar = self.store(tmp_path)
+        self.assert_copy_shows(sidecar, self.OLD)
+
+        assert self.swap(tmp_path, monkeypatch) == 'replaced'
+
+        self.assert_copy_shows(sidecar, self.NEW)
+        assert list((tmp_path / PANO[:2]).glob('*.part')) == []
+
+    def test_a_swap_writes_the_copy_a_store_was_missing(self, tmp_path, monkeypatch, small_cap):
+        """A repair pass over a store that predates #115 leaves it no worse off than the sweep would."""
+        pano, sidecar = self.store(tmp_path, with_sidecar=False)
+        assert not os.path.exists(sidecar)
+
+        assert self.swap(tmp_path, monkeypatch) == 'replaced'
+
+        self.assert_copy_shows(sidecar, self.NEW)
+
+    def test_a_panorama_under_the_cap_gets_no_copy(self, tmp_path, monkeypatch, small_cap):
+        narrow = (self.CAP, self.CAP // 2)
+        pano, sidecar = self.store(tmp_path, dims=narrow)
+
+        assert self.swap(tmp_path, monkeypatch, dims=narrow) == 'replaced'
+
+        assert not os.path.exists(sidecar)
+        assert sorted(os.listdir(tmp_path / PANO[:2])) == [PANO + '.jpg']
+
+    @pytest.mark.parametrize('outcome, seams', [
+        ('gone', dict(resolve=lambda info: None)),
+        ('frame_grew', dict(covers=False)),
+        ('upscaled', dict(fetch=lambda p, w, h, z: gsv.StitchedPano(
+            Image.new('RGB', (w, h), (1, 2, 3)), 0, True))),
+        ('undersized', dict(fetch=lambda p, w, h, z: gsv.StitchedPano(
+            Image.new('RGB', (w, h), (1, 2, 3)), 7, False))),
+        ('too_black', dict(fetch=lambda p, w, h, z: gsv.StitchedPano(
+            Image.new('RGB', (w, h), (0, 0, 0)), 0, False))),
+    ])
+    def test_every_refusal_leaves_the_copy_byte_for_byte_alone(self, tmp_path, monkeypatch, small_cap,
+                                                               outcome, seams):
+        """The sidecar joins the property this whole file exists for: only `replaced` touches the store.
+
+        A refusal that rewrote the copy would be worse than useless - it would replace a copy of the stored
+        imagery with a copy of imagery the tool had just decided was not good enough to keep.
+        """
+        pano, sidecar = self.store(tmp_path)
+        before = open(sidecar, 'rb').read()
+        pano_before = open(pano, 'rb').read()
+
+        assert self.swap(tmp_path, monkeypatch, **seams) == outcome
+
+        assert open(sidecar, 'rb').read() == before
+        assert open(pano, 'rb').read() == pano_before
+
+    def test_a_copy_that_cannot_be_written_does_not_undo_the_swap(self, tmp_path, monkeypatch, small_cap,
+                                                                  caplog):
+        """Never fatal, and for a sharper reason than in the downloaders: the swap has ALREADY landed.
+
+        Raising would leave the panorama unledgered, so the next run would spend another ~512 tile requests
+        redoing a replacement that is on disk. A stale copy the sweep can heal is much the cheaper failure.
+        """
+        pano, sidecar = self.store(tmp_path)
+
+        def refuse(image, pano_path, max_width=None, quality=None):
+            raise OSError(28, 'No space left on device')
+
+        monkeypatch.setattr(rp, 'write_downscaled_sidecar', refuse)
+        with caplog.at_level(logging.ERROR):
+            outcome = self.swap(tmp_path, monkeypatch)
+
+        assert outcome == 'replaced'
+        with Image.open(pano) as new_pano:
+            assert new_pano.size == self.DIMS      # the replacement really is on disk
+        self.assert_copy_shows(sidecar, self.OLD)  # and the copy is merely stale, not corrupt
+        assert 'display copy not rewritten' in caplog.text
+        assert PANO in caplog.text
+
+    def test_the_copy_is_not_written_when_the_panorama_save_fails(self, tmp_path, monkeypatch, small_cap):
+        """Ordering, and the only way to see it: fail the PANORAMA's save while letting the copy's succeed.
+
+        A stub that fails every save cannot tell the two orderings apart - the copy's own write raises too,
+        and _refresh_display_copy swallows it either way. Failing only the panorama makes the difference
+        visible: refreshed first, the store would hold a copy of imagery that never landed, which is worse
+        than the stale copy because its size makes it look freshly correct to the sweep.
+        """
+        pano, sidecar = self.store(tmp_path)
+        before = open(sidecar, 'rb').read()
+        real_save = Image.Image.save
+
+        def only_the_panorama_fails(self, fp, *args, **kwargs):
+            if str(fp).endswith(PANO + '.jpg.part'):
+                raise OSError(28, 'No space left on device')
+            return real_save(self, fp, *args, **kwargs)
+
+        monkeypatch.setattr(Image.Image, 'save', only_the_panorama_fails)
+        with pytest.raises(OSError):
+            self.swap(tmp_path, monkeypatch)
+
+        assert open(sidecar, 'rb').read() == before, 'the copy must not outrun the imagery it is a copy of'
+        assert list((tmp_path / PANO[:2]).glob('*.part')) == []
+
+    def test_the_recovery_measurement_still_lands_after_the_copy_is_written(self, tmp_path, monkeypatch,
+                                                                           small_cap):
+        """_refresh_display_copy sits between the swap and measurements.append, so a version of it that
+        raised would silently drop the pilot's record for every panorama it repaired."""
+        pano, sidecar = self.store(tmp_path, dims=self.DIMS, with_sidecar=False)
+        Image.new('RGB', (16, 8), self.OLD).save(pano, 'JPEG')   # a real, decodable old frame
+
+        monkeypatch.setattr(rp, 'measure_recovery', lambda old, new: {'stub': True})
+        measurements = []
+        stub_seams(monkeypatch)
+        outcome = rp.refetch_pano(str(tmp_path), {'pano_id': PANO}, self.DIMS, rp.MAX_BLACK_FRACTION,
+                                  True, measurements)
+
+        assert outcome == 'replaced'
+        assert [m['pano_id'] for m in measurements] == [PANO]
+        self.assert_copy_shows(sidecar, self.NEW)
+
+    def test_a_repaired_panorama_reads_as_current_to_the_sweep_AND_shows_the_new_imagery(
+            self, tmp_path, monkeypatch, small_cap):
+        """The two halves of the bug in one test. Before the fix the first assertion already passed - the
+        sweep saw a copy at the cap width and skipped it - which is exactly why it needed the second."""
+        pano, sidecar = self.store(tmp_path)
+
+        assert self.swap(tmp_path, monkeypatch) == 'replaced'
+
+        assert downscale_panos.sidecar_is_current(pano, self.DIMS, self.CAP) is True
+        self.assert_copy_shows(sidecar, self.NEW)
+        assert downscale_panos.downscale_store(str(tmp_path), max_width=self.CAP).written == 0
