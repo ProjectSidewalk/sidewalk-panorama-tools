@@ -144,16 +144,27 @@ permanent.** Transient failures leave no row and retry automatically on the next
 **`pano_id_log.csv` gates the image phase** (`pano_id,downloaded`):
 
 * `1` — image on disk, or a prior success.
-* `0` — the source has nothing for this pano: no imagery at any zoom, or unknowable dimensions; for
-  Mapillary, a 404 or a record that names the image and carries no original-resolution rendition. A
-  permanent verdict. No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured
-  2026-09-06 — so on that source the record with no rendition is the one that fires in practice, and three
-  of them in a row stop the run writing any more (see *When the image phase stops trusting a source*).
+* `0` — the source has nothing for this pano. A permanent verdict, one per source:
+  * **GSV** — no imagery at any zoom, or unknowable dimensions. No breaker entry, deliberately: a retired
+    GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4% of a large city's rows.
+  * **Mapillary** — a 404, or a record that names the image and carries no original-resolution rendition.
+    No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured 2026-09-06 — so the
+    record with no rendition is the one that fires in practice, and three of them in a row stop the run
+    writing any more (see *[When the image phase stops trusting a source](#when-the-image-phase-stops-trusting-a-source)*,
+    [#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113)).
+  * **Panoramax** — a 404 **carrying the catalog's own `Feature not found` body**, an item affirming a
+    field of view other than 360 (a flat contributor photograph in the same bbox), or a well-formed assets
+    block that offers no `hd` rendition. Each rests on the catalog affirming something rather than on a
+    status code or a missing key, *and* three in a row trip the same breaker: two of the three are
+    wholesale failures wearing a per-pano face, so the affirmation and the breaker are both wanted here.
+
   A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
-  (code 190 / `OAuthException`), a body that does not name the image, or an image body that is not a JPEG
-  is not a verdict and leaves no row.
-* **no row** — never attempted, the last attempt failed transiently, or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both the withheld tripping verdict and every pano skipped after it) (a network blip, a failed tile, a full
-  store). Retried next run.
+  (code 190 / `OAuthException`), a body that does not name the image, an image body that is not a JPEG, a
+  Panoramax 404 *without* the catalog's body, a malformed assets block, and a redirect off a published `hd`
+  href are none of them verdicts and leave no row.
+* **no row** — never attempted, the last attempt failed transiently (a network blip, a failed tile, a full
+  store), or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both
+  the withheld tripping verdict and every pano skipped after it). Retried next run.
 
 Deleting `0` rows, or the whole file, is the manual force-retry lever; existing `.jpg`s are simply
 re-registered as skipped rather than re-downloaded.
@@ -442,6 +453,13 @@ GSV has no breaker, deliberately: 7.9–8.4% of a large GSV city's ledger is a p
 imagery), so three in a row is routine there rather than evidence — about every 1,700 panos at 8.4%. The
 table is per source, in `DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`; a source with no entry is
 unlimited, so **a new source declares its own threshold or gets no breaker at all**.
+
+**Mapillary and Panoramax both carry 3.** They fail differently, so the first thing to check differs: a
+Mapillary trip points at the token, while **Panoramax is keyless and has no credential to check**. There,
+look at the catalog instead — `api.panoramax.xyz` answering 404 for pictures that exist (a renamed endpoint,
+or a CDN), an instance that has stopped publishing `hd` renditions, or the app's own 360° filter having
+stopped holding, which would hand this scraper the third of the Bayonne bbox that is flat 92° photographs.
+The repair is the same either way: delete the tripped source's last two `downloaded=0` rows and re-run.
 
 **Only a success resets the count.** Not a transient failure and not a skip. A transient reset was the first
 version of this and it defeated the breaker on the fault it was built for: Mapillary answers "does not exist

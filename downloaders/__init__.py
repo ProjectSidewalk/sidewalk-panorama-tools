@@ -1,4 +1,4 @@
-from . import gsv, mapillary
+from . import gsv, mapillary, panoramax
 from .common import DownloadResult
 
 
@@ -21,7 +21,9 @@ def download_pano(storage_path, pano_info):
         return gsv.download_single_pano(storage_path, pano_info)
     if source == 'mapillary':
         return mapillary.download_single_pano(storage_path, pano_info)
+    if source == 'panoramax':
+        return panoramax.download_single_pano(storage_path, pano_info)
     raise ValueError(f"Unknown pano source: {source!r}")
 
 
-__all__ = ['DownloadResult', 'download_pano', 'gsv', 'mapillary']
+__all__ = ['DownloadResult', 'download_pano', 'gsv', 'mapillary', 'panoramax']

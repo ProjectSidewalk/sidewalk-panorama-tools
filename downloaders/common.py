@@ -4,7 +4,10 @@ import os
 import re
 import struct
 
+import requests
 from PIL import Image
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Start-of-frame markers whose payload carries the image dimensions. DHT/DAC/RST/SOS are excluded;
 # 0xC4/0xC8/0xCC look like SOF numerically and are not.
@@ -277,3 +280,23 @@ def write_downscaled_sidecar_from_file(pano_path, max_width=None, quality=None):
         image.draft('RGB', size)
         image.load()
         return _write_reduced(image, size, downscaled_sidecar_path(pano_path, max_width), quality)
+
+
+def retrying_session():
+    """A requests.Session with the retry policy both HTTP downloaders use.
+
+    Lives here rather than in one of them because it was about to be a second byte-identical copy, and the
+    policy is a decision about how this host treats an imagery API rather than anything Mapillary- or
+    Panoramax-specific. What it is NOT is a general-purpose session: 429 and the 5xx family are retried
+    inside the adapter, which is exactly why both callers can treat a status that survives to
+    raise_for_status() as a condition of the run rather than a verdict on the pano (#41).
+
+    gsv.py deliberately does not use it - the tile fan-out is aiohttp + backoff, a different concurrency
+    model with its own retry decisions.
+    """
+    session = requests.Session()
+    retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
