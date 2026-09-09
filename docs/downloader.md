@@ -298,8 +298,10 @@ per-process — see [Depth maps](depth.md#being-a-good-citizen-of-googles-server
 ## Imagery sources
 
 Each pano is dispatched to a source-specific module by the `source` field from `/adminapi/panos`; the modules
-live in [`downloaders/`](../downloaders). Panos with any other `source` are skipped with a warning, and are
-deliberately **not** written to `pano_id_log.csv`, so a later run (or a later release) can still pick them up.
+live in [`downloaders/`](../downloaders). Three sources are supported: `gsv` and `panoramax` always, and
+`mapillary` when `MAPILLARY_ACCESS_TOKEN` is set. Panos with any other `source` are skipped with a warning,
+and are deliberately **not** written to `pano_id_log.csv`, so a later run (or a later release) can still
+pick them up.
 
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
 `cbk?output=tile` endpoint into one equirectangular JPEG: it determines a working zoom level (5 preferred,
@@ -390,6 +392,43 @@ export MAPILLARY_ACCESS_TOKEN='MLY|...'
 unset, which fails as a *quiet* filtering-out rather than an error. Verify with a throwaway crontab line
 that echoes `${#MAPILLARY_ACCESS_TOKEN}` to a file — the length, never the value. The first Mapillary city is
 measured in [reports/2026-08-11-mapillary-census.md](../reports/2026-08-11-mapillary-census.md).
+
+**Panoramax (`panoramax`)** — the French open street-level imagery commons, run by IGN and OpenStreetMap
+France, and the source behind Bayonne ([#110]). **Keyless**: no token, no account, nothing to configure or
+keep out of a crontab. It is a *federation* — `api.panoramax.xyz` is a meta-catalog over instances that each
+hold their own pictures — so the downloader resolves `GET /api/pictures/<uuid>` at the catalog and then
+follows the `assets.hd` href to whichever instance holds the pixels (`panoramax.ign.fr` for Bayonne's own
+survey, `panoramax.openstreetmap.fr` for contributor pictures on the same streets). The href is followed,
+never built.
+
+Ids are UUIDs, so a Panoramax city shards over at most 256 `<pano_id[:2]>` directories.
+
+**What the ledger learns from Panoramax.** Three answers are permanent and write a `downloaded=0` row:
+
+| Answer | Why it is a property of the picture |
+|---|---|
+| `404` at `/api/pictures/<id>` | The catalog does not have it. Measured 2026-09-08: `{"status": 404, "message": "Feature not found"}`. Unlike Mapillary's 404 the body is not read — there is no token, so there is no "we are not allowed to see it" state to confuse with "it is not there" |
+| An item whose `field_of_view` is not `360` | It is a flat photograph, and this scraper stores equirectangular panoramas — see below |
+| An item with no `hd` asset | The catalog affirms the picture and publishes no full-resolution pixels for it |
+
+Everything else raises and is retried next run: any other status, a body that is not the item asked for, an
+error envelope on a `200`, an `hd` href that is not an absolute `https://` URL, and a `200` whose body is not
+a JPEG.
+
+**Why the projection guard exists.** Panoramax is a commons, not a fleet: anyone can contribute, so a city's
+bounding box carries other people's pictures too. Measured over 1,000 pictures in the Bayonne bbox
+(2026-09-08), **323 were flat 92° photographs** rather than panoramas. Nothing downstream of the downloader
+inspects projection — a flat JPEG saved as `<pano_id>.jpg` would be cropped with the equirectangular seam
+modulo and look entirely plausible — so a picture is refused when its item *affirms* a field of view other
+than 360. An item that states none is downloaded: absence of evidence is not a verdict. The full measurement
+is in [reports/2026-09-08-panoramax-api.md](../reports/2026-09-08-panoramax-api.md).
+
+Bayonne's frames are 5760×2880 and 5376×2688 — smaller than any GSV city's, and well under the
+[#115](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/115) display-copy cap, so no sidecar
+is written for them. Licence varies **per picture** (`etalab-2.0`, `CC-BY-SA-4.0`, `CC-BY-4.0` all occur);
+carrying it beside the crops is [#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111).
+
+[#110]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/110
 
 ## `config.py`
 
