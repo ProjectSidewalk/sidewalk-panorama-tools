@@ -78,7 +78,10 @@ def raise_decompression_bomb_ceiling():
     wants the ceiling calls this itself; one who doesn't gets a warning, not a failure.
 
     Every entry point that opens a stored panorama needs it - CropRunner, downscale_panos, refetch_panos'
-    --measure, and (since #115 put an Image.open on the Mapillary download path) DownloadRunner. It lives
+    --measure, and DownloadRunner. That last one is currently a policy for a path nothing takes: #115 put an
+    Image.open on the Mapillary download path, and WRITE_DISPLAY_COPIES (below) has been False since
+    2026-09-09, so nothing reaches it. It is kept because it is correct either way and is needed the moment
+    the switch is flipped - see DownloadRunner.main. It lives
     here rather than in CropRunner, where it was written, because that list stopped being one script's
     concern; CropRunner re-exports the name for the two reports/scripts callers that reach for it there.
     """
@@ -134,19 +137,44 @@ def atomic_output_path(final_path, mode=0o664):
         raise
 
 
-# --- Display copies of wide panoramas (#115) -------------------------------------------------------------
+# --- Display copies of wide panoramas (#115), SWITCHED OFF 2026-09-09 --------------------------------------
 #
-# The Project Sidewalk web app shows a stored pano through Pannellum, which renders an equirectangular image
-# as ONE WebGL texture, and 8192 px is a common MAX_TEXTURE_SIZE. A wider pano - newer GSV is 16384 x 8192,
-# Richmond's Mapillary imagery 11000 - is therefore displayable only through a copy at this width. The copy
-# is written here, beside the native file, because this is where the full raster already is: the web app
-# tried cutting it nightly from the stored JPEG and OOM-killed its own JVMs (SidewalkWebpage#5239). ImageIO
-# has no DCT-domain scaling and re-decodes the file once per strip, ~10 s and ~400 MB of heap per pano,
-# inside a 1.5 GB web-app heap; Pillow's draft() decodes straight to half size in 0.8 s and ~150 MB.
+# A display copy is a stored pano re-encoded at the width a viewer can texture, written beside the native
+# file as <pano_id>.w<width>.jpg. #115 built it on the premise that Pannellum renders an equirectangular
+# image as ONE WebGL texture, so 8192 - a common MAX_TEXTURE_SIZE - was the ceiling and every wider pano
+# (newer GSV is 16384 x 8192, Richmond's Mapillary imagery 11000) needed a copy to be displayable at all.
 #
+# THAT PREMISE IS WRONG BY A FACTOR OF TWO. Pannellum uploads the image as two half-width textures, so its
+# own refusal test is max(width/2, height) > MAX_TEXTURE_SIZE and its error reports the maximum as 2*L. A
+# device advertising 8192 renders a 16384-wide pano - exactly the widest frame GSV produces and exactly what
+# the store holds. Measured on real phones: iPhone 13 Pro reports 16384, Pixel 7 Pro 8192, ceilings 32768 and
+# 16384. Over 365 days of production analytics the population that genuinely cannot render 16384 is ~50 users
+# a year, all Nexus 5 / 5X. The web app now cuts the copy on demand at the width the client asks for
+# (SidewalkWebpage#5256), inside the JPEG decode, at ~105 MB heap and ~2.0 s - which also retires the other
+# half of #115's rationale, that ImageIO could not do this without OOM-killing prod JVMs (#5239).
+#
+# So neither downloader writes one any more; see docs/ops.md for the demand numbers. Two narrow writers
+# remain: downscale_panos.py, which runs only when a person runs it, and refetch_panos._refresh_display_copy,
+# which rewrites a copy ALREADY on the store after a swap but never creates one - a swap leaves the frame
+# unchanged, so a copy left behind would read as current to the sweep for ever. What is kept is deliberate:
+# the format, the primitives below, that sweep, and the whole test battery. The margin
+# this was built for is real and is exactly ZERO - 16384 = 2 x 8192, and GSV has already widened its frames
+# once (13312 -> 16384). The day it widens again, every 8192-class GPU loses native rendering and this
+# switch is the answer, so it stays one line away rather than in the history.
+#
+#: Whether the paths that run on their own - both downloaders, and refetch_panos after a swap - write a
+#: display copy. NOT a per-run flag and deliberately not a CLI option: the copy is not an operator's choice
+#: run by run, it is a contract with a consumer that no longer wants it. Flipping it back on is a code change
+#: that shows up in a diff, and a test asserts the shipped value so the flip cannot be accidental.
+#:
+#: It does NOT reach the primitives below, and must not: downscale_panos.py is a deliberate, human-invoked
+#: sweep and still writes. Guard the policy, not the mechanism.
+WRITE_DISPLAY_COPIES = False
+
 # The width is in the file name, so a change of cap is a new sidecar rather than an ambiguous overwrite,
 # and the web app looks for exactly the name its own configured cap produces. Every walker that lists the
-# store's `*.jpg` has to ask is_downscaled_sidecar(), or a sidecar's stem is taken for a pano id.
+# store's `*.jpg` has to ask is_downscaled_sidecar(), or a sidecar's stem is taken for a pano id - which
+# stays true while any sidecar written before the switch is still on the store.
 DOWNSCALED_MAX_WIDTH = 8192
 
 #: Display copies are looked at in a viewer, never cut from: crops always come from the native file.

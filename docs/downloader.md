@@ -6,8 +6,9 @@ this repo and runs nightly, per city, in production.
 
 A run has two phases:
 
-1. **Image phase** — stitch and save panorama JPEGs, plus the 8192 px
-   [display copy](ops.md#display-copies-of-wide-panoramas) beside any panorama wider than that. Gated by
+1. **Image phase** — stitch and save panorama JPEGs. It no longer writes the 8192 px
+   [display copy](ops.md#display-copies-of-wide-panoramas) beside a wider panorama: that was switched off on
+   2026-09-09 and the reasoning is in that section. Gated by
    [`pano_id_log.csv`](ops.md#resume-ledgers); restricted to labeled panos unless `--all-panos`.
 2. **Depth phase** — one metadata request per unresolved pano, saving a `.depth.npz` artifact where Google has
    one. Gated by `depth_log.csv`. Always covers **every** pano, labeled or not. See [Depth maps](depth.md).
@@ -350,15 +351,39 @@ a token lacking the needed scope would produce the same body for every pano in t
 has never been observed, so the 404 branch is the documented shape rather than the measured one.
 
 That leaves **one permanent-verdict path reachable in production**: a 200 that names the image and carries no
-`thumb_original_url`. It is also the only one with no run-level breaker, which is [#113]. The scope-less
-token — the one auth condition nobody can measure without a live token — need not arrive as an envelope at
-all: Meta's Graph family commonly answers a permission-denied field by *omitting* it from an otherwise
-healthy 200 record, which is exactly that shape, and it would ledger every pano in the city. So the breaker
-that follow-up needs is keyed on **N consecutive no-rendition verdicts**, not on N consecutive 404s: a 404
-breaker would guard a status that has never occurred, and the measured 400 already raises unledgered. The
-depth phase (`DEPTH_MAX_CONSECUTIVE_FAILURES`) and `refetch_panos.py` both have such a breaker; the image
-loop does not, and it is the only one of the three that writes a permanent row an operator has to hand-edit
-off the store to undo.
+`thumb_original_url`. The scope-less token — the one auth condition nobody can measure without a live token —
+need not arrive as an envelope at all: Meta's Graph family commonly answers a permission-denied field by
+*omitting* it from an otherwise healthy 200 record, which is exactly that shape, and it would ledger every
+pano in the city.
+
+**So that path has a run-level breaker** ([#113]). Three consecutive permanent verdicts from one source stop
+this run ledgering that source: its remaining panos are left unattempted, the run says so on stdout and in
+`scrape.log`, and it exits nonzero — which `scrape_queue.py` books as a failed city, so cron mails it. The
+verdict that trips the breaker is itself withheld, so a trip costs two false rows rather than three.
+
+It is keyed on the **source**, not on the no-rendition verdict specifically. That is broader than the shape
+above by design: it also covers a mass 404, which carries identical risk and has simply never been observed.
+And it costs nothing in headroom, because the base rates differ by over two orders of magnitude — measured over
+the production ledgers on 2026-09-06, richmond-va (the only Mapillary city, whole corpus after the 2026-09-05
+catch-up) has **0 permanent verdicts in 9,229 rows**, while the large GSV cities run **7.9–8.4%** because
+retired imagery is permanent and ordinary. A source-blind breaker would stop a healthy GSV city about every
+1,700 panos, which is why `MAX_CONSECUTIVE_PERMANENT_FAILURES` is a per-source table and GSV is not in it.
+A new imagery source declares its own threshold there rather than growing a second breaker — and a source
+with no entry has **no breaker at all**, so adding one is part of adding a source.
+
+**Panoramax took its entry with its first city** ([#110](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/110)),
+also at 3, and needs it more than Mapillary does. Mapillary has one permanent verdict shape; Panoramax
+has three, and two of them are wholesale failures wearing a per-pano face. A picture affirming a field of
+view other than 360 is refused one at a time, but **323 of the 1,000 pictures in the Bayonne bbox are flat
+92° photographs** — the only thing keeping them out of the corpus is that the app filters its own search to
+360, which is a property of the layer above that this scraper cannot check. A missing `hd` asset is the same
+shape one federated instance wide. If either ever goes wrong the candidates are shuffled, so the breaker
+trips within about ninety panos on the first night and cron mails it — instead of the city writing itself
+off a third at a time, silently and permanently.
+
+Only a **success** resets the count — not a transient failure, and not a skip. See
+[ops.md](ops.md#when-the-image-phase-stops-trusting-a-source) for why that distinction is the whole
+difference between a breaker that fires and one that cannot.
 
 [#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
 

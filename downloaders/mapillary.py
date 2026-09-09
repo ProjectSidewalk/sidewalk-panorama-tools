@@ -10,6 +10,7 @@ import stat
 
 import requests
 
+from . import common
 from .common import (DownloadResult, atomic_output_path, jpeg_dimensions, retrying_session,
                      write_downscaled_sidecar_from_file)
 
@@ -168,6 +169,25 @@ def _session():
     return retrying_session()
 
 
+def _write_display_copy(out_image_name, pano_id):
+    """The viewer's copy of a pano wider than it can texture (#115), beside the native file.
+
+    OFF by default since 2026-09-09 - common.WRITE_DISPLAY_COPIES carries the measurements. Same shape and
+    same guard as gsv._write_display_copy, deliberately: two downloaders reading one switch two different
+    ways is how one of them ends up still writing.
+
+    From the file rather than a raster, because this path never decodes the image. Never fatal when it is
+    on, for the reason gsv's copy gives: the native file is already the resume marker, and downscale_panos.py
+    heals a missing sidecar.
+    """
+    if not common.WRITE_DISPLAY_COPIES:
+        return
+    try:
+        write_downscaled_sidecar_from_file(out_image_name)
+    except Exception as e:
+        logging.error("Mapillary pano %s: display copy not written: %r", pano_id, e)
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
 
@@ -235,9 +255,12 @@ def download_single_pano(storage_path, pano_info):
         # error_subcode 33, whose message itself reads "does not exist, cannot be loaded due to missing
         # permissions, or does not support this operation". A token lacking scope would produce that body
         # for every pano in the city, which is the 2026-09-01 incident by another route, so it stays a
-        # condition of the run. The cost is one metadata request per retired image per night; writing
-        # 100/33 off as permanent needs a run-level breaker first, the shape refetch_panos.py uses for
-        # undersized, and that is a follow-up, not this function.
+        # condition of the run. The cost is one metadata request per retired image per night. The
+        # run-level breaker that writing 100/33 off would need now exists
+        # (DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES, #113), and it is still not sufficient on its
+        # own: it bounds the damage at two false rows, but it does not make this body any less ambiguous.
+        # Reading a message that conflates "does not exist" with "missing permissions" as a verdict on the
+        # pano stays a separate decision, on separate evidence.
         meta_resp.raise_for_status()
 
         try:
@@ -251,15 +274,16 @@ def download_single_pano(storage_path, pano_info):
         # Mapillary affirms it knows the image and publishes no original-resolution rendition: permanent.
         image_url = original_rendition_url(payload, pano_id)
         if image_url is None:
-            # THE one permanent verdict this function still reaches in production, and it has no breaker
-            # (#113). Every other permanent path is a 404, and the 2026-09-06 live check found that Mapillary
-            # answers an id it does not have with a 400: no 404 has ever been observed, so this branch alone
-            # decides what gets a downloaded=0 row. That matters because the scope-less token - the one auth
-            # condition nobody can measure - need not arrive as an envelope at all: Meta's Graph family
-            # commonly answers a permission-denied field by OMITTING it from an otherwise-healthy 200 record,
-            # which is exactly this shape. A run-level breaker (N consecutive of these stop ledgering, the
-            # shape refetch_panos.py uses for undersized) is the defence that does not depend on knowing
-            # which way that goes; the depth phase and refetch_panos both have one and this loop does not.
+            # THE one permanent verdict this function reaches in production. Every other permanent path
+            # is a 404, and the 2026-09-06 live check found that Mapillary answers an id it does not have
+            # with a 400: no 404 has ever been observed, so this branch alone decides what gets a
+            # downloaded=0 row. That matters because the scope-less token - the one auth condition nobody
+            # can measure - need not arrive as an envelope at all: Meta's Graph family commonly answers a
+            # permission-denied field by OMITTING it from an otherwise-healthy 200 record, which is exactly
+            # this shape, and no body check can separate the two. So the defence is not a body check: it is
+            # DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES (#113), where three of these in a row stop
+            # the run ledgering this source at all - a guard that does not depend on knowing which way the
+            # scope-less token goes.
             logging.error("Mapillary knows image %s but publishes no original-resolution rendition", pano_id)
             return DownloadResult.failure
 
@@ -295,11 +319,5 @@ def download_single_pano(storage_path, pano_info):
             # a short read raises out of iter_content before this line, and the .part never lands.
             if jpeg_dimensions(tmp_path) is None:
                 raise MapillaryErrorResponse("Mapillary image response for %s was not a JPEG" % pano_id)
-    # The display copy for a pano wider than one WebGL texture (#115). From the file rather than a raster -
-    # this path never decodes the image - and never fatal, for the reason gsv._write_display_copy gives:
-    # the native file is already the resume marker, and downscale_panos.py heals a missing sidecar.
-    try:
-        write_downscaled_sidecar_from_file(out_image_name)
-    except Exception as e:
-        logging.error("Mapillary pano %s: display copy not written: %r", pano_id, e)
+    _write_display_copy(out_image_name, pano_id)
     return DownloadResult.success

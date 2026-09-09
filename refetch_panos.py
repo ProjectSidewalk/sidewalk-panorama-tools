@@ -59,6 +59,7 @@ import time
 from collections import Counter
 
 from downloaders import gsv
+from downloaders import common
 from downloaders.common import (atomic_output_path, jpeg_dimensions, walk_store_panos,
                                 write_downscaled_sidecar)
 
@@ -398,12 +399,31 @@ def _refresh_display_copy(storage_path, pano_id, image):
     a separate artifact a human decides to re-cut, while the sidecar is a pure function of the panorama, and
     the raster it is a function of is in hand right here for nothing.
 
+    NEVER CREATE, ALWAYS REFRESH. With common.WRITE_DISPLAY_COPIES off (2026-09-09) this writes only where a
+    copy is already on the store - the nights the switch was on, plus anything downscale_panos.py was pointed
+    at. That is the one asymmetry in the whole change, and it is the point: the switch says "stop making a
+    new artifact nobody asked for", not "start lying in the one that already exists". Doing nothing here
+    instead would re-introduce precisely the staleness the paragraph above describes, by choice, on the exact
+    panoramas this pass rewrites. Deleting it instead would be cheaper still - but this tool's whole design
+    is that it does not remove imagery, and a display copy on a store whose panorama Google no longer serves
+    is not obviously worthless.
+
     Never fatal, and for a sharper reason than in the downloaders: the swap has ALREADY landed. Raising here
     would leave the panorama unledgered, so the next run would spend another ~512 tile requests to redo a
-    replacement that is already on disk. A stale sidecar the sweep can heal is much the cheaper failure.
+    replacement that is already on disk. A stale sidecar is much the cheaper failure - but it is NOT one the
+    sweep can repair, so the log line is the whole remedy and has to be acted on.
+
+    downscale_panos.sidecar_is_current judges from dimensions alone, because a decode per panorama is the
+    entire cost that sweep exists to avoid, and every gate above refuses a swap that changes the frame. So a
+    copy left stale here has EXACTLY the dimensions the sweep expects and it reports `current`, writing
+    nothing, for ever. The fix is to delete the named .w<cap>.jpg and then run the sweep, which will see it
+    absent and cut a fresh one; docs/ops.md says so where an operator will look.
     """
+    pano_path = _stored_path(storage_path, pano_id)
+    if not common.WRITE_DISPLAY_COPIES and not os.path.exists(common.downscaled_sidecar_path(pano_path)):
+        return
     try:
-        write_downscaled_sidecar(image, _stored_path(storage_path, pano_id))
+        write_downscaled_sidecar(image, pano_path)
     except Exception as e:
         logging.error("REFETCH: pano %s: display copy not rewritten after the swap: %r", pano_id, e)
 

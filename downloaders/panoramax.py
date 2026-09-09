@@ -12,6 +12,7 @@ import logging
 import os
 import stat
 
+from . import common
 from .common import (DownloadResult, atomic_output_path, jpeg_dimensions, retrying_session,
                      write_downscaled_sidecar_from_file)
 
@@ -221,6 +222,29 @@ def hd_asset_url(payload):
     return href
 
 
+def _write_display_copy(out_image_name, pano_id):
+    """The viewer's copy of a pano wider than it can texture (#115), beside the native file.
+
+    OFF by default since 2026-09-09 - common.WRITE_DISPLAY_COPIES carries the measurements. Same shape and
+    same guard as gsv._write_display_copy and mapillary._write_display_copy, deliberately: three downloaders
+    reading one switch three different ways is how one of them ends up still writing.
+
+    A no-op for Bayonne even with the switch on, whose frames are 5760 and 5376 wide (measured 2026-09-08)
+    against an 8192 cap, and not a no-op for the 12288-wide professional-rig imagery elsewhere in the
+    federation.
+
+    From the file rather than a raster, because this path never decodes the image. Never fatal when it is
+    on, for the reason the other two give: the native file is already the resume marker, and
+    downscale_panos.py heals a missing sidecar.
+    """
+    if not common.WRITE_DISPLAY_COPIES:
+        return
+    try:
+        write_downscaled_sidecar_from_file(out_image_name)
+    except Exception as e:
+        logging.error("Panoramax pano %s: display copy not written: %r", pano_id, e)
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
 
@@ -326,13 +350,5 @@ def download_single_pano(storage_path, pano_info):
             # header, which a short read out of iter_content has already raised on.
             if jpeg_dimensions(tmp_path) is None:
                 raise PanoramaxErrorResponse("Panoramax image response for %s was not a JPEG" % pano_id)
-    # The display copy for a pano wider than one WebGL texture (#115). A no-op for Bayonne, whose frames are
-    # 5760 and 5376 wide (measured 2026-09-08) against an 8192 cap, and not a no-op for the 12288-wide
-    # professional-rig imagery elsewhere in the federation. Never fatal, for the reason the other two
-    # downloaders give: the native file is already the resume marker, and downscale_panos.py heals a
-    # missing sidecar.
-    try:
-        write_downscaled_sidecar_from_file(out_image_name)
-    except Exception as e:
-        logging.error("Panoramax pano %s: display copy not written: %r", pano_id, e)
+    _write_display_copy(out_image_name, pano_id)
     return DownloadResult.success
