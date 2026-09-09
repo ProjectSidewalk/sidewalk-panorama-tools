@@ -94,7 +94,7 @@ def declared_field_of_view(payload):
     on (#99) - and because the field is a STAC extension the catalog is under no obligation to keep serving.
 
     Why the check exists at all: 32% of the pictures in the Bayonne bbox are flat 92-degree photographs
-    (measured 2026-09-08), and nothing downstream would notice one. A flat 4000x3000 JPEG saved as
+    (measured 2026-09-08), and nothing downstream would notice one. A flat rectilinear JPEG saved as
     <pano_id>.jpg is a readable image of the right shape at the wrong projection: CropRunner would cut from
     it with the equirectangular seam modulo, pano_x would wrap at a seam that is not there, and the crop
     would look plausible. That is the silent-corruption shape refetch_panos.py's frame_grew gate exists for,
@@ -115,12 +115,61 @@ def declared_field_of_view(payload):
     return interior.get('field_of_view')
 
 
+def is_catalog_not_found(response):
+    """Whether a 404 carries the catalog's own "this picture does not exist" body.
+
+    Measured 2026-09-08: `{"status": 404, "message": "Feature not found"}`, pinned as
+    OBSERVED_PANORAMAX_NOT_FOUND_2026_09_08 in tests/test_image_downloaders.py.
+
+    Matched on the message, case-insensitively, and NOT on the whole body: the catalog is free to add
+    fields, and a verdict that breaks when it does would turn every absent picture into a nightly retry -
+    the harmless direction, but noisy forever. What must not match is an HTML error page, an empty body, or
+    any JSON that does not say this - those mean something other than the catalog answered, and a permanent
+    row would then be written off a stranger's reply.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    message = payload.get('message')
+    return isinstance(message, str) and 'not found' in message.lower()
+
+
+def is_panoramic_field_of_view(fov):
+    """Whether an affirmed field_of_view means "full 360 panorama".
+
+    Compared numerically, with a tolerance, and tolerant of the value arriving as a string. It was an exact
+    `!= 360` against the int until the 2026-09-09 review, which is safe for 360.0 and for nothing else: a
+    catalog that started serving `"360"`, a Decimal, or a stitched 359.9997 would route every genuine
+    panorama in the city to a permanent downloaded=0 row. The module already applies this repo's #46
+    doctrine - never let a comparison depend on what the values happen to look like - to the id check in
+    require_picture_record, where the consequence is milder because it raises rather than ledgers. This is
+    the comparison where getting it wrong is unrecoverable.
+
+    A value that is not a number at all (a dict, a list, a word) is NOT panoramic and is refused, which is
+    the same call the flat-photograph guard makes: the catalog affirmed something, and it is not 360.
+    """
+    try:
+        return abs(float(fov) - PANORAMIC_FIELD_OF_VIEW_DEG) < 0.5
+    except (TypeError, ValueError):
+        return False
+
+
 def hd_asset_url(payload):
     """The href of the item's full-resolution `hd` asset, or None when it publishes none.
 
-    None is the one body shape here that is a permanent property of the picture, the same verdict as
-    Mapillary's "knows the image and publishes no original-resolution rendition": the catalog affirmed the
-    picture (require_picture_record ran first) and offers no full-resolution pixels for it.
+    None is returned for exactly one shape: an assets block that is present, well-formed, and does not offer
+    `hd`. That is the catalog listing this picture's renditions and hd not being among them - a permanent
+    property of the picture, the same verdict as Mapillary's "knows the image and publishes no
+    original-resolution rendition".
+
+    Everything else about the assets block RAISES, so the pano retries unledgered. A missing block, a
+    non-object block, a non-object `hd`, or an `hd` whose href is null or empty are all the catalog changing
+    shape, and require_picture_record cannot have ruled that out - it establishes only that the body is a
+    dict whose id matches. Ledgering those was a 2026-09-09 review finding: one `?fields=` slimming and a
+    whole city gets a permanent downloaded=0 in a single night.
 
     `hd`, not `sd` or the tile pyramid, because `hd` is the frame the stored pano_x/pano_y describe.
     PanoramaxViewer.#panoDataParams writes `pers:interior_orientation.sensor_array_dimensions` into
@@ -138,11 +187,34 @@ def hd_asset_url(payload):
     file:// one means something is answering for it that should not be. Neither is a verdict on the pano.
     """
     assets = payload.get('assets')
-    if not isinstance(assets, dict) or not isinstance(assets.get('hd'), dict):
+    if assets is None:
+        # The catalog affirmed the picture but sent no assets block AT ALL. That is a changed response
+        # shape, not a statement about this picture's pixels - require_picture_record established only that
+        # the body is a dict whose id matches, which `{"id": "<uuid>"}` alone satisfies. Same reasoning as
+        # declared_field_of_view's missing-properties arm one function up, and the same failure if it were
+        # ledgered instead: a `?fields=` slimming, or assets moving under properties the way
+        # pers:interior_orientation already sits there, would write off a whole city in one night with
+        # nothing loud about it (2026-09-09 review).
+        raise PanoramaxErrorResponse("Panoramax picture %.80r came back with no assets block" %
+                                     (payload.get('id'),))
+    if not isinstance(assets, dict):
+        raise PanoramaxErrorResponse("Panoramax picture %.80r has a non-object assets block: %.80r" %
+                                     (payload.get('id'), type(assets).__name__))
+    if 'hd' not in assets:
+        # An assets block that is present and simply has no `hd` entry IS the verdict: the catalog is
+        # telling us which renditions exist for this picture and hd is not among them.
         return None
-    href = assets['hd'].get('href') or None
-    if href is None:
+    if not isinstance(assets['hd'], dict):
+        raise PanoramaxErrorResponse("Panoramax picture %.80r has a non-object hd asset: %.80r" %
+                                     (payload.get('id'), type(assets['hd']).__name__))
+    if 'href' not in assets['hd']:
         return None
+    href = assets['hd'].get('href')
+    if not isinstance(href, str) or not href:
+        # An hd asset that exists with a null or empty href is malformed, not a verdict - the same call the
+        # relative-href branch below already makes, and it was the one shape that ledgered instead.
+        raise PanoramaxErrorResponse("Panoramax picture %.80r has an hd asset with no usable href: %.80r" %
+                                     (payload.get('id'), href))
     if not href.startswith('https://'):
         raise PanoramaxErrorResponse("Panoramax gave picture %.80r an hd href that is not an absolute https "
                                      "URL: %.200r" % (payload.get('id'), href))
@@ -170,16 +242,25 @@ def download_single_pano(storage_path, pano_info):
         meta_resp = session.get('%s/pictures/%s' % (CATALOG_API_BASE, pano_id), timeout=30)
 
         if meta_resp.status_code == 404:
-            # The catalog does not have this id: a permanent property of the pano, so it ledgers (#41).
-            # Measured 2026-09-08, body `{"status":404,"message":"Feature not found"}`.
+            # The catalog does not have this id: a permanent property of the pano, so it ledgers (#41) - but
+            # ONLY if the catalog itself said so. Measured 2026-09-08, the body is
+            # `{"status":404,"message":"Feature not found"}`, and that body is what makes this a verdict.
             #
-            # Read no further than the status, unlike mapillary's 404 branch. That one has to sniff the body
-            # for an auth signature because a token that cannot SEE an image also gets a 404, and a
-            # scope-less token would then write off a whole city. There is no token here, so there is no
-            # analogous "we are not allowed to see it" state to confuse with "it is not there" - a picture
-            # withdrawn or made private by its contributor is genuinely gone as far as this scraper is
-            # concerned, and re-requesting it nightly forever would be the wrong trade.
-            logging.error("Panoramax has no picture %s (404)", pano_id)
+            # The status alone is not enough, and this used to read no further than it (2026-09-09 review).
+            # The stated reason was that a keyless API has no "we are not allowed to see it" state to
+            # confuse with "it is not there" - true, and it answers the wrong question. It does not answer
+            # "did the CATALOG answer at all". api.panoramax.xyz is a keyless community API and this is one
+            # path segment of it: a renamed endpoint, a CDN or WAF answering 404 for an unrecognised UA, or
+            # DNS landing on a parked host all produce a 404 for every pano in the city, and every one of
+            # them would ledger. That is the 2026-09-01 Mapillary incident - 161 false rows hand-edited off
+            # the shared store - at whole-city scale, and unlike Mapillary this source has no #113 breaker
+            # entry to stop it. The affirmation is free in the same response body, so read it.
+            if not is_catalog_not_found(meta_resp):
+                raise PanoramaxErrorResponse(
+                    "Panoramax answered 404 for picture %s without the catalog's not-found body, so "
+                    "something other than the catalog may have answered: %.200r"
+                    % (pano_id, meta_resp.text))
+            logging.error("Panoramax has no picture %s (404, catalog confirms not found)", pano_id)
             return DownloadResult.failure
         # Everything else non-200 is a condition of the RUN - 429/5xx have already exhausted the retry
         # adapter, and a 4xx that is not 404 from a keyless API is the catalog or something in front of it
@@ -199,7 +280,7 @@ def download_single_pano(storage_path, pano_info):
         require_picture_record(payload, pano_id)
 
         fov = declared_field_of_view(payload)
-        if fov is not None and fov != PANORAMIC_FIELD_OF_VIEW_DEG:
+        if fov is not None and not is_panoramic_field_of_view(fov):
             # A permanent property of the picture: it is a flat photograph, and this scraper stores
             # equirectangular panoramas. Ledgering is what stops the whole flat third of the catalog from
             # being re-fetched, decoded and discarded every night.
@@ -212,7 +293,18 @@ def download_single_pano(storage_path, pano_info):
             logging.error("Panoramax knows picture %s but publishes no hd asset", pano_id)
             return DownloadResult.failure
 
-        image_resp = session.get(image_url, stream=True, timeout=120)
+        # allow_redirects=False, deliberately (2026-09-09 review). This is the one URL in the repo that is
+        # taken from a remote response rather than built, on a public commons anyone can contribute to, and
+        # requests follows up to 30 redirects to ANY scheme and host by default - so the https check above
+        # would cover the first hop only, and a 302 to http://169.254.169.254/ or a private address would be
+        # followed and its body streamed into the store. A federated instance serving its own pictures has
+        # no reason to redirect; if one starts, that is the catalog changing shape and belongs in a review,
+        # not in a silent fetch.
+        image_resp = session.get(image_url, stream=True, timeout=120, allow_redirects=False)
+        if image_resp.is_redirect or image_resp.is_permanent_redirect:
+            raise PanoramaxErrorResponse(
+                "Panoramax hd asset for picture %s redirected (%s); not following a redirect off the href "
+                "the catalog published" % (pano_id, image_resp.status_code))
         # A non-200 here is the instance being unreachable or mid-deploy, never a property of the pano - the
         # metadata request above already proved the imagery exists (#41). Unlike Mapillary's, this URL is a
         # plain public path with no signature in it, so nothing secret reaches scrape.log via the HTTPError.

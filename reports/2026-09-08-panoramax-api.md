@@ -8,7 +8,8 @@
 > python reports/scripts/panoramax_api_census.py \
 >     --write reports/data/2026-09-08-panoramax-api.json
 > ```
-> Keyless and read-only — no token, no account, ~1,000 metadata requests and six image downloads.
+> Keyless and read-only — no token, no account. A handful of paged `/api/search` requests covering 1,000
+> pictures, four single-picture probes, and six image downloads.
 
 ## Why measure before writing the downloader
 
@@ -54,13 +55,14 @@ Of **1,000** pictures the catalog lists in the Bayonne bbox:
 | 360° panoramas | **677** | 360 | `etalab-2.0` | `sig_bayonne` | `panoramax.ign.fr` |
 | Everything else | **323** | 92 | `CC-BY-SA-4.0` | `Patchanka` | `panoramax.openstreetmap.fr` |
 
-**67.7%** of the bbox is what Project Sidewalk is here for. The rest is a contributor's GoPro HERO8
-photographs — flat, rectilinear, 4000 px wide — riding the same streets, under a different licence, on a
-different host. That is not a defect in the catalog; it is what a commons looks like. Panoramax is
+**67.7%** of the bbox is what Project Sidewalk is here for. The rest is a single contributor's flat, rectilinear
+photographs — `field_of_view` 92 — riding the same streets, under a different licence, on a different host.
+(The census records licence, producer, host and field of view; it does not record camera make or model, so
+nothing here identifies the rig.) That is not a defect in the catalog; it is what a commons looks like. Panoramax is
 federated and anyone can contribute, so a *place* is not a *fleet*, and no property of the city
 distinguishes the two arms. Only the per-picture `pers:interior_orientation.field_of_view` does.
 
-Nothing downstream of the downloader inspects projection. A flat 4000×2020 JPEG saved as
+Nothing downstream of the downloader inspects projection. A flat JPEG saved as
 `<pano_id>.jpg` is a readable image of roughly the right shape at entirely the wrong projection:
 `CropRunner` would cut from it with the equirectangular seam modulo, wrap `pano_x` at a seam that does not
 exist, and emit a crop that looks completely plausible. So the downloader refuses a picture whose item
@@ -104,12 +106,13 @@ The frames themselves:
 | 5760×2880 | **547** |
 | 5376×2688 | **130** |
 
-Both are GoPro Max, 2:1, ~1.4 MB on the wire, ~50 MB decoded. **Not** the 12288×6144 that #110 and
+Both are 2:1, ~1.4 MB on the wire, ~50 MB decoded. (The census records the dimensions and the byte
+sizes; the camera is not among the fields it collects.) **Not** the 12288×6144 that #110 and
 SidewalkWebpage#5185 both assumed — that figure describes professional-rig imagery elsewhere in the
 federation, not Bayonne's own survey. Two consequences worth recording:
 
-- Nothing here strains the decode limits. `_MAX_PANO_PIXELS` is 16384×8192; a 5760-wide pano is a fifth of
-  that, and the [#115](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/115) display-copy
+- Nothing here strains the decode limits. `MAX_PANO_PIXELS` is 16384×8192 = 134 MP; a 5760×2880 pano is
+  16.6 MP, an eighth of it, and the [#115](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/115) display-copy
   sidecar is a no-op below its 8192 px cap. The downloader still calls it, because the 12288 imagery is
   real and a later French city may be shot with it.
 - The frame is **smaller than any GSV city's**, and crop sizing rule v2 normalises into a 6656 px frame
@@ -130,13 +133,16 @@ federation, not Bayonne's own survey. Two consequences worth recording:
   and SidewalkWebpage#5184.
 - **Whether the bbox composition generalises.** One city, one bbox, 1,000 pictures. The 360/flat split is
   a fact about Bayonne on 2026-09-08, and the *guard* is what generalises, not the ratio.
-- **Anything about rate limits or courtesy pacing.** ~1,000 metadata requests went out at whatever rate
-  urllib managed and nothing pushed back, but that is not evidence about a nightly fleet run. The
-  downloader inherits `retrying_session`'s policy and no more; if Panoramax ever pushes back, that is a
-  measurement nobody has yet.
+- **Anything about rate limits or courtesy pacing.** This census read 1,000 pictures through a handful of
+  paged search requests, not one request per picture, so it exercised nothing like the nightly shape — a
+  city's run issues one `/api/pictures/<id>` per unledgered pano. Nothing pushed back here, and that is
+  close to no evidence at all. The downloader inherits `retrying_session`'s policy and no more; if
+  Panoramax ever pushes back, that is a measurement nobody has yet.
 
 ## Artifact
 
 `reports/data/2026-09-08-panoramax-api.json` carries every count above, the per-check `hd` header
-comparisons, and the verbatim 404 body. `tests/test_panoramax_api_census.py` asserts that each number in
-this write-up appears in it.
+comparisons, and the verbatim 404 body. `tests/test_panoramax_api_census.py` asserts that every value the
+census computes appears in this write-up. Note the direction: it catches a figure in the artifact that the
+prose contradicts or omits, **not** a number in the prose that the artifact never measured. Anything quoted
+here that the census does not compute is unguarded, so do not add one — 2026-09-09 review found five.

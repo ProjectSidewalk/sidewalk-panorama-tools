@@ -166,11 +166,23 @@ class TestDownloadResultIsARealEnum:
 
 
 class FakeResponse:
+    # requests exposes these two on every response and panoramax reads them, because it fetches the hd href
+    # with allow_redirects=False: a redirect off a URL the catalog published is refused rather than followed.
+    REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
     def __init__(self, status_code=200, payload=None, body=None, chunks=None):
         self.status_code = status_code
         self._payload = payload
         self.text = body or ''
         self._chunks = chunks or []
+
+    @property
+    def is_redirect(self):
+        return self.status_code in self.REDIRECT_STATUSES
+
+    @property
+    def is_permanent_redirect(self):
+        return self.status_code in (301, 308)
 
     def json(self):
         if self._payload is None:
@@ -1018,15 +1030,38 @@ class TestPanoramaxPermanentVerdicts:
         assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
             == DownloadResult.failure
 
-    def test_the_404_body_is_not_read_at_all(self, monkeypatch, tmp_path):
-        """Unlike Mapillary's 404, which has to sniff for an auth signature because a scope-less token also
-        produces one. Panoramax is keyless, so there is no "we are not allowed to see it" state to confuse
-        with "it is not there" - and a body-sniffing 404 branch here would be a rule with no reason behind
-        it, which is how the next person deletes the wrong half."""
-        panoramax_session(monkeypatch, FakeResponse(status_code=404, payload=None, body='<html>404</html>'))
+    def test_a_404_carrying_the_catalogs_own_body_is_the_verdict(self, monkeypatch, tmp_path):
+        """The measured body is what makes a 404 permanent, not the status."""
+        status, body = OBSERVED_PANORAMAX_NOT_FOUND_2026_09_08
+        panoramax_session(monkeypatch, FakeResponse(status_code=status, payload=body))
 
         assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
             == DownloadResult.failure
+
+    @pytest.mark.parametrize('response', [
+        FakeResponse(status_code=404, payload=None, body='<html>404 Not Found</html>'),
+        FakeResponse(status_code=404, payload=None, body=''),
+        FakeResponse(status_code=404, payload={'error': 'gateway'}),
+        FakeResponse(status_code=404, payload=['not', 'an', 'object']),
+        FakeResponse(status_code=404, payload={'message': None}),
+    ], ids=['an HTML error page', 'an empty body', 'JSON that does not say it', 'a non-object body',
+            'a null message'])
+    def test_a_404_WITHOUT_the_catalogs_body_raises_instead_of_ledgering(self, monkeypatch, tmp_path,
+                                                                        response):
+        """The status alone does not say the CATALOG answered, and this used to read no further than it.
+
+        The old justification - keyless, so no "we are not allowed to see it" state to confuse with "it is
+        not there" - is true and answers the wrong question. api.panoramax.xyz is a keyless community API
+        and this is one path segment of it: a renamed endpoint, a CDN or WAF answering 404 for an
+        unrecognised UA, or DNS landing on a parked host all 404 for every pano in the city, and every one
+        of them ledgered. That is the 2026-09-01 Mapillary incident at whole-city scale, and this source has
+        no #113 breaker entry to bound it. The affirmation is free in the same body (2026-09-09 review).
+        """
+        panoramax_session(monkeypatch, response)
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+        assert os.listdir(tmp_path / PANORAMAX_PANO['pano_id'][:2]) == []
 
     def test_a_flat_photograph_is_refused_and_never_stored(self, monkeypatch, tmp_path):
         """The real measured flat item, which HAS a perfectly good hd asset - so this can only be the field
@@ -1041,7 +1076,52 @@ class TestPanoramaxPermanentVerdicts:
         assert downloaders.panoramax.download_single_pano(str(tmp_path), pano) == DownloadResult.failure
         assert os.listdir(tmp_path / FLAT_ITEM['id'][:2]) == []
 
-    @pytest.mark.parametrize('fov', [92, 180, 200, '360'], ids=['92', '180', '200', 'the string 360'])
+    @pytest.mark.parametrize('interior', [
+        {'field_of_view': None},
+        {'focal_length': 3.0},
+    ], ids=['field_of_view present but null', 'an interior orientation with no field_of_view'])
+    def test_an_unstated_field_of_view_reads_as_none_and_is_NOT_rescued_to_360(self, interior):
+        """The anti-rescue assertion, in the module that owns the guard.
+
+        Both existing `is None` cases exit at the `properties` guard without ever reaching the
+        `interior.get('field_of_view')` line, so `.get('field_of_view', PANORAMIC_FIELD_OF_VIEW_DEG)` -
+        a default that silently turns "the catalog said nothing" into "the catalog affirmed 360" - passed
+        the entire suite. These two reach that line. Behaviourally neutral today, since both spellings
+        download, which is exactly why it survived (2026-09-09 review); it stops being neutral the moment
+        anything downstream distinguishes "affirmed 360" from "said nothing".
+        """
+        item = {'id': 'x', 'properties': {'pers:interior_orientation': interior}}
+
+        assert downloaders.panoramax.declared_field_of_view(item) is None
+
+    @pytest.mark.parametrize('fov, panoramic', [
+        (360, True), (360.0, True), ('360', True), ('360.0', True), (359.9997, True),
+        (92, False), (180, False), (200, False), ('panoramic', False), (None, False),
+        ({'value': 360}, False), ([360], False),
+    ])
+    def test_a_panoramic_field_of_view_survives_a_change_of_type(self, fov, panoramic):
+        """It was an exact `!= 360` against the int until the 2026-09-09 review - safe for 360.0 and nothing
+        else. A catalog that started serving `"360"`, a Decimal, or a stitched 359.9997 would have routed
+        every genuine panorama in the city to a permanent downloaded=0 row. The module already applies this
+        repo's #46 doctrine to the id comparison in require_picture_record, where the consequence is milder
+        because it raises; this is the comparison where being wrong is unrecoverable."""
+        assert downloaders.panoramax.is_panoramic_field_of_view(fov) is panoramic
+
+    @pytest.mark.parametrize('fov', [360, 360.0, '360', 359.9997],
+                             ids=['int', 'float', 'the string 360', 'a stitched 359.9997'])
+    def test_a_panoramic_picture_downloads_whatever_type_its_fov_arrives_as(self, monkeypatch, tmp_path,
+                                                                           fov):
+        """The call site, not just the helper: an exact `!= 360` passes every assertion on
+        is_panoramic_field_of_view and still writes off the whole city, because the guard is where the
+        comparison is used."""
+        item = dict(PANORAMIC_ITEM)
+        item['properties'] = dict(item['properties'],
+                                  **{'pers:interior_orientation': {'field_of_view': fov}})
+        panoramax_session(monkeypatch, FakeResponse(payload=item), FakeResponse(chunks=[jpeg_bytes(120)]))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)             == DownloadResult.success
+
+    @pytest.mark.parametrize('fov', [92, 180, 200, 'panoramic'], ids=['92', '180', '200', 'a word'])
     def test_any_affirmed_non_360_field_of_view_is_refused(self, monkeypatch, tmp_path, fov):
         """Including the string '360'. The catalog serves it as a number today; if that ever changed, a
         `!= 360` on a string would refuse the entire city - loudly and permanently. Pinned so the day it
@@ -1054,9 +1134,8 @@ class TestPanoramaxPermanentVerdicts:
         assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
             == DownloadResult.failure
 
-    @pytest.mark.parametrize('assets', [{}, {'sd': {'href': 'https://x/sd.jpg'}},
-                                        {'hd': {'href': ''}}, {'hd': {}}],
-                             ids=['no assets', 'sd only', 'empty href', 'hd without an href'])
+    @pytest.mark.parametrize('assets', [{}, {'sd': {'href': 'https://x/sd.jpg'}}, {'hd': {}}],
+                             ids=['no hd', 'sd only', 'hd without an href'])
     def test_a_picture_with_no_hd_asset_is_permanent(self, monkeypatch, tmp_path, assets):
         """The catalog affirmed the picture and publishes no full-resolution pixels for it - the same
         verdict shape as Mapillary's "knows the image, no original-resolution rendition"."""
@@ -1147,6 +1226,56 @@ class TestPanoramaxTransientConditions:
 
         with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='absolute https'):
             downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+    @pytest.mark.parametrize('status', [301, 302, 303, 307, 308])
+    def test_a_redirect_off_the_published_href_is_refused_rather_than_followed(self, monkeypatch, tmp_path,
+                                                                              status):
+        """The hd href is the one URL in this repo taken from a remote response rather than built, on a
+        public commons anyone can contribute to - and requests follows up to 30 redirects to ANY scheme and
+        host by default, so the https check covers the first hop only. A 302 to http://169.254.169.254/ or
+        to a private address would be followed and its body streamed into the store; if it happened to start
+        with a JPEG SOF it would be renamed in and ledgered downloaded=1 (2026-09-09 review).
+
+        Raises rather than ledgering: a federated instance serving its own pictures has no reason to
+        redirect, so one that starts is the catalog changing shape, and the pano retries untouched."""
+        panoramax_session(monkeypatch,
+                          FakeResponse(payload=PANORAMIC_ITEM),
+                          FakeResponse(status_code=status, body='moved'))
+
+        # Matched on the reason: this double returns the queued response rather than following anything, so
+        # without the match= a mutant that drops the check still "passes" - the redirect body is simply not
+        # a JPEG and raises one line later, for a completely different reason.
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='redirect'):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+        assert os.listdir(tmp_path / PANORAMAX_SHARD) == []
+
+    @pytest.mark.parametrize('assets, reason', [
+        (None, 'no assets block at all'),
+        ('not an object', 'a non-object assets block'),
+        ({'hd': 'not an object'}, 'a non-object hd asset'),
+        ({'hd': {'href': ''}}, 'an hd asset with an empty href'),
+        ({'hd': {'href': None}}, 'an hd asset with a null href'),
+    ])
+    def test_a_malformed_assets_block_raises_rather_than_writing_the_picture_off(self, monkeypatch,
+                                                                                tmp_path, assets, reason):
+        """require_picture_record establishes only that the body is a dict whose id matches - which
+        `{"id": "<uuid>"}` alone satisfies - so none of these is the catalog saying anything about this
+        picture's pixels. They are the catalog changing shape, and ledgering them meant one `?fields=`
+        slimming, or assets moving under properties the way pers:interior_orientation already sits there,
+        would write off a whole city in one night with nothing loud about it (2026-09-09 review).
+
+        Contrast test_a_picture_with_no_hd_asset_is_permanent: a well-formed assets block that simply does
+        not offer `hd` IS the verdict."""
+        item = dict(PANORAMIC_ITEM)
+        if assets is None:
+            item.pop('assets', None)
+        else:
+            item['assets'] = assets
+        panoramax_session(monkeypatch, FakeResponse(payload=item))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+        assert os.listdir(tmp_path / PANORAMAX_SHARD) == []
 
     def test_an_unreachable_instance_raises(self, monkeypatch, tmp_path):
         """The catalog already proved the picture exists; the instance holding its pixels being down is

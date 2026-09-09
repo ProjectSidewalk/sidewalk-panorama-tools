@@ -5,11 +5,12 @@ the [streetlevel](https://github.com/sk-zk/streetlevel) library to fetch Google'
 every pano has depth data — third-party and some older panos don't — so the phase saves it where available
 and records the outcome either way.
 
-**Depth is a GSV-only product, and the phase filters for that itself.** `download_depth_maps` keeps only
-`source == 'gsv'` before it asks for anything, so a Mapillary or Panoramax pano costs zero photometa
-requests and never appears in `depth_log.csv` — there is no Google `pano_id` to ask about. This is stated
-because it is invisible at the call site: `run()` hands the depth phase the *whole* supported corpus, and
-the filtering happens one level in. A city on another source therefore reports a depth phase that did
+**Depth is a GSV-only product, and the caller filters for it.** `DownloadRunner.run()` builds `gsv_panos`
+— `source == 'gsv'` only — and hands the depth phase just those, so a Mapillary or Panoramax pano costs zero
+photometa requests and never appears in `depth_log.csv`; there is no Google `pano_id` to ask about. The
+filter is at the **call site**, not inside the phase: `gsv.download_depth_maps` has no source filter of its
+own and its docstring says so ("Callers pre-filter to `source == 'gsv'`"). A future caller that hands it a
+mixed corpus spends one photometa request per non-GSV pano. A city on another source therefore reports a depth phase that did
 nothing, which is correct rather than a stand-down (see
 [ops.md](ops.md) for how to tell the two apart).
 

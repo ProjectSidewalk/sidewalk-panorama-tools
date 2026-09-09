@@ -1443,10 +1443,22 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
     """
 
     class _Response:
+        # requests exposes these on every response, and panoramax reads them: it fetches the hd href with
+        # allow_redirects=False and refuses a redirect off a URL the catalog published.
+        REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
         def __init__(self, status_code=200, payload=None, chunks=()):
             self.status_code = status_code
             self._payload = payload
             self._chunks = chunks
+
+        @property
+        def is_redirect(self):
+            return self.status_code in self.REDIRECT_STATUSES
+
+        @property
+        def is_permanent_redirect(self):
+            return self.status_code in (301, 308)
 
         def json(self):
             return self._payload

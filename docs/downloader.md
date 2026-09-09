@@ -425,7 +425,7 @@ is in [reports/2026-09-08-panoramax-api.md](../reports/2026-09-08-panoramax-api.
 
 Bayonne's frames are 5760×2880 and 5376×2688 — smaller than any GSV city's, and well under the
 [#115](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/115) display-copy cap, so no sidecar
-is written for them. Licence varies **per picture** (`etalab-2.0`, `CC-BY-SA-4.0`, `CC-BY-4.0` all occur);
+is written for them. Licence varies **per picture** (`etalab-2.0` and `CC-BY-SA-4.0` over the 1,000 measured; the catalog permits others);
 carrying it beside the crops is [#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111).
 
 [#110]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/110
