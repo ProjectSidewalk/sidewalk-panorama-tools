@@ -10,6 +10,7 @@ config.depth_min_request_interval, which is therefore the one knob that decides 
 can ever get.
 """
 
+import json
 import os
 import time
 
@@ -24,9 +25,11 @@ def pano_infos(*pano_ids):
     return [{'pano_id': p, 'source': 'gsv'} for p in pano_ids]
 
 
-# Captured at import, before conftest's _isolate_depth_host_state redirects the default away from the real
-# temp directory. TestTheLatchPathIsAHostFact is the one place that has to see the deployed behaviour.
+# Captured at import, before conftest's _isolate_depth_host_state redirects the defaults away from the real
+# temp directory. TestTheLatchPathIsAHostFact and TestTheStatePathIsAHostFact are the places that have to see
+# the deployed behaviour.
 _REAL_DEFAULT_LATCH_PATH = gsv.default_block_latch_path
+_REAL_DEFAULT_PACE_PATH = gsv.default_pace_state_path
 
 
 @pytest.fixture
@@ -453,3 +456,318 @@ class TestTheFlagReachesThePhase:
         args = DownloadRunner.build_parser().parse_args(['host', 'dir', '--depth-block-latch', '/x/y'])
 
         assert args.depth_block_latch == '/x/y'
+
+
+# --- The pacer's standing outlives the process (#43) --------------------------------------------------------
+#
+# Measured on the production store after three nights of the backfill: every city with a backlog makes ~590
+# requests in its 12-minute slot, at 1.22 s each, because every city is a fresh process that opens at 1.0 s
+# and needs 1,400 clean requests to reach the 0.25 s floor - so no slot ever gets there, and the fleet's
+# effective rate is the opening interval, not the floor the census earned. The five biggest cities need
+# 250-460 nights at that rate. So the speed a run EARNS is written to local disk and the next run opens
+# there. Only earned speed: on_pushback is fed by every network failure too, and a persisted back-off would
+# let one DNS blip on the box hand the next 51 cities a 30 s gap.
+
+def write_state(path, interval, clean_streak, written_at=None):
+    with open(path, 'w') as f:
+        json.dump({'interval': interval, 'clean_streak': clean_streak,
+                   'written_at': time.time() if written_at is None else written_at}, f)
+
+
+class TestThePacerRemembersEarnedSpeed:
+
+    def pacer(self, path):
+        return gsv.DepthPacer(floor=0.25, start=1.0, ceiling=30.0, recover_after=2, min_backoff=1.0,
+                              state_path=str(path))
+
+    def test_with_nothing_saved_it_opens_at_the_start_interval(self, tmp_path):
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_earned_steps_are_handed_to_the_next_pacer(self, tmp_path):
+        first = self.pacer(tmp_path / 'pace')
+        for _ in range(4):
+            first.on_clean()  # two full streaks: 1.0 -> 0.8 -> 0.64
+        assert first.interval == pytest.approx(0.64)
+
+        assert self.pacer(tmp_path / 'pace').interval == pytest.approx(0.64)
+
+    def test_the_clean_streak_carries_too(self, tmp_path):
+        """590 requests a slot is two decay steps and 190 towards the third. Forgetting the 190 would cost
+        every city a third of its nightly progress towards the floor."""
+        first = self.pacer(tmp_path / 'pace')
+        first.on_clean()  # one short of a step
+        first.save()
+
+        second = self.pacer(tmp_path / 'pace')
+        second.on_clean()  # completes the streak the first one started
+
+        assert second.interval == pytest.approx(0.8)
+
+    def test_a_step_is_saved_when_it_is_earned_not_only_at_the_end(self, tmp_path):
+        """A run killed by the queue's hard timeout never reaches save(); what it earned must not die with it."""
+        first = self.pacer(tmp_path / 'pace')
+        for _ in range(2):
+            first.on_clean()
+
+        assert self.pacer(tmp_path / 'pace').interval == pytest.approx(0.8)
+
+    def test_a_pushback_forfeits_the_credit_at_once(self, tmp_path):
+        first = self.pacer(tmp_path / 'pace')
+        for _ in range(4):
+            first.on_clean()
+        first.on_pushback('HTTP 429')  # and no save() - the forfeit must not wait for the end of the phase
+
+        second = self.pacer(tmp_path / 'pace')
+        assert second.interval == 1.0
+        assert second._clean_streak == 0
+
+    def test_a_saved_slowdown_is_never_inherited(self, tmp_path):
+        """on_pushback is fed by every network failure and unexpected exception, not only by Google. Were the
+        widened interval persisted, one DNS blip on the box would hand the next 51 cities a 30 s gap - at
+        which a 12-minute slot makes 16 requests and the first decay step is a fortnight of slots away."""
+        first = self.pacer(tmp_path / 'pace')
+        for _ in range(5):
+            first.on_pushback('network failure')  # 30 s, the ceiling
+        first.save()
+
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_the_file_never_holds_a_value_above_the_start(self, tmp_path):
+        first = self.pacer(tmp_path / 'pace')
+        first.on_pushback('HTTP 503')
+        first.save()
+
+        with open(tmp_path / 'pace') as f:
+            assert json.load(f)['interval'] == 1.0
+
+    def test_a_hand_written_slow_value_is_clamped_to_the_start(self, tmp_path):
+        write_state(tmp_path / 'pace', 30.0, 0)
+
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_a_value_below_the_current_floor_is_clamped_up(self, tmp_path):
+        """A floor raised in config.py wins over evidence earned under the old one."""
+        write_state(tmp_path / 'pace', 0.05, 0)
+
+        assert self.pacer(tmp_path / 'pace').interval == 0.25
+
+    def test_a_streak_cannot_exceed_a_full_one(self, tmp_path):
+        write_state(tmp_path / 'pace', 0.8, 10 ** 6)
+
+        assert self.pacer(tmp_path / 'pace')._clean_streak == 1  # recover_after - 1
+
+    @pytest.mark.parametrize('contents', [
+        '', 'not json', '[]', '"fast"', '{"interval": 0.25}',
+        '{"interval": "0.25", "clean_streak": 0, "written_at": %r}' % time.time(),
+        '{"interval": NaN, "clean_streak": 0, "written_at": %r}' % time.time(),
+        '{"interval": false, "clean_streak": 0, "written_at": %r}' % time.time(),
+        '{"interval": 0.25, "clean_streak": 0, "written_at": "yesterday"}',
+    ], ids=['empty', 'garbage', 'list', 'string', 'missing-keys', 'string-number', 'nan', 'bool', 'bad-stamp'])
+    def test_anything_unreadable_opens_careful(self, tmp_path, contents):
+        """The opposite direction from the latch, for the same reason: a latch nobody can read must not stand
+        the fleet down forever, and a pace file nobody can read must not hand it the floor. NaN is the one
+        json accepts that would then pass every clamp - min(max(nan, floor), start) is nan, and wait() reads
+        a nan interval as "no gap at all". The bool case is `false`, not `true`: a JSON true is 1 to Python,
+        which is the opening interval and would pass this test on a loader that took it; false is 0, which a
+        loader that took it would clamp UP to the floor - a speed-up out of a file that says nothing."""
+        (tmp_path / 'pace').write_text(contents)
+
+        pacer = self.pacer(tmp_path / 'pace')
+
+        assert pacer.interval == 1.0
+        assert pacer._clean_streak == 0
+
+    def test_a_day_old_standing_is_not_believed(self, tmp_path):
+        write_state(tmp_path / 'pace', 0.25, 0,
+                    written_at=time.time() - (gsv.DEPTH_PACE_STATE_HOURS + 1) * 3600)
+
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_a_standing_dated_far_in_the_future_is_not_believed(self, tmp_path):
+        write_state(tmp_path / 'pace', 0.25, 0,
+                    written_at=time.time() + (gsv.DEPTH_PACE_STATE_HOURS + 1) * 3600)
+
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_a_standing_dated_moments_in_the_future_still_loads(self, tmp_path):
+        """The latch's lesson: a writer that rounds up dates the file microseconds ahead of a reader that
+        opens it at once. A small future offset is just now."""
+        write_state(tmp_path / 'pace', 0.25, 0, written_at=time.time() + 0.01)
+
+        assert self.pacer(tmp_path / 'pace').interval == 0.25
+
+    def test_no_state_path_means_no_file_is_read_or_written(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        pacer = gsv.DepthPacer(floor=0.25, start=1.0, recover_after=1)
+
+        pacer.on_clean()
+        pacer.on_pushback('HTTP 429')
+        pacer.save()
+        pacer.forfeit()
+
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestWhatThePhaseDoesWithIt:
+
+    @staticmethod
+    def real_pacing(monkeypatch):
+        """conftest zeroes the intervals so the suite does not sleep; these tests need the real shape and use
+        the clock fixture so they still do not."""
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        monkeypatch.setattr(gsv, 'DEPTH_PACE_RECOVER_AFTER', 2)
+
+    def test_a_healthy_phase_saves_its_standing_at_the_end(self, tmp_path, recorder, clock, monkeypatch):
+        self.real_pacing(monkeypatch)
+        state = tmp_path / 'pace'
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2', 'p3', 'p4', 'p5'),
+                                pace_state_path=str(state))
+
+        with open(state) as f:
+            saved = json.load(f)
+        assert saved['interval'] == pytest.approx(0.64), 'five clean requests: steps after the 2nd and 4th'
+        assert saved['clean_streak'] == 1, 'and one towards the third'
+
+    def test_the_next_phase_opens_where_the_last_one_ended(self, tmp_path, recorder, clock, no_jitter,
+                                                            monkeypatch):
+        """The whole point, end to end: the second process's first gap is the first process's last interval,
+        not the opening one."""
+        self.real_pacing(monkeypatch)
+        state = tmp_path / 'pace'
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2', 'p3', 'p4'), pace_state_path=str(state))
+        clock.slept.clear()
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('q1', 'q2'), pace_state_path=str(state))
+
+        assert clock.slept[0] == pytest.approx(0.64), 'the gap before q2 is drawn at the inherited interval'
+
+    def test_a_blocked_stop_forfeits_the_standing(self, tmp_path, fake_streetview, clock, monkeypatch):
+        self.real_pacing(monkeypatch)
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 1)
+        monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes',
+                            lambda pano_id, session: (_ for _ in ()).throw(gsv.DepthBlockedError('/sorry/')))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state),
+                                block_latch_path=str(tmp_path / 'latch'))
+
+        with open(state) as f:
+            saved = json.load(f)
+        assert saved == {**saved, 'interval': 1.0, 'clean_streak': 0}
+
+    def test_a_stood_down_phase_leaves_the_standing_alone(self, tmp_path, recorder):
+        """Zero requests is zero evidence, either way."""
+        state, latch = tmp_path / 'pace', tmp_path / 'latch'
+        write_state(state, 0.25, 1)
+        gsv._write_block_latch(str(latch))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state),
+                                block_latch_path=str(latch))
+
+        with open(state) as f:
+            assert json.load(f)['interval'] == 0.25
+
+    def test_an_unwritable_state_path_costs_nothing(self, tmp_path, recorder):
+        result = gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2', 'p3'),
+                                         pace_state_path=str(tmp_path / 'no-such-dir' / 'pace'))
+
+        assert result[0] == 3
+        assert sorted(recorder.requested) == ['p1', 'p2', 'p3']
+
+    def test_an_unwritable_state_path_cannot_feed_the_breaker(self, tmp_path):
+        """The forfeit is written from inside a requests response hook. An exception there is the REQUEST's
+        exception: it lands in the unexpected arm, counts towards the breaker, and one unwritable temp
+        directory would then trip it after 25 panos - on every city, every night."""
+        pacer = gsv.DepthPacer(floor=0.0, start=0.0, state_path=str(tmp_path / 'no-such-dir' / 'pace'))
+        response = requests.Response()
+        response.status_code = 429
+
+        gsv._pushback_hook(pacer)(response)  # must not raise
+
+
+class TestTheStatePathIsAHostFact:
+
+    def test_the_default_is_local_disk_not_the_store(self):
+        """Beside the block latch, for the latch's reasons: the store root passed to this phase is one city's
+        directory, and what is remembered is this host's standing with Google."""
+        import tempfile
+
+        assert _REAL_DEFAULT_PACE_PATH() == os.path.join(tempfile.gettempdir(), gsv.DEPTH_PACE_STATE_FILENAME)
+
+    def test_download_depth_maps_defaults_to_it(self, tmp_path, recorder, monkeypatch):
+        asked = []
+        monkeypatch.setattr(gsv, 'default_pace_state_path',
+                            lambda: asked.append(1) or str(tmp_path / 'pace'))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'))
+
+        assert asked, 'no explicit path means the host default, not "remember nothing"'
+        assert os.path.isfile(tmp_path / 'pace')
+
+
+class TestTheStateFlagReachesThePhase:
+
+    def test_the_flag_is_passed_through_to_download_depth_maps(self, tmp_path, monkeypatch):
+        import DownloadRunner
+
+        seen = {}
+
+        def spy(storage_path, pano_infos, **kwargs):
+            seen.update(kwargs)
+            return 0, 0, 0, 0
+
+        monkeypatch.setattr(DownloadRunner.gsv, 'download_depth_maps', spy)
+        monkeypatch.setattr(DownloadRunner, 'download_panorama_images', lambda *a, **k: (0, 0, 0, 0, 0))
+
+        DownloadRunner.run_scraper_and_log_results(str(tmp_path), [], [{'pano_id': 'p', 'source': 'gsv'}],
+                                                   False, depth_pace_state='/some/where/pace')
+
+        assert seen['pace_state_path'] == '/some/where/pace'
+
+    def test_not_passing_it_leaves_the_phase_on_its_own_default(self, tmp_path, monkeypatch):
+        import DownloadRunner
+
+        seen = {}
+
+        def spy(storage_path, pano_infos, **kwargs):
+            seen.update(kwargs)
+            return 0, 0, 0, 0
+
+        monkeypatch.setattr(DownloadRunner.gsv, 'download_depth_maps', spy)
+        monkeypatch.setattr(DownloadRunner, 'download_panorama_images', lambda *a, **k: (0, 0, 0, 0, 0))
+
+        DownloadRunner.run_scraper_and_log_results(str(tmp_path), [], [{'pano_id': 'p', 'source': 'gsv'}],
+                                                   False)
+
+        assert seen['pace_state_path'] is None
+
+    def test_the_flag_reaches_the_phase_from_argv(self, tmp_path, monkeypatch):
+        """The whole four-hop chain, argparse -> main -> run -> run_scraper_and_log_results, in one go."""
+        import DownloadRunner
+
+        seen = {}
+
+        def spy(storage_path, pano_infos, **kwargs):
+            seen.update(kwargs)
+            return 0, 0, 0, 0
+
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text('pano_id,width,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
+                            'gsvPanoIdAAAAAAAAAAAAA,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n')
+        monkeypatch.setattr(DownloadRunner.gsv, 'download_depth_maps', spy)
+        monkeypatch.setattr(DownloadRunner, 'download_panorama_images', lambda *a, **k: (0, 0, 0, 0, 0))
+        monkeypatch.chdir(tmp_path)
+
+        DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+                             '--depth-pace-state', '/x/pace'])
+
+        assert seen['pace_state_path'] == '/x/pace'
+
+    def test_the_parser_accepts_it(self):
+        import DownloadRunner
+
+        args = DownloadRunner.build_parser().parse_args(['host', 'dir', '--depth-pace-state', '/x/y'])
+
+        assert args.depth_pace_state == '/x/y'

@@ -10,6 +10,7 @@ import asyncio
 import base64
 import collections
 import csv
+import json
 import logging
 import math
 import os
@@ -672,9 +673,9 @@ DEPTH_PUSHBACK_STATUSES = frozenset((429, 500, 502, 503, 504))
 
 class DepthPacer:
     """Adaptive spacing between depth metadata requests: careful to start, slower on trouble, faster only on
-    sustained evidence.
+    sustained evidence - and, given a state_path, opening where the previous run on this host left off.
 
-    Three things here are load-bearing:
+    Four things here are load-bearing:
 
     * **The floor is a hard floor.** `interval` only ever moves between `floor` and `ceiling`, so
       `config.depth_min_request_interval` alone decides how aggressive this host can ever get. This is
@@ -685,19 +686,67 @@ class DepthPacer:
     * **The wait is measured between requests, not added on top of them.** A photometa call that took 30 s to
       time out has already paid the gap; sleeping the full interval after it would double the cost of exactly
       the requests that are already going badly.
+    * **Earned speed outlives the process; back-offs do not** (#43). Every city is its own process, and
+      measured over three nights of the production backfill every one of them opened at 1.0 s and ended its
+      12-minute slot still ramping - 1,400 clean requests to reach the floor, ~590 per slot - so the fleet's
+      real rate was the opening interval and the five largest cities were 250-460 nights out. Given a
+      `state_path`, the interval and clean streak a run earns are written to local disk (never above the
+      opening interval) and the next run opens there. Only EARNED speed: on_pushback is fed by every network
+      failure and unexpected exception the phase sees, not only by Google, so a persisted back-off would let
+      one DNS blip on the box hand the next 51 cities a 30 s gap. Back-offs stay per-process; refusals stay
+      with the block latch; a push-back forfeits the credit for the next run as well.
 
     Not thread-safe, and does not need to be: the depth phase is serial by design.
     """
 
-    def __init__(self, floor=None, start=None, ceiling=None, recover_after=None, min_backoff=None):
+    def __init__(self, floor=None, start=None, ceiling=None, recover_after=None, min_backoff=None,
+                 state_path=None):
         self.floor = depth_min_request_interval if floor is None else floor
         self.ceiling = depth_max_request_interval if ceiling is None else ceiling
         self.recover_after = DEPTH_PACE_RECOVER_AFTER if recover_after is None else recover_after
         self.min_backoff = DEPTH_PACE_MIN_BACKOFF if min_backoff is None else min_backoff
         opening = depth_start_interval if start is None else start
-        self.interval = min(max(opening, self.floor), self.ceiling)
+        self.start = min(max(opening, self.floor), self.ceiling)
+        self.interval = self.start
         self._clean_streak = 0
         self._last_request_at = None
+        self.state_path = state_path
+        self._inherit()
+
+    def _inherit(self):
+        """Open at whatever an earlier run on this host earned - never slower than the opening interval.
+
+        A loaded interval is clamped into [floor, start] and a loaded streak into [0, recover_after), so a
+        config change - a raised floor, a lowered start - wins over old evidence, and a file holding a value
+        above the opening interval (which the writer never produces, but a hand edit could) cannot slow the
+        fleet down. Everything _load_pace_state cannot believe resolves to "open careful".
+        """
+        loaded = _load_pace_state(self.state_path) if self.state_path else None
+        if loaded is None:
+            return
+        interval, streak = loaded
+        self.interval = min(max(interval, self.floor), self.start)
+        self._clean_streak = min(max(streak, 0), self.recover_after - 1) if self.recover_after else 0
+
+    def _persist(self):
+        """Write the standing for the next run: the interval, capped at the opening one, and the streak."""
+        if self.state_path:
+            _write_pace_state(self.state_path, min(self.interval, self.start), self._clean_streak)
+
+    def save(self):
+        """Record the current standing, for the end of the phase.
+
+        The decay steps persist themselves as they are earned (a run the queue hard-kills never gets here),
+        so what this adds is the streak in progress: 590 requests a slot is two steps and 190 towards the
+        third, and forgetting the 190 would cost every city a third of its nightly progress.
+        """
+        self._persist()
+
+    def forfeit(self):
+        """Google refused us outright: whatever this run earned, the next one opens careful."""
+        self._clean_streak = 0
+        self.interval = max(self.interval, self.start)
+        self._persist()
 
     def wait(self):
         """Sleep whatever is left of this request's gap, then mark the request as starting now."""
@@ -714,15 +763,21 @@ class DepthPacer:
         if self.recover_after and self._clean_streak >= self.recover_after:
             self._clean_streak = 0
             self.interval = max(self.floor, self.interval * DEPTH_PACE_RECOVER_FACTOR)
+            # Persisted as it is earned, not at the end of the phase: the queue's hard timeout kills a run
+            # without unwinding it, and a step earned in that run must not die with it.
+            self._persist()
 
     def on_pushback(self, why):
-        """Google made us wait, retry, or fail. Back off now and forfeit any credit towards speeding up."""
+        """Google made us wait, retry, or fail. Back off now and forfeit any credit towards speeding up -
+        including the credit the NEXT run would have inherited. This runs inside a requests response hook, so
+        the write below must never raise (see _write_pace_state)."""
         self._clean_streak = 0
         widened = max(self.interval * DEPTH_PACE_BACKOFF_FACTOR, self.min_backoff)
         widened = min(widened, self.ceiling)
         if widened > self.interval:
             logging.warning("DEPTHDOWNLOAD: backing off to %.2fs between requests (%s)", widened, why)
         self.interval = widened
+        self._persist()
 
 
 def _pushback_hook(pacer):
@@ -751,6 +806,11 @@ def _pushback_hook(pacer):
 # cover a night's queue (one pass of the fleet) without carrying yesterday's block into a new day.
 DEPTH_BLOCK_LATCH_FILENAME = 'sidewalk-depth-blocked'
 DEPTH_BLOCK_LATCH_HOURS = 6.0
+
+# Where the pacer's earned standing lives (#43), and how long it is believed. A day: the evidence is about
+# this host's recent behaviour towards one endpoint, and a fleet that has not run depth in a day opens careful.
+DEPTH_PACE_STATE_FILENAME = 'sidewalk-depth-pace'
+DEPTH_PACE_STATE_HOURS = 24.0
 
 
 def default_block_latch_path():
@@ -805,6 +865,73 @@ def _write_block_latch(path):
     except OSError as e:
         logging.error("DEPTHDOWNLOAD: could not write the block latch %s (%s); the next city will "
                       "rediscover the block itself", path, str(e))
+
+
+def default_pace_state_path():
+    """Local disk, beside the block latch, for the latch's reasons (see default_block_latch_path)."""
+    return os.path.join(tempfile.gettempdir(), DEPTH_PACE_STATE_FILENAME)
+
+
+def _finite_number(value):
+    """A float from a JSON value that is a real, finite number - or None.
+
+    Not a bool (JSON `true` is an int to Python and would read as 1 s), and not NaN: json.loads accepts a bare
+    NaN token, and a NaN interval passes every clamp below (min(max(nan, floor), start) is nan) and then reads
+    in wait() as "no gap at all" - the one shape that would make a poisoned file the fastest setting there is.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _load_pace_state(path):
+    """(interval, clean_streak) an earlier run on this host earned, or None when there is nothing to believe.
+
+    Every ambiguous case resolves towards CAREFUL - the caller then opens at depth_start_interval - which is
+    the opposite direction from the block latch, and for the same reason, the cost of getting it backwards: a
+    latch nobody can read must not stand the fleet down forever, and a pace file nobody can read must not hand
+    it the floor. Missing, unparseable, non-numeric, NaN, older than DEPTH_PACE_STATE_HOURS, or dated further
+    in the future than that, all mean "start over". A small future offset is just now (the clock-rounding
+    lesson _block_latch_age_hours records).
+    """
+    try:
+        with open(path) as f:
+            state = json.load(f)
+        interval = _finite_number(state['interval'])
+        streak = _finite_number(state['clean_streak'])
+        written_at = _finite_number(state['written_at'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if interval is None or streak is None or written_at is None:
+        return None
+    if abs(time.time() - written_at) / 3600.0 > DEPTH_PACE_STATE_HOURS:
+        return None
+    return interval, int(streak)
+
+
+def _write_pace_state(path, interval, clean_streak):
+    """Record what this host has earned, for the next run to inherit. Never raises.
+
+    Called from inside a requests response hook (a push-back forfeits the credit) and at the end of the phase;
+    an OSError from the first place would become the request's exception, land in the unexpected arm and feed
+    the breaker - one unwritable temp directory would then trip it after 25 panos on every city, every night -
+    and from the second it would take the log.csv evidence row with it.
+
+    Written to a per-process temporary name and renamed into place, so a run that reads while another writes
+    sees the old file or the new one, never a torn one (and a torn one would only mean "open careful").
+    """
+    tmp = '%s.%d.tmp' % (path, os.getpid())
+    try:
+        with open(tmp, 'w') as f:
+            json.dump({'interval': interval, 'clean_streak': clean_streak, 'written_at': time.time()}, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        logging.error("DEPTHDOWNLOAD: could not write the pacing state %s (%s); the next run opens careful",
+                      path, str(e))
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _load_depth_log(depth_log_path):
@@ -1165,7 +1292,7 @@ def camera_height_from_artifact(artifact, default=None):
 
 
 def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
-                        max_requests=None, block_latch_path=None):
+                        max_requests=None, block_latch_path=None, pace_state_path=None):
     """Fetch GSV depth maps via the streetlevel library for every pano in pano_infos.
 
     Callers pre-filter to source == 'gsv'. Depth rides Google's photometa response, so this costs one metadata
@@ -1192,6 +1319,10 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
                                stretch or shrink the budget (#51).
     @param max_runtime_minutes Stop starting new requests once this much time has elapsed since run start.
     @param max_requests        Stop after this many HTTP attempts this run (manual backfill throttle).
+    @param block_latch_path    Where a refusal from Google is remembered across runs; None means the host
+                               default (default_block_latch_path).
+    @param pace_state_path     Where the pacer's earned standing is remembered across runs (#43); None means
+                               the host default (default_pace_state_path). See DepthPacer.
     @return                    (success_count, fail_count, skipped_count, total_completed).
     """
     try:
@@ -1220,7 +1351,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
     success_count, fail_count, skipped_count, unavailable_count = 0, 0, 0, 0
     request_count = 0
     consecutive_failures = 0
-    pacer = DepthPacer()
+    pacer = DepthPacer(state_path=default_pace_state_path() if pace_state_path is None else pace_state_path)
     # Why the phase stopped early, if it did - one of the DEPTH_STOP_* constants, or None if the phase worked
     # through its whole list. The breaker is fed by storage failures as well as network ones, so the cause of a
     # trip is whatever streak_classes and last_error say, not necessarily Google.
@@ -1407,6 +1538,11 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
                 time.sleep(retreat_seconds)
 
     total_completed = success_count + fail_count + skipped_count
+    # What this run earned outlives it (DepthPacer._inherit) - unless Google refused us, which forfeits it.
+    if stop_reason == DEPTH_STOP_BLOCKED:
+        pacer.forfeit()
+    else:
+        pacer.save()
     # Loud on stdout because cron mails it: a phase that stopped early means nothing is progressing, and the
     # per-pano detail is buried in scrape.log.
     if stop_reason == DEPTH_STOP_BLOCKED:
