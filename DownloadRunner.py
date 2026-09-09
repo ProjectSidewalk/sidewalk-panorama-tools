@@ -632,6 +632,11 @@ def main(argv=None):
     # panorama it just wrote, and a Mapillary equirect over Pillow's 89 MP default would otherwise warn on
     # every one - or, past 2x that, raise, which _write_display_copy swallows into "no sidecar, ever" for
     # exactly the widest images. The GSV path never needs it (its raster is built in memory, not decoded).
+    #
+    # Kept although common.WRITE_DISPLAY_COPIES is off (2026-09-09), so this is currently the policy for a
+    # path nothing takes. It is correct either way and is needed the moment the switch is flipped; removing
+    # it would make re-enabling the copy a two-file change whose second file is easy to miss, and the failure
+    # it prevents is silent - a warning per pano, then no sidecar on precisely the widest images.
     raise_decompression_bomb_ceiling()
 
     # exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.

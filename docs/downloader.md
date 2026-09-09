@@ -6,8 +6,9 @@ this repo and runs nightly, per city, in production.
 
 A run has two phases:
 
-1. **Image phase** — stitch and save panorama JPEGs, plus the 8192 px
-   [display copy](ops.md#display-copies-of-wide-panoramas) beside any panorama wider than that. Gated by
+1. **Image phase** — stitch and save panorama JPEGs. It no longer writes the 8192 px
+   [display copy](ops.md#display-copies-of-wide-panoramas) beside a wider panorama: that was switched off on
+   2026-09-09 and the reasoning is in that section. Gated by
    [`pano_id_log.csv`](ops.md#resume-ledgers); restricted to labeled panos unless `--all-panos`.
 2. **Depth phase** — one metadata request per unresolved pano, saving a `.depth.npz` artifact where Google has
    one. Gated by `depth_log.csv`. Always covers **every** pano, labeled or not. See [Depth maps](depth.md).

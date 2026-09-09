@@ -45,6 +45,7 @@ except ImportError:
     depth_start_interval = depth_min_request_interval
     depth_max_request_interval = 30.0
 
+from . import common
 from .common import DownloadResult, atomic_output_path, write_downscaled_sidecar
 
 
@@ -499,12 +500,17 @@ def fetch_pano_image(pano_id, width, height, zoom):
 
 
 def _write_display_copy(image, out_image_name, pano_id):
-    """The viewer's copy of a pano too wide for one WebGL texture (#115), beside the native file.
+    """The viewer's copy of a pano wider than it can texture (#115), beside the native file.
 
-    Never fatal. The native file is already in place and IS the resume marker, so raising here would turn a
-    downloaded pano into a transient failure: re-attempted next run, skipped at the exists() check, and no
-    sidecar ever written. Logged instead, and downscale_panos.py's sweep heals the gap.
+    OFF by default since 2026-09-09 - common.WRITE_DISPLAY_COPIES carries the measurements. The early return
+    is here rather than inside write_downscaled_sidecar because downscale_panos.py must still write.
+
+    Never fatal when it is on. The native file is already in place and IS the resume marker, so raising here
+    would turn a downloaded pano into a transient failure: re-attempted next run, skipped at the exists()
+    check, and no sidecar ever written. Logged instead, and downscale_panos.py's sweep heals the gap.
     """
+    if not common.WRITE_DISPLAY_COPIES:
+        return
     try:
         write_downscaled_sidecar(image, out_image_name)
     except Exception as e:

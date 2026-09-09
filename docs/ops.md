@@ -11,7 +11,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 |---|---|
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | [Depth artifact](depth.md#the-artifact) |
-| `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px |
+| `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded` |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 18-column row per run |
@@ -28,11 +28,17 @@ directory it likes, and a relative path scatters every per-pano failure detail s
 
 ### Display copies of wide panoramas
 
-The Project Sidewalk web app shows a stored panorama through Pannellum, which renders it as **one WebGL
-texture**, and 8192 px is a common `MAX_TEXTURE_SIZE`. A wider panorama — newer GSV imagery is 16384 × 8192,
-Richmond's Mapillary imagery 11000 — is therefore displayable only through a copy at that width. Both
-downloaders write it as a sidecar beside every wider panorama they store, `<pano_id>.w8192.jpg`, through the
-same `.part`-and-rename path as the panorama itself; a store that predates the sidecar is backfilled with
+> **Switched off 2026-09-09. Nothing writes a display copy on its own any more.**
+> `WRITE_DISPLAY_COPIES` in `downloaders/common.py` is `False`, so both downloaders and `refetch_panos.py`
+> leave the store exactly as they did before #115. `downscale_panos.py` still writes, because it only runs
+> when a person runs it. **Why**, and why the code is kept rather than reverted, is
+> [below](#why-it-is-off-2026-09-09). Read that before turning it back on.
+
+A display copy is a stored panorama re-encoded at the width a viewer can texture, written beside the native
+file as `<pano_id>.w8192.jpg`. #115 built it on the premise that Pannellum renders an equirectangular image
+as **one WebGL texture**, so 8192 px — a common `MAX_TEXTURE_SIZE` — was the ceiling and every wider panorama
+(newer GSV imagery is 16384 × 8192, Richmond's Mapillary imagery 11000) was displayable only through a copy.
+**That premise is wrong by a factor of two;** see below. The sweep that writes the copies is
 
 ```bash
 python3 downscale_panos.py <storage-dir> --dry-run          # count the missing copies, write nothing
@@ -47,14 +53,43 @@ running the backfill across the fleet is close to a **+60% commitment on the who
 and never given back. `--dry-run` prints the count of copies it would write, which is the number to multiply
 before starting; check `df` on the store first.
 
-The copy is written here, not by the web app, because this is where the full raster already is. The app
-tried cutting it nightly from the stored JPEG and OOM-killed its own JVMs
-([SidewalkWebpage#5239](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5239)): Java's ImageIO has
-no DCT-domain scaling and re-decodes the file once per strip, ~10 s and ~400 MB of heap per panorama inside a
-1.5 GB web-app heap. Pillow's `draft()` decodes a 16384-wide JPEG straight to half size in 0.8 s and ~150 MB,
-which is what the backfill uses; the downloaders resize the raster they already hold.
+#### Why it is off (2026-09-09)
 
-Three things about the sidecar are load-bearing:
+Four measurements, none of which were available when #115 was written:
+
+* **Pannellum's ceiling is `2 × MAX_TEXTURE_SIZE`, not `1 ×`.** It uploads an equirectangular image as two
+  half-width textures, so its own refusal test is `max(width/2, height) > MAX_TEXTURE_SIZE` and its error
+  reports the maximum as `2*L`. **A device advertising 8192 renders a 16384-wide panorama** — exactly the
+  widest frame GSV produces and exactly what the store holds.
+* **Measured on real phones**, not inferred: iPhone 13 Pro reports 16384 (ceiling 32768), Pixel 7 Pro
+  reports 8192 (ceiling 16384). Both really hold 2 × 8192² RGBA — 512 MiB, in 380 ms and 486 ms.
+  *(If anyone re-runs this: `texImage2D(…, null)` returns in ~1 ms because drivers only reserve address
+  space. Write every row with `texSubImage2D` and then `gl.finish()`, or the probe proves nothing.)*
+* **The demand does not justify a derivative.** Across the five largest production cities the store holds
+  140,599 wide panoramas whose imagery has expired at Google — the only ones ever served from the store —
+  and they were viewed **29 times in ninety days**. That is about **4,850 copies cut per copy looked at**,
+  against a backfill estimated at **6.4 TB and ~8 days**.
+* **The population that genuinely cannot render 16384 is ~50 users a year**, on 365 days of production
+  analytics: Nexus 5 / 5X on Adreno 330/418, ~2.2% of mobile users and ~0.1% of all traffic. iOS needs no
+  copy at all (A9 and later report 16384).
+
+The web app now cuts the copy **on demand**, at the width the client asks for
+([SidewalkWebpage#5256](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5256)), using
+`ImageReadParam.setSourceSubsampling` so the reduction happens inside the JPEG decode: ~105 MB of heap and
+~2.0 s, with no full-size raster and no rescale pass. That is 3.5× less memory and 5× faster than the
+strip-read code that OOM-killed production JVMs
+([SidewalkWebpage#5239](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5239)) — which retires the
+other half of #115's rationale, that Java's ImageIO could not do this at all and so the derivative belonged
+with the scraper that already holds the full raster.
+
+**Why the code is kept rather than reverted.** The margin it was built for is real and is exactly **zero**:
+`16384 = 2 × 8192`, and GSV has already widened its frames once (13312 → 16384). The day it widens again,
+every 8192-class GPU — every Mali-G710-era Android, which is most of the non-Apple fleet — stops rendering
+stored panoramas natively, and the affected population jumps from ~2% of mobile to most of Android. **This
+repo is the only place that sees GSV's reported frame width at the moment it changes**
+(`downloaders/gsv.py::resolve_zoom_and_dims`). So the switch stays one line away rather than in the history.
+
+Three things about the sidecar remain load-bearing while any copy is still on a store:
 
 * **The width is in the name.** The web app looks for exactly the name its own configured cap produces
   (`pano.downscaled.max-width`, 8192), and checks the header before serving it, so a change of cap is a new
@@ -63,24 +98,26 @@ Three things about the sidecar are load-bearing:
 * **A sidecar is never a panorama.** Everything that lists `*.jpg` in a shard — `refetch_panos.py
   --from-store`, the backfill's own walk — excludes it by name (`is_downscaled_sidecar`). The cropper never
   sees one: crops are always cut from the native file, by exact path.
-* **A failed sidecar never fails the panorama.** By the time it is written the native file is in place and is
-  the [resume marker](#resume-ledgers); raising would re-attempt the pano every night, skip it at the exists()
-  check, and never write the copy. The failure is logged to `scrape.log`, and the backfill heals it.
+* **A failed sidecar never fails the panorama.** With the switch on, the native file is in place by the time
+  the copy is written and is the [resume marker](#resume-ledgers); raising would re-attempt the pano every
+  night, skip it at the exists() check, and never write the copy. The failure is logged to `scrape.log`, and
+  the sweep heals it. That also makes the sweep **a repair pass, not a one-off**: `download_single_pano`
+  returns `skipped` at its `exists()` check *before* the sidecar code, so a `display copy not written` line
+  is only ever cleared by running `downscale_panos.py` again.
 
-**The backfill is a repair pass, not a one-off.** `download_single_pano` returns `skipped` at its `exists()`
-check *before* the sidecar code, so a copy that failed to write tonight — a full disk, a dropped mount — is
-never retried by the scraper: the panorama is already there next run. That is the right trade (a `stat` per
-panorama per night over sshfs is not free), but it means a `display copy not written` line in `scrape.log` is
-only ever cleared by running `downscale_panos.py` again. Re-run it after any night that logged one, and after
-any [`fover` repair pass](#repairing-fover-era-panoramas).
-
-**A repaired panorama's copy is rewritten with it.** `refetch_panos.py` swaps the native bytes only under an
-unchanged frame, so a stale sidecar would keep the width its name promises and read as current to the sweep
-for ever — the viewer would go on serving a copy of exactly the imagery the repair replaced. The repair
-therefore rewrites the copy from the raster it already holds (`_refresh_display_copy`), and never fails the
-swap over it: the panorama is already on disk at that point, and re-fetching it would cost ~512 requests to
-redo work that has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
+**A repaired panorama's copy is rewritten with it — never created, always refreshed.** `refetch_panos.py`
+swaps the native bytes only under an unchanged frame, so a stale sidecar would keep the width its name
+promises and read as current to the sweep for ever: the viewer would go on serving a copy of exactly the
+imagery the repair replaced. So `_refresh_display_copy` is the one thing the switch does **not** fully turn
+off. It writes where a copy is already on the store and nowhere else — the switch says stop making a new
+artifact nobody asked for, not start lying in the one that is already there. It never fails the swap over it:
+the panorama is already on disk at that point, and re-fetching it would cost ~512 requests to redo work that
+has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
 `refetch_log.csv`.
+
+**Copies already on a store are left alone.** They cost disk and nothing else: every walker excludes them by
+name, so a sidecar can never be mistaken for a panorama, and the web app serves whichever of the two it
+finds. Removing them is an operator decision, not something any tool here does.
 
 ## Resume ledgers
 
