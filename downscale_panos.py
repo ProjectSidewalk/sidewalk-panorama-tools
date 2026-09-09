@@ -1,11 +1,20 @@
 # !/usr/bin/python3
 """Write the display copy of every stored panorama wider than the viewer's cap (#115).
 
-The Project Sidewalk web app shows a stored pano through Pannellum, which renders it as one WebGL texture,
-and 8192 px is a common MAX_TEXTURE_SIZE; a wider pano is displayable only through a copy at that width.
-The nightly scraper writes that copy beside every new wide pano it stores (`downloaders.common`), but the
-store predates the sidecar, so this sweep writes the missing ones: `<pano_id[:2]>/<pano_id>.w8192.jpg` for
-every `<pano_id>.jpg` wider than the cap whose sidecar is absent or not at the cap.
+A display copy is a stored pano re-encoded at the width a viewer can texture: `<pano_id[:2]>/<pano_id>
+.w8192.jpg` beside the native file, for every `<pano_id>.jpg` wider than the cap whose sidecar is absent or
+not at the cap.
+
+THIS SCRIPT IS THE ONLY WRITER THAT CREATES ONE. Since 2026-09-09 `downloaders.common.WRITE_DISPLAY_COPIES`
+is False, so neither downloader writes a copy and `refetch_panos` only refreshes one that already exists.
+Nothing schedules this script; it writes when a person runs it and not otherwise.
+
+#115 built the feature on the premise that Pannellum renders an equirectangular image as ONE WebGL texture,
+making 8192 a hard ceiling. That premise is wrong by a factor of two - Pannellum uploads two half-width
+textures, so a device advertising 8192 renders the 16384-wide frames the store actually holds - and the
+demand never justified the derivative either: 140,599 wide expired panos were viewed 29 times in ninety
+days against a 6.4 TB sweep. The web app cuts the copy on demand now (SidewalkWebpage#5256). Read
+docs/ops.md before running this over a whole store; the numbers and the reasoning are there.
 
 Idempotent and resumable: a pano is judged from two JPEG headers (its own, and its sidecar's if there is
 one), so re-running over a finished store decodes nothing, and a run cut short by `--max-runtime` picks up

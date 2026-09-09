@@ -1293,8 +1293,18 @@ class TestTheDisplayCopyFollowsTheSwap:
             for xy in ((10, 10), (self.CAP // 2, self.CAP // 4), (self.CAP - 10, self.CAP // 2 - 10)):
                 assert copy.getpixel(xy) == pytest.approx(color, abs=8)
 
-    def test_a_swap_rewrites_the_copy_from_the_NEW_imagery(self, tmp_path, monkeypatch, small_cap):
-        """No copies_on, deliberately: an EXISTING copy is refreshed even with the switch off."""
+    @pytest.mark.parametrize('switch', [False, True])
+    def test_a_swap_rewrites_the_copy_from_the_NEW_imagery(self, tmp_path, monkeypatch, small_cap, switch):
+        """An EXISTING copy is refreshed under BOTH settings of the switch.
+
+        Parametrized rather than pinned at the shipped False, because `not SWITCH and not exists(...)` has
+        four cells and the other three tests cover only three of them. The missing one was (on, present) -
+        the ordinary nightly case the day the switch is flipped back - and `and` short-circuits, so
+        os.path.exists is not even called when the switch is on. Without this arm,
+        `if exists(...) == WRITE_DISPLAY_COPIES: return` reproduces every other pinned cell exactly and
+        silently stops refreshing the moment somebody re-enables the feature.
+        """
+        monkeypatch.setattr(common, 'WRITE_DISPLAY_COPIES', switch)
         pano, sidecar = self.store(tmp_path)
         self.assert_copy_shows(sidecar, self.OLD)
 
@@ -1306,9 +1316,11 @@ class TestTheDisplayCopyFollowsTheSwap:
     def test_a_swap_creates_no_copy_where_there_was_none(self, tmp_path, monkeypatch, small_cap):
         """The other half of never-create-always-refresh, and what production does tonight.
 
-        Discriminates the guard from a bare `if not WRITE_DISPLAY_COPIES: return`, which would pass every
-        other test in this class except the refresh one - and from no guard at all, which would pass this
-        class entirely while quietly seeding sidecars across a store nobody wants them on.
+        Discriminates the guard from NO guard at all, which passes every other test in this class while
+        quietly seeding sidecars across a store nobody wants them on. (The opposite mutation, a bare
+        `if not WRITE_DISPLAY_COPIES: return`, is over-determined - it also fails the refresh test above,
+        the failed-write test, the measurement-ordering test and the reads-as-current test - so this test is
+        the only one that pins the create half.)
         """
         pano, sidecar = self.store(tmp_path, with_sidecar=False)
         assert not os.path.exists(sidecar)
@@ -1332,8 +1344,11 @@ class TestTheDisplayCopyFollowsTheSwap:
         self.assert_copy_shows(sidecar, self.NEW)
 
     def test_a_panorama_under_the_cap_gets_no_copy(self, tmp_path, monkeypatch, small_cap, copies_on):
+        """copies_on, so this pins write_downscaled_sidecar's own <= cap check through the refetch path
+        rather than being satisfied by the switch. with_sidecar spelled out: store() seeds one only when
+        dims[0] > CAP, so passing a narrow frame silently produced no sidecar either way."""
         narrow = (self.CAP, self.CAP // 2)
-        pano, sidecar = self.store(tmp_path, dims=narrow)
+        pano, sidecar = self.store(tmp_path, dims=narrow, with_sidecar=False)
 
         assert self.swap(tmp_path, monkeypatch, dims=narrow) == 'replaced'
 

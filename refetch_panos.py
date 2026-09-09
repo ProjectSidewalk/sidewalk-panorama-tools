@@ -410,7 +410,14 @@ def _refresh_display_copy(storage_path, pano_id, image):
 
     Never fatal, and for a sharper reason than in the downloaders: the swap has ALREADY landed. Raising here
     would leave the panorama unledgered, so the next run would spend another ~512 tile requests to redo a
-    replacement that is already on disk. A stale sidecar the sweep can heal is much the cheaper failure.
+    replacement that is already on disk. A stale sidecar is much the cheaper failure - but it is NOT one the
+    sweep can repair, so the log line is the whole remedy and has to be acted on.
+
+    downscale_panos.sidecar_is_current judges from dimensions alone, because a decode per panorama is the
+    entire cost that sweep exists to avoid, and every gate above refuses a swap that changes the frame. So a
+    copy left stale here has EXACTLY the dimensions the sweep expects and it reports `current`, writing
+    nothing, for ever. The fix is to delete the named .w<cap>.jpg and then run the sweep, which will see it
+    absent and cut a fresh one; docs/ops.md says so where an operator will look.
     """
     pano_path = _stored_path(storage_path, pano_id)
     if not common.WRITE_DISPLAY_COPIES and not os.path.exists(common.downscaled_sidecar_path(pano_path)):

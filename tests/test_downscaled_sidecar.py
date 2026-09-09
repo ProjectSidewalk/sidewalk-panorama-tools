@@ -61,8 +61,12 @@ def small_cap(monkeypatch):
 def copies_on(monkeypatch):
     """What flipping common.WRITE_DISPLAY_COPIES back to True would do, and nothing else.
 
-    Every test that asserts a sidecar appears takes this, so the mechanism stays fully covered while the
-    shipped default writes nothing. A test WITHOUT it is asserting production's behaviour tonight.
+    Scoped to THE THREE AUTOMATIC WRITERS - both downloaders and refetch_panos. A test of one of those which
+    asserts a sidecar appears takes this; one without it is asserting production's behaviour tonight.
+
+    It is NOT a rule for the file. TestTheSweep, TestSidecarIsCurrent and TestTheSwitch's own writer tests
+    all assert a sidecar appears at the shipped False and MUST - that is the whole point of them, and adding
+    this fixture to test_the_sweep_writes_regardless_of_the_switch would destroy the guard it exists to be.
     """
     monkeypatch.setattr(common, 'WRITE_DISPLAY_COPIES', True)
 
@@ -197,9 +201,10 @@ class TestTheGsvDownloaderHonoursTheSwitch:
     def test_the_writer_is_not_even_reached_when_the_switch_is_off(self, tmp_path, monkeypatch, small_cap):
         """The guard is at the caller, not inside the primitive, so the resize is never paid for.
 
-        On a real 16384 x 8192 pano that resize is seconds of CPU and a second full-frame raster. A guard
-        pushed down into write_downscaled_sidecar would still leave the store clean - and would silently
-        disarm downscale_panos.py, which is the one writer that must keep working.
+        On a real 16384 x 8192 pano that resize is seconds of CPU and a second full-frame raster, and a
+        caller that invoked the writer and discarded the result would still leave the store clean. That cost
+        is this test's own justification; the guard-pushed-into-the-primitive mutation is killed by
+        TestTheSwitch's two writer tests, not here.
         """
         stub_probe(monkeypatch, pick_zoom=5)
         stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], tile_bytes(RED)))
@@ -516,6 +521,37 @@ class TestTheSwitch:
 
         assert summary.written == 1
         assert_two_tone(os.path.join(store, 'aa', 'aaSweptAAAAAAAAAAAAA.w1024.jpg'), (CAP, 512))
+
+    def test_every_caller_of_the_primitives_reads_the_switch(self):
+        """The structural claim CLAUDE.md makes, with something behind it.
+
+        The tests above pin the three guards that exist today. None of them notices a FOURTH automatic
+        writer - a new imagery source, a new repair pass - that calls a primitive and never reads the switch:
+        the suite stays green while that source quietly goes on writing copies the other two stopped writing.
+        Not hypothetical. `110-panoramax-source` carries exactly that, an unguarded
+        write_downscaled_sidecar_from_file copied from the Mapillary block this switch was added to, so
+        whichever of the two branches lands second has to bring the guard with it - and this is what says so.
+
+        Stated as a rule rather than a snapshot, so a new module satisfies it by reading the switch rather
+        than by being added to a list. Two modules are exempt and named: common.py DEFINES the primitives,
+        and downscale_panos.py is the deliberate human-invoked sweep the switch is not allowed to disarm.
+        Same instrument as test_no_production_module_re_derives_the_predicate above.
+        """
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        exempt = {'downloaders/common.py', 'downscale_panos.py'}
+        unguarded = []
+        for module in PRODUCTION_MODULES:
+            if module in exempt:
+                continue
+            source = open(os.path.join(repo_root, module), encoding='utf-8').read()
+            if 'write_downscaled_sidecar' in source and 'WRITE_DISPLAY_COPIES' not in source:
+                unguarded.append(module)
+
+        assert unguarded == [], (
+            'these modules write a display copy without reading common.WRITE_DISPLAY_COPIES, so they keep '
+            'writing after the switch was turned off -- silently, since a sidecar appearing beside a '
+            'panorama looks exactly like one that was always meant to be there. Guard the call the way '
+            'gsv._write_display_copy does. Offenders: %s' % unguarded)
 
     def test_the_primitives_write_regardless_of_the_switch(self, tmp_path):
         """Guard the policy, not the mechanism: the sweep reaches these two directly."""
