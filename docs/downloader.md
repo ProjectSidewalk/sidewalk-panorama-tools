@@ -69,6 +69,7 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--min-depth-runtime MINUTES` | Reserve the tail of `--max-runtime` for depth when depth has unresolved work. Default `0`; **production should pass `60`**. |
 | `--max-depth-requests N` | Stop the depth phase after N metadata requests. Useful for throttling the initial backfill. |
 | `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
+| `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back or a refusal resets it, and a day-old file is ignored. Defaults to a file beside the block latch. |
 
 Budgets are measured with `time.monotonic()`, never the wall clock, so an NTP step or a DST transition cannot
 stretch or shrink a run.
@@ -462,7 +463,7 @@ carrying it beside the crops is [#111](https://github.com/ProjectSidewalk/sidewa
 | `thread_count` | Tile fan-out for the image phase (default 8). This is I/O-bound async work, so higher is faster up to your network's limit — test on your own connection. |
 | `headers_list` | Real request headers, one picked at random per request. Add to it, edit it, or leave it. |
 | `proxies` | Set to the `http://`/`https://` sentinel values to disable; otherwise fill in proxy details. |
-| `depth_min_request_interval` | Floor (with jitter) on the gap between depth metadata requests; `0` disables. Leave it at `0` unless a canary run shows Google pushing back — see [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
+| `depth_min_request_interval` | The **floor** on the gap between depth metadata requests (default `0.25` s) — the one setting that decides how aggressive this host can ever get, since nothing draws a shorter gap. A run opens at `depth_start_interval` (`1.0` s), or wherever the last run on the host earned its way down to, and decays towards the floor only on sustained clean requests; `depth_max_request_interval` (`30` s) caps the back-off. `0` disables the throttle but not the reaction to push-back. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
 
 ## Related
 

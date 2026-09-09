@@ -47,6 +47,7 @@ def build_parser():
     parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); the production crontab should pass 60. Ignored without --max-runtime or with --skip-depth.')
     parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
     parser.add_argument('--depth-block-latch', default=None, metavar='PATH', help='Where to remember that Google refused this host, so the next city in the queue stands down instead of rediscovering the block with fresh requests. Defaults to a file in the system temp directory - LOCAL disk, not the pano store, because it is a fact about this host and because the storage dir given to a run belongs to a single city. A latch younger than 6 hours skips the depth phase entirely; images are unaffected.')
+    parser.add_argument('--depth-pace-state', default=None, metavar='PATH', help='Where the depth pacer remembers the request interval this host has EARNED, so the next city in the queue opens there instead of ramping down from depth_start_interval again. Only earned speed is remembered - a back-off or a refusal resets it - and a file older than a day is ignored. Defaults to a file in the system temp directory beside the block latch, for the same reasons.')
     # Deprecated no-op, kept for one release so existing invocations don't crash argparse.
     parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
     return parser
@@ -586,7 +587,7 @@ def write_log_csv_row(storage_location, fields):
 
 def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_infos, skip_depth,
                                 max_runtime_minutes=None, max_depth_requests=None, min_depth_runtime=0.0,
-                                depth_block_latch=None):
+                                depth_block_latch=None, depth_pace_state=None):
     """Run the image and depth phases and append this run's row to log.csv.
 
     Fields are accumulated as each phase completes and the row is written once, in a finally, padded to the
@@ -672,7 +673,8 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
                                                 run_start_monotonic=run_start_monotonic,
                                                 max_runtime_minutes=max_runtime_minutes,
                                                 max_requests=max_depth_requests,
-                                                block_latch_path=depth_block_latch)
+                                                block_latch_path=depth_block_latch,
+                                                pace_state_path=depth_pace_state)
         depth_end_monotonic = time.monotonic()
         fields += [depth_res[0], depth_res[1], depth_res[2], depth_res[3],
                    _duration_minutes(im_end_monotonic, depth_end_monotonic)]
@@ -684,7 +686,8 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
 
 
 def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_panos=False, skip_depth=False,
-        max_runtime_minutes=None, min_depth_runtime=0.0, max_depth_requests=None, depth_block_latch=None):
+        max_runtime_minutes=None, min_depth_runtime=0.0, max_depth_requests=None, depth_block_latch=None,
+        depth_pace_state=None):
     """Fetch the pano list, narrow it, and run the scrape - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, logging, and signal handling; this seam takes plain
@@ -728,7 +731,7 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
             storage_location, image_pano_infos, pano_infos, skip_depth,
             max_runtime_minutes=max_runtime_minutes,
             max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime,
-            depth_block_latch=depth_block_latch)
+            depth_block_latch=depth_block_latch, depth_pace_state=depth_pace_state)
     except BaseException:
         # run_scraper_and_log_results's own finally has already written the evidence row; this puts the
         # traceback - otherwise stderr-only, the exact channel that dies with the container - into scrape.log
@@ -794,7 +797,7 @@ def main(argv=None):
                           all_panos=args.all_panos, skip_depth=args.skip_depth,
                           max_runtime_minutes=args.max_runtime, min_depth_runtime=args.min_depth_runtime,
                           max_depth_requests=args.max_depth_requests,
-                          depth_block_latch=args.depth_block_latch)
+                          depth_block_latch=args.depth_block_latch, depth_pace_state=args.depth_pace_state)
     return 1 if tripped_sources else 0
 
 
