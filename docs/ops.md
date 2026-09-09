@@ -11,7 +11,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 |---|---|
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | [Depth artifact](depth.md#the-artifact) |
-| `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px |
+| `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded` |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 19-column row per run |
@@ -28,11 +28,57 @@ directory it likes, and a relative path scatters every per-pano failure detail s
 
 ### Display copies of wide panoramas
 
-The Project Sidewalk web app shows a stored panorama through Pannellum, which renders it as **one WebGL
-texture**, and 8192 px is a common `MAX_TEXTURE_SIZE`. A wider panorama — newer GSV imagery is 16384 × 8192,
-Richmond's Mapillary imagery 11000 — is therefore displayable only through a copy at that width. Both
-downloaders write it as a sidecar beside every wider panorama they store, `<pano_id>.w8192.jpg`, through the
-same `.part`-and-rename path as the panorama itself; a store that predates the sidecar is backfilled with
+> **Switched off 2026-09-09.** `WRITE_DISPLAY_COPIES` in `downloaders/common.py` is `False`, so neither
+> downloader writes a display copy any more. Two writers remain, both narrow: `downscale_panos.py`, which
+> only runs when a person runs it, and `refetch_panos.py`, which **refreshes a copy already on the store
+> after a swap but never creates one** ([why](#a-repaired-panoramas-copy-is-refreshed-never-created)).
+> **Why the feature is off**, and why the code is kept rather than reverted, is
+> [directly below](#why-it-is-off-2026-09-09). Read that before turning it back on.
+
+A display copy is a stored panorama re-encoded at the width a viewer can texture, written beside the native
+file as `<pano_id>.w8192.jpg`. #115 built it on the premise that Pannellum renders an equirectangular image
+as **one WebGL texture**, so 8192 px — a common `MAX_TEXTURE_SIZE` — was the ceiling and every wider panorama
+(newer GSV imagery is 16384 × 8192, Richmond's Mapillary imagery 11000) was displayable only through a copy.
+
+#### Why it is off (2026-09-09)
+
+Four measurements, none of which were available when #115 was written:
+
+* **Pannellum's ceiling is `2 × MAX_TEXTURE_SIZE`, not `1 ×`.** It uploads an equirectangular image as two
+  half-width textures, so its own refusal test is `max(width/2, height) > MAX_TEXTURE_SIZE` and its error
+  reports the maximum as `2*L`. **A device advertising 8192 renders a 16384-wide panorama** — exactly the
+  widest frame GSV produces and exactly what the store holds. #115's premise was wrong by a factor of two,
+  and so was the `pano.downscaled.max-width` comment in the web app it was copied from.
+* **Measured on real phones**, not inferred: iPhone 13 Pro reports 16384 (ceiling 32768), Pixel 7 Pro
+  reports 8192 (ceiling 16384). Both really hold 2 × 8192² RGBA — 512 MiB, in 380 ms and 486 ms.
+  *(If anyone re-runs this: `texImage2D(…, null)` returns in ~1 ms because drivers only reserve address
+  space. Write every row with `texSubImage2D` and then `gl.finish()`, or the probe proves nothing.)*
+* **The demand does not justify a derivative.** Across the five largest production cities the store holds
+  140,599 wide panoramas whose imagery has expired at Google — the only ones ever served from the store —
+  and they were viewed **29 times in ninety days**. That is about **4,850 copies cut per copy looked at**,
+  against a backfill estimated at **6.4 TB and ~8 days**.
+* **The population that genuinely cannot render 16384 is ~50 users a year**, on 365 days of production
+  analytics: Nexus 5 / 5X on Adreno 330/418, ~2.2% of mobile users and ~0.1% of all traffic. iOS needs no
+  copy at all (A9 and later report 16384).
+
+The web app now cuts the copy **on demand**, at the width the client asks for
+([SidewalkWebpage#5256](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5256)), using
+`ImageReadParam.setSourceSubsampling` so the reduction happens inside the JPEG decode: **~105 MB of heap and
+~2.0 s**. The strip-read code it replaced needed **~400 MB of heap and ~10 s** per panorama inside a 1.5 GB
+web-app heap, which is what OOM-killed production JVMs
+([SidewalkWebpage#5239](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5239)) — so the "Java's
+ImageIO has no DCT-domain scaling, therefore the derivative belongs with the scraper that already holds the
+full raster" half of #115's rationale is retired too.
+
+**Why the code is kept rather than reverted.** The margin it was built for is real and is exactly **zero**:
+`16384 = 2 × 8192`, and GSV has already widened its frames once (13312 → 16384). The day it widens again,
+every 8192-class GPU — every Mali-G710-era Android, which is most of the non-Apple fleet — stops rendering
+stored panoramas natively, and the affected population jumps from ~2% of mobile to most of Android. **This
+repo is the only place that sees GSV's reported frame width at the moment it changes**
+(`downloaders/gsv.py::resolve_zoom_and_dims`, tracked by #121). So the switch stays one line away rather
+than in the history.
+
+#### Running the sweep by hand
 
 ```bash
 python3 downscale_panos.py <storage-dir> --dry-run          # count the missing copies, write nothing
@@ -40,47 +86,55 @@ python3 downscale_panos.py <storage-dir>                    # write them
 python3 downscale_panos.py <storage-dir> --max-runtime 240  # a nightly-sized slice; the rest report as unreached
 ```
 
-**Budget the disk before the sweep, per city.** A display copy is not a thumbnail: measured on the committed
+**Budget the disk first, per city.** A display copy is not a thumbnail: measured on the committed
 `samples/sample_pano.jpg` (13312 × 6656, 6.08 MB), the 8192-wide copy is **3.82 MB — 63% of the native file**
 at the `DOWNSCALED_JPEG_QUALITY` of 85 (2.82 MB, 46%, at 75). Nearly every modern panorama is over the cap, so
-running the backfill across the fleet is close to a **+60% commitment on the whole store**, taken all at once
-and never given back. `--dry-run` prints the count of copies it would write, which is the number to multiply
-before starting; check `df` on the store first.
+sweeping the whole fleet is close to a **+63% commitment on the whole store**, taken all at once and never
+given back — for a derivative the numbers above say is viewed about once per 4,850 copies cut. `--dry-run`
+prints the count it would write, which is the number to multiply; check `df` on the store first.
 
-The copy is written here, not by the web app, because this is where the full raster already is. The app
-tried cutting it nightly from the stored JPEG and OOM-killed its own JVMs
-([SidewalkWebpage#5239](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5239)): Java's ImageIO has
-no DCT-domain scaling and re-decodes the file once per strip, ~10 s and ~400 MB of heap per panorama inside a
-1.5 GB web-app heap. Pillow's `draft()` decodes a 16384-wide JPEG straight to half size in 0.8 s and ~150 MB,
-which is what the backfill uses; the downloaders resize the raster they already hold.
+#### What is still load-bearing
 
-Three things about the sidecar are load-bearing:
+Three properties of the sidecar hold for as long as any copy is on a store:
 
 * **The width is in the name.** The web app looks for exactly the name its own configured cap produces
   (`pano.downscaled.max-width`, 8192), and checks the header before serving it, so a change of cap is a new
   sidecar rather than an ambiguous overwrite — change `DOWNSCALED_MAX_WIDTH` in `downloaders/common.py` and
-  the app's setting together, then re-run the backfill.
+  the app's setting together, then re-run the sweep.
 * **A sidecar is never a panorama.** Everything that lists `*.jpg` in a shard — `refetch_panos.py
-  --from-store`, the backfill's own walk — excludes it by name (`is_downscaled_sidecar`). The cropper never
+  --from-store`, the sweep's own walk — excludes it by name (`is_downscaled_sidecar`). The cropper never
   sees one: crops are always cut from the native file, by exact path.
-* **A failed sidecar never fails the panorama.** By the time it is written the native file is in place and is
-  the [resume marker](#resume-ledgers); raising would re-attempt the pano every night, skip it at the exists()
-  check, and never write the copy. The failure is logged to `scrape.log`, and the backfill heals it.
+* **A failed sidecar never fails the panorama.** This governs the downloaders only while the switch is on,
+  so today it describes a path nothing takes; it still governs `refetch_panos`, below. With the switch on,
+  the native file is in place by the time the copy is written and is the [resume marker](#resume-ledgers);
+  raising would re-attempt the pano every night, skip it at the exists() check, and never write the copy.
+  That also makes the sweep **a repair pass, not a one-off**: `download_single_pano` returns `skipped` at its
+  `exists()` check *before* the sidecar code, so a `display copy not written` line in `scrape.log` is only
+  ever cleared by running `downscale_panos.py` again.
 
-**The backfill is a repair pass, not a one-off.** `download_single_pano` returns `skipped` at its `exists()`
-check *before* the sidecar code, so a copy that failed to write tonight — a full disk, a dropped mount — is
-never retried by the scraper: the panorama is already there next run. That is the right trade (a `stat` per
-panorama per night over sshfs is not free), but it means a `display copy not written` line in `scrape.log` is
-only ever cleared by running `downscale_panos.py` again. Re-run it after any night that logged one, and after
-any [`fover` repair pass](#repairing-fover-era-panoramas).
+<a id="a-repaired-panoramas-copy-is-refreshed-never-created"></a>
 
-**A repaired panorama's copy is rewritten with it.** `refetch_panos.py` swaps the native bytes only under an
-unchanged frame, so a stale sidecar would keep the width its name promises and read as current to the sweep
-for ever — the viewer would go on serving a copy of exactly the imagery the repair replaced. The repair
-therefore rewrites the copy from the raster it already holds (`_refresh_display_copy`), and never fails the
-swap over it: the panorama is already on disk at that point, and re-fetching it would cost ~512 requests to
-redo work that has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
+##### A repaired panorama's copy is refreshed, never created
+
+`refetch_panos.py` swaps the native bytes only under an unchanged frame, so a sidecar left behind keeps the
+width its name promises and reads as current to the sweep for ever: the viewer would go on serving a copy of
+exactly the imagery the repair replaced. So `_refresh_display_copy` is the one thing the switch does **not**
+fully turn off. It writes where a copy is already on the store and nowhere else — the switch says stop making
+a new artifact nobody asked for, not start lying in the one that is already there. It never fails the swap
+over it: the panorama is already on disk at that point, and re-fetching it would cost ~512 requests to redo
+work that has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
 `refetch_log.csv`.
+
+> ⚠ **If that rewrite fails, the sweep cannot repair it — delete the sidecar first.**
+> `scrape.log` gets one `display copy not rewritten` line and the swap is ledgered `replaced` regardless.
+> But `sidecar_is_current` judges from dimensions alone (a decode per panorama is the whole cost the sweep
+> exists to avoid), and every gate in `refetch_panos` refuses a swap that changes the frame — so the stale
+> copy has *exactly* the expected dimensions and every later sweep reports it `current`, writing nothing.
+> `rm` the named `.w8192.jpg`, then run `downscale_panos.py`, which will see it absent and cut a fresh one.
+
+**Copies already on a store are left alone.** They cost disk and nothing else: every walker excludes them by
+name, so a sidecar can never be mistaken for a panorama, and the web app serves whichever of the two it
+finds. Removing them is an operator decision, not something any tool here does.
 
 ## Resume ledgers
 
@@ -93,13 +147,12 @@ permanent.** Transient failures leave no row and retry automatically on the next
 * `0` — the source has nothing for this pano: no imagery at any zoom, or unknowable dimensions; for
   Mapillary, a 404 or a record that names the image and carries no original-resolution rendition. A
   permanent verdict. No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured
-  2026-09-06 — so on that source the record with no rendition is the one that fires in practice, and it is
-  the only permanent verdict anything writes with no run-level breaker behind it
-  ([#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113)).
+  2026-09-06 — so on that source the record with no rendition is the one that fires in practice, and three
+  of them in a row stop the run writing any more (see *When the image phase stops trusting a source*).
   A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
   (code 190 / `OAuthException`), a body that does not name the image, or an image body that is not a JPEG
   is not a verdict and leaves no row.
-* **no row** — never attempted, or the last attempt failed transiently (a network blip, a failed tile, a full
+* **no row** — never attempted, the last attempt failed transiently, or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both the withheld tripping verdict and every pano skipped after it) (a network blip, a failed tile, a full
   store). Retried next run.
 
 Deleting `0` rows, or the whole file, is the manual force-retry lever; existing `.jpg`s are simply
@@ -362,6 +415,53 @@ phase down indefinitely.
 **Do not read a stood-down phase as lost work.** Nothing is ledgered on either path, so every unresolved
 panorama is retried on the next run. See
 [Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers).
+
+## When the image phase stops trusting a source
+
+A `downloaded=0` row is permanent and is only undone by hand-editing `pano_id_log.csv` on the store, so the
+image loop stops writing them once one source produces three in a row
+([#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113)):
+
+```
+IMAGEDOWNLOAD: WARNING - 3 consecutive permanent failures from source mapillary. That is a condition of the
+run, not of the panos, so nothing more from this source is ledgered tonight.
+IMAGEDOWNLOAD: WARNING - breaker tripped for mapillary; 214 pano(s) were left unattempted and nothing was
+ledgered for them, so they retry next run. Check that source's credentials before the next run, then look
+for false downloaded=0 rows in pano_id_log.csv.
+```
+
+**What to do.** Check the source's credentials first — the condition this guards is a token that has lost
+the scope it needs, which Mapillary can answer by omitting the image URL from an otherwise healthy record
+rather than by erroring.
+
+Then repair the ledger. **Exactly two** false `downloaded=0` rows are written before the breaker has enough
+evidence to fire — the threshold is 3 and the tripping verdict is withheld — and since only a *success*
+resets the count, those two are always the tripped source's last two rows, adjacent. Nothing else in the run
+is damage.
+
+They are **not** necessarily the last rows *in the file*. Only the tripped source stops; a city carrying both
+GSV and Mapillary keeps downloading and ledgering GSV afterwards, so the tail can be thousands of GSV rows.
+`pano_id_log.csv` is `pano_id,downloaded` with no source column, so match on the id shape — Mapillary ids are
+all-numeric, GSV's are 22-character base64, Panoramax's are UUIDs. Delete those two rows, fix the
+credentials, and the next run picks up everything the breaker skipped, because none of it was ledgered.
+
+The run **exits nonzero**, so `scrape_queue.py` books the city as `failed` and cron mails the queue summary.
+Only the tripped source stops: a city carrying both GSV and Mapillary panos keeps downloading GSV. `log.csv`
+is unchanged — its fields are counts of work and the breaker is not one of them, so stdout, `scrape.log`
+and the exit code are where this lives.
+
+GSV has no breaker, deliberately: 7.9–8.4% of a large GSV city's ledger is a permanent verdict (retired
+imagery), so three in a row is routine there rather than evidence — about every 1,700 panos at 8.4%. The
+table is per source, in `DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`; a source with no entry is
+unlimited, so **a new source declares its own threshold or gets no breaker at all**.
+
+**Only a success resets the count.** Not a transient failure and not a skip. A transient reset was the first
+version of this and it defeated the breaker on the fault it was built for: Mapillary answers "does not exist
+or missing permissions" with a 400, which raises, and every retired image answers that way on *every* run
+forever, because a transient is never ledgered and so is a candidate again the next night. Those raises,
+shuffled among the live panos, would reset the count constantly — the run would write false permanent rows
+for most of the live panos and might never trip. A raise is not evidence that the source is answering
+honestly; it is no evidence about the source at all.
 
 ## What healthy looks like
 

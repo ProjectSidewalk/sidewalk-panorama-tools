@@ -1,5 +1,10 @@
-"""The display copy of a wide panorama (#115): the `<pano_id>.w<cap>.jpg` sidecar the scraper writes beside
-a pano wider than the viewer's cap, and the sweep that backfills it across a store.
+"""The display copy of a wide panorama (#115): the `<pano_id>.w<cap>.jpg` sidecar, the sweep that writes it
+across a store, and the switch that keeps every automatic writer of it turned off.
+
+Since 2026-09-09 `common.WRITE_DISPLAY_COPIES` is False, so the two downloaders and refetch_panos write
+nothing on their own; `downscale_panos.py` still does, because it only runs when a human runs it. The
+mechanism is therefore tested from BOTH sides - the switch monkeypatched on, which is what a re-enable would
+do and is the proof it still works, and the shipped default, which is what production does tonight.
 
 The cap is patched down to 1024 throughout, so a 2048-wide fixture is "wide" and no test allocates a
 16384 x 8192 raster. Every case that reads pixels back uses a two-tone image - red left, blue right - so a
@@ -50,6 +55,20 @@ def assert_two_tone(path, size):
 def small_cap(monkeypatch):
     """The production cap read at call time, so the downloaders see it without threading a parameter."""
     monkeypatch.setattr(common, 'DOWNSCALED_MAX_WIDTH', CAP)
+
+
+@pytest.fixture
+def copies_on(monkeypatch):
+    """What flipping common.WRITE_DISPLAY_COPIES back to True would do, and nothing else.
+
+    Scoped to THE THREE AUTOMATIC WRITERS - both downloaders and refetch_panos. A test of one of those which
+    asserts a sidecar appears takes this; one without it is asserting production's behaviour tonight.
+
+    It is NOT a rule for the file. TestTheSweep, TestSidecarIsCurrent and TestTheSwitch's own writer tests
+    all assert a sidecar appears at the shipped False and MUST - that is the whole point of them, and adding
+    this fixture to test_the_sweep_writes_regardless_of_the_switch would destroy the guard it exists to be.
+    """
+    monkeypatch.setattr(common, 'WRITE_DISPLAY_COPIES', True)
 
 
 class TestNaming:
@@ -159,11 +178,45 @@ class TestWriteFromAFile:
             common.write_downscaled_sidecar_from_file(str(pano), max_width=CAP)
 
 
-class TestTheGsvDownloaderWritesTheCopy:
+class TestTheGsvDownloaderHonoursTheSwitch:
+    """Off by default, so a night of scraping leaves the store exactly as it was before #115.
+
+    The `copies_on` cases are not dead weight: they are the whole reason the code is kept rather than
+    reverted, and they are what would have to pass on the day GSV widens past 16384 and the switch is
+    flipped back. See common.WRITE_DISPLAY_COPIES for why that day is plausible.
+    """
+
     def pano_info(self, width, height, pano_id='wideStitchAAAAAAAAAAAA'):
         return {'pano_id': pano_id, 'width': width, 'height': height}
 
-    def test_a_wide_stitch_lands_with_its_copy(self, tmp_path, monkeypatch, small_cap):
+    def test_a_wide_stitch_lands_alone_by_default(self, tmp_path, monkeypatch, small_cap):
+        """No copies_on: this is what production writes tonight."""
+        stub_probe(monkeypatch, pick_zoom=5)
+        stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], tile_bytes(RED if tile[0] < 2 else BLUE)))
+
+        assert gsv.download_single_pano(str(tmp_path), self.pano_info(2048, 1024)) == DownloadResult.success
+
+        assert os.listdir(tmp_path / 'wi') == ['wideStitchAAAAAAAAAAAA.jpg']
+
+    def test_the_writer_is_not_even_reached_when_the_switch_is_off(self, tmp_path, monkeypatch, small_cap):
+        """The guard is at the caller, not inside the primitive, so the resize is never paid for.
+
+        On a real 16384 x 8192 pano that resize is seconds of CPU and a second full-frame raster, and a
+        caller that invoked the writer and discarded the result would still leave the store clean. That cost
+        is this test's own justification; the guard-pushed-into-the-primitive mutation is killed by
+        TestTheSwitch's two writer tests, not here.
+        """
+        stub_probe(monkeypatch, pick_zoom=5)
+        stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], tile_bytes(RED)))
+        calls = []
+        monkeypatch.setattr(gsv, 'write_downscaled_sidecar',
+                            lambda *a, **kw: calls.append(a) or None)
+
+        assert gsv.download_single_pano(str(tmp_path), self.pano_info(2048, 1024)) == DownloadResult.success
+
+        assert calls == []
+
+    def test_a_wide_stitch_lands_with_its_copy(self, tmp_path, monkeypatch, small_cap, copies_on):
         stub_probe(monkeypatch, pick_zoom=5)
         stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], tile_bytes(RED if tile[0] < 2 else BLUE)))
 
@@ -173,7 +226,7 @@ class TestTheGsvDownloaderWritesTheCopy:
         assert sorted(os.listdir(shard)) == ['wideStitchAAAAAAAAAAAA.jpg', 'wideStitchAAAAAAAAAAAA.w1024.jpg']
         assert_two_tone(str(shard / 'wideStitchAAAAAAAAAAAA.w1024.jpg'), (CAP, 512))
 
-    def test_a_pano_under_the_cap_lands_alone(self, tmp_path, monkeypatch, small_cap):
+    def test_a_pano_under_the_cap_lands_alone(self, tmp_path, monkeypatch, small_cap, copies_on):
         stub_probe(monkeypatch, pick_zoom=5)
         stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], tile_bytes(RED)))
 
@@ -181,7 +234,8 @@ class TestTheGsvDownloaderWritesTheCopy:
 
         assert os.listdir(tmp_path / 'wi') == ['wideStitchAAAAAAAAAAAA.jpg']
 
-    def test_a_failed_copy_does_not_fail_the_pano(self, tmp_path, monkeypatch, small_cap, caplog):
+    def test_a_failed_copy_does_not_fail_the_pano(self, tmp_path, monkeypatch, small_cap, copies_on,
+                                                  caplog):
         """The native file is already the resume marker. Raising here would re-attempt the pano every night,
         skip it at the exists() check, and never write the copy; the sweep is what heals it."""
         stub_probe(monkeypatch, pick_zoom=5)
@@ -200,7 +254,11 @@ class TestTheGsvDownloaderWritesTheCopy:
         assert 'wideStitchAAAAAAAAAAAA' in caplog.text
 
 
-class TestTheMapillaryDownloaderWritesTheCopy:
+class TestTheMapillaryDownloaderHonoursTheSwitch:
+    """The same switch, read the same way. Two downloaders reading one switch two different ways is how one
+    of them ends up still writing, which is why both guards are a `_write_display_copy` of identical shape.
+    """
+
     @pytest.fixture
     def token(self, monkeypatch):
         monkeypatch.setenv(mapillary.TOKEN_ENV_VAR, 'test-token')
@@ -210,7 +268,18 @@ class TestTheMapillaryDownloaderWritesTheCopy:
         two_tone(2048, 1024).save(buf, 'jpeg', quality=95)
         return buf.getvalue()
 
-    def test_a_wide_download_lands_with_its_copy(self, tmp_path, monkeypatch, small_cap, token):
+    def test_a_wide_download_lands_alone_by_default(self, tmp_path, monkeypatch, small_cap, token):
+        """No copies_on: this is what production writes tonight."""
+        session = FakeSession(FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
+                              FakeResponse(chunks=[self.wide_body()]))
+        monkeypatch.setattr(mapillary, '_session', lambda: session)
+
+        assert mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO) == DownloadResult.success
+
+        pano_id = MAPILLARY_PANO['pano_id']
+        assert os.listdir(tmp_path / pano_id[:2]) == ['%s.jpg' % pano_id]
+
+    def test_a_wide_download_lands_with_its_copy(self, tmp_path, monkeypatch, small_cap, token, copies_on):
         session = FakeSession(FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
                               FakeResponse(chunks=[self.wide_body()]))
         monkeypatch.setattr(mapillary, '_session', lambda: session)
@@ -222,7 +291,8 @@ class TestTheMapillaryDownloaderWritesTheCopy:
         assert sorted(os.listdir(shard)) == ['%s.jpg' % pano_id, '%s.w1024.jpg' % pano_id]
         assert_two_tone(str(shard / ('%s.w1024.jpg' % pano_id)), (CAP, 512))
 
-    def test_a_failed_copy_does_not_fail_the_pano(self, tmp_path, monkeypatch, small_cap, token, caplog):
+    def test_a_failed_copy_does_not_fail_the_pano(self, tmp_path, monkeypatch, small_cap, token,
+                                                  copies_on, caplog):
         session = FakeSession(FakeResponse(payload=HEALTHY_MAPILLARY_METADATA),
                               FakeResponse(chunks=[self.wide_body()]))
         monkeypatch.setattr(mapillary, '_session', lambda: session)
@@ -424,6 +494,74 @@ class TestTheSweep:
         assert os.listdir(tmp_path / 'aa') == ['aaMissingCopyAAAAAAA.jpg']
 
 
+class TestTheSwitch:
+    """common.WRITE_DISPLAY_COPIES: what it turns off, and the two things it must NOT turn off."""
+
+    def test_the_shipped_default_is_off(self):
+        """The one assertion that makes flipping the switch a deliberate act.
+
+        #115's backfill was estimated at 6.4 TB and ~8 days across the fleet, and the nightly writes are the
+        same bytes arriving a pano at a time. A flip made in passing - a merge resolution, a "restore the
+        old behaviour" edit - would spend that silently, since a display copy appearing beside a panorama
+        looks exactly like a display copy that was always meant to be there.
+        """
+        assert common.WRITE_DISPLAY_COPIES is False
+
+    def test_the_sweep_writes_regardless_of_the_switch(self, tmp_path, capsys):
+        """The switch governs the writers that run on their own. downscale_panos.py is not one of them.
+
+        This is the test that fails if someone "simplifies" the three guards down into
+        write_downscaled_sidecar*, which would leave every store-clean assertion in this file still green
+        while quietly disarming the only tool a human runs on purpose.
+        """
+        store = str(tmp_path)
+        two_tone_jpeg(os.path.join(store, 'aa', 'aaSweptAAAAAAAAAAAAA.jpg'), 2048, 1024)
+
+        summary = downscale_panos.downscale_store(store, max_width=CAP)
+
+        assert summary.written == 1
+        assert_two_tone(os.path.join(store, 'aa', 'aaSweptAAAAAAAAAAAAA.w1024.jpg'), (CAP, 512))
+
+    def test_every_caller_of_the_primitives_reads_the_switch(self):
+        """The structural claim CLAUDE.md makes, with something behind it.
+
+        The tests above pin the three guards that exist today. None of them notices a FOURTH automatic
+        writer - a new imagery source, a new repair pass - that calls a primitive and never reads the switch:
+        the suite stays green while that source quietly goes on writing copies the other two stopped writing.
+        Not hypothetical. `110-panoramax-source` carries exactly that, an unguarded
+        write_downscaled_sidecar_from_file copied from the Mapillary block this switch was added to, so
+        whichever of the two branches lands second has to bring the guard with it - and this is what says so.
+
+        Stated as a rule rather than a snapshot, so a new module satisfies it by reading the switch rather
+        than by being added to a list. Two modules are exempt and named: common.py DEFINES the primitives,
+        and downscale_panos.py is the deliberate human-invoked sweep the switch is not allowed to disarm.
+        Same instrument as test_no_production_module_re_derives_the_predicate above.
+        """
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        exempt = {'downloaders/common.py', 'downscale_panos.py'}
+        unguarded = []
+        for module in PRODUCTION_MODULES:
+            if module in exempt:
+                continue
+            source = open(os.path.join(repo_root, module), encoding='utf-8').read()
+            if 'write_downscaled_sidecar' in source and 'WRITE_DISPLAY_COPIES' not in source:
+                unguarded.append(module)
+
+        assert unguarded == [], (
+            'these modules write a display copy without reading common.WRITE_DISPLAY_COPIES, so they keep '
+            'writing after the switch was turned off -- silently, since a sidecar appearing beside a '
+            'panorama looks exactly like one that was always meant to be there. Guard the call the way '
+            'gsv._write_display_copy does. Offenders: %s' % unguarded)
+
+    def test_the_primitives_write_regardless_of_the_switch(self, tmp_path):
+        """Guard the policy, not the mechanism: the sweep reaches these two directly."""
+        pano = two_tone_jpeg(str(tmp_path / 'aa' / 'aaPrimitiveAAAAAAAAA.jpg'), 2048, 1024)
+
+        assert common.write_downscaled_sidecar_from_file(pano, max_width=CAP) is not None
+        assert common.write_downscaled_sidecar(two_tone(2048, 1024),
+                                               str(tmp_path / 'aa' / 'other.jpg'), max_width=CAP) is not None
+
+
 class TestSidecarIsCurrent:
     """The sweep's whole affordability rests on this answering from two headers. It must therefore be exact
     about what it can and cannot see, because a false 'current' is permanent: the copy is never revisited."""
@@ -523,7 +661,10 @@ class TestTheDecompressionBombCeiling:
         assert CropRunner.raise_decompression_bomb_ceiling is common.raise_decompression_bomb_ceiling
 
     def test_the_mapillary_display_copy_can_open_a_pano_over_pillows_default(self, tmp_path, monkeypatch):
-        """The reason DownloadRunner needs the policy at all: this path re-opens the file it just wrote.
+        """The reason DownloadRunner keeps the policy: this path re-opens the file it just wrote.
+
+        It is off by default now (common.WRITE_DISPLAY_COPIES), so DownloadRunner currently sets a policy
+        for a path nothing takes - correct either way, and needed the moment the switch is flipped.
 
         Pillow only hard-fails above 2x its threshold, so this drives the ceiling down far enough that a
         modest test image trips the error rather than allocating a real 134 MP one.

@@ -1247,6 +1247,12 @@ class TestTheDisplayCopyFollowsTheSwap:
     cost it exists to avoid - reads it as current on every later pass. The viewer would go on serving a copy
     cut from precisely the imagery this pass was run to replace. Asserted on the copy's PIXELS, not on its
     size or its mtime: at the right size with the wrong content is the only failure that can happen here.
+
+    NEVER CREATE, ALWAYS REFRESH (2026-09-09). common.WRITE_DISPLAY_COPIES is off, so this is the one place
+    in the repo that still writes a sidecar without a human asking - and only where one already exists. The
+    asymmetry is deliberate and is what the first three tests pin: the switch says stop making a new
+    artifact, not start lying in the one already on the store. Do-nothing here would re-introduce the
+    staleness the paragraph above describes, by choice, on precisely the panoramas this pass rewrites.
     """
 
     CAP = 1024
@@ -1258,6 +1264,11 @@ class TestTheDisplayCopyFollowsTheSwap:
     def small_cap(self, monkeypatch):
         """The production cap, read at call time, so refetch_panos sees it without threading a parameter."""
         monkeypatch.setattr(common, 'DOWNSCALED_MAX_WIDTH', self.CAP)
+
+    @pytest.fixture
+    def copies_on(self, monkeypatch):
+        """What flipping common.WRITE_DISPLAY_COPIES back to True would do, and nothing else."""
+        monkeypatch.setattr(common, 'WRITE_DISPLAY_COPIES', True)
 
     def sidecar_path(self, pano_path):
         return common.downscaled_sidecar_path(pano_path, self.CAP)
@@ -1282,7 +1293,18 @@ class TestTheDisplayCopyFollowsTheSwap:
             for xy in ((10, 10), (self.CAP // 2, self.CAP // 4), (self.CAP - 10, self.CAP // 2 - 10)):
                 assert copy.getpixel(xy) == pytest.approx(color, abs=8)
 
-    def test_a_swap_rewrites_the_copy_from_the_NEW_imagery(self, tmp_path, monkeypatch, small_cap):
+    @pytest.mark.parametrize('switch', [False, True])
+    def test_a_swap_rewrites_the_copy_from_the_NEW_imagery(self, tmp_path, monkeypatch, small_cap, switch):
+        """An EXISTING copy is refreshed under BOTH settings of the switch.
+
+        Parametrized rather than pinned at the shipped False, because `not SWITCH and not exists(...)` has
+        four cells and the other three tests cover only three of them. The missing one was (on, present) -
+        the ordinary nightly case the day the switch is flipped back - and `and` short-circuits, so
+        os.path.exists is not even called when the switch is on. Without this arm,
+        `if exists(...) == WRITE_DISPLAY_COPIES: return` reproduces every other pinned cell exactly and
+        silently stops refreshing the moment somebody re-enables the feature.
+        """
+        monkeypatch.setattr(common, 'WRITE_DISPLAY_COPIES', switch)
         pano, sidecar = self.store(tmp_path)
         self.assert_copy_shows(sidecar, self.OLD)
 
@@ -1291,8 +1313,29 @@ class TestTheDisplayCopyFollowsTheSwap:
         self.assert_copy_shows(sidecar, self.NEW)
         assert list((tmp_path / PANO[:2]).glob('*.part')) == []
 
-    def test_a_swap_writes_the_copy_a_store_was_missing(self, tmp_path, monkeypatch, small_cap):
-        """A repair pass over a store that predates #115 leaves it no worse off than the sweep would."""
+    def test_a_swap_creates_no_copy_where_there_was_none(self, tmp_path, monkeypatch, small_cap):
+        """The other half of never-create-always-refresh, and what production does tonight.
+
+        Discriminates the guard from NO guard at all, which passes every other test in this class while
+        quietly seeding sidecars across a store nobody wants them on. (The opposite mutation, a bare
+        `if not WRITE_DISPLAY_COPIES: return`, is over-determined - it also fails the refresh test above,
+        the failed-write test, the measurement-ordering test and the reads-as-current test - so this test is
+        the only one that pins the create half.)
+        """
+        pano, sidecar = self.store(tmp_path, with_sidecar=False)
+        assert not os.path.exists(sidecar)
+
+        assert self.swap(tmp_path, monkeypatch) == 'replaced'
+
+        assert not os.path.exists(sidecar)
+        assert sorted(os.listdir(tmp_path / PANO[:2])) == [PANO + '.jpg']
+
+    def test_a_swap_writes_the_copy_a_store_was_missing_when_the_switch_is_on(self, tmp_path, monkeypatch,
+                                                                             small_cap, copies_on):
+        """A repair pass over a store that predates #115 leaves it no worse off than the sweep would.
+
+        Kept for the day the switch is flipped back; it is the only case the switch actually changes here.
+        """
         pano, sidecar = self.store(tmp_path, with_sidecar=False)
         assert not os.path.exists(sidecar)
 
@@ -1300,9 +1343,12 @@ class TestTheDisplayCopyFollowsTheSwap:
 
         self.assert_copy_shows(sidecar, self.NEW)
 
-    def test_a_panorama_under_the_cap_gets_no_copy(self, tmp_path, monkeypatch, small_cap):
+    def test_a_panorama_under_the_cap_gets_no_copy(self, tmp_path, monkeypatch, small_cap, copies_on):
+        """copies_on, so this pins write_downscaled_sidecar's own <= cap check through the refetch path
+        rather than being satisfied by the switch. with_sidecar spelled out: store() seeds one only when
+        dims[0] > CAP, so passing a narrow frame silently produced no sidecar either way."""
         narrow = (self.CAP, self.CAP // 2)
-        pano, sidecar = self.store(tmp_path, dims=narrow)
+        pano, sidecar = self.store(tmp_path, dims=narrow, with_sidecar=False)
 
         assert self.swap(tmp_path, monkeypatch, dims=narrow) == 'replaced'
 
@@ -1385,8 +1431,12 @@ class TestTheDisplayCopyFollowsTheSwap:
     def test_the_recovery_measurement_still_lands_after_the_copy_is_written(self, tmp_path, monkeypatch,
                                                                            small_cap):
         """_refresh_display_copy sits between the swap and measurements.append, so a version of it that
-        raised would silently drop the pilot's record for every panorama it repaired."""
-        pano, sidecar = self.store(tmp_path, dims=self.DIMS, with_sidecar=False)
+        raised would silently drop the pilot's record for every panorama it repaired.
+
+        Seeded WITH a copy, because that is the only case the refresh runs in now - with the switch off and
+        no copy present it returns before it can raise, and the ordering would go untested.
+        """
+        pano, sidecar = self.store(tmp_path, dims=self.DIMS)
         Image.new('RGB', (16, 8), self.OLD).save(pano, 'JPEG')   # a real, decodable old frame
 
         monkeypatch.setattr(rp, 'measure_recovery', lambda old, new: {'stub': True})
