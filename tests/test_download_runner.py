@@ -246,7 +246,9 @@ from downloaders import DownloadResult
 def _fake_download_pano(storage_path, pano_info):
     with open(os.environ['FAKE_DOWNLOAD_LOG'], 'a') as f:
         f.write(pano_info['pano_id'] + '\\n')
-    return DownloadResult.success
+    # Defaults to success, so every existing caller is unchanged; FAKE_VERDICT lets a test drive a real
+    # process all the way to its exit status, which is the only thing the #113 breaker signals with.
+    return getattr(DownloadResult, os.environ.get('FAKE_VERDICT', 'success'))
 
 
 downloaders.download_pano = _fake_download_pano
@@ -1529,6 +1531,30 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
         assert os.listdir(storage / '10') == ['100000000000001.jpg']
         assert (storage / '10' / '100000000000001.jpg').read_bytes() == self.IMAGE_BYTES
 
+    def test_three_real_no_rendition_verdicts_trip_the_breaker(self, monkeypatch, tmp_path):
+        """The #113 breaker driven by the real downloader, not by a stubbed download_pano.
+
+        Every test in TestASourceThatFailsPermanentlyInARowStopsBeingLedgered replaces download_pano
+        wholesale, so "an omitted thumb_original_url is a permanent verdict" and "the breaker counts
+        permanent verdicts" were pinned as two halves with the composition inferred - which is precisely
+        what this class's docstring says #99 taught. The scope-less token this breaker exists for produces
+        exactly this shape: an otherwise-healthy 200 that names the image and omits the URL.
+        """
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        shapes = {'10000000000000%d' % n: self._Response(payload={'id': '10000000000000%d' % n})
+                  for n in (1, 2, 3)}
+        self._wire_up(monkeypatch, shapes)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+
+        result = DownloadRunner.download_panorama_images(
+            str(storage), [{'pano_id': pano_id, 'source': 'mapillary'} for pano_id in shapes])
+
+        assert result == (0, 0, 3, 0, 3)
+        assert self._ledger_rows(storage) == ['100000000000001,0', '100000000000002,0'], \
+            'the third verdict trips the breaker and is withheld'
+        assert os.listdir(storage / '10') == [], 'the shard dir is made before the verdict, and stays empty'
+
     def test_the_next_run_re_attempts_exactly_the_unledgered_panos(self, monkeypatch, tmp_path):
         """The other half of "no row": the pano comes back. A run with the token fixed picks up precisely the
         three that were written off by the run's condition, and touches none of the three that were decided."""
@@ -1566,10 +1592,15 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
 
     Why it is keyed on SOURCE rather than on the no-rendition verdict specifically: measured over the
     production ledgers on 2026-09-06, the permanent-failure rate is 0 of 9,229 on richmond-va (the only
-    Mapillary city, whole corpus, after the 2026-09-05 catch-up) and 8.0-8.4% on the large GSV cities
+    Mapillary city, whole corpus, after the 2026-09-05 catch-up) and 7.9-8.4% on the large GSV cities
     (seattle-wa 14,603/183,682; chicago-il 22,985/272,755). At 8.4% a source-blind breaker would trip about
     every 1,700 panos on ordinary retired-imagery verdicts. test_a_long_run_of_gsv_verdicts_is_still_ledgered
     below is that measurement as a test.
+
+    Two tests hold the keying apart, and they catch different mutants (a 2026-09-09 review corrected a claim
+    that one of them did it alone): the GSV test catches a breaker that TRIPS source-blind, while
+    test_another_sources_verdicts_neither_count_nor_reset catches one that merely COUNTS source-blind and
+    trips per source - which the GSV test passes, because `limit is None` suppresses the trip there anyway.
     """
 
     @staticmethod
@@ -1639,10 +1670,20 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
         assert self.ledger_rows(storage) == ['mly-0,0', 'mly-1,0', 'mly-2,1', 'mly-3,0', 'mly-4,0']
         assert result == (1, 0, 5, 0, 6)
 
-    def test_a_transient_failure_also_resets_the_count(self, monkeypatch, tmp_path):
-        """A raised exception is not a verdict on the pano (#41), so it is not evidence of a source that has
-        started answering with false verdicts - it resets, like every other non-verdict outcome. It is also
-        the one reset that writes no ledger row, so the rows here are one short of the attempts."""
+    def test_a_transient_failure_does_NOT_reset_the_count(self, monkeypatch, tmp_path):
+        """The bound has to be a bound per RUN, and a raise is no evidence about the source at all.
+
+        This is the finding that made the breaker useless on the exact fault it was built for (2026-09-09
+        review). Mapillary answers "does not exist OR missing permissions" with 400/100/33, which raises -
+        and every retired image answers that way on EVERY run, forever, because a transient is never
+        ledgered and so is a candidate again the next night. The scope-less token produces the OTHER shape,
+        the omitted-field 200 that is the permanent verdict. So the real candidate set is live panos
+        shuffled uniformly among retired ones, and if a raise forgave the count the breaker would reset
+        constantly, write false permanent rows for most of the live panos, and might never trip.
+
+        Under the old rule this exact input wrote FOUR false rows and never tripped. It now trips at mly-3,
+        having written two.
+        """
         storage = tmp_path / 'storage'
         storage.mkdir()
         panos = self.mapillary_panos(5)
@@ -1651,14 +1692,67 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
 
         result, calls = self.drive(monkeypatch, storage, panos, verdicts)
 
-        assert calls == ['mly-0', 'mly-1', 'mly-2', 'mly-3', 'mly-4'], 'nothing trips in five attempts'
-        assert self.ledger_rows(storage) == ['mly-0,0', 'mly-1,0', 'mly-3,0', 'mly-4,0']
-        assert result == (0, 0, 5, 0, 5)
+        assert calls == ['mly-0', 'mly-1', 'mly-2', 'mly-3'], 'trips on the third verdict, transient ignored'
+        assert self.ledger_rows(storage) == ['mly-0,0', 'mly-1,0'], 'two false rows, not four'
+        assert result == (0, 0, 4, 0, 4)
+
+    def test_a_skip_does_not_reset_the_count_either(self, monkeypatch, tmp_path):
+        """A skip is os.path.isfile() returning true, so the source was never contacted - even less
+        evidence than a raise. Only a real success forgives the count."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        panos = self.mapillary_panos(5)
+        verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
+        verdicts['mly-1'] = downloaders.DownloadResult.skipped
+
+        result, calls = self.drive(monkeypatch, storage, panos, verdicts)
+
+        assert calls == ['mly-0', 'mly-1', 'mly-2', 'mly-3']
+        assert self.ledger_rows(storage) == ['mly-0,0', 'mly-1,1', 'mly-2,0']
+        assert result == (0, 0, 3, 1, 4)
+
+    def test_a_fallback_success_forgives_the_count_like_a_plain_one(self, monkeypatch, tmp_path):
+        """fallback_success is real imagery, materially less of it (#52) - the source answered
+        honestly, which is the whole question the counter asks. Pins that the reset is not narrowed to
+        DownloadResult.success alone, which would trip a Mapillary city mid-backfill on nothing."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        panos = self.mapillary_panos(7)
+        verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
+        verdicts['mly-2'] = downloaders.DownloadResult.fallback_success
+
+        result, calls = self.drive(monkeypatch, storage, panos, verdicts)
+
+        assert calls == ['mly-0', 'mly-1', 'mly-2', 'mly-3', 'mly-4', 'mly-5']
+        assert self.ledger_rows(storage) == ['mly-0,0', 'mly-1,0', 'mly-2,1', 'mly-3,0', 'mly-4,0']
+        assert result == (0, 1, 5, 0, 6)
+
+    def test_another_sources_verdicts_neither_count_nor_reset(self, monkeypatch, tmp_path):
+        """The counter is keyed on source, not merely the trip.
+
+        Without this, a single shared counter with a per-source trip passes every other test in the class -
+        the all-Mapillary tests are identical, the GSV test still passes because `limit is None` suppresses
+        the trip, and the mixed test's GSV panos are successes placed after the trip. In production that
+        mutant trips Mapillary after two ordinary GSV retired-imagery verdicts plus one Mapillary verdict,
+        in exactly the shuffled mixed-source city this design is for.
+        """
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        panos = [{'pano_id': 'gsv-0', 'source': 'gsv'}, {'pano_id': 'gsv-1', 'source': 'gsv'},
+                 {'pano_id': 'mly-0', 'source': 'mapillary'}]
+        verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
+
+        result, calls = self.drive(monkeypatch, storage, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'mly-0'], 'nothing trips'
+        assert self.ledger_rows(storage) == ['gsv-0,0', 'gsv-1,0', 'mly-0,0'], 'the Mapillary verdict lands'
+        assert result == (0, 0, 3, 0, 3)
 
     def test_a_long_run_of_gsv_verdicts_is_still_ledgered(self, monkeypatch, tmp_path):
         """The measurement in this class's docstring, as a test: GSV carries no breaker, because 8.4% of
         chicago-il's ledger is a permanent verdict and three in a row is then routine rather than evidence.
-        A source-blind breaker passes every other test in this class and fails this one."""
+        A breaker that trips source-blind fails this one; one that only COUNTS source-blind passes it, and
+        is caught by test_another_sources_verdicts_neither_count_nor_reset instead."""
         storage = tmp_path / 'storage'
         storage.mkdir()
         panos = [{'pano_id': 'gsv-%d' % n, 'source': 'gsv'} for n in range(10)]
@@ -1702,10 +1796,56 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
         logged = '\n'.join(record.getMessage() for record in caplog.records)
         assert 'mapillary' in logged and '3 consecutive' in logged
 
+        # The end-of-phase summary is the OTHER message, and until the 2026-09-09 review every assertion
+        # above was satisfied by the per-trip one alone - so deleting the summary block, or dropping its
+        # logging call, went unnoticed. It carries the two things a repair actually needs.
+        for channel in (stdout, logged):
+            assert 'left unattempted' in channel
+            assert 'false downloaded=0 rows in pano_id_log.csv' in channel
+
+    def test_the_summary_counts_the_panos_the_breaker_actually_dropped(self, monkeypatch, tmp_path, capsys):
+        """Without this, deleting `breaker_skipped += 1` leaves the operator line reading a constant
+        "0 pano(s) were left unattempted" - which is the number they would use to decide whether the next
+        run has anything to pick up."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        panos = self.mapillary_panos(10)
+        verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
+
+        self.drive(monkeypatch, storage, panos, verdicts)
+
+        # Trips on mly-2; mly-3..mly-9 are never attempted.
+        assert '7 pano(s) were left unattempted' in capsys.readouterr().out
+
     def test_a_tripped_run_exits_nonzero(self, monkeypatch, tmp_path):
         """log.csv keeps its 18 positional columns, so the alarm is the exit code: scrape_queue.py books a
         nonzero city as `failed` and exits nonzero itself, which is what cron mails on."""
         assert self.run_main(monkeypatch, tmp_path, downloaders.DownloadResult.failure) == 1
+
+    def test_a_tripped_run_exits_nonzero_as_a_PROCESS(self, tmp_path):
+        """The whole alarm rests on the process exit status, and main()'s return value is not it.
+
+        `sys.exit(main())` sits under the `if __name__ == '__main__'` guard, which .coveragerc excludes, and
+        no other test drives a trip through a real interpreter - so mutating it to a bare `main()` left the
+        suite green and coverage at gate while producing exit 0. scrape_queue then books the city `ok` and
+        cron never mails: the breaker fires, says so on stdout nobody reads, and raises no alarm at all.
+        Found by the 2026-09-09 review.
+        """
+        driver = tmp_path / 'fake_network_driver.py'
+        driver.write_text(FAKE_NETWORK_DRIVER)
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + ''.join(
+            'mly-%d,4096,2048,47.6,-122.3,180.0,0.0,mapillary,True\n' % n for n in range(4)))
+        storage = tmp_path / 'storage'
+        env = dict(os.environ, FAKE_DOWNLOAD_LOG=str(tmp_path / 'downloads.txt'),
+                   FAKE_VERDICT='failure', MAPILLARY_ACCESS_TOKEN='test-token')
+        result = subprocess.run(
+            [sys.executable, str(driver), 'sidewalk-test.invalid', str(storage), '-c', str(csv_path),
+             '--max-depth-requests', '0'],
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env)
+
+        assert result.returncode == 1, result.stdout[-2000:] + result.stderr[-2000:]
+        assert 'breaker tripped for mapillary' in result.stdout
 
     def test_an_ordinary_run_still_exits_zero(self, monkeypatch, tmp_path):
         """The discrimination for the test above - an unconditional `return 1` would otherwise pass it."""

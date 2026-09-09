@@ -360,12 +360,17 @@ verdict that trips the breaker is itself withheld, so a trip costs two false row
 
 It is keyed on the **source**, not on the no-rendition verdict specifically. That is broader than the shape
 above by design: it also covers a mass 404, which carries identical risk and has simply never been observed.
-And it costs nothing in headroom, because the base rates differ by three orders of magnitude — measured over
+And it costs nothing in headroom, because the base rates differ by over two orders of magnitude — measured over
 the production ledgers on 2026-09-06, richmond-va (the only Mapillary city, whole corpus after the 2026-09-05
-catch-up) has **0 permanent verdicts in 9,229 rows**, while the large GSV cities run **8.0–8.4%** because
+catch-up) has **0 permanent verdicts in 9,229 rows**, while the large GSV cities run **7.9–8.4%** because
 retired imagery is permanent and ordinary. A source-blind breaker would stop a healthy GSV city about every
 1,700 panos, which is why `MAX_CONSECUTIVE_PERMANENT_FAILURES` is a per-source table and GSV is not in it.
-A new imagery source declares its own threshold there rather than growing a second breaker.
+A new imagery source declares its own threshold there rather than growing a second breaker — and a source
+with no entry has **no breaker at all**, so adding one is part of adding a source.
+
+Only a **success** resets the count — not a transient failure, and not a skip. See
+[ops.md](ops.md#when-the-image-phase-stops-trusting-a-source) for why that distinction is the whole
+difference between a breaker that fires and one that cannot.
 
 [#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
 

@@ -310,12 +310,15 @@ def filter_supported_sources(pano_infos):
 # a permanent row is never revisited, and undoing 161 of them on 2026-09-01 meant hand-editing
 # pano_id_log.csv on the shared store.
 #
-# Keyed on source rather than on the no-rendition verdict because the base rates differ by three orders of
-# magnitude. Measured over the production ledgers 2026-09-06: richmond-va, the only Mapillary city, has 0
+# Keyed on source rather than on the no-rendition verdict because the base rates differ by over two orders
+# of magnitude. Measured over the production ledgers 2026-09-06: richmond-va, the only Mapillary city, has 0
 # permanent verdicts in 9,229 rows - the whole corpus, after the 2026-09-05 catch-up - while the large GSV
-# cities run 8.0-8.4% (seattle-wa 14,603/183,682, chicago-il 22,985/272,755), because retired imagery is
-# permanent and ordinary. At 8.4% three in a row arrives about every 1,700 panos, so a source-blind breaker
-# would stop a healthy GSV city most nights. Keying it this way also means a new source (#110) declares its
+# cities run 7.9-8.4% (seattle-wa 14,603/183,682, chicago-il 22,985/272,755), because retired imagery is
+# permanent and ordinary. Rule of three bounds the Mapillary rate at 3/9,229 = 0.0325%, so the measured
+# separation is 8.427/0.0325 = 259x. (It read "three orders" until the 2026-09-09 review; that would need the
+# Mapillary rate under 0.0084%, which 9,229 rows cannot establish - it would take ~35,700 clean ones.)
+# At 8.4% three in a row arrives about every 1,700 panos, so a source-blind breaker would stop a healthy GSV
+# city roughly that often - most nights during a backfill, less for a mature city attempting fewer. Keying it this way also means a new source (#110) declares its
 # own threshold rather than growing a second bespoke breaker.
 #
 # Three rather than one, for MAX_CONSECUTIVE_UNDERSIZED's reason (refetch_panos.py): one image legitimately
@@ -428,13 +431,27 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 # pano) is permanent and writes the terminal 0-row.
                 fail_count += 1
                 downloaded = None
+                result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
                 logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
 
             limit = MAX_CONSECUTIVE_PERMANENT_FAILURES.get(source)
             if limit is not None:
-                # `downloaded == 0` is exactly the permanent verdict; 1 is any success or skip and None a
-                # transient failure, and both of those reset - a source still answering with anything else is
-                # not the wholesale-false-verdict condition this watches for.
+                # `downloaded == 0` is exactly the permanent verdict. ONLY A REAL SUCCESS RESETS - not a
+                # transient failure, and not a skip.
+                #
+                # A transient reset was the first version of this and it defeated the breaker on the exact
+                # fault it was built for (2026-09-09 review). Mapillary answers "does not exist OR missing
+                # permissions" with 400/100/33, which raises; and every retired image answers that way on
+                # EVERY run, forever, because a transient is never ledgered and so is a candidate again the
+                # next night. The scope-less token meanwhile produces the other shape, the omitted-field 200
+                # that IS the permanent verdict. So in a mature city the candidate set is mostly retired
+                # images shuffled uniformly among the live ones, every one of them resetting the count: the
+                # run writes false permanent rows for most of the live panos and may never trip at all. The
+                # bound the breaker advertises has to be a bound per run, and a raise is not evidence that
+                # the source is answering honestly - it is no evidence about the source at all.
+                #
+                # A skip does not reset either, and for a stronger reason: it is os.path.isfile() returning
+                # true, so the source was never contacted.
                 if downloaded == 0:
                     consecutive_permanent[source] = consecutive_permanent.get(source, 0) + 1
                     if consecutive_permanent[source] >= limit:
@@ -451,7 +468,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                         print("IMAGEDOWNLOAD: WARNING - %d consecutive permanent failures from source %s. "
                               "That is a condition of the run, not of the panos, so nothing more from this "
                               "source is ledgered tonight." % (limit, source))
-                else:
+                elif result_code in (DownloadResult.success, DownloadResult.fallback_success):
                     consecutive_permanent[source] = 0
             total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
@@ -465,10 +482,15 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             print("--- %s seconds ---" % (time.time() - start_time))
 
     if tripped:
-        print("IMAGEDOWNLOAD: WARNING - breaker tripped for %s; %d pano(s) were left unattempted and nothing "
-              "was ledgered for them, so they retry next run. Check that source's credentials before the "
-              "next run, then look for false downloaded=0 rows in pano_id_log.csv."
-              % (', '.join(sorted(tripped)), breaker_skipped))
+        # Both channels, like the per-trip message above: this is the half that carries the unattempted count
+        # and the repair pointer, which is exactly what someone needs a week later reading scrape.log while
+        # editing the ledger. It was print-only until the 2026-09-09 review.
+        summary = ("IMAGEDOWNLOAD: WARNING - breaker tripped for %s; %d pano(s) were left unattempted and "
+                   "nothing was ledgered for them, so they retry next run. Check that source's credentials "
+                   "before the next run, then look for false downloaded=0 rows in pano_id_log.csv."
+                   % (', '.join(sorted(tripped)), breaker_skipped))
+        logging.error("%s", summary)
+        print(summary)
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",

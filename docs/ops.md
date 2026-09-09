@@ -98,7 +98,7 @@ permanent.** Transient failures leave no row and retry automatically on the next
   A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
   (code 190 / `OAuthException`), a body that does not name the image, or an image body that is not a JPEG
   is not a verdict and leaves no row.
-* **no row** — never attempted, or the last attempt failed transiently (a network blip, a failed tile, a full
+* **no row** — never attempted, the last attempt failed transiently, or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both the withheld tripping verdict and every pano skipped after it) (a network blip, a failed tile, a full
   store). Retried next run.
 
 Deleting `0` rows, or the whole file, is the manual force-retry lever; existing `.jpg`s are simply
@@ -366,19 +366,36 @@ for false downloaded=0 rows in pano_id_log.csv.
 
 **What to do.** Check the source's credentials first — the condition this guards is a token that has lost
 the scope it needs, which Mapillary can answer by omitting the image URL from an otherwise healthy record
-rather than by erroring. Then look at the last rows of `pano_id_log.csv`: **two** false `downloaded=0` rows
-are written before the breaker has enough evidence to fire, and those two are the only damage. Delete them,
-fix the credentials, and the next run picks up everything the breaker skipped, because none of it was
-ledgered.
+rather than by erroring.
+
+Then repair the ledger. **Exactly two** false `downloaded=0` rows are written before the breaker has enough
+evidence to fire — the threshold is 3 and the tripping verdict is withheld — and since only a *success*
+resets the count, those two are always the tripped source's last two rows, adjacent. Nothing else in the run
+is damage.
+
+They are **not** necessarily the last rows *in the file*. Only the tripped source stops; a city carrying both
+GSV and Mapillary keeps downloading and ledgering GSV afterwards, so the tail can be thousands of GSV rows.
+`pano_id_log.csv` is `pano_id,downloaded` with no source column, so match on the id shape — Mapillary ids are
+all-numeric, GSV's are 22-character base64, Panoramax's are UUIDs. Delete those two rows, fix the
+credentials, and the next run picks up everything the breaker skipped, because none of it was ledgered.
 
 The run **exits nonzero**, so `scrape_queue.py` books the city as `failed` and cron mails the queue summary.
 Only the tripped source stops: a city carrying both GSV and Mapillary panos keeps downloading GSV. `log.csv`
 is unchanged — the row is 18 positional fields and the breaker is not one of them, so stdout, `scrape.log`
 and the exit code are where this lives.
 
-GSV has no breaker, deliberately: 8.0–8.4% of a large GSV city's ledger is a permanent verdict (retired
-imagery), so three in a row is routine there rather than evidence. The table is per source, in
-`DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`.
+GSV has no breaker, deliberately: 7.9–8.4% of a large GSV city's ledger is a permanent verdict (retired
+imagery), so three in a row is routine there rather than evidence — about every 1,700 panos at 8.4%. The
+table is per source, in `DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`; a source with no entry is
+unlimited, so **a new source declares its own threshold or gets no breaker at all**.
+
+**Only a success resets the count.** Not a transient failure and not a skip. A transient reset was the first
+version of this and it defeated the breaker on the fault it was built for: Mapillary answers "does not exist
+or missing permissions" with a 400, which raises, and every retired image answers that way on *every* run
+forever, because a transient is never ledgered and so is a candidate again the next night. Those raises,
+shuffled among the live panos, would reset the count constantly — the run would write false permanent rows
+for most of the live panos and might never trip. A raise is not evidence that the source is answering
+honestly; it is no evidence about the source at all.
 
 ## What healthy looks like
 
