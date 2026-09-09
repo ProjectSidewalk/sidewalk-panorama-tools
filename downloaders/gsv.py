@@ -1362,7 +1362,7 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
                 # realistic one, given this feature adds terabytes. Also transient and also not ledgered. Caught
                 # deliberately: escaping would fail the whole run and forfeit the rest of the phase's budget over
                 # one pano's storage hiccup. (log.csv itself is safe either way - DownloadRunner now pads the row
-                # to 18 fields in a finally.)
+                # to its full width in a finally.)
                 fail_count += 1
                 consecutive_failures += 1
                 failure_class = 'storage'

@@ -88,10 +88,13 @@ def test_crash_mid_run_still_writes_a_full_width_log_row(tmp_path):
 
     assert result.returncode != 0, "the crash must still fail the run loudly"
     fields = last_log_fields(storage)
-    assert len(fields) == 18
+    assert len(fields) == 19
     assert fields[0] != ''  # run start timestamp
     assert fields[1:6] == ['0'] * 5  # xml stub completed before the crash
-    assert fields[6:] == [''] * 12  # image/depth/total never completed - blank, not fabricated
+    assert fields[6:18] == [''] * 12  # image/depth/total never completed - blank, not fabricated
+    # The depth corpus size is not a phase result: it was known before the crash, so it is recorded (#43).
+    # This corpus has no GSV pano, hence 0 - a count, not a blank.
+    assert fields[18] == '0'
     # The traceback must land in scrape.log, not just stderr - under cron, stderr goes to mail at best.
     # `.exists()` is not enough: the FileHandler opens the file eagerly, so an empty file proves nothing.
     scrape_log = (storage / 'scrape.log').read_text()
@@ -102,7 +105,8 @@ def test_webserver_fetch_failure_still_leaves_evidence(tmp_path):
     """A server outage - the single most likely nightly failure - crashes before any phase runs (#49).
 
     It must still fail loudly AND leave both kinds of evidence: the traceback in scrape.log, and a blank-padded
-    18-field log.csv row whose real timestamp shows a run started and produced nothing.
+    19-field log.csv row whose real timestamp shows a run started and produced nothing - the depth corpus
+    size included, since the list it is counted from never arrived.
     """
     storage = tmp_path / 'storage'
     # No -c flag, so the runner fetches from the webserver; the .invalid TLD guarantees the fetch raises.
@@ -112,22 +116,24 @@ def test_webserver_fetch_failure_still_leaves_evidence(tmp_path):
 
     assert result.returncode != 0, "a run that scraped nothing must not report success"
     fields = last_log_fields(storage)
-    assert len(fields) == 18
+    assert len(fields) == 19
     assert fields[0] != ''  # a real timestamp: evidence the run started
-    assert fields[1:] == [''] * 17  # no phase ran - all blank, not fake zeros
+    assert fields[1:] == [''] * 18  # no phase ran - all blank, not fake zeros
     assert 'Traceback' in (storage / 'scrape.log').read_text()
 
 
-def test_log_csv_keeps_18_positional_fields(tmp_path):
+def test_log_csv_keeps_19_positional_fields(tmp_path):
     storage, result = run_downloader(tmp_path)
     assert result.returncode == 0, result.stderr
 
     fields = last_log_fields(storage)
-    assert len(fields) == 18
+    assert len(fields) == 19
     # Field 1 is the run timestamp; with every pano filtered out, the xml stub, image, and depth counts are all 0.
     assert fields[1:6] == ['0'] * 5
     assert fields[6:12] == ['0'] * 6
     assert fields[12:17] == ['0'] * 5
+    # Field 19 is the depth corpus size (#43): every pano here is of an unsupported source, so 0 GSV panos.
+    assert fields[18] == '0'
 
 
 def test_skip_depth_writes_zero_depth_columns_and_no_ledger(tmp_path):
@@ -135,8 +141,9 @@ def test_skip_depth_writes_zero_depth_columns_and_no_ledger(tmp_path):
     assert result.returncode == 0, result.stderr
 
     fields = last_log_fields(storage)
-    assert len(fields) == 18
+    assert len(fields) == 19
     assert fields[12:17] == ['0'] * 5
+    assert fields[18] == '0'  # the corpus size is a fact about the input, recorded whether or not depth ran
     assert not (storage / 'depth_log.csv').exists()
 
 
@@ -144,13 +151,13 @@ def test_deprecated_attempt_depth_flag_warns_but_runs(tmp_path):
     storage, result = run_downloader(tmp_path, '--attempt-depth', '--skip-depth')
     assert result.returncode == 0, result.stderr
     assert '--attempt-depth is deprecated' in result.stdout
-    assert len(last_log_fields(storage)) == 18
+    assert len(last_log_fields(storage)) == 19
 
 
 def test_max_depth_requests_flag_is_accepted(tmp_path):
     storage, result = run_downloader(tmp_path, '--max-depth-requests', '10')
     assert result.returncode == 0, result.stderr
-    assert len(last_log_fields(storage)) == 18
+    assert len(last_log_fields(storage)) == 19
 
 
 class TestDepthBudgetMessages:
@@ -482,7 +489,7 @@ def test_broken_scrape_log_falls_back_to_stderr_and_the_run_survives(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert 'logging to stderr' in result.stderr  # one loud warning, then the run proceeds
-    assert len(last_log_fields(storage)) == 18
+    assert len(last_log_fields(storage)) == 19
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -510,16 +517,18 @@ def test_depth_crash_keeps_the_image_phases_real_counts(tmp_path, monkeypatch):
         DownloadRunner.run_scraper_and_log_results(str(storage), panos, panos, skip_depth=False)
 
     fields = last_log_fields(storage)
-    assert len(fields) == 18
+    assert len(fields) == 19
     assert fields[6:11] == ['3', '1', '2', '4', '10'], "the image phase's real counts must survive"
     assert fields[11] != ''  # image duration was recorded too
-    assert fields[12:] == [''] * 6  # depth and total never finished - blank, not fabricated
+    assert fields[12:18] == [''] * 6  # depth and total never finished - blank, not fabricated
+    assert fields[18] == '1'  # the one GSV pano the depth phase was given: known before it exploded (#43)
 
 
 def test_an_overwide_log_row_errors_instead_of_silently_widening(tmp_path):
-    """Blank-padding computes 18 - len(fields); a future 19th field must fail loudly, not no-op the padding."""
+    """Blank-padding computes LOG_CSV_FIELD_COUNT - len(fields); a row one wider than the analyzer's column
+    list must fail loudly, not no-op the padding."""
     with pytest.raises(AssertionError):
-        DownloadRunner.write_log_csv_row(str(tmp_path), ['x'] * 19)
+        DownloadRunner.write_log_csv_row(str(tmp_path), ['x'] * (DownloadRunner.LOG_CSV_FIELD_COUNT + 1))
 
 
 def test_log_row_write_failure_dumps_the_row_to_stderr(tmp_path, capsys):
@@ -651,7 +660,7 @@ def test_main_with_bad_argv_exits_2(tmp_path, monkeypatch):
 
 def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
     """The #49 evidence path at the new run() seam: a pano-list fetch crash must leave a blank-padded
-    18-field log.csv row whose real timestamp shows a run started and produced nothing. In-process and
+    19-field log.csv row whose real timestamp shows a run started and produced nothing. In-process and
     deterministic - unlike the subprocess variant, which relies on .invalid DNS failing through the whole
     retry stack."""
     monkeypatch.chdir(tmp_path)
@@ -668,9 +677,9 @@ def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
         module.run('sidewalk-test.invalid', str(storage))
 
     fields = last_log_fields(storage)
-    assert len(fields) == 18
+    assert len(fields) == 19
     assert fields[0] != ''  # a real timestamp: evidence the run started
-    assert fields[1:] == [''] * 17  # no phase ran - all blank, not fake zeros
+    assert fields[1:] == [''] * 18  # no phase ran - all blank, not fake zeros
 
 
 # --- Retry semantics and source ordering (#41, #40) -----------------------------------------------------------
@@ -1543,3 +1552,49 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
         assert metadata_asked == ['100000000000004', '100000000000005', '100000000000006']
         assert self._ledger_rows(storage) == ['100000000000001,1', '100000000000002,0', '100000000000003,0',
                                               '100000000000004,1', '100000000000005,1', '100000000000006,1']
+
+
+# --- log.csv field 19: the depth corpus size (#43) ---------------------------------------------------------
+#
+# Field 16 says how many panos the depth phase has resolved and nothing in the row said out of how many, so a
+# backfill's progress - and whether a city that reports zero requests still has work - could not be read from
+# log.csv at all. The GSV corpus size is known before either phase runs, so it lands on every row that gets
+# past the pano-list fetch, crashed or not, and on --skip-depth runs, where it is exactly the number an
+# operator needs to see next to five zeros.
+
+class TestTheDepthCorpusSizeReachesLogCsv:
+
+    def test_it_is_the_gsv_pano_count_and_survives_skip_depth(self, monkeypatch, tmp_path):
+        """call_main passes --skip-depth: the field is a fact about the input, not a result of the phase."""
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        fields = last_log_fields(storage)
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+
+    def test_only_gsv_panos_count(self, monkeypatch, tmp_path):
+        """Depth is GSV-only, so a Mapillary pano in the list is not part of the corpus the field describes."""
+        rows = GSV_CSV_ROWS + 'mapillaryPanoId0000001,4096,2048,47.6,-122.3,180.0,0.0,mapillary,True\n'
+        monkeypatch.setenv('MAPILLARY_ACCESS_TOKEN', 'MLY|test|token')
+        storage, _ = call_main(monkeypatch, tmp_path, rows)
+
+        assert last_log_fields(storage)[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+
+    def test_a_crash_in_the_image_phase_still_records_it(self, monkeypatch, tmp_path):
+        """The field is written from the finally, so the row a crash leaves behind keeps the denominator:
+        an analyzer reading a crashed night can still tell how much work the city has."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').mkdir()  # the image phase's first ledger open raises
+
+        with pytest.raises(OSError):
+            call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        fields = last_log_fields(storage)
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[6:18] == [''] * 12, 'the unfinished phases stay blank'
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+
+    def test_the_field_is_the_last_one(self):
+        """Appending is what keeps every existing position - and every existing reader - unmoved."""
+        assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT

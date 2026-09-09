@@ -1,8 +1,11 @@
 # Log analyzer — `log_analyzer/analyze.py`
 
-Monitors the nightly scrape across every city. It pulls each city's `log.csv` off the pano store over SFTP and
-flags the ones that look broken. This is an ops tool you run from a workstation or a cron box — the scraper
-neither knows nor needs it, and it shares no code with the runners.
+Monitors the nightly scrape across every city. It pulls each city's `log.csv` off the pano store over SFTP,
+flags the ones that look broken, and reports the [depth backfill](#the-depth-backfill) per city and for the
+fleet. This is an ops tool you run from a workstation or a cron box — the scraper neither knows nor needs it,
+and it shares no code with the runners. **Pull the repo before running it after a deploy**: the column list
+it reads by position moves with the runner's ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)
+added field 19), and an older analyzer against newer rows would misplace every count.
 
 It needs only `pandas` plus the `sftp` client binary (`openssh-client`). `pandas` lives in
 `requirements-dev.txt`, not `requirements.txt` — nothing the scraper or cropper runs imports it
@@ -65,21 +68,51 @@ to diff against; before then it is the crontab.
 | 🔴 CRITICAL | Last log entry is more than `--stale-days` days old (default 3) |
 | 🟡 WARNING | `image_fail` growing by ≥20/day (7-day average) — new panos failing |
 | 🟡 WARNING | Zero new images for 30 consecutive days, after a period that had some (regression) |
-| 🟡 WARNING | A recent run took >3× the historical median runtime |
+| 🟡 WARNING | A recent run took >3× the historical median runtime **outside the depth phase** — depth runs to whatever budget the queue hands it, which varies by design |
 | 🟡 WARNING | ≥3 of the last 7 runs ended early (blank columns) |
-| 🔵 INFO | Multiple runs logged on the same calendar day |
+| 🟡 WARNING | Two runs **overlapped**: one started before the previous one's recorded end — two processes racing on one city's ledgers. Same-day runs alone are not reported; the queue's extra passes produce them by design |
+| 🟡 WARNING | **Depth backfill stalled**: no depth request on the last 3 nights while panos remain unresolved. The message says which shape it saw — five zeros (did not run: block latch, `--skip-depth`, an unwritable ledger) or a phase that ran and asked for nothing (the image phase spent the whole budget) |
 
 Thresholds are module constants near the top of `analyze.py`.
 
 A healthy mature city looks like: `image_success` small or zero most days, stable `image_fail`,
 `image_skip ≈ image_total`.
 
+## The depth backfill
+
+Every city's stats line carries a depth clause once its `log.csv` has a row with field 19, the corpus size
+([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)):
+
+```
+depth 1,753/183,680 (1.0%) · +590/night · ~308 nights left
+depth complete (2,709)
+depth not started (0/5,381)
+```
+
+and the report ends with the fleet's block — resolved out of eligible, the summed nightly request rate, how
+many cities are complete or stalled, and the three cities with the longest road ahead. That last line is the
+operational number: the fleet finishes when its slowest city does, and a fleet *average* (the 47-night
+estimate that sized the current slots) hid a tail more than ten times longer.
+
+How the figures are defined, since each definition is a trap the other way:
+
+* **resolved** is `depth_total` (field 16) of the newest row on which the phase actually ran — success +
+  failed + skipped, everything the ledger accounts for. A row whose five depth fields are all zero is a phase
+  that did not run, not a city with nothing resolved.
+* **rate** is requests (`depth_success + depth_fail`) summed **per night**, averaged over the last 7 nights in
+  the log. Per night, not per row: the [queue](downloader.md#nightly-deployment) can run a city more than
+  once a night, and a per-row average would halve on every re-run.
+* **ETA** is unresolved ÷ rate, and is simply absent when either is zero. Undefined is not zero.
+
 ## Two things about the parsing
 
-**It reads the [18 positional columns](ops.md#the-logcsv-columns) by position**, tolerating a header row that
+**It reads the [19 positional columns](ops.md#the-logcsv-columns) by position**, tolerating a header row that
 may or may not be there: `write_log_csv_row` never writes one, and production files get theirs by hand at city
-setup. Blank fields stay `NaN` — a crashed run must never read as a quiet one — so every check guards against
-NaN rather than coercing to `int`.
+setup. Rows are read with the `csv` module and padded or truncated to the column count *before* pandas sees
+them, so nothing about the file's shape is inferred — measured before field 19 shipped, `read_csv` could not
+parse the file every production city has (an 18-name hand-written header, years of 18-field rows, then
+19-field rows) under either engine. Blank fields stay `NaN` — a crashed run must never read as a quiet one —
+so every check guards against NaN rather than coercing to `int`.
 
 **It uses `sftp -b -`** (batch mode via stdin) rather than `scp`, because the store runs a restricted SFTP
 subsystem that doesn't speak the SCP wire protocol; newer `scp` clients default to SFTP-over-SSH and fail with

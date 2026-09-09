@@ -406,9 +406,17 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
 
-# Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration. Positional, parsed by
-# our log-analyzer tooling. The full column table lives in docs/ops.md.
-LOG_CSV_FIELD_COUNT = 18
+# Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration, then the depth corpus
+# size (#43). Positional, parsed by our log-analyzer tooling. The full column table lives in docs/ops.md.
+LOG_CSV_FIELD_COUNT = 19
+
+# 1-based position of the depth corpus size - the number of GSV panos the depth phase was given. It is the one
+# number the analyzer cannot derive from the other 18: field 16 says how many panos are resolved, and only this
+# says out of how many, which is what a backfill's progress and ETA are computed from. Appended at the END of
+# the row so no existing position moves, and written from the finally rather than after the depth phase because
+# it is known before any phase runs - so a crashed run still records it, and only a run that died in the
+# pano-list fetch itself leaves it blank.
+DEPTH_ELIGIBLE_FIELD = 19
 
 
 def log_timestamp(now=None):
@@ -450,7 +458,7 @@ def _duration_minutes(start_monotonic, end_monotonic):
 
 
 def write_log_csv_row(storage_location, fields):
-    """Append one run's row to <storage_location>/log.csv, blank-padded to the full 18 columns.
+    """Append one run's row to <storage_location>/log.csv, blank-padded to the full LOG_CSV_FIELD_COUNT columns.
 
     Blank means the phase never finished - visibly missing data, not a fake zero. If the append itself fails
     (the classic cause: the sshfs store went away mid-run), the joined row is printed to stderr before the
@@ -474,9 +482,11 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     """Run the image and depth phases and append this run's row to log.csv.
 
     Fields are accumulated as each phase completes and the row is written once, in a finally, padded to the
-    full 18 with blanks. A crash mid-run therefore still yields a parseable full-width line that keeps every
+    full width with blanks. A crash mid-run therefore still yields a parseable full-width line that keeps every
     completed phase's counts (a failure in the depth phase must not discard what the image phase downloaded),
-    while the phases that never finished stay visibly blank rather than turning into fake zeros (#49).
+    while the phases that never finished stay visibly blank rather than turning into fake zeros (#49). The
+    one field that is not a phase result - the depth corpus size, DEPTH_ELIGIBLE_FIELD - is known up front
+    and lands on every row that gets this far, crashed or not.
 
     @param storage_location Root of the pano store (log.csv and the ledgers live here).
     @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
@@ -491,8 +501,10 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     run_start_monotonic = time.monotonic()
 
     # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
-    # split below needs it too.
+    # split below needs it too - and because its size is log.csv's last field (#43): the denominator every
+    # progress figure for the backfill needs, and the one number nothing else in the row carries.
     gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
+    depth_eligible = len(gsv_panos)
 
     # Both phases share --max-runtime (it exists to keep the run inside its daily cron slot, per #38, and that
     # constraint doesn't care which phase spends the clock), but the image phase must leave the reserved tail so
@@ -522,7 +534,7 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     try:
         # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below),
         # but its log.csv columns are stubbed with the values every production run has always written so the
-        # positional 18-column format parsed by scraper-log-analyzer doesn't shift. Deliberately the image
+        # positional format parsed by scraper-log-analyzer doesn't shift. Deliberately the image
         # list's length, which is what this counted before depth stopped honouring --all-panos.
         xml_res = (0, 0, len(image_pano_infos), len(image_pano_infos))
         xml_end_monotonic = time.monotonic()
@@ -557,6 +569,10 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
 
         fields.append(_duration_minutes(run_start_monotonic, depth_end_monotonic))
     finally:
+        # Whatever the phases managed to record, then blanks up to the corpus-size field, then the corpus size
+        # itself. On a completed run the padding is empty; on a crashed one it is the unfinished phases.
+        fields += [''] * (DEPTH_ELIGIBLE_FIELD - 1 - len(fields))
+        fields.append(depth_eligible)
         write_log_csv_row(storage_location, fields)
 
 
