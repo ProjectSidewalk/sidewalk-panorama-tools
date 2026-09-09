@@ -7,7 +7,8 @@ the working day on the hosts the runs actually load - the pano store and the Sid
 Because each slot was picked by hand at onboarding, the ring also developed gaps and could develop
 collisions; and a fixed UTC crontab drifts an hour against Seattle twice a year.
 
-This driver walks a city list in order and starts the next city as soon as the previous one exits, which:
+This driver walks a city list in order and starts the next city as soon as the previous one exits - and then,
+while a full slot of the window remains, runs the cities that stopped on their budget again (#43), which:
 
   - serialises by construction. The stagger existed to keep two cities off /adminapi/panos and the store at
     once; a queue enforces that without anyone maintaining 53 slot numbers.
@@ -17,6 +18,11 @@ This driver walks a city list in order and starts the next city as soon as the p
     the queue finishes long before the window closes on an ordinary night.
   - cannot overlap itself. There was no lock anywhere in this repo before: a slow run and the next slot
     could put two processes on one city's pano_id_log.csv, log.csv and scrape.log at the same time.
+  - spends the whole window. Measured after the depth backfill's first three nights: 477 of 690 minutes
+    used, 13 cities already complete and exiting in seconds, and every city with a backlog capped at its
+    12-minute slot - so the five largest were 250-460 nights out while a third of every night went unused.
+    Pass 1 still gives every city its guaranteed slot; the passes after it give the leftover to whoever ran
+    out of budget, in equal shares no smaller than a slot.
 
 Deliberately NOT parallel. The politeness constraint the stagger encoded is real, and the whole point here
 is that exactly one city is talking to the APIs and the store at any moment.
@@ -65,8 +71,10 @@ _DEFAULT_LOCK_NAME = 'sidewalk-scrape-queue.lock'
 City = namedtuple('City', 'city_id fqdn')
 
 # outcome is one of: 'ok', 'failed', 'timed_out', 'skipped_deadline'. exit_code and seconds are None for a
-# city that never started.
-CityResult = namedtuple('CityResult', 'city_id outcome exit_code seconds')
+# city that never started. budget_minutes is what the city was given (None when there was no budget) and
+# pass_number which pass of the night ran it (#43); both default so a four-field construction still works.
+CityResult = namedtuple('CityResult', 'city_id outcome exit_code seconds budget_minutes pass_number',
+                        defaults=(None, 1))
 
 
 class QueueLocked(Exception):
@@ -122,6 +130,12 @@ def build_parser():
                         help='Keep the manifest order every night instead of rotating the starting point. '
                              'Rotation only matters on a night the window truncates the queue: it moves '
                              'which cities lose rather than always losing the same tail.')
+    parser.add_argument('--single-pass', action='store_true',
+                        help='Run every city once and stop, leaving the rest of the window unused. By '
+                             'default, once every city has had its slot, the cities that ran out of budget '
+                             'are run again while a full slot of window remains, each with the larger of a '
+                             'slot and an equal share of what is left. Needs both --max-runtime and '
+                             '--city-max-runtime; --only implies this flag.')
     parser.add_argument('--lock', default=None, metavar='PATH',
                         help='Lock file guaranteeing one queue run at a time (default: %s in the system temp '
                              'directory). It defaults to LOCAL disk, not the store: the store is a network '
@@ -303,7 +317,7 @@ def build_command(city, store_root, python_exe, runner_path, city_budget_minutes
 
 
 def _city_budget(city_max_runtime, remaining_minutes):
-    """What to give one city: its own cap, further clamped by what is left of the queue window.
+    """What to give one city in pass 1: its own cap, further clamped by what is left of the queue window.
 
     Composing the two is the point. Passing the city cap alone lets the last city of the night run an hour
     past the window; passing the remaining window alone lets the FIRST city eat the whole night, which is the
@@ -311,6 +325,32 @@ def _city_budget(city_max_runtime, remaining_minutes):
     """
     budgets = [b for b in (city_max_runtime, remaining_minutes) if b is not None]
     return min(budgets) if budgets else None
+
+
+def _extra_pass_budget(city_max_runtime, remaining_minutes, cities_left):
+    """What to give one city in a pass after the first: an equal share of what is left, never below a slot.
+
+    The floor is load-bearing (#43). 213 minutes left for 39 working cities is 5.5 minutes each, which is
+    below the production line's --min-depth-runtime and so zeroes every image phase and mails a WARNING per
+    city; and a fraction of a minute can kill a city inside its pano-list fetch, which runs before the
+    runner's own budget clock starts. So the share is floored at the slot, and run_queue starts nobody once
+    a slot no longer fits. Five cities left with 625 minutes get 125 each, in one process each.
+    """
+    return max(city_max_runtime, remaining_minutes / cities_left)
+
+
+def stopped_on_budget(result):
+    """Whether a city's run ended because its budget ran out - which is to say, it still has work.
+
+    Read from elapsed time alone, and exactly. DownloadRunner's --max-runtime stops it STARTING work once
+    the budget is spent, and its clock starts after the pano-list fetch, so a run that stopped on budget
+    took at least the budget as the queue measured it; one that exhausted its list at minute 11 took less,
+    and a fraction (0.9) would re-run it for nothing. Only an 'ok' run qualifies: a crash says nothing about
+    work left and re-running it is a crash loop, a timed-out city was killed past its budget and would be
+    killed again, and a city the window never reached has no elapsed time at all.
+    """
+    return (result is not None and result.outcome == 'ok' and result.budget_minutes is not None
+            and result.seconds is not None and result.seconds >= result.budget_minutes * 60.0)
 
 
 def stop_process(proc, city_id):
@@ -389,13 +429,23 @@ def run_city(city, store_root, python_exe, runner_path, city_budget_minutes, kil
 
 def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runtime_minutes=None,
               city_max_runtime=None, kill_grace_minutes=DEFAULT_KILL_GRACE_MINUTES, env=None,
-              run_one=run_city):
-    """Run every city in order, stopping only when the window closes. Returns one CityResult per city.
+              run_one=run_city, extra_passes=True):
+    """Run every city in order, then the ones that ran out of budget again while the window lasts.
 
-    The window gates STARTING a city, never interrupts one that is already running - the same rule as the
-    image phase's budget (#51), and for the same reason: a partial pano or a torn ledger costs more than
-    finishing five minutes late. Elapsed time is measured with time.monotonic() so an NTP step or a DST
-    transition cannot stretch or shrink the night.
+    Returns the CityResults in the order they ran: one per city for pass 1, then one per re-run, each
+    stamped with its pass_number and the budget it was given.
+
+    Pass 1 is the guarantee: the window gates STARTING a city, never interrupts one that is already running
+    - the same rule as the image phase's budget (#51), and for the same reason: a partial pano or a torn
+    ledger costs more than finishing five minutes late. Elapsed time is measured with time.monotonic() so an
+    NTP step or a DST transition cannot stretch or shrink the night.
+
+    The passes after it are the window being spent (#43). Which cities still have work is read from the
+    pass before - a run that stopped on its budget has more (stopped_on_budget) - so nothing crosses nights
+    and nothing reads the store. They need both a window and a slot: without a window there is nothing to
+    spend, and without a slot there is no unit to hand out and no floor under the shares. A later pass never
+    reports a city as not reached - running out of window there is the design working, not a fleet failing
+    to complete - but a crash in one still fails the night, because a crash is a crash.
     """
     started = time.monotonic()
     results = []
@@ -411,32 +461,76 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
                       % (max_runtime_minutes, index, len(cities), ', '.join(skipped)))
                 results += [CityResult(c, 'skipped_deadline', None, None) for c in cities[index:]]
                 break
-        results.append(run_one(city, store_root, python_exe, runner_path,
-                               _city_budget(city_max_runtime, remaining), kill_grace_minutes, runner_args,
-                               env=env))
+        budget = _city_budget(city_max_runtime, remaining)
+        result = run_one(city, store_root, python_exe, runner_path, budget, kill_grace_minutes, runner_args,
+                         env=env)
+        results.append(result._replace(budget_minutes=budget, pass_number=1))
+
+    if not extra_passes or max_runtime_minutes is None or city_max_runtime is None:
+        return results
+
+    latest = {r.city_id: r for r in results}
+    pass_number = 1
+    while True:
+        working = [c for c in cities if stopped_on_budget(latest.get(c.city_id))]
+        remaining = max_runtime_minutes - (time.monotonic() - started) / 60.0
+        if not working or remaining < city_max_runtime:
+            break
+        pass_number += 1
+        logging.info("pass %d starting: %d cities still had work, %.1f min of window left",
+                     pass_number, len(working), remaining)
+        print("[queue] pass %d: %d cities still had work, %.1f min of window left"
+              % (pass_number, len(working), remaining))
+        for index, city in enumerate(working):
+            remaining = max_runtime_minutes - (time.monotonic() - started) / 60.0
+            if remaining < city_max_runtime:
+                # Not an alarm: pass 1 reached every one of these cities tonight. Said, so tomorrow's reader
+                # knows the window closed here rather than the queue stopping for a reason.
+                logging.info("pass %d: a slot no longer fits (%.1f min left); %d cities wait for tomorrow",
+                             pass_number, remaining, len(working) - index)
+                break
+            budget = _extra_pass_budget(city_max_runtime, remaining, len(working) - index)
+            result = run_one(city, store_root, python_exe, runner_path, budget, kill_grace_minutes,
+                             runner_args, env=env)
+            result = result._replace(budget_minutes=budget, pass_number=pass_number)
+            results.append(result)
+            latest[city.city_id] = result
     return results
 
 
 def summarise(results, elapsed_minutes):
-    """The run's one-screen report: a line per city that did not simply work, then the totals.
+    """The run's one-screen report: a line per run that did not simply work, the per-city totals for pass 1,
+    then one line per extra pass.
 
-    Every city gets a line in the queue log, but stdout is what cron mails, so it leads with what went wrong.
-    A clean night is four lines; a bad one names every city and why.
+    Every run gets a line in the queue log, but stdout is what cron mails, so it leads with what went wrong.
+    A clean night is a few lines; a bad one names every city and why. The "N/M cities ok" figure counts
+    pass 1 only - one result per city - so a night that re-ran one city five times still reads as a fleet
+    of M, not of M + 5.
     """
+    first = [r for r in results if r.pass_number == 1]
     by_outcome = {}
-    for r in results:
+    for r in first:
         by_outcome.setdefault(r.outcome, []).append(r)
     lines = ["", "[queue] ==== summary ===="]
-    for outcome in ('failed', 'timed_out', 'skipped_deadline'):
-        for r in by_outcome.get(outcome, []):
-            when = '' if r.seconds is None else ' after %.1f min' % (r.seconds / 60.0)
-            code = '' if r.exit_code is None else ' (exit %d)' % r.exit_code
-            lines.append("[queue] %-24s %s%s%s" % (r.city_id, outcome.upper(), code, when))
+    for r in results:
+        if r.outcome == 'ok':
+            continue
+        when = '' if r.seconds is None else ' after %.1f min' % (r.seconds / 60.0)
+        code = '' if r.exit_code is None else ' (exit %d)' % r.exit_code
+        which = '' if r.pass_number == 1 else ' in pass %d' % r.pass_number
+        lines.append("[queue] %-24s %s%s%s%s" % (r.city_id, r.outcome.upper(), code, when, which))
     ok = len(by_outcome.get('ok', []))
     lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached; %.1f min total"
-                 % (ok, len(results), len(by_outcome.get('failed', [])),
+                 % (ok, len(first), len(by_outcome.get('failed', [])),
                     len(by_outcome.get('timed_out', [])), len(by_outcome.get('skipped_deadline', [])),
                     elapsed_minutes))
+    passes = sorted({r.pass_number for r in results if r.pass_number > 1})
+    for n in passes:
+        runs = [r for r in results if r.pass_number == n]
+        minutes = sum(r.seconds or 0.0 for r in runs) / 60.0
+        lines.append("[queue] pass %d: %d cities re-run in %.1f min - %s"
+                     % (n, len(runs), minutes,
+                        ', '.join('%s %.1f' % (r.city_id, (r.seconds or 0.0) / 60.0) for r in runs)))
     return '\n'.join(lines)
 
 
@@ -473,6 +567,8 @@ def main(argv=None):
         print("Could not read the city list: %s" % (e,), file=sys.stderr)
         return 2
 
+    extra_passes = not args.single_pass and not args.only
+
     if args.dry_run:
         # The budget shown is the FIRST city's - its own cap clamped by the whole window. Later cities get
         # whatever the window has left by the time they start, which a plan printed before anything runs
@@ -483,6 +579,9 @@ def main(argv=None):
         for i, city in enumerate(ordered, 1):
             print("  %2d. %s" % (i, ' '.join(build_command(city, args.store_root, python_exe, runner_path,
                                                            budget, runner_args))))
+        if extra_passes and args.max_runtime is not None and args.city_max_runtime is not None:
+            print("Then extra passes over whichever cities ran out of budget, while a slot of the window "
+                  "remains - which cities, and with what budgets, cannot be shown before pass 1 has run.")
         return 0
 
     # Same warning discipline as DownloadRunner's --min-depth-runtime check: tell the operator when the
@@ -505,14 +604,15 @@ def main(argv=None):
         with exclusive_lock(lock_path):
             # Announced only once the lock is held, so a run that is about to be refused never prints a
             # start line that reads like a fleet beginning to scrape.
-            logging.info("queue starting: %d cities, window %s min, per-city %s min",
-                         len(ordered), args.max_runtime, args.city_max_runtime)
-            print("[queue] %d cities, window %s min, per-city cap %s min"
-                  % (len(ordered), args.max_runtime, args.city_max_runtime))
+            logging.info("queue starting: %d cities, window %s min, per-city %s min, extra passes %s",
+                         len(ordered), args.max_runtime, args.city_max_runtime,
+                         'on' if extra_passes else 'off')
+            print("[queue] %d cities, window %s min, per-city cap %s min, extra passes %s"
+                  % (len(ordered), args.max_runtime, args.city_max_runtime, 'on' if extra_passes else 'off'))
             results = run_queue(ordered, args.store_root, python_exe, runner_path, runner_args,
                                 max_runtime_minutes=args.max_runtime,
                                 city_max_runtime=args.city_max_runtime,
-                                kill_grace_minutes=args.kill_grace)
+                                kill_grace_minutes=args.kill_grace, extra_passes=extra_passes)
     except QueueLocked as e:
         # Loud, and nonzero: the previous night's queue still running when tonight's starts is the exact
         # condition 53 unsynchronised crontab slots could not detect.
