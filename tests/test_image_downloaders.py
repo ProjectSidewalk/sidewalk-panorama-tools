@@ -902,6 +902,13 @@ class TestALostShardDirRaceDoesNotFailThePano:
         assert downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO) \
             == DownloadResult.success
 
+    def test_panoramax_still_downloads(self, monkeypatch, tmp_path):
+        self.deny_chmod_on_directories(monkeypatch)
+        panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM),
+                          FakeResponse(chunks=[jpeg_bytes(120)]))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)             == DownloadResult.success
+
     def test_gsv_still_downloads(self, monkeypatch, tmp_path):
         tile = jpeg_bytes(120)
         monkeypatch.setattr(downloaders.gsv, '_get_response',
@@ -914,3 +921,371 @@ class TestALostShardDirRaceDoesNotFailThePano:
         self.deny_chmod_on_directories(monkeypatch)
 
         assert downloaders.gsv.download_single_pano(str(tmp_path), GSV_PANO) == DownloadResult.success
+
+
+# --- Panoramax (#110) -----------------------------------------------------------------------------------
+#
+# Two REAL STAC items, fetched from the live keyless catalog on 2026-09-08 and trimmed to the fields this
+# module reads (exif, geometry, links and the tile matrix dropped; nothing else altered). They are pinned as
+# data for the reason OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05 is: the shape a permanent verdict rests on
+# has to be the shape the API actually serves, not the shape we imagined while writing the parser.
+#
+# Both were returned by ONE bbox search over Bayonne, which is the point of the pair: the catalog is a
+# federation and the flat picture is not an error, an edge case, or someone else's city - it is a
+# contributor's GoPro HERO8 photograph sitting in the same bbox as the 360 survey Project Sidewalk is here
+# for, on a different host and under a different licence. 323 of 1,000 pictures in that bbox are flat.
+OBSERVED_PANORAMAX_ITEMS_2026_09_08 = {
+    "a 360 panorama from Bayonne's own survey": {
+        'id': '4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6',
+        'type': 'Feature',
+        'collection': 'ad10778e-56f7-4fca-88d5-368445cffd2c',
+        'assets': {
+            'hd': {'type': 'image/jpeg', 'roles': ['data'],
+                   'href': 'https://panoramax.ign.fr/api/pictures/'
+                           '4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6/hd.jpg'},
+            'sd': {'type': 'image/jpeg', 'roles': ['visual'],
+                   'href': 'https://panoramax.ign.fr/api/pictures/'
+                           '4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6/sd.jpg'},
+            'thumb': {'type': 'image/jpeg', 'roles': ['thumbnail'],
+                      'href': 'https://panoramax.ign.fr/api/pictures/'
+                              '4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6/thumb.jpg'},
+        },
+        'properties': {
+            'datetime': '2024-08-08T11:57:28+00:00',
+            'license': 'etalab-2.0',
+            'geovisio:producer': 'sig_bayonne',
+            'view:azimuth': 31,
+            'panoramax:horizontal_pixel_density': 16,
+            'pers:interior_orientation': {'camera_manufacturer': 'GoPro', 'camera_model': 'Max',
+                                          'field_of_view': 360, 'focal_length': 3.0,
+                                          'sensor_array_dimensions': [5760, 2880]},
+        },
+    },
+    'a flat 92-degree photograph in the same bbox': {
+        'id': 'de0d8e2f-6063-4811-8bfd-c39af3256aa3',
+        'type': 'Feature',
+        'collection': '9a13941b-e541-4cd4-8332-1370f903ab67',
+        'assets': {
+            'hd': {'type': 'image/jpeg', 'roles': ['data'],
+                   'href': 'https://panoramax.openstreetmap.fr/images/de/0d/8e/2f/'
+                           '6063-4811-8bfd-c39af3256aa3.jpg'},
+            'sd': {'type': 'image/jpeg', 'roles': ['visual'],
+                   'href': 'https://panoramax.openstreetmap.fr/derivates/de/0d/8e/2f/'
+                           '6063-4811-8bfd-c39af3256aa3/sd.jpg'},
+            'thumb': {'type': 'image/jpeg', 'roles': ['thumbnail'],
+                      'href': 'https://panoramax.openstreetmap.fr/derivates/de/0d/8e/2f/'
+                              '6063-4811-8bfd-c39af3256aa3/thumb.jpg'},
+        },
+        'properties': {
+            'datetime': '2022-07-09T16:43:37.009600+00:00',
+            'license': 'CC-BY-SA-4.0',
+            'geovisio:producer': 'Patchanka',
+            'view:azimuth': 56,
+            'panoramax:horizontal_pixel_density': 43,
+            'pers:interior_orientation': {'camera_manufacturer': 'GoPro', 'camera_model': 'HERO8 Black',
+                                          'field_of_view': 92, 'focal_length': 3.0,
+                                          'sensor_array_dimensions': [4000, 2020]},
+        },
+    },
+}
+PANORAMIC_ITEM = OBSERVED_PANORAMAX_ITEMS_2026_09_08["a 360 panorama from Bayonne's own survey"]
+FLAT_ITEM = OBSERVED_PANORAMAX_ITEMS_2026_09_08['a flat 92-degree photograph in the same bbox']
+
+# Measured 2026-09-08 against GET /api/pictures/<a well-formed uuid the catalog does not have>. The status is
+# a real 404, unlike Mapillary's does-not-exist (a 400), which is why this source can ledger on the status
+# alone. The body is pinned because the SEARCH endpoint answers the same question with 200 + {"features":[]},
+# and choosing between those two endpoints is what decides whether absence can ever be a verdict here (#99).
+OBSERVED_PANORAMAX_NOT_FOUND_2026_09_08 = (404, {'status': 404, 'message': 'Feature not found'})
+OBSERVED_PANORAMAX_SEARCH_MISS_2026_09_08 = (200, {'features': [], 'links': []})
+
+PANORAMAX_PANO = {'pano_id': PANORAMIC_ITEM['id'], 'source': 'panoramax'}
+PANORAMAX_SHARD = PANORAMAX_PANO['pano_id'][:2]
+
+
+def panoramax_session(monkeypatch, *responses):
+    session = FakeSession(*responses)
+    monkeypatch.setattr(downloaders.panoramax, 'retrying_session', lambda: session)
+    return session
+
+
+class TestPanoramaxPermanentVerdicts:
+    """Properties of the PICTURE: ledgered downloaded=0 and never re-attempted (#41)."""
+
+    def test_an_unknown_picture_id_is_permanent(self, monkeypatch, tmp_path):
+        status, body = OBSERVED_PANORAMAX_NOT_FOUND_2026_09_08
+        panoramax_session(monkeypatch, FakeResponse(status_code=status, payload=body))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
+            == DownloadResult.failure
+
+    def test_the_404_body_is_not_read_at_all(self, monkeypatch, tmp_path):
+        """Unlike Mapillary's 404, which has to sniff for an auth signature because a scope-less token also
+        produces one. Panoramax is keyless, so there is no "we are not allowed to see it" state to confuse
+        with "it is not there" - and a body-sniffing 404 branch here would be a rule with no reason behind
+        it, which is how the next person deletes the wrong half."""
+        panoramax_session(monkeypatch, FakeResponse(status_code=404, payload=None, body='<html>404</html>'))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
+            == DownloadResult.failure
+
+    def test_a_flat_photograph_is_refused_and_never_stored(self, monkeypatch, tmp_path):
+        """The real measured flat item, which HAS a perfectly good hd asset - so this can only be the field
+        of view talking, not a missing-asset verdict wearing its clothes.
+
+        What it prevents: a 4000x2020 rectilinear photograph saved as <pano_id>.jpg. Nothing downstream
+        inspects projection. CropRunner would cut from it with the equirectangular seam modulo, wrap pano_x
+        at a seam that does not exist, and emit a crop that looks entirely plausible."""
+        pano = {'pano_id': FLAT_ITEM['id'], 'source': 'panoramax'}
+        panoramax_session(monkeypatch, FakeResponse(payload=FLAT_ITEM))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), pano) == DownloadResult.failure
+        assert os.listdir(tmp_path / FLAT_ITEM['id'][:2]) == []
+
+    @pytest.mark.parametrize('fov', [92, 180, 200, '360'], ids=['92', '180', '200', 'the string 360'])
+    def test_any_affirmed_non_360_field_of_view_is_refused(self, monkeypatch, tmp_path, fov):
+        """Including the string '360'. The catalog serves it as a number today; if that ever changed, a
+        `!= 360` on a string would refuse the entire city - loudly and permanently. Pinned so the day it
+        happens the test says so rather than the ledger does."""
+        interior = dict(PANORAMIC_ITEM['properties']['pers:interior_orientation'], field_of_view=fov)
+        properties = dict(PANORAMIC_ITEM['properties'])
+        properties['pers:interior_orientation'] = interior
+        panoramax_session(monkeypatch, FakeResponse(payload=dict(PANORAMIC_ITEM, properties=properties)))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
+            == DownloadResult.failure
+
+    @pytest.mark.parametrize('assets', [{}, {'sd': {'href': 'https://x/sd.jpg'}},
+                                        {'hd': {'href': ''}}, {'hd': {}}],
+                             ids=['no assets', 'sd only', 'empty href', 'hd without an href'])
+    def test_a_picture_with_no_hd_asset_is_permanent(self, monkeypatch, tmp_path, assets):
+        """The catalog affirmed the picture and publishes no full-resolution pixels for it - the same
+        verdict shape as Mapillary's "knows the image, no original-resolution rendition"."""
+        panoramax_session(monkeypatch, FakeResponse(payload=dict(PANORAMIC_ITEM, assets=assets)))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
+            == DownloadResult.failure
+
+
+class TestPanoramaxTransientConditions:
+    """Properties of the RUN. Returning failure would ledger them permanently, so one bad night would
+    blacklist every Panoramax pano in the city (#41)."""
+
+    # The same spread the Mapillary suite uses, and for the same reason: the rule is "only 404 is
+    # permanent", so pinning the rule rather than the statuses we happened to observe is what stops the next
+    # unanticipated one - 402, 410, 451 - from being a gap. 429/5xx are contract cases here, not wire cases:
+    # retrying_session's status_forcelist retries them inside the adapter, so in production they surface as
+    # RetryError. FakeSession bypasses the adapter.
+    @pytest.mark.parametrize('status', [400, 401, 402, 403, 410, 422, 429, 451, 500, 503])
+    def test_every_non_404_error_status_raises(self, monkeypatch, tmp_path, status):
+        panoramax_session(monkeypatch, FakeResponse(status_code=status))
+
+        with pytest.raises(requests.HTTPError):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+        assert os.listdir(tmp_path / PANORAMAX_SHARD) == []
+
+    def test_a_non_json_metadata_body_raises(self, monkeypatch, tmp_path):
+        panoramax_session(monkeypatch, FakeResponse(payload=None, body='<html>502</html>'))
+
+        with pytest.raises(ValueError):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+    def test_the_error_envelope_on_a_200_raises_rather_than_ledgering(self, monkeypatch, tmp_path):
+        """The measured 404 body, arriving on a 200. Something between us and the catalog rewrote the
+        status, which is a condition of the run - and if this were read as "no picture" the whole city would
+        ledger downloaded=0 in one night."""
+        _, envelope = OBSERVED_PANORAMAX_NOT_FOUND_2026_09_08
+        panoramax_session(monkeypatch, FakeResponse(payload=envelope))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='error envelope'):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+        assert os.listdir(tmp_path / PANORAMAX_SHARD) == []
+
+    def test_the_search_endpoints_empty_answer_could_never_have_been_a_verdict(self, monkeypatch, tmp_path):
+        """/api/search?ids=<unknown> answers 200 with {"features":[]} - absence dressed as success, the
+        exact body #99 says must not found a permanent verdict. This module resolves by /api/pictures/<id>
+        precisely so that absence arrives as a 404 instead; the test exists so that a future "just use
+        search, it is one request either way" change fails here rather than in the ledger."""
+        _, body = OBSERVED_PANORAMAX_SEARCH_MISS_2026_09_08
+        panoramax_session(monkeypatch, FakeResponse(payload=body))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+    @pytest.mark.parametrize('payload', [[], 'not an object', 42],
+                             ids=['empty list', 'a string', 'a number'])
+    def test_a_body_that_is_not_a_json_object_raises(self, monkeypatch, tmp_path, payload):
+        panoramax_session(monkeypatch, FakeResponse(payload=payload))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='not a JSON object'):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+    def test_the_item_wrapped_in_a_list_raises(self, monkeypatch, tmp_path):
+        """The natural mistake if anyone ever swaps the endpoint for search: right item, wrong envelope."""
+        panoramax_session(monkeypatch, FakeResponse(payload=[PANORAMIC_ITEM]))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='not a JSON object'):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+    def test_a_record_naming_another_picture_raises(self, monkeypatch, tmp_path):
+        """A cache or a redirect serving someone else's item. Following its hd href would store another
+        picture's pixels under this pano's id - permanent, and invisible to everything downstream."""
+        panoramax_session(monkeypatch, FakeResponse(payload=dict(PANORAMIC_ITEM, id=FLAT_ITEM['id'])))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='does not name'):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+    @pytest.mark.parametrize('href', ['/api/pictures/x/hd.jpg', 'http://panoramax.ign.fr/x/hd.jpg',
+                                      'file:///etc/passwd', '//panoramax.ign.fr/x/hd.jpg'],
+                             ids=['relative', 'plain http', 'file', 'protocol-relative'])
+    def test_an_hd_href_that_is_not_absolute_https_raises(self, monkeypatch, tmp_path, href):
+        """Relative hrefs do occur in the same document - the `rel: related` links are `/api/...` paths - so
+        this is not a hypothetical shape, just one that has never appeared under `assets.hd`. Whatever it
+        means, it is the catalog changing shape rather than a verdict on the picture."""
+        assets = dict(PANORAMIC_ITEM['assets'])
+        assets['hd'] = {'type': 'image/jpeg', 'href': href}
+        panoramax_session(monkeypatch, FakeResponse(payload=dict(PANORAMIC_ITEM, assets=assets)))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='absolute https'):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+    def test_an_unreachable_instance_raises(self, monkeypatch, tmp_path):
+        """The catalog already proved the picture exists; the instance holding its pixels being down is
+        never a verdict on the picture."""
+        panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM), FakeResponse(status_code=503))
+
+        with pytest.raises(requests.HTTPError):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+    def test_a_dying_stream_leaves_no_file_to_mistake_for_success(self, monkeypatch, tmp_path):
+        """With no ledger row written (#41), the NEXT run reaches the os.path.isfile() check - so a
+        truncated .jpg left here would be reported as a completed download forever."""
+        panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM),
+                          FakeResponse(chunks=[b'\xff\xd8\xff\xe0 partial',
+                                               requests.ConnectionError('connection reset mid-stream')]))
+
+        with pytest.raises(requests.ConnectionError):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+        assert os.listdir(tmp_path / PANORAMAX_SHARD) == []
+
+    def test_a_200_image_body_that_is_not_a_jpeg_is_refused_before_it_becomes_the_resume_marker(
+            self, monkeypatch, tmp_path):
+        """An instance mid-deploy answering 200 with a holding page. Saved as .jpg that page IS the resume
+        marker: permanent, with no ledger row to edit."""
+        panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM),
+                          FakeResponse(chunks=[b'<!DOCTYPE html><html><body>502</body></html>']))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='not a JPEG'):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+        assert os.listdir(tmp_path / PANORAMAX_SHARD) == []
+
+
+class TestPanoramaxHealthyPath:
+    def test_a_real_bayonne_item_downloads_from_the_instance_named_in_its_href(self, monkeypatch, tmp_path):
+        session = panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM),
+                                    FakeResponse(chunks=[jpeg_bytes(120)]))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
+            == DownloadResult.success
+        assert os.listdir(tmp_path / PANORAMAX_SHARD) == ['%s.jpg' % PANORAMAX_PANO['pano_id']]
+
+        metadata_url, image_url = session.calls[0][0], session.calls[1][0]
+        assert metadata_url == '%s/pictures/%s' % (downloaders.panoramax.CATALOG_API_BASE,
+                                                   PANORAMAX_PANO['pano_id'])
+        # Followed from the item, not built from the catalog base: the pixels live on a different host than
+        # the record, and only the record knows which.
+        assert image_url == PANORAMIC_ITEM['assets']['hd']['href']
+        assert image_url.startswith('https://panoramax.ign.fr/')
+
+    def test_no_credential_is_sent_anywhere(self, monkeypatch, tmp_path):
+        """Panoramax is keyless. The mirror of TestTheTokenStaysOutOfURLs: there is nothing to leak here,
+        and this is what fails if someone copies mapillary.py's header or params in wholesale."""
+        session = panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM),
+                                    FakeResponse(chunks=[jpeg_bytes(120)]))
+
+        downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+        for url, kwargs in session.calls:
+            assert 'token' not in url.lower()
+            assert not kwargs.get('params')
+            assert 'Authorization' not in (kwargs.get('headers') or {})
+
+    @pytest.mark.parametrize('properties', [
+        {},
+        {'pers:interior_orientation': {}},
+        {'pers:interior_orientation': {'camera_model': 'Max'}},
+        {'pers:interior_orientation': 'not an object'},
+    ], ids=['no interior orientation', 'empty', 'no field_of_view key', 'not an object'])
+    def test_a_picture_that_states_no_field_of_view_is_still_downloaded(self, monkeypatch, tmp_path,
+                                                                       properties):
+        """The asymmetry that makes the guard safe: it refuses only what the item AFFIRMS is not 360.
+        `pers:interior_orientation` is a STAC extension the catalog is under no obligation to keep serving,
+        and an absent field is exactly the absence-of-evidence a verdict must not rest on (#99). Getting
+        this backwards would ledger a whole city the day the field moved."""
+        panoramax_session(monkeypatch, FakeResponse(payload=dict(PANORAMIC_ITEM, properties=properties)),
+                          FakeResponse(chunks=[jpeg_bytes(120)]))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
+            == DownloadResult.success
+
+    def test_an_existing_file_is_the_resume_marker_and_costs_no_request(self, monkeypatch, tmp_path):
+        shard = tmp_path / PANORAMAX_SHARD
+        shard.mkdir()
+        (shard / ('%s.jpg' % PANORAMAX_PANO['pano_id'])).write_bytes(jpeg_bytes(9))
+        session = panoramax_session(monkeypatch)
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
+            == DownloadResult.skipped
+        assert session.calls == []
+
+
+class TestPanoramaxChunking:
+    def test_an_empty_chunk_is_skipped_rather_than_written(self, monkeypatch, tmp_path):
+        """requests yields b'' for a keep-alive chunk. Writing it is harmless; the `if chunk:` guard exists
+        so the two downloaders behave identically, and this closes the branch rather than leaving it in
+        .coveragerc's enumerated remainder the way the Mapillary copy is."""
+        body = jpeg_bytes(120)
+        panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM),
+                          FakeResponse(chunks=[body[:64], b'', body[64:]]))
+
+        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)             == DownloadResult.success
+        assert (tmp_path / PANORAMAX_SHARD / ('%s.jpg' % PANORAMAX_PANO['pano_id'])).read_bytes() == body
+
+
+class TestPanoramaxSeams:
+    """The three body readers, driven directly. download_single_pano composes them; these say what each one
+    decides on its own, which is where the positive-evidence rule (#99) actually lives."""
+
+    def test_the_field_of_view_reader_agrees_with_both_measured_items(self):
+        assert downloaders.panoramax.declared_field_of_view(PANORAMIC_ITEM) == 360
+        assert downloaders.panoramax.declared_field_of_view(FLAT_ITEM) == 92
+        assert downloaders.panoramax.declared_field_of_view({}) is None
+        assert downloaders.panoramax.declared_field_of_view({'pers:interior_orientation': None}) is None
+
+    def test_the_hd_reader_returns_the_measured_href_and_never_sd(self):
+        assert downloaders.panoramax.hd_asset_url(PANORAMIC_ITEM) \
+            == PANORAMIC_ITEM['assets']['hd']['href']
+        # sd is a different frame; storing it under dimensions describing hd is how every label in the city
+        # ends up skipped by the cropper's dims_mismatch preflight.
+        assert downloaders.panoramax.hd_asset_url(PANORAMIC_ITEM) \
+            != PANORAMIC_ITEM['assets']['sd']['href']
+        assert downloaders.panoramax.hd_asset_url({'assets': {'sd': {'href': 'https://x/sd.jpg'}}}) is None
+
+    def test_the_record_gate_accepts_only_the_picture_that_was_asked_for(self):
+        require = downloaders.panoramax.require_picture_record
+        assert require(PANORAMIC_ITEM, PANORAMIC_ITEM['id']) is None
+
+        for payload in ([], None, 'x', {}, {'id': None},
+                        {'status': 404, 'message': 'Feature not found'},
+                        dict(PANORAMIC_ITEM, id=FLAT_ITEM['id'])):
+            with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse):
+                require(payload, PANORAMIC_ITEM['id'])
+
+    def test_an_envelope_message_cannot_flood_the_log(self):
+        """DownloadRunner logs str(e) per failed pano into a 10 MB x 3 rotation, so an uncapped body times a
+        city's corpus rotates away the night's own diagnosis. Every field of the envelope comes from the
+        same untrusted place, so both are capped, not just the one that looks like prose."""
+        message = 'x' * 100_000
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse) as excinfo:
+            downloaders.panoramax.require_picture_record({'status': message, 'message': message}, 'some-id')
+
+        assert len(str(excinfo.value)) < 1000

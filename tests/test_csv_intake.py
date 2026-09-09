@@ -557,7 +557,8 @@ PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape
                       'migrate_depth_artifacts.py', 'refetch_panos.py', 'downscale_panos.py',
                       'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
-                      'downloaders/gsv.py', 'downloaders/mapillary.py']
+                      'downloaders/gsv.py', 'downloaders/mapillary.py',
+                      'downloaders/panoramax.py']
 
 
 def imported_names(source):
@@ -594,3 +595,47 @@ class TestPandasStaysOutOfProduction:
         with open(os.path.join(REPO_ROOT, 'requirements.txt'), encoding='utf-8') as f:
             pins = [line.split('#')[0].strip() for line in f]
         assert not any(pin.startswith('pandas') for pin in pins)
+
+
+class TestUuidPanoIdsSurviveEveryIntake:
+    """Panoramax ids are UUIDs (#110), the third id alphabet this repo has had to carry.
+
+    Nothing here is expected to be difficult - which is the reason to check rather than assume. A UUID
+    contains hyphens and hex digits, so it is the one id shape that could plausibly be reinterpreted on the
+    way in: `de0d8e2f-6063-4811-8bfd-c39af3256aa3` looks like arithmetic to anything that guesses, and the
+    two id alphabets before it (GSV's base64-ish strings, Mapillary's all-digit ids) each broke something
+    exactly once - #46 and #55 - by having their type inferred rather than read.
+    """
+
+    # The real ids of two Bayonne-bbox pictures, measured 2026-09-08.
+    UUIDS = ['4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6', 'de0d8e2f-6063-4811-8bfd-c39af3256aa3']
+
+    def test_the_pano_csv_reads_them_as_strings(self, tmp_path):
+        path = write_pano_csv(tmp_path, PANO_HEADER
+                              + ''.join(pano_row(pano_id=u, source='panoramax') for u in self.UUIDS))
+
+        records = DownloadRunner.fetch_pano_ids_csv(path)
+
+        assert [r['pano_id'] for r in records] == self.UUIDS
+        assert all(isinstance(r['pano_id'], str) for r in records)
+        assert [r['source'] for r in records] == ['panoramax', 'panoramax']
+
+    def test_a_uuid_shards_to_two_hex_characters(self):
+        """The storage layout is `<pano_id[:2]>/<pano_id>.jpg` for every source. A UUID's first two
+        characters are hex, so a Panoramax city spreads over at most 256 shard directories instead of GSV's
+        wider alphabet - denser, and fine, but worth having written down somewhere that is checked."""
+        for uuid in self.UUIDS:
+            assert len(uuid[:2]) == 2
+            assert all(c in '0123456789abcdef' for c in uuid[:2])
+            assert '-' not in uuid[:2], 'a shard directory named with a hyphen would be legal but ugly'
+
+    def test_the_label_csv_reads_them_as_strings_too(self, tmp_path):
+        """The cropper's intake, which joins on pano_id: a type mismatch between the two readers would
+        match nothing and report every Bayonne label as missing_pano."""
+        path = write_label_csv(tmp_path, LABEL_HEADER
+                               + ''.join(label_csv_row(pano_id=u, label_id=str(i + 1))
+                                         for i, u in enumerate(self.UUIDS)))
+
+        records = CropRunner.fetch_label_ids_csv(path)
+
+        assert [r['pano_id'] for r in records] == self.UUIDS

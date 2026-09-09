@@ -25,6 +25,7 @@ PRODUCTION_MODULES = {
     'downloaders/common.py',
     'downloaders/gsv.py',
     'downloaders/mapillary.py',
+    'downloaders/panoramax.py',
     'downscale_panos.py',
     'log_analyzer/analyze.py',
     'migrate_depth_artifacts.py',
