@@ -97,7 +97,11 @@ Three consequences worth knowing:
 ## Nightly deployment
 
 The fleet runs as **one queue, from one crontab line**, pinned to one named timezone. `scrape_queue.py` walks
-a manifest of cities and starts the next one as soon as the previous one exits.
+a manifest of cities and starts the next one as soon as the previous one exits — and then, while the window
+has a slot left, runs the cities that ran out of budget again ([extra passes](#extra-passes)).
+
+The line in production since 2026-09-06 (depth on; 52 cities × 12 minutes inside an 11.5-hour window that
+ends 06:30 Pacific):
 
 ```cron
 # Vixie/Debian cron reads CRON_TZ; a systemd timer takes Timezone= instead. Without it the schedule is UTC
@@ -106,12 +110,15 @@ CRON_TZ=America/Los_Angeles
 SHELL=/bin/bash
 BASH_ENV=/home/ubuntu/.scraper.env
 
-0 20 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
+0 19 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
-              --max-runtime 540 --city-max-runtime 240 \
-              -- --all-panos --skip-depth
+              --max-runtime 690 --city-max-runtime 12 \
+              -- --all-panos --min-depth-runtime 6
 ```
+
+`--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
+images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the `--`.
 
 **Why a queue rather than 53 slots**
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The old shape was one line
@@ -166,6 +173,7 @@ To generate it from the per-city crontab it replaces:
 | `--city-max-runtime` | Passed to each city as `DownloadRunner`'s own `--max-runtime`, then hard-killed `--kill-grace` minutes later (default 5). **Always set it** — without it one hung city holds the whole queue open, which is the head-of-line cost of serialising. |
 | `--only CITY_ID` | Re-run one city through the same machinery — the lock, the budgets, the summary — rather than by hand. Repeatable. |
 | `--no-rotate` | Keep manifest order. By default the starting point rotates daily, so a night that truncates does not always drop the same tail cities. |
+| `--single-pass` | Run every city once and leave the rest of the window unused — today's behaviour before [extra passes](#extra-passes). `--only` implies it. |
 | `--dry-run` | Print the order and the exact command per city. Takes no lock, so it is safe to run while the queue is running. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
@@ -174,6 +182,43 @@ something failed, timed out, **or was never reached**, `2` usage, `3` another qu
 the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53 cities a night
 is the silent failure this design exists to surface. If a night's truncation is expected and accepted, the
 window is the wrong size.
+
+### Extra passes
+
+Pass 1 gives every city its guaranteed slot, `--city-max-runtime`, in the night's rotated order: that is the
+head-of-line guarantee, and it is unchanged. Then, **while a full slot of the window remains, the cities whose
+previous run stopped on its budget are run again**, each with the larger of a slot and an equal share of what
+is left, recomputed as each one starts; passes repeat until a slot no longer fits or nobody hit their budget.
+
+Why ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43),
+[report](../reports/2026-09-09-depth-backfill-first-nights.md)): three nights into the depth backfill the queue
+was using 477 of its 690 minutes. Thirteen small cities were already complete and exited in seconds, giving
+nothing back, while every city with a backlog was capped at 12 minutes whether it had 400 panos left or
+270,000 — so the five largest cities were 250–460 nights out while a third of every night went unused, and the
+share grew every night a small city finished. Spending the window on whoever still has work is what "size the
+window to the night, not the work" was always supposed to mean.
+
+Three rules that are load-bearing:
+
+* **Who has work is read from tonight's own pass 1, exactly.** A run that *stopped on its budget* — the
+  queue's elapsed time is at least the budget it was given, and the runner's clock starts after its pano-list
+  fetch, so this is exact — has more work; one that exhausted its list at minute 11 does not, and a fraction
+  would re-run it for nothing. Only an `ok` run qualifies: a crash says nothing about work left and re-running
+  it is a crash loop; a timed-out city was killed past its budget and would be killed again. Nothing crosses
+  nights and nothing reads the store.
+* **The share is never below a slot.** 213 minutes over 39 working cities is 5.5 each, below the production
+  line's `--min-depth-runtime`, which would zero every image phase and mail a warning per city; and a
+  fraction of a minute can kill a city inside its pano-list fetch. So `--city-max-runtime` is both the pass-1
+  guarantee and the floor under every later share, and extra passes need both it and `--max-runtime`.
+* **A later pass never reports a city as "not reached".** That alarm belongs to pass 1: a fleet whose
+  guaranteed slots do not fit its window is not completing. Running out of window in pass 3 is the design
+  working. A crash in a later pass still fails the night, because a crash is a crash.
+
+What it looks like: the queue log gets `pass 2 starting: 17 cities still had work, 213.0 min of window
+left`, and the summary a line per pass — `pass 2: 17 cities re-run in 204.0 min - chicago-il 12.0, …`. The
+"N/M cities ok" figure counts pass 1 only, one per city. A city re-run in a night writes one `log.csv` row
+per run; the [analyzer](log-analyzer.md) sums requests per *night*, and flags overlapping
+runs rather than same-day ones, for exactly this reason.
 
 **One queue at a time.** The queue takes an advisory lock (default: the system temp directory, *not* the store
 — the store is a network mount whose lock semantics are not guaranteed, and the overlap being prevented is

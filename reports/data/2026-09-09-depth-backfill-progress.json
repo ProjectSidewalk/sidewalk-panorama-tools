@@ -1,0 +1,580 @@
+{
+  "measured_on": "2026-09-09",
+  "parameters": {
+    "slot_minutes": 12.0,
+    "window_minutes": 690.0,
+    "floor_gap_seconds": 0.375,
+    "per_slot_at_floor": 1920.0,
+    "per_night_at_floor": 110400.0
+  },
+  "fleet": {
+    "cities": 52,
+    "cities_with_gsv": 51,
+    "complete": 13,
+    "working": 38,
+    "eligible": 1433938,
+    "resolved": 76251,
+    "unresolved": 1357687,
+    "resolved_pct": 5.317593926655127,
+    "requests_last_night": 22237,
+    "requests_per_full_slot_median": 586.0,
+    "nights_measured_fleet_average": 61.055313216710886,
+    "nights_measured_longest_city": 463.1975945017182,
+    "nights_floor_slot_longest_city": 140.40677083333333,
+    "nights_floor_whole_window": 12.297889492753622
+  },
+  "longest_remaining": [
+    {
+      "city_id": "chicago-il",
+      "unresolved": 269581,
+      "nights_measured": 463.1975945017182,
+      "nights_floor_slot": 140.40677083333333
+    },
+    {
+      "city_id": "kaohsiung-tw",
+      "unresolved": 208137,
+      "nights_measured": 349.81008403361346,
+      "nights_floor_slot": 108.4046875
+    },
+    {
+      "city_id": "seattle-wa",
+      "unresolved": 181927,
+      "nights_measured": 306.79089376053963,
+      "nights_floor_slot": 94.75364583333334
+    },
+    {
+      "city_id": "columbia-sc",
+      "unresolved": 149546,
+      "nights_measured": 260.5331010452962,
+      "nights_floor_slot": 77.88854166666667
+    },
+    {
+      "city_id": "vancouver-wa",
+      "unresolved": 140858,
+      "nights_measured": 239.9625212947189,
+      "nights_floor_slot": 73.36354166666666
+    }
+  ],
+  "cities": [
+    {
+      "city_id": "amsterdam",
+      "eligible": 14847,
+      "resolved": 1754,
+      "unresolved": 13093,
+      "last_run_requests": 576,
+      "complete": false,
+      "nights_measured": 22.73090277777778,
+      "nights_floor_slot": 6.819270833333333
+    },
+    {
+      "city_id": "auckland",
+      "eligible": 2300,
+      "resolved": 1773,
+      "unresolved": 527,
+      "last_run_requests": 580,
+      "complete": false,
+      "nights_measured": 0.9086206896551724,
+      "nights_floor_slot": 0.27447916666666666
+    },
+    {
+      "city_id": "blackhawk-hills-il",
+      "eligible": 616,
+      "resolved": 616,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "burnaby",
+      "eligible": 17241,
+      "resolved": 1768,
+      "unresolved": 15473,
+      "last_run_requests": 586,
+      "complete": false,
+      "nights_measured": 26.40443686006826,
+      "nights_floor_slot": 8.058854166666666
+    },
+    {
+      "city_id": "cdmx",
+      "eligible": 47592,
+      "resolved": 1761,
+      "unresolved": 45831,
+      "last_run_requests": 583,
+      "complete": false,
+      "nights_measured": 78.6123499142367,
+      "nights_floor_slot": 23.8703125
+    },
+    {
+      "city_id": "chandigarh-india",
+      "eligible": 4222,
+      "resolved": 1763,
+      "unresolved": 2459,
+      "last_run_requests": 575,
+      "complete": false,
+      "nights_measured": 4.276521739130435,
+      "nights_floor_slot": 1.2807291666666667
+    },
+    {
+      "city_id": "chicago-il",
+      "eligible": 271299,
+      "resolved": 1718,
+      "unresolved": 269581,
+      "last_run_requests": 582,
+      "complete": false,
+      "nights_measured": 463.1975945017182,
+      "nights_floor_slot": 140.40677083333333
+    },
+    {
+      "city_id": "cliffside-park-nj",
+      "eligible": 1344,
+      "resolved": 1344,
+      "unresolved": 0,
+      "last_run_requests": 153,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "clifton-nj",
+      "eligible": 576,
+      "resolved": 576,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "columbia-sc",
+      "eligible": 151319,
+      "resolved": 1773,
+      "unresolved": 149546,
+      "last_run_requests": 574,
+      "complete": false,
+      "nights_measured": 260.5331010452962,
+      "nights_floor_slot": 77.88854166666667
+    },
+    {
+      "city_id": "columbus-oh",
+      "eligible": 21808,
+      "resolved": 1760,
+      "unresolved": 20048,
+      "last_run_requests": 586,
+      "complete": false,
+      "nights_measured": 34.21160409556314,
+      "nights_floor_slot": 10.441666666666666
+    },
+    {
+      "city_id": "cuenca",
+      "eligible": 5771,
+      "resolved": 1743,
+      "unresolved": 4028,
+      "last_run_requests": 592,
+      "complete": false,
+      "nights_measured": 6.804054054054054,
+      "nights_floor_slot": 2.097916666666667
+    },
+    {
+      "city_id": "danville-il",
+      "eligible": 13142,
+      "resolved": 1749,
+      "unresolved": 11393,
+      "last_run_requests": 583,
+      "complete": false,
+      "nights_measured": 19.542024013722127,
+      "nights_floor_slot": 5.933854166666666
+    },
+    {
+      "city_id": "detroit-mi",
+      "eligible": 1792,
+      "resolved": 1759,
+      "unresolved": 33,
+      "last_run_requests": 587,
+      "complete": false,
+      "nights_measured": 0.056218057921635436,
+      "nights_floor_slot": 0.0171875
+    },
+    {
+      "city_id": "fort-wayne-in",
+      "eligible": 707,
+      "resolved": 707,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "gainesville-fl",
+      "eligible": 30267,
+      "resolved": 1773,
+      "unresolved": 28494,
+      "last_run_requests": 595,
+      "complete": false,
+      "nights_measured": 47.8890756302521,
+      "nights_floor_slot": 14.840625
+    },
+    {
+      "city_id": "hackensack-nj",
+      "eligible": 725,
+      "resolved": 725,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "houston-tx",
+      "eligible": 566,
+      "resolved": 566,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "kaohsiung-tw",
+      "eligible": 209909,
+      "resolved": 1772,
+      "unresolved": 208137,
+      "last_run_requests": 595,
+      "complete": false,
+      "nights_measured": 349.81008403361346,
+      "nights_floor_slot": 108.4046875
+    },
+    {
+      "city_id": "keelung-tw",
+      "eligible": 2205,
+      "resolved": 1752,
+      "unresolved": 453,
+      "last_run_requests": 589,
+      "complete": false,
+      "nights_measured": 0.769100169779287,
+      "nights_floor_slot": 0.2359375
+    },
+    {
+      "city_id": "knox-oh",
+      "eligible": 17670,
+      "resolved": 1759,
+      "unresolved": 15911,
+      "last_run_requests": 583,
+      "complete": false,
+      "nights_measured": 27.291595197255575,
+      "nights_floor_slot": 8.286979166666667
+    },
+    {
+      "city_id": "la-ca",
+      "eligible": 213,
+      "resolved": 213,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "la-piedad",
+      "eligible": 500,
+      "resolved": 500,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "madison-wi",
+      "eligible": 2070,
+      "resolved": 1754,
+      "unresolved": 316,
+      "last_run_requests": 583,
+      "complete": false,
+      "nights_measured": 0.5420240137221269,
+      "nights_floor_slot": 0.16458333333333333
+    },
+    {
+      "city_id": "maywood-nj",
+      "eligible": 4870,
+      "resolved": 1742,
+      "unresolved": 3128,
+      "last_run_requests": 581,
+      "complete": false,
+      "nights_measured": 5.383820998278829,
+      "nights_floor_slot": 1.6291666666666667
+    },
+    {
+      "city_id": "mendota-il",
+      "eligible": 8793,
+      "resolved": 1758,
+      "unresolved": 7035,
+      "last_run_requests": 583,
+      "complete": false,
+      "nights_measured": 12.066895368782161,
+      "nights_floor_slot": 3.6640625
+    },
+    {
+      "city_id": "newberg-or",
+      "eligible": 7604,
+      "resolved": 1765,
+      "unresolved": 5839,
+      "last_run_requests": 587,
+      "complete": false,
+      "nights_measured": 9.947189097103918,
+      "nights_floor_slot": 3.041145833333333
+    },
+    {
+      "city_id": "newport-ky",
+      "eligible": 162,
+      "resolved": 162,
+      "unresolved": 0,
+      "last_run_requests": 3,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "new-taipei-tw",
+      "eligible": 2933,
+      "resolved": 1777,
+      "unresolved": 1156,
+      "last_run_requests": 598,
+      "complete": false,
+      "nights_measured": 1.9331103678929766,
+      "nights_floor_slot": 0.6020833333333333
+    },
+    {
+      "city_id": "niagara-falls-ny",
+      "eligible": 2376,
+      "resolved": 1769,
+      "unresolved": 607,
+      "last_run_requests": 594,
+      "complete": false,
+      "nights_measured": 1.0218855218855218,
+      "nights_floor_slot": 0.31614583333333335
+    },
+    {
+      "city_id": "oradell-nj",
+      "eligible": 5640,
+      "resolved": 1755,
+      "unresolved": 3885,
+      "last_run_requests": 584,
+      "complete": false,
+      "nights_measured": 6.652397260273973,
+      "nights_floor_slot": 2.0234375
+    },
+    {
+      "city_id": "paterson-nj",
+      "eligible": 26054,
+      "resolved": 1771,
+      "unresolved": 24283,
+      "last_run_requests": 585,
+      "complete": false,
+      "nights_measured": 41.50940170940171,
+      "nights_floor_slot": 12.647395833333333
+    },
+    {
+      "city_id": "pittsburgh-pa",
+      "eligible": 19496,
+      "resolved": 1763,
+      "unresolved": 17733,
+      "last_run_requests": 573,
+      "complete": false,
+      "nights_measured": 30.94764397905759,
+      "nights_floor_slot": 9.2359375
+    },
+    {
+      "city_id": "rancagua-chile",
+      "eligible": 1942,
+      "resolved": 1768,
+      "unresolved": 174,
+      "last_run_requests": 582,
+      "complete": false,
+      "nights_measured": 0.29896907216494845,
+      "nights_floor_slot": 0.090625
+    },
+    {
+      "city_id": "richmond-va",
+      "eligible": 0,
+      "resolved": 0,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "santiago-chile",
+      "eligible": 1154,
+      "resolved": 1154,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "sao-paulo-brazil",
+      "eligible": 623,
+      "resolved": 623,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "seattle-wa",
+      "eligible": 183680,
+      "resolved": 1753,
+      "unresolved": 181927,
+      "last_run_requests": 593,
+      "complete": false,
+      "nights_measured": 306.79089376053963,
+      "nights_floor_slot": 94.75364583333334
+    },
+    {
+      "city_id": "spgg",
+      "eligible": 34684,
+      "resolved": 1770,
+      "unresolved": 32914,
+      "last_run_requests": 591,
+      "complete": false,
+      "nights_measured": 55.69204737732657,
+      "nights_floor_slot": 17.142708333333335
+    },
+    {
+      "city_id": "st-louis-mo",
+      "eligible": 80841,
+      "resolved": 1685,
+      "unresolved": 79156,
+      "last_run_requests": 514,
+      "complete": false,
+      "nights_measured": 154.0,
+      "nights_floor_slot": 41.22708333333333
+    },
+    {
+      "city_id": "taichung-tw",
+      "eligible": 6731,
+      "resolved": 1777,
+      "unresolved": 4954,
+      "last_run_requests": 582,
+      "complete": false,
+      "nights_measured": 8.512027491408935,
+      "nights_floor_slot": 2.580208333333333
+    },
+    {
+      "city_id": "tainan-tw",
+      "eligible": 972,
+      "resolved": 972,
+      "unresolved": 0,
+      "last_run_requests": 0,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "taipei",
+      "eligible": 23409,
+      "resolved": 1754,
+      "unresolved": 21655,
+      "last_run_requests": 588,
+      "complete": false,
+      "nights_measured": 36.82823129251701,
+      "nights_floor_slot": 11.278645833333334
+    },
+    {
+      "city_id": "teaneck-nj",
+      "eligible": 24538,
+      "resolved": 1780,
+      "unresolved": 22758,
+      "last_run_requests": 593,
+      "complete": false,
+      "nights_measured": 38.377740303541316,
+      "nights_floor_slot": 11.853125
+    },
+    {
+      "city_id": "tucson-az",
+      "eligible": 5381,
+      "resolved": 1762,
+      "unresolved": 3619,
+      "last_run_requests": 590,
+      "complete": false,
+      "nights_measured": 6.133898305084746,
+      "nights_floor_slot": 1.8848958333333334
+    },
+    {
+      "city_id": "validation-study",
+      "eligible": 6702,
+      "resolved": 1780,
+      "unresolved": 4922,
+      "last_run_requests": 595,
+      "complete": false,
+      "nights_measured": 8.272268907563026,
+      "nights_floor_slot": 2.5635416666666666
+    },
+    {
+      "city_id": "vancouver-wa",
+      "eligible": 142623,
+      "resolved": 1765,
+      "unresolved": 140858,
+      "last_run_requests": 587,
+      "complete": false,
+      "nights_measured": 239.9625212947189,
+      "nights_floor_slot": 73.36354166666666
+    },
+    {
+      "city_id": "virden-il",
+      "eligible": 1692,
+      "resolved": 1692,
+      "unresolved": 0,
+      "last_run_requests": 526,
+      "complete": true,
+      "nights_measured": null,
+      "nights_floor_slot": null
+    },
+    {
+      "city_id": "walla-walla-wa",
+      "eligible": 9896,
+      "resolved": 1094,
+      "unresolved": 8802,
+      "last_run_requests": 245,
+      "complete": false,
+      "nights_measured": 35.926530612244896,
+      "nights_floor_slot": 4.584375
+    },
+    {
+      "city_id": "waltham-ma",
+      "eligible": 6590,
+      "resolved": 1433,
+      "unresolved": 5157,
+      "last_run_requests": 271,
+      "complete": false,
+      "nights_measured": 19.029520295202953,
+      "nights_floor_slot": 2.6859375
+    },
+    {
+      "city_id": "west-chester-pa",
+      "eligible": 2709,
+      "resolved": 2274,
+      "unresolved": 435,
+      "last_run_requests": 587,
+      "complete": false,
+      "nights_measured": 0.7410562180579217,
+      "nights_floor_slot": 0.2265625
+    },
+    {
+      "city_id": "zurich",
+      "eligible": 3142,
+      "resolved": 1775,
+      "unresolved": 1367,
+      "last_run_requests": 603,
+      "complete": false,
+      "nights_measured": 2.2669983416252073,
+      "nights_floor_slot": 0.7119791666666667
+    }
+  ]
+}
