@@ -330,7 +330,7 @@ def test_storage_failure_is_transient_not_fatal(tmp_path, fake_streetview, monke
     """A failed artifact write must not escape.
 
     An escaping OSError would fail the whole run and forfeit the rest of the phase's budget over one pano's
-    storage hiccup. (log.csv itself is safe either way - DownloadRunner pads the row to 18 fields in a finally.)
+    storage hiccup. (log.csv itself is safe either way - DownloadRunner pads the row to its full width in a finally.)
     """
     storage = str(tmp_path)
     fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
