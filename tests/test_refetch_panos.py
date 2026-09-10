@@ -590,7 +590,11 @@ class TestRefetchStore:
         `downloaded=1` for a repaired panorama, which is correct - it IS downloaded."""
         store_with_pano(tmp_path)
         sentinels = {}
-        for name, body in (('pano_id_log.csv', 'pano_id,downloaded\n%s,1\n' % PANO),
+        # Three fields, because that is what a current ledger holds (#114). A two-field sentinel would
+        # still pass - this asserts the bytes are untouched - but it would stop representing the file the
+        # repair pass actually runs beside, which is the whole point of a sentinel.
+        for name, body in (('pano_id_log.csv',
+                            'pano_id,downloaded,fetched_at\n%s,1,2026-09-10 11:04:05.123456-07:00\n' % PANO),
                            ('depth_log.csv', 'pano_id,status\n%s,saved\n' % PANO),
                            ('log.csv', '2026-01-01,0,0,0,0,0\n')):
             (tmp_path / name).write_text(body)

@@ -79,7 +79,7 @@ One directory per city, sharded by the first two characters of the pano id:
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | Depth artifact |
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | Display copy of a panorama wider than 8192 px (no longer written by the downloaders) |
-| `pano_id_log.csv` | Image ledger — a row means the outcome is permanent |
+| `pano_id_log.csv` | Image ledger — a row means the outcome is permanent, and carries when it was reached |
 | `depth_log.csv` | Depth ledger — likewise |
 | `log.csv` | One 18-column row per run |
 | `scrape.log` | Rotating run log |

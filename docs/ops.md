@@ -12,7 +12,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | [Depth artifact](depth.md#the-artifact) |
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
-| `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded` |
+| `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at` (rows written before 2026-09-10 have no `fetched_at`) |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 18-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
@@ -184,7 +184,7 @@ compares them across runs as `pose_drift`. It catches the re-poses, not the pure
 Both phases resume from an append-only ledger, and both draw the same line: **a row means the outcome is
 permanent.** Transient failures leave no row and retry automatically on the next run.
 
-**`pano_id_log.csv` gates the image phase** (`pano_id,downloaded`):
+**`pano_id_log.csv` gates the image phase** (`pano_id,downloaded,fetched_at`):
 
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano. A permanent verdict, one per source:
@@ -211,6 +211,36 @@ permanent.** Transient failures leave no row and retry automatically on the next
 
 Deleting `0` rows, or the whole file, is the manual force-retry lever; existing `.jpg`s are simply
 re-registered as skipped rather than re-downloaded.
+
+### `fetched_at`, and the two row widths
+
+The third field is when the verdict was reached: local time with an explicit UTC offset, the same
+`log_timestamp()` rendering as [`log.csv`'s column 1](#which-clock-each-field-is-on), so it says which clock
+it is on. It exists because [the store is an archive](#the-store-is-an-archive-not-a-cache) and file mtime
+was the only record of when a panorama was fetched — a record `refetch_panos`'s `already_clean` gate already
+leans on, and one that any `cp` or `rsync` without `-t` destroys.
+
+**Two widths are legal and a long-lived store holds both.** Rows written before 2026-09-10 are
+`pano_id,downloaded`; rows after it are `pano_id,downloaded,fetched_at`. Three specifics follow:
+
+* **Old rows are never backfilled.** Three fields means we know when; two means it predates the change and
+  mtime is the only evidence there will ever be. Inventing a timestamp from an mtime we already distrust
+  would be worse than the blank.
+* **A store created before the change keeps its two-column header** above three-field rows, so `head -1`
+  under-reports. Deliberate: rewriting a production ledger in place is the O(n²) truncate-on-crash path
+  [#55](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/55) removed, over the only record of
+  what has been scraped. `progress_check` reads by position and skips the header by value, so a stale header
+  costs nothing. A `csv.DictReader` on such a file *will* put the stamp under the `None` key — read it
+  positionally.
+* **The stamp is the last field on purpose**, so `cut -d, -f1`, `cut -d, -f2` and `grep ',0$'`-style
+  recovery greps keep meaning what they meant.
+
+**A rollback is the one thing to be careful about.** A build older than 2026-09-10 reads rows with a hard
+`len(row) != 2` and silently skips every three-field one — so a fully-timestamped ledger parses as *empty*,
+with nothing raised: permanent `0` verdicts stop being terminal and go back to Google nightly, duplicate rows
+accumulate, and `log.csv`'s column 9 loses its prior-failure seed. Reader and writer ship in one commit, so
+this cannot happen from a partial deploy; it can only happen by deliberately deploying an older build over a
+store that has already been written. Roll forward rather than repairing.
 
 **`depth_log.csv` gates the depth phase** with the same semantics — see
 [Depth maps → The ledger](depth.md#the-ledger). The artifacts on disk are the ground truth; deleting the
@@ -482,7 +512,7 @@ is damage.
 
 They are **not** necessarily the last rows *in the file*. Only the tripped source stops; a city carrying both
 GSV and Mapillary keeps downloading and ledgering GSV afterwards, so the tail can be thousands of GSV rows.
-`pano_id_log.csv` is `pano_id,downloaded` with no source column, so match on the id shape — Mapillary ids are
+`pano_id_log.csv` has no source column, so match on the id shape — Mapillary ids are
 all-numeric, GSV's are 22-character base64, Panoramax's are UUIDs. Delete those two rows, fix the
 credentials, and the next run picks up everything the breaker skipped, because none of it was ledgered.
 

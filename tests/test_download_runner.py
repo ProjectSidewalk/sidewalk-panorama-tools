@@ -61,6 +61,23 @@ def last_log_fields(storage):
         return f.read().strip().splitlines()[-1].split(',')
 
 
+def ledger_verdict_rows(storage, sort=True):
+    """The image ledger's `pano_id,downloaded` pairs, with the fetch timestamp dropped.
+
+    Rows gained a third field, `fetched_at`, in #114. Every assertion in this file is about WHICH panos got
+    WHICH verdict and none is about when - and a wall-clock stamp is not something an equality assertion
+    can name anyway - so the column is dropped here rather than in the twenty-odd literal expectations that
+    would otherwise each have to grow a wildcard.
+
+    Deliberately blind to the timestamp rather than tolerant of it: the stamp is pinned on its own in
+    TestTheFetchTimestamp, and a helper that quietly accepted a row with or without one would let the
+    writer stop emitting it with nothing failing.
+    """
+    lines = (storage / 'pano_id_log.csv').read_text().strip().splitlines()[1:]
+    pairs = [','.join(line.split(',')[:2]) for line in lines]
+    return sorted(pairs) if sort else pairs
+
+
 def test_scrape_log_lands_in_storage_not_cwd(tmp_path):
     """A relative scrape.log resolves against whatever CWD cron happened to hand the process. It must live on
     the pano store next to log.csv, where a failed run's evidence survives and the operator looks (#49)."""
@@ -478,7 +495,7 @@ def test_max_runtime_flag_reaches_the_image_download_loop(monkeypatch, tmp_path,
     assert calls == []
     assert 'IMAGEDOWNLOAD: Max runtime' in capsys.readouterr().out
     with open(storage / 'pano_id_log.csv') as f:
-        assert f.read().strip() == 'pano_id,downloaded', "no pano may be attempted or logged"
+        assert f.read().strip() == 'pano_id,downloaded,fetched_at', "no pano may be attempted or logged"
 
 
 def test_without_max_runtime_every_supported_pano_is_downloaded(monkeypatch, tmp_path):
@@ -488,8 +505,8 @@ def test_without_max_runtime_every_supported_pano_is_downloaded(monkeypatch, tmp
     with open(storage / 'pano_id_log.csv') as f:
         lines = f.read().strip().splitlines()
     # The ledger is written in attempt order, which the loop shuffles; the header's position is not.
-    assert lines[0] == 'pano_id,downloaded'
-    assert sorted(lines[1:]) == sorted('%s,1' % p for p in GSV_PANO_IDS)
+    assert lines[0] == 'pano_id,downloaded,fetched_at'
+    assert ledger_verdict_rows(storage) == sorted('%s,1' % p for p in GSV_PANO_IDS)
 
 
 def test_broken_scrape_log_falls_back_to_stderr_and_the_run_survives(tmp_path):
@@ -718,14 +735,13 @@ class TestRetrySemantics:
 
         assert result == (0, 0, 1, 0, 1), "the failure still counts in THIS run's totals"
         with open(storage / 'pano_id_log.csv') as f:
-            assert f.read().strip() == 'pano_id,downloaded', "a transient failure must leave no ledger row"
+            assert f.read().strip() == 'pano_id,downloaded,fetched_at', "a transient failure must leave no ledger row"
 
         monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
         DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
 
         assert attempts == [GSV_PANO_IDS[0], GSV_PANO_IDS[0]], "the next run must re-attempt it"
-        with open(storage / 'pano_id_log.csv') as f:
-            assert f.read().strip().splitlines()[1:] == ['%s,1' % GSV_PANO_IDS[0]]
+        assert ledger_verdict_rows(storage, sort=False) == ['%s,1' % GSV_PANO_IDS[0]]
 
     def test_permanent_failure_writes_zero_row_and_is_never_reattempted(self, monkeypatch, tmp_path):
         """DownloadResult.failure is the downloader's verdict on the PANO itself (no imagery at either zoom,
@@ -742,8 +758,7 @@ class TestRetrySemantics:
         monkeypatch.setattr(DownloadRunner, 'download_pano', no_imagery)
         DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
 
-        with open(storage / 'pano_id_log.csv') as f:
-            assert f.read().strip().splitlines()[1:] == ['%s,0' % GSV_PANO_IDS[0]]
+        assert ledger_verdict_rows(storage, sort=False) == ['%s,0' % GSV_PANO_IDS[0]]
 
         monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
         DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
@@ -847,8 +862,7 @@ class TestFallbackResolutionReachesTheLog:
         monkeypatch.setattr(DownloadRunner, 'download_pano', self.fallback_download_pano(attempts))
         DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
 
-        with open(storage / 'pano_id_log.csv') as f:
-            assert f.read().strip().splitlines()[1:] == ['%s,1' % GSV_PANO_IDS[0]]
+        assert ledger_verdict_rows(storage, sort=False) == ['%s,1' % GSV_PANO_IDS[0]]
 
         monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
         DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
@@ -1083,8 +1097,12 @@ class TestLedgerHygiene:
         ParserError (#55)."""
         storage = tmp_path / 'storage'
         storage.mkdir()
+        # `a,b,c` used to be the wrong-width row here. Three fields became LEGAL in #114, so it now tests
+        # the value guard instead of the width guard - it is still rejected, because 'b' is not a verdict,
+        # but the test would have silently stopped covering what its name claims. `a,b,c,d` restores the
+        # width case, and both are kept because the reader has both guards.
         (storage / 'pano_id_log.csv').write_text(
-            'pano_id,downloaded\n%s,1\ntrunc\na,b,c\n' % GSV_PANO_IDS[0])
+            'pano_id,downloaded\n%s,1\ntrunc\na,b,c\na,b,c,d\n' % GSV_PANO_IDS[0])
         calls = []
         monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
 
@@ -1129,7 +1147,118 @@ class TestLedgerHygiene:
 
         raw = (storage / 'pano_id_log.csv').read_bytes()
         assert b'\r' not in raw
-        assert raw.startswith(b'pano_id,downloaded\n')
+        assert raw.startswith(b'pano_id,downloaded,fetched_at\n')
+
+
+class TestTheFetchTimestamp:
+    """`pano_id_log.csv` gained a third field, `fetched_at`, in #114.
+
+    The store is an archive (docs/ops.md) and mtime was the only record of when a panorama was fetched -
+    which `refetch_panos`'s `already_clean` gate already leans on, and which any copy without `rsync -t`
+    destroys. This is that record, written where it survives a copy.
+
+    The whole change is two lines in the writer and one token in the reader, and the reader's token is the
+    dangerous one: `len(row) != 2` silently skips a three-field row, so a timestamped ledger would parse as
+    EMPTY with nothing raising. `test_a_mixed_width_ledger_reads_as_the_union` is the test that catches a
+    revert of it.
+    """
+
+    def ledger_lines(self, storage):
+        return (storage / 'pano_id_log.csv').read_text().strip().splitlines()
+
+    def test_a_row_carries_a_timestamp_that_says_which_clock_it_is_on(self, monkeypatch, tmp_path):
+        """log_timestamp, not a bare datetime.now(): a stamp with no offset is silently 7-8 hours out the
+        moment a scraper host is not on UTC, which is the #101 defect in log.csv's column 1. Asserting
+        tzinfo rather than a shape is what makes a naive stamp impossible to ship."""
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        rows = self.ledger_lines(storage)[1:]
+        assert rows, 'the run ledgered nothing'
+        for row in rows:
+            fields = row.split(',')
+            assert len(fields) == 3, row
+            assert datetime.fromisoformat(fields[2]).tzinfo is not None, row
+
+    def test_the_stamp_is_last_so_ops_greps_keep_working(self, monkeypatch, tmp_path):
+        """Every recovery procedure in docs/ops.md reads the ledger by column position - `cut -d, -f1` for
+        the id, `,0$` for a permanent failure. Inserting the stamp anywhere but last would move the column
+        those read, silently."""
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        for row in self.ledger_lines(storage)[1:]:
+            fields = row.split(',')
+            assert fields[0] in GSV_PANO_IDS
+            assert fields[1] in ('0', '1')
+
+    def test_a_mixed_width_ledger_reads_as_the_union(self):
+        """THE discrimination test for the reader change, and the ordinary state of every existing store:
+        a two-column header, a million two-field rows written before #114, three-field rows after it.
+
+        Against the old `len(row) != 2` the three-field rows vanish, so this returns only the old ids and
+        the counters under-report. Nothing raises - which is the whole problem, because in production that
+        reads as 'the corpus was never scraped'.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'pano_id_log.csv')
+            with open(path, 'w', newline='') as f:
+                f.write('pano_id,downloaded\n'
+                        'old-success,1\n'
+                        'old-failure,0\n'
+                        'new-success,1,2026-09-10 11:04:05.123456-07:00\n'
+                        'new-failure,0,2026-09-10 11:04:06.123456-07:00\n')
+
+            ledgered, total, success, failure = DownloadRunner.progress_check(path)
+
+        assert ledgered == {'old-success', 'old-failure', 'new-success', 'new-failure'}
+        assert (total, success, failure) == (4, 2, 2)
+
+    def test_a_timestamped_permanent_failure_is_still_terminal(self, monkeypatch, tmp_path):
+        """The back-compat constraint that matters most: a `0` row means the source has nothing for this
+        pano and it is never re-attempted. If a three-field row were invisible to the reader, every
+        permanent failure would go back to Google every night - real request load, on exactly the panos
+        that fail."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').write_text(
+            'pano_id,downloaded,fetched_at\n%s,0,2026-09-10 11:04:05.123456-07:00\n' % GSV_PANO_IDS[0])
+        attempts = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(attempts))
+
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        assert attempts == [], 'a ledgered 0-row is terminal whether or not it carries a timestamp'
+
+    def test_an_existing_two_column_header_is_left_alone(self, monkeypatch, tmp_path):
+        """A store created before #114 keeps its two-column header above three-field rows. Rewriting it
+        would mean rewriting a production ledger in place - the O(n^2) truncate-on-crash path #55 removed -
+        over the only record of what has been scraped. The reader skips the header by value, so a stale one
+        costs nothing but a surprising `head -1`."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').write_text('pano_id,downloaded\nalready-done,1\n')
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano([]))
+
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos()[:1])
+
+        lines = self.ledger_lines(storage)
+        assert lines[0] == 'pano_id,downloaded', 'the old header must not be rewritten'
+        assert len(lines[-1].split(',')) == 3, 'but new rows still carry the stamp'
+
+    def test_a_four_field_row_is_still_damage(self):
+        """Two widths are legal; a third is not. Written as a membership test rather than `>= 2` so a torn
+        append with a surplus field stays damage instead of being trusted."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'pano_id_log.csv')
+            with open(path, 'w', newline='') as f:
+                f.write('pano_id,downloaded\ngood,1,2026-09-10 11:04:05.123456-07:00\ntorn,1,stamp,extra\n')
+
+            ledgered, total, _, _ = DownloadRunner.progress_check(path)
+
+        assert ledgered == {'good'} and total == 1
 
 
 def test_pano_list_fetch_session_configuration(monkeypatch):
@@ -1526,7 +1655,7 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
 
     @staticmethod
     def _ledger_rows(storage):
-        return sorted((storage / 'pano_id_log.csv').read_text().strip().splitlines()[1:])
+        return ledger_verdict_rows(storage)
 
     def test_only_a_verdict_on_the_pano_writes_a_row(self, monkeypatch, tmp_path):
         storage = tmp_path / 'storage'
@@ -1662,7 +1791,7 @@ class TestAPanoramaxVerdictReachesTheLedgerThroughTheRealDispatcher:
 
     @staticmethod
     def _ledger_rows(storage):
-        return sorted((storage / 'pano_id_log.csv').read_text().strip().splitlines()[1:])
+        return ledger_verdict_rows(storage)
 
     def test_only_a_verdict_on_the_picture_writes_a_row(self, monkeypatch, tmp_path):
         storage = tmp_path / 'storage'
@@ -1772,7 +1901,7 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
 
     @staticmethod
     def ledger_rows(storage):
-        return (storage / 'pano_id_log.csv').read_text().strip().splitlines()[1:]
+        return ledger_verdict_rows(storage, sort=False)
 
     @staticmethod
     def mapillary_panos(count):

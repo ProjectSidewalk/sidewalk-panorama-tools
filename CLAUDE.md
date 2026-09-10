@@ -161,7 +161,7 @@ Everything lives under the storage root, with two-char pano-id prefix sharding:
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | Depth artifact (see below) |
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | Display copy of a pano wider than 8192 px (#115). **Not written automatically since 2026-09-09** — only by `downscale_panos.py`, plus `refetch_panos` refreshing one that already exists. Copies written before the switch are still on the store, so: **never list the store's `*.jpg` by hand — call `downloaders.common.walk_store_panos()`**, the one definition of "this file is a panorama"; a walker that forgets `is_downscaled_sidecar()` does not fail, it invents pano ids like `<real id>.w8192` |
-| `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded` |
+| `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at`; two-field rows predate 2026-09-10 (#114) and are never backfilled. `progress_check` accepts **both** widths - a bare `len(row) != 2` silently parses a timestamped ledger as EMPTY |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 18-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
