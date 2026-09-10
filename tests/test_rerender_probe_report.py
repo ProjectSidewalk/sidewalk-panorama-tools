@@ -171,6 +171,55 @@ class TestTheNadirFinding:
         assert '%d to %d of 16' % (min(locked), max(locked)) in report
 
 
+@pytest.fixture(scope='module')
+def drift():
+    """The pose proxy run over the two committed censuses.
+
+    Re-derived rather than read from a stored block: `pose_drift` postdates both artifacts, so their
+    `decay` blocks do not carry it, and recomputing is what keeps the report honest if either moves.
+    """
+    import pandas as pd
+
+    import photometa_census
+
+    frames = []
+    for name in ('2026-08-09-photometa-census.json', '2026-09-06-photometa-census.json'):
+        with open(os.path.join(DATA, name), encoding='utf8') as f:
+            frames.append(pd.DataFrame(json.load(f)['records']))
+    return photometa_census.decay(*frames)['pose_drift']
+
+
+class TestThePoseDriftSection:
+    """The report's "how we would ever notice this again" numbers, against that recomputation."""
+
+    def test_the_population_and_the_drift_rate_are_the_artifacts(self, report, drift):
+        assert str(drift['n']) in report
+        assert str(drift['n_drifted_any_axis']) in report
+        assert '%.2f%%' % drift['drifted_pct'] in report
+
+    def test_the_per_axis_maxima_are_the_artifacts(self, report, drift):
+        for axis in ('pitch_deg', 'roll_deg'):
+            assert '%.4f' % drift['axes'][axis]['max_abs_deg'] in report
+
+    def test_the_two_axes_moved_on_the_same_panoramas(self, report, drift):
+        """The report leans on this: independent per-axis noise would not move exactly the same set, so
+        the agreement is what makes it a re-stitch signal. If the two counts ever diverge, the sentence
+        claiming they are the same 95 is wrong and this fails."""
+        changed = {axis: drift['axes'][axis]['n_changed'] for axis in ('pitch_deg', 'roll_deg')}
+        assert changed['pitch_deg'] == changed['roll_deg']
+        assert str(changed['pitch_deg']) in report
+
+    def test_the_heading_axis_is_absent_from_the_existing_baseline(self, drift):
+        """The report says the two existing censuses can only be compared on pitch and roll. If a future
+        pair does carry heading this fails, and that sentence needs rewriting rather than quietly aging."""
+        assert drift['axes']['heading_deg'] is None
+
+    def test_the_threshold_quoted_is_the_one_in_the_code(self, report):
+        import photometa_census
+
+        assert str(photometa_census.POSE_DRIFT_DEG) in report
+
+
 class TestTheAgeClaim:
 
     def test_both_groups_span_the_same_years(self, report, rerendered, same, meta):

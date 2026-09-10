@@ -154,14 +154,37 @@ tripwire and there should not be one.
 
 There is a cheaper channel. **Photometa carries `heading`/`pitch`/`roll`, and 13 of these 19 were re-posed**
 — so pose drift is a re-render proxy at one metadata request rather than 512 tile requests.
-`photometa_census.py --refetch` already re-asks a fixed 1,360-panorama manifest, already records pose on
-both sides, and already joins them one-to-one; it simply never compared the pose. It does now
-(`pose_drift`), which makes the standing decay census a re-render tracker for free, across every city in the
-sample rather than Seattle alone.
+`photometa_census.py --refetch` already re-asks a fixed 1,360-panorama manifest, already records pose on both
+sides, and already joins them one-to-one; it simply never compared the pose. It does now (`pose_drift`),
+which makes the standing decay census a re-render tracker for free, across every city in the sample rather
+than Seattle alone.
 
-Its limit is honest and worth stating: it would catch roughly **13 of 19**. The six no-displacement
-panoramas — the pure re-grades and the 2025 nadir patches — are invisible to pose and stay undetectable by
-anything short of the pixels.
+**Run against the two existing censuses, it immediately finds the effect.** Of the **649** panoramas alive in
+both, **21 (3.24%)** had their reported pose move by at least 0.05° on some axis in the 28 days between them,
+and **95** moved by any amount at all. Maximum movement was **0.1065°** of pitch and **0.2918°** of roll —
+which is squarely the "`camera_pitch` changing by .1 degrees or something" raised on
+[#114](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/114), now measured rather than
+recalled.
+
+The structural detail is what makes it a signal rather than noise: **the 95 panoramas that moved on pitch and
+the 95 that moved on roll are the same 95.** Serialisation jitter would be independent per axis. A pose
+re-estimation is one operation touching both, which is exactly what a re-stitch does. No panorama alive in
+both changed its served dimensions, so none of this is visible to any existing check.
+
+Its limits are worth stating plainly:
+
+* **It catches roughly 13 of 19.** The six no-displacement panoramas — the pure re-grades and the 2025 nadir
+  patches — are invisible to pose and stay undetectable by anything short of the pixels. It is a lower bound
+  on re-rendering, never a count of it.
+* **The 0.05° threshold is a reporting choice, not a validated detector**, and it cannot be validated: that
+  would need each panorama's pose as of the night we scraped it, and nothing recorded it. The count of
+  panoramas whose pose moved *at all* is reported beside it for that reason.
+* **Pose drift is not the same measurement as the pixel displacement above.** These are Google's reported
+  camera angles between two censuses; the table measures where the pixels actually went between scrape and
+  now. They should agree in magnitude and here they do, but nothing forces them to.
+* **Heading joins the census only from now on.** `extract_record` did not carry it before this change, so the
+  two existing censuses can only be compared on pitch and roll — the axis a pure yaw re-estimate moves is the
+  one the existing baseline is blind to.
 
 ## Where the data lives
 
