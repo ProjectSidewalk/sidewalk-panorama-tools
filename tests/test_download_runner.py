@@ -12,6 +12,7 @@ functions directly with plain arguments.
 """
 
 import ast
+import json
 import logging
 import logging.handlers
 import os
@@ -2071,3 +2072,101 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
         monkeypatch.chdir(tmp_path)
         return DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'),
                                     '-c', str(csv_path), '--skip-depth'])
+
+
+class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
+    """--run-summary-file is the channel scrape_queue's extra passes read (#43, #126 review).
+
+    The queue used to infer "this city still has work" from how long it watched the subprocess for, which
+    is wrong in both directions: the queue times the whole process while the budget clock below starts only
+    after the pano-list fetch. So a COMPLETE city with a slow prologue read as "has work" forever, and a
+    city whose image phase stopped on its --min-depth-runtime share while depth finished early read as
+    "finished" with a live backlog. The runner is the only thing that actually knows, so it says so.
+    """
+
+    def summary(self, tmp_path):
+        with open(tmp_path / 'summary.json') as f:
+            return json.load(f)
+
+    def test_an_image_phase_stopped_on_its_budget_says_so(self, monkeypatch, tmp_path):
+        storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--max-runtime', '0',
+                                   '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert calls == [], 'the budget must have stopped the phase for this to be the case under test'
+        assert self.summary(tmp_path)['image_stop'] == 'max-runtime'
+
+    def test_a_phase_that_worked_through_its_whole_list_reports_no_stop(self, monkeypatch, tmp_path):
+        """The false-positive half. Nothing stopped this run, so nothing may be reported - however long the
+        process took, which is exactly what the queue can no longer see."""
+        storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS,
+                                   '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert sorted(calls) == sorted(GSV_PANO_IDS), 'every pano must have been downloaded'
+        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None}
+
+    def test_a_budget_that_was_not_reached_reports_no_stop(self, monkeypatch, tmp_path):
+        """Discrimination against reporting 'max-runtime' whenever --max-runtime is merely PRESENT."""
+        storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--max-runtime', '600',
+                                   '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert sorted(calls) == sorted(GSV_PANO_IDS)
+        assert self.summary(tmp_path)['image_stop'] is None
+
+    def test_the_depth_phase_reports_its_own_stop_reason(self, tmp_path):
+        """A stood-down depth phase must be distinguishable from a budget stop: the queue re-runs one and
+        deliberately does not re-run the other."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        latch = tmp_path / 'latch'
+        latch.write_text(str(time.time()))
+        stop_reasons = {}
+
+        DownloadRunner.run_scraper_and_log_results(
+            str(storage), [], [{'pano_id': 'p1', 'source': 'gsv'}], skip_depth=False,
+            depth_block_latch=str(latch), stop_reasons=stop_reasons)
+
+        assert stop_reasons['depth_stop'] == 'blocked'
+        assert stop_reasons['image_stop'] is None
+
+    def test_no_flag_means_no_file_and_no_complaint(self, monkeypatch, tmp_path):
+        """The by-hand cron line does not pass it, and must be unaffected - in particular the flag must not
+        acquire a default path, which would write a summary into whatever CWD cron happened to use."""
+        storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        assert sorted(calls) == sorted(GSV_PANO_IDS), 'the scrape must have completed normally'
+        written = [p for p in os.listdir(tmp_path) if p.endswith('.json')]
+        assert written == [], 'no summary may be written without the flag, got %r' % (written,)
+
+    def test_the_budget_stop_string_is_one_value_across_the_three_modules(self):
+        """scrape_queue compares against a literal, so a rename anywhere silently stops every extra pass."""
+        from downloaders import gsv
+        assert DownloadRunner.STOP_MAX_RUNTIME == gsv.DEPTH_STOP_MAX_RUNTIME
+
+    def test_a_crash_before_the_phases_still_leaves_a_summary(self, monkeypatch, tmp_path):
+        """Same discipline as the log.csv evidence row (#49): the summary is written in a finally, so a run
+        that died in its pano-list fetch does not leave the queue guessing from elapsed time."""
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + GSV_CSV_ROWS)
+        summary_path = tmp_path / 'summary.json'
+        storage = tmp_path / 'storage'
+        storage.mkdir()  # main() makes this; run() is being driven directly
+
+        def boom(*a, **k):
+            raise RuntimeError('the webserver is down')
+
+        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', boom)
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(RuntimeError):
+            DownloadRunner.run('sidewalk-test.invalid', str(storage),
+                               pano_metadata_csv=str(csv_path), skip_depth=True,
+                               run_summary_path=str(summary_path))
+
+        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None}
+
+    def test_an_unwritable_summary_path_does_not_fail_the_run(self, monkeypatch, tmp_path):
+        """The summary is evidence, not cargo - the same rule configure_logging follows. Losing a night's
+        scrape because a temp file could not be written would be a far worse trade."""
+        storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS,
+                                   '--run-summary-file', str(tmp_path / 'no-such-dir' / 'summary.json'))
+
+        assert sorted(calls) == sorted(GSV_PANO_IDS), 'the scrape must have completed normally'
