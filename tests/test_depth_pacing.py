@@ -461,11 +461,13 @@ class TestTheFlagReachesThePhase:
 
 # --- The pacer's standing outlives the process (#43) --------------------------------------------------------
 #
-# Measured on the production store after three nights of the backfill: every city with a backlog makes ~590
-# requests in its 12-minute slot, at 1.22 s each, because every city is a fresh process that opens at 1.0 s
-# and needs 1,400 clean requests to reach the 0.25 s floor - so no slot ever gets there, and the fleet's
-# effective rate is the opening interval, not the floor the census earned. The five biggest cities need
-# 250-460 nights at that rate. So the speed a run EARNS is written to local disk and the next run opens
+# Measured on the production store after three nights of the backfill: a city with a backlog gets through a
+# median of 585.5 requests in its 12-minute slot - chicago-il's own last run was 582 - because every city is
+# a fresh process that opens at 1.0 s and needs 1,400 clean requests to reach the 0.25 s floor. So no slot
+# ever gets there, and the fleet's effective rate is the opening interval, not the floor the census earned.
+# At that rate the five biggest cities need 240-463 nights. (The figures are the ones the backfill report's
+# committed data carries; an earlier draft of this comment said 590 requests at 1.22 s, and neither number
+# was in any artifact.) So the speed a run EARNS is written to local disk and the next run opens
 # there. Only earned speed: on_pushback is fed by every network failure too, and a persisted back-off would
 # let one DNS blip on the box hand the next 51 cities a 30 s gap.
 
