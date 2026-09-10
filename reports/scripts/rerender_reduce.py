@@ -1,61 +1,173 @@
-"""Reduce rerender_probe.json + rerender_photometa.json into the tables for #114."""
+"""Reduce the re-render probe artifact into the per-panorama table in the #114 write-up.
+
+    python rerender_reduce.py --probe reports/data/2026-09-06-rerender-probe.json \
+        --photometa reports/data/2026-09-06-rerender-photometa.json
+
+Prints the markdown table that appears in reports/2026-09-06-rerender-probe.md. It reads only committed
+artifacts and makes no requests, so the table in the report can be regenerated - and is re-derived by
+tests/test_rerender_probe_report.py, which asserts every cell it produces appears in the markdown.
+
+Why this is a separate step rather than more summary in rerender_probe.py: the probe measures a *band*
+against a band and stores every window it locked. Turning 16 per-window displacements into "the heading
+moved by this much and the horizon tilted by that much" is a model of what a re-render did, and models
+belong where they can be changed without re-running a measurement that needs both copies of 78
+panoramas. The probe's own `summary` deliberately carries only distribution-free medians for that reason.
+
+The two quantities, and why a mean and an amplitude rather than one number:
+
+* **heading offset** - the mean horizontal sub-pixel shift over locked windows. A re-stitch that only
+  re-estimated the camera's yaw translates the whole frame sideways by a constant, so the mean is the
+  estimate and the spread is the evidence that it really was uniform.
+* **tilt amplitude** - a pitch or roll re-estimate cannot translate an equirectangular frame; it moves
+  content *up* on one side of the panorama and *down* on the opposite side. So the vertical shift runs
+  as one full sinusoid across heading, and its amplitude is the size of the tilt. Fitting
+  `dy ~ c + a*cos(phi) + b*sin(phi)` and reporting `hypot(a, b)` is that amplitude; the constant `c`
+  absorbs a uniform vertical offset, which a tilt is not.
+"""
+import argparse
 import json
-import statistics as st
+import math
+import os
 import sys
 
-SP = sys.argv[1]
-probe = json.load(open(SP + '/rerender_probe.json'))
-meta = {r['pano_id']: r for r in json.load(open(SP + '/rerender_photometa.json'))}
-recs = [r for r in probe['records'] if 'error' not in r]
-errs = [r for r in probe['records'] if 'error' in r]
-print('measured', len(recs), 'errors', errs)
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import studyfmt  # noqa: E402
+
+# A window whose phase-correlation peak is below this found no correspondence; must match the probe's own
+# LOCK_PEAK, since the two describe the same windows. rerender_probe.LOCK_PEAK is the definition.
+LOCK_PEAK = 0.10
+
+# How the probe's machine labels read in a table a person is going to look at. `classify` in
+# rerender_probe.py owns the labels themselves; this owns only their English.
+LABEL_TEXT = {
+    'warped': 're-posed (heading + tilt)',
+    'shifted': 're-posed (heading)',
+    'sharpened': 'sharpened, no displacement',
+    'changed-unclassified': 'no displacement',
+    'same': 'same rendering',
+}
 
 
-def med(v):
-    v = [x for x in v if x is not None]
-    return st.median(v) if v else None
+def locked_windows(record, band='horizon'):
+    """The windows of one band that actually found a correspondence.
+
+    An unlocked window's `dy_sub`/`dx_sub` are the argmax of noise, so averaging them in would pull both
+    estimates towards zero in proportion to how featureless the band was - which is exactly backwards,
+    since a smooth band is where a displacement is hardest to see and least safe to report.
+    """
+    return [w for w in record[band]['windows'] if w['peak'] >= LOCK_PEAK]
 
 
-def row(r):
-    h = r['horizon']
-    b = r['bottom']
-    s = h['shift']
-    m = meta.get(r['pano_id'], {})
-    return (r['pilot_horizon_mae'] or 0, r['pano_id'], r['width'], r['label'],
-            h['mae'], s['n_locked'], s['n_windows'], s['median_dy_sub'], s['median_dx_sub'], s['max_abs_sub'],
-            s['n_locked_agree'], s['n_locked_moved'], s['peak_median'],
-            h['affine']['gain'], h['affine']['offset'], h['affine']['mae_after'],
-            h['lap_ratio'], h['lap_ratio_gain_corrected'], b['mae'], b['lap_ratio_gain_corrected'],
-            m.get('capture_date'), m.get('pitch_deg'), m.get('roll_deg'))
+def degrees_per_pixel(width):
+    """Angular size of one pixel: 360 degrees over the width.
+
+    For a 2:1 equirectangular frame the vertical scale (180 degrees over the height) is identical, so one
+    number serves both axes - which is why a heading offset and a tilt amplitude in pixels convert the
+    same way.
+    """
+    return 360.0 / width
 
 
-for grp, name in ((True, 'RE-RENDERED'), (False, 'SAME-RENDERING (null)')):
-    rs = sorted([r for r in recs if r['rerendered'] == grp], key=lambda r: -(r['pilot_horizon_mae'] or 0))
-    print('\n=== %s n=%d ===' % (name, len(rs)))
-    labels = {}
-    for r in rs:
-        labels[r['label']] = labels.get(r['label'], 0) + 1
-    print('labels:', labels)
-    print('pilotMAE pano                   width label                 hMAE lock  sub(dy,dx)     maxsub agree moved peak  gain   offs  resid  lap  lapc  bMAE bLapc  capture  pitch  roll')
-    for r in rs:
-        t = row(r)
-        print('%6.2f %s %5d %-20s %5.2f %2d/%2d (%+5.2f,%+5.2f) %5.2f %2d %2d %4.2f %5.3f %+5.1f %5.2f %4.2f %4.2f %5.2f %4.2f %s %+5.2f %+6.2f'
-              % (t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7] or 0, t[8] or 0, t[9] or 0, t[10], t[11], t[12] or 0,
-                 t[13], t[14], t[15], t[16] or 0, t[17] or 0, t[18], t[19] or 0, t[20], t[21] or 0, t[22] or 0))
-    print('medians: hMAE %.2f  peak %.2f  |sub| max %.2f  affine resid %.2f  lap_corr %.2f  bottom lap_corr %.2f'
-          % (med([r['horizon']['mae'] for r in rs]), med([r['horizon']['shift']['peak_median'] for r in rs]),
-             med([r['horizon']['shift']['max_abs_sub'] for r in rs]), med([r['horizon']['affine']['mae_after'] for r in rs]),
-             med([r['horizon']['lap_ratio_gain_corrected'] for r in rs]), med([r['bottom']['lap_ratio_gain_corrected'] for r in rs])))
+def heading_offset_px(record, band='horizon'):
+    """Mean horizontal sub-pixel shift over locked windows, or None when nothing locked."""
+    windows = locked_windows(record, band)
+    if not windows:
+        return None
+    return float(np.mean([w['dx_sub'] for w in windows]))
 
-# per-window detail for the re-rendered ones: does the shift vary with x (heading/pitch/roll) ?
-print('\n=== per-window sub-pixel shifts, re-rendered, horizon band (row y: dx values across x; then dy) ===')
-for r in sorted([r for r in recs if r['rerendered']], key=lambda r: -(r['pilot_horizon_mae'] or 0)):
-    wins = r['horizon']['windows']
-    ys = sorted(set(w['y'] for w in wins))
-    print(r['pano_id'], r['label'])
-    for y in ys:
-        ws = [w for w in wins if w['y'] == y]
-        print('  y=%5d dx: %s' % (y, ' '.join('%+5.1f' % w['dx_sub'] if w['peak'] >= 0.1 else '  ---' for w in ws)))
-        print('          dy: %s' % (' '.join('%+5.1f' % w['dy_sub'] if w['peak'] >= 0.1 else '  ---' for w in ws)))
-        print('        peak: %s' % (' '.join('%5.2f' % w['peak'] for w in ws)))
-        print('  mae un/sh: %s' % (' '.join('%4.1f/%4.1f' % (w['mae_unshifted'], w['mae_shifted']) for w in ws)))
+
+def tilt_amplitude_px(record, band='horizon'):
+    """Amplitude of one sinusoid fitted to vertical shift against heading, or None if underdetermined.
+
+    Three locked windows is the minimum for a three-parameter fit; below that the amplitude is not a
+    measurement, so it is undefined rather than zero (the studyfmt rule).
+    """
+    windows = locked_windows(record, band)
+    if len(windows) < 3:
+        return None
+    phi = np.array([2 * math.pi * w['x'] / record['width'] for w in windows])
+    dy = np.array([w['dy_sub'] for w in windows])
+    design = np.column_stack([np.ones_like(phi), np.cos(phi), np.sin(phi)])
+    _, cos_c, sin_c = np.linalg.lstsq(design, dy, rcond=None)[0]
+    return float(math.hypot(cos_c, sin_c))
+
+
+def table_row(record, meta):
+    """One panorama's row of the report table, as the values behind the formatted cells."""
+    horizon = record['horizon']
+    scale = degrees_per_pixel(record['width'])
+    heading = heading_offset_px(record)
+    tilt = tilt_amplitude_px(record)
+    displaced = record['label'] in ('shifted', 'warped')
+    return {
+        'pano_id': record['pano_id'],
+        'captured': meta.get(record['pano_id'], {}).get('capture_date'),
+        'what_changed': LABEL_TEXT.get(record['label'], record['label']),
+        'horizon_mae': studyfmt.num(horizon['mae']),
+        # A panorama the classifier found no displacement on reports 0, not the residual noise of a fit to
+        # windows that agree on nothing: the table's job is to say "this did not move".
+        'heading_px': studyfmt.num(heading) if displaced and heading is not None else 0.0,
+        'heading_deg': studyfmt.num(heading * scale) if displaced and heading is not None else 0.0,
+        'tilt_px': studyfmt.num(tilt) if displaced and tilt is not None else 0.0,
+        'tilt_deg': studyfmt.num(tilt * scale) if displaced and tilt is not None else 0.0,
+        'gain': studyfmt.num(horizon['affine']['gain']),
+        'offset': studyfmt.num(horizon['affine']['offset']),
+        'sharpness': studyfmt.num(horizon['lap_ratio_gain_corrected']),
+        'bottom_mae': studyfmt.num(record['bottom']['mae']),
+    }
+
+
+def format_row(row):
+    """The markdown cells for one row, in the report's column order.
+
+    Kept beside `table_row` so the report's formatting has exactly one definition: the transcription test
+    asserts these strings appear in the markdown, so a spec changed here changes the report's own contract.
+    """
+    degree = '°'
+    return [
+        '`%s`' % row['pano_id'],
+        row['captured'] or 'unknown',
+        row['what_changed'],
+        studyfmt.fmt(row['horizon_mae'], '.1f'),
+        '0' if not row['heading_px'] else '%+.1f (%+.3f%s)' % (row['heading_px'], row['heading_deg'], degree),
+        '0' if not row['tilt_px'] else '%.1f (%.3f%s)' % (row['tilt_px'], row['tilt_deg'], degree),
+        '%s / %+d' % (studyfmt.fmt(row['gain'], '.2f'), round(row['offset'])),
+        studyfmt.fmt(row['sharpness'], '.1f'),
+        studyfmt.fmt(row['bottom_mae'], '.1f'),
+    ]
+
+
+def rerendered_rows(probe, meta):
+    """Every re-rendered panorama's row, worst horizon MAE first - the report's ordering."""
+    records = [r for r in probe['records'] if r.get('rerendered') and 'error' not in r]
+    records.sort(key=lambda r: -r['horizon']['mae'])
+    return [table_row(r, meta) for r in records]
+
+
+HEADER = ['pano', 'captured', 'what changed', 'horizon MAE', 'heading offset px', 'tilt amplitude px',
+          'tone gain / offset', 'sharpness ×', 'bottom-band MAE']
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--probe', required=True)
+    parser.add_argument('--photometa', required=True)
+    args = parser.parse_args(argv)
+
+    with open(args.probe, encoding='utf8') as f:
+        probe = json.load(f)
+    with open(args.photometa, encoding='utf8') as f:
+        meta = {r['pano_id']: r for r in json.load(f)}
+
+    rows = rerendered_rows(probe, meta)
+    print('| ' + ' | '.join(HEADER) + ' |')
+    print('|' + '---|' * len(HEADER))
+    for row in rows:
+        print('| ' + ' | '.join(format_row(row)) + ' |')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
