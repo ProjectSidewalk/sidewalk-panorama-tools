@@ -69,6 +69,7 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--min-depth-runtime MINUTES` | Reserve the tail of `--max-runtime` for depth when depth has unresolved work. Default `0`; **production should pass `60`**. |
 | `--max-depth-requests N` | Stop the depth phase after N metadata requests. Useful for throttling the initial backfill. |
 | `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
+| `--run-summary-file PATH` | Write a small JSON object (`image_stop`, `depth_stop`) naming what stopped each phase. `scrape_queue` passes this and reads it back to decide which cities still have work; nothing else reads it, and without the flag nothing is written. No default, deliberately — a default path would write into whatever CWD cron started in. |
 
 Budgets are measured with `time.monotonic()`, never the wall clock, so an NTP step or a DST transition cannot
 stretch or shrink a run.
@@ -200,25 +201,51 @@ window to the night, not the work" was always supposed to mean.
 
 Three rules that are load-bearing:
 
-* **Who has work is read from tonight's own pass 1, exactly.** A run that *stopped on its budget* — the
-  queue's elapsed time is at least the budget it was given, and the runner's clock starts after its pano-list
-  fetch, so this is exact — has more work; one that exhausted its list at minute 11 does not, and a fraction
-  would re-run it for nothing. Only an `ok` run qualifies: a crash says nothing about work left and re-running
-  it is a crash loop; a timed-out city was killed past its budget and would be killed again. Nothing crosses
-  nights and nothing reads the store.
-* **The share is never below a slot.** 213 minutes over 39 working cities is 5.5 each, below the production
-  line's `--min-depth-runtime`, which would zero every image phase and mail a warning per city; and a
-  fraction of a minute can kill a city inside its pano-list fetch. So `--city-max-runtime` is both the pass-1
-  guarantee and the floor under every later share, and extra passes need both it and `--max-runtime`.
+* **Who has work is read from what the runner reported, not from how long the queue watched it.** The queue
+  passes each city a `--run-summary-file`; `DownloadRunner` writes what stopped each phase, and a phase that
+  stopped on `max-runtime` — either phase — is one that would have kept going. Only an `ok` run qualifies: a
+  crash says nothing about work left and re-running it is a crash loop; a timed-out city was killed past its
+  budget and would be killed again. Nothing crosses nights and nothing reads the store.
+
+  Timing the subprocess instead is wrong in **both** directions, because the queue measures from spawn to
+  exit while the runner's budget clock starts only after its pano-list fetch. A *complete* city whose
+  `/adminapi/panos` prologue outlasts its 12-minute slot exits having downloaded nothing and still measures
+  over budget — so it was re-run in every pass of every night, forever. And with the production
+  `--min-depth-runtime 6`, a city whose image phase stopped on its reserved 6-minute share while depth then
+  exhausted its own list exits at minute ~6.4 of 12 — so the city that most needed the leftover window was
+  the one denied it.
+
+  The other depth stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
+  collapsed into "stopped early": `blocked` means the host is standing down for six hours and a re-run would
+  spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again, and
+  `max-requests` is a per-process cap the operator asked for, which re-running would silently multiply. If no
+  summary arrives at all — an older runner, or one killed before its `finally` ran — the queue falls back to
+  the old elapsed-time rule, which is at least a *necessary* condition.
+* **The share is never below a slot, and the depth reservation moves with it.** 213 minutes over 39 working
+  cities is 5.5 each, below the production line's `--min-depth-runtime`, which would zero every image phase
+  and mail a warning per city; and a fraction of a minute can kill a city inside its pano-list fetch. So
+  `--city-max-runtime` is both the pass-1 guarantee and the floor under every later share, and extra passes
+  need both it and `--max-runtime`.
+
+  Symmetrically at the top end: `--min-depth-runtime` is a *share* of `--max-runtime`, so the queue scales it
+  by the same factor it enlarges the budget by. Passing it through unchanged would hand a 120-minute endgame
+  slot 114 minutes of image phase and leave depth the same 6 it had in pass 1 — the opposite of what these
+  passes exist for. It is only ever scaled up, never down: pass 1's last city can be clamped *below* the slot
+  by what is left of the window, and enlarging the reservation towards a smaller budget is how you get a run
+  that downloads no images at all.
 * **A later pass never reports a city as "not reached".** That alarm belongs to pass 1: a fleet whose
   guaranteed slots do not fit its window is not completing. Running out of window in pass 3 is the design
   working. A crash in a later pass still fails the night, because a crash is a crash.
 
 What it looks like: the queue log gets `pass 2 starting: 17 cities still had work, 213.0 min of window
 left`, and the summary a line per pass — `pass 2: 17 cities re-run in 204.0 min - chicago-il 12.0, …`. The
-"N/M cities ok" figure counts pass 1 only, one per city. A city re-run in a night writes one `log.csv` row
-per run; the [analyzer](log-analyzer.md) sums requests per *night*, and flags overlapping
-runs rather than same-day ones, for exactly this reason.
+"N/M cities ok" figure counts pass 1 only, one per city.
+
+**A city re-run in a night writes one `log.csv` row per run**, which the [analyzer](log-analyzer.md) does
+not yet expect: its "Multiple runs logged on the same calendar day" rule fires at INFO for every re-run
+city, and its 30-*row* recent window covers about ten days once a city writes three rows a night. Both are
+addressed in #124; until that lands, read those INFO lines as the extra passes working rather than as
+something wrong.
 
 **One queue at a time.** The queue takes an advisory lock (default: the system temp directory, *not* the store
 — the store is a network mount whose lock semantics are not guaranteed, and the overlap being prevented is
