@@ -679,3 +679,151 @@ class TestTheRefetchCLI:
         monkeypatch.setattr(pc, 'run_census', fake)
 
         pc.main(['--refetch', self._prior(tmp_path), '--interval', '0'])
+
+
+def _pose(pano_id, found=True, **axes):
+    """A census record with the pose axes named explicitly. Absent kwargs leave the axis at _rec's
+    default, so a test can move one axis and hold the others still."""
+    rec = _rec(pano_id, found=found)
+    for axis, value in axes.items():
+        rec[axis] = value if found else None
+    return rec
+
+
+class TestPoseDrift:
+    """The cheap re-render proxy (#114).
+
+    Detecting a re-render in pixels costs a full tile fan-out per panorama and the download path never
+    re-fetches an image it already has, so pose - which arrives with the photometa request this census
+    already pays for - is the only affordable signal. On the two committed censuses it finds 21 of 649
+    living panoramas re-posed in 28 days, and the same 95 panoramas move on pitch and roll together,
+    which is what makes it a re-stitch signal rather than per-axis serialisation noise.
+    """
+
+    def test_a_re_estimated_pose_is_detected(self):
+        before = pd.DataFrame([_pose('a', pitch_deg=1.0), _pose('b', pitch_deg=1.0)])
+        after = pd.DataFrame([_pose('a', pitch_deg=1.2), _pose('b', pitch_deg=1.0)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['axes']['pitch_deg']['n_drifted'] == 1
+        assert p['axes']['pitch_deg']['max_abs_deg'] == pytest.approx(0.2)
+        assert p['n_drifted_any_axis'] == 1
+
+    def test_an_unchanged_pose_is_no_drift(self):
+        frame = pd.DataFrame([_pose('a'), _pose('b')])
+
+        p = pc.decay(frame, frame.copy())['pose_drift']
+
+        assert p['n_drifted_any_axis'] == 0
+        assert p['axes']['pitch_deg']['n_changed'] == 0
+        assert p['axes']['pitch_deg']['max_abs_deg'] == 0.0
+
+    def test_the_wrap_is_applied_to_the_difference_not_just_the_values(self):
+        """Google serves roll (and sometimes pitch) in [0, 360), so 359.95 -> 0.05 is a tenth of a degree
+        of movement, not 359.9 of it. Differencing before wrapping would book every panorama that crosses
+        zero as the largest drift in the sample - and roll sits near zero, so it crosses constantly."""
+        before = pd.DataFrame([_pose('a', roll_deg=359.95)])
+        after = pd.DataFrame([_pose('a', roll_deg=0.05)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['axes']['roll_deg']['max_abs_deg'] == pytest.approx(0.1)
+        assert p['n_drifted_any_axis'] == 1
+
+    def test_an_axis_neither_census_carried_is_undefined_not_zero(self):
+        """_rec has no heading_deg, which is the real shape of every census written before 2026-09-10.
+        Reporting 0 there would say 'the heading never moved' about an axis nobody looked at."""
+        frame = pd.DataFrame([_pose('a')])
+
+        p = pc.decay(frame, frame.copy())['pose_drift']
+
+        assert p['axes']['heading_deg'] is None
+
+    def test_an_axis_only_one_census_carried_is_also_undefined(self):
+        before = pd.DataFrame([_pose('a')])
+        after = pd.DataFrame([_pose('a', heading_deg=12.0)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['axes']['heading_deg'] is None
+
+    def test_a_carried_axis_is_compared(self):
+        before = pd.DataFrame([_pose('a', heading_deg=12.0)])
+        after = pd.DataFrame([_pose('a', heading_deg=12.5)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['axes']['heading_deg']['n_drifted'] == 1
+        assert p['axes']['heading_deg']['max_abs_deg'] == pytest.approx(0.5)
+
+    def test_only_panoramas_alive_in_both_censuses_are_compared(self):
+        """A dead panorama has no current pose and a resurrected one has no meaningful before, so both
+        would contribute a difference against a None. The denominator here is legitimately smaller than
+        the decay comparison's, and conflating the two would misstate the rate."""
+        before = pd.DataFrame([_pose('lives'), _pose('dies'), _pose('back', found=False)])
+        after = pd.DataFrame([_pose('lives'), _pose('dies', found=False), _pose('back')])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['n'] == 1
+
+    def test_a_panorama_drifting_on_two_axes_is_counted_once(self):
+        """The headline is 'how many panoramas were re-posed', not 'how many axis-moves happened'. A real
+        re-estimation moves pitch and roll together - on the committed censuses, all 95 of them do - so
+        summing per-axis counts would nearly double the rate."""
+        before = pd.DataFrame([_pose('a', pitch_deg=1.0, roll_deg=0.5)])
+        after = pd.DataFrame([_pose('a', pitch_deg=1.3, roll_deg=0.9)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['axes']['pitch_deg']['n_drifted'] == 1
+        assert p['axes']['roll_deg']['n_drifted'] == 1
+        assert p['n_drifted_any_axis'] == 1
+
+    def test_a_sub_threshold_move_still_counts_as_changed(self):
+        """`n_changed` and `n_drifted` are deliberately two numbers. The threshold is a reporting choice
+        that was never validated against ground truth - nothing recorded each pano's pose at scrape time -
+        so the count of panoramas whose pose moved *at all* has to stay visible beside it."""
+        before = pd.DataFrame([_pose('a', pitch_deg=1.0)])
+        after = pd.DataFrame([_pose('a', pitch_deg=1.0 + pc.POSE_DRIFT_DEG / 10)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['axes']['pitch_deg']['n_changed'] == 1
+        assert p['axes']['pitch_deg']['n_drifted'] == 0
+        assert p['n_drifted_any_axis'] == 0
+
+    def test_a_missing_pose_value_does_not_crash_or_count(self):
+        before = pd.DataFrame([_pose('a', pitch_deg=None), _pose('b', pitch_deg=1.0)])
+        after = pd.DataFrame([_pose('a', pitch_deg=None), _pose('b', pitch_deg=1.4)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['axes']['pitch_deg']['n'] == 1
+        assert p['n_drifted_any_axis'] == 1
+
+    def test_the_result_survives_strict_json(self):
+        """decay() lands in an artifact written with allow_nan=False; a numpy scalar or a NaN in here
+        would abort the write on the run's last line, after the network work."""
+        before = pd.DataFrame([_pose('a', pitch_deg=1.0)])
+        after = pd.DataFrame([_pose('a', pitch_deg=1.4)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        json.dumps(p, allow_nan=False)
+
+
+class TestHeadingIsRecorded:
+
+    def test_extract_record_carries_heading(self):
+        """Added for #114: without it the pose proxy can only see pitch and roll, and the axis a yaw
+        re-estimate moves is the one it would be blind to."""
+        r = pc.extract_record(TestRecordExtraction.fake_pano())
+
+        assert r['heading_deg'] == pytest.approx(np.degrees(1.0))
+
+    def test_a_missing_pano_still_has_the_key(self):
+        """The not-found record is the schema every dead pano lands on; a key missing there makes the
+        column ragged and the axis silently un-comparable."""
+        assert pc.extract_record(None)['heading_deg'] is None

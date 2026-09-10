@@ -57,7 +57,7 @@ def extract_record(pano):
     """The fields this census reads off a streetlevel StreetViewPanorama (or None if the pano is
     gone). Kept minimal and tolerant: an absent optional field is a None, never a crash."""
     if pano is None:
-        return {'found': False, 'served_width': None, 'served_height': None,
+        return {'found': False, 'served_width': None, 'served_height': None, 'heading_deg': None,
                 'pitch_deg': None, 'roll_deg': None, 'has_depth': None, 'capture_date': None}
     biggest = pano.image_sizes[-1]
     date = getattr(pano, 'date', None)
@@ -66,6 +66,11 @@ def extract_record(pano):
         'found': True,
         'served_width': int(biggest.x),
         'served_height': int(biggest.y),
+        # heading joins pitch/roll as of 2026-09-10 (#114): a re-stitch with a re-estimated camera
+        # orientation moves it, and comparing it across two censuses is the cheap re-render proxy
+        # `pose_drift` reads. Censuses written before that date carry no heading, which is why every
+        # consumer of it has to tolerate the axis being absent rather than assume 0.
+        'heading_deg': scalar(getattr(pano, 'heading', None)),
         'pitch_deg': scalar(getattr(pano, 'pitch', None)),
         'roll_deg': scalar(getattr(pano, 'roll', None)),
         'has_depth': getattr(pano, 'depth', None) is not None,
@@ -259,6 +264,72 @@ def confirm_deaths(before, after, interval_s):
     return pd.DataFrame(rows)
 
 
+# The pose axes compared across two censuses. `heading_deg` was added to extract_record on 2026-09-10
+# (#114); a comparison whose `before` predates that carries only pitch and roll, and the missing axis is
+# reported None rather than 0 - "we could not look" is not "nothing moved".
+POSE_AXES = ('heading_deg', 'pitch_deg', 'roll_deg')
+
+# A per-axis change at or above this counts as drift. It is a reporting threshold, not a detector that has
+# been validated against ground truth, and it cannot be: measuring that would need each panorama's pose as
+# of the night we scraped it, which nothing recorded. It is placed an order of magnitude below the
+# displacements the re-render probe measured on the imagery (heading to 0.083 deg, tilt to 0.158 deg -
+# reports/2026-09-06-rerender-probe.md) and above the last decimal Google serves, so it should separate a
+# re-estimated pose from serialisation noise. The distribution beside it is the real output; if this
+# threshold turns out wrong, the quantiles are what will say so.
+POSE_DRIFT_DEG = 0.05
+
+
+def pose_drift(joined):
+    """How far each panorama's reported camera pose moved between two censuses of one manifest.
+
+    This is the cheap half of #114. Detecting a re-render in *pixels* costs a full tile fan-out per
+    panorama, and the download path deliberately never re-fetches an image it already has - so there is no
+    affordable image-side tripwire and there should not be one. But 13 of the 19 re-rendered panoramas in
+    the pilot had been re-stitched with a re-estimated camera orientation, and pose arrives with the
+    photometa request this census already pays for. So pose drift is a re-render proxy at metadata cost.
+
+    What it does not catch, stated because a proxy silently under-reporting is worse than no proxy: the
+    six panoramas that were re-graded or had their nadir patch replaced without moving. Roughly 13 of 19
+    on the only sample where both are known. It is a lower bound on re-rendering, never a count of it.
+
+    Restricted to panoramas alive in BOTH censuses - a pano that died has no current pose, and one that
+    came back has no meaningful "before" - so `n` here is smaller than the decay comparison's.
+    """
+    alive = joined[joined['found_before'].fillna(False).astype(bool)
+                   & joined['found_after'].fillna(False).astype(bool)]
+    out = {'n': int(len(alive)), 'threshold_deg': POSE_DRIFT_DEG, 'axes': {}}
+    drifted_any = np.zeros(len(alive), dtype=bool)
+    measured_any = False
+    for axis in POSE_AXES:
+        before_col, after_col = axis + '_before', axis + '_after'
+        if before_col not in alive or after_col not in alive:
+            out['axes'][axis] = None          # this census pair never carried the axis
+            continue
+        # wrap each side before differencing AND wrap the difference: Google serves roll (and sometimes
+        # pitch) in [0, 360), so 359.9 -> 0.1 is a 0.2 deg move, not a 359.8 deg one.
+        pair = alive[[before_col, after_col]].dropna()
+        if pair.empty:
+            out['axes'][axis] = None
+            continue
+        measured_any = True
+        delta = np.abs(_wrap_deg(_wrap_deg(pair[after_col]) - _wrap_deg(pair[before_col])))
+        drifted = delta >= POSE_DRIFT_DEG
+        out['axes'][axis] = {
+            'n': int(len(delta)),
+            'n_changed': int((delta > 0).sum()),
+            'n_drifted': int(drifted.sum()),
+            'max_abs_deg': float(delta.max()),
+            'p50_abs_deg': float(np.percentile(delta, 50)),
+            'p90_abs_deg': float(np.percentile(delta, 90)),
+            'p99_abs_deg': float(np.percentile(delta, 99)),
+        }
+        drifted_any[alive.index.isin(pair.index[drifted])] = True
+    out['n_drifted_any_axis'] = int(drifted_any.sum()) if measured_any else None
+    out['drifted_pct'] = (float(100 * out['n_drifted_any_axis'] / len(alive))
+                          if measured_any and len(alive) else None)
+    return out
+
+
 def decay(before, after):
     """Per-pano transitions between two censuses of the same manifest.
 
@@ -303,6 +374,7 @@ def decay(before, after):
               'died': int((g['found_before'].fillna(False).astype(bool)
                            & ~g['found_after'].fillna(False).astype(bool)).sum())}
         for era, g in joined.groupby('era_before')}
+    out['pose_drift'] = pose_drift(joined)
     return out
 
 
@@ -321,6 +393,27 @@ def print_decay(d, days=None):
           f"({fmt(d['depth_lost_pct_of_alive_before'], '.1f')}% of those alive)"
           + (f"   ~= {fmt(per_month, '.1f')}%/30d" if per_month is not None else ''))
     print('died by era:', {k: v['died'] for k, v in d['by_era'].items()})
+    print_pose_drift(d.get('pose_drift'))
+
+
+def print_pose_drift(p):
+    """The pose-drift block. Prints what each axis says, and says so when an axis was never carried.
+
+    An axis absent from one side reads 'not carried' rather than being silently dropped: a re-render
+    proxy that quietly stopped looking at an axis would report reassuring numbers forever.
+    """
+    if not p:
+        return
+    print(f"pose re-estimated (>= {p['threshold_deg']}deg on any axis): "
+          f"{fmt(p['n_drifted_any_axis'], 'd')} of {p['n']} alive in both "
+          f"({fmt(p['drifted_pct'], '.2f')}%)")
+    for axis, stats in p['axes'].items():
+        if stats is None:
+            print(f"  {axis}: not carried by both censuses")
+            continue
+        print(f"  {axis}: changed at all {stats['n_changed']}, past threshold {stats['n_drifted']}, "
+              f"max {fmt(stats['max_abs_deg'], '.4f')}deg, "
+              f"p90/p99 {fmt(stats['p90_abs_deg'], '.4f')}/{fmt(stats['p99_abs_deg'], '.4f')}deg")
 
 
 def print_summary(summary):

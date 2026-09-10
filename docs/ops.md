@@ -136,6 +136,49 @@ work that has landed. Crops are the artifact that is still *not* refreshed — s
 name, so a sidecar can never be mistaken for a panorama, and the web app serves whichever of the two it
 finds. Removing them is an operator decision, not something any tool here does.
 
+## The store is an archive, not a cache
+
+A stored panorama is frequently **the only copy of that picture that will ever exist**, so replacing one is a
+deletion rather than a refresh. Two measurements say so:
+
+* **Roughly half the labelled panoramas are already retired at Google**
+  ([47.9% survival](../reports/2026-08-09-photometa-census.md)). Nothing re-fetches those, ever.
+* **Of the ones Google *does* still serve, about a quarter come back as a different picture** — same id, same
+  frame, re-posed and re-graded pixels
+  ([#114](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/114),
+  [the re-render probe](../reports/2026-09-06-rerender-probe.md)). For those, the store holds the rendering
+  the labels were actually placed on and Google no longer does.
+
+The rule has two tiers, and they are not in tension:
+
+1. **The download path never overwrites an existing panorama.** All three downloaders short-circuit on
+   `os.path.isfile` before spending a single request — `gsv.py`, `mapillary.py`, `panoramax.py` alike. That
+   check is also the resume marker, which is *why* it is easy to lose: a future writer that resumes some
+   other way inherits none of this protection. It is a rule, not an implementation detail.
+2. **A repair path may overwrite only on positive proof the replacement is strictly better.** That is what
+   [`refetch_panos.py`'s gates](#what-it-will-and-will-not-do) are — `frame_grew`, `upscaled`, `undersized`,
+   `too_black`, plus the `.part`-and-rename — with every other outcome leaving the stored bytes untouched.
+
+**The gap this leaves, and what would close it.** A re-render that kept the frame size passes all four of
+those gates: `dims_changed` catches only the ones whose dimensions moved, and nothing downstream can see the
+rest, since `pano_x`/`pano_y` still index the file and it still looks right. The gate that would close it is a
+**horizon-band MAE against the stored file**, refusing above a threshold. It costs **no extra requests** — the
+fresh frame is already decoded at the point of the swap — and it separates the two populations by 45.6×
+(≤ 0.0742 luma across 59 same-rendering panoramas, ≥ 3.3823 on all 19 re-rendered), so the threshold is not
+delicate. Phase-correlation lock at zero shift is the stronger form.
+
+**It is deliberately not built.** No writer runs today: the `fover` pass was decided against, so the gap is
+latent rather than active, and a gate for a pass that does not run is speculative code that would rot.
+Writing the requirement down is what stops the *next* repair path shipping without it. Adding it means adding
+to `refetch_panos.py`'s `OUTCOMES`, deciding whether it belongs in `LEDGERED_OUTCOMES`, and extending the
+byte-for-byte "the original survives" battery in `tests/test_refetch_panos.py`.
+
+Noticing a re-render *without* a repair pass is a separate problem, because detecting one in pixels means
+fetching the pixels. The cheap proxy is pose: photometa carries `heading`/`pitch`/`roll` at one metadata
+request, 13 of the 19 were re-posed, and
+[`photometa_census.py --refetch`](../reports/2026-09-06-rerender-probe.md#how-we-would-ever-notice-this-again)
+compares them across runs as `pose_drift`. It catches the re-poses, not the pure re-grades.
+
 ## Resume ledgers
 
 Both phases resume from an append-only ledger, and both draw the same line: **a row means the outcome is
@@ -221,11 +264,10 @@ downloading, along with the ledger semantics that go with it. It writes nothing 
 `depth_log.csv`, `log.csv`, or any depth artifact. Depth stays valid because artifacts index by fraction of
 the frame, and the frame does not change.
 
-**It replaces a stored panorama only when the replacement is strictly better.** Roughly half the labelled
-panoramas in the store no longer exist at Google ([47.9% survival](../reports/2026-08-09-photometa-census.md)),
-so for much of any work-list the file on disk is the only copy that will ever exist. Every outcome but
-`replaced` leaves those bytes untouched, and the swap itself goes through the same `.part`-and-rename as a
-download.
+**It replaces a stored panorama only when the replacement is strictly better** — this tool is the second tier
+of [the archive rule](#the-store-is-an-archive-not-a-cache), which is where the reasoning lives and which also
+records the one case these gates do not cover. Every outcome but `replaced` leaves the stored bytes untouched,
+and the swap itself goes through the same `.part`-and-rename as a download.
 
 The subtlest of the refusals is `frame_grew`, and it is the reason the tool probes before it fetches. The
 store is a scrape-time archive and Google re-serves panos larger, so a grid sized from a stored 13312×6656
