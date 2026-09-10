@@ -164,16 +164,39 @@ fan-out — and on top of that:
     push-back always lands on at least `DEPTH_PACE_MIN_BACKOFF` (1 s).
   * **Back-offs are per-process; earned speed is per-host.** Every city is its own process, and a fresh
     pacer opens at `depth_start_interval`. Since 2026-09-09 the interval and clean streak a run *earns* are
-    written to local disk (`--depth-pace-state` overrides the default, which sits beside the block latch) and
-    the next run on the host opens there — never slower than the opening interval, never faster than the
-    floor, and clamped to the current config so a raised floor wins over old evidence. Only earned speed
-    persists: a push-back forfeits the credit at once (the file is rewritten with the opening interval), a
-    refusal forfeits it too, and a file older than a day, unparseable, non-numeric or `NaN` is ignored —
-    every doubt resolves towards *careful*, the opposite direction from the latch and for the same reason. A
-    back-off is deliberately **not** carried across runs: `on_pushback` is fed by every network failure the
-    phase sees, not only by Google, and one DNS blip on the box would otherwise hand the next 51 cities a
-    30 s gap. All of this is safe only because `scrape_queue.py` runs one city at a time; going back to
-    concurrent per-city cron lines would multiply the rate Google sees by however many overlap.
+    written to local disk (`--depth-pace-state` overrides the default, which sits beside the **default**
+    block latch — moving the latch with `--depth-block-latch` does not move this file, so a host that needs
+    both off `/tmp` passes both flags) and the next run on the host opens there — never slower than the
+    opening interval, never faster than the floor, and clamped to the current config so a raised floor wins
+    over old evidence. A file older than a day, unparseable, non-numeric or `NaN` is ignored, as is one
+    nothing can parse at all — every doubt resolves towards *careful*, the opposite direction from the
+    latch and for the same reason.
+  * **Only Google forfeits the standing.** A back-off is deliberately not carried across runs, and neither
+    is the *reason* for one unless Google itself supplied it. This is the block latch's rule — *"only a
+    blocked stop latches; the breaker counts storage failures, and a full disk is not Google"* — applied
+    to the pacer, not a second convention. `on_pushback` is also fed by the phase's network arm (a DNS blip,
+    one connection reset, a non-JSON body) and by its unexpected arm, which catches the `DepthPayloadError`
+    raised for a pano carrying depth but no planes. Each of those slows *this* run down, which is right and
+    cheap, and leaves the host's file alone: candidates are shuffled, so one malformed pano in 1.43 M is met
+    at random, and forfeiting there would hand the next 51 cities a 1.0 s opening interval — seven decay
+    steps, about 2.4 twelve-minute slots, to earn back. A push-back **status**, a **retry history**, or an
+    outright refusal does forfeit it, at once.
+  * **The standing is what was *earned*, not the live gap.** The two are different numbers: a local back-off
+    widens the gap without touching the standing, and the decay steps that walk it back are re-earning
+    ground the host already held rather than new evidence. The clean streak rides with the interval it was
+    earned at — persist one without the other and 190 observations Google gave at 2 s spacing would
+    justify a speed-up at 1 s.
+  * **Zero requests is zero evidence.** A phase that made no requests — a Mapillary-only city, a
+    fully-backfilled one, a run whose image phase already spent `--max-runtime` — writes nothing at all,
+    not even a fresh timestamp. Otherwise 52 nightly no-ops would keep refreshing a freshness window that
+    then never expires.
+  * **One process at a time spends it.** The phase holds an advisory lock (`<state file>.lock`) for its
+    whole duration. `scrape_queue.py` serialises the fleet, but its lock guards the *queue*, not this host's
+    depth rate, and a manual backfill alongside the nightly window is a documented workflow. A phase that
+    cannot take the lock still does all of its work — it just opens at `depth_start_interval` and
+    remembers nothing, which is the pre-2026-09-09 behaviour, and says so with a `WARNING` on stdout.
+    Without it, two overlapping processes would both open at the floor and double the rate Google sees at
+    precisely the moment the "one city at a time" assumption is violated.
 * **A refusal is remembered across runs — the block latch.** Standing down for the *run* is not enough when
   the fleet is 52 cities through one queue: each would rediscover a live block with fresh requests aimed at
   the endpoint that just refused us, which is how a soft refusal is escalated into a ban that stops the image

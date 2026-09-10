@@ -13,12 +13,13 @@ can ever get.
 import json
 import os
 import time
+from types import SimpleNamespace
 
 import pytest
 import requests
 
 from conftest import default_depth_array, make_pano
-from downloaders import gsv
+from downloaders import common, gsv
 
 
 def pano_infos(*pano_ids):
@@ -511,11 +512,13 @@ class TestThePacerRemembersEarnedSpeed:
 
         assert self.pacer(tmp_path / 'pace').interval == pytest.approx(0.8)
 
-    def test_a_pushback_forfeits_the_credit_at_once(self, tmp_path):
+    def test_a_pushback_from_google_forfeits_the_credit_at_once(self, tmp_path):
         first = self.pacer(tmp_path / 'pace')
         for _ in range(4):
             first.on_clean()
-        first.on_pushback('HTTP 429')  # and no save() - the forfeit must not wait for the end of the phase
+        # No save() - the forfeit must not wait for the end of the phase. from_google because only Google's
+        # own evidence may forfeit the host's standing; TestOnlyGoogleForfeitsTheStanding covers the rest.
+        first.on_pushback('HTTP 429', from_google=True)
 
         second = self.pacer(tmp_path / 'pace')
         assert second.interval == 1.0
@@ -771,3 +774,518 @@ class TestTheStateFlagReachesThePhase:
         args = DownloadRunner.build_parser().parse_args(['host', 'dir', '--depth-pace-state', '/x/y'])
 
         assert args.depth_pace_state == '/x/y'
+
+
+class TestOnlyGoogleForfeitsTheStanding:
+    """A back-off is a reflex; forfeiting the HOST's earned standing is a verdict about Google (#125.1).
+
+    The governing precedent is the block latch's, and this is deliberately the same principle rather than a
+    second convention: "Only a blocked stop latches - the breaker counts storage failures, and a full disk is
+    not Google." on_pushback is fed by the phase's `except (requests.RequestException, ValueError)` arm (a DNS
+    blip, one connection reset, a JSONDecodeError from any non-200 body) and by its `except Exception` arm,
+    which catches the DepthPayloadError raised for a pano that has a depth raster but no plane data - a
+    property of one pano's upstream payload. None of those is Google saying "slow down", and each of them
+    would otherwise hand the next 51 cities of the night a 1.0 s opening interval.
+    """
+
+    def pacer(self, path):
+        return gsv.DepthPacer(floor=0.25, start=1.0, ceiling=30.0, recover_after=2, min_backoff=1.0,
+                              state_path=str(path))
+
+    def test_a_local_failure_does_not_forfeit_what_the_host_earned(self, tmp_path):
+        write_state(tmp_path / 'pace', 0.25, 1)
+
+        self.pacer(tmp_path / 'pace').on_pushback('network failure')
+
+        assert self.pacer(tmp_path / 'pace').interval == 0.25
+
+    def test_a_local_failure_still_slows_THIS_run_down(self, tmp_path):
+        """The reflex is right and stays; only its reach beyond the process was wrong. A test that only
+        asserted the file would pass against a pacer that had stopped backing off at all."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        first = self.pacer(tmp_path / 'pace')
+
+        first.on_pushback('network failure')
+
+        assert first.interval == 1.0, 'max(0.25 * 2, min_backoff)'
+
+    def test_the_end_of_phase_save_does_not_launder_a_local_backoff(self, tmp_path):
+        """Not persisting from on_pushback is not enough on its own: save() runs at the end of every phase,
+        and a widened interval clamped back down to the opening one IS the forfeit, one seam later."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        first = self.pacer(tmp_path / 'pace')
+        first.on_pushback('network failure')
+
+        first.save()
+
+        assert self.pacer(tmp_path / 'pace').interval == 0.25
+
+    def test_google_pushing_back_does_forfeit_it(self, tmp_path):
+        write_state(tmp_path / 'pace', 0.25, 1)
+
+        self.pacer(tmp_path / 'pace').on_pushback('HTTP 429', from_google=True)
+
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_a_pushback_status_reaches_the_pacer_as_googles(self, tmp_path):
+        """The response hook is the one caller that can attribute a push-back to Google, so it is the one
+        caller that may forfeit. Wiring it up as a local failure would pass every test above."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        response = requests.Response()
+        response.status_code = 503
+
+        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(response)
+
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_a_retry_history_reaches_the_pacer_as_googles_too(self, tmp_path):
+        """The other half of the hook: a 200 that needed retries. urllib3 retries inside the adapter, so this
+        is the earliest observable sign of push-back and it must forfeit like an outright 429."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        response = requests.Response()
+        response.status_code = 200
+        response.raw = SimpleNamespace(retries=SimpleNamespace(history=('one',)))
+
+        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(response)
+
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_one_malformed_pano_does_not_slow_the_next_city(self, tmp_path, fake_streetview, clock,
+                                                            monkeypatch):
+        """End to end, on the concrete case: a pano whose payload carries depth but no planes raises
+        DepthPayloadError into the unexpected arm. Candidates are shuffled, so such a pano is met at random
+        rather than being stuck at the head of one city's list."""
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 0)
+        fake_streetview.find_panorama_by_id = (
+            lambda pano_id, **kw: make_pano(default_depth_array(), planes=None))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state))
+
+        with open(state) as f:
+            assert json.load(f)['interval'] == 0.25
+
+    def test_a_refusal_from_google_still_forfeits_through_the_phase(self, tmp_path, fake_streetview, clock,
+                                                                    monkeypatch):
+        """The counterpart: narrowing the forfeit must not narrow it to nothing."""
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 0)
+        monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes',
+                            lambda pano_id, session: (_ for _ in ()).throw(gsv.DepthBlockedError('/sorry/')))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state),
+                                block_latch_path=str(tmp_path / 'latch'))
+
+        with open(state) as f:
+            assert json.load(f)['interval'] == 1.0
+
+
+class TestTheStreakIsPersistedWithTheIntervalItWasEarnedAt:
+    """The decay rule is "200 consecutive clean requests AT the current interval" (#125.2).
+
+    _persist writes the earned interval, which is capped at the opening one. When that cap bites, the streak
+    standing beside it was gathered at a DIFFERENT, slower interval, and carrying it over spends evidence
+    Google gave at one rate to justify a speed-up at another.
+    """
+
+    def pacer(self, path):
+        return gsv.DepthPacer(floor=0.25, start=1.0, ceiling=30.0, recover_after=200, min_backoff=1.0,
+                              state_path=str(path))
+
+    def test_a_streak_earned_at_a_slower_interval_is_not_carried_over(self, tmp_path):
+        first = self.pacer(tmp_path / 'pace')
+        first.on_pushback('HTTP 429', from_google=True)  # live interval 2.0 s, credit forfeited
+        for _ in range(190):
+            first.on_clean()                             # 190 clean requests, all of them AT 2.0 s
+
+        first.save()
+
+        assert self.pacer(tmp_path / 'pace')._clean_streak == 0
+
+    def test_and_so_the_next_run_cannot_decay_ten_requests_in(self, tmp_path):
+        """The consequence the pairing exists to prevent, asserted on the interval rather than the streak."""
+        first = self.pacer(tmp_path / 'pace')
+        first.on_pushback('HTTP 429', from_google=True)
+        for _ in range(190):
+            first.on_clean()
+        first.save()
+
+        second = self.pacer(tmp_path / 'pace')
+        for _ in range(10):
+            second.on_clean()
+
+        assert second.interval == 1.0, 'ten clean requests is not a decay step'
+
+    def test_a_streak_earned_at_the_persisted_interval_still_carries(self, tmp_path):
+        """The pairing narrows what is carried; it must not stop the feature working. 590 requests a slot is
+        two steps and 190 towards the third, and forgetting the 190 costs a third of a city's nightly gain."""
+        first = self.pacer(tmp_path / 'pace')
+        for _ in range(190):
+            first.on_clean()
+
+        first.save()
+
+        assert self.pacer(tmp_path / 'pace')._clean_streak == 190
+
+
+class TestZeroRequestsIsZeroEvidence:
+    """A phase that asked Google nothing must not restamp the standing's freshness (#125.3).
+
+    DEPTH_PACE_STATE_HOURS exists so evidence about this host's recent behaviour towards one endpoint expires.
+    run_scraper_and_log_results calls download_depth_maps unconditionally, so a Mapillary-only city, a
+    fully-backfilled one, and a run whose image phase already spent --max-runtime all reach the end of the
+    phase having made no requests. Restamping there means the window never expires while the queue runs.
+    """
+
+    def test_a_phase_with_no_candidates_does_not_restamp_the_standing(self, tmp_path, recorder):
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 7, written_at=time.time() - 23.5 * 3600)
+
+        gsv.download_depth_maps(str(tmp_path), [], pace_state_path=str(state))
+
+        with open(state) as f:
+            age_hours = (time.time() - json.load(f)['written_at']) / 3600.0
+        assert age_hours == pytest.approx(23.5, abs=0.1)
+
+    def test_a_fully_backfilled_city_does_not_restamp_it_either(self, tmp_path, recorder):
+        """The steady state after the backfill: every pano is already in the ledger, so the phase walks the
+        whole corpus, spends nothing, and would otherwise refresh the file 52 times a night."""
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 7, written_at=time.time() - 23.5 * 3600)
+        with open(tmp_path / 'depth_log.csv', 'w') as f:
+            f.write('pano_id,status\np1,saved\n')
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state))
+
+        with open(state) as f:
+            age_hours = (time.time() - json.load(f)['written_at']) / 3600.0
+        assert age_hours == pytest.approx(23.5, abs=0.1)
+
+    def test_a_phase_that_did_spend_requests_still_saves(self, tmp_path, recorder, clock, monkeypatch):
+        """The guard narrows what is written; it must not stop the standing being written at all."""
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        monkeypatch.setattr(gsv, 'DEPTH_PACE_RECOVER_AFTER', 2)
+        state = tmp_path / 'pace'
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2'), pace_state_path=str(state))
+
+        with open(state) as f:
+            assert json.load(f)['interval'] == pytest.approx(0.8)
+
+
+class TestNothingUnreadableCanEndThePhase:
+    """"Everything _load_pace_state cannot believe resolves to open careful" has to hold for the whole class
+    of unreadable files, not for an enumerated part of it (#125.4).
+
+    The path is a FIXED name in the machine's temp directory, so on a shared box anything can create it first.
+    A RecursionError or MemoryError out of json.load escapes DepthPacer.__init__, which download_depth_maps
+    calls outside its own try - so one such file ends the depth phase for every city, every night.
+    """
+
+    def test_a_deeply_nested_file_opens_careful(self, tmp_path):
+        state = tmp_path / 'pace'
+        state.write_text('[' * 200_000 + ']' * 200_000)
+
+        assert gsv._load_pace_state(str(state)) is None
+
+    def test_and_the_pacer_built_on_it_still_starts(self, tmp_path):
+        """Asserted through the constructor, because that is where the exception would actually escape."""
+        state = tmp_path / 'pace'
+        state.write_text('[' * 200_000 + ']' * 200_000)
+
+        pacer = gsv.DepthPacer(floor=0.25, start=1.0, state_path=str(state))
+
+        assert pacer.interval == 1.0
+
+    def test_a_phase_reading_one_still_runs(self, tmp_path, recorder):
+        state = tmp_path / 'pace'
+        state.write_text('[' * 200_000 + ']' * 200_000)
+
+        result = gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2'), pace_state_path=str(state))
+
+        assert result[0] == 2
+        assert sorted(recorder.requested) == ['p1', 'p2']
+
+
+class TestOneProcessAtATimeSpendsTheStanding:
+    """The persisted standing is a fact about the host, so exactly one live process may spend it (#125.5).
+
+    scrape_queue serialises the fleet, but its lock guards the queue, not this host's depth rate: a manual
+    backfill alongside the nightly window is a documented workflow. Two phases inheriting the same floor would
+    double the rate Google sees at precisely the moment that assumption breaks.
+    """
+
+    def held(self, state):
+        return common.exclusive_host_lock(str(state) + gsv.PACE_LOCK_SUFFIX)
+
+    def test_a_second_phase_does_not_inherit_the_standing(self, tmp_path, recorder, clock, no_jitter,
+                                                          monkeypatch):
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 0)
+
+        with self.held(state):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2'), pace_state_path=str(state))
+
+        assert clock.slept[0] == pytest.approx(1.0), 'the opening interval, not the inherited 0.25'
+
+    def test_a_second_phase_does_not_overwrite_the_standing(self, tmp_path, recorder, clock, monkeypatch):
+        """The other half: a locked-out run must not clobber the holder's read-modify-write either."""
+        monkeypatch.setattr(gsv, 'DEPTH_PACE_RECOVER_AFTER', 2)
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 0)
+
+        with self.held(state):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2', 'p3'), pace_state_path=str(state))
+
+        with open(state) as f:
+            assert json.load(f)['interval'] == 0.25
+
+    def test_a_locked_out_phase_still_does_its_work(self, tmp_path, recorder):
+        """It is a pacing decision, never a reason to skip the corpus."""
+        state = tmp_path / 'pace'
+
+        with self.held(state):
+            result = gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2'), pace_state_path=str(state))
+
+        assert result[0] == 2
+        assert sorted(recorder.requested) == ['p1', 'p2']
+
+    def test_a_locked_out_phase_says_so_where_cron_will_see_it(self, tmp_path, recorder, capsys):
+        state = tmp_path / 'pace'
+
+        with self.held(state):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state))
+
+        assert 'WARNING' in capsys.readouterr().out
+
+    def test_the_lock_is_released_when_the_phase_ends(self, tmp_path, recorder, clock, no_jitter, monkeypatch):
+        """A lock held past the end of a phase would stand the whole fleet down after the first city - the
+        failure mode CLAUDE.md rejects O_EXCL lock files for."""
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        monkeypatch.setattr(gsv, 'DEPTH_PACE_RECOVER_AFTER', 2)
+        state = tmp_path / 'pace'
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2'), pace_state_path=str(state))
+        clock.slept.clear()
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('q1', 'q2'), pace_state_path=str(state))
+
+        assert clock.slept[0] == pytest.approx(0.8), 'the second phase inherited, so the lock was free'
+
+    def test_a_lock_that_cannot_be_created_costs_only_the_memory(self, tmp_path, recorder):
+        """An unwritable temp directory is not a reason to skip depth - it is a reason to forget."""
+        state = tmp_path / 'no-such-dir' / 'pace'
+
+        result = gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2'), pace_state_path=str(state))
+
+        assert result[0] == 2
+
+
+class TestTheStandingIsWrittenOnlyWhenItChanges:
+    """A write that carries no new evidence is noise (#125.6).
+
+    A sustained outage drives up to DEPTH_MAX_CONSECUTIVE_FAILURES push-backs. After the first the interval is
+    at the ceiling and the streak is 0, so every later write is identical but for its timestamp - and on an
+    unwritable path each one logs an error, 25 per city per night, into a scrape.log on the shared store where
+    an ops grep cannot tell them from real storage trouble.
+    """
+
+    def test_a_run_of_identical_forfeits_is_written_once(self, tmp_path, monkeypatch):
+        writes = []
+        monkeypatch.setattr(gsv, '_write_pace_state', lambda *a: writes.append(a))
+        pacer = gsv.DepthPacer(floor=0.25, start=1.0, ceiling=30.0, min_backoff=1.0,
+                               state_path=str(tmp_path / 'pace'))
+
+        for _ in range(25):
+            pacer.on_pushback('HTTP 503', from_google=True)
+
+        assert len(writes) == 1
+
+    def test_every_step_that_does_change_it_is_still_written(self, tmp_path, monkeypatch):
+        """The dedup compares the value; it must not merely suppress every write after the first. Each decay
+        step is earned evidence that has to survive the queue's hard kill, so none of them may be swallowed."""
+        writes = []
+        monkeypatch.setattr(gsv, '_write_pace_state', lambda *a: writes.append(a))
+        pacer = gsv.DepthPacer(floor=0.25, start=1.0, ceiling=30.0, recover_after=2, min_backoff=1.0,
+                               state_path=str(tmp_path / 'pace'))
+
+        for _ in range(4):
+            pacer.on_clean()
+
+        assert [w[1] for w in writes] == [pytest.approx(0.8), pytest.approx(0.64)]
+
+
+class TestTheTemporaryFileCannotAccumulate:
+    """The write is a temp file plus a rename, and the queue SIGKILLs cities (#125.7).
+
+    A kill between the two leaves the temp file behind, and that window now opens on every decay step and
+    every forfeit rather than once per run. A per-pid name made every such orphan permanent and unswept; a
+    fixed one is reclaimed by the next write, which the pacing lock makes safe.
+    """
+
+    def test_an_orphan_from_a_killed_run_is_reclaimed(self, tmp_path):
+        state = tmp_path / 'pace'
+        orphan = tmp_path / ('pace' + '.tmp')
+        orphan.write_text('{"interval": 0.9, half-written')
+
+        gsv._write_pace_state(str(state), 0.25, 3)
+
+        assert not orphan.exists()
+        assert [p.name for p in tmp_path.iterdir() if p.name.endswith('.tmp')] == []
+
+    def test_repeated_writes_leave_exactly_one_file_behind(self, tmp_path, monkeypatch):
+        state = tmp_path / 'pace'
+
+        for pid in range(5):
+            monkeypatch.setattr(gsv.os, 'getpid', lambda pid=pid: 1000 + pid)
+            gsv._write_pace_state(str(state), 0.25, pid)
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == ['pace']
+
+
+class TestForfeitGivesUpTheStandingNotTheLiveGap:
+    """forfeit() runs after the request loop has stopped, so moving the live interval there changes nothing
+    and reads as throttling a run that has already ended (#125.8)."""
+
+    def test_it_writes_the_opening_interval(self, tmp_path):
+        pacer = gsv.DepthPacer(floor=0.25, start=1.0, recover_after=2, state_path=str(tmp_path / 'pace'))
+        for _ in range(2):
+            pacer.on_clean()
+
+        pacer.forfeit()
+
+        with open(tmp_path / 'pace') as f:
+            assert json.load(f)['interval'] == 1.0
+
+    def test_it_leaves_the_live_interval_where_the_backoff_put_it(self, tmp_path):
+        pacer = gsv.DepthPacer(floor=0.25, start=1.0, ceiling=30.0, min_backoff=1.0,
+                               state_path=str(tmp_path / 'pace'))
+        pacer.on_pushback('HTTP 429', from_google=True)
+
+        pacer.forfeit()
+
+        assert pacer.interval == 2.0
+
+
+class TestEarnedSpeedIsRememberedNotRecomputed:
+    """The standing written is what the host EARNED, which is not the live gap and not the opening one."""
+
+    def pacer(self, path):
+        return gsv.DepthPacer(floor=0.25, start=1.0, ceiling=30.0, recover_after=2, min_backoff=1.0,
+                              state_path=str(path))
+
+    def test_an_inherited_standing_survives_a_run_that_earned_nothing_new(self, tmp_path):
+        """A 12-minute slot that makes a handful of requests must hand the floor on, not give it back."""
+        write_state(tmp_path / 'pace', 0.25, 0)
+        first = self.pacer(tmp_path / 'pace')
+        first.on_clean()  # one short of a step, so nothing new is earned
+
+        first.save()
+
+        with open(tmp_path / 'pace') as f:
+            assert json.load(f)['interval'] == 0.25
+
+    def test_climbing_back_after_a_local_blip_does_not_count_as_earning(self, tmp_path):
+        """A local back-off widens the live gap, and the decay steps that walk it back are re-earning ground
+        the host already held. Recording them as newly earned would let one DNS blip ratchet the standing
+        upwards a step at a time - the same forfeit as #125.1, paid in instalments."""
+        write_state(tmp_path / 'pace', 0.25, 0)
+        first = self.pacer(tmp_path / 'pace')
+        first.on_pushback('network failure')  # live gap 1.0 s; the standing is untouched
+        for _ in range(2):
+            first.on_clean()                  # one step back down, to 0.8 - still slower than 0.25
+
+        first.save()
+
+        with open(tmp_path / 'pace') as f:
+            assert json.load(f)['interval'] == 0.25
+
+    def test_a_network_failure_in_the_phase_does_not_forfeit_it_either(self, tmp_path, fake_streetview,
+                                                                       clock, monkeypatch):
+        """End to end through the phase's `except (requests.RequestException, ValueError)` arm, so a call site
+        that told the pacer this was Google's doing is caught here rather than only in the unit tests."""
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 0)
+        monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes',
+                            lambda pano_id, session: (_ for _ in ()).throw(
+                                requests.exceptions.ConnectionError('name resolution failed')))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state))
+
+        with open(state) as f:
+            assert json.load(f)['interval'] == 0.25
+
+
+class TestTheHostLockDrivesBothPlatformApis:
+    """`common.exclusive_host_lock` is the pacing lock's mechanism, and one of its two arms is dead on
+    whichever OS is running. CI is Ubuntu and this desk is Windows, so without substituting a module-shaped
+    stand-in each arm is only ever checked by half the places this repo runs.
+    """
+
+    def test_the_posix_lock_api_is_driven_correctly(self, monkeypatch, tmp_path):
+        calls = []
+
+        class FakeFcntl:
+            LOCK_EX = 2
+            LOCK_NB = 4
+
+            def flock(self, fd, op):
+                calls.append(op)
+
+        monkeypatch.setattr(common, '_lock_module', lambda: FakeFcntl())
+
+        with common.exclusive_host_lock(str(tmp_path / 'pace.lock')):
+            pass
+
+        assert calls == [FakeFcntl.LOCK_EX | FakeFcntl.LOCK_NB], 'exclusive AND non-blocking'
+
+    def test_the_windows_lock_api_is_driven_correctly(self, monkeypatch, tmp_path):
+        calls = []
+
+        class FakeMsvcrt:
+            LK_NBLCK = 3
+
+            def locking(self, fd, mode, nbytes):
+                calls.append((mode, nbytes))
+
+        monkeypatch.setattr(common, '_lock_module', lambda: FakeMsvcrt())
+
+        with common.exclusive_host_lock(str(tmp_path / 'pace.lock')):
+            pass
+
+        assert calls == [(FakeMsvcrt.LK_NBLCK, 1)], 'must be a NON-blocking single-byte lock'
+
+    def test_a_refusal_from_the_platform_becomes_hoststatelocked(self, monkeypatch, tmp_path):
+        """download_depth_maps catches exactly this, so a platform OSError arriving unwrapped would take the
+        depth phase down instead of costing it the standing."""
+        class Refusing:
+            LOCK_EX = 2
+            LOCK_NB = 4
+
+            def flock(self, fd, op):
+                raise OSError(11, 'Resource temporarily unavailable')
+
+        monkeypatch.setattr(common, '_lock_module', lambda: Refusing())
+
+        with pytest.raises(common.HostStateLocked):
+            with common.exclusive_host_lock(str(tmp_path / 'pace.lock')):
+                pass
+
+    def test_the_holder_leaves_its_pid_behind(self, tmp_path):
+        """The lock file is never unlinked - unlinking races - so it is left holding the pid of whoever to
+        go looking for."""
+        lock = tmp_path / 'pace.lock'
+
+        with common.exclusive_host_lock(str(lock)):
+            pass
+
+        assert lock.read_text().strip() == str(os.getpid())

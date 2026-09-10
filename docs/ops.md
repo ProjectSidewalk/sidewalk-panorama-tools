@@ -400,11 +400,22 @@ moves it. To clear one by hand, delete the file; a missing, unparseable or impla
 all mean "not blocked", because a latch nobody can read must never be able to stand the whole fleet's depth
 phase down indefinitely.
 
-Beside it lives the pacer's **earned standing** (`sidewalk-depth-pace`, `--depth-pace-state PATH` moves it):
-the request interval and clean streak the last run on this host earned, which the next run opens at instead
-of ramping down from `depth_start_interval` again. Deleting it costs one ramp (~1,400 requests); an
-unreadable, `NaN`, or day-old file is ignored the same way. It never holds a value slower than the opening
-interval, so it cannot be used to slow the fleet down, only to keep the speed it has already earned.
+Beside the **default** latch lives the pacer's **earned standing** (`sidewalk-depth-pace`,
+`--depth-pace-state PATH` moves it — the two paths are independent, so moving the latch alone leaves this
+file in the temp directory): the request interval and clean streak the last run on this host earned, which
+the next run opens at instead of ramping down from `depth_start_interval` again. Deleting it costs one ramp
+(~1,400 requests); an unreadable, `NaN`, or day-old file is ignored the same way, and so is one nothing can
+parse at all. It never holds a value slower than the opening interval, so it cannot be used to slow the
+fleet down, only to keep the speed it has already earned. Only Google's own push-back forfeits it — a
+local network blip or one malformed pano slows the running phase down and leaves the file alone, the same
+rule the latch follows when it declines to blame a full disk on Google — and a phase that made no
+requests writes nothing.
+
+A `sidewalk-depth-pace.lock` sits beside it. The depth phase holds it for its whole duration so exactly one
+live process spends the host's standing; a second concurrent phase logs a `WARNING`, paces itself from
+scratch and writes nothing. It is advisory (`flock`/`msvcrt`, released by the OS when the holder dies),
+never an `O_EXCL` file, for the reason the queue lock is: a lock that outlived a crash would disable the
+feature silently and for ever. Deleting it is safe; it is recreated on demand.
 
 **Do not read a stood-down phase as lost work.** Nothing is ledgered on either path, so every unresolved
 panorama is retried on the next run. See
