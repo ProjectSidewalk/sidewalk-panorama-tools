@@ -122,17 +122,35 @@ def is_catalog_not_found(response):
     Measured 2026-09-08: `{"status": 404, "message": "Feature not found"}`, pinned as
     OBSERVED_PANORAMAX_NOT_FOUND_2026_09_08 in tests/test_image_downloaders.py.
 
-    Matched on the message, case-insensitively, and NOT on the whole body: the catalog is free to add
-    fields, and a verdict that breaks when it does would turn every absent picture into a nightly retry -
-    the harmless direction, but noisy forever. What must not match is an HTML error page, an empty body, or
-    any JSON that does not say this - those mean something other than the catalog answered, and a permanent
-    row would then be written off a stranger's reply.
+    BOTH measured fields are required, not just the one that reads like prose. A message-only match was
+    the first version of this check, and `{"message": "Not Found"}` is the default 404 body of AWS API
+    Gateway and of Express - the two things likeliest to sit in front of a community API without anyone
+    here knowing - so it accepts a stranger's reply as the catalog's verdict and ledgers a whole city off
+    it. Reading the body and then matching a substring every proxy on the internet also emits is one field
+    short of the positive evidence #99 asks for (2026-09-10 review).
+
+    Matched on those two fields and NOT on the whole body: the catalog is free to add fields, and a verdict
+    that breaks when it does would turn every absent picture into a nightly retry - the harmless direction,
+    but noisy forever. What must not match is an HTML error page, an empty body, or any JSON that does not
+    say this.
+
+    `status` is compared numerically, tolerant of a string, for the #46 reason is_panoramic_field_of_view
+    gives, and the asymmetry there is the same one: too strict re-requests an absent picture nightly, which
+    is noisy and free to fix, while too loose writes a permanent downloaded=0 row nothing downstream will
+    ever revisit (#41). This is the body's OWN status field, not the HTTP status - the caller has already
+    established that one - and the point of reading it is that it comes from the catalog rather than from
+    whatever answered.
     """
     try:
         payload = response.json()
     except ValueError:
         return False
     if not isinstance(payload, dict):
+        return False
+    try:
+        if float(payload.get('status')) != 404:
+            return False
+    except (TypeError, ValueError):
         return False
     message = payload.get('message')
     return isinstance(message, str) and 'not found' in message.lower()
@@ -161,16 +179,17 @@ def is_panoramic_field_of_view(fov):
 def hd_asset_url(payload):
     """The href of the item's full-resolution `hd` asset, or None when it publishes none.
 
-    None is returned for exactly one shape: an assets block that is present, well-formed, and does not offer
-    `hd`. That is the catalog listing this picture's renditions and hd not being among them - a permanent
-    property of the picture, the same verdict as Mapillary's "knows the image and publishes no
-    original-resolution rendition".
+    None is returned for exactly one shape, and since the 2026-09-10 review that is true rather than
+    merely claimed: an assets block that is present, well-formed, and does not offer `hd`. That is the
+    catalog listing this picture's renditions and hd not being among them - a permanent property of the
+    picture, the same verdict as Mapillary's "knows the image and publishes no original-resolution
+    rendition".
 
     Everything else about the assets block RAISES, so the pano retries unledgered. A missing block, a
-    non-object block, a non-object `hd`, or an `hd` whose href is null or empty are all the catalog changing
-    shape, and require_picture_record cannot have ruled that out - it establishes only that the body is a
-    dict whose id matches. Ledgering those was a 2026-09-09 review finding: one `?fields=` slimming and a
-    whole city gets a permanent downloaded=0 in a single night.
+    non-object block, a non-object `hd`, or an `hd` whose href is absent, null or empty are all the catalog
+    changing shape, and require_picture_record cannot have ruled that out - it establishes only that the
+    body is a dict whose id matches. Ledgering those was a 2026-09-09 review finding: one `?fields=`
+    slimming and a whole city gets a permanent downloaded=0 in a single night.
 
     `hd`, not `sd` or the tile pyramid, because `hd` is the frame the stored pano_x/pano_y describe.
     PanoramaxViewer.#panoDataParams writes `pers:interior_orientation.sensor_array_dimensions` into
@@ -208,12 +227,14 @@ def hd_asset_url(payload):
     if not isinstance(assets['hd'], dict):
         raise PanoramaxErrorResponse("Panoramax picture %.80r has a non-object hd asset: %.80r" %
                                      (payload.get('id'), type(assets['hd']).__name__))
-    if 'href' not in assets['hd']:
-        return None
     href = assets['hd'].get('href')
     if not isinstance(href, str) or not href:
-        # An hd asset that exists with a null or empty href is malformed, not a verdict - the same call the
-        # relative-href branch below already makes, and it was the one shape that ledgered instead.
+        # An hd asset that exists with a missing, null or empty href is malformed, not a verdict - the same
+        # call the relative-href branch below already makes, and it was the one shape that ledgered instead.
+        # `hd: {}` reached this function's ONLY other return-None path until the 2026-09-10 review, so an
+        # asset block that lost its href - a `?fields=` slimming, a rendition mid-generation - ledgered
+        # while the same block with `href: null` raised. Two shapes of the same accident, opposite and
+        # permanent verdicts, and the docstring above claimed there was exactly one.
         raise PanoramaxErrorResponse("Panoramax picture %.80r has an hd asset with no usable href: %.80r" %
                                      (payload.get('id'), href))
     if not href.startswith('https://'):

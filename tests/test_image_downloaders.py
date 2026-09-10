@@ -919,7 +919,8 @@ class TestALostShardDirRaceDoesNotFailThePano:
         panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM),
                           FakeResponse(chunks=[jpeg_bytes(120)]))
 
-        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)             == DownloadResult.success
+        assert (downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+                == DownloadResult.success)
 
     def test_gsv_still_downloads(self, monkeypatch, tmp_path):
         tile = jpeg_bytes(120)
@@ -1044,8 +1045,10 @@ class TestPanoramaxPermanentVerdicts:
         FakeResponse(status_code=404, payload={'error': 'gateway'}),
         FakeResponse(status_code=404, payload=['not', 'an', 'object']),
         FakeResponse(status_code=404, payload={'message': None}),
+        FakeResponse(status_code=404, payload={'message': 'Not Found'}),
+        FakeResponse(status_code=404, payload={'status': 500, 'message': 'Feature not found'}),
     ], ids=['an HTML error page', 'an empty body', 'JSON that does not say it', 'a non-object body',
-            'a null message'])
+            'a null message', 'a bare message with no status', 'a status field that is not 404'])
     def test_a_404_WITHOUT_the_catalogs_body_raises_instead_of_ledgering(self, monkeypatch, tmp_path,
                                                                         response):
         """The status alone does not say the CATALOG answered, and this used to read no further than it.
@@ -1119,13 +1122,18 @@ class TestPanoramaxPermanentVerdicts:
                                   **{'pers:interior_orientation': {'field_of_view': fov}})
         panoramax_session(monkeypatch, FakeResponse(payload=item), FakeResponse(chunks=[jpeg_bytes(120)]))
 
-        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)             == DownloadResult.success
+        assert (downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+                == DownloadResult.success)
 
     @pytest.mark.parametrize('fov', [92, 180, 200, 'panoramic'], ids=['92', '180', '200', 'a word'])
     def test_any_affirmed_non_360_field_of_view_is_refused(self, monkeypatch, tmp_path, fov):
-        """Including the string '360'. The catalog serves it as a number today; if that ever changed, a
-        `!= 360` on a string would refuse the entire city - loudly and permanently. Pinned so the day it
-        happens the test says so rather than the ledger does."""
+        """A value the catalog affirmed that is not 360, including one that is not a number at all.
+
+        NOT including the string `'360'`, which this docstring claimed until 2026-09-10 and which
+        test_a_panoramic_picture_downloads_whatever_type_its_fov_arrives_as covers from the other side: the
+        comparison became tolerant in the same PR, so `'360'` is a panorama and is downloaded. The
+        catalog serves the value as a number today; the day that changes, the tolerant compare is what
+        stops the entire city from being refused loudly and permanently."""
         interior = dict(PANORAMIC_ITEM['properties']['pers:interior_orientation'], field_of_view=fov)
         properties = dict(PANORAMIC_ITEM['properties'])
         properties['pers:interior_orientation'] = interior
@@ -1134,11 +1142,15 @@ class TestPanoramaxPermanentVerdicts:
         assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
             == DownloadResult.failure
 
-    @pytest.mark.parametrize('assets', [{}, {'sd': {'href': 'https://x/sd.jpg'}}, {'hd': {}}],
-                             ids=['no hd', 'sd only', 'hd without an href'])
+    @pytest.mark.parametrize('assets', [{}, {'sd': {'href': 'https://x/sd.jpg'}}],
+                             ids=['no hd', 'sd only'])
     def test_a_picture_with_no_hd_asset_is_permanent(self, monkeypatch, tmp_path, assets):
         """The catalog affirmed the picture and publishes no full-resolution pixels for it - the same
-        verdict shape as Mapillary's "knows the image, no original-resolution rendition"."""
+        verdict shape as Mapillary's "knows the image, no original-resolution rendition".
+
+        `{'hd': {}}` was a third case here until 2026-09-10 and is now on the raising side, beside
+        `{'hd': {'href': None}}`: an hd entry that exists and carries no usable href is the catalog
+        changing shape, not a statement about this picture's pixels."""
         panoramax_session(monkeypatch, FakeResponse(payload=dict(PANORAMIC_ITEM, assets=assets)))
 
         assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) \
@@ -1255,6 +1267,7 @@ class TestPanoramaxTransientConditions:
         ({'hd': 'not an object'}, 'a non-object hd asset'),
         ({'hd': {'href': ''}}, 'an hd asset with an empty href'),
         ({'hd': {'href': None}}, 'an hd asset with a null href'),
+        ({'hd': {}}, 'an hd asset with no href at all'),
     ])
     def test_a_malformed_assets_block_raises_rather_than_writing_the_picture_off(self, monkeypatch,
                                                                                 tmp_path, assets, reason):
@@ -1376,7 +1389,8 @@ class TestPanoramaxChunking:
         panoramax_session(monkeypatch, FakeResponse(payload=PANORAMIC_ITEM),
                           FakeResponse(chunks=[body[:64], b'', body[64:]]))
 
-        assert downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)             == DownloadResult.success
+        assert (downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+                == DownloadResult.success)
         assert (tmp_path / PANORAMAX_SHARD / ('%s.jpg' % PANORAMAX_PANO['pano_id'])).read_bytes() == body
 
 
@@ -1398,6 +1412,39 @@ class TestPanoramaxSeams:
         assert downloaders.panoramax.hd_asset_url(PANORAMIC_ITEM) \
             != PANORAMIC_ITEM['assets']['sd']['href']
         assert downloaders.panoramax.hd_asset_url({'assets': {'sd': {'href': 'https://x/sd.jpg'}}}) is None
+
+    def test_the_not_found_reader_needs_the_catalogs_WHOLE_fingerprint(self):
+        """Both measured fields, not just the one that reads like prose.
+
+        `{"message": "Not Found"}` is the DEFAULT 404 body of AWS API Gateway and of Express - the two
+        things likeliest to sit in front of a community API without anyone here knowing - so a match on the
+        message alone accepts a stranger's reply as the catalog's verdict and ledgers a whole city off it.
+        That is the same failure the 2026-09-09 review closed one level up by reading the body at all, one
+        field short of closed: reading a body and then matching a substring every proxy on the internet
+        also emits is not positive evidence (#99).
+
+        `status` is compared numerically for the #46 reason is_panoramic_field_of_view gives - the catalog
+        is free to serve it as a string - and the cost of getting the tolerance wrong is asymmetric here:
+        too strict means an absent picture is re-requested nightly (noisy, self-announcing, free to fix),
+        too loose means a permanent downloaded=0 row that nothing downstream will ever revisit.
+        """
+        not_found = downloaders.panoramax.is_catalog_not_found
+        status, body = OBSERVED_PANORAMAX_NOT_FOUND_2026_09_08
+        assert not_found(FakeResponse(status_code=status, payload=body))
+        assert not_found(FakeResponse(status_code=404,
+                                      payload={'status': '404', 'message': 'Feature not found'}))
+        # The catalog is free to ADD fields; the verdict must survive that or every absent picture becomes
+        # a nightly retry forever.
+        assert not_found(FakeResponse(status_code=404,
+                                      payload=dict(body, detail='https://api.panoramax.xyz/errors/404')))
+
+        for payload in ({'message': 'Not Found'},
+                        {'message': 'Feature not found'},
+                        {'status': 500, 'message': 'Feature not found'},
+                        {'status': None, 'message': 'Feature not found'},
+                        {'status': 404},
+                        {'status': 404, 'message': None}):
+            assert not not_found(FakeResponse(status_code=404, payload=payload)), payload
 
     def test_the_record_gate_accepts_only_the_picture_that_was_asked_for(self):
         require = downloaders.panoramax.require_picture_record
