@@ -8,8 +8,6 @@ import logging
 import os
 import stat
 
-import requests
-
 from . import common
 from .common import (DownloadResult, atomic_output_path, jpeg_dimensions, retrying_session,
                      write_downscaled_sidecar_from_file)
