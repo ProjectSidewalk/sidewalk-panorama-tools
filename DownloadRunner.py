@@ -93,11 +93,32 @@ def progress_check(csv_pano_log_path):
     the old rewrite path) is skipped, so a damaged ledger degrades to re-attempting a few panos instead of a
     ParserError that crashes every future run (#55). Reads with csv, not pandas, so the id type can never
     depend on what the ids happen to look like (#46).
+
+    TWO widths are legal, and this is the one place that knows it. Rows were `pano_id,downloaded` until
+    2026-09-10 and are `pano_id,downloaded,fetched_at` after it (#114), so every long-lived store holds
+    both: the header and the first million rows are two fields, everything appended since is three. Nothing
+    rewrites the old rows - see docs/ops.md - so tolerating the mixture here is not a migration step, it is
+    the permanent state.
+
+    Written as a membership test rather than `len(row) >= 2` deliberately. The looser form would accept a
+    four-field row, and a row with a surplus field is the signature of a torn append or a stray comma, which
+    is exactly the damage the tolerance above exists to survive rather than to trust. Widening this to a new
+    width is a decision, not a default.
+
+    The `!= 2` this replaced was load-bearing in the dangerous direction: it silently `continue`d on every
+    three-field row, so a timestamped ledger parsed as EMPTY. Nothing raises - the whole corpus reads as
+    unattempted, permanent `downloaded=0` verdicts stop being terminal and are re-requested against Google
+    every night, duplicate rows accumulate, and the prior-failure counters that seed log.csv's column 9 all
+    read zero. That is the shape of a rollback to a pre-#114 build, and it is why the writer and this reader
+    ship in the same commit.
+
+    The depth and refetch ledgers keep their own `!= 2`: neither gained a column, and a shared helper here
+    would let a future widening of one silently widen all three.
     """
     ledgered_ids, total_processed, total_success = set(), 0, 0
     with open(csv_pano_log_path, newline='') as f:
         for row in csv.reader(f):
-            if len(row) != 2 or row[0] == 'pano_id' or row[1] not in ('0', '1'):
+            if len(row) not in (2, 3) or row[0] == 'pano_id' or row[1] not in ('0', '1'):
                 continue
             ledgered_ids.add(row[0])
             total_processed += 1
@@ -398,7 +419,12 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         # trailing '\r' on the downloaded column.
         ledger = csv.writer(ledger_file, lineterminator='\n')
         if not ledger_existed:
-            ledger.writerow(['pano_id', 'downloaded'])
+            # Only a ledger this run CREATES gets the three-column header. An existing store keeps its
+            # two-column one above three-field rows, which looks wrong to a person running `head -1` and is
+            # correct anyway: rewriting a production ledger in place is the O(n^2) truncate-on-crash path
+            # the comment above warns about, over a file that is the only record of what has been scraped.
+            # progress_check reads by position and skips the header by value, so a stale one is inert.
+            ledger.writerow(['pano_id', 'downloaded', 'fetched_at'])
             ledger_file.flush()
             # Group-writable like depth_log.csv: other lab users' runs append to the same store.
             try:
@@ -491,7 +517,12 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
             if downloaded is not None:
-                ledger.writerow([pano_id, downloaded])
+                # fetched_at goes LAST so `cut -d, -f1` and `-f2` keep meaning what every ops procedure and
+                # every `grep ',0$'` in docs/ops.md assumes. It reuses log_timestamp for the same reason
+                # log.csv's column 1 does (#101): a stamp that does not say which clock it is on is
+                # silently 7-8 hours out the moment a host is not on UTC, and there is no second timestamp
+                # convention on this store to get that wrong differently.
+                ledger.writerow([pano_id, downloaded, log_timestamp()])
                 ledger_file.flush()
                 df_id_set.add(pano_id)
 

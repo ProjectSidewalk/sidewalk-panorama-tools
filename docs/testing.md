@@ -37,6 +37,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | Area | Files |
 |---|---|
 | Downloader: run flow, budgets, ledgers, crash/`SIGTERM` behaviour, the positional `log.csv` contract | `test_download_runner.py` |
+| The image ledger's [two legal row widths](ops.md#fetched_at-and-the-two-row-widths): a mixed-width file reading as the union of its ids, a timestamped `0` row staying terminal, an existing two-column header left alone, a four-field row still counting as damage, and the stamp carrying a UTC offset | `test_download_runner.py` (`TestTheFetchTimestamp`) |
 | Depth phase: ledger semantics, error taxonomy, artifact format, budget flags | `test_depth_phase.py`, `test_depth_helpers.py` |
 | Depth pacing (adaptive floor/backoff/jitter) and the cross-run block latch | `test_depth_pacing.py` |
 | GSV stitching and the tile endpoint's behaviour, pinned against captured bytes | `test_gsv_stitcher.py`, `test_gsv_tile_contract.py`, `test_image_downloaders.py` |
