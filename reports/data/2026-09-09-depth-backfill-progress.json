@@ -17,12 +17,18 @@
     "unresolved": 1357687,
     "resolved_pct": 5.317593926655127,
     "requests_last_night": 22237,
-    "requests_per_full_slot_median": 586.0,
+    "unavailable_last_night": 8137,
+    "failed_last_night": 8137,
+    "transient_failures_last_night": 0,
+    "max_runtime_runs": 38,
+    "requests_per_max_runtime_run_median": 585.5,
+    "seconds_per_request_median": 1.2297181895815543,
     "nights_measured_fleet_average": 61.055313216710886,
     "nights_measured_longest_city": 463.1975945017182,
     "nights_floor_slot_longest_city": 140.40677083333333,
     "nights_floor_whole_window": 12.297889492753622
   },
+  "store_scan": null,
   "longest_remaining": [
     {
       "city_id": "chicago-il",
@@ -62,6 +68,7 @@
       "resolved": 1754,
       "unresolved": 13093,
       "last_run_requests": 576,
+      "last_run_failed": 269,
       "complete": false,
       "nights_measured": 22.73090277777778,
       "nights_floor_slot": 6.819270833333333
@@ -72,6 +79,7 @@
       "resolved": 1773,
       "unresolved": 527,
       "last_run_requests": 580,
+      "last_run_failed": 283,
       "complete": false,
       "nights_measured": 0.9086206896551724,
       "nights_floor_slot": 0.27447916666666666
@@ -82,6 +90,7 @@
       "resolved": 616,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -92,6 +101,7 @@
       "resolved": 1768,
       "unresolved": 15473,
       "last_run_requests": 586,
+      "last_run_failed": 214,
       "complete": false,
       "nights_measured": 26.40443686006826,
       "nights_floor_slot": 8.058854166666666
@@ -102,6 +112,7 @@
       "resolved": 1761,
       "unresolved": 45831,
       "last_run_requests": 583,
+      "last_run_failed": 228,
       "complete": false,
       "nights_measured": 78.6123499142367,
       "nights_floor_slot": 23.8703125
@@ -112,6 +123,7 @@
       "resolved": 1763,
       "unresolved": 2459,
       "last_run_requests": 575,
+      "last_run_failed": 278,
       "complete": false,
       "nights_measured": 4.276521739130435,
       "nights_floor_slot": 1.2807291666666667
@@ -122,6 +134,7 @@
       "resolved": 1718,
       "unresolved": 269581,
       "last_run_requests": 582,
+      "last_run_failed": 193,
       "complete": false,
       "nights_measured": 463.1975945017182,
       "nights_floor_slot": 140.40677083333333
@@ -132,6 +145,7 @@
       "resolved": 1344,
       "unresolved": 0,
       "last_run_requests": 153,
+      "last_run_failed": 57,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -142,6 +156,7 @@
       "resolved": 576,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -152,6 +167,7 @@
       "resolved": 1773,
       "unresolved": 149546,
       "last_run_requests": 574,
+      "last_run_failed": 212,
       "complete": false,
       "nights_measured": 260.5331010452962,
       "nights_floor_slot": 77.88854166666667
@@ -162,6 +178,7 @@
       "resolved": 1760,
       "unresolved": 20048,
       "last_run_requests": 586,
+      "last_run_failed": 291,
       "complete": false,
       "nights_measured": 34.21160409556314,
       "nights_floor_slot": 10.441666666666666
@@ -172,6 +189,7 @@
       "resolved": 1743,
       "unresolved": 4028,
       "last_run_requests": 592,
+      "last_run_failed": 216,
       "complete": false,
       "nights_measured": 6.804054054054054,
       "nights_floor_slot": 2.097916666666667
@@ -182,6 +200,7 @@
       "resolved": 1749,
       "unresolved": 11393,
       "last_run_requests": 583,
+      "last_run_failed": 132,
       "complete": false,
       "nights_measured": 19.542024013722127,
       "nights_floor_slot": 5.933854166666666
@@ -192,6 +211,7 @@
       "resolved": 1759,
       "unresolved": 33,
       "last_run_requests": 587,
+      "last_run_failed": 88,
       "complete": false,
       "nights_measured": 0.056218057921635436,
       "nights_floor_slot": 0.0171875
@@ -202,6 +222,7 @@
       "resolved": 707,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -212,6 +233,7 @@
       "resolved": 1773,
       "unresolved": 28494,
       "last_run_requests": 595,
+      "last_run_failed": 21,
       "complete": false,
       "nights_measured": 47.8890756302521,
       "nights_floor_slot": 14.840625
@@ -222,6 +244,7 @@
       "resolved": 725,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -232,6 +255,7 @@
       "resolved": 566,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -242,6 +266,7 @@
       "resolved": 1772,
       "unresolved": 208137,
       "last_run_requests": 595,
+      "last_run_failed": 99,
       "complete": false,
       "nights_measured": 349.81008403361346,
       "nights_floor_slot": 108.4046875
@@ -252,6 +277,7 @@
       "resolved": 1752,
       "unresolved": 453,
       "last_run_requests": 589,
+      "last_run_failed": 313,
       "complete": false,
       "nights_measured": 0.769100169779287,
       "nights_floor_slot": 0.2359375
@@ -262,6 +288,7 @@
       "resolved": 1759,
       "unresolved": 15911,
       "last_run_requests": 583,
+      "last_run_failed": 153,
       "complete": false,
       "nights_measured": 27.291595197255575,
       "nights_floor_slot": 8.286979166666667
@@ -272,6 +299,7 @@
       "resolved": 213,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -282,6 +310,7 @@
       "resolved": 500,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -292,6 +321,7 @@
       "resolved": 1754,
       "unresolved": 316,
       "last_run_requests": 583,
+      "last_run_failed": 111,
       "complete": false,
       "nights_measured": 0.5420240137221269,
       "nights_floor_slot": 0.16458333333333333
@@ -302,6 +332,7 @@
       "resolved": 1742,
       "unresolved": 3128,
       "last_run_requests": 581,
+      "last_run_failed": 150,
       "complete": false,
       "nights_measured": 5.383820998278829,
       "nights_floor_slot": 1.6291666666666667
@@ -312,6 +343,7 @@
       "resolved": 1758,
       "unresolved": 7035,
       "last_run_requests": 583,
+      "last_run_failed": 191,
       "complete": false,
       "nights_measured": 12.066895368782161,
       "nights_floor_slot": 3.6640625
@@ -322,6 +354,7 @@
       "resolved": 1765,
       "unresolved": 5839,
       "last_run_requests": 587,
+      "last_run_failed": 336,
       "complete": false,
       "nights_measured": 9.947189097103918,
       "nights_floor_slot": 3.041145833333333
@@ -332,6 +365,7 @@
       "resolved": 162,
       "unresolved": 0,
       "last_run_requests": 3,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -342,6 +376,7 @@
       "resolved": 1777,
       "unresolved": 1156,
       "last_run_requests": 598,
+      "last_run_failed": 344,
       "complete": false,
       "nights_measured": 1.9331103678929766,
       "nights_floor_slot": 0.6020833333333333
@@ -352,6 +387,7 @@
       "resolved": 1769,
       "unresolved": 607,
       "last_run_requests": 594,
+      "last_run_failed": 168,
       "complete": false,
       "nights_measured": 1.0218855218855218,
       "nights_floor_slot": 0.31614583333333335
@@ -362,6 +398,7 @@
       "resolved": 1755,
       "unresolved": 3885,
       "last_run_requests": 584,
+      "last_run_failed": 282,
       "complete": false,
       "nights_measured": 6.652397260273973,
       "nights_floor_slot": 2.0234375
@@ -372,6 +409,7 @@
       "resolved": 1771,
       "unresolved": 24283,
       "last_run_requests": 585,
+      "last_run_failed": 76,
       "complete": false,
       "nights_measured": 41.50940170940171,
       "nights_floor_slot": 12.647395833333333
@@ -382,6 +420,7 @@
       "resolved": 1763,
       "unresolved": 17733,
       "last_run_requests": 573,
+      "last_run_failed": 271,
       "complete": false,
       "nights_measured": 30.94764397905759,
       "nights_floor_slot": 9.2359375
@@ -392,6 +431,7 @@
       "resolved": 1768,
       "unresolved": 174,
       "last_run_requests": 582,
+      "last_run_failed": 231,
       "complete": false,
       "nights_measured": 0.29896907216494845,
       "nights_floor_slot": 0.090625
@@ -402,6 +442,7 @@
       "resolved": 0,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -412,6 +453,7 @@
       "resolved": 1154,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -422,6 +464,7 @@
       "resolved": 623,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -432,6 +475,7 @@
       "resolved": 1753,
       "unresolved": 181927,
       "last_run_requests": 593,
+      "last_run_failed": 311,
       "complete": false,
       "nights_measured": 306.79089376053963,
       "nights_floor_slot": 94.75364583333334
@@ -442,6 +486,7 @@
       "resolved": 1770,
       "unresolved": 32914,
       "last_run_requests": 591,
+      "last_run_failed": 311,
       "complete": false,
       "nights_measured": 55.69204737732657,
       "nights_floor_slot": 17.142708333333335
@@ -452,6 +497,7 @@
       "resolved": 1685,
       "unresolved": 79156,
       "last_run_requests": 514,
+      "last_run_failed": 196,
       "complete": false,
       "nights_measured": 154.0,
       "nights_floor_slot": 41.22708333333333
@@ -462,6 +508,7 @@
       "resolved": 1777,
       "unresolved": 4954,
       "last_run_requests": 582,
+      "last_run_failed": 266,
       "complete": false,
       "nights_measured": 8.512027491408935,
       "nights_floor_slot": 2.580208333333333
@@ -472,6 +519,7 @@
       "resolved": 972,
       "unresolved": 0,
       "last_run_requests": 0,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -482,6 +530,7 @@
       "resolved": 1754,
       "unresolved": 21655,
       "last_run_requests": 588,
+      "last_run_failed": 294,
       "complete": false,
       "nights_measured": 36.82823129251701,
       "nights_floor_slot": 11.278645833333334
@@ -492,6 +541,7 @@
       "resolved": 1780,
       "unresolved": 22758,
       "last_run_requests": 593,
+      "last_run_failed": 252,
       "complete": false,
       "nights_measured": 38.377740303541316,
       "nights_floor_slot": 11.853125
@@ -502,6 +552,7 @@
       "resolved": 1762,
       "unresolved": 3619,
       "last_run_requests": 590,
+      "last_run_failed": 155,
       "complete": false,
       "nights_measured": 6.133898305084746,
       "nights_floor_slot": 1.8848958333333334
@@ -512,6 +563,7 @@
       "resolved": 1780,
       "unresolved": 4922,
       "last_run_requests": 595,
+      "last_run_failed": 337,
       "complete": false,
       "nights_measured": 8.272268907563026,
       "nights_floor_slot": 2.5635416666666666
@@ -522,6 +574,7 @@
       "resolved": 1765,
       "unresolved": 140858,
       "last_run_requests": 587,
+      "last_run_failed": 165,
       "complete": false,
       "nights_measured": 239.9625212947189,
       "nights_floor_slot": 73.36354166666666
@@ -532,6 +585,7 @@
       "resolved": 1692,
       "unresolved": 0,
       "last_run_requests": 526,
+      "last_run_failed": 0,
       "complete": true,
       "nights_measured": null,
       "nights_floor_slot": null
@@ -542,6 +596,7 @@
       "resolved": 1094,
       "unresolved": 8802,
       "last_run_requests": 245,
+      "last_run_failed": 47,
       "complete": false,
       "nights_measured": 35.926530612244896,
       "nights_floor_slot": 4.584375
@@ -552,6 +607,7 @@
       "resolved": 1433,
       "unresolved": 5157,
       "last_run_requests": 271,
+      "last_run_failed": 1,
       "complete": false,
       "nights_measured": 19.029520295202953,
       "nights_floor_slot": 2.6859375
@@ -562,6 +618,7 @@
       "resolved": 2274,
       "unresolved": 435,
       "last_run_requests": 587,
+      "last_run_failed": 247,
       "complete": false,
       "nights_measured": 0.7410562180579217,
       "nights_floor_slot": 0.2265625
@@ -572,6 +629,7 @@
       "resolved": 1775,
       "unresolved": 1367,
       "last_run_requests": 603,
+      "last_run_failed": 348,
       "complete": false,
       "nights_measured": 2.2669983416252073,
       "nights_floor_slot": 0.7119791666666667

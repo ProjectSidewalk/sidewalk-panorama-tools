@@ -42,11 +42,31 @@ were not yet deployed:
 Fleet-wide push-back was checked separately: `grep -l "backing off\|refusing requests\|block latch"
 */scrape.log` over all 52 cities.
 
+**How complete a scan is, and how you can tell.** A city that failed, was skipped, or stood its depth phase
+down writes no `Final result` line that night, so the last line in its log is an *earlier* night's; a city
+whose `scrape.log` rotated past its last one contributes no row at all and is simply absent from every fleet
+total. Both used to be silent. `--store` now reports the census beside the rows — how many city directories
+produced a line, which produced none, and which recorded fewer runs than the fleet's busiest, that run count
+being the only staleness signal the file carries (the line is logged at `logging.BASIC_FORMAT` and has no
+timestamp; `log.csv` field 19 and the analyzer are the dated nightly check). This snapshot predates the
+census, so `store_scan` is `null` in the artifact rather than a fabricated all-clear — what was checked by
+hand at the time is the count above: 52 cities, three `Final result` lines each, west-chester-pa four.
+
 ## What came out
 
-**Zero push-back, latch or breaker events in three nights.** And every city with a backlog stopped on
-`max-runtime` after a median of **586** requests per full slot, at 1.22 s each — because every city is a
-fresh process that opens at 1.0 s and needs 1,400 clean requests to reach the floor, so no slot ever got there.
+**Zero push-back, latch or breaker events in three nights** — and zero *transient* failures with them: all
+**8,137** failures on the third night were the permanent `unavailable` verdict. Every city with a backlog
+stopped on `max-runtime`, after a median of **585.5** requests, which is **1.23 s** per request across a
+12-minute slot — because every city is a fresh process that opens at 1.0 s and needs 1,400 clean requests to
+reach the floor, so no slot ever got there.
+
+> **Which filter that median is under:** every one of the 38 runs that stopped on `max-runtime`, with no
+> condition on the request count itself. Two of them spent much of their slot in the image phase
+> (walla-walla-wa at 245 requests, waltham-ma at 271), so 585.5 is a *lower* bound on what a whole slot
+> yields and 1.23 s an upper bound on the per-request cost. Nothing in the log line says how the slot was
+> split between the phases, and excluding those two by request count would be circular — selecting runs by
+> request count and then reporting the median request count can only bias it upward, and on a night the
+> pacer backed off fleet-wide it would report nothing at all.
 
 | fleet, 2026-09-09 | |
 |---|---:|
@@ -58,10 +78,13 @@ fresh process that opens at 1.0 s and needs 1,400 clean requests to reach the fl
 | resolved (saved + unavailable) | **76,251** (5.3%) |
 | unresolved | **1,357,687** |
 | depth requests on the third night | **22,237** |
+| of those, failures | **8,137**, all `unavailable` (0 transient) |
 
-That third night the queue used **477 of its 690 minutes**: the 13 complete cities exit in seconds and give
-nothing back, and the 38 working ones are each capped at 12 minutes whether they have 400 panos left or
-270,000. So the window was already a third unused, and the share grows every night a small city finishes.
+That third night the queue used **477 of its 690 minutes** (read from the queue's own run summary, not from
+this artifact — the scan reads `scrape.log`, which holds no queue-level total): the 13 complete cities exit
+in seconds and give nothing back, and the 38 working ones are each capped at 12 minutes whether they have
+400 panos left or 270,000. So the window was already a third unused, and the share grows every night a small
+city finishes.
 
 | nights to finish | |
 |---|---:|
@@ -81,8 +104,11 @@ The five cities that set the fleet's finish date:
 | vancouver-wa | 140,858 | 240 | 73 |
 
 Two things follow. **The "47 nights" was a fleet average, and it hid the number that matters by an order of
-magnitude**: the fleet finishes when its slowest city does, and at 590 requests a night chicago-il alone is
-1.3 years. And **the ramp, not the floor, set the rate** — exactly the case `docs/depth.md` had reserved for
+magnitude**: the fleet finishes when its slowest city does, and at 582 requests a night chicago-il alone is
+463 nights — 1.3 years. (582 is chicago-il's own last run, the rate its 463 is computed from; the fleet
+median above is a different figure and not the one to divide a single city's backlog by.)
+
+And **the ramp, not the floor, set the rate** — exactly the case `docs/depth.md` had reserved for
 persisting the pacer's interval across runs.
 
 ## What changed in the code
@@ -102,7 +128,15 @@ Three PRs, each one idea:
 
 ## Where the data lives, and the tests that pin it
 
-* `reports/data/2026-09-09-depth-backfill-progress.csv` — one row per city, straight from the log lines.
+* `reports/data/2026-09-09-depth-backfill-progress.csv` — one row per city, straight from the log lines, with
+  one exception: **`last_run_failed` was derived, not re-scanned.** The column was added after the store scan,
+  and the store is not re-readable from here. It is exact rather than estimated: `download_depth_maps`
+  increments its request counter once per pano and then increments exactly one of success or failure
+  (`downloaders/gsv.py`), so `failed == requests - saved`. On this snapshot that equals `unavailable` on all 52
+  rows — every failure in three nights was the permanent verdict, which is the "zero push-back" finding seen
+  from the other side. A future `--store` scan reads the field straight off the log line, where it always was:
+  the regex captured `failed` from the start and the schema threw it away, so a night of transient failures
+  would have looked exactly like a clean one.
 * `reports/data/2026-09-09-depth-backfill-progress.json` — the reduction above, every figure this page quotes.
 * `tests/test_depth_backfill_report.py` — the reducer against synthetic rows (a fleet average versus a longest
   city; undefined-is-None; the floor regimes from their constants), the committed JSON being exactly what the
@@ -128,7 +162,8 @@ Three PRs, each one idea:
 ## Open questions
 
 * **The floor at volume.** The 0.25 s floor is evidenced by 1,360 requests in the 2026-08-09 census and now
-  by ~66,000 across three nights at ~1.2 s. Extra passes at the floor mean up to ~110,000 requests a night from
+  by the third night's **22,237** — about 67,000 over the three nights, if the first two ran like the third —
+at 1.23 s a request. Extra passes at the floor mean up to ~110,000 requests a night from
   one IP; the pacer backs off on the first retry and the block latch stands the fleet down on a refusal, but
   the first full night at that rate is the real canary. Check `grep -l "backing off" */scrape.log` the morning
   after.
