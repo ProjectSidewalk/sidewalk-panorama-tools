@@ -63,7 +63,11 @@ LOG_COLUMNS = [
 # Fields 2-18 are phase results: a completed run fills every one of them, so a blank there means the run
 # ended early (#49). Field 19 is not a phase result and is blank on every pre-#43 row, so the ended-early
 # rule must not read it - or the whole fleet reads as crashing for a week after the column arrives.
-PHASE_COLUMNS = LOG_COLUMNS[1:18]
+PHASE_COLUMNS = LOG_COLUMNS[1:LOG_COLUMNS.index("depth_eligible")]
+
+# The widths a log.csv row is allowed to have: 18 before the corpus column (#43) existed, 19 since. Any
+# other width is a torn or corrupted write, and read_log counts them rather than reshaping them into a run.
+LOG_ROW_WIDTHS = (LOG_COLUMNS.index("depth_eligible"), len(LOG_COLUMNS))
 
 # ---------------------------------------------------------------------------
 # Thresholds (override via CLI flags where applicable)
@@ -72,7 +76,11 @@ STALE_DAYS_DEFAULT       = 3    # --stale-days
 ZERO_PROGRESS_DAYS       = 30   # consecutive days with 0 new images before flagging
 ZERO_PROGRESS_LOOKBACK   = 90   # days to look back when checking for prior progress
 NEW_FAIL_DAILY_WARNING   = 20   # new image_fail entries/day (7-day avg) to flag
-LONG_RUN_MULTIPLIER      = 3.0  # recent runtime (outside the depth phase) > this × median → warning
+LONG_RUN_MULTIPLIER      = 3.0  # recent image-phase runtime > this × the median (floored) → warning
+LONG_RUN_MIN_MEDIAN      = 5    # minutes; the median is floored here before the multiplier is applied
+NEW_FAIL_NIGHTS          = 7    # nights (not rows) averaged by rule 2
+RUNS_PER_NIGHT_INFO      = 8    # runs on one date above which rule 8 asks whether a stray schedule survives
+RUNS_PER_NIGHT_LOOKBACK  = 14   # dates rule 8 looks back over
 INCOMPLETE_RUN_WARNING   = 3    # incomplete runs in the last 7 before flagging
 OVERLAP_TOLERANCE_MIN    = 1.0  # durations are whole minutes; a start this close to the previous end is rounding
 DEPTH_STALLED_NIGHTS     = 3    # consecutive nights with no depth request, with work left, before flagging
@@ -161,20 +169,31 @@ def read_log(log_path: Path) -> pd.DataFrame:
     18-name header, years of 18-field rows, then 19-field rows - under either engine: the C parser fixes the
     width from the first row and dies with "Expected 18 fields, saw 19", so every city would have read as
     CRITICAL "Could not parse log" the morning after the deploy, and stayed there. Padding by hand also
-    removes the other failure in that class, a row one field WIDER than the names, which read_csv answers by
-    taking the first column as the index and shifting every count one place left (the #46 shape).
+    changes the direction of the other failure in that class: read_csv answers a row one field WIDER than the
+    names by taking the first column as the index and shifting every count one place left (the #46 shape),
+    while padding shifts it right instead. Neither is a run, so rows whose width is not in LOG_ROW_WIDTHS are
+    counted and reported (rule 9) rather than quietly reshaped.
 
     Blank fields (a run that crashed or was stopped before that phase finished, see #49) stay NaN: missing
     data, never a fabricated 0. So does field 19 on every row older than it.
     """
     width = len(LOG_COLUMNS)
-    with open(log_path, newline="") as f:
+    # encoding is explicit: read_csv defaulted to UTF-8, open() takes the locale's, and a cron tool should
+    # not read a different file on a differently-configured host.
+    with open(log_path, newline="", encoding="utf-8") as f:
         rows = [[cell.strip() for cell in row] for row in csv.reader(f)]
     # write_log_csv_row prefixes every row with "\n", so a fresh file opens with an empty line; and the header
     # is optional - never written by the runner, added by hand at city setup.
     rows = [row for row in rows if any(row)]
     if rows and rows[0][0] == "start_time":
         rows = rows[1:]
+    # Counted BEFORE padding, because this is the only place the evidence exists. A row of some other width
+    # is not a run: one stray comma reaching a written value shifts every count one place right, the 19th
+    # field falls off the end, and the night reads as a healthy all-zero run - while whatever landed in
+    # position 19 becomes the city's corpus via last_value and can report a 183,680-pano city complete. The
+    # docstring above used to claim hand-padding "removes" the wider-row failure; it changes the shift's
+    # direction. So the width is reported (rule 9) rather than reshaped away.
+    malformed = sum(1 for row in rows if len(row) not in LOG_ROW_WIDTHS)
     rows = [(row + [""] * width)[:width] for row in rows]
 
     # dtype=object, so pandas does not get to pick a string dtype whose missing-value semantics differ across
@@ -204,7 +223,9 @@ def read_log(log_path: Path) -> pd.DataFrame:
 
     # A run whose timestamp is unparseable can't be placed in time; nothing below can use it.
     df = df[df["start_time"].notna()]
-    return df.sort_values("start_time").reset_index(drop=True)
+    result = df.sort_values("start_time").reset_index(drop=True)
+    result.attrs["malformed_rows"] = malformed
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +251,12 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     if df.empty:
         return [{"level": "CRITICAL", "msg": "Log file is empty"}]
 
-    # Convenience: calendar date column, in UTC. Rule 6 below is the one that depends on where the day
-    # boundary falls, and it is safe under the Pacific night window the queue runs in (#101): 20:00-05:00 PT
-    # is 03:00-12:00 UTC (04:00-13:00 under PST), so a night sits entirely inside one UTC day and a city
-    # still gets exactly one row per date.
+    # Convenience: calendar date column, in UTC. Rules 2, 3 and 8 and depth_progress's rate all group by it,
+    # so where the day boundary falls matters to them: it is safe under the Pacific night window the queue
+    # runs in (#101), since 20:00-05:00 PT is 03:00-12:00 UTC (04:00-13:00 under PST) and a night therefore
+    # sits entirely inside one UTC day. What is NO LONGER true is "one row per date" - the queue's extra
+    # passes put several rows on a night by design, which is why every rule below counts dates rather than
+    # rows.
     df["date"] = df["start_time"].dt.normalize()
 
     # --- 1. Staleness ---
@@ -258,8 +281,12 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     # We compute the per-row delta and look at the recent 7-day average.
     if len(df) > 1:
         df["fail_delta"] = df["image_fail"].diff().clip(lower=0)  # ignore drops (retries succeed)
-        recent_7  = df.tail(7)
-        avg_new_fails = recent_7["fail_delta"].mean()
+        # Summed per DATE and averaged over dates. tail(7) was seven ROWS, and the queue's extra passes (#43)
+        # put more than one row on a night, so seven rows is three and a half nights at two passes each and a
+        # real 30/day failure rate read as 15 and never reached the threshold. Rule 6 was rewritten for
+        # exactly this reason; this rule and rule 3 were left behind.
+        recent_nights = df.groupby("date")["fail_delta"].sum().tail(NEW_FAIL_NIGHTS)
+        avg_new_fails = recent_nights.mean()
         if pd.notna(avg_new_fails) and avg_new_fails >= NEW_FAIL_DAILY_WARNING:
             issues.append({
                 "level": "WARNING",
@@ -275,14 +302,17 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     # We check: last ZERO_PROGRESS_DAYS all-zero AND the preceding
     # ZERO_PROGRESS_LOOKBACK days had at least some success.
     df["daily_success"] = df["image_success"] + df["image_fallback_success"]
-    n = len(df)
+    # Per DATE, for rule 2's reason: these slices are named in days and were counted in rows, so "no new
+    # images in 30 days" fired after about fifteen of them once a city started running twice a night.
+    by_night = df.groupby("date")["daily_success"].sum()
+    n = len(by_night)
 
     if n > ZERO_PROGRESS_DAYS + ZERO_PROGRESS_LOOKBACK:
-        tail_n   = df.tail(ZERO_PROGRESS_DAYS)
-        prior_n  = df.iloc[-(ZERO_PROGRESS_DAYS + ZERO_PROGRESS_LOOKBACK) : -ZERO_PROGRESS_DAYS]
+        tail_n   = by_night.tail(ZERO_PROGRESS_DAYS)
+        prior_n  = by_night.iloc[-(ZERO_PROGRESS_DAYS + ZERO_PROGRESS_LOOKBACK) : -ZERO_PROGRESS_DAYS]
 
-        tail_all_zero  = (tail_n["daily_success"] == 0).all()
-        prior_had_some = (prior_n["daily_success"] > 0).any()
+        tail_all_zero  = (tail_n == 0).all()
+        prior_had_some = (prior_n > 0).any()
 
         if tail_all_zero and prior_had_some:
             last_success_mask = df["daily_success"] > 0
@@ -302,18 +332,26 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     # to ten - so a city in backfill would trip this every time its allocation grew. What CAN run unexpectedly
     # long is the image phase, which is work-driven; the depth minutes come out first. A row with either
     # duration blank (#49) is NaN here and compares false, so a crashed run neither trips nor moves the median.
-    df["run_minutes"] = df["total_minutes"] - df["depth_minutes"]
-    median_mins = df["run_minutes"].median()
-    if pd.notna(median_mins) and median_mins > 0:
-        threshold = median_mins * LONG_RUN_MULTIPLIER
+    # Read from image_minutes (field 12) directly rather than total minus depth. That subtraction was the
+    # difference of two INDEPENDENTLY ROUNDED integers, so a run of 12.4 total and 11.6 depth gave 0 where
+    # the image phase really took a minute - and for a mature city, whose image phase is a ledger read and a
+    # membership scan while depth spends the whole slot, it gave 0 on essentially every row.
+    median_mins = df["image_minutes"].median()
+    if pd.notna(median_mins):
+        # The median is FLOORED before the multiplier, and that floor is what makes the rule work at all.
+        # With a median of 0 the old `median_mins > 0` guard was false and the rule never evaluated: a hung
+        # image phase was unreportable for exactly the class of city the fleet is moving into (measured: a
+        # 192-minute run returned no issue at all). At the other end, a median of 1 made the threshold 3
+        # minutes and an ordinary 4-minute image phase warned. One floor fixes both ends.
+        threshold = max(median_mins, LONG_RUN_MIN_MEDIAN) * LONG_RUN_MULTIPLIER
         recent_7  = df.tail(7)
-        long_runs = recent_7[recent_7["run_minutes"] > threshold]
+        long_runs = recent_7[recent_7["image_minutes"] > threshold]
         if not long_runs.empty:
-            worst = long_runs["run_minutes"].max()
+            worst = long_runs["image_minutes"].max()
             issues.append({
                 "level": "WARNING",
                 "msg": (
-                    f"Recent unusually long run: {worst:.0f} min outside the depth phase "
+                    f"Recent unusually long image phase: {worst:.0f} min "
                     f"(historical median: {median_mins:.0f} min, "
                     f"threshold: {threshold:.0f} min)"
                 ),
@@ -365,18 +403,51 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     # simply finished writes too. Only the corpus size (field 19) tells those apart, which is why it exists.
     progress = depth_progress(df)
     if progress and progress["unresolved"] > 0 and progress["quiet_nights"] >= DEPTH_STALLED_NIGHTS:
-        if progress["newest_ran"]:
-            cause = ("the phase ran but made no requests: the image phase spent the whole budget, "
-                     "check --min-depth-runtime")
+        # Both arms name candidates rather than asserting one, because the row cannot tell them apart and
+        # asserting was wrong on BOTH shapes this diagnosis exists to separate. An unwritable ledger does not
+        # write five zeros - gsv.download_depth_maps returns (0, 0, skipped, skipped) when it cannot open the
+        # ledger - so it landed in the first arm and sent the operator to tune a runtime flag while the store
+        # was read-only. And a fresh city whose image phase ate the whole budget has nothing in the ledger to
+        # skip, so it landed in the second and was told the phase had not run when it had.
+        if progress["newest_accounted"]:
+            cause = ("the phase accounted for panos but made no requests: it ran out of budget (check "
+                     "--min-depth-runtime), or the ledger could not be written")
         else:
-            cause = ("the phase did not run: a block latch, --skip-depth, an unwritable ledger or streetlevel "
-                     "missing - deliberate if --skip-depth is set")
+            cause = ("the phase accounted for nothing: --skip-depth, a block latch, streetlevel missing, the "
+                     "image phase spending the whole budget on a city with an empty ledger, or a run that "
+                     "crashed before the phase - deliberate if --skip-depth is set")
         issues.append({
             "level": "WARNING",
             "msg": (
                 f"Depth backfill stalled: no depth requests on the last {progress['quiet_nights']} nights "
                 f"with {progress['unresolved']:,} of {progress['eligible']:,} panos unresolved ({cause}). "
                 f"Check scrape.log next to log.csv."
+            ),
+        })
+
+    # --- 8. The corpus column contradicts the ledger ---
+    # depth_eligible is len(gsv_panos), so an empty or source-less pano-list answer writes a plausible 0 and
+    # erases the city's whole depth report. corpus_size refuses such a value; this is where that refusal is
+    # said out loud, because a silently substituted corpus is the same class of quiet wrongness.
+    if progress and progress["corpus_suspect"]:
+        issues.append({
+            "level": "WARNING",
+            "msg": (
+                f"Newest GSV corpus size is not believable (field 19); measuring against "
+                f"{progress['eligible']:,} from an earlier run. A 0 here is what an empty or source-less "
+                f"/adminapi/panos answer writes - check the pano-list fetch in scrape.log."
+            ),
+        })
+
+    # --- 9. Rows that are not runs ---
+    malformed = df.attrs.get("malformed_rows", 0)
+    if malformed:
+        issues.append({
+            "level": "WARNING",
+            "msg": (
+                f"{malformed} row(s) have a field count that is neither {LOG_ROW_WIDTHS[0]} nor "
+                f"{LOG_ROW_WIDTHS[1]} - a torn or corrupted write. Every count in such a row is shifted, so "
+                f"it reads as a quiet healthy night and its 19th field can be mistaken for the corpus size."
             ),
         })
 
@@ -389,57 +460,119 @@ def last_value(df: pd.DataFrame, column: str):
     return None if values.empty else values.iloc[-1]
 
 
+def corpus_size(df: pd.DataFrame):
+    """The GSV corpus to measure the backfill against, and whether it had to be taken from an older row.
+
+    last_value skips a BLANK field - a run that crashed before the phase - but 0 is not blank, and 0 is
+    exactly what a degenerate pano-list fetch writes: depth_eligible is len(gsv_panos), so an empty or
+    source-less answer from /adminapi/panos leaves a legitimate-looking `...,0` row. Taken at face value that
+    erased the city's entire depth report on one bad night - the stats line asserted it had no GSV panos, it
+    vanished from the fleet block and its `longest remaining` ranking, and nothing anywhere said why. The
+    impossible state it produces (resolved > eligible) raised no complaint either, because unresolved is
+    floored at 0.
+
+    The test is 0 and nothing else, deliberately. A corpus SHRINKS legitimately as Google retires panos, and
+    it can fall below what the ledger already holds - those panos were resolved when they were still in the
+    corpus. So "smaller than resolved" is not evidence of anything, and a percentage-drop rule would be a
+    threshold with no measurement behind it. 0 is the one value that cannot be a real corpus for a city that
+    has ever reported one, and it is exactly what the observed failure writes.
+
+    A city that genuinely has no GSV panos has never reported one, so it still reports 0 and is not flagged.
+    """
+    values = df["depth_eligible"].dropna()
+    if values.empty:
+        return None, False
+    newest = int(values.iloc[-1])
+    if newest > 0:
+        return newest, False
+    positive = [int(v) for v in values if v > 0]
+    return (positive[-1], True) if positive else (0, False)
+
+
 def depth_progress(df: pd.DataFrame):
     """What the depth backfill looks like for one city, from log.csv alone (#43) - or None when no row carries
     field 19 yet, because nothing below can be computed without the corpus size.
 
     The definition of each figure is the part that matters:
 
-      eligible     the GSV corpus, from the newest row that recorded it (field 19).
-      resolved     depth_total (field 16) of the newest row on which the phase actually RAN: success + failed
-                   + skipped, every pano the ledger accounts for by the end of that run. A row whose five
-                   depth fields are all 0 is not "0 resolved" - that is the shape of a phase that never ran
-                   (a block latch, --skip-depth, an unreadable ledger, streetlevel missing) - and reading it
-                   as zero progress would report a city un-backfilled the morning after one stand-down.
+      eligible     the GSV corpus (field 19), from the newest row that can be true - see corpus_size.
+      resolved     LEDGER-DERIVED: skip + success (fields 15 and 13) of the newest row on which the phase
+                   actually RAN. NOT depth_total, which adds depth_fail - and depth_fail carries TRANSIENT
+                   failures, which are deliberately not ledgered and are re-requested next run (the ledger
+                   semantics in docs/depth.md). Counting them let a city report "depth complete" with panos
+                   that have no artifact and never will, and made the figure run BACKWARDS when a night of
+                   heavy transient failure was followed by a quiet one. The cost is a one-night lag: this
+                   run's `unavailable` verdicts are permanent and ARE ledgered, but the row cannot separate
+                   them from transient ones inside depth_fail, so they only count once the next run reads
+                   them back as skip. A lower bound that converges is the safe direction - it can delay
+                   "complete", never assert it falsely. A row whose five depth fields are all 0 is not
+                   "0 resolved" - that is the shape of a phase that never ran - and reading it as zero
+                   progress would report a city un-backfilled the morning after one stand-down.
       unresolved   eligible - resolved, floored at 0: the corpus can shrink between runs.
-      nightly      requests per NIGHT: success + failed summed per calendar date, averaged over the last
-                   DEPTH_RATE_NIGHTS dates in the log. Per date and not per row, because the queue can run
-                   a city more than once a night (extra passes), and a per-row average would read a re-run
-                   as a halved rate.
-      nights_left  unresolved / nightly, or None when either is 0. Undefined is not zero.
-      quiet_nights how many of the newest dates, counting back, saw no depth request at all.
-      newest_ran   whether the newest row ran the phase (depth_total > 0): the difference between "stood
-                   down" and "ran out of budget" in the stalled rule's message.
+      nightly      requests per CALENDAR night: success + failed summed per date, over the last
+                   DEPTH_RATE_NIGHTS dates ending at the newest one in the log, nights with no row counted
+                   as 0. Not per row (the queue runs a city more than once a night, #43) and not per LOGGED
+                   date (a city only gets a slot on the nights the window reaches it, so averaging the dates
+                   that happen to appear read three runs spread over a month as three consecutive nights -
+                   measured 10x optimistic, and biased against exactly the starved cities the fleet block
+                   exists to surface).
+      nightly_resolved
+                   panos newly resolved per calendar night over the same window. The ETA's denominator has
+                   to be this and not `nightly`: a night of heavy transient failure spends requests and
+                   resolves nothing, and dividing panos by requests reads it as a productive night.
+      nights_left  unresolved / nightly_resolved, or None when either is 0. Undefined is not zero.
+      quiet_nights CALENDAR nights since the newest date that saw a depth request, uncapped. Counting rows
+                   made the alarm's latency scale with how often a city runs - three quarterly rows read as
+                   "the last 3 nights" when it had been 90 days - and printed a row count as a night count.
+      newest_accounted
+                   whether the newest row's phase ACCOUNTED for any pano (depth_total > 0). Deliberately not
+                   called "ran": an unwritable ledger returns (0, 0, skipped, skipped) (gsv.py), so it
+                   accounts for panos without making a request, and a fresh city whose image phase ate the
+                   budget accounts for nothing while having run. The row cannot separate those, so rule 7
+                   names the candidates instead of asserting one.
+      corpus_suspect
+                   whether `eligible` had to be taken from an older row than the newest - see corpus_size.
     """
-    eligible = last_value(df, "depth_eligible")
+    ran = df[df["depth_total"] > 0]  # NaN compares false: a crashed row neither ran nor resolved anything
+    ledgered = ran["depth_skip"].fillna(0) + ran["depth_success"].fillna(0)
+    resolved = int(ledgered.iloc[-1]) if not ran.empty else 0
+
+    eligible, corpus_suspect = corpus_size(df)
     if eligible is None:
         return None
-    eligible = int(eligible)
-
-    ran = df[df["depth_total"] > 0]  # NaN compares false: a crashed row neither ran nor resolved anything
-    resolved = int(ran["depth_total"].iloc[-1]) if not ran.empty else 0
     unresolved = max(eligible - resolved, 0)
 
     requests  = df["depth_success"].fillna(0) + df["depth_fail"].fillna(0)
     per_night = requests.groupby(df["start_time"].dt.normalize()).sum()
-    recent    = per_night.tail(DEPTH_RATE_NIGHTS)
-    nightly   = float(recent.mean()) if len(recent) else 0.0
-    nights_left = unresolved / nightly if unresolved and nightly > 0 else None
+    newest    = per_night.index.max()
+    window    = pd.date_range(end=newest, periods=DEPTH_RATE_NIGHTS, freq="D")
+    recent    = per_night.reindex(window, fill_value=0)
+    nightly   = float(recent.mean())
 
-    quiet_nights = 0
-    for night in reversed(per_night.tolist()):
-        if night > 0:
-            break
-        quiet_nights += 1
+    # The rate the ETA divides by is panos-per-night, measured as what the ledger gained across the window.
+    # Its divisor is the window's own span, so a city three nights into the column is not reported at
+    # three-sevenths of its true rate.
+    span     = min(DEPTH_RATE_NIGHTS, (newest - per_night.index.min()).days + 1)
+    earlier  = ledgered[ran["start_time"] < window[0]]
+    baseline = int(earlier.iloc[-1]) if not earlier.empty else 0
+    nightly_resolved = max(resolved - baseline, 0) / span
+    nights_left = unresolved / nightly_resolved if unresolved and nightly_resolved > 0 else None
+
+    # Calendar nights since the last request, not a count of quiet rows.
+    with_requests = per_night[per_night > 0]
+    quiet_nights = (int((newest - with_requests.index.max()).days) if not with_requests.empty
+                    else int((newest - per_night.index.min()).days) + 1)
 
     return {
         "eligible": eligible,
         "resolved": resolved,
         "unresolved": unresolved,
         "nightly": nightly,
+        "nightly_resolved": nightly_resolved,
         "nights_left": nights_left,
         "quiet_nights": quiet_nights,
-        "newest_ran": bool(df["depth_total"].iloc[-1] > 0),
+        "newest_accounted": bool(df["depth_total"].iloc[-1] > 0),
+        "corpus_suspect": corpus_suspect,
     }
 
 
@@ -456,11 +589,14 @@ def depth_status(progress) -> str:
     pct = 100.0 * progress["resolved"] / progress["eligible"]
     eta = ("no rate, no ETA" if progress["nights_left"] is None
            else f"~{max(1, round(progress['nights_left'])):,} nights left")
+    # Panos per night, not requests per night. Printing the request rate next to a pano-based ETA invited
+    # exactly the arithmetic the ETA no longer does - and on a night of heavy transient failure the two
+    # numbers differ by the whole failure count.
     return (f"depth {progress['resolved']:,}/{progress['eligible']:,} ({pct:.1f}%) · "
-            f"+{progress['nightly']:,.0f}/night · {eta}")
+            f"+{progress['nightly_resolved']:,.0f} panos/night · {eta}")
 
 
-def fleet_depth_summary(progress_by_city: dict) -> list[str]:
+def fleet_depth_summary(progress_by_city: dict, total_cities: int = None) -> list[str]:
     """The fleet-wide backfill block for the end of the report: totals, the rate, and the longest road ahead.
 
     Empty when no city reports a corpus yet, so a fleet that has not deployed the column sees nothing rather
@@ -471,9 +607,11 @@ def fleet_depth_summary(progress_by_city: dict) -> list[str]:
     reporting = {c: p for c, p in progress_by_city.items() if p is not None and p["eligible"] > 0}
     if not reporting:
         return []
+    total_cities = len(progress_by_city) if total_cities is None else total_cities
     eligible  = sum(p["eligible"] for p in reporting.values())
     resolved  = sum(p["resolved"] for p in reporting.values())
     nightly   = sum(p["nightly"] for p in reporting.values())
+    gaining   = sum(p["nightly_resolved"] for p in reporting.values())
     complete  = sum(1 for p in reporting.values() if p["unresolved"] == 0)
     stalled   = sum(1 for p in reporting.values()
                     if p["unresolved"] > 0 and p["quiet_nights"] >= DEPTH_STALLED_NIGHTS)
@@ -481,9 +619,12 @@ def fleet_depth_summary(progress_by_city: dict) -> list[str]:
     longest   = ", ".join(f"{c} ~{max(1, round(n)):,} nights ({reporting[c]['unresolved']:,} left)"
                           for n, c in reversed(with_eta[-3:]))
     lines = [
-        f"  DEPTH BACKFILL — {len(reporting)} of {len(progress_by_city)} cities report a corpus",
+        # The denominator is every city the report covered, not every city that got as far as a corpus. A
+        # city whose log could not be downloaded never reaches this dict, so counting the dict read
+        # "46 of 46 cities report a corpus" at exactly the moment six of them were invisible.
+        f"  DEPTH BACKFILL — {len(reporting)} of {total_cities} cities report a corpus",
         f"  resolved {resolved:,} of {eligible:,} GSV panos ({100.0 * resolved / eligible:.1f}%) · "
-        f"+{nightly:,.0f} requests/night ({DEPTH_RATE_NIGHTS}-night avg) · "
+        f"+{gaining:,.0f} panos/night on +{nightly:,.0f} requests ({DEPTH_RATE_NIGHTS}-night avg) · "
         f"{complete} complete · {stalled} stalled",
     ]
     if longest:
@@ -614,7 +755,7 @@ def main(argv=None) -> int:
             print(f"      {level_icon} [{issue['level']}] {issue['msg']}")
 
     # The fleet's depth backfill, before the summary (#43)
-    fleet = fleet_depth_summary(progress)
+    fleet = fleet_depth_summary(progress, total_cities=len(cities))
     if fleet:
         print(f"\n{'━'*70}")
         for line in fleet:

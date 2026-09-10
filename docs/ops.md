@@ -350,7 +350,7 @@ rows written before then have 18 fields, and the analyzer reads them with the la
 | 16 | depth total processed | sum of fields 13–15 |
 | 17 | depth phase duration | |
 | 18 | total run duration | |
-| 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a run that died in the pano-list fetch, and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting |
+| 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a run that died in the pano-list fetch, and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -388,13 +388,33 @@ show large failure numbers that are entirely normal. The success/failure/unavail
 
 ### Reading the backfill from the row
 
-Field 16 (`depth_total`) is success + failed + skipped: every pano the ledger accounts for by the end of the
-run, i.e. **the cumulative resolved count**, and field 19 is the corpus. So `19 − 16` is the work left, the
-per-night sum of `13 + 14` is the rate, and their quotient is the ETA — which is exactly what the
-[log analyzer](log-analyzer.md#the-depth-backfill) prints per city and for the fleet. One shape to read
-carefully: a row whose five depth fields are all `0` is a phase that **did not run** (the block latch,
-`--skip-depth`, an unwritable ledger, `streetlevel` missing), not a city with nothing resolved. The analyzer
-takes "resolved" from the newest row on which the phase ran.
+**`depth_total` (field 16) is not the resolved count.** It is success + failed + skipped, and `depth_fail`
+carries *transient* failures alongside permanent `unavailable` verdicts — and a transient failure is
+deliberately not ledgered, so those panos are requested again next run. Reading progress from field 16 lets a
+city report `depth complete` while panos have no artifact and never will (the ordinary end-state of a
+backfill: the last stragglers are exactly the ones that keep failing), and makes the figure run **backwards**
+when a heavy-failure night is followed by a quiet one.
+
+What is resolved is what the ledger holds: **`15 + 13`** (skipped, i.e. everything the ledger already
+accounted for at the start of the run, plus this run's saves). That undercounts by this run's `unavailable`
+verdicts — permanent and ledgered, but indistinguishable from transient ones inside field 14 — which arrive
+in the count one night later, when the next run reads them back as skips. It is a lower bound that converges,
+and it can only ever delay "complete", never assert it falsely.
+
+So the work left is `19 − (15 + 13)`, the request rate is the per-night sum of `13 + 14`, and the ETA is the
+work left over the rate at which **panos** (not requests) are being resolved — which is what the
+[log analyzer](log-analyzer.md#the-depth-backfill) prints per city and for the fleet.
+
+Two shapes to read carefully:
+
+- A row whose five depth fields are all `0` is a phase that **accounted for nothing** — `--skip-depth`, a
+  block latch, `streetlevel` missing, a run that crashed before the phase, or a city whose ledger is still
+  empty and whose image phase spent the whole budget. It is not a city with nothing resolved, so the analyzer
+  takes "resolved" from the newest row on which the phase ran.
+- An **unwritable ledger does not write five zeros.** `download_depth_maps` returns
+  `(0, 0, skipped, skipped)` when it cannot open `depth_log.csv`, so the row looks like a phase that reached
+  the ledger and made no requests. The row cannot distinguish that from running out of budget, which is why
+  the analyzer names both candidates instead of asserting one.
 
 ## When the depth phase stands itself down
 

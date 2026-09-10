@@ -25,7 +25,8 @@ so adding a module is a deliberate measure-or-omit decision rather than silently
 Two settings there are load-bearing, and losing either shows up as a *lower number* rather than as an error:
 
 - **`branch = True`** — the gap that motivated the gate was an `if` that only ever went one way (three of the
-  log analyzer's six alert rules never fired while every line around them was green).
+  log analyzer's alert rules never fired while every line around them was green; there were six at the
+  time of that measurement and there are nine now).
 - **`source = ${SIDEWALK_COVERAGE_ROOT-.}`, not `.`** — coverage resolves a relative source against each
   *process's* CWD, and the runner tests spawn subprocesses with `cwd=tmp_path`. That variable, plus
   `COVERAGE_PROCESS_START` and `COVERAGE_FILE`, is set by `tests/conftest.py`'s `pytest_configure`, and only

@@ -66,12 +66,14 @@ to diff against; before then it is the crontab.
 |-------|-----------|
 | 🔴 CRITICAL | Log download failed, or the file is missing/empty/unparseable |
 | 🔴 CRITICAL | Last log entry is more than `--stale-days` days old (default 3) |
-| 🟡 WARNING | `image_fail` growing by ≥20/day (7-day average) — new panos failing |
-| 🟡 WARNING | Zero new images for 30 consecutive days, after a period that had some (regression) |
-| 🟡 WARNING | A recent run took >3× the historical median runtime **outside the depth phase** — depth runs to whatever budget the queue hands it, which varies by design |
+| 🟡 WARNING | `image_fail` growing by ≥20/day (7-night average) — new panos failing. Averaged over calendar **nights**, not rows: the queue's extra passes put more than one row on a night |
+| 🟡 WARNING | Zero new images for 30 consecutive **nights**, after a period that had some (regression) |
+| 🟡 WARNING | A recent **image phase** took >3× the historical median, with the median floored at `LONG_RUN_MIN_MEDIAN` minutes before the multiplier. Read from `image_minutes` directly: a mature city's image phase is a ledger read while depth spends the whole slot, so an unfloored median is 0 and the rule could never fire |
 | 🟡 WARNING | ≥3 of the last 7 runs ended early (blank columns) |
 | 🟡 WARNING | Two runs **overlapped**: one started before the previous one's recorded end — two processes racing on one city's ledgers. Same-day runs alone are not reported; the queue's extra passes produce them by design |
-| 🟡 WARNING | **Depth backfill stalled**: no depth request on the last 3 nights while panos remain unresolved. The message says which shape it saw — five zeros (did not run: block latch, `--skip-depth`, an unwritable ledger) or a phase that ran and asked for nothing (the image phase spent the whole budget) |
+| 🟡 WARNING | **Depth backfill stalled**: no depth request on the last 3 calendar nights while panos remain unresolved. The message names the *candidates* rather than asserting a cause, because the row cannot tell them apart: a phase that accounted for panos but made no requests is either out of budget or unable to write the ledger (which returns `(0, 0, skipped, skipped)`, not five zeros), and a phase that accounted for nothing is `--skip-depth`, a block latch, `streetlevel` missing, a crash before the phase, or a fresh city whose image phase spent the budget |
+| 🟡 WARNING | **The newest GSV corpus size is not believable** — a `0` in field 19, which is what an empty or source-less `/adminapi/panos` answer writes. The backfill is measured against the newest earlier row instead, rather than the city silently dropping out of the report |
+| 🟡 WARNING | **Rows that are not runs** — a field count that is neither 18 nor 19, i.e. a torn or corrupted write. Every count in such a row is shifted, so it otherwise reads as a quiet healthy night |
 
 Thresholds are module constants near the top of `analyze.py`.
 
