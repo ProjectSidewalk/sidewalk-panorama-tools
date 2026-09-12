@@ -145,7 +145,8 @@ def main(argv=None):
     if args.hosts and not args.all or args.dest and not args.all:
         ap.error('--hosts and --dest only apply with --all')
     if args.all:
-        fetch(all_cities(read_hosts(args.hosts) if args.hosts else None), args.dest or DEST_ALL)
+        roster = all_cities(read_hosts(args.hosts)) if args.hosts else all_cities()
+        fetch(roster, args.dest or DEST_ALL)
         return
     fetch(CITIES, DEST)
     fetch(MAPILLARY_CITIES, MAPILLARY_DEST)

@@ -121,3 +121,49 @@ class TestTheMapillaryCorpusKeepsItsOwnDirectory:
         fr.main([])
         for city in fr.MAPILLARY_CITIES:
             assert not os.path.exists(os.path.join(dest, f'{city}.csv')), city
+
+
+class TestPrivateDeploymentsAndReSweeps:
+    """Since 2026-09 the cities API answers `url: null` for private deployments (22 of 59), which the
+    sweep used to turn into a request for 'None/v3/api/rawLabels'. And a post-repair re-sweep must not
+    be answered out of the earlier cache, which the exists-check would otherwise do."""
+
+    @pytest.fixture
+    def cities_api(self, monkeypatch):
+        payload = {'cities': [
+            {'city_id': 'seattle-wa', 'url': 'https://sidewalk-sea.cs.washington.edu'},
+            {'city_id': 'taipei', 'url': None},
+            {'city_id': 'crowdstudy', 'url': None},
+        ]}
+        import json
+
+        def fake_urlopen(url, timeout=None):
+            assert url == fr.CITIES_API
+            return io.BytesIO(json.dumps(payload).encode())
+
+        monkeypatch.setattr(fr.urllib.request, 'urlopen', fake_urlopen)
+
+    def test_a_private_deployment_with_no_host_is_skipped_with_a_warning(self, cities_api, capsys):
+        assert fr.all_cities() == {'seattle-wa': 'https://sidewalk-sea.cs.washington.edu'}
+        err = capsys.readouterr().err
+        assert 'crowdstudy' in err and 'taipei' in err and '--hosts' in err
+
+    def test_hosts_fill_in_the_private_deployments(self, cities_api, tmp_path):
+        hosts = tmp_path / 'hosts.txt'
+        hosts.write_text('# from cityparams.conf\ntaipei https://sidewalk-taipei.cs.washington.edu/\n\n')
+        roster = fr.all_cities(fr.read_hosts(str(hosts)))
+        assert roster == {'seattle-wa': 'https://sidewalk-sea.cs.washington.edu',
+                          'taipei': 'https://sidewalk-taipei.cs.washington.edu'}
+
+    def test_dest_lands_the_sweep_outside_the_before_cache(self, sandbox, tmp_path):
+        dest, dest_all, _, fetched = sandbox
+        fr.main(['--all'])
+        fetched.clear()
+        after = tmp_path / 'rawlabels-all-after'
+        fr.main(['--all', '--dest', str(after)])
+        assert sorted(os.listdir(after)) == ['crowdstudy.csv', 'richmond-va.csv', 'seattle-wa.csv']
+        assert len(fetched) == 3, 'the re-sweep must fetch, not be satisfied by the earlier cache'
+
+    def test_hosts_and_dest_need_all(self, sandbox):
+        with pytest.raises(SystemExit):
+            fr.main(['--hosts', 'x'])
