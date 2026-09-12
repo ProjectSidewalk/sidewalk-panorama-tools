@@ -20,6 +20,16 @@ committed artifact rather than failing:
 
     python reports/scripts/fetch_rawlabels.py            # the GSV corpus + the Mapillary corpus
     python reports/scripts/fetch_rawlabels.py --all      # every deployment, into rawlabels-all/
+
+**Private deployments have no URL in the cities API** (since 2026-09 it answers `"url": null` for
+them — 22 of 59 at the SidewalkWebpage#4842 post-repair sweep, including taipei, zurich, burnaby and
+validation-study, all of which the 2026-08-11 "before" census had measured). `--all` skips those with
+a warning unless `--hosts FILE` supplies their hosts, one `city_id url` pair per line; the pairs come
+from `landing-page-url.prod` in SidewalkWebpage's `conf/cityparams.conf`. `--dest DIR` lands a sweep
+in its own directory, which is how a post-repair "after" sweep is kept from being answered out of the
+"before" cache by the exists-check above.
+
+    python reports/scripts/fetch_rawlabels.py --all --hosts prod-hosts.txt --dest reports/scripts/.cache/rawlabels-all-<date>
 """
 
 import argparse
@@ -63,14 +73,35 @@ DEST_ALL = os.path.join(_CACHE, 'rawlabels-all')
 FETCH_TIMEOUT_SEC = 60
 
 
-def all_cities():
-    """Every deployment from the public cities API (55 at last count), keyed by its city_id —
+def all_cities(hosts=None):
+    """Every deployment from the public cities API (59 at last count), keyed by its city_id —
     the same ids the study-corpus dict uses. The record bug lived in the shared client, so the
-    all-cities sweep is how 'fix it everywhere' gets measured."""
+    all-cities sweep is how 'fix it everywhere' gets measured.
+
+    A private deployment is listed with `url: null`; `hosts` (city_id -> base url) fills those in,
+    and any still without a host is skipped with a warning rather than fetched from 'None/...'."""
     with urllib.request.urlopen(CITIES_API, timeout=30) as r:
         payload = json.load(r)
     cities = payload if isinstance(payload, list) else payload['cities']
-    return {c['city_id']: c['url'] for c in cities}
+    hosts = hosts or {}
+    roster = {c['city_id']: c['url'] or hosts.get(c['city_id']) for c in cities}
+    missing = sorted(k for k, v in roster.items() if not v)
+    if missing:
+        print(f'no url for {len(missing)} private deployment(s), skipped (pass --hosts): '
+              + ', '.join(missing), file=sys.stderr)
+    return {k: v for k, v in roster.items() if v}
+
+
+def read_hosts(path):
+    """`city_id url` pairs, one per line; blank lines and `#` comments ignored."""
+    hosts = {}
+    with open(path) as f:
+        for line in f:
+            line = line.split('#', 1)[0].strip()
+            if line:
+                city, url = line.split()
+                hosts[city] = url.rstrip('/')
+    return hosts
 
 
 def fetch(cities, dest):
@@ -103,9 +134,18 @@ def main(argv=None):
                     help='fetch every deployment from the cities API into .cache/rawlabels-all/ '
                          'instead of the study corpora in .cache/rawlabels/ and '
                          '.cache/rawlabels-mapillary/')
+    ap.add_argument('--hosts', metavar='FILE',
+                    help='with --all: `city_id url` pairs for the private deployments the cities API '
+                         'lists with url=null (from landing-page-url.prod in SidewalkWebpage\'s '
+                         'conf/cityparams.conf)')
+    ap.add_argument('--dest', metavar='DIR',
+                    help='with --all: fetch into this directory instead of .cache/rawlabels-all/ '
+                         '(a re-sweep must not be answered out of the earlier cache)')
     args = ap.parse_args(argv)
+    if args.hosts and not args.all or args.dest and not args.all:
+        ap.error('--hosts and --dest only apply with --all')
     if args.all:
-        fetch(all_cities(), DEST_ALL)
+        fetch(all_cities(read_hosts(args.hosts) if args.hosts else None), args.dest or DEST_ALL)
         return
     fetch(CITIES, DEST)
     fetch(MAPILLARY_CITIES, MAPILLARY_DEST)
