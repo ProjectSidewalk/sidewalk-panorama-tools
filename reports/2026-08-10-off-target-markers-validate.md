@@ -357,6 +357,61 @@ and the roster includes Mapillary deployments, which the census machinery does n
 
 `crowdstudy` stays an open row: re-measure it when it responds, before certifying the rollout.
 
+### 8. After the repair: every deployment re-measured (addendum, 2026-09-12)
+
+SidewalkWebpage#4866 shipped the closed-form repair as evolution 355 (in every release tag from v11.9.0; on
+production since the v11.11.0 deploy, 2026-09-04). This is the Stage 3 gate §7 promised: the same instrument,
+re-run against every deployment on 2026-09-12, with §7 as the "before" column.
+
+| city | in-window (before) | stale before | ≥ 4 px before | ≥ 30 px before | max px before | in-window (after) | stale after | ≥ 4 px after | ≥ 30 px after | max px after |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| chicago-il | 43221 | 7465 | 10.1 | 2.06 | 4333.1 | 43229 | 538 | 0.01 | 0.0 | 17.8 |
+| taipei | 46272 | 6334 | 4.92 | 0.88 | 4641.2 | 46272 | 319 | 0.0 | 0.0 | 2.0 |
+| teaneck-nj | 19734 | 5814 | 16.98 | 2.43 | 1508.0 | 19736 | 464 | 0.0 | 0.0 | 1.9 |
+| seattle-wa | 41354 | 5349 | 4.84 | 1.65 | 4681.7 | 41364 | 767 | 0.0 | 0.0 | 1.7 |
+| new-taipei-tw | 18164 | 2498 | 4.25 | 0.59 | 4456.6 | 18164 | 134 | 0.0 | 0.0 | 1.6 |
+| st-louis-mo | 19989 | 2253 | 7.43 | 4.48 | 718.1 | 20000 | 123 | 0.01 | 0.01 | 43.0 |
+| burnaby | 20668 | 1970 | 6.2 | 3.13 | 2502.6 | 20668 | 108 | 0.0 | 0.0 | 1.6 |
+| validation-study | 7038 | 1678 | 12.7 | 4.58 | 1537.6 | 7038 | 269 | 0.0 | 0.0 | 1.7 |
+| zurich | 8933 | 1518 | 3.32 | 1.67 | 1434.0 | 8933 | 596 | 0.0 | 0.0 | 1.4 |
+| keelung-tw | 7166 | 837 | 3.81 | 0.75 | 4635.5 | 7166 | 25 | 0.0 | 0.0 | 1.6 |
+| cuenca | 14950 | 637 | 2.45 | 1.3 | 4391.2 | 14952 | 14 | 0.01 | 0.0 | 10.3 |
+| columbus-oh | 5256 | 504 | 3.81 | 2.4 | 330.0 | 5256 | 82 | 0.0 | 0.0 | 1.6 |
+| walla-walla-wa | 2049 | 305 | 6.1 | 0.73 | 614.1 | 2049 | 36 | 0.0 | 0.0 | 1.6 |
+| pittsburgh-pa | 4002 | 290 | 3.17 | 0.57 | 738.2 | 4002 | 16 | 0.0 | 0.0 | 1.1 |
+| oradell-nj | 862 | 146 | 9.63 | 5.1 | 470.7 | 865 | 13 | 0.0 | 0.0 | 1.6 |
+| amsterdam | 678 | 144 | 7.37 | 3.54 | 147.5 | 678 | 23 | 0.0 | 0.0 | 1.1 |
+| la-ca | 283 | 88 | 16.61 | 5.3 | 122.6 | 283 | 2 | 0.0 | 0.0 | 1.1 |
+| cdmx | 751 | 49 | 5.06 | 2.93 | 147.7 | 751 | 0 | 0.0 | 0.0 | 0.2 |
+| mendota-il | 103 | 39 | 14.56 | 2.91 | 133.9 | 103 | 8 | 0.0 | 0.0 | 1.1 |
+| spgg | 310 | 26 | 6.77 | 5.16 | 119.6 | 310 | 0 | 0.0 | 0.0 | 0.0 |
+| auckland | 54 | 6 | 7.41 | 0.0 | 27.7 | 54 | 0 | 0.0 | 0.0 | 0.0 |
+| la-piedad-old | 46 | 3 | 6.52 | 6.52 | 63.0 | 46 | 0 | 0.0 | 0.0 | 0.0 |
+| newberg-or | 54 | 1 | 0.0 | 0.0 | 1.5 | 54 | 0 | 0.0 | 0.0 | 0.6 |
+
+**Totals: 261,937 in-window / 37,954 stale (14.49%) before → 261,973 / 3,537 (1.35%) after.** Every one of the 23
+affected cities is measured. The residual is the repair's own floor, not a survivor: the migration repaired records
+that missed by more than 2 px, while this instrument counts a miss at > 1 px, so the 3,537 "stale" rows after are
+the sub-2 px band the repair deliberately left (`max px after` is ≤ 2.0 in 20 of the 23 cities; ≥ 4 px is 0.00% in
+all but three, where it is 0.01%). Nine labels in three cities still render ≥ 4 px off — chicago-il 47288–47292
+(five on one pano, 4–18 px), 27884 (6 px); st-louis-mo 5312 (43 px); cuenca 7451 and 7459 (10 and 4 px, one pano).
+They are listed rather than explained: several share a pano, which is the `camera_heading`-refresh fingerprint, but
+none was examined individually. Per-city numbers:
+[`data/2026-09-12-off-target-markers-all-cities-after.json`](data/2026-09-12-off-target-markers-all-cities-after.json);
+the table is `scripts/off_target_markers_certify.py` over the two JSONs.
+
+**Not measured:** `vancouver-wa` and `washington-dc` (the export stream dropped mid-file on two attempts each; both
+had zero in-window exposure — vancouver-wa in §7, washington-dc not yet a deployment then), `crowdstudy` (no such
+host, as in §7), and `bayonne` / `laurens-ia` (listed by the cities API, not deployed).
+
+**Two instrument updates were needed, both in this repo.** The cities API now answers `url: null` for private
+deployments (22 of 59, including taipei, zurich, burnaby and validation-study), so `fetch_rawlabels.py --all` gained
+`--hosts` (pairs from `landing-page-url.prod` in SidewalkWebpage's `conf/cityparams.conf`) and `--dest` (a re-sweep
+must not be answered out of the "before" cache). And rawLabels changed shape: `time_created` is ISO-8601 now (was
+epoch ms) and `tags` a JSON array (was a bracketed comma-join); `rawlabels.py` loads both, pinned by
+`tests/test_rawlabels_formats.py`. In-window counts moved by up to +11 per city between the fetches (rawLabels is a
+moving target; restored or newly unexcluded labels), which is why the "after" totals do not match "before" exactly.
+
 ## What this hands SidewalkWebpage
 
 1. **A ready repair migration.** The committed repair CSVs are exactly an
