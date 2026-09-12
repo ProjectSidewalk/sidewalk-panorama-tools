@@ -19,6 +19,8 @@ only field that says whether a label's stored point identifies a specific physic
 region that qualifies (see `has_located_referent`).
 """
 
+import json
+
 import pandas as pd
 
 LEGACY_END = pd.Timestamp('2021-01-01', tz='UTC')
@@ -186,21 +188,38 @@ def load_rawlabels(path):
     header = pd.read_csv(path, nrows=0).columns
     columns = STUDY_COLUMNS + [c for c in OPTIONAL_COLUMNS if c in header]
     df = pd.read_csv(path, usecols=columns, dtype=dtypes)
-    df['time_created'] = pd.to_datetime(df['time_created'], unit='ms', utc=True)
+    df['time_created'] = parse_time_created(df['time_created'])
     return add_era(df)
 
 
-def parse_tags(tags):
-    """rawLabels serves `tags` as a bracketed comma-joined string (`[points into traffic,steep]`, or
-    `[]`). Returns one frozenset per row; a blank or missing cell becomes an empty set.
+def parse_time_created(values):
+    """rawLabels served `time_created` as epoch milliseconds through 2026-08 and serves ISO-8601 strings
+    (`2023-02-10T22:30:44.439Z`) since 2026-09; a cache from either era must load, so the unit is chosen
+    from the data rather than assumed."""
+    values = pd.Series(values)
+    if pd.api.types.is_numeric_dtype(values):
+        return pd.to_datetime(values, unit='ms', utc=True)
+    return pd.to_datetime(values, utc=True, format='ISO8601')
 
-    Not a JSON array despite the brackets — the tag text is unquoted, so `json.loads` fails on every
-    non-empty value. Split on commas and strip.
+
+def parse_tags(tags):
+    """rawLabels served `tags` as a bracketed comma-joined string (`[points into traffic,steep]`, or
+    `[]`) through 2026-08 and as a JSON array (`["points into traffic","steep"]`) since 2026-09.
+    Returns one frozenset per row; a blank or missing cell becomes an empty set.
+
+    The legacy form is not JSON despite the brackets — the tag text is unquoted — so it is split on
+    commas; a value `json.loads` accepts as a list is taken as one.
     """
     def one(value):
         if not isinstance(value, str):
             return frozenset()
         inner = value.strip()
+        try:
+            parsed = json.loads(inner)
+            if isinstance(parsed, list):
+                return frozenset(str(t).strip() for t in parsed if str(t).strip())
+        except ValueError:
+            pass
         if inner.startswith('[') and inner.endswith(']'):
             inner = inner[1:-1]
         return frozenset(t.strip() for t in inner.split(',') if t.strip())
