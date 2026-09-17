@@ -338,8 +338,8 @@ as the fresh one, so it roughly doubles peak memory and is meant for a pilot.
 Each run appends **one row of 19 positional comma-separated fields, with no header**, parsed by the
 [log analyzer](log-analyzer.md). Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata
 phase — a stub since Google killed that endpoint in 2022, kept at fixed values purely so the column positions
-never shift. Field 19 was added on 2026-09-09 ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43));
-rows written before then have 18 fields, and the analyzer reads them with the last one blank.
+never shift. Field 19 was added by [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124) (for [#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)); every row written before that
+deployed has 18 fields, and the analyzer reads them with the last one blank.
 
 | # | field | notes |
 |---|-------|-------|
@@ -507,7 +507,8 @@ A mature city settles into: `image_success` small or zero most nights, stable `i
 `image_skip ≈ image_total`. The [log analyzer](log-analyzer.md) encodes the rest of the heuristics, including
 what "stale" and "ended early" mean in practice.
 
-During the depth backfill, add: `depth_total` climbing night over night towards field 19, and `depth_fail`
+During the depth backfill, add: `depth_skip + depth_success` (fields 15 + 13, [what the ledger
+holds](#reading-the-backfill-from-the-row)) climbing night over night towards field 19, and `depth_fail`
 large but *stable* — it counts `unavailable`, which is permanent and expected, so it is not an alert signal.
 The split goes to stdout and `scrape.log`. The analyzer's stats line puts it in one clause:
-`depth 1,753/183,680 (1.0%) · +590/night · ~308 nights left`.
+`depth 1,753/183,680 (1.0%) · +590 panos/night · ~308 nights left`.

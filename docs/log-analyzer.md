@@ -73,7 +73,7 @@ to diff against; before then it is the crontab.
 | 🟡 WARNING | Two runs **overlapped**: one started before the previous one's recorded end — two processes racing on one city's ledgers. Same-day runs alone are not reported; the queue's extra passes produce them by design |
 | 🟡 WARNING | **Depth backfill stalled**: no depth request on the last 3 calendar nights while panos remain unresolved. The message names the *candidates* rather than asserting a cause, because the row cannot tell them apart: a phase that accounted for panos but made no requests is either out of budget or unable to write the ledger (which returns `(0, 0, skipped, skipped)`, not five zeros), and a phase that accounted for nothing is `--skip-depth`, a block latch, `streetlevel` missing, a crash before the phase, or a fresh city whose image phase spent the budget |
 | 🟡 WARNING | **The newest GSV corpus size is not believable** — a `0` in field 19, which is what an empty or source-less `/adminapi/panos` answer writes. The backfill is measured against the newest earlier row instead, rather than the city silently dropping out of the report |
-| 🟡 WARNING | **Rows that are not runs** — a field count that is neither 18 nor 19, i.e. a torn or corrupted write. Every count in such a row is shifted, so it otherwise reads as a quiet healthy night |
+| 🟡 WARNING | **Rows that are not runs** — a field count that is neither 18 nor 19, i.e. a torn or corrupted write. Every count in such a row is shifted, so it is left out of every figure rather than read as a run (a file holding nothing else is CRITICAL, and says so) |
 
 Thresholds are module constants near the top of `analyze.py`.
 
@@ -86,25 +86,33 @@ Every city's stats line carries a depth clause once its `log.csv` has a row with
 ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)):
 
 ```
-depth 1,753/183,680 (1.0%) · +590/night · ~308 nights left
+depth 1,753/183,680 (1.0%) · +590 panos/night · ~308 nights left
 depth complete (2,709)
 depth not started (0/5,381)
 ```
 
-and the report ends with the fleet's block — resolved out of eligible, the summed nightly request rate, how
-many cities are complete or stalled, and the three cities with the longest road ahead. That last line is the
-operational number: the fleet finishes when its slowest city does, and a fleet *average* (the 47-night
-estimate that sized the current slots) hid a tail more than ten times longer.
+and the report ends with the fleet's block — resolved out of eligible, panos resolved and requests made per
+night, how many cities are complete or stalled, and the three cities with the longest road ahead. That last
+line is the operational number: the fleet finishes when its slowest city does, and a fleet *average* (the
+47-night estimate that sized the current slots) hid a tail more than ten times longer.
 
-How the figures are defined, since each definition is a trap the other way:
+How the figures are defined, since each definition is a trap the other way (the row-level reasoning is in
+[ops.md](ops.md#reading-the-backfill-from-the-row)):
 
-* **resolved** is `depth_total` (field 16) of the newest row on which the phase actually ran — success +
-  failed + skipped, everything the ledger accounts for. A row whose five depth fields are all zero is a phase
-  that did not run, not a city with nothing resolved.
-* **rate** is requests (`depth_success + depth_fail`) summed **per night**, averaged over the last 7 nights in
-  the log. Per night, not per row: the [queue](downloader.md#nightly-deployment) can run a city more than
-  once a night, and a per-row average would halve on every re-run.
-* **ETA** is unresolved ÷ rate, and is simply absent when either is zero. Undefined is not zero.
+* **resolved** is what the ledger holds: `depth_skip + depth_success` (fields 15 + 13) of the newest row on
+  which the phase actually ran. **Not** `depth_total` (field 16): that adds `depth_fail`, which carries
+  transient failures that are re-requested next run, and counting them let a city report `depth complete`
+  with panos that will never have depth. A row whose five depth fields are all zero is a phase that did not
+  run, not a city with nothing resolved.
+* **rate** — both of them — is per **calendar night**, over the last 7 nights ending at the newest row, a
+  night with no row counting as 0 and the divisor being the nights the log actually covers (so a city two
+  nights into its log is measured over two nights, for panos *and* for requests). Per night, not per row:
+  the [queue](downloader.md#nightly-deployment) can run a city more than once a night, and a per-row average
+  would halve on every re-run. Not per *logged* night either: a city the window did not reach writes no row,
+  and averaging the dates that happen to appear read three runs spread over a month as three nights.
+* **ETA** is unresolved ÷ panos resolved per night — panos over panos, never panos over requests, because a
+  night of heavy transient failure spends requests and resolves nothing — and is simply absent when either is
+  zero. Undefined is not zero.
 
 ## Two things about the parsing
 

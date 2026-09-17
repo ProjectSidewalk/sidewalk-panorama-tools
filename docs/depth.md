@@ -223,7 +223,7 @@ fan-out — and on top of that:
 * **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent,
   expected, non-actionable outcome — so the first backfill runs show large failure numbers that are entirely
   normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; the row has no
-  separate column for it. What the row does carry, since 2026-09-09, is the **corpus size** (field 19), so
+  separate column for it. What the row does carry, since [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124), is the **corpus size** (field 19), so
   the [log analyzer](log-analyzer.md#the-depth-backfill) can report how far along each city is and when it
   will finish.
 * **Storage or ledger write failures** (a full or unmounted store) are treated as transient per-pano failures
