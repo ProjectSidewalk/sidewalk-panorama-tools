@@ -210,7 +210,10 @@ fan-out — and on top of that:
     cannot take the lock still does all of its work — it just opens at `depth_start_interval` and
     remembers nothing, which is the pre-2026-09-09 behaviour, and says so with a `WARNING` on stdout.
     Without it, two overlapping processes would both open at the floor and double the rate Google sees at
-    precisely the moment the "one city at a time" assumption is violated.
+    precisely the moment the "one city at a time" assumption is violated. One edge is left open on purpose:
+    a locked-out phase that Google then refuses writes the block latch (which stands the whole host down)
+    but cannot forfeit the holder's standing. The holder is asking from the same address and meets the same
+    refusal, so it forfeits for itself.
 * **A refusal is remembered across runs — the block latch.** Standing down for the *run* is not enough when
   the fleet is 52 cities through one queue: each would rediscover a live block with fresh requests aimed at
   the endpoint that just refused us, which is how a soft refusal is escalated into a ban that stops the image
