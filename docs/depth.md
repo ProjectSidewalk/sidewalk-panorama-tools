@@ -171,8 +171,49 @@ fan-out — and on top of that:
     of pacing rather than only stopping at the point of refusal.
   * **Setting the floor to 0 disables the throttle, not the reaction.** A back-off from 0 would stay 0, so a
     push-back always lands on at least `DEPTH_PACE_MIN_BACKOFF` (1 s).
-  * **The throttle is per-process.** That is safe only because `scrape_queue.py` runs one city at a time;
-    going back to concurrent per-city cron lines would multiply the rate Google sees by however many overlap.
+  * **Back-offs are per-process; earned speed is per-host.** Every city is its own process, and a fresh
+    pacer opens at `depth_start_interval`. Since 2026-09-09 the interval and clean streak a run *earns* are
+    written to local disk (`--depth-pace-state` overrides the default, which sits beside the **default**
+    block latch — moving the latch with `--depth-block-latch` does not move this file, so a host that needs
+    both off `/tmp` passes both flags) and the next run on the host opens there — never slower than the
+    opening interval, never faster than the floor, and clamped to the current config so a raised floor wins
+    over old evidence. A file older than a day, unparseable, non-numeric or `NaN` is ignored, as is one
+    nothing can parse at all — every doubt resolves towards *careful*, the opposite direction from the
+    latch and for the same reason.
+  * **Only Google forfeits the standing.** A back-off is deliberately not carried across runs, and neither
+    is the *reason* for one unless Google itself supplied it. This is the block latch's rule — *"only a
+    blocked stop latches; the breaker counts storage failures, and a full disk is not Google"* — applied
+    to the pacer, not a second convention. `on_pushback` is also fed by the phase's network arm (a DNS blip,
+    one connection reset, a non-JSON body) and by its unexpected arm, which catches the `DepthPayloadError`
+    raised for a pano carrying depth but no planes. Each of those slows *this* run down, which is right and
+    cheap, and leaves the host's file alone: candidates are shuffled, so one malformed pano in 1.43 M is met
+    at random, and forfeiting there would hand the next 51 cities a 1.0 s opening interval — seven decay
+    steps, about 2.4 twelve-minute slots, to earn back. A push-back **status**, a retry history that **holds one**, or an
+    outright refusal does forfeit it, at once. A retry history made of connect or read errors — a DNS
+    lookup on the box that failed and then succeeded, one reset, a read timeout — is the box's evidence,
+    not Google's: it backs *this* run off and leaves the file alone, exactly as the same error does when it
+    exhausts every retry and reaches the phase's network arm.
+  * **The standing is what was *earned*, not the live gap.** The two are different numbers: a local back-off
+    widens the gap without touching the standing, and the decay steps that walk it back are re-earning
+    ground the host already held rather than new evidence. The clean streak rides with the interval it was
+    earned at — persist one without the other and 190 observations Google gave at 2 s spacing would
+    justify a speed-up at 1 s.
+  * **Zero requests is zero evidence.** A phase that made no requests — a Mapillary-only city, a
+    fully-backfilled one, a run whose image phase already spent `--max-runtime` — writes nothing at all,
+    not even a fresh timestamp. Otherwise 52 nightly no-ops would keep refreshing a freshness window that
+    then never expires. The write runs on the way out of the phase *however* it ends — a run the queue
+    stops with SIGTERM, or an operator's Ctrl-C on a manual backfill, keeps the streak it had built up,
+    since the decay steps are already on disk the moment they are earned.
+  * **One process at a time spends it.** The phase holds an advisory lock (`<state file>.lock`) for its
+    whole duration. `scrape_queue.py` serialises the fleet, but its lock guards the *queue*, not this host's
+    depth rate, and a manual backfill alongside the nightly window is a documented workflow. A phase that
+    cannot take the lock still does all of its work — it just opens at `depth_start_interval` and
+    remembers nothing, which is the pre-2026-09-09 behaviour, and says so with a `WARNING` on stdout.
+    Without it, two overlapping processes would both open at the floor and double the rate Google sees at
+    precisely the moment the "one city at a time" assumption is violated. One edge is left open on purpose:
+    a locked-out phase that Google then refuses writes the block latch (which stands the whole host down)
+    but cannot forfeit the holder's standing. The holder is asking from the same address and meets the same
+    refusal, so it forfeits for itself.
 * **A refusal is remembered across runs — the block latch.** Standing down for the *run* is not enough when
   the fleet is 52 cities through one queue: each would rediscover a live block with fresh requests aimed at
   the endpoint that just refused us, which is how a soft refusal is escalated into a ban that stops the image
@@ -186,14 +227,15 @@ fan-out — and on top of that:
   * **Every ambiguous latch resolves towards scraping.** Missing, unparseable, or dated implausibly far in the
     future all mean "not blocked" — a latch nobody can read must never be able to stand the whole fleet's
     depth phase down indefinitely.
-* **Sizing, and the thing that actually decides it.** A photometa request measures **0.077 s median** from
+* **Sizing, and the thing that actually decided it.** A photometa request measures **0.077 s median** from
   the production box, so the raw request cost of the 1,433,104-pano corpus is nothing like the "inherently
   multi-month job" this page used to claim — and that claim was the stated reason for leaving pacing off.
-  But **the floor is not what sets the backfill's length**, because the pacer is per-process and every city
-  run starts a fresh one. Ramping 1.0 s down to 0.25 s takes seven decay steps — **1,400 requests, about 20
-  minutes of continuous depth work** — so a city whose slot is shorter than that never reaches the floor,
-  and the fleet's effective rate sits nearer `depth_start_interval` than the floor. Sizing the whole 52-city
-  ring at one city at a time:
+  What set the backfill's length in its first three nights (2026-09-06 to 09-08) was the **ramp**: every
+  city run started a fresh pacer at 1.0 s, reaching the 0.25 s floor takes seven decay steps — **1,400 clean
+  requests, about 20 minutes** — and no 12-minute slot got there, so a city that used its whole slot made a
+  median of **585.5** requests at **1.23 s** each (`reports/2026-09-09-depth-backfill-first-nights.md`, which
+  lands with [#126](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/126)). That is the
+  regime this table describes:
 
   | per-city slot | window for all 52 | requests/city | requests/night | nights for 1.43 M |
   |---|---:|---:|---:|---:|
@@ -201,14 +243,17 @@ fan-out — and on top of that:
   | 12 min | 10.4 h | 588 | 30,576 | 47 |
   | 15 min | 13.0 h | 824 | 42,848 | 33 |
 
-  Longer slots win disproportionately because the ramp amortises, but a 15-minute slot needs 13 hours, which
-  puts the fleet back into the working day that [#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)
-  moved it out of. **This is an operational trade, not a default**, and it is cheap to get wrong slowly:
-  panorama retirement was measured at ~0.3% of survivors per 28 days
-  ([2026-09-06 decay report](../reports/2026-09-06-photometa-decay.md)), so an extra month of backfill costs
-  about a third of a percent of the depth still reachable. If the ramp ever becomes the binding cost, the fix
-  is to persist the learned interval across runs the way the block latch persists a refusal — at the floor
-  with no ramp, a 12-minute slot would be ~14 nights rather than 47.
+  The last column is a fleet *average*, and it hid the number that matters: the fleet finishes when its
+  slowest city does, and at its own 582 a night chicago-il (269,581 unresolved) was 463 nights out,
+  kaohsiung-tw 350, seattle-wa 307 (the same report). So the ramp *was* the binding cost, and this page's
+  old advice applies: the pacer now
+  persists what it earns across runs the way the latch persists a refusal (the bullet above). At the floor
+  from the first request, a 12-minute slot is ~1,900 requests rather than ~586, and the per-city ETAs above
+  divide by about three. What remains is the slot itself — the queue's window is spent on a fixed 12 minutes
+  per city whether or not the city has work — and that is the queue's problem to solve, not the pacer's.
+  Either way it is cheap to get wrong slowly: panorama retirement was measured at ~0.3% of survivors per
+  28 days ([2026-09-06 decay report](../reports/2026-09-06-photometa-decay.md)), so a month of backfill
+  costs about a third of a percent of the depth still reachable.
 
 ## Ops notes specific to depth
 
@@ -222,8 +267,10 @@ fan-out — and on top of that:
   anything behind it.
 * **The depth failure count in `log.csv` is not an alert signal.** It includes `unavailable` — a permanent,
   expected, non-actionable outcome — so the first backfill runs show large failure numbers that are entirely
-  normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; `log.csv` keeps its
-  18-column positional shape, so there was no room for a separate column.
+  normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; the row has no
+  separate column for it. What the row does carry, since [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124), is the **corpus size** (field 19), so
+  the [log analyzer](log-analyzer.md#the-depth-backfill) can report how far along each city is and when it
+  will finish.
 * **Storage or ledger write failures** (a full or unmounted store) are treated as transient per-pano failures
   and retried next run — the phase deliberately never lets them escape.
 

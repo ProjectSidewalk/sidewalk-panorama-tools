@@ -6,9 +6,14 @@ import argparse
 import csv
 import json
 import math
+import os
+import sys
 import time
 
 from streetlevel import streetview
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from refetch_pilot import RERENDERED_HORIZON_MAE  # noqa: E402
 
 
 def main():
@@ -29,7 +34,7 @@ def main():
     out = []
     for i, pid in enumerate(ids):
         rec = {'pano_id': pid, 'pilot_horizon_mae': pilot.get(pid),
-               'rerendered': pilot.get(pid) is not None and pilot[pid] > 3.0}
+               'rerendered': pilot.get(pid) is not None and pilot[pid] > RERENDERED_HORIZON_MAE}
         try:
             pano = streetview.find_panorama_by_id(pid, download_depth=False)
             if pano is None:
@@ -49,8 +54,10 @@ def main():
         out.append(rec)
         print(i + 1, pid, rec.get('capture_date'), rec.get('found'), rec.get('error', ''), flush=True)
         time.sleep(a.interval)
-    with open(a.write, 'w') as f:
-        json.dump(out, f, indent=1)
+    # allow_nan=False and LF newlines, as every other study writer: a NaN token would be unreadable outside
+    # Python, and a committed artifact should be byte-identical whichever platform regenerated it.
+    with open(a.write, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(out, f, indent=1, allow_nan=False)
 
 
 if __name__ == '__main__':

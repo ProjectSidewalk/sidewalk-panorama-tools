@@ -37,13 +37,19 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.insert(0, REPO_ROOT)
 
 from downloaders.common import jpeg_dimensions          # noqa: E402  (after the sys.path bootstrap)
+# The downloader's own rule, imported rather than restated. Pinning the CONSTANT in two files did not stop
+# the two from drifting - the downloader's comparison became tolerant (`"360"`, a Decimal, a stitched
+# 359.9997) while this script kept an exact `== 360`, inside the same PR the pin was watching, because the
+# constant matched the whole time (2026-09-10 review). Same doctrine as studyfmt: one definition, no local
+# copies. This script's arms then describe what the scraper will actually do with the bbox, which is the
+# only reason the composition was worth measuring.
+from downloaders.panoramax import is_panoramic_field_of_view    # noqa: E402
 from studyfmt import display_path, fmt, num             # noqa: E402
 
 CATALOG_API_BASE = 'https://api.panoramax.xyz/api'
 # Bayonne. Wide enough to include the whole commune and the contributor tracks that run through it, which
 # is the point: the flat/360 mix is a property of the AREA a city covers, not of a curated collection.
 BAYONNE_BBOX = '-1.52,43.45,-1.42,43.52'
-PANORAMIC_FIELD_OF_VIEW_DEG = 360
 # A syntactically valid UUID chosen to be absent. v4 with an all-zero body: the catalog has to answer it
 # the same way it answers a real id it has never held, and it can never collide with a real picture.
 ABSENT_UUID = '00000000-0000-4000-8000-000000000000'
@@ -126,8 +132,12 @@ def classify(features):
     the pixels can be treated as equirectangular - and a downloader can read it per picture without
     knowing anything about who contributed what.
     """
-    panoramic = [f for f in features if field_of_view(f) == PANORAMIC_FIELD_OF_VIEW_DEG]
-    other = [f for f in features if field_of_view(f) != PANORAMIC_FIELD_OF_VIEW_DEG]
+    # An item that STATES no fov lands in `other` here while the downloader would still fetch it -
+    # deliberate, and the one place the two rules differ: this script classifies the catalog's
+    # declarations, and the downloader refuses only an affirmation (declared_field_of_view says why).
+    # Nothing in the Bayonne bbox was undeclared when this was measured.
+    panoramic = [f for f in features if is_panoramic_field_of_view(field_of_view(f))]
+    other = [f for f in features if not is_panoramic_field_of_view(field_of_view(f))]
 
     def arm(items):
         return {
@@ -155,7 +165,7 @@ def dimension_agreement(features):
     """
     agree, disagree, missing, sizes, examples = 0, 0, 0, collections.Counter(), []
     for f in features:
-        if field_of_view(f) != PANORAMIC_FIELD_OF_VIEW_DEG:
+        if not is_panoramic_field_of_view(field_of_view(f)):
             continue
         sensor, matrix = sensor_dims(f), tile_matrix_dims(f)
         if matrix is not None:
@@ -211,7 +221,7 @@ def probe_hd_headers(features, per_size=3, timeout=180):
     by_size, checks = collections.defaultdict(list), []
     for f in features:
         matrix = tile_matrix_dims(f)
-        if field_of_view(f) == PANORAMIC_FIELD_OF_VIEW_DEG and matrix is not None:
+        if is_panoramic_field_of_view(field_of_view(f)) and matrix is not None:
             by_size[matrix].append(f)
     for size, items in sorted(by_size.items()):
         for item in items[:per_size]:
@@ -265,7 +275,7 @@ def main(argv=None):
         print('No pictures returned for bbox %s — nothing to measure.' % args.bbox)
         return 1
 
-    panoramic = next((f for f in features if field_of_view(f) == PANORAMIC_FIELD_OF_VIEW_DEG), None)
+    panoramic = next((f for f in features if is_panoramic_field_of_view(field_of_view(f))), None)
     result = study(
         features,
         probe_id_resolution(panoramic['id']) if panoramic else None,

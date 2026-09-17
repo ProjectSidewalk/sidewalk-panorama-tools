@@ -66,9 +66,11 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--all-panos` | Download **images** for panos users visited but never labeled. Does not affect depth, which always covers every pano. |
 | `--skip-depth` | Skip the depth phase (it is on by default). |
 | `--max-runtime MINUTES` | Stop *starting* new downloads and requests after this much wall time. Sized to the nightly cron slot ([#38](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/38)). |
-| `--min-depth-runtime MINUTES` | Reserve the tail of `--max-runtime` for depth when depth has unresolved work. Default `0`; **production should pass `60`**. |
+| `--min-depth-runtime MINUTES` | Reserve the tail of `--max-runtime` for depth when depth has unresolved work — a *share* of the budget, so size it against the slot, not the night. Default `0`; the production line passes `6` of its 12-minute `--city-max-runtime` (below), and must stay below it or no images are downloaded. |
 | `--max-depth-requests N` | Stop the depth phase after N metadata requests. Useful for throttling the initial backfill. |
 | `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
+| `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back **from Google** or a refusal resets it, a local failure does not, a phase that made no requests writes nothing, and a day-old file is ignored. The phase holds `<PATH>.lock` while it runs, so a second concurrent phase paces itself from scratch. Defaults to a file beside the *default* block latch; `--depth-block-latch` does not move it. |
+| `--run-summary-file PATH` | Write a small JSON object (`image_stop`, `depth_stop`) naming what stopped each phase. `scrape_queue` passes this and reads it back to decide which cities still have work; nothing else reads it, and without the flag nothing is written. No default, deliberately — a default path would write into whatever CWD cron started in. |
 
 Budgets are measured with `time.monotonic()`, never the wall clock, so an NTP step or a DST transition cannot
 stretch or shrink a run.
@@ -97,7 +99,11 @@ Three consequences worth knowing:
 ## Nightly deployment
 
 The fleet runs as **one queue, from one crontab line**, pinned to one named timezone. `scrape_queue.py` walks
-a manifest of cities and starts the next one as soon as the previous one exits.
+a manifest of cities and starts the next one as soon as the previous one exits — and then, while the window
+has a slot left, runs the cities that ran out of budget again ([extra passes](#extra-passes)).
+
+The line in production since 2026-09-06 (depth on; 52 cities × 12 minutes inside an 11.5-hour window that
+ends 06:30 Pacific):
 
 ```cron
 # Vixie/Debian cron reads CRON_TZ; a systemd timer takes Timezone= instead. Without it the schedule is UTC
@@ -106,12 +112,15 @@ CRON_TZ=America/Los_Angeles
 SHELL=/bin/bash
 BASH_ENV=/home/ubuntu/.scraper.env
 
-0 20 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
+0 19 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
-              --max-runtime 540 --city-max-runtime 240 \
-              -- --all-panos --skip-depth
+              --max-runtime 690 --city-max-runtime 12 \
+              -- --all-panos --min-depth-runtime 6
 ```
+
+`--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
+images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the `--`.
 
 **Why a queue rather than 53 slots**
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The old shape was one line
@@ -166,6 +175,7 @@ To generate it from the per-city crontab it replaces:
 | `--city-max-runtime` | Passed to each city as `DownloadRunner`'s own `--max-runtime`, then hard-killed `--kill-grace` minutes later (default 5). **Always set it** — without it one hung city holds the whole queue open, which is the head-of-line cost of serialising. |
 | `--only CITY_ID` | Re-run one city through the same machinery — the lock, the budgets, the summary — rather than by hand. Repeatable. |
 | `--no-rotate` | Keep manifest order. By default the starting point rotates daily, so a night that truncates does not always drop the same tail cities. |
+| `--single-pass` | Run every city once and leave the rest of the window unused — today's behaviour before [extra passes](#extra-passes). `--only` implies it. |
 | `--dry-run` | Print the order and the exact command per city. Takes no lock, so it is safe to run while the queue is running. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
@@ -174,6 +184,73 @@ something failed, timed out, **or was never reached**, `2` usage, `3` another qu
 the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53 cities a night
 is the silent failure this design exists to surface. If a night's truncation is expected and accepted, the
 window is the wrong size.
+
+### Extra passes
+
+Pass 1 gives every city its guaranteed slot, `--city-max-runtime`, in the night's rotated order: that is the
+head-of-line guarantee, and it is unchanged. Then, **while a full slot of the window remains, the cities whose
+previous run stopped on its budget are run again**, each with the larger of a slot and an equal share of what
+is left, recomputed as each one starts; passes repeat until a slot no longer fits or nobody hit their budget.
+
+Why ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43),
+[report](../reports/2026-09-09-depth-backfill-first-nights.md)): three nights into the depth backfill the queue
+was using 477 of its 690 minutes. Thirteen small cities were already complete and exited in seconds, giving
+nothing back, while every city with a backlog was capped at 12 minutes whether it had 400 panos left or
+270,000 — so the five largest cities were 240–463 nights out while a third of every night went unused, and the
+share grew every night a small city finished. Spending the window on whoever still has work is what "size the
+window to the night, not the work" was always supposed to mean.
+
+Three rules that are load-bearing:
+
+* **Who has work is read from what the runner reported, not from how long the queue watched it.** The queue
+  passes each city a `--run-summary-file`; `DownloadRunner` writes what stopped each phase, and a phase that
+  stopped on `max-runtime` — either phase — is one that would have kept going. Only an `ok` run qualifies: a
+  crash says nothing about work left and re-running it is a crash loop; a timed-out city was killed past its
+  budget and would be killed again. Nothing crosses nights and nothing reads the store.
+
+  Timing the subprocess instead is wrong in **both** directions, because the queue measures from spawn to
+  exit while the runner's budget clock starts only after its pano-list fetch. A *complete* city whose
+  `/adminapi/panos` prologue outlasts its 12-minute slot exits having downloaded nothing and still measures
+  over budget — so it was re-run in every pass of every night, forever. And with the production
+  `--min-depth-runtime 6`, a city whose image phase stopped on its reserved 6-minute share while depth then
+  exhausted its own list exits at minute ~6.4 of 12 — so the city that most needed the leftover window was
+  the one denied it.
+
+  The other depth stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
+  collapsed into "stopped early": `blocked` means the host is standing down for six hours and a re-run would
+  spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again, and
+  `max-requests` is a per-process cap the operator asked for, which re-running would silently multiply. If no
+  summary arrives at all the queue falls back to the old elapsed-time rule, which is at least a *necessary*
+  condition. That case is narrower than it sounds: a `DownloadRunner` from before the flag existed does not
+  quietly write nothing, it refuses the unrecognised argument and exits 2, so a queue newer than its runner
+  books every city `FAILED (exit 2)` and re-runs none of them; and a runner killed mid-run exits nonzero,
+  which is never re-run either. What actually reaches the fallback is an `ok` run whose summary could not be
+  written (the runner warns on stdout) or one where an operator's own `--run-summary-file` after `--` won.
+* **The share is never below a slot, and the depth reservation moves with it.** 213 minutes over 39 working
+  cities is 5.5 each, below the production line's `--min-depth-runtime`, which would zero every image phase
+  and mail a warning per city; and a fraction of a minute can kill a city inside its pano-list fetch. So
+  `--city-max-runtime` is both the pass-1 guarantee and the floor under every later share, and extra passes
+  need both it and `--max-runtime`.
+
+  Symmetrically at the top end: `--min-depth-runtime` is a *share* of `--max-runtime`, so the queue scales it
+  by the same factor it enlarges the budget by. Passing it through unchanged would hand a 120-minute endgame
+  slot 114 minutes of image phase and leave depth the same 6 it had in pass 1 — the opposite of what these
+  passes exist for. It is only ever scaled up, never down: pass 1's last city can be clamped *below* the slot
+  by what is left of the window, and enlarging the reservation towards a smaller budget is how you get a run
+  that downloads no images at all.
+* **A later pass never reports a city as "not reached".** That alarm belongs to pass 1: a fleet whose
+  guaranteed slots do not fit its window is not completing. Running out of window in pass 3 is the design
+  working. A crash in a later pass still fails the night, because a crash is a crash.
+
+What it looks like: the queue log gets `pass 2 starting: 17 cities still had work, 213.0 min of window
+left`, and the summary a line per pass — `pass 2: 17 cities re-run in 204.0 min - chicago-il 12.0, …`. The
+"N/M cities ok" figure counts pass 1 only, one per city.
+
+**A city re-run in a night writes one `log.csv` row per run**, which the [analyzer](log-analyzer.md) does
+not yet expect: its "Multiple runs logged on the same calendar day" rule fires at INFO for every re-run
+city, and its 30-*row* recent window covers about ten days once a city writes three rows a night. Both are
+addressed in #124; until that lands, read those INFO lines as the extra passes working rather than as
+something wrong.
 
 **One queue at a time.** The queue takes an advisory lock (default: the system temp directory, *not* the store
 — the store is a network mount whose lock semantics are not guaranteed, and the overlap being prevented is
@@ -432,13 +509,13 @@ Ids are UUIDs, so a Panoramax city shards over at most 256 `<pano_id[:2]>` direc
 
 | Answer | Why it is a property of the picture |
 |---|---|
-| `404` at `/api/pictures/<id>` | The catalog does not have it. Measured 2026-09-08: `{"status": 404, "message": "Feature not found"}`. Unlike Mapillary's 404 the body is not read — there is no token, so there is no "we are not allowed to see it" state to confuse with "it is not there" |
+| `404` at `/api/pictures/<id>` **carrying the catalog's own body** | The catalog does not have it. Measured 2026-09-08: `{"status": 404, "message": "Feature not found"}`, and both fields are required. Unlike Mapillary's 404 the body is not read for an auth signature — there is no token, so there is no "we are not allowed to see it" state to confuse with "it is not there" — but it is read for the affirmation itself, because the status alone does not say the *catalog* answered. `{"message": "Not Found"}` is what AWS API Gateway's HTTP API answers an unknown route with, and the usual shape of a hand-written JSON 404 |
 | An item whose `field_of_view` is not `360` | It is a flat photograph, and this scraper stores equirectangular panoramas — see below |
-| An item with no `hd` asset | The catalog affirms the picture and publishes no full-resolution pixels for it |
+| An item with no `hd` asset | The catalog affirms the picture, lists its renditions, and `hd` is not among them. Only a well-formed, **non-empty** assets block that does not offer `hd` — an empty block, or an `hd` entry whose href is missing, null or empty, is the catalog changing shape, and raises. Every picture measured in the Bayonne bbox carries `hd`, `sd` and `thumb` |
 
-Everything else raises and is retried next run: any other status, a body that is not the item asked for, an
-error envelope on a `200`, an `hd` href that is not an absolute `https://` URL, and a `200` whose body is not
-a JPEG.
+Everything else raises and is retried next run: any other status, a 404 without the catalog's own body, a
+body that is not the item asked for, an error envelope on a `200`, an empty assets block, an `hd` href that
+is missing, null, empty or not an absolute `https://` URL, and a `200` whose body is not a JPEG.
 
 **Why the projection guard exists.** Panoramax is a commons, not a fleet: anyone can contribute, so a city's
 bounding box carries other people's pictures too. Measured over 1,000 pictures in the Bayonne bbox
@@ -462,7 +539,7 @@ carrying it beside the crops is [#111](https://github.com/ProjectSidewalk/sidewa
 | `thread_count` | Tile fan-out for the image phase (default 8). This is I/O-bound async work, so higher is faster up to your network's limit — test on your own connection. |
 | `headers_list` | Real request headers, one picked at random per request. Add to it, edit it, or leave it. |
 | `proxies` | Set to the `http://`/`https://` sentinel values to disable; otherwise fill in proxy details. |
-| `depth_min_request_interval` | Floor (with jitter) on the gap between depth metadata requests; `0` disables. Leave it at `0` unless a canary run shows Google pushing back — see [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
+| `depth_min_request_interval` | The **floor** on the gap between depth metadata requests (default `0.25` s) — the one setting that decides how aggressive this host can ever get, since nothing draws a shorter gap. A run opens at `depth_start_interval` (`1.0` s), or wherever the last run on the host earned its way down to, and decays towards the floor only on sustained clean requests; `depth_max_request_interval` (`30` s) caps the back-off. `0` disables the throttle but not the reaction to push-back. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
 
 ## Related
 

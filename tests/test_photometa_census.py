@@ -218,6 +218,61 @@ class TestResummarize:
         assert 'NaN' not in text
         assert json.loads(text)['records'][0]['error'] is None
 
+    def _refetch_pair(self, tmp_path):
+        """A prior census and a re-fetch of it, side by side, the way the committed pair sits."""
+        import json
+        prior = tmp_path / '2026-08-09-census.json'
+        prior.write_text(json.dumps({'source': 's', 'seed': 1, 'summary': {}, 'records': [
+            _rec('a'), _rec('b')]}), encoding='utf-8')
+        after = tmp_path / '2026-09-06-census.json'
+        moved = _rec('a')
+        moved['pitch_deg'] = 1.3
+        after.write_text(json.dumps({'source': 's', 'seed': 1, 'refetch_of': prior.name,
+                                     'since_days': 28, 'summary': {},
+                                     'decay': {'stale': True},
+                                     'records': [moved, _rec('b')]}), encoding='utf-8')
+        return prior, after
+
+    def test_a_refetch_census_gets_its_decay_block_recomputed_against_the_prior_beside_it(self, tmp_path):
+        """`pose_drift` was added after the 2026-09-06 re-fetch ran, so the committed artifact carried no
+        such block and the report's numbers lived only in a test fixture. The offline path is how a new
+        reducer reaches a committed re-fetch without a second network pass - the same reason it exists
+        for the summary."""
+        import json
+        prior, after = self._refetch_pair(tmp_path)
+
+        out = pc.resummarize(str(after))
+
+        assert 'stale' not in out['decay']
+        assert out['decay']['pose_drift']['n_drifted_any_axis'] == 1
+        assert json.loads(after.read_text(encoding='utf-8'))['decay']['pose_drift']['n'] == 2
+
+    def test_it_leaves_the_prior_untouched(self, tmp_path):
+        """The prior is the manifest every later re-fetch replays; regenerating the follow-up must never
+        write to it."""
+        prior, after = self._refetch_pair(tmp_path)
+        before = prior.read_bytes()
+
+        pc.resummarize(str(after))
+
+        assert prior.read_bytes() == before
+
+    def test_a_first_census_has_no_decay_to_recompute(self, tmp_path):
+        p = self.census_file(tmp_path, self.records())
+
+        out = pc.resummarize(str(p))
+
+        assert 'decay' not in out
+
+    def test_the_cli_prints_the_recomputed_decay(self, tmp_path, capsys):
+        """The command in the report's Reproduce block has to show the numbers it claims to reproduce."""
+        prior, after = self._refetch_pair(tmp_path)
+
+        pc.main(['--resummarize', str(after)])
+
+        out = capsys.readouterr().out
+        assert 'pose re-estimated' in out and '1 of 2 alive in both' in out
+
 
 class TestOneRenderingOfTheSummary:
     """The two entry points printed the same summary two different ways. `--resummarize` ran the tilt
@@ -697,7 +752,9 @@ class TestPoseDrift:
     re-fetches an image it already has, so pose - which arrives with the photometa request this census
     already pays for - is the only affordable signal. On the two committed censuses it finds 21 of 649
     living panoramas re-posed in 28 days, and the same 95 panoramas move on pitch and roll together,
-    which is what makes it a re-stitch signal rather than per-axis serialisation noise.
+    which is what makes it a re-stitch signal rather than per-axis serialisation noise. That "same 95" is
+    a claim about sets, and `n_changed_any_axis` is what lets a test assert it: equal per-axis counts that
+    also equal the union are one set.
     """
 
     def test_a_re_estimated_pose_is_detected(self):
@@ -780,6 +837,29 @@ class TestPoseDrift:
         assert p['axes']['pitch_deg']['n_drifted'] == 1
         assert p['axes']['roll_deg']['n_drifted'] == 1
         assert p['n_drifted_any_axis'] == 1
+        assert p['n_changed_any_axis'] == 1
+
+    def test_the_any_axis_count_tells_the_same_set_from_equal_counts(self):
+        """Two panoramas, one moving only on pitch and one only on roll: each axis reports one changed,
+        which is indistinguishable from one panorama moving on both until the union says two. This is the
+        number the report's "the same 95" sentence rests on; without it that sentence was only ever
+        checked as 95 == 95."""
+        before = pd.DataFrame([_pose('a', pitch_deg=1.0, roll_deg=0.5), _pose('b', pitch_deg=1.0, roll_deg=0.5)])
+        after = pd.DataFrame([_pose('a', pitch_deg=1.01, roll_deg=0.5), _pose('b', pitch_deg=1.0, roll_deg=0.51)])
+
+        p = pc.decay(before, after)['pose_drift']
+
+        assert p['axes']['pitch_deg']['n_changed'] == 1
+        assert p['axes']['roll_deg']['n_changed'] == 1
+        assert p['n_changed_any_axis'] == 2
+
+    def test_the_any_axis_count_is_undefined_when_no_axis_was_carried(self):
+        frame = pd.DataFrame([{k: v for k, v in _pose('a').items()
+                               if k not in ('pitch_deg', 'roll_deg')}])
+
+        p = pc.decay(frame, frame.copy())['pose_drift']
+
+        assert p['n_changed_any_axis'] is None and p['n_drifted_any_axis'] is None
 
     def test_a_sub_threshold_move_still_counts_as_changed(self):
         """`n_changed` and `n_drifted` are deliberately two numbers. The threshold is a reporting choice

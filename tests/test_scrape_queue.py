@@ -37,7 +37,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Everything it does is driven by the environment so one script covers every scenario.
 
 FAKE_RUNNER = textwrap.dedent('''
-    import os, signal, sys, time
+    import json, os, signal, sys, time
 
     journal = os.environ['QUEUE_TEST_JOURNAL']
     city = os.path.basename(sys.argv[2])
@@ -50,6 +50,31 @@ FAKE_RUNNER = textwrap.dedent('''
     if os.environ.get('QUEUE_TEST_IGNORE_SIGTERM') and hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(float(os.environ.get('QUEUE_TEST_SLEEP', '0')))
+
+    # The run summary, exactly as DownloadRunner writes it (--run-summary-file). QUEUE_TEST_STOP names the
+    # phase that stopped on its budget - '' for a run that worked through its whole list. Which cities are
+    # still working is driven from HERE rather than from how long this process took, because that is the
+    # real contract: the queue must not be able to tell them apart by timing.
+    #
+    # The stop is reported on a city's FIRST run only, and it is what makes these tests terminate: a city
+    # that reported work every time would be re-run until the window closed, so the test would take the
+    # whole window in real seconds and its "was it re-run?" assertion would be racing pass 1 against the
+    # clock. Reporting once means the passes stop because the work ran out, which is also the behaviour
+    # worth pinning.
+    if '--run-summary-file' in sys.argv:
+        target = sys.argv[sys.argv.index('--run-summary-file') + 1]
+        stop = os.environ.get('QUEUE_TEST_STOP_%s' % city.replace('-', '_').upper(),
+                              os.environ.get('QUEUE_TEST_STOP', ''))
+        first_run_marker = os.path.join(os.path.dirname(journal), 'ran-%s' % city)
+        if os.path.exists(first_run_marker) and not os.environ.get('QUEUE_TEST_STOP_EVERY_RUN'):
+            stop = ''
+        open(first_run_marker, 'a').close()
+        summary = {'image_stop': None, 'depth_stop': None}
+        if stop:
+            summary['%s_stop' % stop.split(':')[0]] = stop.split(':')[1]
+        with open(target, 'w') as f:
+            json.dump(summary, f)
+
     note('END')
     sys.exit(int(os.environ.get('QUEUE_TEST_EXIT', '0')))
 ''')
@@ -264,6 +289,17 @@ class TestTheCommandBuiltForOneCity:
         cmd = scrape_queue.build_command(self.city(), '/store', 'py', 'runner.py', None, ['--all-panos'])
         assert '--max-runtime' not in cmd
 
+    def test_the_queues_summary_path_goes_before_the_pass_through_so_an_operators_own_wins(self):
+        """argparse is last-one-wins, so the queue's --run-summary-file has to precede `--` arguments for an
+        operator who passes their own to get it. A mutant that appended the queue's flag last survived the
+        suite until this pin existed (#126 review)."""
+        cmd = scrape_queue.build_command(self.city(), '/store', 'py', 'runner.py', 12,
+                                         ['--run-summary-file', '/mine.json'],
+                                         run_summary_path='/queue.json')
+
+        assert cmd[-2:] == ['--run-summary-file', '/mine.json']
+        assert cmd.index('/queue.json') < cmd.index('/mine.json')
+
 
 # --- One city ----------------------------------------------------------------------------------------------
 
@@ -451,6 +487,28 @@ class TestTheSummary:
         assert 'bravo-bb' in text and 'charlie-cc' in text
         assert 'alpha-aa' not in text, 'a clean night should not need a screen of output'
         assert '1/3 cities ok' in text
+
+    def test_the_headline_counts_cities_not_runs(self):
+        """With extra passes (#43) a city can appear several times in the results; "N/M cities ok" must
+        still be a per-city figure, or a night that re-ran one city five times reads as 8/8."""
+        results = [scrape_queue.CityResult('alpha-aa', 'ok', 0, 720.0, 12.0, 1),
+                   scrape_queue.CityResult('bravo-bb', 'ok', 0, 5.0, 12.0, 1),
+                   scrape_queue.CityResult('alpha-aa', 'ok', 0, 720.0, 12.0, 2),
+                   scrape_queue.CityResult('alpha-aa', 'ok', 0, 700.0, 12.0, 3)]
+
+        text = scrape_queue.summarise(results, 36.0)
+
+        assert '2/2 cities ok' in text
+        assert 'pass 2: 1 cities re-run' in text and 'pass 3: 1 cities re-run' in text
+        assert 'alpha-aa 12.0' in text
+
+    def test_a_failure_in_a_later_pass_is_named_with_its_pass(self):
+        results = [scrape_queue.CityResult('alpha-aa', 'ok', 0, 720.0, 12.0, 1),
+                   scrape_queue.CityResult('alpha-aa', 'failed', 1, 3.0, 12.0, 2)]
+
+        text = scrape_queue.summarise(results, 12.1)
+
+        assert 'alpha-aa' in text and 'FAILED' in text and 'pass 2' in text
 
     def test_a_city_that_never_started_does_not_format_its_missing_numbers(self):
         """None is not zero. `'%.1f' % None` raises, on the last line of the run, after everything worked -
@@ -870,3 +928,744 @@ class TestAStoppedQueueDoesNotOrphanTheCityItIsRunning:
             scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
                                   'py', 'runner.py', None, 1.0, [])
         assert exc.value.code == 143
+
+
+# --- Extra passes: the window is spent on the cities that still have work (#43) ----------------------------
+#
+# Measured on the production store after the depth backfill's first three nights: the queue used 477 of its
+# 690-minute window, because 13 small cities were already complete and exited in seconds while every city
+# with a backlog was capped at its 12-minute slot - and the five largest cities were 240-463 nights out. Pass
+# 1 is unchanged (every city gets its guaranteed slot). Then, while a full slot of window remains, the cities
+# whose previous run STOPPED ON ITS BUDGET are run again, each with the larger of a slot and an equal share
+# of what is left. Who has work is read from tonight's own pass 1, so no cross-night state is needed.
+
+def result(city_id, outcome='ok', seconds=0.0, budget=None, pass_number=1, exit_code=None,
+           stop_reasons=None):
+    if exit_code is None:
+        exit_code = 0 if outcome == 'ok' else 1
+    return scrape_queue.CityResult(city_id, outcome, exit_code, seconds, budget, pass_number, stop_reasons)
+
+
+def stops(image=None, depth=None):
+    """A run summary as DownloadRunner writes it: what stopped each phase, or None if nothing did."""
+    return {'image_stop': image, 'depth_stop': depth}
+
+
+class TestWhichCitiesStillHaveWorkReportedByTheRunner:
+    """The runner says why each phase stopped and the queue applies the re-run policy to that.
+
+    Reading it from queue-measured elapsed time instead was wrong in both directions: the queue times the
+    whole subprocess while DownloadRunner's budget clock starts after the pano-list fetch, so a COMPLETE
+    city whose prologue outlasts its slot measured as "has work" forever, and a city whose image phase
+    stopped on its --min-depth-runtime share while depth finished early measured as "finished" with a live
+    image backlog."""
+
+    def test_an_image_phase_stopped_on_budget_has_more_work(self):
+        assert scrape_queue.stopped_on_budget(
+            result('a', seconds=384.0, budget=12.0, stop_reasons=stops(image='max-runtime')))
+
+    def test_the_image_backlog_case_the_elapsed_rule_got_wrong(self):
+        """The false NEGATIVE. Image stopped on its 6-minute reserved share, depth then exhausted its own
+        list, so the process exited at 6.4 of 12 minutes with an image backlog intact. Elapsed time said
+        'finished'; the runner says the image phase stopped on its budget."""
+        assert scrape_queue.stopped_on_budget(
+            result('seattle-wa', seconds=6.4 * 60, budget=12.0, stop_reasons=stops(image='max-runtime')))
+
+    def test_a_depth_phase_stopped_on_budget_has_more_work(self):
+        assert scrape_queue.stopped_on_budget(
+            result('a', seconds=740.0, budget=12.0, stop_reasons=stops(depth='max-runtime')))
+
+    def test_a_city_that_finished_both_phases_has_no_work_however_long_it_took(self):
+        """The false POSITIVE. A complete city whose /adminapi/panos prologue alone outlasts the slot exits
+        having downloaded nothing; elapsed time re-ran it in every pass of every night, forever."""
+        assert not scrape_queue.stopped_on_budget(
+            result('chicago-il', seconds=12 * 60 + 5, budget=12.0, stop_reasons=stops()))
+
+    @pytest.mark.parametrize('depth_stop', ['blocked', 'consecutive-failures', 'max-requests'])
+    def test_a_depth_phase_stopped_for_any_other_reason_is_not_re_run(self, depth_stop):
+        """Only a BUDGET stop means "more time would help". A blocked host stands down for six hours and a
+        re-run just spends the slot rediscovering it; a tripped breaker would trip again; --max-depth-requests
+        is a per-process cap the operator asked for, so re-running silently multiplies it."""
+        assert not scrape_queue.stopped_on_budget(
+            result('a', seconds=740.0, budget=12.0, stop_reasons=stops(depth=depth_stop)))
+
+    def test_the_image_phase_wins_even_when_depth_stood_down(self):
+        """The exact production shape: the latch stands depth down at zero requests while the image phase
+        really did stop on its share. The city has work and the depth reason must not veto it."""
+        assert scrape_queue.stopped_on_budget(
+            result('a', seconds=380.0, budget=12.0,
+                   stop_reasons=stops(image='max-runtime', depth='blocked')))
+
+    @pytest.mark.parametrize('outcome', ['failed', 'timed_out', 'skipped_deadline'])
+    def test_only_a_clean_run_qualifies(self, outcome):
+        """A crash says nothing about work left and re-running it is a crash loop; a hung city was killed
+        past its budget and would be killed again; a city the window never reached never started."""
+        assert not scrape_queue.stopped_on_budget(
+            result('a', outcome=outcome, seconds=720.0, budget=12.0,
+                   stop_reasons=stops(image='max-runtime')))
+
+    def test_no_result_at_all_is_no_work(self):
+        assert not scrape_queue.stopped_on_budget(None)
+
+
+class TestWhichCitiesStillHaveWorkWhenTheRunnerSaidNothing:
+    """The fallback, for an 'ok' run that produced no summary: one whose summary could not be written, or
+    one where an operator's own --run-summary-file after `--` displaced the queue's. (NOT an older
+    DownloadRunner - that one refuses the flag and exits 2, so it is booked failed and never re-run; see
+    test_a_runner_that_does_not_know_the_flag_is_a_failed_city_not_a_fallback.) It is the old elapsed-time
+    rule, kept because it is at least a NECESSARY condition (a run that stopped on budget always measures
+    at least its budget), and because losing the window entirely is worse than the wasted slot its false
+    positives cost."""
+
+    def test_a_run_that_reached_its_budget_has_more_work(self):
+        assert scrape_queue.stopped_on_budget(result('a', seconds=720.0, budget=12.0))
+
+    def test_a_run_that_finished_one_second_early_does_not(self):
+        """The discrimination against a fraction: 0.9 x 12 min would re-run this city for nothing."""
+        assert not scrape_queue.stopped_on_budget(result('a', seconds=719.0, budget=12.0))
+
+    def test_a_run_with_no_budget_cannot_have_stopped_on_it(self):
+        assert not scrape_queue.stopped_on_budget(result('a', seconds=720.0, budget=None))
+
+    def test_an_empty_summary_is_not_a_missing_one(self):
+        """A runner that reported "nothing stopped either phase" is authoritative; only the absence of a
+        summary falls back. Without this the two paths collapse and the false positive returns."""
+        assert not scrape_queue.stopped_on_budget(
+            result('a', seconds=720.0, budget=12.0, stop_reasons=stops()))
+
+
+class TestTheRunSummaryVocabularyIsTheRunnersOwn:
+    """The queue compares against literal strings, so a rename in the runner would silently stop every
+    re-run - the queue would just see an unfamiliar reason and treat every city as finished."""
+
+    def test_the_budget_stop_string_is_the_one_gsv_writes(self):
+        gsv = pytest.importorskip('downloaders.gsv')
+        assert scrape_queue.STOP_MAX_RUNTIME == gsv.DEPTH_STOP_MAX_RUNTIME
+
+    def test_every_other_depth_stop_reason_is_known_and_not_a_budget_stop(self):
+        gsv = pytest.importorskip('downloaders.gsv')
+        others = {gsv.DEPTH_STOP_BLOCKED, gsv.DEPTH_STOP_CONSECUTIVE_FAILURES, gsv.DEPTH_STOP_MAX_REQUESTS}
+        assert scrape_queue.STOP_MAX_RUNTIME not in others
+        for reason in others:
+            assert not scrape_queue.stopped_on_budget(
+                result('a', seconds=720.0, budget=12.0, stop_reasons=stops(depth=reason)))
+
+
+class TestThePassBudget:
+
+    def test_it_is_the_slot_when_the_share_is_smaller(self):
+        assert scrape_queue._extra_pass_budget(12.0, remaining_minutes=213.0, cities_left=39) == 12.0
+
+    def test_it_is_the_equal_share_when_that_is_larger(self):
+        assert scrape_queue._extra_pass_budget(12.0, remaining_minutes=625.0, cities_left=5) == 125.0
+
+    def test_the_last_city_of_a_pass_gets_everything_left(self):
+        assert scrape_queue._extra_pass_budget(12.0, remaining_minutes=40.0, cities_left=1) == 40.0
+
+
+class TestTheQueueSpendsTheWholeWindow:
+    """run_queue's extra passes, driven in-process with a stand-in run_one and a hand-advanced clock."""
+
+    def cities(self, n=3):
+        return [scrape_queue.City('city-%d' % i, 'host-%d.invalid' % i) for i in range(n)]
+
+    @staticmethod
+    def scripted(calls, clock, minutes_by_city):
+        """A run_one whose cities each have a fixed amount of WORK, in minutes, that carries across passes: a
+        run stops at its budget with the rest of the work left over, as DownloadRunner does, or ends early
+        when the work runs out. Records (city, budget, pass) per call."""
+        work_left = dict(minutes_by_city)
+
+        def run_one(city, store_root, python_exe, runner_path, budget, kill_grace, runner_args, env=None):
+            left = work_left.get(city.city_id, 0.0)
+            took = min(left, budget) if budget is not None else left
+            work_left[city.city_id] = left - took
+            calls.append((city.city_id, budget, len([c for c in calls if c[0] == city.city_id]) + 1))
+            clock.now += took * 60.0
+            return scrape_queue.CityResult(city.city_id, 'ok', 0, took * 60.0)
+        return run_one
+
+    def run(self, monkeypatch, minutes_by_city, window, slot, n=3, **kwargs):
+        clock = FakeClock()
+        monkeypatch.setattr(scrape_queue, 'time', clock)
+        calls = []
+        results = scrape_queue.run_queue(self.cities(n), '/store', 'py', 'r.py', [],
+                                         max_runtime_minutes=window, city_max_runtime=slot,
+                                         run_one=self.scripted(calls, clock, minutes_by_city), **kwargs)
+        return calls, results, clock
+
+    def test_a_city_that_ran_to_its_budget_is_run_again_and_one_that_finished_early_is_not(self, monkeypatch):
+        calls, results, _ = self.run(monkeypatch, {'city-0': 99, 'city-1': 0.1, 'city-2': 0.1},
+                                     window=100, slot=12)
+
+        assert [c for c, _, _ in calls] == ['city-0', 'city-1', 'city-2', 'city-0']
+        assert [r.pass_number for r in results] == [1, 1, 1, 2]
+
+    def test_pass_two_hands_the_working_city_what_the_window_has_left(self, monkeypatch):
+        calls, results, _ = self.run(monkeypatch, {'city-0': 99, 'city-1': 0.1, 'city-2': 0.1},
+                                     window=100, slot=12)
+
+        # Pass 1 spent 12 + 0.1 + 0.1 = 12.2 min; one city still has work, so it gets all 87.8 that remain.
+        assert calls[3] == ('city-0', pytest.approx(87.8), 2)
+        assert results[3].budget_minutes == pytest.approx(87.8)
+
+    def test_the_share_is_equal_among_the_cities_still_working_and_recomputed_as_they_finish(self, monkeypatch):
+        """Two cities with work and 76 min left: 38 each. The first finishes at minute 20 of its 38, so the
+        second is recomputed from what is actually left, not from the plan."""
+        calls, _, _ = self.run(monkeypatch, {'city-0': 32, 'city-1': 99, 'city-2': 0.0},
+                               window=100, slot=12)
+
+        pass_two = [c for c in calls if c[2] == 2]
+        assert pass_two[0] == ('city-0', pytest.approx(38.0), 2)
+        assert pass_two[1] == ('city-1', pytest.approx(56.0), 2), 'city-0 used 20 of its 38; city-1 gets 76 - 20'
+
+    def test_a_pass_budget_is_never_below_a_slot(self, monkeypatch):
+        """213 minutes left for 39 working cities is 5.5 each - below --min-depth-runtime, which would zero
+        every image phase and mail a warning per city, and a fraction of a minute can kill a city inside its
+        pano-list fetch. So the share is floored at a slot, and the pass stops when a slot no longer fits."""
+        calls, _, _ = self.run(monkeypatch, {'city-%d' % i: 99 for i in range(10)}, window=180, slot=12, n=10)
+
+        pass_two = [c for c in calls if c[2] == 2]
+        assert pass_two, 'there was window left after pass 1 (180 - 120 = 60 min)'
+        assert all(budget >= 12 for _, budget, _ in pass_two)
+        assert len(pass_two) == 5, '60 minutes is five full slots, not ten 6-minute ones'
+
+    def test_passes_repeat_until_the_window_is_spent(self, monkeypatch):
+        calls, results, clock = self.run(monkeypatch, {'city-0': 999, 'city-1': 0.0, 'city-2': 0.0},
+                                         window=100, slot=12)
+
+        # Pass 1: 12 min. Pass 2: all 88 left. Nothing fits after that.
+        assert [c for c, _, _ in calls] == ['city-0', 'city-1', 'city-2', 'city-0']
+        assert clock.now / 60.0 == pytest.approx(100.0), 'the window is spent, not left on the table'
+
+    def test_passes_stop_when_nobody_hit_their_budget(self, monkeypatch):
+        calls, results, clock = self.run(monkeypatch, {'city-0': 1, 'city-1': 1, 'city-2': 1},
+                                         window=100, slot=12)
+
+        assert len(calls) == 3
+        assert clock.now / 60.0 == pytest.approx(3.0), 'a fleet with no work does not wait out the window'
+
+    def test_a_failed_city_is_not_run_again(self, monkeypatch):
+        clock = FakeClock()
+        monkeypatch.setattr(scrape_queue, 'time', clock)
+        calls = []
+
+        def run_one(city, store_root, python_exe, runner_path, budget, kill_grace, runner_args, env=None):
+            calls.append(city.city_id)
+            clock.now += budget * 60.0  # every city runs to its budget...
+            outcome = 'failed' if city.city_id == 'city-1' else 'ok'  # ...and one of them crashes there
+            return scrape_queue.CityResult(city.city_id, outcome, 0 if outcome == 'ok' else 1, budget * 60.0)
+
+        scrape_queue.run_queue(self.cities(), '/store', 'py', 'r.py', [], max_runtime_minutes=60,
+                               city_max_runtime=12, run_one=run_one)
+
+        assert 'city-1' not in calls[3:], 'a crash says nothing about work left, and re-running it is a crash loop'
+        assert calls[3:] == ['city-0', 'city-2']
+
+    def test_a_later_pass_never_reports_a_city_as_not_reached(self, monkeypatch):
+        """skipped_deadline is pass 1's alarm: a city the guaranteed slot never reached is a fleet that is not
+        completing. Running out of window in pass 3 is the design working."""
+        _, results, _ = self.run(monkeypatch, {'city-%d' % i: 999 for i in range(3)}, window=50, slot=12)
+
+        assert all(r.outcome == 'ok' for r in results)
+        assert scrape_queue.exit_code_for(results) == 0
+
+    def test_a_crash_in_a_later_pass_still_fails_the_night(self, monkeypatch):
+        clock = FakeClock()
+        monkeypatch.setattr(scrape_queue, 'time', clock)
+        seen = []
+
+        def run_one(city, store_root, python_exe, runner_path, budget, kill_grace, runner_args, env=None):
+            seen.append(city.city_id)
+            clock.now += budget * 60.0
+            crashed = seen.count(city.city_id) == 2  # fine in pass 1, crashes in pass 2
+            return scrape_queue.CityResult(city.city_id, 'failed' if crashed else 'ok', 1 if crashed else 0,
+                                           budget * 60.0)
+
+        results = scrape_queue.run_queue(self.cities(1), '/store', 'py', 'r.py', [], max_runtime_minutes=60,
+                                         city_max_runtime=12, run_one=run_one)
+
+        assert [r.outcome for r in results] == ['ok', 'failed']
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_single_pass_is_exactly_the_old_behaviour(self, monkeypatch):
+        calls, results, clock = self.run(monkeypatch, {'city-0': 999, 'city-1': 0.0, 'city-2': 0.0},
+                                         window=100, slot=12, extra_passes=False)
+
+        assert [c for c, _, _ in calls] == ['city-0', 'city-1', 'city-2']
+        assert [r.pass_number for r in results] == [1, 1, 1]
+
+    def test_without_a_slot_there_is_nothing_to_share(self, monkeypatch):
+        """--city-max-runtime is both the pass-1 guarantee and the pass-2 floor; without it a second pass has
+        no unit to hand out, so there is none. (With no slot, pass 1 hands the first city the whole window,
+        so the first city here does 20 of its minutes and stops on budget only in the sense that matters:
+        it is the window, not a slot, and there is nothing left to share.)"""
+        calls, _, _ = self.run(monkeypatch, {'city-0': 100, 'city-1': 0.0, 'city-2': 0.0},
+                               window=100, slot=None)
+
+        assert len(calls) == 1, 'pass 1 with no slot gives the first city the window; no pass follows'
+
+    def test_without_a_window_there_is_nothing_to_spend(self, monkeypatch):
+        calls, _, _ = self.run(monkeypatch, {'city-0': 999, 'city-1': 0.0, 'city-2': 0.0},
+                               window=None, slot=12)
+
+        assert len(calls) == 3
+
+    def test_a_pass_stops_when_a_slot_no_longer_fits_even_with_minutes_left(self, monkeypatch):
+        """178 - 120 = 58 minutes after pass 1: four slots fit, then 10 minutes are left. A queue that
+        starts a fifth city there hands it a slot the window cannot honour."""
+        calls, _, clock = self.run(monkeypatch, {'city-%d' % i: 99 for i in range(10)}, window=178, slot=12,
+                                   n=10)
+
+        pass_two = [c for c in calls if c[2] == 2]
+        assert len(pass_two) == 4
+        assert clock.now / 60.0 == pytest.approx(168.0), '10 minutes are left for tomorrow, not overspent'
+
+    def test_passes_repeat_while_cities_keep_finishing_early(self, monkeypatch):
+        """Pass 2 gives two working cities 38 each; the second finishes after 18, leaving 20 - enough for a
+        slot, so the city that is still working gets a third pass rather than the window going unused."""
+        calls, results, clock = self.run(monkeypatch, {'city-0': 999, 'city-1': 30, 'city-2': 0.0},
+                                         window=100, slot=12)
+
+        assert [(c, p) for c, _, p in calls] == [('city-0', 1), ('city-1', 1), ('city-2', 1),
+                                                 ('city-0', 2), ('city-1', 2), ('city-0', 3)]
+        assert calls[-1][1] == pytest.approx(20.0)
+        assert clock.now / 60.0 == pytest.approx(100.0)
+
+    def test_a_claimed_budget_stop_with_no_slot_configured_starts_no_pass(self, monkeypatch):
+        """With no slot, pass 1 hands each city what the window has left, so a run that stops on budget has
+        spent the window and the question never arises in production. The guard is still real: a pass with
+        no slot has no floor and no unit, so a result that CLAIMS a budget stop must not start one."""
+        clock = FakeClock()
+        monkeypatch.setattr(scrape_queue, 'time', clock)
+        calls = []
+
+        def run_one(city, store_root, python_exe, runner_path, budget, kill_grace, runner_args, env=None):
+            calls.append(city.city_id)
+            clock.now += 600.0  # ten minutes of real time, whatever the budget was...
+            return scrape_queue.CityResult(city.city_id, 'ok', 0, budget * 60.0)  # ...and a claimed budget stop
+
+        scrape_queue.run_queue(self.cities(), '/store', 'py', 'r.py', [], max_runtime_minutes=100,
+                               city_max_runtime=None, run_one=run_one)
+
+        assert calls == ['city-0', 'city-1', 'city-2']
+
+    def test_every_result_carries_its_budget_and_pass(self, monkeypatch):
+        _, results, _ = self.run(monkeypatch, {'city-0': 99, 'city-1': 0.1, 'city-2': 0.1}, window=100, slot=12)
+
+        assert [(r.budget_minutes, r.pass_number) for r in results[:3]] == [(12, 1), (12, 1), (12, 1)]
+        assert results[3].pass_number == 2
+
+
+class TestTheRunSummaryReachesTheQueue:
+    """run_city asks each city for a run summary and reads it back onto the result.
+
+    This is the whole channel finding 1 turns on, so it is asserted on the argv the city actually received
+    and on the CityResult that came back - not on the queue's own timing, which is precisely the thing that
+    was wrong."""
+
+    def test_the_city_is_asked_for_one(self, fake_runner, journal, tmp_path):
+        scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                              sys.executable, fake_runner, 12.0, 1.0, [])
+
+        start = [line for line in journal.read() if line.startswith('START')][0]
+        assert '--run-summary-file' in start
+
+    def test_what_the_city_reported_lands_on_the_result(self, fake_runner, journal, tmp_path, monkeypatch):
+        monkeypatch.setenv('QUEUE_TEST_STOP', 'image:max-runtime')
+
+        result = scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                       sys.executable, fake_runner, 12.0, 1.0, [])
+
+        assert result.stop_reasons == {'image_stop': 'max-runtime', 'depth_stop': None}
+        assert scrape_queue.stopped_on_budget(result._replace(budget_minutes=12.0))
+
+    def test_a_city_that_finished_reports_no_stop_however_long_it_took(self, fake_runner, journal, tmp_path,
+                                                                      monkeypatch):
+        """The false positive, end to end: this run outlasts its budget on the queue's clock and must still
+        come back as finished, because the city said nothing stopped it."""
+        monkeypatch.setenv('QUEUE_TEST_SLEEP', '0.4')
+
+        result = scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                       sys.executable, fake_runner, 0.002, 1.0, [])
+
+        assert result.seconds > 0.002 * 60, 'the run must outlast its budget for this to be the case'
+        assert result.stop_reasons == {'image_stop': None, 'depth_stop': None}
+        assert not scrape_queue.stopped_on_budget(result._replace(budget_minutes=0.002))
+
+    def test_a_runner_that_cannot_write_a_summary_leaves_the_fallback_in_charge(self, journal, tmp_path):
+        """A runner that exits 0 without a summary - the file could not be written, or the queue's flag was
+        displaced by an operator's own - carries None and the elapsed rule decides. This stand-in accepts the
+        flag and ignores it; a DownloadRunner from before the flag existed would NOT do that (below)."""
+        mute_runner = tmp_path / 'mute_runner.py'
+        mute_runner.write_text('import os,sys\n'
+                               "open(os.environ['QUEUE_TEST_JOURNAL'],'a').write('START %s x\\n'"
+                               " % os.path.basename(sys.argv[2]))\n")
+
+        result = scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                       sys.executable, str(mute_runner), 12.0, 1.0, [])
+
+        assert result.stop_reasons is None
+
+    def test_a_runner_that_does_not_know_the_flag_is_a_failed_city_not_a_fallback(self, journal, tmp_path):
+        """The mixed-version deployment the docs used to describe as "falls back": a runner whose parser
+        predates --run-summary-file refuses the argument (argparse, exit 2). The queue books that as a
+        FAILURE - never re-run - not as a run with work left; the docs now say so. Pinned against a stand-in
+        with DownloadRunner's argparse shape, since the real pre-flag file is history, not a fixture."""
+        strict_runner = tmp_path / 'strict_runner.py'
+        strict_runner.write_text('import argparse, os, sys\n'
+                                 "open(os.environ['QUEUE_TEST_JOURNAL'],'a').write('START %s x\\n'"
+                                 " % os.path.basename(sys.argv[2]))\n"
+                                 'p = argparse.ArgumentParser()\n'
+                                 "p.add_argument('d'); p.add_argument('s'); p.add_argument('--max-runtime')\n"
+                                 'p.parse_args()\n')
+
+        result = scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                       sys.executable, str(strict_runner), 12.0, 1.0, [])
+
+        assert (result.outcome, result.exit_code) == ('failed', 2)
+        assert not scrape_queue.stopped_on_budget(result._replace(budget_minutes=12.0))
+
+    def test_the_summary_file_does_not_litter_the_store(self, fake_runner, journal, tmp_path):
+        """It is a temp file per run, not an artifact: the store holds the city's panos and ledgers, and a
+        stray run_summary.json beside them would be read as one."""
+        store = tmp_path / 'store'
+        scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(store),
+                              sys.executable, fake_runner, 12.0, 1.0, [])
+
+        assert not list(store.rglob('run_summary.json'))
+
+
+class TestExtraPassesEndToEnd:
+    """Through main() and a real stand-in runner. The scripted stand-in above proves the arithmetic; this
+    proves the plumbing - the flags, the log, the summary - with real processes and the real clock.
+
+    Which cities still have work is driven by what the stand-in REPORTS, not by making it outlive its
+    budget: the old version raced three 1.5 s sleeps against a 12 s window, so a slow interpreter start
+    could exhaust the window in pass 1 and fail the exit-code assertion. Nothing here now depends on how
+    long a city takes.
+    """
+
+    def test_a_city_that_reports_a_budget_stop_is_run_again(self, tmp_path, fake_runner, journal,
+                                                            monkeypatch):
+        monkeypatch.setenv('QUEUE_TEST_STOP', 'image:max-runtime')
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate',
+                        '--max-runtime', '5', '--city-max-runtime', '0.02', '--kill-grace', '0.1')
+
+        starts = [line.split()[1] for line in journal.read() if line.startswith('START')]
+        assert code == 0
+        # Exactly two runs each: one in pass 1, one in pass 2, and then nothing - because the second run
+        # reported no stop. An exact count, not `> 3`, so a pass loop that failed to notice the work had
+        # run out (and spent the rest of the window re-running finished cities) fails here too.
+        assert starts[:3] == ['alpha-aa', 'bravo-bb', 'charlie-cc']
+        assert sorted(starts) == sorted(['alpha-aa', 'bravo-bb', 'charlie-cc'] * 2), starts
+        log = (tmp_path / 'store' / 'scrape_queue.log').read_text()
+        assert 'pass 2 starting' in log
+        assert 'pass 3 starting' not in log
+
+    def test_cities_that_report_no_stop_are_not_run_again(self, tmp_path, fake_runner, journal, monkeypatch):
+        """The discrimination the old timing-based test could not make: same window, same slot, same
+        sleeps - only the reported reason differs, and no extra pass may happen."""
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate',
+                        '--max-runtime', '5', '--city-max-runtime', '0.02', '--kill-grace', '0.1')
+
+        starts = [line.split()[1] for line in journal.read() if line.startswith('START')]
+        assert code == 0
+        assert starts == ['alpha-aa', 'bravo-bb', 'charlie-cc'], 'no city had work left'
+        assert 'pass 2 starting' not in (tmp_path / 'store' / 'scrape_queue.log').read_text()
+
+    def test_only_the_city_with_work_is_re_run(self, tmp_path, fake_runner, journal, monkeypatch):
+        monkeypatch.setenv('QUEUE_TEST_STOP_BRAVO_BB', 'depth:max-runtime')
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate',
+                 '--max-runtime', '5', '--city-max-runtime', '0.02', '--kill-grace', '0.1')
+
+        starts = [line.split()[1] for line in journal.read() if line.startswith('START')]
+        assert starts[:3] == ['alpha-aa', 'bravo-bb', 'charlie-cc']
+        assert starts[3:] == ['bravo-bb'], 'only bravo-bb reported work left, got %r' % (starts[3:],)
+
+    def test_a_city_that_stood_down_on_the_block_latch_is_not_re_run(self, tmp_path, fake_runner, journal,
+                                                                     monkeypatch):
+        """A re-run would spend its slot rediscovering the same refusal - and 52 of them would escalate a
+        soft refusal into a real ban, which is what the latch exists to prevent."""
+        monkeypatch.setenv('QUEUE_TEST_STOP', 'depth:blocked')
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate',
+                 '--max-runtime', '5', '--city-max-runtime', '0.02', '--kill-grace', '0.1')
+
+        starts = [line.split()[1] for line in journal.read() if line.startswith('START')]
+        assert starts == ['alpha-aa', 'bravo-bb', 'charlie-cc']
+
+    def test_single_pass_runs_each_city_once(self, tmp_path, fake_runner, journal, monkeypatch):
+        """Every city reports a budget stop, so only --single-pass can be what stops the second pass."""
+        monkeypatch.setenv('QUEUE_TEST_STOP', 'image:max-runtime')
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate', '--single-pass',
+                 '--max-runtime', '5', '--city-max-runtime', '0.02', '--kill-grace', '0.1')
+
+        assert len([line for line in journal.read() if line.startswith('START')]) == 3
+
+    def test_only_implies_a_single_pass(self, tmp_path, fake_runner, journal, monkeypatch):
+        """--only is the manual re-run affordance: the operator asked for that city, once."""
+        monkeypatch.setenv('QUEUE_TEST_STOP', 'image:max-runtime')
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--only', 'bravo-bb',
+                 '--max-runtime', '5', '--city-max-runtime', '0.02', '--kill-grace', '0.1')
+
+        assert [line.split()[1] for line in journal.read() if line.startswith('START')] == ['bravo-bb']
+
+    def test_the_summary_reports_the_pass(self, tmp_path, fake_runner, journal, monkeypatch, capsys):
+        monkeypatch.setenv('QUEUE_TEST_STOP', 'image:max-runtime')
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate',
+                 '--max-runtime', '5', '--city-max-runtime', '0.02', '--kill-grace', '0.1')
+
+        out = capsys.readouterr().out
+        assert '3/3 cities ok' in out
+        assert 'pass 2:' in out
+
+    def test_dry_run_says_passes_cannot_be_shown(self, tmp_path, fake_runner, capsys):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run',
+                 '--max-runtime', '690', '--city-max-runtime', '12')
+
+        assert 'extra passes' in capsys.readouterr().out.lower()
+
+
+# --- Review fixes: the summary, the banner, the stop, and the reservation --------------------------------
+
+def _clock_that_jumps_past(minutes):
+    """time.monotonic that is normal once and then far in the future: a window spent before city 1 starts."""
+    calls = {'n': 0}
+    real = time.monotonic
+
+    def fake():
+        calls['n'] += 1
+        return real() + (0 if calls['n'] < 2 else minutes * 60.0)
+    return fake
+
+
+class TestTheSummaryCountsEveryRunNotJustPassOne:
+    """The totals line is the one grep-able aggregate in the cron mail, so it must not contradict the exit
+    code. It counted `pass_number == 1` only, so a city hard-killed in pass 2 read as `0 timed out` on a
+    night that exited 1 - while the per-run lines directly above it named the kill."""
+
+    def test_a_failure_in_a_later_pass_is_counted(self):
+        results = [result('alpha', seconds=60.0, budget=12.0),
+                   result('alpha', outcome='failed', seconds=5.0, budget=12.0, pass_number=2)]
+
+        assert '1 failed' in scrape_queue.summarise(results, 1.0)
+
+    def test_a_timeout_in_a_later_pass_is_counted(self):
+        results = [result('alpha', seconds=60.0, budget=12.0),
+                   result('alpha', outcome='timed_out', exit_code=137, seconds=900.0, budget=12.0,
+                          pass_number=2)]
+
+        assert '1 timed out' in scrape_queue.summarise(results, 1.0)
+
+    def test_the_fleet_denominator_still_counts_cities_not_runs(self):
+        """The other half of the same line: a night that re-ran one city five times is a fleet of 2, not 7."""
+        results = [result('alpha', seconds=60.0, budget=12.0), result('bravo', seconds=60.0, budget=12.0)]
+        results += [result('alpha', seconds=60.0, budget=12.0, pass_number=n) for n in (2, 3, 4, 5, 6)]
+
+        assert '2/2 cities ok' in scrape_queue.summarise(results, 1.0)
+
+    def test_the_totals_line_never_disagrees_with_the_exit_code(self):
+        """The property behind both: if the night exits 1, the totals must name something nonzero."""
+        results = [result('alpha', seconds=60.0, budget=12.0),
+                   result('alpha', outcome='timed_out', exit_code=137, seconds=900.0, budget=12.0,
+                          pass_number=2)]
+        totals = [ln for ln in scrape_queue.summarise(results, 1.0).splitlines() if 'cities ok' in ln][0]
+
+        assert scrape_queue.exit_code_for(results) == 1
+        assert '0 failed, 0 timed out, 0 not reached' not in totals, totals
+
+
+class TestTheSummaryLeadsWithWhatWentWrong:
+    """stdout is what cron mails, so the crashes must not be buried inside twenty skip lines. Grouping and
+    run order are not in conflict: within an outcome the run order is kept."""
+
+    def named_lines(self, results):
+        return [ln.split()[1] for ln in scrape_queue.summarise(results, 1.0).splitlines()
+                if ln.startswith('[queue] ') and 'cities ok' not in ln and '====' not in ln
+                and not ln.startswith('[queue] pass ')]
+
+    def test_failures_come_before_skips(self):
+        results = [result('city-%02d' % n, outcome='skipped_deadline', seconds=None, exit_code=None)
+                   for n in range(20)]
+        results.insert(9, result('boom', outcome='failed', seconds=5.0))
+        results.insert(15, result('hung', outcome='timed_out', exit_code=137, seconds=900.0))
+
+        assert self.named_lines(results)[:2] == ['boom', 'hung'], self.named_lines(results)[:5]
+
+    def test_run_order_is_kept_within_an_outcome(self):
+        results = [result('zulu', outcome='failed', seconds=1.0),
+                   result('alpha', outcome='failed', seconds=1.0)]
+
+        assert self.named_lines(results) == ['zulu', 'alpha'], 'grouped by outcome, not re-sorted by name'
+
+
+class TestASkippedCityIsNamedByItsCityId:
+    """The skipped_deadline results were built as CityResult(c, ...) over City tuples, so the alarm line
+    printed the whole namedtuple - leaking the fqdn into cron mail and blowing the %-24s column. The PR then
+    made that same field a dict key, where a City can never match a city_id lookup."""
+
+    def skipped(self, monkeypatch, tmp_path):
+        cities = [scrape_queue.City('alpha-aa', 'sidewalk-alpha.invalid')]
+        monkeypatch.setattr(scrape_queue.time, 'monotonic', _clock_that_jumps_past(90.0))
+        return scrape_queue.run_queue(cities, str(tmp_path), sys.executable, 'runner.py', [],
+                                      max_runtime_minutes=1.0, city_max_runtime=12.0)
+
+    def test_a_skipped_result_keys_on_a_string(self, monkeypatch, tmp_path):
+        results = self.skipped(monkeypatch, tmp_path)
+
+        assert [r.outcome for r in results] == ['skipped_deadline']
+        assert [r.city_id for r in results] == ['alpha-aa']
+        assert {r.city_id: r for r in results}.get('alpha-aa') is not None
+
+    def test_the_summary_does_not_leak_the_fqdn(self, monkeypatch, tmp_path):
+        summary = scrape_queue.summarise(self.skipped(monkeypatch, tmp_path), 1.0)
+
+        assert 'sidewalk-alpha.invalid' not in summary
+        assert 'alpha-aa' in summary
+
+
+class TestTheBannerDoesNotPromisePassesThatCannotHappen:
+    """run_queue returns after pass 1 without both budgets, but the start banner announced them anyway -
+    while --dry-run, two screens away, guarded on exactly that."""
+
+    def test_a_window_with_no_slot_says_extra_passes_are_off(self, tmp_path, fake_runner, journal, capsys):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--max-runtime', '5')
+
+        out = capsys.readouterr().out
+        assert 'extra passes off' in out
+        assert 'extra passes on' not in out
+
+    def test_a_slot_with_no_window_says_extra_passes_are_off(self, tmp_path, fake_runner, journal, capsys):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--city-max-runtime', '5')
+
+        assert 'extra passes off' in capsys.readouterr().out
+
+    def test_both_budgets_says_on(self, tmp_path, fake_runner, journal, capsys):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--max-runtime', '5',
+                 '--city-max-runtime', '0.02')
+
+        assert 'extra passes on' in capsys.readouterr().out
+
+
+class TestAStoppedQueueStillReportsWhatItDid:
+    """A SIGTERM mid-pass used to propagate straight out of main(), skipping summarise entirely: every city
+    that had run that night vanished from stdout. Pre-#43 the queue occupied 477 of 690 minutes; it now
+    occupies all 690 by design, so the window in which a cron timeout wrapper or an operator's kill can land
+    inside it is the whole night, and the evidence lost is several passes deep."""
+
+    def test_the_summary_survives_a_stop(self, tmp_path, fake_runner, journal, monkeypatch, capsys):
+        calls = []
+
+        def run_one(city, *a, **k):
+            calls.append(city.city_id)
+            if len(calls) == 2:
+                raise KeyboardInterrupt('the queue is being stopped')
+            return scrape_queue.CityResult(city.city_id, 'ok', 0, 30.0)
+
+        monkeypatch.setattr(scrape_queue, 'run_city', run_one)
+        with pytest.raises(KeyboardInterrupt):
+            scrape_queue.main(['--lock', str(tmp_path / 'test.lock'), '--no-rotate',
+                               '--cities', write_manifest(tmp_path, ['alpha-aa,h1', 'bravo-bb,h2']),
+                               '--store-root', str(tmp_path / 'store'),
+                               '--runner', fake_runner, '--python', sys.executable])
+
+        out = capsys.readouterr().out
+        assert calls == ['alpha-aa', 'bravo-bb'], calls
+        # The city that finished before the stop is still counted, so the record of the night survives.
+        assert '1/1 cities ok' in out, out
+
+    def test_a_clean_night_reports_exactly_once(self, tmp_path, fake_runner, journal, capsys):
+        """Discrimination against printing the summary twice - once in the finally and once after."""
+        run_main(tmp_path, three_cities(tmp_path), fake_runner)
+
+        assert capsys.readouterr().out.count('==== summary ====') == 1
+
+
+class TestTheDepthReservationScalesWithAnEnlargedSlot:
+    """--min-depth-runtime is a reservation carved out of --max-runtime, and the queue rewrites the budget
+    for every extra pass - so leaving the reservation at its pass-1 value hands almost the whole enlarged
+    slot to the image phase, which is the opposite of what the passes exist for (#43)."""
+
+    def test_a_bigger_budget_gets_a_proportionally_bigger_reservation(self):
+        args = scrape_queue.scale_depth_reservation(['--all-panos', '--min-depth-runtime', '6'],
+                                                    budget_minutes=120.0, slot_minutes=12.0)
+
+        assert args == ['--all-panos', '--min-depth-runtime', '60']
+
+    def test_the_equals_form_is_rewritten_too(self):
+        args = scrape_queue.scale_depth_reservation(['--min-depth-runtime=6'],
+                                                    budget_minutes=24.0, slot_minutes=12.0)
+
+        assert args == ['--min-depth-runtime=12']
+
+    def test_a_pass_one_slot_is_left_exactly_alone(self):
+        original = ['--all-panos', '--min-depth-runtime', '6']
+
+        assert scrape_queue.scale_depth_reservation(original, 12.0, 12.0) == original
+
+    def test_a_smaller_budget_is_never_scaled_up(self):
+        """Pass 1's last city can be clamped BELOW the slot by the window; scaling must never enlarge the
+        reservation, which at or past the budget zeroes the image phase entirely."""
+        args = scrape_queue.scale_depth_reservation(['--min-depth-runtime', '6'], 3.0, 12.0)
+
+        assert args == ['--min-depth-runtime', '6']
+
+    def test_no_reservation_means_nothing_to_scale(self):
+        assert scrape_queue.scale_depth_reservation(['--all-panos'], 120.0, 12.0) == ['--all-panos']
+
+    def test_a_malformed_reservation_is_passed_through_untouched(self):
+        """The runner owns argument validation; the queue must not turn a typo into a traceback of its own
+        and take the whole fleet down with it."""
+        original = ['--min-depth-runtime', 'six']
+
+        assert scrape_queue.scale_depth_reservation(original, 120.0, 12.0) == original
+
+    def test_it_reaches_the_command_an_extra_pass_actually_runs(self, tmp_path, fake_runner, journal,
+                                                                monkeypatch):
+        """Through run_queue, not just the helper: a correct fix that is never called is the failure mode."""
+        monkeypatch.setenv('QUEUE_TEST_STOP', 'depth:max-runtime')
+        run_main(tmp_path, write_manifest(tmp_path, ['alpha-aa,h1']), fake_runner, '--no-rotate',
+                 '--max-runtime', '5', '--city-max-runtime', '0.02', '--kill-grace', '0.1',
+                 '--', '--min-depth-runtime', '0.01')
+
+        starts = [line for line in journal.read() if line.startswith('START')]
+        assert len(starts) == 2, starts
+        assert '--min-depth-runtime 0.01' in starts[0], starts[0]
+        assert '--min-depth-runtime 0.01' not in starts[1], 'pass 2 must scale the reservation'
+
+
+class TestReadingARunSummaryResolvesEveryDoubtTowardsTheFallback:
+    """None means "fall back to the elapsed rule", so every malformed shape has to produce None rather than
+    a confident wrong answer. The distinction that matters most is the last one: an object naming neither
+    phase is a summary that says NOTHING, not one that says "nothing stopped me" - and only the latter is
+    allowed to mark a city finished."""
+
+    def write(self, tmp_path, text):
+        path = tmp_path / 'summary.json'
+        path.write_text(text)
+        return str(path)
+
+    def test_a_well_formed_summary_comes_back_with_both_keys(self, tmp_path):
+        assert scrape_queue.read_run_summary(self.write(tmp_path, '{"image_stop": "max-runtime"}')) == {
+            'image_stop': 'max-runtime', 'depth_stop': None}
+
+    def test_a_missing_file_is_no_summary(self, tmp_path):
+        assert scrape_queue.read_run_summary(str(tmp_path / 'nothing-here.json')) is None
+
+    def test_a_truncated_write_is_no_summary(self, tmp_path):
+        assert scrape_queue.read_run_summary(self.write(tmp_path, '{"image_stop": "max-run')) is None
+
+    def test_something_that_is_not_an_object_is_no_summary(self, tmp_path):
+        assert scrape_queue.read_run_summary(self.write(tmp_path, '["max-runtime"]')) is None
+
+    def test_an_object_naming_neither_phase_is_no_summary(self, tmp_path):
+        """The discrimination against treating `{}` as "nothing stopped me": an empty object is what a
+        half-written or foreign file looks like, and marking a city finished on it would silently strand
+        its backlog every night."""
+        assert scrape_queue.read_run_summary(self.write(tmp_path, '{}')) is None
+        assert scrape_queue.read_run_summary(self.write(tmp_path, '{"other": 1}')) is None
+
+    def test_an_unknown_extra_key_is_ignored_not_fatal(self, tmp_path):
+        summary = self.write(tmp_path, '{"image_stop": null, "depth_stop": null, "future_field": 7}')
+
+        assert scrape_queue.read_run_summary(summary) == {'image_stop': None, 'depth_stop': None}

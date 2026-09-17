@@ -1,5 +1,7 @@
 import contextlib
 import enum
+import errno
+import importlib
 import os
 import re
 import struct
@@ -8,6 +10,88 @@ import requests
 from PIL import Image
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+
+class HostStateLocked(Exception):
+    """Another live process on this host already holds the lock."""
+
+
+def _lock_module():
+    """The platform's advisory-lock module: fcntl on POSIX, msvcrt on Windows.
+
+    Imported by name at call time rather than behind a module-scope try/except ImportError, so this module has
+    no line that is dead on the platform it is running on - and so a test can substitute a module-shaped
+    object and exercise the arm this platform never takes.
+
+    Both APIs release the lock when the holding process dies, which is the property the callers rest on: a
+    lock that outlived a crash would silently disable a feature for ever, which is worse than the overlap it
+    prevents. An O_EXCL lock file - the obvious first implementation - has exactly that defect.
+    """
+    return importlib.import_module('fcntl' if os.name == 'posix' else 'msvcrt')
+
+
+# The errno a NON-BLOCKING lock attempt returns when someone else holds the lock, and nothing else: flock
+# gives EWOULDBLOCK (EAGAIN on Linux), msvcrt.locking gives EACCES (measured) or EDEADLOCK. Any other OSError
+# - ENOLCK or EOPNOTSUPP from a filesystem that cannot lock, EBADF - is not a second process and must not be
+# reported as one (#125 review, finding 4). Built with getattr because not every platform defines every name.
+_LOCK_HELD_ERRNOS = frozenset(
+    code for code in (getattr(errno, name, None) for name in ('EAGAIN', 'EWOULDBLOCK', 'EACCES', 'EDEADLOCK', 'EDEADLK'))
+    if code is not None)
+
+
+def _try_lock(fd):
+    """Take an exclusive advisory lock on fd without blocking.
+
+    Raise HostStateLocked if someone else holds it; let any other OSError through unwrapped, because "another
+    process holds this" is the one diagnosis a caller acts on (download_depth_maps prints it to stdout, where
+    cron mails it), and a lock that cannot be taken for some other reason - a filesystem without lock support,
+    a bad descriptor - would otherwise send the operator looking for a process that does not exist.
+    """
+    lock_api = _lock_module()
+    try:
+        if hasattr(lock_api, 'flock'):
+            lock_api.flock(fd, lock_api.LOCK_EX | lock_api.LOCK_NB)
+        else:
+            # One byte at offset 0. Windows allows locking a region past EOF, so this works on the empty file
+            # a first run creates.
+            os.lseek(fd, 0, os.SEEK_SET)
+            lock_api.locking(fd, lock_api.LK_NBLCK, 1)
+    except OSError as e:
+        if e.errno in _LOCK_HELD_ERRNOS:
+            raise HostStateLocked(str(e)) from e
+        raise
+
+
+@contextlib.contextmanager
+def exclusive_host_lock(path):
+    """Hold an advisory lock on a HOST-level state file for the duration of the block, or raise.
+
+    For state that belongs to the machine rather than to one city's store, where two processes reading,
+    deciding and writing independently would each believe they owned the whole budget. `scrape_queue.py`
+    carries its own copy of this idiom for the queue lock; the two are deliberately not shared, because
+    collapsing them would make the fleet driver import the image package to borrow four lines of `fcntl`.
+
+    The lock file is never unlinked, deliberately: unlinking races - another process can already have opened
+    the same path and be holding a lock on what is now an orphaned inode, so both would believe they hold it.
+    It is left behind holding the pid, which costs nothing and tells whoever finds it who to look for. Lock a
+    file that is never renamed: an os.replace() swaps the inode out from under any lock held on it.
+
+    @raise HostStateLocked if another process holds it; OSError if the path cannot be opened at all.
+    """
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o664)
+    try:
+        _try_lock(fd)
+        os.ftruncate(fd, 0)
+        os.write(fd, ("%d\n" % os.getpid()).encode())
+    except BaseException:
+        os.close(fd)
+        raise
+    try:
+        yield path
+    finally:
+        # Closing releases the lock under both APIs. Nothing else is needed, and nothing here may raise on the
+        # way out and mask the caller's own exception.
+        os.close(fd)
 
 # Start-of-frame markers whose payload carries the image dimensions. DHT/DAC/RST/SOS are excluded;
 # 0xC4/0xC8/0xCC look like SOF numerically and are not.
