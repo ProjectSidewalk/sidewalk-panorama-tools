@@ -56,6 +56,7 @@ def build_parser():
     parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); it is a share of --max-runtime, and the production queue passes 6 of a 12-minute slot. Ignored without --max-runtime or with --skip-depth.')
     parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
     parser.add_argument('--depth-block-latch', default=None, metavar='PATH', help='Where to remember that Google refused this host, so the next city in the queue stands down instead of rediscovering the block with fresh requests. Defaults to a file in the system temp directory - LOCAL disk, not the pano store, because it is a fact about this host and because the storage dir given to a run belongs to a single city. A latch younger than 6 hours skips the depth phase entirely; images are unaffected.')
+    parser.add_argument('--depth-pace-state', default=None, metavar='PATH', help='Where the depth pacer remembers the request interval this host has EARNED, so the next city in the queue opens there instead of ramping down from depth_start_interval again. Only earned speed is remembered - a back-off or a refusal resets it - and a file older than a day is ignored. Defaults to a file in the system temp directory beside the block latch, for the same reasons.')
     parser.add_argument('--run-summary-file', default=None, metavar='PATH', help='Write a small JSON object naming what stopped each phase (image_stop, depth_stop) to PATH. This is how scrape_queue decides which cities still have work and so get an extra pass over the leftover window (#43); nothing else reads it, and without the flag nothing is written. Deliberately has no default: a default path would write into whatever CWD cron happened to start in.')
     # Deprecated no-op, kept for one release so existing invocations don't crash argparse.
     parser.add_argument('--attempt-depth', action='store_true', help=argparse.SUPPRESS)
@@ -541,9 +542,17 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     return success_count, fallback_success_count, fail_count, skipped_count, total_completed
 
 
-# Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration. Positional, parsed by
-# our log-analyzer tooling. The full column table lives in docs/ops.md.
-LOG_CSV_FIELD_COUNT = 18
+# Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration, then the depth corpus
+# size (#43). Positional, parsed by our log-analyzer tooling. The full column table lives in docs/ops.md.
+LOG_CSV_FIELD_COUNT = 19
+
+# 1-based position of the depth corpus size - the number of GSV panos the depth phase was given. It is the one
+# number the analyzer cannot derive from the other 18: field 16 says how many panos are resolved, and only this
+# says out of how many, which is what a backfill's progress and ETA are computed from. Appended at the END of
+# the row so no existing position moves, and written from the finally rather than after the depth phase because
+# it is known before any phase runs - so a crashed run still records it, and only a run that died in the
+# pano-list fetch itself leaves it blank.
+DEPTH_ELIGIBLE_FIELD = 19
 
 
 def log_timestamp(now=None):
@@ -585,7 +594,7 @@ def _duration_minutes(start_monotonic, end_monotonic):
 
 
 def write_log_csv_row(storage_location, fields):
-    """Append one run's row to <storage_location>/log.csv, blank-padded to the full 18 columns.
+    """Append one run's row to <storage_location>/log.csv, blank-padded to the full LOG_CSV_FIELD_COUNT columns.
 
     Blank means the phase never finished - visibly missing data, not a fake zero. If the append itself fails
     (the classic cause: the sshfs store went away mid-run), the joined row is printed to stderr before the
@@ -605,13 +614,15 @@ def write_log_csv_row(storage_location, fields):
 
 def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_infos, skip_depth,
                                 max_runtime_minutes=None, max_depth_requests=None, min_depth_runtime=0.0,
-                                depth_block_latch=None, stop_reasons=None):
+                                depth_block_latch=None, depth_pace_state=None, stop_reasons=None):
     """Run the image and depth phases and append this run's row to log.csv.
 
     Fields are accumulated as each phase completes and the row is written once, in a finally, padded to the
-    full 18 with blanks. A crash mid-run therefore still yields a parseable full-width line that keeps every
+    full width with blanks. A crash mid-run therefore still yields a parseable full-width line that keeps every
     completed phase's counts (a failure in the depth phase must not discard what the image phase downloaded),
-    while the phases that never finished stay visibly blank rather than turning into fake zeros (#49).
+    while the phases that never finished stay visibly blank rather than turning into fake zeros (#49). The
+    one field that is not a phase result - the depth corpus size, DEPTH_ELIGIBLE_FIELD - is known up front
+    and lands on every row that gets this far, crashed or not.
 
     @param storage_location Root of the pano store (log.csv and the ledgers live here).
     @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
@@ -622,9 +633,9 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
         from "the phase never got to run" - which is the whole distinction scrape_queue's extra passes turn
         on (#43).
     @return The set of sources whose breaker tripped this run (#113), empty when none did. It rides back
-        rather than into log.csv: the row is 18 positional fields that log_analyzer parses by position, so a
-        19th would have to move LOG_COLUMNS and every production file's hand-written header in step, for an
-        alarm the exit code already delivers through scrape_queue and cron mail.
+        rather than into log.csv: the row's fields are counts of work, parsed by position, and an alarm is
+        not one - the exit code already delivers it through scrape_queue and cron mail. (Field 19, the depth
+        corpus size, IS a count of work, which is why it went into the row and the breaker did not.)
     """
     # The wall clock supplies the one thing it is good for - when this run happened, stamped with its offset
     # so a reader knows which clock that is (#101). Everything measuring an INTERVAL - the budgets (#51) and
@@ -640,8 +651,10 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
         stop_reasons.setdefault('depth_stop', None)
 
     # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
-    # split below needs it too.
+    # split below needs it too - and because its size is log.csv's last field (#43): the denominator every
+    # progress figure for the backfill needs, and the one number nothing else in the row carries.
     gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
+    depth_eligible = len(gsv_panos)
 
     # Both phases share --max-runtime (it exists to keep the run inside its daily cron slot, per #38, and that
     # constraint doesn't care which phase spends the clock), but the image phase must leave the reserved tail so
@@ -672,7 +685,7 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     try:
         # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below),
         # but its log.csv columns are stubbed with the values every production run has always written so the
-        # positional 18-column format parsed by scraper-log-analyzer doesn't shift. Deliberately the image
+        # positional format parsed by scraper-log-analyzer doesn't shift. Deliberately the image
         # list's length, which is what this counted before depth stopped honouring --all-panos.
         xml_res = (0, 0, len(image_pano_infos), len(image_pano_infos))
         xml_end_monotonic = time.monotonic()
@@ -703,6 +716,7 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
                                                 max_runtime_minutes=max_runtime_minutes,
                                                 max_requests=max_depth_requests,
                                                 block_latch_path=depth_block_latch,
+                                                pace_state_path=depth_pace_state,
                                                 stop_reasons=stop_reasons)
         depth_end_monotonic = time.monotonic()
         fields += [depth_res[0], depth_res[1], depth_res[2], depth_res[3],
@@ -710,6 +724,10 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
 
         fields.append(_duration_minutes(run_start_monotonic, depth_end_monotonic))
     finally:
+        # Whatever the phases managed to record, then blanks up to the corpus-size field, then the corpus size
+        # itself. On a completed run the padding is empty; on a crashed one it is the unfinished phases.
+        fields += [''] * (DEPTH_ELIGIBLE_FIELD - 1 - len(fields))
+        fields.append(depth_eligible)
         write_log_csv_row(storage_location, fields)
     return tripped_sources
 
@@ -731,7 +749,7 @@ def _write_run_summary(path, stop_reasons):
 
 def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_panos=False, skip_depth=False,
         max_runtime_minutes=None, min_depth_runtime=0.0, max_depth_requests=None, depth_block_latch=None,
-        run_summary_path=None):
+        depth_pace_state=None, run_summary_path=None):
     """Fetch the pano list, narrow it, and run the scrape - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, logging, and signal handling; this seam takes plain
@@ -748,14 +766,15 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
     try:
         return _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_panos, skip_depth,
                            max_runtime_minutes, min_depth_runtime, max_depth_requests, depth_block_latch,
-                           stop_reasons)
+                           depth_pace_state, stop_reasons)
     finally:
         if run_summary_path is not None:
             _write_run_summary(run_summary_path, stop_reasons)
 
 
 def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_panos, skip_depth,
-                max_runtime_minutes, min_depth_runtime, max_depth_requests, depth_block_latch, stop_reasons):
+                max_runtime_minutes, min_depth_runtime, max_depth_requests, depth_block_latch,
+                depth_pace_state, stop_reasons):
     """run()'s body, minus the run-summary bookkeeping its finally owns."""
     # Access Project Sidewalk API to get Pano IDs for city
     print("Fetching pano-ids")
@@ -791,7 +810,7 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
             storage_location, image_pano_infos, pano_infos, skip_depth,
             max_runtime_minutes=max_runtime_minutes,
             max_depth_requests=max_depth_requests, min_depth_runtime=min_depth_runtime,
-            depth_block_latch=depth_block_latch, stop_reasons=stop_reasons)
+            depth_block_latch=depth_block_latch, depth_pace_state=depth_pace_state, stop_reasons=stop_reasons)
     except BaseException:
         # run_scraper_and_log_results's own finally has already written the evidence row; this puts the
         # traceback - otherwise stderr-only, the exact channel that dies with the container - into scrape.log
@@ -857,7 +876,7 @@ def main(argv=None):
                           all_panos=args.all_panos, skip_depth=args.skip_depth,
                           max_runtime_minutes=args.max_runtime, min_depth_runtime=args.min_depth_runtime,
                           max_depth_requests=args.max_depth_requests,
-                          depth_block_latch=args.depth_block_latch,
+                          depth_block_latch=args.depth_block_latch, depth_pace_state=args.depth_pace_state,
                           run_summary_path=args.run_summary_file)
     return 1 if tripped_sources else 0
 
