@@ -98,7 +98,8 @@ Three consequences worth knowing:
 
 ## Nightly deployment
 
-The fleet runs as **one queue, from one crontab line**, pinned to one named timezone. `scrape_queue.py` walks
+The fleet runs as **one queue, from one crontab line**, on a box whose clock is set to Seattle's timezone.
+`scrape_queue.py` walks
 a manifest of cities and starts the next one as soon as the previous one exits — and then, while the window
 has a slot left, runs the cities that ran out of budget again ([extra passes](#extra-passes)).
 
@@ -106,9 +107,7 @@ The line in production since 2026-09-06 (depth on; 52 cities × 12 minutes insid
 ends 06:30 Pacific):
 
 ```cron
-# Vixie/Debian cron reads CRON_TZ; a systemd timer takes Timezone= instead. Without it the schedule is UTC
-# and drifts an hour against Seattle every March and November.
-CRON_TZ=America/Los_Angeles
+# No CRON_TZ: this cron ignores it (see below). The box timezone IS the schedule.
 SHELL=/bin/bash
 BASH_ENV=/home/ubuntu/.scraper.env
 
@@ -121,6 +120,21 @@ BASH_ENV=/home/ubuntu/.scraper.env
 
 `--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
 images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the `--`.
+
+**The timezone lives in the box, not in the crontab.** The first version of this line carried
+`CRON_TZ=America/Los_Angeles`, which is how cronie (Fedora/RHEL) pins a schedule to a zone — and Ubuntu 22.04
+ships Debian's ISC cron (`3.0pl1-137ubuntu3`), which silently ignores it. Measured 2026-09-17: eleven nights of
+`queue starting` at `19:00:01` in a `scrape_queue.log` stamped in the box's then-UTC local time, i.e. **noon
+Pacific**, the working day the queue exists to stay out of
+([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The fix is
+`timedatectl set-timezone America/Los_Angeles` on the box plus a cron restart (`KillMode=process`, so a running
+queue survives it): cron schedules in the system's local time, so `0 19` is 19:00 Pacific and follows DST.
+Nothing the scraper writes depends on the box's zone — `log.csv` column 1, `pano_id_log.csv`'s `fetched_at` and
+the pacer's state file all carry their offset or are epoch values (that was the point of #101's timestamp change)
+— but `scrape_queue.log` stamps written before the switch read UTC and those after read Pacific, so a reader
+diffing the two eras should expect a seven-hour step at 2026-09-17. Do not put `CRON_TZ` back: it reads as a fix
+and is not one. A systemd timer would take `Timezone=` for real, but this is one line and cron mails failures,
+which a timer does not.
 
 **Why a queue rather than 53 slots**
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The old shape was one line

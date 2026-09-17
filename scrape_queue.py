@@ -12,8 +12,8 @@ while a full slot of the window remains, runs the cities that stopped on their b
 
   - serialises by construction. The stagger existed to keep two cities off /adminapi/panos and the store at
     once; a queue enforces that without anyone maintaining 53 slot numbers.
-  - has one start time to pin to a timezone (CRON_TZ=America/Los_Angeles - see docs/downloader.md), so the
-    whole fleet moves with DST instead of drifting against it.
+  - has one start time to pin to a timezone (the box's, set with timedatectl - NOT CRON_TZ, which Ubuntu's
+    cron ignores; see docs/downloader.md), so the whole fleet moves with DST instead of drifting against it.
   - packs the ring into the idle hours. The measured fleet total is ~16 minutes of real work per day, so
     the queue finishes long before the window closes on an ordinary night.
   - cannot overlap itself. There was no lock anywhere in this repo before: a slow run and the next slot
