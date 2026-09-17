@@ -20,7 +20,7 @@ while a full slot of the window remains, runs the cities that stopped on their b
     could put two processes on one city's pano_id_log.csv, log.csv and scrape.log at the same time.
   - spends the whole window. Measured after the depth backfill's first three nights: 477 of 690 minutes
     used, 13 cities already complete and exiting in seconds, and every city with a backlog capped at its
-    12-minute slot - so the five largest were 250-460 nights out while a third of every night went unused.
+    12-minute slot - so the five largest were 240-463 nights out while a third of every night went unused.
     Pass 1 still gives every city its guaranteed slot; the passes after it give the leftover to whoever ran
     out of budget, in equal shares no smaller than a slot.
 

@@ -934,7 +934,7 @@ class TestAStoppedQueueDoesNotOrphanTheCityItIsRunning:
 #
 # Measured on the production store after the depth backfill's first three nights: the queue used 477 of its
 # 690-minute window, because 13 small cities were already complete and exited in seconds while every city
-# with a backlog was capped at its 12-minute slot - and the five largest cities were 250-460 nights out. Pass
+# with a backlog was capped at its 12-minute slot - and the five largest cities were 240-463 nights out. Pass
 # 1 is unchanged (every city gets its guaranteed slot). Then, while a full slot of window remains, the cities
 # whose previous run STOPPED ON ITS BUDGET are run again, each with the larger of a slot and an equal share
 # of what is left. Who has work is read from tonight's own pass 1, so no cross-night state is needed.

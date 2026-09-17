@@ -66,7 +66,7 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--all-panos` | Download **images** for panos users visited but never labeled. Does not affect depth, which always covers every pano. |
 | `--skip-depth` | Skip the depth phase (it is on by default). |
 | `--max-runtime MINUTES` | Stop *starting* new downloads and requests after this much wall time. Sized to the nightly cron slot ([#38](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/38)). |
-| `--min-depth-runtime MINUTES` | Reserve the tail of `--max-runtime` for depth when depth has unresolved work. Default `0`; **production should pass `60`**. |
+| `--min-depth-runtime MINUTES` | Reserve the tail of `--max-runtime` for depth when depth has unresolved work — a *share* of the budget, so size it against the slot, not the night. Default `0`; the production line passes `6` of its 12-minute `--city-max-runtime` (below), and must stay below it or no images are downloaded. |
 | `--max-depth-requests N` | Stop the depth phase after N metadata requests. Useful for throttling the initial backfill. |
 | `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
 | `--run-summary-file PATH` | Write a small JSON object (`image_stop`, `depth_stop`) naming what stopped each phase. `scrape_queue` passes this and reads it back to decide which cities still have work; nothing else reads it, and without the flag nothing is written. No default, deliberately — a default path would write into whatever CWD cron started in. |
@@ -195,7 +195,7 @@ Why ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)
 [report](../reports/2026-09-09-depth-backfill-first-nights.md)): three nights into the depth backfill the queue
 was using 477 of its 690 minutes. Thirteen small cities were already complete and exited in seconds, giving
 nothing back, while every city with a backlog was capped at 12 minutes whether it had 400 panos left or
-270,000 — so the five largest cities were 250–460 nights out while a third of every night went unused, and the
+270,000 — so the five largest cities were 240–463 nights out while a third of every night went unused, and the
 share grew every night a small city finished. Spending the window on whoever still has work is what "size the
 window to the night, not the work" was always supposed to mean.
 

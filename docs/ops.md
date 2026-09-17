@@ -21,7 +21,8 @@ Everything lives under the storage root, sharded by the first two characters of 
 
 One file lives at the **store root** rather than inside a city: `scrape_queue.log`, the
 [queue driver](downloader.md#nightly-deployment)'s own rotating log. It records what ran last night, in what
-order, and how long each city took — which no per-city log can, because none of them can see the ring.
+order, in which [pass](downloader.md#extra-passes) and how long each city took — which no per-city log can,
+because none of them can see the ring.
 
 `scrape.log` lives here rather than in the working directory on purpose: cron runs the scraper from whatever
 directory it likes, and a relative path scatters every per-pano failure detail somewhere nobody looks.
