@@ -1181,8 +1181,9 @@ class TestTheFetchTimestamp:
 
     def test_the_stamp_is_last_so_ops_greps_keep_working(self, monkeypatch, tmp_path):
         """Every recovery procedure in docs/ops.md reads the ledger by column position - `cut -d, -f1` for
-        the id, `,0$` for a permanent failure. Inserting the stamp anywhere but last would move the column
-        those read, silently."""
+        the id, `cut -d, -f2` / `awk -F, '$2 == 0'` for the verdict. Inserting the stamp anywhere but last
+        would move the column those read, silently. (An end-anchored `grep ',0$'` is the one form that does
+        NOT survive, because the row now ends in the stamp - the docs say so rather than suggest it.)"""
         storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
 
         for row in self.ledger_lines(storage)[1:]:
@@ -1245,6 +1246,49 @@ class TestTheFetchTimestamp:
         lines = self.ledger_lines(storage)
         assert lines[0] == 'pano_id,downloaded', 'the old header must not be rewritten'
         assert len(lines[-1].split(',')) == 3, 'but new rows still carry the stamp'
+
+    def test_a_skip_writes_a_blank_stamp_not_now(self, monkeypatch, tmp_path):
+        """A skip is os.path.isfile() returning true: the pixels were fetched by an earlier run whose row is
+        missing - killed between the save and the append, a ledger deleted as the force-retry lever, a store
+        assembled by copy. Stamping NOW there relabels a 2019 fetch as today's, on a row that is never
+        rewritten, and the next `rsync` without -t then destroys the mtime that contradicted it. Blank means
+        unknown, the same thing a two-field row from before #114 means. Written against the first version,
+        which stamped every verdict alike."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        verdicts = {'on-disk-since-2019': downloaders.DownloadResult.skipped,
+                    'fetched-tonight': downloaders.DownloadResult.success,
+                    'fallback-tonight': downloaders.DownloadResult.fallback_success,
+                    'nothing-there': downloaders.DownloadResult.failure}
+        panos = [{'pano_id': p, 'source': 'gsv'} for p in verdicts]
+        monkeypatch.setattr(DownloadRunner, 'download_pano', scripted_download_pano(verdicts))
+
+        DownloadRunner.download_panorama_images(str(storage), panos)
+
+        stamps = {}
+        for row in self.ledger_lines(storage)[1:]:
+            fields = row.split(',')
+            assert len(fields) == 3, 'every row is three fields, a skip included: %r' % row
+            stamps[fields[0]] = fields[2]
+        assert stamps['on-disk-since-2019'] == '', 'a skip must not claim a fetch time it has no evidence for'
+        for pano in ('fetched-tonight', 'fallback-tonight', 'nothing-there'):
+            assert datetime.fromisoformat(stamps[pano]).tzinfo is not None, (pano, stamps[pano])
+
+    def test_a_blank_stamp_still_reads_as_a_ledgered_verdict(self):
+        """The reader must keep the row it now writes: `<id>,1,` is three fields with an empty third, and it
+        gates the pano exactly as a stamped row does. Pairs with the writer test above - a reader that
+        demanded a non-empty stamp would turn every re-registered pano into a nightly re-attempt."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'pano_id_log.csv')
+            with open(path, 'w', newline='') as f:
+                f.write('pano_id,downloaded,fetched_at\nre-registered,1,\nrefused,0,\n')
+
+            ledgered, total, success, failure = DownloadRunner.progress_check(path)
+
+        assert ledgered == {'re-registered', 'refused'}
+        assert (total, success, failure) == (2, 1, 1)
 
     def test_a_four_field_row_is_still_damage(self):
         """Two widths are legal; a third is not. Written as a membership test rather than `>= 2` so a torn

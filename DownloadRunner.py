@@ -517,12 +517,22 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
             if downloaded is not None:
-                # fetched_at goes LAST so `cut -d, -f1` and `-f2` keep meaning what every ops procedure and
-                # every `grep ',0$'` in docs/ops.md assumes. It reuses log_timestamp for the same reason
-                # log.csv's column 1 does (#101): a stamp that does not say which clock it is on is
-                # silently 7-8 hours out the moment a host is not on UTC, and there is no second timestamp
-                # convention on this store to get that wrong differently.
-                ledger.writerow([pano_id, downloaded, log_timestamp()])
+                # fetched_at goes LAST so the id and the verdict stay in columns 1 and 2, which is what every
+                # `cut -d, -f1` / `-f2` and `awk -F, '$2 == 0'` in docs/ops.md reads. (A `grep ',0$'` does NOT
+                # survive this - the row now ends in the stamp - which is why the docs no longer suggest one.)
+                # It reuses log_timestamp for the same reason log.csv's column 1 does (#101): a stamp that
+                # does not say which clock it is on is silently 7-8 hours out the moment a host is not on
+                # UTC, and there is no second timestamp convention on this store to get that wrong differently.
+                #
+                # A skip gets a BLANK stamp. `skipped` is os.path.isfile() returning true: the pixels were
+                # fetched by some earlier run whose row is missing - one killed between the atomic save and
+                # this append, a ledger deleted as the force-retry lever docs/ops.md describes, a torn row the
+                # reader dropped, a store assembled by copy. The only evidence of WHEN is the file's mtime,
+                # and this row is never rewritten, so stamping now would relabel a 2019 fetch as today's for
+                # ever - on exactly the question (which rendering is this?) the column exists to answer. Blank
+                # means unknown, the same thing a two-field row from before #114 means.
+                fetched_at = '' if result_code == DownloadResult.skipped else log_timestamp()
+                ledger.writerow([pano_id, downloaded, fetched_at])
                 ledger_file.flush()
                 df_id_set.add(pano_id)
 
