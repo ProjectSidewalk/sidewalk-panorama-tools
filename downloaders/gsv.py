@@ -689,8 +689,9 @@ class DepthPacer:
       the requests that are already going badly.
     * **Earned speed outlives the process; back-offs do not** (#43). Every city is its own process, and
       measured over three nights of the production backfill every one of them opened at 1.0 s and ended its
-      12-minute slot still ramping - 1,400 clean requests to reach the floor, ~590 per slot - so the fleet's
-      real rate was the opening interval and the five largest cities were 250-460 nights out. Given a
+      12-minute slot still ramping - 1,400 clean requests to reach the floor, a median of 585.5 per slot at
+      1.23 s each (reports/2026-09-09-depth-backfill-first-nights.md) - so the fleet's real rate was the opening
+      interval and the five longest cities were 240-463 nights out. Given a
       `state_path`, the interval and clean streak a run earns are written to local disk (never above the
       opening interval) and the next run opens there. Only EARNED speed: on_pushback is fed by every network
       failure and unexpected exception the phase sees, not only by Google, so a persisted back-off would let
@@ -765,8 +766,8 @@ class DepthPacer:
         """Record the current standing, for the end of the phase.
 
         The decay steps persist themselves as they are earned (a run the queue hard-kills never gets here),
-        so what this adds is the streak in progress: 590 requests a slot is two steps and 190 towards the
-        third, and forgetting the 190 would cost every city a third of its nightly progress.
+        so what this adds is the streak in progress: ~586 requests a slot is two steps and ~186 towards the
+        third, and forgetting the 186 would cost every city a third of its nightly progress.
         """
         self._persist()
 

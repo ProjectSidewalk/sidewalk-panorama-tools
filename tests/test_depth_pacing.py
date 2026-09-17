@@ -498,7 +498,7 @@ class TestThePacerRemembersEarnedSpeed:
         assert self.pacer(tmp_path / 'pace').interval == pytest.approx(0.64)
 
     def test_the_clean_streak_carries_too(self, tmp_path):
-        """590 requests a slot is two decay steps and 190 towards the third. Forgetting the 190 would cost
+        """~586 requests a slot is two decay steps and ~186 towards the third. Forgetting the 186 would cost
         every city a third of its nightly progress towards the floor."""
         first = self.pacer(tmp_path / 'pace')
         first.on_clean()  # one short of a step
@@ -999,8 +999,8 @@ class TestTheStreakIsPersistedWithTheIntervalItWasEarnedAt:
         assert second.interval == 1.0, 'ten clean requests is not a decay step'
 
     def test_a_streak_earned_at_the_persisted_interval_still_carries(self, tmp_path):
-        """The pairing narrows what is carried; it must not stop the feature working. 590 requests a slot is
-        two steps and 190 towards the third, and forgetting the 190 costs a third of a city's nightly gain."""
+        """The pairing narrows what is carried; it must not stop the feature working. ~586 requests a slot is
+        two steps and ~186 towards the third, and forgetting the 186 costs a third of a city's nightly gain."""
         first = self.pacer(tmp_path / 'pace')
         for _ in range(190):
             first.on_clean()

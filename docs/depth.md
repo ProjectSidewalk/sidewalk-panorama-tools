@@ -229,8 +229,10 @@ fan-out — and on top of that:
   multi-month job" this page used to claim — and that claim was the stated reason for leaving pacing off.
   What set the backfill's length in its first three nights (2026-09-06 to 09-08) was the **ramp**: every
   city run started a fresh pacer at 1.0 s, reaching the 0.25 s floor takes seven decay steps — **1,400 clean
-  requests, about 20 minutes** — and no 12-minute slot got there, so every city with a backlog made ~590
-  requests a slot at 1.22 s each. That is the regime this table describes:
+  requests, about 20 minutes** — and no 12-minute slot got there, so a city that used its whole slot made a
+  median of **585.5** requests at **1.23 s** each (`reports/2026-09-09-depth-backfill-first-nights.md`, which
+  lands with [#126](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/126)). That is the
+  regime this table describes:
 
   | per-city slot | window for all 52 | requests/city | requests/night | nights for 1.43 M |
   |---|---:|---:|---:|---:|
@@ -239,10 +241,11 @@ fan-out — and on top of that:
   | 15 min | 13.0 h | 824 | 42,848 | 33 |
 
   The last column is a fleet *average*, and it hid the number that matters: the fleet finishes when its
-  slowest city does, and at 590 a night chicago-il (271,299 panos) was ~460 nights out, kaohsiung-tw ~355,
-  seattle-wa ~310. So the ramp *was* the binding cost, and this page's old advice applies: the pacer now
+  slowest city does, and at its own 582 a night chicago-il (269,581 unresolved) was 463 nights out,
+  kaohsiung-tw 350, seattle-wa 307 (the same report). So the ramp *was* the binding cost, and this page's
+  old advice applies: the pacer now
   persists what it earns across runs the way the latch persists a refusal (the bullet above). At the floor
-  from the first request, a 12-minute slot is ~1,900 requests rather than ~590, and the per-city ETAs above
+  from the first request, a 12-minute slot is ~1,900 requests rather than ~586, and the per-city ETAs above
   divide by about three. What remains is the slot itself — the queue's window is spent on a fixed 12 minutes
   per city whether or not the city has work — and that is the queue's problem to solve, not the pacer's.
   Either way it is cheap to get wrong slowly: panorama retirement was measured at ~0.3% of survivors per
