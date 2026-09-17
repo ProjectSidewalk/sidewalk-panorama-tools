@@ -435,13 +435,33 @@ columns are `0`), so read stdout or `scrape.log` rather than the row:
 | what you see | what happened | what to do |
 |---|---|---|
 | `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
-| `WARNING - the depth phase stopped early because Google stopped answering` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer will also have backed off, and each new city process starts fresh at `depth_start_interval`. |
+| `WARNING - the depth phase stopped early because Google stopped answering` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
 with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
 moves it. To clear one by hand, delete the file; a missing, unparseable or implausibly future-dated latch
 all mean "not blocked", because a latch nobody can read must never be able to stand the whole fleet's depth
 phase down indefinitely.
+
+Beside the **default** latch lives the pacer's **earned standing** (`sidewalk-depth-pace`,
+`--depth-pace-state PATH` moves it — the two paths are independent, so moving the latch alone leaves this
+file in the temp directory): the request interval and clean streak the last run on this host earned, which
+the next run opens at instead of ramping down from `depth_start_interval` again. Deleting it costs one ramp
+(~1,400 requests); an unreadable, `NaN`, or day-old file is ignored the same way, and so is one nothing can
+parse at all. It never holds a value slower than the opening interval, so it cannot be used to slow the
+fleet down, only to keep the speed it has already earned. Only Google's own push-back forfeits it — a
+local network blip or one malformed pano slows the running phase down and leaves the file alone, the same
+rule the latch follows when it declines to blame a full disk on Google — and a phase that made no
+requests writes nothing.
+
+A `sidewalk-depth-pace.lock` sits beside it. The depth phase holds it for its whole duration so exactly one
+live process spends the host's standing; a second concurrent phase logs a `WARNING`, paces itself from
+scratch and writes nothing. It is advisory (`flock`/`msvcrt`, released by the OS when the holder dies),
+never an `O_EXCL` file, for the reason the queue lock is: a lock that outlived a crash would disable the
+feature silently and for ever. Deleting it is safe; it is recreated on demand. Only a *contended* lock is
+reported as a second phase; a lock file that cannot be opened or a filesystem that cannot lock at all
+(`ENOLCK`) is logged to `scrape.log` as `cannot open the pacing lock`, with nothing on stdout, and the run
+remembers nothing.
 
 **Do not read a stood-down phase as lost work.** Nothing is ledgered on either path, so every unresolved
 panorama is retried on the next run. See

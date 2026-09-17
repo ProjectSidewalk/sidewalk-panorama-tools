@@ -54,9 +54,9 @@ def _isolate_process_state():
 
 @pytest.fixture(autouse=True)
 def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
-    """Keep the depth phase's two HOST-level side effects (#43) out of the suite.
+    """Keep the depth phase's three HOST-level side effects (#43) out of the suite.
 
-    Both are correct in production and both have to be neutralised here, and neither is something an
+    All are correct in production and all have to be neutralised here, and none is something an
     individual test would think to do:
 
     * **The pacer's floor is a real 0.25 s** in `config.py`, not the 0 it used to be, so any test driving
@@ -80,6 +80,12 @@ def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(gsv, 'DEPTH_PACE_MIN_BACKOFF', 0.0)
     latch = tmp_path_factory.mktemp('depth-latch') / gsv.DEPTH_BLOCK_LATCH_FILENAME
     monkeypatch.setattr(gsv, 'default_block_latch_path', lambda: str(latch))
+    # The pacer's earned standing is the third host-level side effect (#43): download_depth_maps writes it
+    # at the end of every phase and reads it at the start of the next, so without this one test's earned
+    # speed would be the next test's opening interval - and, with the real intervals above restored by a
+    # test, its sleeps.
+    state = tmp_path_factory.mktemp('depth-pace') / gsv.DEPTH_PACE_STATE_FILENAME
+    monkeypatch.setattr(gsv, 'default_pace_state_path', lambda: str(state))
 
 
 def pytest_configure(config):
