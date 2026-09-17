@@ -219,8 +219,12 @@ Three rules that are load-bearing:
   collapsed into "stopped early": `blocked` means the host is standing down for six hours and a re-run would
   spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again, and
   `max-requests` is a per-process cap the operator asked for, which re-running would silently multiply. If no
-  summary arrives at all — an older runner, or one killed before its `finally` ran — the queue falls back to
-  the old elapsed-time rule, which is at least a *necessary* condition.
+  summary arrives at all the queue falls back to the old elapsed-time rule, which is at least a *necessary*
+  condition. That case is narrower than it sounds: a `DownloadRunner` from before the flag existed does not
+  quietly write nothing, it refuses the unrecognised argument and exits 2, so a queue newer than its runner
+  books every city `FAILED (exit 2)` and re-runs none of them; and a runner killed mid-run exits nonzero,
+  which is never re-run either. What actually reaches the fallback is an `ok` run whose summary could not be
+  written (the runner warns on stdout) or one where an operator's own `--run-summary-file` after `--` won.
 * **The share is never below a slot, and the depth reservation moves with it.** 213 minutes over 39 working
   cities is 5.5 each, below the production line's `--min-depth-runtime`, which would zero every image phase
   and mail a warning per city; and a fraction of a minute can kill a city inside its pano-list fetch. So

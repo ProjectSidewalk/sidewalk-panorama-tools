@@ -1193,9 +1193,12 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
     @param max_runtime_minutes Stop starting new requests once this much time has elapsed since run start.
     @param max_requests        Stop after this many HTTP attempts this run (manual backfill throttle).
     @param stop_reasons        An optional dict this phase records why it stopped into, under 'depth_stop':
-                               one of the DEPTH_STOP_* constants, or None if it worked through its whole
-                               list. An out-parameter for the same reason tripped_sources is one - the
-                               return tuple is log.csv columns and must not be widened by a non-column.
+                               one of the DEPTH_STOP_* constants, or None if nothing more time would have
+                               helped - it worked through its whole list, or never had one to work through
+                               (streetlevel missing, the ledger unreadable or unwritable), which the queue
+                               must treat the same way. An out-parameter for the same reason
+                               tripped_sources is one - the return tuple is log.csv columns and must not be
+                               widened by a non-column.
                                scrape_queue reads it to decide who gets an extra pass (#43): only
                                DEPTH_STOP_MAX_RUNTIME means "more time would have helped", which is why
                                the stood-down and breaker-tripped cases have to be distinguishable from it

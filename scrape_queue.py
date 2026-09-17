@@ -341,9 +341,15 @@ def read_run_summary(path):
     """The stop reasons a city reported, or None if it reported nothing usable.
 
     None means "fall back to the elapsed-time rule", so every ambiguous case resolves to it rather than to a
-    confident wrong answer: no file (an older runner, or one killed before its finally ran), unreadable,
-    not JSON, not an object, or an object naming neither phase. The last of those matters - an empty object
-    is a summary that says nothing, not a summary that says "nothing stopped me".
+    confident wrong answer: no file, unreadable, not JSON, not an object, or an object naming neither
+    phase. The last of those matters - an empty object is a summary that says nothing, not a summary that
+    says "nothing stopped me".
+
+    "No file" is narrower than it looks. A DownloadRunner from before the flag existed does not silently
+    write nothing - argparse refuses the unrecognised argument and the city exits 2, so it is booked as
+    failed and never re-run; and a runner killed before its finally ran exits nonzero for the same result.
+    What actually arrives here with an 'ok' run and no summary is a summary the runner could not WRITE (it
+    warns on stdout when that happens), or an operator's own --run-summary-file after `--`, which wins.
 
     Both keys are always present in what comes back, so callers never have to distinguish a missing key from
     a null one.
@@ -450,11 +456,15 @@ def stopped_on_budget(result):
     is a crash loop, a timed-out city was killed past its budget and would be killed again, and a city the
     window never reached never started.
 
-    When there is no summary at all - an older runner, or one killed before its finally ran - this falls
-    back to the elapsed-time rule. That rule is at least a NECESSARY condition (a run that stopped on budget
-    always measures at least its budget), and leaving the window unspent is worse than the wasted slot its
-    false positives cost. An EMPTY summary is not a missing one: a runner that reported "nothing stopped
-    either phase" is authoritative and does not fall back.
+    When there is no summary at all, this falls back to the elapsed-time rule. That rule is at least a
+    NECESSARY condition (a run that stopped on budget always measures at least its budget), and leaving the
+    window unspent is worse than the wasted slot its false positives cost. An EMPTY summary is not a missing
+    one: a runner that reported "nothing stopped either phase" is authoritative and does not fall back.
+
+    The fallback is narrower than "an older runner" - see read_run_summary: a DownloadRunner without the
+    flag refuses to start (argparse, exit 2) and is booked as failed, and a runner killed mid-run exits
+    nonzero, so neither ever gets here. What does is an 'ok' run whose summary could not be written, or one
+    where an operator's own --run-summary-file after `--` displaced the queue's.
     """
     if result is None or result.outcome != 'ok':
         return False
@@ -554,9 +564,11 @@ def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budge
     stop_reasons = read_run_summary(summary_path)
     if stop_reasons is None and outcome == 'ok':
         # Worth one log line and no more: the run was fine, and the elapsed-time fallback still decides.
-        # A fleet-wide version of this line means the runner beside the queue is older than the queue.
-        logging.info("%s: no run summary; falling back to elapsed time to decide whether it has work left",
-                     city.city_id)
+        # NOT the signature of an old runner beside a new queue - that one refuses the flag and exits 2, so
+        # it shows up as FAILED, not here. This is a runner that could not write the file (it warned on
+        # stdout), or an operator's own --run-summary-file after `--` displacing the queue's.
+        logging.info("%s: no run summary (could not be written, or displaced by a --run-summary-file after "
+                     "--); falling back to elapsed time to decide whether it has work left", city.city_id)
     return CityResult(city.city_id, outcome, exit_code, elapsed, stop_reasons=stop_reasons)
 
 
@@ -738,8 +750,9 @@ def main(argv=None):
         # whatever the window has left by the time they start, which a plan printed before anything runs
         # cannot know. Said here rather than left for someone to discover from a mismatched log line.
         budget = _city_budget(args.city_max_runtime, args.max_runtime)
-        print("Would run %d cities into %s (budgets shown are the first city's):"
-              % (len(ordered), args.store_root))
+        # The one flag a real run adds that cannot be shown: the summary path is a per-run temp file.
+        print("Would run %d cities into %s (budgets shown are the first city's; each real run also gets "
+              "--run-summary-file <per-run temp file>):" % (len(ordered), args.store_root))
         for i, city in enumerate(ordered, 1):
             print("  %2d. %s" % (i, ' '.join(build_command(city, args.store_root, python_exe, runner_path,
                                                            budget, runner_args))))

@@ -289,6 +289,17 @@ class TestTheCommandBuiltForOneCity:
         cmd = scrape_queue.build_command(self.city(), '/store', 'py', 'runner.py', None, ['--all-panos'])
         assert '--max-runtime' not in cmd
 
+    def test_the_queues_summary_path_goes_before_the_pass_through_so_an_operators_own_wins(self):
+        """argparse is last-one-wins, so the queue's --run-summary-file has to precede `--` arguments for an
+        operator who passes their own to get it. A mutant that appended the queue's flag last survived the
+        suite until this pin existed (#126 review)."""
+        cmd = scrape_queue.build_command(self.city(), '/store', 'py', 'runner.py', 12,
+                                         ['--run-summary-file', '/mine.json'],
+                                         run_summary_path='/queue.json')
+
+        assert cmd[-2:] == ['--run-summary-file', '/mine.json']
+        assert cmd.index('/queue.json') < cmd.index('/mine.json')
+
 
 # --- One city ----------------------------------------------------------------------------------------------
 
@@ -998,10 +1009,13 @@ class TestWhichCitiesStillHaveWorkReportedByTheRunner:
 
 
 class TestWhichCitiesStillHaveWorkWhenTheRunnerSaidNothing:
-    """The fallback, for a runner that wrote no summary - an older DownloadRunner, or one killed before its
-    finally ran. It is the old elapsed-time rule, kept because it is at least a NECESSARY condition (a run
-    that stopped on budget always measures at least its budget), and because losing the window entirely is
-    worse than the wasted slot its false positives cost."""
+    """The fallback, for an 'ok' run that produced no summary: one whose summary could not be written, or
+    one where an operator's own --run-summary-file after `--` displaced the queue's. (NOT an older
+    DownloadRunner - that one refuses the flag and exits 2, so it is booked failed and never re-run; see
+    test_a_runner_that_does_not_know_the_flag_is_a_failed_city_not_a_fallback.) It is the old elapsed-time
+    rule, kept because it is at least a NECESSARY condition (a run that stopped on budget always measures
+    at least its budget), and because losing the window entirely is worse than the wasted slot its false
+    positives cost."""
 
     def test_a_run_that_reached_its_budget_has_more_work(self):
         assert scrape_queue.stopped_on_budget(result('a', seconds=720.0, budget=12.0))
@@ -1279,17 +1293,38 @@ class TestTheRunSummaryReachesTheQueue:
         assert result.stop_reasons == {'image_stop': None, 'depth_stop': None}
         assert not scrape_queue.stopped_on_budget(result._replace(budget_minutes=0.002))
 
-    def test_a_runner_that_writes_nothing_leaves_the_fallback_in_charge(self, journal, tmp_path):
-        """An older DownloadRunner: no summary, so the result carries None and the elapsed rule decides."""
-        old_runner = tmp_path / 'old_runner.py'
-        old_runner.write_text('import os,sys\n'
-                              "open(os.environ['QUEUE_TEST_JOURNAL'],'a').write('START %s x\\n'"
-                              " % os.path.basename(sys.argv[2]))\n")
+    def test_a_runner_that_cannot_write_a_summary_leaves_the_fallback_in_charge(self, journal, tmp_path):
+        """A runner that exits 0 without a summary - the file could not be written, or the queue's flag was
+        displaced by an operator's own - carries None and the elapsed rule decides. This stand-in accepts the
+        flag and ignores it; a DownloadRunner from before the flag existed would NOT do that (below)."""
+        mute_runner = tmp_path / 'mute_runner.py'
+        mute_runner.write_text('import os,sys\n'
+                               "open(os.environ['QUEUE_TEST_JOURNAL'],'a').write('START %s x\\n'"
+                               " % os.path.basename(sys.argv[2]))\n")
 
         result = scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
-                                       sys.executable, str(old_runner), 12.0, 1.0, [])
+                                       sys.executable, str(mute_runner), 12.0, 1.0, [])
 
         assert result.stop_reasons is None
+
+    def test_a_runner_that_does_not_know_the_flag_is_a_failed_city_not_a_fallback(self, journal, tmp_path):
+        """The mixed-version deployment the docs used to describe as "falls back": a runner whose parser
+        predates --run-summary-file refuses the argument (argparse, exit 2). The queue books that as a
+        FAILURE - never re-run - not as a run with work left; the docs now say so. Pinned against a stand-in
+        with DownloadRunner's argparse shape, since the real pre-flag file is history, not a fixture."""
+        strict_runner = tmp_path / 'strict_runner.py'
+        strict_runner.write_text('import argparse, os, sys\n'
+                                 "open(os.environ['QUEUE_TEST_JOURNAL'],'a').write('START %s x\\n'"
+                                 " % os.path.basename(sys.argv[2]))\n"
+                                 'p = argparse.ArgumentParser()\n'
+                                 "p.add_argument('d'); p.add_argument('s'); p.add_argument('--max-runtime')\n"
+                                 'p.parse_args()\n')
+
+        result = scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                       sys.executable, str(strict_runner), 12.0, 1.0, [])
+
+        assert (result.outcome, result.exit_code) == ('failed', 2)
+        assert not scrape_queue.stopped_on_budget(result._replace(budget_minutes=12.0))
 
     def test_the_summary_file_does_not_litter_the_store(self, fake_runner, journal, tmp_path):
         """It is a temp file per run, not an artifact: the store holds the city's panos and ledgers, and a
