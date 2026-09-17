@@ -249,11 +249,32 @@ class TestTheReportMatchesTheArtifact:
         assert '"message": "%s"' % body['message'] in report_text
 
     def test_the_downloaders_guard_and_the_census_share_one_definition_of_panoramic(self):
-        """Two constants named the same thing in two files is how they drift. If either moves, the flat
-        arm of the census and the downloader's refusal stop describing the same rule."""
+        """Two constants named the same thing in two files is how they drift - and pinning the CONSTANT
+        does not stop it, which is how it drifted anyway (found 2026-09-10): the downloader's comparison
+        became tolerant (`"360"`, 359.9997, a Decimal) inside the same PR that this test watched, while the
+        census kept an exact `== 360`. The constant matched the whole time. So the census imports the
+        downloader's predicate rather than restating the rule, the same way no study may grow a local copy
+        of studyfmt.fmt, and this asserts it is the one function rather than an equal-looking one.
+        """
         import downloaders.panoramax as panoramax
 
-        assert census.PANORAMIC_FIELD_OF_VIEW_DEG == panoramax.PANORAMIC_FIELD_OF_VIEW_DEG == 360
+        assert panoramax.PANORAMIC_FIELD_OF_VIEW_DEG == 360
+        assert census.is_panoramic_field_of_view is panoramax.is_panoramic_field_of_view
+        assert not hasattr(census, 'PANORAMIC_FIELD_OF_VIEW_DEG'), (
+            'a local copy of the constant is how the rule drifted the first time')
+
+    def test_the_census_classifies_by_the_downloaders_rule_not_by_an_exact_360(self):
+        """The arms are what the report's percentages are computed over, so a value the downloader would
+        treat as a panorama has to land in the panoramic arm here too - otherwise the census stops
+        predicting what the scraper will do with the bbox, which is the only reason it was measured."""
+        features = [item(pano_id='a', fov=360), item(pano_id='b', fov='360'),
+                    item(pano_id='c', fov=359.9997), item(pano_id='d', fov=92),
+                    item(pano_id='e', fov=None)]
+
+        composition = census.classify(features)
+
+        assert composition['panoramic']['count'] == 3
+        assert composition['other']['count'] == 2
 
     def test_the_census_and_the_downloader_agree_on_the_catalog(self):
         import downloaders.panoramax as panoramax
