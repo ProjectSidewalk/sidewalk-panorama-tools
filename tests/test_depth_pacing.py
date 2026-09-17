@@ -1290,13 +1290,27 @@ class TestTheTemporaryFileCannotAccumulate:
         assert not orphan.exists()
         assert [p.name for p in tmp_path.iterdir() if p.name.endswith('.tmp')] == []
 
-    def test_repeated_writes_leave_exactly_one_file_behind(self, tmp_path, monkeypatch):
+    def test_repeated_writes_leave_exactly_one_file_behind(self, tmp_path):
+        """Five writes, one file: the temp name is fixed, so nothing about the writing process - not its pid,
+        which an earlier design put in the name - can make a second one."""
         state = tmp_path / 'pace'
 
-        for pid in range(5):
-            monkeypatch.setattr(gsv.os, 'getpid', lambda pid=pid: 1000 + pid)
-            gsv._write_pace_state(str(state), 0.25, pid)
+        for streak in range(5):
+            gsv._write_pace_state(str(state), 0.25, streak)
 
+        assert sorted(p.name for p in tmp_path.iterdir()) == ['pace']
+
+    def test_the_temp_name_does_not_depend_on_the_process(self, tmp_path, monkeypatch):
+        """The property the reclaim above rests on, asserted directly: a write from a different pid targets
+        the same temp name, so an orphan from a killed run is what the next run's write replaces."""
+        state = tmp_path / 'pace'
+        orphan = tmp_path / 'pace.tmp'
+        orphan.write_text('half-written by pid 1000')
+        monkeypatch.setattr(gsv.os, 'getpid', lambda: 2000)
+
+        gsv._write_pace_state(str(state), 0.25, 0)
+
+        assert not orphan.exists()
         assert sorted(p.name for p in tmp_path.iterdir()) == ['pace']
 
 
