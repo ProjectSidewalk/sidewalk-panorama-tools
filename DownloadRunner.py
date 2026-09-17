@@ -261,8 +261,8 @@ def filter_supported_sources(pano_infos):
     Drop panos we can't download in this run, preserving the server's ordering, with a one-time warning per
     reason.
 
-    Supported sources: gsv, mapillary (mapillary requires MAPILLARY_ACCESS_TOKEN). Filtered-out panos are NOT written to
-    pano_id_log.csv, so a later run with the token / updated code can still pick them up.
+    Supported sources: gsv, panoramax, and mapillary when MAPILLARY_ACCESS_TOKEN is set. Filtered-out panos
+    are NOT written to pano_id_log.csv, so a later run with the token / updated code can still pick them up.
 
     Order-preserving on purpose (#40): the old implementation regrouped the list by source as a side effect
     of bucketing for the warnings, which put every GSV pano ahead of every Mapillary one - on a city whose
@@ -277,8 +277,14 @@ def filter_supported_sources(pano_infos):
 
     # Mapillary gets its own warning naming the missing token, so it is never also reported as an
     # unsupported source - hence 'known' rather than reusing 'supported' in the loop below.
-    known = {'gsv', 'mapillary'}
-    supported = {'gsv'}
+    #
+    # Panoramax (#110) is in BOTH sets unconditionally: the catalog is keyless, so unlike Mapillary there is
+    # no environment variable that can make a city's panos undownloadable and nothing to warn about. Adding
+    # the word here is the whole of what stands between Bayonne opening (2026-09-18) and a city whose every
+    # pano is silently dropped every night - the run completes, log.csv says it had nothing to do, and
+    # CropRunner reports missing_pano for every label (#101's failure shape).
+    known = {'gsv', 'mapillary', 'panoramax'}
+    supported = {'gsv', 'panoramax'}
     # Both warnings go to stdout AND to scrape.log, the depth phase's pattern (#52 item 6). stdout is what
     # cron mails, which is how an operator finds out tonight; scrape.log is what is still there next week
     # when someone asks why a city's Mapillary panos never arrived. Either channel alone loses one of those.
@@ -325,7 +331,19 @@ def filter_supported_sources(pano_infos):
 # without a rendition is not impossible, three in a row is not that. The loop shuffles its candidates, so
 # even at a rate the measurement cannot rule out (under 0.033%, rule of three on 0/9,229) three adjacent
 # legitimate verdicts is not a run this fleet will see.
-MAX_CONSECUTIVE_PERMANENT_FAILURES = {'mapillary': 3}
+#
+# Panoramax (#110) takes an entry as of its first city, and is the source with the widest permanent-verdict
+# exposure: three shapes found one, against Mapillary's one. Two of them are wholesale failures wearing a
+# per-pano face. An affirmed non-360 field of view is refused because a flat picture stored as
+# `<pano_id>.jpg` crops plausibly and wrongly - but 323 of the 1,000 pictures in the Bayonne bbox ARE flat
+# 92-degree photographs (reports/2026-09-08-panoramax-api.md), and the only thing keeping them out of the
+# corpus is that the app filters its own search to 360. That filter is a property of the layer above, which
+# this scraper cannot verify; if it ever stops holding, every flat picture the app hands us is written off
+# permanently. Likewise a missing `hd` asset, which one federated instance could stop publishing for all of
+# its pictures at once. The candidates are shuffled, so at the ~32% flat rate a broken filter would produce
+# would trip this within about ninety panos on the first night, and a trip is exit 1 and cron mail - the
+# loud, correctable direction. Three legitimate ones adjacent in a shuffled healthy corpus is not.
+MAX_CONSECUTIVE_PERMANENT_FAILURES = {'mapillary': 3, 'panoramax': 3}
 
 
 def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,

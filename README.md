@@ -8,8 +8,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
 Python tooling that turns [Project Sidewalk](https://github.com/ProjectSidewalk/SidewalkWebpage)'s
-crowdsourced accessibility labels into machine-learning data: it downloads the Google Street View and
-Mapillary panoramas those labels sit on, downloads Google's depth maps for them, and cuts one image per label
+crowdsourced accessibility labels into machine-learning data: it downloads the Google Street View,
+Mapillary and Panoramax panoramas those labels sit on, downloads Google's depth maps for them, and cuts one image per label
 out of the panorama. It runs unattended every night, per city, across ~50 deployments.
 
 | Tool | What it does |

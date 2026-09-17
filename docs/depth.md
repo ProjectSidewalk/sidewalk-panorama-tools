@@ -5,6 +5,15 @@ the [streetlevel](https://github.com/sk-zk/streetlevel) library to fetch Google'
 every pano has depth data — third-party and some older panos don't — so the phase saves it where available
 and records the outcome either way.
 
+**Depth is a GSV-only product, and the caller filters for it.** `DownloadRunner.run()` builds `gsv_panos`
+— `source == 'gsv'` only — and hands the depth phase just those, so a Mapillary or Panoramax pano costs zero
+photometa requests and never appears in `depth_log.csv`; there is no Google `pano_id` to ask about. The
+filter is at the **call site**, not inside the phase: `gsv.download_depth_maps` has no source filter of its
+own and its docstring says so ("Callers pre-filter to `source == 'gsv'`"). A future caller that hands it a
+mixed corpus spends one photometa request per non-GSV pano. A city on another source therefore reports a depth phase that did
+nothing, which is correct rather than a stand-down (see
+[ops.md](ops.md) for how to tell the two apart).
+
 The depth payload itself is decoded in-repo: every streetlevel release through 0.12.11 misreads a header
 byte, which makes its parser crash on the ~1% of panos whose zenith is a modeled surface (tunnels, overpass
 soffits) — see [sk-zk/streetlevel#45](https://github.com/sk-zk/streetlevel/pull/45). Once that fix ships, the
