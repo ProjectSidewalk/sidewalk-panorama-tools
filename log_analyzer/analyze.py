@@ -172,7 +172,7 @@ def read_log(log_path: Path) -> pd.DataFrame:
     changes the direction of the other failure in that class: read_csv answers a row one field WIDER than the
     names by taking the first column as the index and shifting every count one place left (the #46 shape),
     while padding shifts it right instead. Neither is a run, so rows whose width is not in LOG_ROW_WIDTHS are
-    counted and reported (rule 9) rather than quietly reshaped.
+    counted and reported (rule 9) and left OUT of the frame - not reshaped into one.
 
     Blank fields (a run that crashed or was stopped before that phase finished, see #49) stay NaN: missing
     data, never a fabricated 0. So does field 19 on every row older than it.
@@ -192,9 +192,13 @@ def read_log(log_path: Path) -> pd.DataFrame:
     # field falls off the end, and the night reads as a healthy all-zero run - while whatever landed in
     # position 19 becomes the city's corpus via last_value and can report a 183,680-pano city complete. The
     # docstring above used to claim hand-padding "removes" the wider-row failure; it changes the shift's
-    # direction. So the width is reported (rule 9) rather than reshaped away.
+    # direction. So the width is reported (rule 9) AND the row is dropped: the first version counted it and
+    # then padded it into the frame anyway, and a stray comma after field 5 turned a 183,680-pano city into
+    # `0 total | depth 0/12` with rule 8 silent, because 12 (its shifted total_minutes) is a believable
+    # corpus. A torn write - the realistic case, a row cut short by the mount dropping - is dropped too; it
+    # was reading as a crashed run, which is a fair description but not evidence the row can be trusted for.
     malformed = sum(1 for row in rows if len(row) not in LOG_ROW_WIDTHS)
-    rows = [(row + [""] * width)[:width] for row in rows]
+    rows = [(row + [""] * width)[:width] for row in rows if len(row) in LOG_ROW_WIDTHS]
 
     # dtype=object, so pandas does not get to pick a string dtype whose missing-value semantics differ across
     # versions; every column below is converted explicitly.
@@ -249,6 +253,13 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         return [{"level": "CRITICAL", "msg": f"Could not parse log: {exc}"}]
 
     if df.empty:
+        # A file of nothing but torn rows is not "empty": the evidence that something wrote to it is the
+        # malformed count, and it would be lost here since rule 9 runs on the frame the rows were dropped from.
+        malformed = df.attrs.get("malformed_rows", 0)
+        if malformed:
+            return [{"level": "CRITICAL",
+                     "msg": (f"Log file has no readable run: {malformed} row(s) have a field count that is "
+                             f"neither {LOG_ROW_WIDTHS[0]} nor {LOG_ROW_WIDTHS[1]}")}]
         return [{"level": "CRITICAL", "msg": "Log file is empty"}]
 
     # Convenience: calendar date column, in UTC. Rules 2, 3 and 8 and depth_progress's rate all group by it,
@@ -447,7 +458,7 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
             "msg": (
                 f"{malformed} row(s) have a field count that is neither {LOG_ROW_WIDTHS[0]} nor "
                 f"{LOG_ROW_WIDTHS[1]} - a torn or corrupted write. Every count in such a row is shifted, so "
-                f"it reads as a quiet healthy night and its 19th field can be mistaken for the corpus size."
+                f"it is left out of every figure above rather than read as a run."
             ),
         })
 
@@ -515,11 +526,15 @@ def depth_progress(df: pd.DataFrame):
                    date (a city only gets a slot on the nights the window reaches it, so averaging the dates
                    that happen to appear read three runs spread over a month as three consecutive nights -
                    measured 10x optimistic, and biased against exactly the starved cities the fleet block
-                   exists to surface).
+                   exists to surface). The divisor is the window's SPAN - the nights the log actually
+                   covers, capped at DEPTH_RATE_NIGHTS - the same divisor as nightly_resolved, so the two
+                   rates can be read against each other: dividing requests by 7 and panos by the span
+                   printed a two-night-old city as `+590 panos/night on +169 requests`.
       nightly_resolved
-                   panos newly resolved per calendar night over the same window. The ETA's denominator has
-                   to be this and not `nightly`: a night of heavy transient failure spends requests and
-                   resolves nothing, and dividing panos by requests reads it as a productive night.
+                   panos newly resolved per calendar night over the same window and span. The ETA's
+                   denominator has to be this and not `nightly`: a night of heavy transient failure spends
+                   requests and resolves nothing, and dividing panos by requests reads it as a productive
+                   night.
       nights_left  unresolved / nightly_resolved, or None when either is 0. Undefined is not zero.
       quiet_nights CALENDAR nights since the newest date that saw a depth request, uncapped. Counting rows
                    made the alarm's latency scale with how often a city runs - three quarterly rows read as
@@ -546,13 +561,15 @@ def depth_progress(df: pd.DataFrame):
     per_night = requests.groupby(df["start_time"].dt.normalize()).sum()
     newest    = per_night.index.max()
     window    = pd.date_range(end=newest, periods=DEPTH_RATE_NIGHTS, freq="D")
+    # Both rates divide by the window's own span - the calendar nights the log covers, capped at the window -
+    # so a city three nights into its log is not reported at three-sevenths of its true rate, and requests
+    # and panos are measured over the same nights. A night before the log's first row contributes nothing
+    # to either sum, so `reindex(fill_value=0)` keeps every night the log DOES cover in the denominator.
+    span      = min(DEPTH_RATE_NIGHTS, (newest - per_night.index.min()).days + 1)
     recent    = per_night.reindex(window, fill_value=0)
-    nightly   = float(recent.mean())
+    nightly   = float(recent.sum()) / span
 
     # The rate the ETA divides by is panos-per-night, measured as what the ledger gained across the window.
-    # Its divisor is the window's own span, so a city three nights into the column is not reported at
-    # three-sevenths of its true rate.
-    span     = min(DEPTH_RATE_NIGHTS, (newest - per_night.index.min()).days + 1)
     earlier  = ledgered[ran["start_time"] < window[0]]
     baseline = int(earlier.iloc[-1]) if not earlier.empty else 0
     nightly_resolved = max(resolved - baseline, 0) / span

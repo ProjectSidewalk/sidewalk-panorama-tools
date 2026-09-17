@@ -994,15 +994,21 @@ class TestTheIntakeNeverInfersTheShape:
         assert len(df) == 5
         assert df['image_total'].tolist() == [100] * 5
 
-    def test_a_row_wider_than_the_columns_is_truncated_not_shifted(self, tmp_path):
+    def test_a_row_wider_than_the_columns_is_dropped_not_shifted(self, tmp_path):
         """One surplus field is the #46 shape: pandas answered it by taking the first column as the index and
-        shifting every count one place left, silently. Here the surplus is dropped and the counts stay put."""
-        log = self.write(tmp_path, [make_row(days_ago(0), image_success=5, depth_eligible=1000) + ',999'], None)
+        shifting every count one place left, silently. Here the row is left out of the frame and counted for
+        rule 9 - not truncated into a run, which is what this test pinned until a stray comma INSIDE a row
+        (rather than after its last field) showed the truncation reading total_minutes as the corpus size."""
+        good = make_row(days_ago(1), image_success=5, depth_eligible=1000)
+        wide = make_row(days_ago(0), image_success=5, depth_eligible=1000) + ',999'
+        log = self.write(tmp_path, [good, wide], None)
 
         df = analyze.read_log(log)
 
+        assert len(df) == 1
         assert df['image_success'].iloc[0] == 5
         assert df['depth_eligible'].iloc[0] == 1000
+        assert df.attrs['malformed_rows'] == 1
 
     def test_a_lone_old_file_reads_with_a_blank_last_column(self, tmp_path):
         log = self.write(tmp_path, [old_row(days_ago(n), image_fail=3) for n in (1, 0)], self.OLD_HEADER)
@@ -1059,7 +1065,10 @@ class TestDepthProgress:
     def test_two_runs_on_one_night_are_one_nights_requests(self, tmp_path):
         """The queue's extra passes put two rows on one date; the nightly rate must not halve for it."""
         base = days_ago(1).replace(hour=1, minute=0, second=0, microsecond=0)
-        rows = [make_row(base, depth_success=300, depth_fail=290, depth_skip=0, depth_total=590,
+        # The old row makes the log older than the window, so the divisor is DEPTH_RATE_NIGHTS and the two
+        # dates that carry rows are not the whole span - the shape a per-logged-date average gets wrong.
+        rows = [old_row(days_ago(20)),
+                make_row(base, depth_success=300, depth_fail=290, depth_skip=0, depth_total=590,
                          depth_eligible=5000),
                 make_row(base.replace(hour=5), depth_success=100, depth_fail=100, depth_skip=590,
                          depth_total=790, depth_eligible=5000),
@@ -1070,6 +1079,18 @@ class TestDepthProgress:
         # Divided by DEPTH_RATE_NIGHTS calendar nights, not by the two dates that happen to carry rows.
         assert progress['nightly'] == pytest.approx((790 + 590) / analyze.DEPTH_RATE_NIGHTS)
         assert progress['resolved'] == 790 + 590
+
+    def test_both_rates_are_measured_over_the_same_nights(self, tmp_path):
+        """A city two nights into its log: 590 requests a night, every one saved. Requests were divided by
+        the 7-night window and panos by the log's span, so the fleet line read `+590 panos/night on +169
+        requests` - more panos resolved than requests made. Every city in its first week has this shape."""
+        rows = [depth_rows(1, 10_000, 0, 590), depth_rows(0, 10_000, 590, 590)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['nightly'] == pytest.approx(590)
+        assert progress['nightly_resolved'] == pytest.approx(590)
+        assert '+590 panos/night on +590 requests' in analyze.fleet_depth_summary({'x': progress})[1]
 
     def test_nights_left_is_unresolved_over_the_nightly_rate(self, tmp_path):
         rows = [depth_rows(n, 1000, 100 * (2 - n), 100) for n in (2, 1, 0)]
@@ -1297,6 +1318,19 @@ class TestATransientFailureResolvesNothing:
 
         assert first['resolved'] == 700 and second['resolved'] == 700
 
+    def test_resolved_follows_the_newest_row_when_the_corpus_retires_panos(self, tmp_path):
+        """depth_skip counts ledgered panos still in TONIGHT's corpus, so when Google retires 180 of the 900
+        the ledger holds, the ledger-derived count falls to 720. Taking the maximum over the log instead
+        reported 900 resolved of an 800-pano corpus: `depth complete`, with 80 panos never requested."""
+        rows = [depth_rows(1, 1000, 0, 900), depth_rows(0, 800, 720, 0)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        progress = analyze.depth_progress(analyze.read_log(log))
+
+        assert progress['resolved'] == 720
+        assert progress['unresolved'] == 80
+        assert 'depth complete' not in analyze.city_stats(analyze.read_log(log))
+
     def test_an_unavailable_verdict_still_resolves_the_pano(self, tmp_path):
         """The discrimination: `unavailable` is permanent and ledgered, so it must NOT be treated as
         outstanding. It arrives one night late, when the next run reads it back as a skip - a lower bound
@@ -1314,7 +1348,9 @@ class TestACorpusOfZeroIsRefused:
     last_value skips a BLANK field but not a zero one, so one such night erased the city's entire depth
     report - stats line, fleet block and `longest remaining` ranking - and raised nothing."""
 
-    SEVEN_GOOD = [depth_rows(n, 183_680, (7 - n) * 590, 590) for n in (7, 6, 5, 4, 3, 2, 1)]
+    # The corpus shrinks by ten a night, so the row the substitute is taken from is pinned: the NEWEST
+    # believable one, 183,680, not the oldest. With one value on every row, `positive[0]` passed too.
+    SEVEN_GOOD = [depth_rows(n, 183_680 + (n - 1) * 10, (7 - n) * 590, 590) for n in (7, 6, 5, 4, 3, 2, 1)]
 
     def test_one_empty_night_does_not_erase_the_city(self, tmp_path):
         rows = self.SEVEN_GOOD + [depth_rows(0, 0, 0, 0, ran=False)]
@@ -1478,6 +1514,51 @@ class TestARowThatIsNotARun:
 
         assert not [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
                     if 'field count' in i['msg']]
+
+    def test_a_shifted_row_does_not_become_the_corpus(self, tmp_path):
+        """Reported is not enough: the first version counted the row for rule 9 and then padded it into the
+        frame anyway. A stray comma after field 5 moved every later count one place right, the corpus fell
+        off the end, total_minutes (12) landed in its place, and a 183,680-pano city read as
+        `0 total | depth 0/12 (0.0%)` - with rule 8 silent, because 12 is a believable corpus."""
+        good = [depth_rows(n, 183_680, (8 - n) * 590, 590) for n in range(7, 0, -1)]
+        parts = depth_rows(0, 183_680, 8 * 590, 590).split(',')
+        parts.insert(5, '')
+        log = write_log(tmp_path / 'log.csv', good + [','.join(parts)])
+
+        df = analyze.read_log(log)
+        progress = analyze.depth_progress(df)
+        issues = analyze.analyze_city('seattle-wa', log, stale_days=3)
+
+        assert len(df) == 7, 'the shifted row is not a run'
+        assert progress['eligible'] == 183_680
+        assert progress['resolved'] == 8 * 590, 'read from the newest row that IS a run'
+        assert 'depth 0/12' not in analyze.city_stats(df)
+        assert any('neither 18 nor 19' in i['msg'] for i in issues), issues
+        assert not any('not believable' in i['msg'] for i in issues), 'nothing suspect reached corpus_size'
+
+    def test_a_torn_last_row_is_not_tonights_run(self, tmp_path):
+        """The realistic torn write: the mount dropped mid-row and the line was cut short. It used to pad
+        into a crashed-looking run dated tonight; now the newest run is the last complete row."""
+        good = [depth_rows(n, 1000, 0, 100) for n in (2, 1)]
+        torn = ','.join(depth_rows(0, 1000, 100, 100).split(',')[:12])
+        log = write_log(tmp_path / 'log.csv', good + [torn])
+
+        df = analyze.read_log(log)
+
+        assert len(df) == 2
+        assert df.attrs['malformed_rows'] == 1
+        assert not [i for i in analyze.analyze_city('somewhere', log, stale_days=3) if 'ended early' in i['msg']]
+
+    def test_a_file_of_only_torn_rows_says_so(self, tmp_path):
+        """Dropping every row would otherwise report 'Log file is empty', and the one piece of evidence -
+        that something wrote rows of the wrong width - would be lost with the frame it was attached to."""
+        torn = [','.join(depth_rows(n, 1000, 0, 100).split(',')[:12]) for n in (1, 0)]
+        log = write_log(tmp_path / 'log.csv', torn)
+
+        issues = analyze.analyze_city('somewhere', log, stale_days=3)
+
+        assert [i['level'] for i in issues] == ['CRITICAL'], issues
+        assert 'no readable run' in issues[0]['msg'] and '2 row(s)' in issues[0]['msg']
 
 
 class TestRules2And3CountNightsNotRows:
