@@ -25,7 +25,8 @@ so adding a module is a deliberate measure-or-omit decision rather than silently
 Two settings there are load-bearing, and losing either shows up as a *lower number* rather than as an error:
 
 - **`branch = True`** — the gap that motivated the gate was an `if` that only ever went one way (three of the
-  log analyzer's six alert rules never fired while every line around them was green).
+  log analyzer's alert rules never fired while every line around them was green; there were six at the
+  time of that measurement and there are nine now).
 - **`source = ${SIDEWALK_COVERAGE_ROOT-.}`, not `.`** — coverage resolves a relative source against each
   *process's* CWD, and the runner tests spawn subprocesses with `cwd=tmp_path`. That variable, plus
   `COVERAGE_PROCESS_START` and `COVERAGE_FILE`, is set by `tests/conftest.py`'s `pytest_configure`, and only
@@ -43,12 +44,12 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | The image ledger contract at both ends: which downloader answers are permanent and which raise, the Mapillary error-envelope shapes measured on 2026-09-05 and the Panoramax item and 404 body measured on 2026-09-08, and a real response from each source driven through the dispatcher into `pano_id_log.csv` | `test_image_downloaders.py`, `test_download_runner.py` |
 | Cropper: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins, the equirectangular unit primitives and the token-stream guard that keeps 360/180 out of the rest of the module, label registration measured against planted pixels, the window width's axis on a non-2:1 pano, and agreement with the gold-annotation instrument's independent window derivation | `test_crop_runner.py` |
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
-| The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes | `test_scrape_queue.py` |
+| The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes, the [extra passes](downloader.md#extra-passes) and the run-summary channel they read (the runner's side of it is in `test_download_runner.py` and `test_depth_pacing.py`) | `test_scrape_queue.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
 | The display copy of a wide panorama: naming, the two writers, the switch that keeps both downloaders' hooks off and the sweep and primitives on, the one store walker and the guard against a second, what `sidecar_is_current` can and cannot see, the shared decompression-bomb ceiling, and the sweep itself | `test_downscaled_sidecar.py` |
 | The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal (the display copy included), the copy being rewritten from the imagery that replaced it but never created where there was none, ledger semantics, the recovery metric, and the CLI surface | `test_refetch_panos.py` |
-| The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
+| The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_depth_backfill_report.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
 | The [re-render probe](../reports/2026-09-06-rerender-probe.md): displacement, tone and sharpness on synthetic pairs with known answers — including the gain-squared confound that would otherwise read a brightened panorama as a sharpened one — plus the three-component pose fit (a uniform vertical offset is its own component, never a tilt and never dropped; the fit is reported for every row, gated on nothing), the movement verdict against the probe's own gate, and every cell of the report's table and every count in its prose regenerated from the committed artifacts, the click-noise sigma it quotes included | `test_rerender_probe.py`, `test_rerender_probe_report.py` |
 | The pose-drift re-render proxy in the standing decay census: the wrap applied to the *difference*, an axis neither census carried reported undefined rather than zero, one panorama counted once however many axes moved, the any-axis union that lets "the same panoramas moved on both axes" be asserted rather than inferred from equal counts, and `--resummarize` regenerating a re-fetch census's `decay` block offline | `test_photometa_census.py` (`TestPoseDrift`, `TestResummarize`) |
 | That the docs' internal links and anchors resolve, and that cited `docs/` paths exist | `test_docs.py` |

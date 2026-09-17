@@ -7,7 +7,8 @@ the working day on the hosts the runs actually load - the pano store and the Sid
 Because each slot was picked by hand at onboarding, the ring also developed gaps and could develop
 collisions; and a fixed UTC crontab drifts an hour against Seattle twice a year.
 
-This driver walks a city list in order and starts the next city as soon as the previous one exits, which:
+This driver walks a city list in order and starts the next city as soon as the previous one exits - and then,
+while a full slot of the window remains, runs the cities that stopped on their budget again (#43), which:
 
   - serialises by construction. The stagger existed to keep two cities off /adminapi/panos and the store at
     once; a queue enforces that without anyone maintaining 53 slot numbers.
@@ -17,6 +18,11 @@ This driver walks a city list in order and starts the next city as soon as the p
     the queue finishes long before the window closes on an ordinary night.
   - cannot overlap itself. There was no lock anywhere in this repo before: a slow run and the next slot
     could put two processes on one city's pano_id_log.csv, log.csv and scrape.log at the same time.
+  - spends the whole window. Measured after the depth backfill's first three nights: 477 of 690 minutes
+    used, 13 cities already complete and exiting in seconds, and every city with a backlog capped at its
+    12-minute slot - so the five largest were 240-463 nights out while a third of every night went unused.
+    Pass 1 still gives every city its guaranteed slot; the passes after it give the leftover to whoever ran
+    out of budget, in equal shares no smaller than a slot.
 
 Deliberately NOT parallel. The politeness constraint the stagger encoded is real, and the whole point here
 is that exactly one city is talking to the APIs and the store at any moment.
@@ -30,9 +36,11 @@ See docs/downloader.md, "Nightly deployment".
 import argparse
 import csv
 import importlib
+import json
 import logging
 import logging.handlers
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -65,8 +73,22 @@ _DEFAULT_LOCK_NAME = 'sidewalk-scrape-queue.lock'
 City = namedtuple('City', 'city_id fqdn')
 
 # outcome is one of: 'ok', 'failed', 'timed_out', 'skipped_deadline'. exit_code and seconds are None for a
-# city that never started.
-CityResult = namedtuple('CityResult', 'city_id outcome exit_code seconds')
+# city that never started. budget_minutes is what the city was given (None when there was no budget),
+# pass_number which pass of the night ran it (#43), and stop_reasons the run summary the runner wrote
+# (None when it wrote none); all three default so a four-field construction still works.
+CityResult = namedtuple('CityResult',
+                        'city_id outcome exit_code seconds budget_minutes pass_number stop_reasons',
+                        defaults=(None, 1, None))
+
+# The one stop reason that means "more time would have helped". It is DownloadRunner's own vocabulary -
+# downloaders.gsv.DEPTH_STOP_MAX_RUNTIME and the image phase's matching string - repeated here rather than
+# imported, because importing downloaders.gsv would pull aiohttp and streetlevel into a driver that never
+# touches either. A test pins the two together, so a rename in the runner fails CI instead of silently
+# turning every city into "finished" and leaving the window unspent.
+STOP_MAX_RUNTIME = 'max-runtime'
+
+# Name of the per-run summary file the queue asks each city to write, inside a per-run temp directory.
+_RUN_SUMMARY_NAME = 'run_summary.json'
 
 
 class QueueLocked(Exception):
@@ -122,6 +144,12 @@ def build_parser():
                         help='Keep the manifest order every night instead of rotating the starting point. '
                              'Rotation only matters on a night the window truncates the queue: it moves '
                              'which cities lose rather than always losing the same tail.')
+    parser.add_argument('--single-pass', action='store_true',
+                        help='Run every city once and stop, leaving the rest of the window unused. By '
+                             'default, once every city has had its slot, the cities that ran out of budget '
+                             'are run again while a full slot of window remains, each with the larger of a '
+                             'slot and an equal share of what is left. Needs both --max-runtime and '
+                             '--city-max-runtime; --only implies this flag.')
     parser.add_argument('--lock', default=None, metavar='PATH',
                         help='Lock file guaranteeing one queue run at a time (default: %s in the system temp '
                              'directory). It defaults to LOCAL disk, not the store: the store is a network '
@@ -289,21 +317,55 @@ def strip_separator(runner_args):
     return runner_args[1:] if runner_args and runner_args[0] == '--' else runner_args
 
 
-def build_command(city, store_root, python_exe, runner_path, city_budget_minutes, runner_args):
+def build_command(city, store_root, python_exe, runner_path, city_budget_minutes, runner_args,
+                  run_summary_path=None):
     """The exact argv for one city.
 
     The city's budget is passed as DownloadRunner's own --max-runtime rather than enforced only by killing
     it: a runner that stops itself writes its log.csv row and leaves a clean ledger, where a kill leaves the
     row to the SIGTERM handler and anything in flight unfinished. The kill is the backstop, not the mechanism.
+
+    run_summary_path asks the runner to say why each phase stopped, which is how the extra passes tell a
+    city with a backlog from one that merely started slowly (#43). It goes BEFORE runner_args so an operator
+    passing their own --run-summary-file through `--` still wins on argparse's last-one-wins.
     """
     cmd = [python_exe, runner_path, city.fqdn, os.path.join(store_root, city.city_id)]
     if city_budget_minutes is not None:
         cmd += ['--max-runtime', '%g' % city_budget_minutes]
+    if run_summary_path is not None:
+        cmd += ['--run-summary-file', run_summary_path]
     return cmd + list(runner_args)
 
 
+def read_run_summary(path):
+    """The stop reasons a city reported, or None if it reported nothing usable.
+
+    None means "fall back to the elapsed-time rule", so every ambiguous case resolves to it rather than to a
+    confident wrong answer: no file, unreadable, not JSON, not an object, or an object naming neither
+    phase. The last of those matters - an empty object is a summary that says nothing, not a summary that
+    says "nothing stopped me".
+
+    "No file" is narrower than it looks. A DownloadRunner from before the flag existed does not silently
+    write nothing - argparse refuses the unrecognised argument and the city exits 2, so it is booked as
+    failed and never re-run; and a runner killed before its finally ran exits nonzero for the same result.
+    What actually arrives here with an 'ok' run and no summary is a summary the runner could not WRITE (it
+    warns on stdout when that happens), or an operator's own --run-summary-file after `--`, which wins.
+
+    Both keys are always present in what comes back, so callers never have to distinguish a missing key from
+    a null one.
+    """
+    try:
+        with open(path) as f:
+            reported = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(reported, dict) or not any(k in reported for k in ('image_stop', 'depth_stop')):
+        return None
+    return {key: reported.get(key) for key in ('image_stop', 'depth_stop')}
+
+
 def _city_budget(city_max_runtime, remaining_minutes):
-    """What to give one city: its own cap, further clamped by what is left of the queue window.
+    """What to give one city in pass 1: its own cap, further clamped by what is left of the queue window.
 
     Composing the two is the point. Passing the city cap alone lets the last city of the night run an hour
     past the window; passing the remaining window alone lets the FIRST city eat the whole night, which is the
@@ -311,6 +373,105 @@ def _city_budget(city_max_runtime, remaining_minutes):
     """
     budgets = [b for b in (city_max_runtime, remaining_minutes) if b is not None]
     return min(budgets) if budgets else None
+
+
+def _extra_pass_budget(city_max_runtime, remaining_minutes, cities_left):
+    """What to give one city in a pass after the first: an equal share of what is left, never below a slot.
+
+    The floor is load-bearing (#43). 213 minutes left for 39 working cities is 5.5 minutes each, which is
+    below the production line's --min-depth-runtime and so zeroes every image phase and mails a WARNING per
+    city; and a fraction of a minute can kill a city inside its pano-list fetch, which runs before the
+    runner's own budget clock starts. So the share is floored at the slot, and run_queue starts nobody once
+    a slot no longer fits. Five cities left with 625 minutes get 125 each, in one process each.
+    """
+    return max(city_max_runtime, remaining_minutes / cities_left)
+
+
+# The runner flag whose value is a RESERVATION out of --max-runtime, so it only means the same thing after
+# the budget is rewritten if it is rewritten too (#43).
+_RESERVATION_FLAG = '--min-depth-runtime'
+
+
+def scale_depth_reservation(runner_args, budget_minutes, slot_minutes):
+    """Rewrite a pass-through --min-depth-runtime in proportion to an enlarged budget.
+
+    --min-depth-runtime is a share of --max-runtime, not an absolute quantity of depth work: the image phase
+    stops at `max_runtime - min_depth_runtime` so the tail belongs to depth. The queue rewrites --max-runtime
+    for every extra pass, so passing the reservation through unchanged silently changes what it means. The
+    production line is `--city-max-runtime 12 -- --min-depth-runtime 6`, an even split; an endgame pass
+    handing one city 120 minutes would leave images 114 of them and depth the same 6 it had in pass 1 - the
+    exact opposite of what the passes exist for, since the backfill they were built for is the depth one.
+
+    Only ever scales UP, and only when the budget exceeds the slot. Pass 1's last city can be clamped BELOW
+    the slot by what is left of the window, and enlarging a reservation towards that smaller budget is how
+    you get `--min-depth-runtime >= --max-runtime` and a run that downloads no images at all.
+
+    A value the runner would reject is passed through untouched: argument validation is the runner's job,
+    and a queue that raised here would take the whole fleet down over one city's typo.
+    """
+    if budget_minutes is None or slot_minutes is None or not (budget_minutes > slot_minutes > 0):
+        return list(runner_args)
+    factor = budget_minutes / slot_minutes
+    scaled = list(runner_args)
+    for i, arg in enumerate(scaled):
+        if arg == _RESERVATION_FLAG and i + 1 < len(scaled):
+            value, target = scaled[i + 1], i + 1
+        elif arg.startswith(_RESERVATION_FLAG + '='):
+            value, target = arg.split('=', 1)[1], i
+        else:
+            continue
+        try:
+            minutes = float(value)
+        except ValueError:
+            continue
+        rewritten = '%g' % (minutes * factor)
+        scaled[target] = rewritten if target != i else '%s=%s' % (_RESERVATION_FLAG, rewritten)
+    return scaled
+
+
+def stopped_on_budget(result):
+    """Whether a city's run ended because a budget ran out - which is to say, it still has work.
+
+    Read from what the RUNNER said, not from how long the queue watched it for. DownloadRunner writes a
+    run summary naming what stopped each phase (--run-summary-file); a phase that stopped on 'max-runtime'
+    is one that would have kept going, in either phase, and that is the whole question.
+
+    Timing the subprocess instead was wrong in both directions, because the queue measures from Popen to
+    exit while the runner's budget clock starts only after the pano-list fetch:
+
+      - false positive: a COMPLETE city whose /adminapi/panos prologue alone outlasts its 12-minute slot
+        exits having downloaded nothing, yet measured >= its budget - so it was re-run in every pass of
+        every night, forever, burning a full slot each time and inflating the share divisor for everyone.
+      - false negative: with the production `--min-depth-runtime 6`, a city whose image phase stopped on
+        its reserved 6-minute share and whose depth phase then exhausted its own list exits at minute ~6.4
+        of 12 - so the one city that most needed the leftover window was the one denied it.
+
+    Only 'max-runtime' counts. The other depth stops are reasons NOT to re-run: 'blocked' means the host is
+    standing down for six hours and a re-run would spend the slot rediscovering that, 'consecutive-failures'
+    is a tripped breaker that would trip again, and 'max-requests' is a per-process cap the operator asked
+    for, which re-running would silently multiply. Either phase's budget stop is enough on its own, so a
+    stood-down depth phase cannot veto a real image backlog.
+
+    Only an 'ok' run qualifies, whatever it reported: a crash says nothing about work left and re-running it
+    is a crash loop, a timed-out city was killed past its budget and would be killed again, and a city the
+    window never reached never started.
+
+    When there is no summary at all, this falls back to the elapsed-time rule. That rule is at least a
+    NECESSARY condition (a run that stopped on budget always measures at least its budget), and leaving the
+    window unspent is worse than the wasted slot its false positives cost. An EMPTY summary is not a missing
+    one: a runner that reported "nothing stopped either phase" is authoritative and does not fall back.
+
+    The fallback is narrower than "an older runner" - see read_run_summary: a DownloadRunner without the
+    flag refuses to start (argparse, exit 2) and is booked as failed, and a runner killed mid-run exits
+    nonzero, so neither ever gets here. What does is an 'ok' run whose summary could not be written, or one
+    where an operator's own --run-summary-file after `--` displaced the queue's.
+    """
+    if result is None or result.outcome != 'ok':
+        return False
+    if result.stop_reasons is not None:
+        return any(result.stop_reasons.get(key) == STOP_MAX_RUNTIME for key in ('image_stop', 'depth_stop'))
+    return (result.budget_minutes is not None and result.seconds is not None
+            and result.seconds >= result.budget_minutes * 60.0)
 
 
 def stop_process(proc, city_id):
@@ -341,7 +502,23 @@ def run_city(city, store_root, python_exe, runner_path, city_budget_minutes, kil
     availability must not depend on its worst member, which is the same reason nothing in the cropper's crop
     loop is fatal (#48). The result is what makes it visible.
     """
-    cmd = build_command(city, store_root, python_exe, runner_path, city_budget_minutes, runner_args)
+    # A temp directory per run, removed on the way out: the summary is a message between two processes,
+    # not an artifact. Writing it into the store would leave a run_summary.json beside the city's panos and
+    # ledgers, where the next reader would reasonably take it for one.
+    summary_dir = tempfile.mkdtemp(prefix='scrape-queue-%s-' % city.city_id)
+    summary_path = os.path.join(summary_dir, _RUN_SUMMARY_NAME)
+    try:
+        return _run_city_with_summary(city, store_root, python_exe, runner_path, city_budget_minutes,
+                                      kill_grace_minutes, runner_args, env, summary_path)
+    finally:
+        shutil.rmtree(summary_dir, ignore_errors=True)
+
+
+def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budget_minutes,
+                           kill_grace_minutes, runner_args, env, summary_path):
+    """run_city's body, with the run-summary temp file already arranged and its cleanup owned by run_city."""
+    cmd = build_command(city, store_root, python_exe, runner_path, city_budget_minutes, runner_args,
+                        run_summary_path=summary_path)
     hard_timeout = None if city_budget_minutes is None else (city_budget_minutes + kill_grace_minutes) * 60.0
 
     print("[queue] %s: starting %s" % (city.city_id, ' '.join(cmd)))
@@ -384,21 +561,45 @@ def run_city(city, store_root, python_exe, runner_path, city_budget_minutes, kil
     level = logging.INFO if outcome == 'ok' else logging.ERROR
     logging.log(level, "%s: %s (exit %s) in %.1f min", city.city_id, outcome, exit_code, elapsed / 60.0)
     print("[queue] %s: %s (exit %s) in %.1f min" % (city.city_id, outcome, exit_code, elapsed / 60.0))
-    return CityResult(city.city_id, outcome, exit_code, elapsed)
+    stop_reasons = read_run_summary(summary_path)
+    if stop_reasons is None and outcome == 'ok':
+        # Worth one log line and no more: the run was fine, and the elapsed-time fallback still decides.
+        # NOT the signature of an old runner beside a new queue - that one refuses the flag and exits 2, so
+        # it shows up as FAILED, not here. This is a runner that could not write the file (it warned on
+        # stdout), or an operator's own --run-summary-file after `--` displacing the queue's.
+        logging.info("%s: no run summary (could not be written, or displaced by a --run-summary-file after "
+                     "--); falling back to elapsed time to decide whether it has work left", city.city_id)
+    return CityResult(city.city_id, outcome, exit_code, elapsed, stop_reasons=stop_reasons)
 
 
 def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runtime_minutes=None,
               city_max_runtime=None, kill_grace_minutes=DEFAULT_KILL_GRACE_MINUTES, env=None,
-              run_one=run_city):
-    """Run every city in order, stopping only when the window closes. Returns one CityResult per city.
+              run_one=None, extra_passes=True, results=None):
+    """Run every city in order, then the ones that ran out of budget again while the window lasts.
 
-    The window gates STARTING a city, never interrupts one that is already running - the same rule as the
-    image phase's budget (#51), and for the same reason: a partial pano or a torn ledger costs more than
-    finishing five minutes late. Elapsed time is measured with time.monotonic() so an NTP step or a DST
-    transition cannot stretch or shrink the night.
+    Returns the CityResults in the order they ran: one per city for pass 1, then one per re-run, each
+    stamped with its pass_number and the budget it was given.
+
+    Pass 1 is the guarantee: the window gates STARTING a city, never interrupts one that is already running
+    - the same rule as the image phase's budget (#51), and for the same reason: a partial pano or a torn
+    ledger costs more than finishing five minutes late. Elapsed time is measured with time.monotonic() so an
+    NTP step or a DST transition cannot stretch or shrink the night.
+
+    The passes after it are the window being spent (#43). Which cities still have work is read from the
+    pass before - from what the RUNNER reported about why each phase stopped (stopped_on_budget), not from
+    how long the queue watched it - so nothing crosses nights and nothing reads the store. They need both a window and a slot: without a window there is nothing to
+    spend, and without a slot there is no unit to hand out and no floor under the shares. A later pass never
+    reports a city as not reached - running out of window there is the design working, not a fleet failing
+    to complete - but a crash in one still fails the night, because a crash is a crash.
     """
+    # Resolved at CALL time, not bound as a default at definition time, so that replacing the module
+    # attribute (which is how main() is driven in tests) actually takes effect.
+    run_one = run_city if run_one is None else run_one
     started = time.monotonic()
-    results = []
+    # An out-parameter as well as the return value, so a caller can still see what ran when this raises.
+    # A stop (SIGTERM, Ctrl-C) unwinds through here, and discarding the night's record on the way out is
+    # exactly what left a killed queue with nothing on stdout but its per-city lines.
+    results = [] if results is None else results
     for index, city in enumerate(cities):
         remaining = None
         if max_runtime_minutes is not None:
@@ -409,39 +610,103 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
                                 max_runtime_minutes, len(skipped), ', '.join(skipped))
                 print("[queue] WARNING: window of %.1f min spent after %d of %d cities; not reached: %s"
                       % (max_runtime_minutes, index, len(cities), ', '.join(skipped)))
-                results += [CityResult(c, 'skipped_deadline', None, None) for c in cities[index:]]
+                # c.city_id, not c: this field is printed into the cron-mailed alarm line and is
+                # keyed on by the extra passes, and a City here leaks the fqdn into both.
+                results += [CityResult(c.city_id, 'skipped_deadline', None, None)
+                            for c in cities[index:]]
                 break
-        results.append(run_one(city, store_root, python_exe, runner_path,
-                               _city_budget(city_max_runtime, remaining), kill_grace_minutes, runner_args,
-                               env=env))
+        budget = _city_budget(city_max_runtime, remaining)
+        result = run_one(city, store_root, python_exe, runner_path, budget, kill_grace_minutes, runner_args,
+                         env=env)
+        results.append(result._replace(budget_minutes=budget, pass_number=1))
+
+    if not extra_passes or max_runtime_minutes is None or city_max_runtime is None:
+        return results
+
+    latest = {r.city_id: r for r in results}
+    pass_number = 1
+    while True:
+        working = [c for c in cities if stopped_on_budget(latest.get(c.city_id))]
+        remaining = max_runtime_minutes - (time.monotonic() - started) / 60.0
+        if not working or remaining < city_max_runtime:
+            break
+        pass_number += 1
+        logging.info("pass %d starting: %d cities still had work, %.1f min of window left",
+                     pass_number, len(working), remaining)
+        print("[queue] pass %d: %d cities still had work, %.1f min of window left"
+              % (pass_number, len(working), remaining))
+        for index, city in enumerate(working):
+            remaining = max_runtime_minutes - (time.monotonic() - started) / 60.0
+            if remaining < city_max_runtime:
+                # Not an alarm: pass 1 reached every one of these cities tonight. Said, so tomorrow's reader
+                # knows the window closed here rather than the queue stopping for a reason.
+                logging.info("pass %d: a slot no longer fits (%.1f min left); %d cities wait for tomorrow",
+                             pass_number, remaining, len(working) - index)
+                break
+            budget = _extra_pass_budget(city_max_runtime, remaining, len(working) - index)
+            # The reservation is a SHARE of the budget, so it moves with it - otherwise an endgame pass's
+            # enlarged slot goes almost entirely to the image phase (#43).
+            pass_args = scale_depth_reservation(runner_args, budget, city_max_runtime)
+            result = run_one(city, store_root, python_exe, runner_path, budget, kill_grace_minutes,
+                             pass_args, env=env)
+            result = result._replace(budget_minutes=budget, pass_number=pass_number)
+            results.append(result)
+            latest[city.city_id] = result
     return results
 
 
-def summarise(results, elapsed_minutes):
-    """The run's one-screen report: a line per city that did not simply work, then the totals.
+# The order the non-ok lines are printed in. stdout is what cron mails, so the two or three real crashes
+# have to appear before the twenty skipped_deadline lines rather than interleaved with them. Run order is
+# kept WITHIN an outcome, so "which city crashed first" is still readable off the list.
+_OUTCOME_ORDER = ('failed', 'timed_out', 'skipped_deadline')
 
-    Every city gets a line in the queue log, but stdout is what cron mails, so it leads with what went wrong.
-    A clean night is four lines; a bad one names every city and why.
+
+def summarise(results, elapsed_minutes):
+    """The run's one-screen report: a line per run that did not simply work, the night's totals, then one
+    line per extra pass.
+
+    Every run gets a line in the queue log, but stdout is what cron mails, so it leads with what went wrong.
+    A clean night is a few lines; a bad one names every city and why.
+
+    The totals line has two different denominators and they are both deliberate. "N/M cities ok" counts
+    pass 1 - one result per city - so a night that re-ran one city five times still reads as a fleet of M,
+    not of M + 5. The failure counts beside it are over EVERY run, because a city hard-killed in pass 2 is a
+    city that was hard-killed: counting only pass 1 there printed "0 failed, 0 timed out" on a night that
+    exited 1, contradicting both the exit code and the per-run lines immediately above it.
     """
+    first = [r for r in results if r.pass_number == 1]
     by_outcome = {}
     for r in results:
         by_outcome.setdefault(r.outcome, []).append(r)
     lines = ["", "[queue] ==== summary ===="]
-    for outcome in ('failed', 'timed_out', 'skipped_deadline'):
+    for outcome in _OUTCOME_ORDER:
         for r in by_outcome.get(outcome, []):
             when = '' if r.seconds is None else ' after %.1f min' % (r.seconds / 60.0)
             code = '' if r.exit_code is None else ' (exit %d)' % r.exit_code
-            lines.append("[queue] %-24s %s%s%s" % (r.city_id, outcome.upper(), code, when))
-    ok = len(by_outcome.get('ok', []))
+            which = '' if r.pass_number == 1 else ' in pass %d' % r.pass_number
+            lines.append("[queue] %-24s %s%s%s%s" % (r.city_id, outcome.upper(), code, when, which))
     lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached; %.1f min total"
-                 % (ok, len(results), len(by_outcome.get('failed', [])),
+                 % (sum(1 for r in first if r.outcome == 'ok'), len(first),
+                    len(by_outcome.get('failed', [])),
                     len(by_outcome.get('timed_out', [])), len(by_outcome.get('skipped_deadline', [])),
                     elapsed_minutes))
+    passes = sorted({r.pass_number for r in results if r.pass_number > 1})
+    for n in passes:
+        runs = [r for r in results if r.pass_number == n]
+        minutes = sum(r.seconds or 0.0 for r in runs) / 60.0
+        lines.append("[queue] pass %d: %d cities re-run in %.1f min - %s"
+                     % (n, len(runs), minutes,
+                        ', '.join('%s %.1f' % (r.city_id, (r.seconds or 0.0) / 60.0) for r in runs)))
     return '\n'.join(lines)
 
 
 def exit_code_for(results):
-    """0 only when every city ran and succeeded.
+    """0 only when every RUN succeeded - one per city in pass 1, plus one per re-run after it.
+
+    So a city that succeeded in pass 1 and crashed in pass 2 makes the night nonzero, deliberately: a crash
+    is a crash whichever pass it happened in. What does NOT fail the night is a city an extra pass never
+    reached, which produces no result at all - pass 1 reached it, and running out of window in pass 3 is the
+    design working.
 
     A city that was never reached counts as a failure on purpose. cron mails a nonzero exit, and a fleet
     quietly completing 40 of 53 cities every night - which is exactly what an un-monitored window produces -
@@ -473,16 +738,27 @@ def main(argv=None):
         print("Could not read the city list: %s" % (e,), file=sys.stderr)
         return 2
 
+    # Both budgets are required for a pass to be possible at all (run_queue returns after pass 1
+    # without them), so the banner and --dry-run must agree about that rather than only --dry-run
+    # guarding on it. An operator who typed --max-runtime alone needs to be told the default-on
+    # behaviour is off, not congratulated on it.
+    extra_passes = (not args.single_pass and not args.only
+                    and args.max_runtime is not None and args.city_max_runtime is not None)
+
     if args.dry_run:
         # The budget shown is the FIRST city's - its own cap clamped by the whole window. Later cities get
         # whatever the window has left by the time they start, which a plan printed before anything runs
         # cannot know. Said here rather than left for someone to discover from a mismatched log line.
         budget = _city_budget(args.city_max_runtime, args.max_runtime)
-        print("Would run %d cities into %s (budgets shown are the first city's):"
-              % (len(ordered), args.store_root))
+        # The one flag a real run adds that cannot be shown: the summary path is a per-run temp file.
+        print("Would run %d cities into %s (budgets shown are the first city's; each real run also gets "
+              "--run-summary-file <per-run temp file>):" % (len(ordered), args.store_root))
         for i, city in enumerate(ordered, 1):
             print("  %2d. %s" % (i, ' '.join(build_command(city, args.store_root, python_exe, runner_path,
                                                            budget, runner_args))))
+        if extra_passes:
+            print("Then extra passes over whichever cities ran out of budget, while a slot of the window "
+                  "remains - which cities, and with what budgets, cannot be shown before pass 1 has run.")
         return 0
 
     # Same warning discipline as DownloadRunner's --min-depth-runtime check: tell the operator when the
@@ -501,27 +777,44 @@ def main(argv=None):
 
     started = time.monotonic()
     lock_path = args.lock or default_lock_path()
+    results = []
     try:
         with exclusive_lock(lock_path):
             # Announced only once the lock is held, so a run that is about to be refused never prints a
             # start line that reads like a fleet beginning to scrape.
-            logging.info("queue starting: %d cities, window %s min, per-city %s min",
-                         len(ordered), args.max_runtime, args.city_max_runtime)
-            print("[queue] %d cities, window %s min, per-city cap %s min"
-                  % (len(ordered), args.max_runtime, args.city_max_runtime))
-            results = run_queue(ordered, args.store_root, python_exe, runner_path, runner_args,
-                                max_runtime_minutes=args.max_runtime,
-                                city_max_runtime=args.city_max_runtime,
-                                kill_grace_minutes=args.kill_grace)
+            logging.info("queue starting: %d cities, window %s min, per-city %s min, extra passes %s",
+                         len(ordered), args.max_runtime, args.city_max_runtime,
+                         'on' if extra_passes else 'off')
+            print("[queue] %d cities, window %s min, per-city cap %s min, extra passes %s"
+                  % (len(ordered), args.max_runtime, args.city_max_runtime, 'on' if extra_passes else 'off'))
+            run_queue(ordered, args.store_root, python_exe, runner_path, runner_args,
+                      max_runtime_minutes=args.max_runtime, city_max_runtime=args.city_max_runtime,
+                      kill_grace_minutes=args.kill_grace, extra_passes=extra_passes,
+                      results=results)
     except QueueLocked as e:
         # Loud, and nonzero: the previous night's queue still running when tonight's starts is the exact
-        # condition 53 unsynchronised crontab slots could not detect.
+        # condition 53 unsynchronised crontab slots could not detect. Nothing ran, so there is nothing to
+        # summarise - returned from inside the handler so the finally below has no report to print.
         logging.error("another queue run holds %s (%s); exiting without running anything", lock_path, e)
         print("ERROR: another scrape queue is already running (lock %s: %s). Nothing was run."
               % (lock_path, e), file=sys.stderr)
         return 3
+    except BaseException:
+        # The queue is being STOPPED - a cron timeout wrapper's SIGTERM (translated to SystemExit above), an
+        # operator's kill, Ctrl-C. run_city has already stopped the city it was supervising; what is left is
+        # the record of everything that did run tonight, which used to be discarded on the way out. That
+        # mattered more the moment the passes made the queue occupy the whole 690-minute window rather than
+        # the 477 minutes pass 1 alone used: the interval in which a stop can land is now the entire night,
+        # and the evidence lost is several passes deep.
+        _report(results, started)
+        raise
 
-    summary = summarise(results, (time.monotonic() - started) / 60.0)
+    return _report(results, started)
+
+
+def _report(results, started_monotonic):
+    """Print and log the summary, and return the exit code it implies."""
+    summary = summarise(results, (time.monotonic() - started_monotonic) / 60.0)
     print(summary)
     for line in summary.splitlines():
         if line.strip():
