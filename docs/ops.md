@@ -426,7 +426,10 @@ A `sidewalk-depth-pace.lock` sits beside it. The depth phase holds it for its wh
 live process spends the host's standing; a second concurrent phase logs a `WARNING`, paces itself from
 scratch and writes nothing. It is advisory (`flock`/`msvcrt`, released by the OS when the holder dies),
 never an `O_EXCL` file, for the reason the queue lock is: a lock that outlived a crash would disable the
-feature silently and for ever. Deleting it is safe; it is recreated on demand.
+feature silently and for ever. Deleting it is safe; it is recreated on demand. Only a *contended* lock is
+reported as a second phase; a lock file that cannot be opened or a filesystem that cannot lock at all
+(`ENOLCK`) is logged to `scrape.log` as `cannot open the pacing lock`, with nothing on stdout, and the run
+remembers nothing.
 
 **Do not read a stood-down phase as lost work.** Nothing is ledgered on either path, so every unresolved
 panorama is retried on the next run. See

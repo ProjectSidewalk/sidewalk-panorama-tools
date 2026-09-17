@@ -1,5 +1,6 @@
 import contextlib
 import enum
+import errno
 import importlib
 import os
 import re
@@ -29,8 +30,23 @@ def _lock_module():
     return importlib.import_module('fcntl' if os.name == 'posix' else 'msvcrt')
 
 
+# The errno a NON-BLOCKING lock attempt returns when someone else holds the lock, and nothing else: flock
+# gives EWOULDBLOCK (EAGAIN on Linux), msvcrt.locking gives EACCES (measured) or EDEADLOCK. Any other OSError
+# - ENOLCK or EOPNOTSUPP from a filesystem that cannot lock, EBADF - is not a second process and must not be
+# reported as one (#125 review, finding 4). Built with getattr because not every platform defines every name.
+_LOCK_HELD_ERRNOS = frozenset(
+    code for code in (getattr(errno, name, None) for name in ('EAGAIN', 'EWOULDBLOCK', 'EACCES', 'EDEADLOCK', 'EDEADLK'))
+    if code is not None)
+
+
 def _try_lock(fd):
-    """Take an exclusive advisory lock on fd without blocking. Raise HostStateLocked if someone else holds it."""
+    """Take an exclusive advisory lock on fd without blocking.
+
+    Raise HostStateLocked if someone else holds it; let any other OSError through unwrapped, because "another
+    process holds this" is the one diagnosis a caller acts on (download_depth_maps prints it to stdout, where
+    cron mails it), and a lock that cannot be taken for some other reason - a filesystem without lock support,
+    a bad descriptor - would otherwise send the operator looking for a process that does not exist.
+    """
     lock_api = _lock_module()
     try:
         if hasattr(lock_api, 'flock'):
@@ -41,7 +57,9 @@ def _try_lock(fd):
             os.lseek(fd, 0, os.SEEK_SET)
             lock_api.locking(fd, lock_api.LK_NBLCK, 1)
     except OSError as e:
-        raise HostStateLocked(str(e)) from e
+        if e.errno in _LOCK_HELD_ERRNOS:
+            raise HostStateLocked(str(e)) from e
+        raise
 
 
 @contextlib.contextmanager

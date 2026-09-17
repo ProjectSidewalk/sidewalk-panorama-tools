@@ -10,6 +10,7 @@ config.depth_min_request_interval, which is therefore the one knob that decides 
 can ever get.
 """
 
+import errno
 import json
 import os
 import time
@@ -1428,6 +1429,66 @@ class TestTheHostLockDrivesBothPlatformApis:
         with pytest.raises(common.HostStateLocked):
             with common.exclusive_host_lock(str(tmp_path / 'pace.lock')):
                 pass
+
+    @pytest.mark.parametrize('code', ['EAGAIN', 'EWOULDBLOCK', 'EACCES'])
+    def test_every_contended_lock_errno_is_hoststatelocked(self, monkeypatch, tmp_path, code):
+        """flock says EWOULDBLOCK (EAGAIN on Linux); msvcrt.locking says EACCES (measured on Windows)."""
+        class Refusing:
+            LOCK_EX = 2
+            LOCK_NB = 4
+
+            def flock(self, fd, op):
+                raise OSError(getattr(errno, code), 'held')
+
+        monkeypatch.setattr(common, '_lock_module', lambda: Refusing())
+
+        with pytest.raises(common.HostStateLocked):
+            with common.exclusive_host_lock(str(tmp_path / 'pace.lock')):
+                pass
+
+    @pytest.mark.parametrize('code', ['ENOLCK', 'EBADF'])
+    def test_a_lock_that_cannot_be_taken_for_another_reason_is_not_a_second_process(self, monkeypatch,
+                                                                                    tmp_path, code):
+        """"Another depth phase holds the pacing lock" is the one diagnosis the caller prints to stdout, where
+        cron mails it. A filesystem that cannot lock at all (ENOLCK, EOPNOTSUPP) or a bad descriptor is not
+        that, and wrapping it as HostStateLocked sent the operator looking for a process that did not exist -
+        for every city, every night (#125 review, finding 4)."""
+        class Broken:
+            LOCK_EX = 2
+            LOCK_NB = 4
+
+            def flock(self, fd, op):
+                raise OSError(getattr(errno, code), 'cannot lock here')
+
+        monkeypatch.setattr(common, '_lock_module', lambda: Broken())
+
+        with pytest.raises(OSError) as raised:
+            with common.exclusive_host_lock(str(tmp_path / 'pace.lock')):
+                pass
+
+        assert not isinstance(raised.value, common.HostStateLocked)
+
+    def test_and_the_phase_then_remembers_nothing_without_claiming_a_second_phase(self, monkeypatch, tmp_path,
+                                                                                  recorder, capsys, caplog):
+        """The arm download_depth_maps already had for a lock file it cannot open: a log line, no stdout."""
+        class Broken:
+            LOCK_EX = 2
+            LOCK_NB = 4
+
+            def flock(self, fd, op):
+                raise OSError(errno.ENOLCK, 'No locks available')
+
+        monkeypatch.setattr(common, '_lock_module', lambda: Broken())
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 0)
+
+        result = gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2'), pace_state_path=str(state))
+
+        assert result[0] == 2, 'the corpus is still worked'
+        assert 'another depth phase' not in capsys.readouterr().out
+        assert 'cannot open the pacing lock' in caplog.text
+        with open(state) as f:
+            assert json.load(f)['interval'] == 0.25, 'and nothing was written'
 
     def test_the_holder_leaves_its_pid_behind(self, tmp_path):
         """The lock file is never unlinked - unlinking races - so it is left holding the pid of whoever to
