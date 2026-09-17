@@ -463,6 +463,63 @@ class TestTheFlagReachesThePhase:
         assert args.depth_block_latch == '/x/y'
 
 
+class TestTheDepthPhaseReportsWhyItStopped:
+    """stop_reasons is how scrape_queue tells "give this city more window" from "do NOT re-run it" (#43).
+
+    The queue used to infer that from how long it watched the subprocess for, which cannot distinguish a
+    budget stop from a stood-down phase, a tripped breaker, or a city that simply took a while to start.
+    Only DEPTH_STOP_MAX_RUNTIME means more time would have helped, so each of the others has to arrive as
+    itself rather than collapsed into "stopped early".
+    """
+
+    def test_a_budget_stop_is_reported_as_max_runtime(self, tmp_path, recorder):
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1', 'pano2'),
+                                run_start_monotonic=time.monotonic() - 600, max_runtime_minutes=5.0,
+                                block_latch_path=str(tmp_path / 'no-latch'), stop_reasons=stop_reasons)
+
+        assert recorder.requested == [], 'the budget must have stopped it for this to be the case under test'
+        assert stop_reasons['depth_stop'] == gsv.DEPTH_STOP_MAX_RUNTIME
+
+    def test_a_phase_that_resolved_its_whole_list_reports_no_stop(self, tmp_path, recorder):
+        """The false-positive half: nothing stopped this phase, so it must say nothing stopped it."""
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'),
+                                block_latch_path=str(tmp_path / 'no-latch'), stop_reasons=stop_reasons)
+
+        assert recorder.requested == ['pano1']
+        assert stop_reasons['depth_stop'] is None
+
+    def test_a_request_cap_is_reported_as_itself_not_as_a_budget(self, tmp_path, recorder):
+        """--max-depth-requests is a per-PROCESS cap the operator asked for, so a re-run would silently
+        multiply it. It must not arrive at the queue looking like a budget stop."""
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1', 'pano2', 'pano3'), max_requests=1,
+                                block_latch_path=str(tmp_path / 'no-latch'), stop_reasons=stop_reasons)
+
+        assert stop_reasons['depth_stop'] == gsv.DEPTH_STOP_MAX_REQUESTS
+
+    def test_a_live_latch_is_reported_as_blocked(self, tmp_path, recorder):
+        latch = str(tmp_path / 'latch')
+        gsv._write_block_latch(latch)
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'), block_latch_path=latch,
+                                stop_reasons=stop_reasons)
+
+        assert stop_reasons['depth_stop'] == gsv.DEPTH_STOP_BLOCKED
+
+    def test_the_phase_runs_perfectly_well_without_being_asked(self, tmp_path, recorder):
+        """stop_reasons is optional: the by-hand cron line passes no --run-summary-file at all."""
+        result = gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'),
+                                         block_latch_path=str(tmp_path / 'no-latch'))
+
+        assert result == (1, 0, 0, 1)
+
+
 # --- The pacer's standing outlives the process (#43) --------------------------------------------------------
 #
 # Measured on the production store after three nights of the backfill: a city with a backlog gets through a

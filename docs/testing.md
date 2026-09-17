@@ -44,12 +44,12 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | The image ledger contract at both ends: which downloader answers are permanent and which raise, the Mapillary error-envelope shapes measured on 2026-09-05 and the Panoramax item and 404 body measured on 2026-09-08, and a real response from each source driven through the dispatcher into `pano_id_log.csv` | `test_image_downloaders.py`, `test_download_runner.py` |
 | Cropper: intake, the crop loop's failure taxonomy and count reconciliation, `predict_crop_size` pins, the equirectangular unit primitives and the token-stream guard that keeps 360/180 out of the rest of the module, label registration measured against planted pixels, the window width's axis on a non-2:1 pano, and agreement with the gold-annotation instrument's independent window derivation | `test_crop_runner.py` |
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
-| The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes | `test_scrape_queue.py` |
+| The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes, the [extra passes](downloader.md#extra-passes) and the run-summary channel they read (the runner's side of it is in `test_download_runner.py` and `test_depth_pacing.py`) | `test_scrape_queue.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
 | The display copy of a wide panorama: naming, the two writers, the switch that keeps both downloaders' hooks off and the sweep and primitives on, the one store walker and the guard against a second, what `sidecar_is_current` can and cannot see, the shared decompression-bomb ceiling, and the sweep itself | `test_downscaled_sidecar.py` |
 | The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal (the display copy included), the copy being rewritten from the imagery that replaced it but never created where there was none, ledger semantics, the recovery metric, and the CLI surface | `test_refetch_panos.py` |
-| The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
+| The desk studies under `reports/scripts/`, and the artifacts they commit | `test_*_census.py`, `test_*_study.py`, `test_depth_backfill_report.py`, `test_studyfmt.py`, `test_committed_data_files.py`, `test_reports_index.py` |
 | That the docs' internal links and anchors resolve, and that cited `docs/` paths exist | `test_docs.py` |
 | That the README's hero figure still builds against the current cropper, and isn't stale | `test_make_banner.py` |
 

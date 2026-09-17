@@ -1376,7 +1376,7 @@ def camera_height_from_artifact(artifact, default=None):
 
 
 def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
-                        max_requests=None, block_latch_path=None, pace_state_path=None):
+                        max_requests=None, block_latch_path=None, pace_state_path=None, stop_reasons=None):
     """Run the depth phase, holding this host's pacing lock for as long as it lasts (#125.5).
 
     The lock is what keeps the pacer's persisted standing a fact about the host rather than a number several
@@ -1413,11 +1413,12 @@ def download_depth_maps(storage_path, pano_infos, run_start_monotonic=None, max_
         # Inside the stack, so the lock is held for the whole phase and released however it ends.
         return _run_depth_phase(storage_path, pano_infos, run_start_monotonic=run_start_monotonic,
                                 max_runtime_minutes=max_runtime_minutes, max_requests=max_requests,
-                                block_latch_path=block_latch_path, pace_state_path=pace_path)
+                                block_latch_path=block_latch_path, pace_state_path=pace_path,
+                                stop_reasons=stop_reasons)
 
 
 def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
-                     max_requests=None, block_latch_path=None, pace_state_path=None):
+                     max_requests=None, block_latch_path=None, pace_state_path=None, stop_reasons=None):
     """Fetch GSV depth maps via the streetlevel library for every pano in pano_infos.
 
     Callers pre-filter to source == 'gsv'. Depth rides Google's photometa response, so this costs one metadata
@@ -1449,14 +1450,30 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
     @param pace_state_path     Where the pacer's earned standing is remembered across runs (#43), already
                                resolved by download_depth_maps, which also holds the lock on it. None means
                                this phase must neither inherit nor persist. See DepthPacer.
+    @param stop_reasons        An optional dict this phase records why it stopped into, under 'depth_stop':
+                               one of the DEPTH_STOP_* constants, or None if nothing more time would have
+                               helped - it worked through its whole list, or never had one to work through
+                               (streetlevel missing, the ledger unreadable or unwritable), which the queue
+                               must treat the same way. An out-parameter for the same reason
+                               tripped_sources is one - the return tuple is log.csv columns and must not be
+                               widened by a non-column.
+                               scrape_queue reads it to decide who gets an extra pass (#43): only
+                               DEPTH_STOP_MAX_RUNTIME means "more time would have helped", which is why
+                               the stood-down and breaker-tripped cases have to be distinguishable from it
+                               rather than collapsed into "stopped early".
     @return                    (success_count, fail_count, skipped_count, total_completed).
     """
+    def _record(reason):
+        if stop_reasons is not None:
+            stop_reasons['depth_stop'] = reason
+        return reason
     try:
         # Availability probe only - the fetch seam (_fetch_pano_with_depth_planes) imports the submodules it
         # needs lazily, per request.
         from streetlevel import streetview  # noqa: F401
     except ImportError as e:
         logging.error("DEPTHDOWNLOAD: streetlevel is not installed (%s); skipping depth phase", str(e))
+        _record(None)
         return 0, 0, 0, 0
 
     # Before the ledger read, and before anything is opened: a live latch means a run on this host was refused
@@ -1471,6 +1488,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         print("DEPTHDOWNLOAD: WARNING - Google refused this host %.1f hours ago, so the depth phase is "
               "standing down (latch %s, held for %g hours). Images are unaffected; unresolved panos are "
               "retried once it expires." % (latched_hours, latch_path, DEPTH_BLOCK_LATCH_HOURS))
+        _record(DEPTH_STOP_BLOCKED)
         return 0, 0, 0, 0
 
     total_panos = len(pano_infos)
@@ -1721,6 +1739,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
               "%d skipped of %d). No panos were lost (unresolved panos are retried next run). Last error: %s"
               % (success_count, fail_count, unavailable_count, skipped_count, total_panos,
                  str(last_error)[:200]))
+    _record(stop_reason)
     logging.debug("DEPTHDOWNLOAD: Final result: Completed %d of %d (%d success, %d failed [%d unavailable], "
                   "%d skipped, %d requests, stop_reason=%s)", total_completed, total_panos, success_count,
                   fail_count, unavailable_count, skipped_count, request_count, stop_reason)
