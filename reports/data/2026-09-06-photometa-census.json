@@ -93,6 +93,34 @@
     "alive_before": 306,
     "died": 0
    }
+  },
+  "pose_drift": {
+   "n": 649,
+   "threshold_deg": 0.05,
+   "axes": {
+    "heading_deg": null,
+    "pitch_deg": {
+     "n": 649,
+     "n_changed": 95,
+     "n_drifted": 10,
+     "max_abs_deg": 0.1064910888671875,
+     "p50_abs_deg": 0.0,
+     "p90_abs_deg": 0.003675842285156262,
+     "p99_abs_deg": 0.05994140624999996
+    },
+    "roll_deg": {
+     "n": 649,
+     "n_changed": 95,
+     "n_drifted": 19,
+     "max_abs_deg": 0.2918242812156677,
+     "p50_abs_deg": 0.0,
+     "p90_abs_deg": 0.006320118904113773,
+     "p99_abs_deg": 0.11438110351559541
+    }
+   },
+   "n_drifted_any_axis": 21,
+   "drifted_pct": 3.235747303543914,
+   "n_changed_any_axis": 95
   }
  },
  "records": [
