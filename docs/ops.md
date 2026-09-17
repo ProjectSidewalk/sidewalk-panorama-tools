@@ -175,7 +175,7 @@ byte-for-byte "the original survives" battery in `tests/test_refetch_panos.py`.
 
 Noticing a re-render *without* a repair pass is a separate problem, because detecting one in pixels means
 fetching the pixels. The cheap proxy is pose: photometa carries `heading`/`pitch`/`roll` at one metadata
-request, 13 of the 19 were re-posed, and
+request, 15 of the 19 moved (14 with a pose the fit can name), and
 [`photometa_census.py --refetch`](../reports/2026-09-06-rerender-probe.md#how-we-would-ever-notice-this-again)
 compares them across runs as `pose_drift`. It catches the re-poses, not the pure re-grades.
 

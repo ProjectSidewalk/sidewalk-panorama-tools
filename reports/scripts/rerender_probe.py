@@ -22,10 +22,16 @@ import argparse
 import csv
 import json
 import os
+import sys
 from multiprocessing import Pool
 
 import numpy as np
 from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The pilot drew the re-rendered/same split, so its threshold is the definition; a copy here would be a
+# second number that could drift from the one the pairs were actually classed under.
+from refetch_pilot import RERENDERED_HORIZON_MAE  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None
 TILE = 512
@@ -33,7 +39,9 @@ TILE = 512
 BAND_ROWS = {8192: (5, 10), 6656: (4, 8)}
 WIN = 1024
 LOCK_PEAK = 0.10          # a window whose phase-correlation peak is below this did not find a correspondence
-RERENDERED_HORIZON_MAE = 3.0
+# `classify`'s first gate: a band has moved when at least this fraction of its locked windows shifted by a
+# whole pixel. rerender_reduce reads the same gate, so "moved" means one thing in the table and the labels.
+MOVED_FRACTION = 0.5
 
 
 def band_pixel_rows(h):
@@ -45,7 +53,8 @@ def band_pixel_rows(h):
 
 
 def phase_correlate(a, b):
-    """(dy, dx, peak) with b ~= np.roll(a, (dy, dx)): content in b sits at old position + shift."""
+    """(dy, dx, peak, dy_sub, dx_sub) with b ~= np.roll(a, (dy, dx)): content in b sits at old position +
+    shift. The first two are the integer argmax; the last two carry the parabolic sub-pixel refinement."""
     h, w = a.shape
     win = np.outer(np.hanning(h), np.hanning(w)).astype(np.float32)
     A = np.fft.rfft2((a - a.mean()) * win)
@@ -186,17 +195,28 @@ def measure_band(old, new, top, bottom):
     return out
 
 
+def moved(shift):
+    """Whether a band's windows moved: at least MOVED_FRACTION of the locked ones shifted by a whole pixel.
+
+    This is the first gate of `classify`, and the only one that asks "did anything move" rather than "what
+    shape did the movement have". It is exposed on its own because the later gates cannot see a pure tilt
+    below about 1.5 px: a sinusoid's median is zero, so the `shifted` test fails, and +-1 px agreement
+    swallows the amplitude, so `warped` fails too - which left two re-posed panoramas reading as
+    "no displacement" in the first draft of the write-up. A summary with no locked window has not moved.
+    """
+    return shift['n_locked'] > 0 and shift['n_locked_moved'] / shift['n_locked'] >= MOVED_FRACTION
+
+
 def classify(rec):
     """One primary label per panorama from the horizon band (the control band, and the textured one)."""
     h = rec['horizon']
     s = h['shift']
     if s['n_locked'] == 0:
         return 'no-lock'
-    moved = s['n_locked_moved'] / s['n_locked']
     agree = s['n_locked_agree'] / s['n_locked']
-    if moved >= 0.5 and agree >= 0.75 and max(abs(s['median_dy_sub']), abs(s['median_dx_sub'])) >= 1.0:
+    if moved(s) and agree >= 0.75 and max(abs(s['median_dy_sub']), abs(s['median_dx_sub'])) >= 1.0:
         return 'shifted'
-    if moved >= 0.5 and agree < 0.75:
+    if moved(s) and agree < 0.75:
         return 'warped'
     if not rec['rerendered']:
         return 'same'

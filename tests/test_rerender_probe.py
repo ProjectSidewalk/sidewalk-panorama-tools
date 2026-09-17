@@ -170,29 +170,43 @@ class TestTheClassifierDiscriminates:
         assert rerender_probe.classify(self.record(n_locked=0)) == 'no-lock'
 
 
-def windows_with(width, heading_px=0.0, tilt_px=0.0, peak=0.5, n=8):
-    """Locked windows carrying a known yaw translation and a known pitch/roll sinusoid."""
+def windows_with(width, heading_px=0.0, tilt_px=0.0, vertical_px=0.0, peak=0.5, n=8):
+    """Locked windows carrying a known yaw translation, a known pitch/roll sinusoid and a known uniform
+    vertical offset - the three components the reduce's fit is supposed to take apart."""
     out = []
     for k in range(n):
         x = int(k * width / n)
         phi = 2 * math.pi * x / width
         out.append({'y': 0, 'x': x, 'peak': peak,
-                    'dx_sub': heading_px, 'dy_sub': tilt_px * math.sin(phi)})
+                    'dx_sub': heading_px, 'dy_sub': vertical_px + tilt_px * math.sin(phi)})
     return out
 
 
-class TestTheReduceRecoversAKnownPose:
-    """rerender_reduce turns 16 per-window displacements into the table's two pose numbers. It is new
-    code with no upstream check, so the recovery is verified against poses put in by hand."""
+def shift_summary(windows, moved_fraction=1.0):
+    """The probe's per-band `shift` block for a synthetic window set, with the fraction of locked windows
+    that shifted by a whole pixel set directly - the one field the movement verdict reads."""
+    n_locked = sum(1 for w in windows if w['peak'] >= rerender_probe.LOCK_PEAK)
+    return {'n_windows': len(windows), 'n_locked': n_locked,
+            'n_locked_moved': int(round(moved_fraction * n_locked)), 'n_locked_agree': n_locked,
+            'median_dy_sub': 0.0, 'median_dx_sub': 0.0,
+            'max_abs_sub': max((max(abs(w['dy_sub']), abs(w['dx_sub'])) for w in windows), default=None)}
 
-    def record(self, width=16384, **kwargs):
-        return {'width': width, 'label': 'warped', 'horizon': {'windows': windows_with(width, **kwargs)}}
+
+class TestTheReduceRecoversAKnownPose:
+    """rerender_reduce turns 16 per-window displacements into the table's pose numbers. It is new code
+    with no upstream check, so the recovery is verified against poses put in by hand."""
+
+    def record(self, width=16384, height=8192, label='warped', moved_fraction=1.0, **kwargs):
+        windows = windows_with(width, **kwargs)
+        return {'width': width, 'height': height, 'label': label,
+                'horizon': {'windows': windows, 'shift': shift_summary(windows, moved_fraction)}}
 
     def test_a_pure_yaw_change_is_all_heading_and_no_tilt(self):
         rec = self.record(heading_px=2.5)
 
         assert abs(rerender_reduce.heading_offset_px(rec) - 2.5) < 1e-6
         assert rerender_reduce.tilt_amplitude_px(rec) < 1e-6
+        assert abs(rerender_reduce.vertical_offset_px(rec)) < 1e-6
 
     def test_a_pure_tilt_is_all_tilt_and_no_heading(self):
         rec = self.record(tilt_px=7.2)
@@ -206,10 +220,12 @@ class TestTheReduceRecoversAKnownPose:
         assert abs(rerender_reduce.heading_offset_px(rec) - 3.0) < 1e-6
         assert abs(rerender_reduce.tilt_amplitude_px(rec) - 5.2) < 1e-6
 
-    def test_a_uniform_vertical_offset_is_not_a_tilt(self):
+    def test_a_uniform_vertical_offset_is_its_own_component_not_a_tilt(self):
         """A tilt moves content up on one side and down on the opposite side. A constant vertical offset
-        is not that, and the fitted constant must absorb it - otherwise a re-stitch that merely moved the
-        horizon would be reported as a camera-tilt correction.
+        is not that - but it IS a displacement of every feature under its stored coordinate, which is the
+        question the report answers, so it comes out as its own number rather than being absorbed and
+        dropped (the first draft did exactly that, and one panorama's largest displacement, a -1.4 px
+        vertical offset, went unreported behind a 0.7 px tilt).
 
         Only half the circle locks here, and that is the point rather than incidental colour. Over
         *evenly spaced* windows covering a full turn, cos and sin are orthogonal to a constant, so the
@@ -218,13 +234,23 @@ class TestTheReduceRecoversAKnownPose:
         when windows fail to lock, which is the low-evidence case where a spurious tilt would be least
         likely to be questioned: without the constant, this flat 4 px offset reads as a 5.2 px tilt.
         """
-        rec = self.record(tilt_px=0.0)
-        for index, window in enumerate(rec['horizon']['windows']):
-            window['dy_sub'] = 4.0
-            if index >= 4:
-                window['peak'] = 0.01
+        rec = self.record(vertical_px=4.0)
+        for window in rec['horizon']['windows'][4:]:
+            window['peak'] = 0.01
 
+        assert abs(rerender_reduce.vertical_offset_px(rec) - 4.0) < 1e-6
         assert rerender_reduce.tilt_amplitude_px(rec) < 1e-6
+
+    def test_the_fit_residual_is_zero_on_an_exact_pose_and_nonzero_on_noise(self):
+        """The residual is the column that says whether the three numbers describe the windows or merely
+        summarise them: on the committed data one panorama's residual exceeds every component."""
+        exact = rerender_reduce.fit_pose(self.record(heading_px=1.0, tilt_px=2.0, vertical_px=0.5))
+        noisy_rec = self.record()
+        for index, window in enumerate(noisy_rec['horizon']['windows']):
+            window['dy_sub'] = 3.0 if index % 3 == 0 else -1.0
+
+        assert exact['residual_px'] < 1e-6
+        assert rerender_reduce.fit_pose(noisy_rec)['residual_px'] > 1.0
 
     def test_unlocked_windows_are_not_averaged_in(self):
         """An unlocked window's shift is the argmax of noise. Including it would pull both estimates
@@ -245,22 +271,86 @@ class TestTheReduceRecoversAKnownPose:
         for window in rec['horizon']['windows'][n_locked:]:
             window['peak'] = 0.01
 
+        assert rerender_reduce.fit_pose(rec) is None
         assert rerender_reduce.tilt_amplitude_px(rec) is None
 
-    def test_degrees_per_pixel_is_the_same_on_both_axes(self):
-        """A 2:1 equirectangular frame has square pixels, which is why one scale converts a heading
-        offset and a tilt amplitude alike."""
-        assert rerender_reduce.degrees_per_pixel(16384) == pytest.approx(180.0 / 8192)
-
-    def test_a_panorama_with_no_displacement_reports_zero_not_fit_noise(self):
-        """The table's job on those six rows is to say 'this did not move', so an unclassified record
-        reports a flat 0 rather than the residual of a fit to windows that agree on nothing."""
-        rec = self.record(heading_px=1.5, tilt_px=2.0)
-        rec['label'] = 'changed-unclassified'
-
+    def test_heading_converts_over_the_width_and_the_vertical_components_over_the_height(self):
+        """On a 2:1 frame the two scales agree, which is how a wrong-axis conversion returns the right
+        answer for the wrong reason; a non-2:1 record is what tells them apart."""
+        assert rerender_reduce.azimuth_deg_per_px(16384) == pytest.approx(rerender_reduce.elevation_deg_per_px(8192))
+        rec = self.record(width=16384, height=4096, heading_px=1.0, tilt_px=1.0, vertical_px=1.0)
         row = rerender_reduce.table_row({**rec, 'pano_id': 'x', 'bottom': {'mae': 1.0},
                                          'horizon': {**rec['horizon'], 'mae': 5.0,
                                                      'affine': {'gain': 1.0, 'offset': 0.0},
                                                      'lap_ratio_gain_corrected': 1.0}}, {})
 
-        assert row['heading_px'] == 0.0 and row['tilt_px'] == 0.0
+        assert row['heading_deg'] == pytest.approx(360.0 / 16384)
+        assert row['tilt_deg'] == pytest.approx(180.0 / 4096)
+        assert row['vertical_deg'] == pytest.approx(180.0 / 4096)
+
+
+class TestTheMovementVerdict:
+    """Whether a panorama moved comes from the probe's own first gate, and the fit is reported whatever
+    the classifier said - the two mistakes the first table made were gating the fit on the classifier
+    and trusting the classifier to see every movement."""
+
+    def record(self, moved_fraction, label='changed-unclassified', **kwargs):
+        windows = windows_with(16384, **kwargs)
+        return {'width': 16384, 'height': 8192, 'label': label, 'pano_id': 'x',
+                'bottom': {'mae': 1.0},
+                'horizon': {'windows': windows, 'shift': shift_summary(windows, moved_fraction),
+                            'mae': 5.0, 'affine': {'gain': 1.0, 'offset': 0.0},
+                            'lap_ratio_gain_corrected': 1.0}}
+
+    def test_a_small_pure_tilt_the_classifier_missed_is_still_reported_as_moved(self):
+        """The committed case: half the windows shifted by a pixel, a 1.2 px sinusoid, and a classifier
+        label of 'no shift seen' because a sinusoid's median is zero. The table has to say it moved and
+        show the tilt, not print 0 because the classifier could not name the shape."""
+        rec = self.record(moved_fraction=0.5, tilt_px=1.2, label='changed-unclassified')
+
+        row = rerender_reduce.table_row(rec, {})
+
+        assert rerender_reduce.movement(rec) == 'modelled'
+        assert row['movement'] == 'modelled' and row['tilt_px'] == pytest.approx(1.2)
+        assert 'no shift seen' in row['classifier']
+
+    def test_the_gate_is_the_probes_not_a_second_definition(self):
+        """Three of eight windows moved: the same 1.2 px sinusoid as above, one window short of the gate."""
+        rec = self.record(moved_fraction=3 / 8, tilt_px=1.2)
+
+        assert not rerender_probe.moved(rec['horizon']['shift'])
+        assert rerender_reduce.movement(rec) == 'still'
+
+    def test_a_still_panorama_reports_its_fit_rather_than_a_forced_zero(self):
+        """A row that did not move shows what the fit found - which on a still panorama is a number under
+        0.03 px, and that smallness is evidence. A forced 0 would have hidden the two panoramas above."""
+        rec = self.record(moved_fraction=0.0, heading_px=0.02)
+
+        row = rerender_reduce.table_row(rec, {})
+
+        assert row['movement'] == 'still' and row['heading_px'] == pytest.approx(0.02)
+
+    def test_movement_the_fit_cannot_name_is_said_so(self):
+        """Windows moved, but no fitted component reaches a pixel and the residual is large: the verdict
+        is 'yes, no consistent model', never a heading or a tilt that the numbers do not support."""
+        rec = self.record(moved_fraction=0.6)
+        for index, window in enumerate(rec['horizon']['windows']):
+            window['dy_sub'] = 3.0 if index % 3 == 0 else -1.0
+
+        assert rerender_reduce.movement(rec) == 'unmodelled'
+        assert rerender_reduce.MOVEMENT_TEXT[rerender_reduce.movement(rec)] == 'yes, no consistent model'
+
+    def test_no_locked_window_is_unknown_not_still(self):
+        rec = self.record(moved_fraction=0.0, peak=0.01)
+
+        assert rerender_reduce.movement(rec) == 'no-lock'
+
+    def test_a_rounded_zero_never_prints_with_a_minus_sign(self):
+        """A component that rounds to nothing reads as nothing; '-0.0' invites a reader to see a direction
+        that is not there."""
+        rec = self.record(moved_fraction=0.0, heading_px=-0.02)
+
+        cells = rerender_reduce.format_row(rerender_reduce.table_row(rec, {}))
+
+        assert cells[5].startswith('+0.0 (')
+        assert '-0.0 ' not in ' '.join(cells)
