@@ -806,9 +806,10 @@ class DepthPacer:
     def on_pushback(self, why, from_google=False):
         """Something made us wait, retry, or fail. Back off now and forfeit any credit towards speeding up.
 
-        @param from_google Whether the evidence is Google's OWN - a push-back status, or a retry history on a
-                           response that eventually succeeded. Only that forfeits the standing the next run
-                           inherits, and _pushback_hook is the only caller that can say so.
+        @param from_google Whether the evidence is Google's OWN - a push-back status, or a retry history that
+                           holds one. Only that forfeits the standing the next run inherits, and
+                           _pushback_hook is the only caller that can say so. A retry history made of connect
+                           or read errors is this box's evidence, not Google's (_retry_history_is_googles).
 
         The narrowing is the block latch's rule, not a second convention (#125.1): *"Only a blocked stop
         latches - the breaker counts storage failures, and a full disk is not Google."* This method is also
@@ -834,6 +835,22 @@ class DepthPacer:
             self._persist()
 
 
+def _retry_history_is_googles(history):
+    """Whether a urllib3 retry history carries a verdict from Google, as opposed to a retry this box needed.
+
+    `Retry.history` records EVERY retry cause, not only status retries. A status retry is a `RequestHistory`
+    with `status` set to the 429/5xx Google answered and `error` None; a connect or read retry - a DNS lookup
+    that failed and then succeeded, one connection reset, a read timeout - carries the error and `status`
+    None. Only the first kind is Google's own evidence (#125 review, finding 1). The second is exactly the
+    "one DNS blip on the box" that on_pushback's `from_google` split exists to keep out of the host's file:
+    the phase's own network arm already treats the same blip, when it exhausts every retry, as local, and
+    the blip that cleared must not cost more than the one that did not.
+
+    Read with getattr because the entries are urllib3's internals, not the requests API this repo pins.
+    """
+    return any(getattr(entry, 'status', None) in DEPTH_PUSHBACK_STATUSES for entry in history)
+
+
 def _pushback_hook(pacer):
     """requests response hook: tell the pacer when Google pushed back, without changing the outcome.
 
@@ -843,8 +860,10 @@ def _pushback_hook(pacer):
     Google made us try again, which is the earliest warning available and the whole point of reacting before
     the point of refusal.
 
-    Wrapped in a getattr chain because `raw.retries` is urllib3's internals, not part of the requests API this
-    repo pins - a shape change upstream must not be able to back a healthy run off permanently.
+    Any retry history backs THIS run off; only a history holding a push-back status forfeits the standing the
+    next run inherits (_retry_history_is_googles). Wrapped in a getattr chain because `raw.retries` is
+    urllib3's internals, not part of the requests API this repo pins - a shape change upstream must not be
+    able to back a healthy run off permanently.
     """
     def hook(response, *args, **kwargs):
         if response.status_code in DEPTH_PUSHBACK_STATUSES:
@@ -852,7 +871,8 @@ def _pushback_hook(pacer):
             return
         history = getattr(getattr(getattr(response, 'raw', None), 'retries', None), 'history', None)
         if history:
-            pacer.on_pushback('%d retries were needed' % (len(history),), from_google=True)
+            pacer.on_pushback('%d retries were needed' % (len(history),),
+                              from_google=_retry_history_is_googles(history))
     return hook
 
 

@@ -188,8 +188,11 @@ fan-out — and on top of that:
     raised for a pano carrying depth but no planes. Each of those slows *this* run down, which is right and
     cheap, and leaves the host's file alone: candidates are shuffled, so one malformed pano in 1.43 M is met
     at random, and forfeiting there would hand the next 51 cities a 1.0 s opening interval — seven decay
-    steps, about 2.4 twelve-minute slots, to earn back. A push-back **status**, a **retry history**, or an
-    outright refusal does forfeit it, at once.
+    steps, about 2.4 twelve-minute slots, to earn back. A push-back **status**, a retry history that **holds one**, or an
+    outright refusal does forfeit it, at once. A retry history made of connect or read errors — a DNS
+    lookup on the box that failed and then succeeded, one reset, a read timeout — is the box's evidence,
+    not Google's: it backs *this* run off and leaves the file alone, exactly as the same error does when it
+    exhausts every retry and reaches the phase's network arm.
   * **The standing is what was *earned*, not the live gap.** The two are different numbers: a local back-off
     widens the gap without touching the standing, and the decay steps that walk it back are re-earning
     ground the host already held rather than new evidence. The clean streak rides with the interval it was

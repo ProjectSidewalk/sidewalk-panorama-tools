@@ -17,6 +17,9 @@ from types import SimpleNamespace
 
 import pytest
 import requests
+import urllib3
+from urllib3.exceptions import NewConnectionError, ProtocolError, ReadTimeoutError
+from urllib3.util.retry import RequestHistory, Retry
 
 from conftest import default_depth_array, make_pano
 from downloaders import common, gsv
@@ -840,17 +843,90 @@ class TestOnlyGoogleForfeitsTheStanding:
 
         assert self.pacer(tmp_path / 'pace').interval == 1.0
 
-    def test_a_retry_history_reaches_the_pacer_as_googles_too(self, tmp_path):
-        """The other half of the hook: a 200 that needed retries. urllib3 retries inside the adapter, so this
-        is the earliest observable sign of push-back and it must forfeit like an outright 429."""
-        write_state(tmp_path / 'pace', 0.25, 1)
+    @staticmethod
+    def _retried(*history):
+        """A 200 whose urllib3 retry history is `history` - real RequestHistory entries, because the shape of
+        an entry is what the hook has to read."""
         response = requests.Response()
         response.status_code = 200
-        response.raw = SimpleNamespace(retries=SimpleNamespace(history=('one',)))
+        response.raw = SimpleNamespace(retries=SimpleNamespace(history=history))
+        return response
 
-        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(response)
+    def test_a_retry_history_holding_a_pushback_status_reaches_the_pacer_as_googles_too(self, tmp_path):
+        """The other half of the hook: a 200 that needed retries because Google answered 429/5xx first.
+        urllib3 retries inside the adapter, so this is the earliest observable sign of push-back and it must
+        forfeit like an outright 429."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        status_retry = RequestHistory('GET', '/maps/photometa/v1', None, 503, None)
+
+        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(self._retried(status_retry))
 
         assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    @pytest.mark.parametrize('error', [
+        NewConnectionError(None, 'Name or service not known'),
+        ReadTimeoutError(None, '/maps/photometa/v1', 'Read timed out'),
+        ProtocolError('Connection aborted'),
+    ], ids=['dns', 'read-timeout', 'connection-reset'])
+    def test_a_retry_this_box_needed_does_not_forfeit_the_standing(self, tmp_path, error):
+        """`Retry.history` records every retry cause. `Retry(connect=5, ...)` appends an entry with `status`
+        None and the error for a DNS lookup that failed and then succeeded - the "one DNS blip on the box"
+        this whole class exists to keep out of the host's file - and the same for a read timeout or a reset.
+        Before this test the hook called every non-empty history Google's, so the blip that CLEARED after
+        one retry forfeited the standing while the same blip exhausting all five retries (the phase's
+        network arm, from_google=False) kept it."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        local_retry = RequestHistory('GET', '/maps/photometa/v1', error, None, None)
+
+        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(self._retried(local_retry))
+
+        assert self.pacer(tmp_path / 'pace').interval == 0.25
+
+    def test_but_it_still_backs_this_run_off(self, tmp_path):
+        """Narrowing what forfeits must not narrow what backs off: a retry is still a retry for this run."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        pacer = self.pacer(tmp_path / 'pace')
+        local_retry = RequestHistory('GET', '/maps/photometa/v1', ProtocolError('Connection aborted'), None, None)
+
+        gsv._pushback_hook(pacer)(self._retried(local_retry))
+
+        assert pacer.interval == 1.0, 'max(0.25 * 2, min_backoff)'
+
+    def test_one_pushback_status_anywhere_in_a_mixed_history_is_googles(self, tmp_path):
+        """A history is the whole chain of retries one request needed; a status entry AHEAD of a connect
+        entry is still Google's verdict, so the hook has to read every entry, not the last one."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        history = (RequestHistory('GET', '/x', None, 429, None),
+                   RequestHistory('GET', '/x', NewConnectionError(None, 'blip'), None, None))
+
+        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(self._retried(*history))
+
+        assert self.pacer(tmp_path / 'pace').interval == 1.0
+
+    def test_a_status_outside_the_pushback_set_is_not_googles_either(self, tmp_path):
+        """What makes an entry Google's is its STATUS being a push-back one, not merely the absence of an
+        error: a redirect entry carries a 3xx and no error, and is not Google telling us to slow down."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        redirect = RequestHistory('GET', '/x', None, 302, 'https://www.google.com/maps/photometa/v1')
+
+        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(self._retried(redirect))
+
+        assert self.pacer(tmp_path / 'pace').interval == 0.25
+
+    def test_the_history_shape_is_urllib3s_own(self, tmp_path):
+        """Pinned against the real Retry object rather than a hand-built entry, so a urllib3 change to what
+        `increment` records fails here rather than silently reclassifying every retry."""
+        write_state(tmp_path / 'pace', 0.25, 1)
+        retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+        after_a_blip = retry.increment(method='GET', url='/maps/photometa/v1',
+                                       error=NewConnectionError(None, 'Name or service not known'))
+        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(self._retried(*after_a_blip.history))
+        assert self.pacer(tmp_path / 'pace').interval == 0.25, 'a connect retry is not Google'
+
+        refused = urllib3.response.HTTPResponse(body=b'', status=429, headers={}, preload_content=False)
+        after_a_429 = retry.increment(method='GET', url='/maps/photometa/v1', response=refused)
+        gsv._pushback_hook(self.pacer(tmp_path / 'pace'))(self._retried(*after_a_429.history))
+        assert self.pacer(tmp_path / 'pace').interval == 1.0, 'a status retry is'
 
     def test_one_malformed_pano_does_not_slow_the_next_city(self, tmp_path, fake_streetview, clock,
                                                             monkeypatch):
