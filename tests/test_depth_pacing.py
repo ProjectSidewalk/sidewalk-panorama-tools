@@ -1056,6 +1056,77 @@ class TestZeroRequestsIsZeroEvidence:
             assert json.load(f)['interval'] == pytest.approx(0.8)
 
 
+class TestTheStandingSurvivesAStopThePhaseDidNotChoose:
+    """The decay steps persist themselves as they are earned, but the streak in progress is written only at
+    the end of the phase - and DownloadRunner translates SIGTERM into SystemExit(143) precisely so that
+    end-of-phase work runs under the queue's --kill-grace backstop, a systemctl stop, or an operator's kill
+    (#125 review, finding 2). A save placed after the loop was skipped by every one of those, and save()'s
+    own docstring is the cost: the ~186 requests towards the next step, a third of a slot's progress.
+    """
+
+    @staticmethod
+    def stopped_on_the_third_request(fake_streetview, exc):
+        calls = []
+
+        def find(pano_id, download_depth=True, session=None):
+            calls.append(pano_id)
+            if len(calls) == 3:
+                raise exc
+            return make_pano(default_depth_array())
+
+        fake_streetview.find_panorama_by_id = find
+
+    def test_a_sigterm_translated_stop_still_writes_the_streak(self, tmp_path, fake_streetview, monkeypatch):
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        state = tmp_path / 'pace'
+        self.stopped_on_the_third_request(fake_streetview, SystemExit(143))
+
+        with pytest.raises(SystemExit):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2', 'p3', 'p4'), pace_state_path=str(state))
+
+        with open(state) as f:
+            assert json.load(f)['clean_streak'] == 2, 'two clean requests were made before the stop'
+
+    def test_and_so_does_a_keyboard_interrupt(self, tmp_path, fake_streetview, monkeypatch):
+        """An operator's Ctrl-C on a manual backfill is the other BaseException the loop does not catch."""
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        state = tmp_path / 'pace'
+        self.stopped_on_the_third_request(fake_streetview, KeyboardInterrupt())
+
+        with pytest.raises(KeyboardInterrupt):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2', 'p3', 'p4'), pace_state_path=str(state))
+
+        with open(state) as f:
+            assert json.load(f)['clean_streak'] == 2
+
+    def test_the_stop_is_still_the_stop(self, tmp_path, fake_streetview, monkeypatch):
+        """Remembering the standing on the way out must not swallow the exit: the runner's exit code 143 is
+        what tells scrape_queue the city was stopped rather than finished."""
+        state = tmp_path / 'pace'
+        self.stopped_on_the_third_request(fake_streetview, SystemExit(143))
+
+        with pytest.raises(SystemExit) as stop:
+            gsv.download_depth_maps(str(tmp_path), pano_infos('p1', 'p2', 'p3'), pace_state_path=str(state))
+
+        assert stop.value.code == 143
+
+    def test_a_stop_before_any_request_still_writes_nothing(self, tmp_path, recorder, monkeypatch):
+        """Zero requests is zero evidence on this path too (#125.3): a SIGTERM that lands during the phase's
+        setup - here, in the candidate shuffle, the last thing before the loop - must not restamp."""
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 7, written_at=time.time() - 23.5 * 3600)
+        monkeypatch.setattr(gsv.random, 'shuffle', lambda seq: (_ for _ in ()).throw(SystemExit(143)))
+
+        with pytest.raises(SystemExit):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state))
+
+        with open(state) as f:
+            age_hours = (time.time() - json.load(f)['written_at']) / 3600.0
+        assert age_hours == pytest.approx(23.5, abs=0.1)
+
+
 class TestNothingUnreadableCanEndThePhase:
     """"Everything _load_pace_state cannot believe resolves to open careful" has to hold for the whole class
     of unreadable files, not for an enumerated part of it (#125.4).

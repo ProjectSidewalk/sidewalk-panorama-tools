@@ -1528,9 +1528,33 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         print("DEPTHDOWNLOAD: WARNING - cannot write the depth ledger (%s). Skipping the depth phase." % (e))
         return 0, 0, skipped_count, skipped_count
 
-    # Created after the ledger so an early return can't leak it; the with closes both (#51).
+    def remember_standing():
+        """What this run earned outlives it (DepthPacer._inherit) - unless Google refused us, which forfeits it.
+
+        Registered as an exit callback rather than written after the loop (#125 review, finding 2): the decay
+        steps persist themselves as they are earned, but the streak in progress is written only here, and
+        DownloadRunner translates SIGTERM into SystemExit(143) precisely so that exits like this one run -
+        the queue's --kill-grace backstop, a systemctl stop, an operator's kill. A save placed after the loop
+        was skipped by every one of those. Nothing here can raise (_write_pace_state never does), so it
+        cannot mask the exception it runs under.
+
+        A phase that spent no requests writes NOTHING, not even a fresh timestamp (#125.3):
+        DEPTH_PACE_STATE_HOURS exists so evidence about this host's recent standing expires, and this function
+        is called unconditionally for every city - a Mapillary-only one, a fully-backfilled one, or one whose
+        image phase already spent --max-runtime. Restamping there would keep 52 nightly no-ops refreshing a
+        window that then never expires. Reads stop_reason and request_count as they stand when the loop ends,
+        however it ends.
+        """
+        if stop_reason == DEPTH_STOP_BLOCKED:
+            pacer.forfeit()
+        elif request_count:
+            pacer.save()
+
+    # Created after the ledger so an early return can't leak it; the with closes both (#51). The ExitStack
+    # is exited first, so the standing is remembered before the ledger and the session close.
     session = _depth_session(pacer)
-    with depth_log, session:
+    with depth_log, session, contextlib.ExitStack() as on_exit:
+        on_exit.callback(remember_standing)
 
         def record(pano_id, status):
             ledger.writerow([pano_id, status])
@@ -1665,15 +1689,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
                 time.sleep(retreat_seconds)
 
     total_completed = success_count + fail_count + skipped_count
-    # What this run earned outlives it (DepthPacer._inherit) - unless Google refused us, which forfeits it.
-    # A phase that spent no requests writes NOTHING, not even a fresh timestamp (#125.3): DEPTH_PACE_STATE_HOURS
-    # exists so evidence about this host's recent standing expires, and this function is called unconditionally
-    # for every city - a Mapillary-only one, a fully-backfilled one, or one whose image phase already spent
-    # --max-runtime. Restamping there would keep 52 nightly no-ops refreshing a window that then never expires.
-    if stop_reason == DEPTH_STOP_BLOCKED:
-        pacer.forfeit()
-    elif request_count:
-        pacer.save()
+    # The standing was already remembered by remember_standing on the way out of the with above.
     # Loud on stdout because cron mails it: a phase that stopped early means nothing is progressing, and the
     # per-pano detail is buried in scrape.log.
     if stop_reason == DEPTH_STOP_BLOCKED:

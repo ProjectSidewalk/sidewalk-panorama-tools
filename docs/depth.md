@@ -201,7 +201,9 @@ fan-out — and on top of that:
   * **Zero requests is zero evidence.** A phase that made no requests — a Mapillary-only city, a
     fully-backfilled one, a run whose image phase already spent `--max-runtime` — writes nothing at all,
     not even a fresh timestamp. Otherwise 52 nightly no-ops would keep refreshing a freshness window that
-    then never expires.
+    then never expires. The write runs on the way out of the phase *however* it ends — a run the queue
+    stops with SIGTERM, or an operator's Ctrl-C on a manual backfill, keeps the streak it had built up,
+    since the decay steps are already on disk the moment they are earned.
   * **One process at a time spends it.** The phase holds an advisory lock (`<state file>.lock`) for its
     whole duration. `scrape_queue.py` serialises the fleet, but its lock guards the *queue*, not this host's
     depth rate, and a manual backfill alongside the nightly window is a documented workflow. A phase that
