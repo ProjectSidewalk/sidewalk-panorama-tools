@@ -19,12 +19,13 @@ import re
 import pytest
 from PIL import Image
 
-from downloaders import common, gsv, mapillary
+from downloaders import common, gsv, mapillary, panoramax
 from downloaders.common import DownloadResult
 import downscale_panos
 import refetch_panos
 from test_gsv_stitcher import stub_probe, stub_tiles, jpeg_bytes as tile_bytes, RED, BLUE, assert_color
-from test_image_downloaders import FakeResponse, FakeSession, HEALTHY_MAPILLARY_METADATA, MAPILLARY_PANO
+from test_image_downloaders import (FakeResponse, FakeSession, HEALTHY_MAPILLARY_METADATA,
+                                    MAPILLARY_PANO, PANORAMAX_PANO, PANORAMIC_ITEM)
 # The one list of "the production tree", shared with the no-pandas rule this guard is a sibling of.
 from test_csv_intake import PRODUCTION_MODULES
 
@@ -306,6 +307,65 @@ class TestTheMapillaryDownloaderHonoursTheSwitch:
 
         assert result == DownloadResult.success
         assert os.listdir(tmp_path / MAPILLARY_PANO['pano_id'][:2]) == ['%s.jpg' % MAPILLARY_PANO['pano_id']]
+        assert 'display copy not written' in caplog.text
+
+
+class TestThePanoramaxDownloaderHonoursTheSwitch:
+    """The third downloader reading the one switch, the same way as the other two.
+
+    Bayonne's own frames are 5760 and 5376 wide, under the 8192 cap, so no sidecar would be written for
+    them in production even with the switch on (#110). The call is still made and still guarded, because
+    the federation carries 12288-wide professional-rig imagery and a later French city may be shot with it
+    - so the path has to work, and has to be non-fatal, before the first city that needs it rather than
+    after. `110-panoramax-source` carried this write UNGUARDED, copied from the Mapillary block before the
+    switch existed; the two branches crossed and this is the behavioural half of catching that, beside
+    TestTheSwitch's structural scan.
+    """
+
+    def wide_body(self):
+        buf = io.BytesIO()
+        two_tone(2048, 1024).save(buf, 'jpeg', quality=95)
+        return buf.getvalue()
+
+    def _session(self, monkeypatch, body):
+        session = FakeSession(FakeResponse(payload=PANORAMIC_ITEM), FakeResponse(chunks=[body]))
+        monkeypatch.setattr(panoramax, 'retrying_session', lambda: session)
+
+    def test_a_wide_download_lands_alone_by_default(self, tmp_path, monkeypatch, small_cap):
+        """No copies_on: this is what Bayonne writes on 2026-09-18."""
+        self._session(monkeypatch, self.wide_body())
+
+        assert panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) == DownloadResult.success
+
+        pano_id = PANORAMAX_PANO['pano_id']
+        assert os.listdir(tmp_path / pano_id[:2]) == ['%s.jpg' % pano_id]
+
+    def test_a_wide_download_lands_with_its_copy(self, tmp_path, monkeypatch, small_cap, copies_on):
+        self._session(monkeypatch, self.wide_body())
+
+        assert panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO) == DownloadResult.success
+
+        pano_id = PANORAMAX_PANO['pano_id']
+        shard = tmp_path / pano_id[:2]
+        assert sorted(os.listdir(shard)) == ['%s.jpg' % pano_id, '%s.w1024.jpg' % pano_id]
+        assert_two_tone(str(shard / ('%s.w1024.jpg' % pano_id)), (CAP, 512))
+
+    def test_a_failed_copy_does_not_fail_the_pano(self, tmp_path, monkeypatch, small_cap, copies_on,
+                                                  caplog):
+        """The native file is already the resume marker and downscale_panos.py heals a missing sidecar, so
+        a full store must cost the display copy and not the pano."""
+        self._session(monkeypatch, self.wide_body())
+
+        def refuse(pano_path, max_width=None, quality=None):
+            raise OSError(28, 'No space left on device')
+
+        monkeypatch.setattr(panoramax, 'write_downscaled_sidecar_from_file', refuse)
+        with caplog.at_level(logging.ERROR):
+            result = panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+
+        assert result == DownloadResult.success
+        pano_id = PANORAMAX_PANO['pano_id']
+        assert os.listdir(tmp_path / pano_id[:2]) == ['%s.jpg' % pano_id]
         assert 'display copy not written' in caplog.text
 
 

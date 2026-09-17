@@ -14,10 +14,11 @@ The two Project Sidewalk endpoints this repo reads, field by field. Both are ser
 | `lng` | The longitude of the camera when the image was taken |
 | `camera_heading` | The heading (in degrees) of the center of the image with respect to true north |
 | `camera_pitch` | The pitch (in degrees) of the camera with respect to horizontal |
-| `source` | The source of the imagery (`gsv`, `mapillary`, …) |
+| `source` | The source of the imagery (`gsv`, `mapillary`, `panoramax`, …) |
 
-The downloader drops empty ids and the literal id `tutorial`, then keeps `gsv` and — when
-`MAPILLARY_ACCESS_TOKEN` is set — `mapillary`. See [Downloader → Imagery sources](downloader.md#imagery-sources).
+The downloader drops empty ids and the literal id `tutorial`, then keeps `gsv` and `panoramax`, plus
+`mapillary` when `MAPILLARY_ACCESS_TOKEN` is set. Panoramax `pano_id`s are UUIDs, so nothing may assume an
+id alphabet. See [Downloader → Imagery sources](downloader.md#imagery-sources).
 
 ## `/adminapi/labels/cvMetadata` — the cropper's label list
 
@@ -29,7 +30,7 @@ on probably doesn't matter for you.
 |---|---|
 | `label_id` | A unique ID for each label **within a given city**, provided by Project Sidewalk |
 | `gsv_panorama_id` | A unique ID, provided by the imagery source, for the panoramic image [same as `/adminapi/panos`] |
-| `source` | The source of the imagery (`gsv`, `mapillary`, …) [same as `/adminapi/panos`] |
+| `source` | The source of the imagery (`gsv`, `mapillary`, `panoramax`, …) [same as `/adminapi/panos`] |
 | `label_type_id` | An integer ID denoting the type of label placed — see the table below |
 | `pano_x` | The x-pixel location of the label on the pano, where top-left is (0,0) |
 | `pano_y` | The y-pixel location of the label on the pano, where top-left is (0,0) |

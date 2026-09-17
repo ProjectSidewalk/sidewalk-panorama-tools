@@ -41,6 +41,7 @@ NAMED_SOURCES = [
     'CLAUDE.md',
     'DownloadRunner.py', 'CropRunner.py', 'migrate_depth_artifacts.py', 'config.py',
     os.path.join('downloaders', 'gsv.py'), os.path.join('downloaders', 'mapillary.py'),
+    os.path.join('downloaders', 'panoramax.py'),
     os.path.join('downloaders', 'common.py'), os.path.join('log_analyzer', 'analyze.py'),
     os.path.join('assets', 'make_banner.py'),
 ]

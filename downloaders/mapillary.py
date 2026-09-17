@@ -9,11 +9,9 @@ import os
 import stat
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from . import common
-from .common import (DownloadResult, atomic_output_path, jpeg_dimensions,
+from .common import (DownloadResult, atomic_output_path, jpeg_dimensions, retrying_session,
                      write_downscaled_sidecar_from_file)
 
 GRAPH_API_BASE = 'https://graph.mapillary.com'
@@ -165,12 +163,10 @@ def original_rendition_url(payload, pano_id):
 
 
 def _session():
-    session = requests.Session()
-    retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    return session
+    """The retry policy now lives in common.retrying_session, shared with panoramax.py (#110). This stays as
+    a named seam rather than becoming an import: it is where every test in tests/test_image_downloaders.py
+    patches in its fake session."""
+    return retrying_session()
 
 
 def _write_display_copy(out_image_name, pano_id):

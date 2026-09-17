@@ -1,0 +1,164 @@
+{
+  "absence": {
+    "absent_uuid": "00000000-0000-4000-8000-000000000000",
+    "pictures_endpoint": {
+      "body": {
+        "message": "Feature not found",
+        "status": 404
+      },
+      "status": 404
+    },
+    "search_endpoint": {
+      "features_returned": 0,
+      "status": 200
+    }
+  },
+  "bbox": "-1.52,43.45,-1.42,43.52",
+  "catalog": "https://api.panoramax.xyz/api",
+  "composition": {
+    "examined": 1000,
+    "other": {
+      "asset_hosts": {
+        "panoramax.openstreetmap.fr": 323
+      },
+      "count": 323,
+      "field_of_view_values": {
+        "92": 323
+      },
+      "licenses": {
+        "CC-BY-SA-4.0": 323
+      },
+      "producers": {
+        "Patchanka": 323
+      }
+    },
+    "panoramic": {
+      "asset_hosts": {
+        "panoramax.ign.fr": 677
+      },
+      "count": 677,
+      "field_of_view_values": {
+        "360": 677
+      },
+      "licenses": {
+        "etalab-2.0": 677
+      },
+      "producers": {
+        "sig_bayonne": 677
+      }
+    },
+    "panoramic_share_pct": 67.7
+  },
+  "dimensions": {
+    "agree": 677,
+    "disagree": 0,
+    "disagreements": [],
+    "frame_sizes": {
+      "5376x2688": 130,
+      "5760x2880": 547
+    },
+    "not_stated": 0
+  },
+  "hd_headers": {
+    "agree": 6,
+    "checked": 6,
+    "checks": [
+      {
+        "agrees": true,
+        "bytes": 1426009,
+        "host": "panoramax.ign.fr",
+        "id": "a2800cba-54b7-41e3-b28b-fd8d7b1a3eb8",
+        "jpeg_header": [
+          5376,
+          2688
+        ],
+        "tile_matrix": [
+          5376,
+          2688
+        ]
+      },
+      {
+        "agrees": true,
+        "bytes": 1400218,
+        "host": "panoramax.ign.fr",
+        "id": "ba6acb73-4929-4031-a6be-ecec68e5b840",
+        "jpeg_header": [
+          5376,
+          2688
+        ],
+        "tile_matrix": [
+          5376,
+          2688
+        ]
+      },
+      {
+        "agrees": true,
+        "bytes": 1412673,
+        "host": "panoramax.ign.fr",
+        "id": "bf82ff7a-2261-43f6-b825-81cb5c2c3a67",
+        "jpeg_header": [
+          5376,
+          2688
+        ],
+        "tile_matrix": [
+          5376,
+          2688
+        ]
+      },
+      {
+        "agrees": true,
+        "bytes": 1444102,
+        "host": "panoramax.ign.fr",
+        "id": "4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6",
+        "jpeg_header": [
+          5760,
+          2880
+        ],
+        "tile_matrix": [
+          5760,
+          2880
+        ]
+      },
+      {
+        "agrees": true,
+        "bytes": 1386467,
+        "host": "panoramax.ign.fr",
+        "id": "94eb47b9-fcc1-4c08-9e94-609dde7b4154",
+        "jpeg_header": [
+          5760,
+          2880
+        ],
+        "tile_matrix": [
+          5760,
+          2880
+        ]
+      },
+      {
+        "agrees": true,
+        "bytes": 1331684,
+        "host": "panoramax.ign.fr",
+        "id": "054c78b8-41ff-438b-80d9-9b128b6a22e9",
+        "jpeg_header": [
+          5760,
+          2880
+        ],
+        "tile_matrix": [
+          5760,
+          2880
+        ]
+      }
+    ]
+  },
+  "id_resolution": {
+    "pano_id": "4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6",
+    "pictures_endpoint": {
+      "hd_href": "https://panoramax.ign.fr/api/pictures/4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6/hd.jpg",
+      "names_the_picture": true,
+      "status": 200
+    },
+    "search_endpoint": {
+      "features_returned": 1,
+      "status": 200
+    }
+  }
+}

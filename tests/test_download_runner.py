@@ -1453,10 +1453,22 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
     """
 
     class _Response:
+        # requests exposes these on every response, and panoramax reads them: it fetches the hd href with
+        # allow_redirects=False and refuses a redirect off a URL the catalog published.
+        REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
         def __init__(self, status_code=200, payload=None, chunks=()):
             self.status_code = status_code
             self._payload = payload
             self._chunks = chunks
+
+        @property
+        def is_redirect(self):
+            return self.status_code in self.REDIRECT_STATUSES
+
+        @property
+        def is_permanent_redirect(self):
+            return self.status_code in (301, 308)
 
         def json(self):
             return self._payload
@@ -1577,6 +1589,161 @@ class TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher:
         assert metadata_asked == ['100000000000004', '100000000000005', '100000000000006']
         assert self._ledger_rows(storage) == ['100000000000001,1', '100000000000002,0', '100000000000003,0',
                                               '100000000000004,1', '100000000000005,1', '100000000000006,1']
+
+
+class TestAPanoramaxVerdictReachesTheLedgerThroughTheRealDispatcher:
+    """The same composition as the Mapillary class above, for the source added by #110.
+
+    Worth driving separately rather than trusting the parallel: Panoramax reaches the ledger through a
+    different verdict table (a real 404 instead of Mapillary's 400, plus two verdicts Mapillary has no
+    analogue for - a flat photograph and a picture with no hd asset), and Bayonne opens 2026-09-18 with no
+    opportunity to discover a wrong row on a staging city first. Only the HTTP session is faked.
+
+    The response/wire doubles are the Mapillary class's, reused deliberately: two copies would drift, and
+    what they model - "answer by URL, record what was asked" - is not source-specific.
+    """
+
+    _Response = TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher._Response
+    _Wire = TestAMapillaryVerdictReachesTheLedgerThroughTheRealDispatcher._Wire
+
+    IMAGE_URL = 'https://panoramax.ign.fr/api/pictures/x/hd.jpg'
+    IMAGE_BYTES = _small_jpeg()
+
+    # Four ids chosen for four DIFFERENT two-character shards, because UUID sharding is the one storage
+    # property this source does not share with the other two (16 million ids over 256 hex prefixes, against
+    # GSV's base64-ish alphabet) and nothing else in the suite would notice it breaking.
+    HEALTHY = '4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6'
+    # Two more healthy pictures, so that a success sits between each pair of permanent verdicts and this
+    # class measures the verdict TABLE rather than #113's breaker. Panoramax took a breaker entry when the
+    # two branches met, and three permanent verdicts adjacent - which is what this corpus was before, since
+    # a raise does not forgive the count - trips it, withholds the third row and leaves the tail
+    # unattempted. That is correct behaviour and belongs in the breaker's own class; here it would mean
+    # this class silently stopped exercising two of the three shapes it exists for.
+    HEALTHY_2 = 'e51a0d94-5555-4666-8777-888899990000'
+    HEALTHY_3 = 'f62b1ea5-6666-4777-8888-99990000aaaa'
+    ABSENT = 'de0d8e2f-6063-4811-8bfd-c39af3256aa3'
+    FLAT = 'a2800cba-1111-4222-8333-444455556666'
+    NO_HD = 'b17c9f01-2222-4333-8444-555566667777'
+    ENVELOPE_200 = 'c93d1e55-3333-4444-8555-666677778888'
+    UNREACHABLE = 'd05f2a77-4444-4555-8666-777788889999'
+
+    def _item(self, pano_id, field_of_view=360, assets=None):
+        return {
+            'id': pano_id,
+            'type': 'Feature',
+            'assets': {'hd': {'type': 'image/jpeg', 'href': self.IMAGE_URL}} if assets is None else assets,
+            'properties': {'pers:interior_orientation': {'field_of_view': field_of_view},
+                           'license': 'etalab-2.0', 'geovisio:producer': 'sig_bayonne'},
+        }
+
+    def _shapes(self):
+        return {
+            self.HEALTHY: self._Response(payload=self._item(self.HEALTHY)),
+            self.HEALTHY_2: self._Response(payload=self._item(self.HEALTHY_2)),
+            # Measured 2026-09-08: a well-formed uuid the catalog does not have.
+            self.ABSENT: self._Response(status_code=404,
+                                        payload={'status': 404, 'message': 'Feature not found'}),
+            self.HEALTHY_3: self._Response(payload=self._item(self.HEALTHY_3)),
+            self.FLAT: self._Response(payload=self._item(self.FLAT, field_of_view=92)),
+            self.NO_HD: self._Response(payload=self._item(self.NO_HD, assets={
+                'sd': {'href': 'https://panoramax.ign.fr/api/pictures/x/sd.jpg'}})),
+            self.ENVELOPE_200: self._Response(payload={'status': 404, 'message': 'Feature not found'}),
+            self.UNREACHABLE: self._Response(status_code=503),
+        }
+
+    def _wire_up(self, monkeypatch, metadata_by_pano):
+        routes = {'%s/pictures/%s' % (downloaders.panoramax.CATALOG_API_BASE, pano_id): response
+                  for pano_id, response in metadata_by_pano.items()}
+        routes[self.IMAGE_URL] = self._Response(chunks=[self.IMAGE_BYTES])
+        asked = []
+        monkeypatch.setattr(downloaders.panoramax, 'retrying_session',
+                            lambda: self._Wire(routes, asked))
+        return asked
+
+    @staticmethod
+    def _ledger_rows(storage):
+        return sorted((storage / 'pano_id_log.csv').read_text().strip().splitlines()[1:])
+
+    def test_only_a_verdict_on_the_picture_writes_a_row(self, monkeypatch, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        shapes = self._shapes()
+        self._wire_up(monkeypatch, shapes)
+        # The loop shuffles (#40/#41), which would make the breaker's view of this corpus differ run
+        # to run and this test flaky rather than wrong. _shapes()' order already keeps three verdicts
+        # from being adjacent; pinning it makes that true of the run as well as of the dict.
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+
+        result = DownloadRunner.download_panorama_images(
+            str(storage), [{'pano_id': pano_id, 'source': 'panoramax'} for pano_id in shapes])
+
+        assert result == (3, 0, 5, 0, 8), '(success, fallback_success, fail, skipped, total)'
+        assert self._ledger_rows(storage) == sorted(['%s,1' % self.HEALTHY, '%s,1' % self.HEALTHY_2,
+                                                     '%s,1' % self.HEALTHY_3, '%s,0' % self.ABSENT,
+                                                     '%s,0' % self.FLAT, '%s,0' % self.NO_HD]), \
+            'the rewritten envelope and the 503 are conditions of the RUN and must leave no row'
+        assert os.listdir(storage / self.HEALTHY[:2]) == ['%s.jpg' % self.HEALTHY]
+        assert (storage / self.HEALTHY[:2] / ('%s.jpg' % self.HEALTHY)).read_bytes() == self.IMAGE_BYTES
+
+    def test_the_flat_picture_is_written_off_once_rather_than_re_fetched_nightly(self, monkeypatch, tmp_path):
+        """A third of the pictures in the Bayonne bbox are flat (measured 2026-09-08). The ledger row is what
+        stops the whole of that third from being requested, decoded and discarded every night - and, more to
+        the point, what proves the refusal reached the ledger rather than only the return value."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        shapes = self._shapes()
+        panos = [{'pano_id': pano_id, 'source': 'panoramax'} for pano_id in shapes]
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        self._wire_up(monkeypatch, shapes)
+        DownloadRunner.download_panorama_images(str(storage), panos)
+
+        asked = self._wire_up(monkeypatch, shapes)
+        DownloadRunner.download_panorama_images(str(storage), panos)
+
+        requested = sorted(url.rsplit('/', 1)[1] for url in asked if url != self.IMAGE_URL)
+        assert requested == sorted([self.ENVELOPE_200, self.UNREACHABLE]), \
+            'only the two unledgered conditions come back; the six decided panos cost nothing'
+        assert os.listdir(storage / self.FLAT[:2]) == [], 'and no flat photograph was ever stored'
+
+
+class TestPanoramaxNeedsNoCredentialToBeSupported:
+    """#110: the word `panoramax` in filter_supported_sources is the whole of what stands between Bayonne
+    opening and a city that silently downloads nothing every night (#101's failure shape)."""
+
+    def panos(self):
+        return [{'pano_id': 'gsvPanoIdAAAAAAAAAAAAA', 'source': 'gsv'},
+                {'pano_id': '4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6', 'source': 'panoramax'},
+                {'pano_id': '111111111111111', 'source': 'mapillary'},
+                {'pano_id': 'de0d8e2f-6063-4811-8bfd-c39af3256aa3', 'source': 'panoramax'}]
+
+    def test_panoramax_survives_the_filter_with_no_token_set(self, monkeypatch, capsys, caplog):
+        """The catalog is keyless, so unlike Mapillary there is no environment variable whose absence can
+        drop a city - and nothing to warn about. This is also the regression test for the shape the issue
+        describes: before #110 both Panoramax panos left here as "unsupported source"."""
+        monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
+
+        with caplog.at_level(logging.WARNING):
+            kept = DownloadRunner.filter_supported_sources(self.panos())
+
+        assert [p['pano_id'] for p in kept] == ['gsvPanoIdAAAAAAAAAAAAA',
+                                                '4ebd63bc-9b6f-4ea8-94d4-6eec2b6ce6a6',
+                                                'de0d8e2f-6063-4811-8bfd-c39af3256aa3']
+        out = capsys.readouterr().out
+        assert 'panoramax' not in out.lower() and 'panoramax' not in caplog.text.lower()
+        # The Mapillary warning still fires; what must not appear is an unsupported-source warning.
+        assert 'unsupported source' not in out
+
+    def test_the_dispatcher_routes_panoramax_to_its_own_module(self, monkeypatch, tmp_path):
+        """downloaders.download_pano raises ValueError for an unknown source, so this is what fails if the
+        filter learns the word and the dispatcher does not."""
+        seen = []
+        monkeypatch.setattr(downloaders.panoramax, 'download_single_pano',
+                            lambda storage, info: seen.append(info) or downloaders.common.DownloadResult.success)
+
+        result = downloaders.download_pano(str(tmp_path), {'pano_id': 'u', 'source': 'panoramax'})
+
+        assert result == downloaders.common.DownloadResult.success
+        assert [info['source'] for info in seen] == ['panoramax']
 
 
 class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
@@ -1779,6 +1946,46 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
         assert calls == ['mly-0', 'mly-1', 'mly-2', 'gsv-0', 'gsv-1'], 'mly-3 is dropped, the GSV tail is not'
         assert self.ledger_rows(storage) == ['mly-0,0', 'mly-1,0', 'gsv-0,1', 'gsv-1,1']
         assert result == (2, 0, 3, 0, 5)
+
+    def test_panoramax_carries_its_own_entry(self, monkeypatch, tmp_path):
+        """#110's source declares a threshold rather than inheriting one, and dropping it from the table is
+        the mutant this catches - `{'mapillary': 3}` alone leaves Panoramax unlimited and every test above
+        still passes, because none of them attempts a Panoramax pano.
+
+        It is wanted here more than on Mapillary. Two of Panoramax's three permanent verdicts are wholesale
+        failures wearing a per-pano face: 323 of the 1,000 pictures in the Bayonne bbox affirm a 92-degree
+        field of view, and the only thing keeping them out of the corpus is that the app filters its own
+        search to 360 - a property of the layer above that this scraper cannot check. A missing `hd` asset
+        is the same shape one federated instance wide.
+        """
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        panos = [{'pano_id': 'pnx-%d' % n, 'source': 'panoramax'} for n in range(6)]
+        verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
+
+        result, calls = self.drive(monkeypatch, storage, panos, verdicts)
+
+        assert calls == ['pnx-0', 'pnx-1', 'pnx-2'], 'panos after the trip must not be attempted at all'
+        assert self.ledger_rows(storage) == ['pnx-0,0', 'pnx-1,0'], 'two false rows, not six'
+        assert result == (0, 0, 3, 0, 3)
+
+    def test_panoramax_and_mapillary_count_separately(self, monkeypatch, tmp_path):
+        """Two breakered sources in one table is a new state the Mapillary-only tests could not reach: a
+        single counter shared BETWEEN the two entries trips on three verdicts split across them, and every
+        other test in this class still passes. Bayonne is single-source today, so this is the guard for the
+        mixed city that keying on source is for.
+        """
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        panos = [{'pano_id': 'pnx-0', 'source': 'panoramax'}, {'pano_id': 'mly-0', 'source': 'mapillary'},
+                 {'pano_id': 'pnx-1', 'source': 'panoramax'}, {'pano_id': 'mly-1', 'source': 'mapillary'}]
+        verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
+
+        result, calls = self.drive(monkeypatch, storage, panos, verdicts)
+
+        assert calls == ['pnx-0', 'mly-0', 'pnx-1', 'mly-1'], 'two apiece is under both thresholds'
+        assert self.ledger_rows(storage) == ['pnx-0,0', 'mly-0,0', 'pnx-1,0', 'mly-1,0']
+        assert result == (0, 0, 4, 0, 4)
 
     def test_the_stop_reaches_both_stdout_and_the_log(self, monkeypatch, tmp_path, capsys, caplog):
         """The two-channels rule: stdout is what cron mails, so someone hears about it tonight; scrape.log is
