@@ -153,14 +153,14 @@ permanent.** Transient failures leave no row and retry automatically on the next
     writing any more (see *[When the image phase stops trusting a source](#when-the-image-phase-stops-trusting-a-source)*,
     [#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113)).
   * **Panoramax** — a 404 **carrying the catalog's own `Feature not found` body**, an item affirming a
-    field of view other than 360 (a flat contributor photograph in the same bbox), or a well-formed assets
-    block that offers no `hd` rendition. Each rests on the catalog affirming something rather than on a
+    field of view other than 360 (a flat contributor photograph in the same bbox), or a well-formed, non-empty
+    assets block that offers no `hd` rendition. Each rests on the catalog affirming something rather than on a
     status code or a missing key, *and* three in a row trip the same breaker: two of the three are
     wholesale failures wearing a per-pano face, so the affirmation and the breaker are both wanted here.
 
   A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
   (code 190 / `OAuthException`), a body that does not name the image, an image body that is not a JPEG, a
-  Panoramax 404 *without* the catalog's body, a malformed assets block, and a redirect off a published `hd`
+  Panoramax 404 *without* the catalog's body, a malformed or empty assets block, and a redirect off a published `hd`
   href are none of them verdicts and leave no row.
 * **no row** — never attempted, the last attempt failed transiently (a network blip, a failed tile, a full
   store), or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both

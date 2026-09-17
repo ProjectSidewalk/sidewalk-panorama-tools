@@ -74,6 +74,13 @@ def require_picture_record(payload, pano_id):
     different intakes and a bare != would raise for every pano forever with a message that looks like a
     match (#46). Panoramax ids are UUIDs, so nothing here is at risk of numeric coercion, but the intakes
     are the same three and the next source's ids may not be.
+
+    Case-folded as well, for the same #46 reason one level down. The catalog resolves an upper-case id and
+    answers with the canonical lower-case one (measured 2026-09-17: GET /api/pictures/4EBD63BC-... is a 200
+    whose body says "id": "4ebd63bc-..."), as RFC 4122 s3 says a UUID reader must - so a str-only compare
+    raised for every upper-case id from a hand-made `-c` CSV on every run, unledgered, with a message that
+    looked like a match. Two UUIDs that differ only in case are the same picture, so folding cannot conflate
+    two different ones.
     """
     if not isinstance(payload, dict):
         raise PanoramaxErrorResponse("Panoramax metadata for %s was not a JSON object: %.80r"
@@ -81,7 +88,7 @@ def require_picture_record(payload, pano_id):
     if payload.get('message') is not None and payload.get('id') is None:
         raise PanoramaxErrorResponse("Panoramax answered for %s with an error envelope (%s)"
                                      % (pano_id, _detail(payload)))
-    if str(payload.get('id')) != str(pano_id):
+    if str(payload.get('id')).lower() != str(pano_id).lower():
         raise PanoramaxErrorResponse("Panoramax metadata for %s does not name that picture (id=%.80r)"
                                      % (pano_id, payload.get('id')))
 
@@ -124,10 +131,11 @@ def is_catalog_not_found(response):
 
     BOTH measured fields are required, not just the one that reads like prose. A message-only match was
     the first version of this check, and `{"message": "Not Found"}` is the default 404 body of AWS API
-    Gateway and of Express - the two things likeliest to sit in front of a community API without anyone
-    here knowing - so it accepts a stranger's reply as the catalog's verdict and ledgers a whole city off
-    it. Reading the body and then matching a substring every proxy on the internet also emits is one field
-    short of the positive evidence #99 asks for (2026-09-10 review).
+    Gateway's HTTP API - the kind of thing likeliest to sit in front of a community API without anyone
+    here knowing - and the usual shape of a hand-written JSON 404 in an Express or Koa app (Express's own
+    default is an HTML "Cannot GET" page, not JSON), so it accepts a stranger's reply as the catalog's
+    verdict and ledgers a whole city off it. Reading the body and then matching a substring every proxy on
+    the internet also emits is one field short of the positive evidence #99 asks for (2026-09-10 review).
 
     Matched on those two fields and NOT on the whole body: the catalog is free to add fields, and a verdict
     that breaks when it does would turn every absent picture into a nightly retry - the harmless direction,
@@ -180,16 +188,20 @@ def hd_asset_url(payload):
     """The href of the item's full-resolution `hd` asset, or None when it publishes none.
 
     None is returned for exactly one shape, and since the 2026-09-10 review that is true rather than
-    merely claimed: an assets block that is present, well-formed, and does not offer `hd`. That is the
-    catalog listing this picture's renditions and hd not being among them - a permanent property of the
-    picture, the same verdict as Mapillary's "knows the image and publishes no original-resolution
+    merely claimed: an assets block that is present, well-formed, NON-EMPTY, and does not offer `hd`. That
+    is the catalog listing this picture's renditions and hd not being among them - a permanent property of
+    the picture, the same verdict as Mapillary's "knows the image and publishes no original-resolution
     rendition".
 
     Everything else about the assets block RAISES, so the pano retries unledgered. A missing block, a
-    non-object block, a non-object `hd`, or an `hd` whose href is absent, null or empty are all the catalog
-    changing shape, and require_picture_record cannot have ruled that out - it establishes only that the
-    body is a dict whose id matches. Ledgering those was a 2026-09-09 review finding: one `?fields=`
-    slimming and a whole city gets a permanent downloaded=0 in a single night.
+    non-object block, an EMPTY block, a non-object `hd`, or an `hd` whose href is absent, null or empty are
+    all the catalog changing shape, and require_picture_record cannot have ruled that out - it establishes
+    only that the body is a dict whose id matches. Ledgering those was a 2026-09-09 review finding: one
+    `?fields=` slimming and a whole city gets a permanent downloaded=0 in a single night. The empty block
+    was the last of them to move (2026-09-17 review): a block that lists NO renditions is not "the catalog
+    listing this picture's renditions and hd not being among them" - every picture measured in the Bayonne
+    bbox carries hd, sd and thumb (1,000 of 1,000 have an hd host in the census artifact), so `{}` is a
+    stripped response or a picture mid-processing, the same accident as `hd: {}` one key deeper.
 
     `hd`, not `sd` or the tile pyramid, because `hd` is the frame the stored pano_x/pano_y describe.
     PanoramaxViewer.#panoDataParams writes `pers:interior_orientation.sensor_array_dimensions` into
@@ -220,9 +232,13 @@ def hd_asset_url(payload):
     if not isinstance(assets, dict):
         raise PanoramaxErrorResponse("Panoramax picture %.80r has a non-object assets block: %.80r" %
                                      (payload.get('id'), type(assets).__name__))
+    if not assets:
+        # Zero renditions listed is not the catalog saying which renditions exist - see the docstring.
+        raise PanoramaxErrorResponse("Panoramax picture %.80r came back with an empty assets block" %
+                                     (payload.get('id'),))
     if 'hd' not in assets:
-        # An assets block that is present and simply has no `hd` entry IS the verdict: the catalog is
-        # telling us which renditions exist for this picture and hd is not among them.
+        # An assets block that is present, lists SOMETHING, and simply has no `hd` entry IS the verdict:
+        # the catalog is telling us which renditions exist for this picture and hd is not among them.
         return None
     if not isinstance(assets['hd'], dict):
         raise PanoramaxErrorResponse("Panoramax picture %.80r has a non-object hd asset: %.80r" %
@@ -298,8 +314,10 @@ def download_single_pano(storage_path, pano_info):
             # path segment of it: a renamed endpoint, a CDN or WAF answering 404 for an unrecognised UA, or
             # DNS landing on a parked host all produce a 404 for every pano in the city, and every one of
             # them would ledger. That is the 2026-09-01 Mapillary incident - 161 false rows hand-edited off
-            # the shared store - at whole-city scale, and unlike Mapillary this source has no #113 breaker
-            # entry to stop it. The affirmation is free in the same response body, so read it.
+            # the shared store - at whole-city scale. The #113 breaker bounds it at two false rows per run,
+            # but a bound is not a verdict, and the affirmation is free in the same response body, so read
+            # it. (Measured 2026-09-17: a malformed id gets a 404 with a plain-text `UUID parsing failed`
+            # body from the catalog itself, which is exactly a 404 that is not this verdict.)
             if not is_catalog_not_found(meta_resp):
                 raise PanoramaxErrorResponse(
                     "Panoramax answered 404 for picture %s without the catalog's not-found body, so "

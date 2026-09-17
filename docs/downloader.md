@@ -432,13 +432,13 @@ Ids are UUIDs, so a Panoramax city shards over at most 256 `<pano_id[:2]>` direc
 
 | Answer | Why it is a property of the picture |
 |---|---|
-| `404` at `/api/pictures/<id>` **carrying the catalog's own body** | The catalog does not have it. Measured 2026-09-08: `{"status": 404, "message": "Feature not found"}`, and both fields are required. Unlike Mapillary's 404 the body is not read for an auth signature — there is no token, so there is no "we are not allowed to see it" state to confuse with "it is not there" — but it is read for the affirmation itself, because the status alone does not say the *catalog* answered. `{"message": "Not Found"}` is what AWS API Gateway and Express answer an unknown route with |
+| `404` at `/api/pictures/<id>` **carrying the catalog's own body** | The catalog does not have it. Measured 2026-09-08: `{"status": 404, "message": "Feature not found"}`, and both fields are required. Unlike Mapillary's 404 the body is not read for an auth signature — there is no token, so there is no "we are not allowed to see it" state to confuse with "it is not there" — but it is read for the affirmation itself, because the status alone does not say the *catalog* answered. `{"message": "Not Found"}` is what AWS API Gateway's HTTP API answers an unknown route with, and the usual shape of a hand-written JSON 404 |
 | An item whose `field_of_view` is not `360` | It is a flat photograph, and this scraper stores equirectangular panoramas — see below |
-| An item with no `hd` asset | The catalog affirms the picture and publishes no full-resolution pixels for it. Only a well-formed assets block that does not offer `hd` — an `hd` entry whose href is missing, null or empty is the catalog changing shape, and raises |
+| An item with no `hd` asset | The catalog affirms the picture, lists its renditions, and `hd` is not among them. Only a well-formed, **non-empty** assets block that does not offer `hd` — an empty block, or an `hd` entry whose href is missing, null or empty, is the catalog changing shape, and raises. Every picture measured in the Bayonne bbox carries `hd`, `sd` and `thumb` |
 
 Everything else raises and is retried next run: any other status, a 404 without the catalog's own body, a
-body that is not the item asked for, an error envelope on a `200`, an `hd` href that is missing, null, empty
-or not an absolute `https://` URL, and a `200` whose body is not a JPEG.
+body that is not the item asked for, an error envelope on a `200`, an empty assets block, an `hd` href that
+is missing, null, empty or not an absolute `https://` URL, and a `200` whose body is not a JPEG.
 
 **Why the projection guard exists.** Panoramax is a commons, not a fleet: anyone can contribute, so a city's
 bounding box carries other people's pictures too. Measured over 1,000 pictures in the Bayonne bbox
