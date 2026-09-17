@@ -249,12 +249,64 @@ class TestTheLogLineParser:
         assert dbp.reduce_progress(rows)['fleet']['transient_failures_last_night'] is None
 
 
+class TestTheSnapshotCarriesItsOwnDate:
+    """`measured_on` was a hardcoded '2026-09-09' (#126 review), so every later `--store` scan - the documented
+    way to take another snapshot - would have been stamped as the first one. The date is the snapshot's: the
+    day a store scan ran, the filename prefix a committed CSV carries, or an explicit --measured-on."""
+
+    LINE = TestTheLogLineParser.LINE
+
+    def store(self, tmp_path):
+        (tmp_path / 'store' / 'city').mkdir(parents=True)
+        (tmp_path / 'store' / 'city' / 'scrape.log').write_text(self.LINE + '\n')
+        return str(tmp_path / 'store')
+
+    def written(self, tmp_path, *argv):
+        out = tmp_path / 'out.json'
+        assert dbp.main(list(argv) + ['--write', str(out)]) == 0
+        with open(out) as f:
+            return json.load(f)
+
+    def test_a_store_scan_is_stamped_with_the_day_it_ran(self, tmp_path):
+        summary = self.written(tmp_path, '--store', self.store(tmp_path))
+
+        assert summary['measured_on'] == dbp.today()
+        assert summary['measured_on'] != '2026-09-09', 'the hardcoded date the review found'
+
+    def test_a_committed_csv_is_stamped_with_the_date_in_its_name(self, tmp_path):
+        assert dbp.date_from_path(CSV) == '2026-09-09'
+        assert self.written(tmp_path, '--csv', CSV)['measured_on'] == '2026-09-09'
+
+    def test_a_csv_with_no_date_in_its_name_is_undefined_not_today_and_not_the_first_snapshot(self, tmp_path):
+        undated = tmp_path / 'progress.csv'
+        undated.write_text(open(CSV).read())
+
+        summary = self.written(tmp_path, '--csv', str(undated))
+
+        assert dbp.date_from_path(str(undated)) is None
+        assert summary['measured_on'] is None
+
+    def test_measured_on_overrides_both(self, tmp_path):
+        assert self.written(tmp_path, '--store', self.store(tmp_path), '--measured-on', '2030-01-02'
+                            )['measured_on'] == '2030-01-02'
+        assert self.written(tmp_path, '--csv', CSV, '--measured-on', '2030-01-02')['measured_on'] == '2030-01-02'
+
+    def test_the_reducer_never_invents_a_date(self):
+        assert dbp.reduce_progress([row('a', 10, 1, 5)])['measured_on'] is None
+
+    def test_an_undefined_date_prints_rather_than_raising(self, capsys):
+        dbp.print_summary(dbp.reduce_progress([row('a', 10, 1, 5)]))
+        assert 'measured n/a' in capsys.readouterr().out
+
+
 class TestTheCommittedArtifactIsWhatTheScriptProduces:
 
     def test_the_json_is_the_reduction_of_the_csv(self):
         with open(JSON) as f:
             committed = json.load(f)
-        regenerated = json.loads(json.dumps(dbp.reduce_progress(dbp.read_csv(CSV)), allow_nan=False))
+        regenerated = json.loads(json.dumps(dbp.reduce_progress(dbp.read_csv(CSV),
+                                                                measured_on=dbp.date_from_path(CSV)),
+                                            allow_nan=False))
         assert regenerated == committed
 
     def test_every_failure_in_the_snapshot_was_a_permanent_one(self):
@@ -331,6 +383,22 @@ class TestTheReportMatchesTheArtifact:
         for number, city_id in quoted:
             assert city_id in rates, city_id
             assert int(number.replace(',', '')) == rates[city_id], city_id
+
+    CITY_AT_REQUESTS = re.compile(r'\b([a-z][a-z0-9-]*-[a-z]{2}) at ([\d,]+)(?= requests\b|[,)])')
+
+    def test_a_city_named_with_its_request_count_in_prose_is_that_city_s_own(self, report, fleet):
+        """The other form the page uses - "walla-walla-wa at 245 requests, waltham-ma at 271" - which the
+        sentence pin above does not match, so a typo there passed every pin (#126 review). Two quoted this
+        way at the time of writing; the regex takes any `<city-xx> at N` followed by "requests", a comma or
+        a closing bracket."""
+        rates = {c['city_id']: c['last_run_requests'] for c in fleet['cities']}
+
+        quoted = self.CITY_AT_REQUESTS.findall(report)
+
+        assert len(quoted) >= 2, 'no `<city> at N` figures found - if the prose dropped them, drop this pin'
+        for city_id, number in quoted:
+            assert city_id in rates, city_id
+            assert int(number.replace(',', '')) == rates[city_id], (city_id, number)
 
     def test_the_four_regimes(self, report, fleet):
         f = fleet['fleet']

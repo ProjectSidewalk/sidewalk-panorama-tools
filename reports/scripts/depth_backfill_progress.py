@@ -15,6 +15,11 @@ Two steps, separable so the reduction is testable without a store:
   --csv PATH       reduce a per-city CSV (default: the committed 2026-09-09 snapshot) to the fleet figures
                    and the per-city nights-left, printing a table and, with --write, a JSON artifact
 
+The artifact's `measured_on` is the snapshot's date, not the script's: a store scan is stamped with the day it
+ran, a CSV with the `YYYY-MM-DD-` its filename carries (the reports/data convention), and `--measured-on`
+overrides both. It was a hardcoded '2026-09-09' until the #126 review, so every later `--store` snapshot would
+have claimed to be the first one.
+
 The fleet's "what a slot yields" figure is the median over the runs that stopped on `max-runtime`, and over
 nothing else: no condition on the request count itself, because selecting runs by request count and then
 reporting the median request count is circular. It is therefore a lower bound - a run whose image phase took
@@ -35,6 +40,7 @@ Usage:
 
 import argparse
 import csv
+import datetime
 import json
 import os
 import re
@@ -154,11 +160,14 @@ def _maybe(value):
 
 
 def reduce_progress(rows, slot_minutes=SLOT_MINUTES, window_minutes=WINDOW_MINUTES,
-                    floor_gap_seconds=FLOOR_GAP_SECONDS, store_census=None):
+                    floor_gap_seconds=FLOOR_GAP_SECONDS, store_census=None, measured_on=None):
     """The fleet figures and the per-city nights-left, under three regimes.
 
     per_slot_at_floor is what one slot yields at the floor; per_night_at_floor is the whole window's worth,
     which is the fleet's ceiling once the window is spent on whoever has work.
+
+    measured_on is the snapshot's date as an ISO string, or None when the caller has none to offer - never
+    a default date, which is how a later store scan came to be stamped with the first one's.
     """
     per_slot_at_floor = slot_minutes * 60.0 / floor_gap_seconds
     per_night_at_floor = window_minutes * 60.0 / floor_gap_seconds
@@ -200,7 +209,7 @@ def reduce_progress(rows, slot_minutes=SLOT_MINUTES, window_minutes=WINDOW_MINUT
                      key=lambda c: c['nights_measured'], reverse=True)
 
     return {
-        'measured_on': '2026-09-09',
+        'measured_on': measured_on,
         'parameters': {'slot_minutes': slot_minutes, 'window_minutes': window_minutes,
                        'floor_gap_seconds': floor_gap_seconds,
                        'per_slot_at_floor': num(per_slot_at_floor), 'per_night_at_floor': num(per_night_at_floor)},
@@ -238,6 +247,20 @@ def reduce_progress(rows, slot_minutes=SLOT_MINUTES, window_minutes=WINDOW_MINUT
     }
 
 
+_DATE_PREFIX = re.compile(r'^(\d{4}-\d{2}-\d{2})-')
+
+
+def date_from_path(path):
+    """The `YYYY-MM-DD-` a reports/data filename starts with, or None - the date a committed CSV was taken."""
+    m = _DATE_PREFIX.match(os.path.basename(path))
+    return m.group(1) if m else None
+
+
+def today():
+    """Local date as ISO, for stamping a store scan with the day it ran."""
+    return datetime.date.today().isoformat()
+
+
 def _print_store_scan(census, rows):
     """What the scan could not read, loudly - a fleet total short a city otherwise looks like a fleet total."""
     if census is None:
@@ -255,7 +278,7 @@ def _print_store_scan(census, rows):
 
 def print_summary(summary):
     fleet = summary['fleet']
-    print("Depth backfill, measured %s" % summary['measured_on'])
+    print("Depth backfill, measured %s" % fmt(summary['measured_on']))
     print("  cities: %d (%d with GSV panos; %d complete, %d with work left)"
           % (fleet['cities'], fleet['cities_with_gsv'], fleet['complete'], fleet['working']))
     print("  resolved %s of %s (%s%%); %s unresolved"
@@ -285,6 +308,9 @@ def main(argv=None):
     parser.add_argument('--csv', default=DEFAULT_CSV, metavar='PATH', help='per-city CSV to reduce')
     parser.add_argument('--csv-out', metavar='PATH', help='with --store: where to write the per-city CSV')
     parser.add_argument('--write', metavar='PATH', help='write the reduction as a JSON artifact')
+    parser.add_argument('--measured-on', metavar='YYYY-MM-DD',
+                        help='the date the snapshot was taken (default: today for --store; for --csv, the '
+                             'YYYY-MM-DD- prefix of its filename, if it has one)')
     args = parser.parse_args(argv)
 
     census = None
@@ -296,7 +322,8 @@ def main(argv=None):
     else:
         rows = read_csv(args.csv)
 
-    summary = reduce_progress(rows, store_census=census)
+    measured_on = args.measured_on or (today() if args.store else date_from_path(args.csv))
+    summary = reduce_progress(rows, store_census=census, measured_on=measured_on)
     print_summary(summary)
     if args.write:
         with open(args.write, 'w') as f:
