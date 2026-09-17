@@ -14,7 +14,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded` |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
-| `log.csv` | One 18-column row per run |
+| `log.csv` | One 19-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
 | `refetch_log.csv` | Ledger for the [`fover` repair pass](#repairing-fover-era-panoramas), if one has run here |
 | `refetch.log` | That pass's rotating log |
@@ -335,10 +335,11 @@ as the fresh one, so it roughly doubles peak memory and is meant for a pilot.
 
 ## The `log.csv` columns
 
-Each run appends **one row of 18 positional comma-separated fields, with no header**, parsed by the
+Each run appends **one row of 19 positional comma-separated fields, with no header**, parsed by the
 [log analyzer](log-analyzer.md). Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata
 phase — a stub since Google killed that endpoint in 2022, kept at fixed values purely so the column positions
-never shift.
+never shift. Field 19 was added by [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124) (for [#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)); every row written before that
+deployed has 18 fields, and the analyzer reads them with the last one blank.
 
 | # | field | notes |
 |---|-------|-------|
@@ -360,6 +361,7 @@ never shift.
 | 16 | depth total processed | sum of fields 13–15 |
 | 17 | depth phase duration | |
 | 18 | total run duration | |
+| 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a run that died in the pano-list fetch, and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -376,7 +378,7 @@ reported an abnormally long run on the same night, with nothing actually wrong.
 
 ### Blank fields mark a crashed or stopped run
 
-A run that crashes — or is stopped — still appends a full 18-field row: every phase that completed keeps its
+A run that crashes — or is stopped — still appends a full 19-field row: every phase that completed keeps its
 real counts, and every field from the first unfinished phase onward is blank. Visibly missing data, never a
 fabricated `0`. A row that is only a timestamp means the run died before scraping started, most likely because
 the pano-list fetch against the webserver failed.
@@ -393,7 +395,37 @@ blocks instead of discarding the evidence.
 
 Field 14 includes `unavailable` — a permanent, expected, non-actionable outcome — so the first backfill runs
 show large failure numbers that are entirely normal. The success/failure/unavailable split goes to stdout and
-`scrape.log`; `log.csv` keeps its fixed 18-column shape, so there was no room for a separate column.
+`scrape.log`; the row has no separate column for it.
+
+### Reading the backfill from the row
+
+**`depth_total` (field 16) is not the resolved count.** It is success + failed + skipped, and `depth_fail`
+carries *transient* failures alongside permanent `unavailable` verdicts — and a transient failure is
+deliberately not ledgered, so those panos are requested again next run. Reading progress from field 16 lets a
+city report `depth complete` while panos have no artifact and never will (the ordinary end-state of a
+backfill: the last stragglers are exactly the ones that keep failing), and makes the figure run **backwards**
+when a heavy-failure night is followed by a quiet one.
+
+What is resolved is what the ledger holds: **`15 + 13`** (skipped, i.e. everything the ledger already
+accounted for at the start of the run, plus this run's saves). That undercounts by this run's `unavailable`
+verdicts — permanent and ledgered, but indistinguishable from transient ones inside field 14 — which arrive
+in the count one night later, when the next run reads them back as skips. It is a lower bound that converges,
+and it can only ever delay "complete", never assert it falsely.
+
+So the work left is `19 − (15 + 13)`, the request rate is the per-night sum of `13 + 14`, and the ETA is the
+work left over the rate at which **panos** (not requests) are being resolved — which is what the
+[log analyzer](log-analyzer.md#the-depth-backfill) prints per city and for the fleet.
+
+Two shapes to read carefully:
+
+- A row whose five depth fields are all `0` is a phase that **accounted for nothing** — `--skip-depth`, a
+  block latch, `streetlevel` missing, a run that crashed before the phase, or a city whose ledger is still
+  empty and whose image phase spent the whole budget. It is not a city with nothing resolved, so the analyzer
+  takes "resolved" from the newest row on which the phase ran.
+- An **unwritable ledger does not write five zeros.** `download_depth_maps` returns
+  `(0, 0, skipped, skipped)` when it cannot open `depth_log.csv`, so the row looks like a phase that reached
+  the ledger and made no requests. The row cannot distinguish that from running out of budget, which is why
+  the analyzer names both candidates instead of asserting one.
 
 ## When the depth phase stands itself down
 
@@ -446,7 +478,7 @@ credentials, and the next run picks up everything the breaker skipped, because n
 
 The run **exits nonzero**, so `scrape_queue.py` books the city as `failed` and cron mails the queue summary.
 Only the tripped source stops: a city carrying both GSV and Mapillary panos keeps downloading GSV. `log.csv`
-is unchanged — the row is 18 positional fields and the breaker is not one of them, so stdout, `scrape.log`
+is unchanged — its fields are counts of work and the breaker is not one of them, so stdout, `scrape.log`
 and the exit code are where this lives.
 
 GSV has no breaker, deliberately: 7.9–8.4% of a large GSV city's ledger is a permanent verdict (retired
@@ -475,6 +507,8 @@ A mature city settles into: `image_success` small or zero most nights, stable `i
 `image_skip ≈ image_total`. The [log analyzer](log-analyzer.md) encodes the rest of the heuristics, including
 what "stale" and "ended early" mean in practice.
 
-During the depth backfill, add: `depth_success` climbing night over night, and `depth_fail` large but
-*stable* — it counts `unavailable`, which is permanent and expected, so it is not an alert signal. The split
-goes to stdout and `scrape.log`.
+During the depth backfill, add: `depth_skip + depth_success` (fields 15 + 13, [what the ledger
+holds](#reading-the-backfill-from-the-row)) climbing night over night towards field 19, and `depth_fail`
+large but *stable* — it counts `unavailable`, which is permanent and expected, so it is not an alert signal.
+The split goes to stdout and `scrape.log`. The analyzer's stats line puts it in one clause:
+`depth 1,753/183,680 (1.0%) · +590 panos/night · ~308 nights left`.

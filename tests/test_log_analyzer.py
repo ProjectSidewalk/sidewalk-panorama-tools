@@ -1,7 +1,7 @@
 """Tests for log_analyzer/analyze.py.
 
 The analyzer is the only consumer of log.csv, so these tests pin the two things that couple it to
-DownloadRunner: the 18-column positional layout, and blank fields meaning "this phase never finished".
+DownloadRunner: the 19-column positional layout, and blank fields meaning "this phase never finished".
 
 They also pin the six alert rules themselves. Three of them - extended zero progress, abnormally long
 runtime, duplicate runs on one day - had their entire firing branch uncovered until #57, which for an ops
@@ -45,7 +45,7 @@ def runner_constant(name):
 
 
 def make_row(start_time, **overrides):
-    """One log.csv row: a timestamp plus 17 counts, defaulting to a quiet, healthy run."""
+    """One log.csv row: a timestamp plus the counts, defaulting to a quiet, healthy run with no GSV corpus."""
     values = dict.fromkeys(analyze.LOG_COLUMNS[1:], 0)
     values.update(overrides)
     return ','.join([str(start_time)] + [str(values[c]) for c in analyze.LOG_COLUMNS[1:]])
@@ -85,8 +85,13 @@ def recent_rows(count=7, **overrides):
 
 
 def crashed_row(n_days_ago=0):
-    """A run that died before any phase finished: a real timestamp, then 17 blanks (#49)."""
-    return str(days_ago(n_days_ago)) + ',' * 17
+    """A run that died before any phase finished: a real timestamp, then blanks (#49)."""
+    return str(days_ago(n_days_ago)) + ',' * (len(analyze.LOG_COLUMNS) - 1)
+
+
+def old_row(start_time, **overrides):
+    """A row as every run wrote it before field 19 existed (#43): 18 fields, no depth corpus size."""
+    return make_row(start_time, **overrides).rsplit(',', 1)[0]
 
 
 def test_columns_match_the_runners_field_count():
@@ -394,14 +399,15 @@ class TestAnAbnormallyLongRunIsFlagged:
     """
 
     def test_a_recent_run_far_over_the_median_is_flagged(self, tmp_path):
-        rows = daily_rows(10, offset=1, total_minutes=10) + [make_row(days_ago(0), total_minutes=100)]
+        rows = (daily_rows(10, offset=1, image_minutes=10, total_minutes=10)
+                + [make_row(days_ago(0), image_minutes=100, total_minutes=100)])
         log = write_log(tmp_path / 'log.csv', rows)
 
         issues = analyze.analyze_city('somewhere', log, stale_days=3)
 
         warnings = [i for i in issues if i['level'] == 'WARNING']
         assert len(warnings) == 1, issues
-        assert 'Recent unusually long run: 100 min' in warnings[0]['msg']
+        assert 'Recent unusually long image phase: 100 min' in warnings[0]['msg']
         assert 'median: 10 min' in warnings[0]['msg']
         assert 'threshold: 30 min' in warnings[0]['msg']
 
@@ -421,44 +427,94 @@ class TestAnAbnormallyLongRunIsFlagged:
 
         assert analyze.analyze_city('somewhere', log, stale_days=3) == []
 
+    def test_a_long_depth_phase_is_not_a_long_run(self, tmp_path):
+        """The depth phase runs to whatever budget it is handed, and under the queue's extra passes (#43)
+        that varies by design from one 12-minute slot to ten. A big city given 120 minutes after ten
+        12-minute nights is the backfill working, not a hung run - so depth minutes are outside this rule."""
+        rows = (daily_rows(10, offset=1, total_minutes=12, depth_minutes=12)
+                + [make_row(days_ago(0), total_minutes=120, depth_minutes=120)])
+        log = write_log(tmp_path / 'log.csv', rows)
 
-class TestTwoRunsOnOneDayAreReportedAsInfo:
-    """Check 6: more than one run on a calendar day, which means the cron slot is overlapping itself.
+        assert analyze.analyze_city('somewhere', log, stale_days=3) == []
 
-    INFO rather than WARNING - it is usually an operator running the scraper by hand - but it needs saying,
-    because two concurrent runs race on the same ledgers.
+    def test_a_long_image_phase_beside_a_depth_phase_is_still_flagged(self, tmp_path):
+        """The discrimination for the test above: taking depth out must not take the rule out with it."""
+        rows = (daily_rows(10, offset=1, image_minutes=10, total_minutes=22, depth_minutes=12)
+                + [make_row(days_ago(0), image_minutes=120, total_minutes=132, depth_minutes=12)])
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        warnings = [i for i in analyze.analyze_city('somewhere', log, stale_days=3) if i['level'] == 'WARNING']
+        assert len(warnings) == 1, warnings
+        assert 'Recent unusually long image phase: 120 min' in warnings[0]['msg']
+        assert 'median: 10 min' in warnings[0]['msg']
+
+
+class TestOverlappingRunsAreFlagged:
+    """Check 6: a run that starts before the previous one's recorded end - two processes on one store.
+
+    This was "more than one run on a calendar day", at INFO. The queue's extra passes (#43) run a city more
+    than once a night by design, so that rule would have fired for most of the fleet every night and meant
+    nothing. Overlap is what the same-day rule was standing in for - two runs racing on one city's ledgers -
+    and it can be read directly from start_time + total_minutes.
     """
 
     @staticmethod
-    def two_runs_on(day_offset):
+    def runs_on(day_offset, first_minutes, gap_minutes):
         # Built by replacing the hour rather than by arithmetic on days_ago, so both rows land on one
-        # calendar date at every time of day. Subtracting hours instead would silently cross midnight for
-        # part of the day, which is the same flooring trap days_ago's own docstring documents.
+        # calendar date at every time of day (the flooring trap days_ago's own docstring documents).
         base = days_ago(day_offset).replace(hour=1, minute=0, second=0, microsecond=0)
-        return [make_row(base), make_row(base.replace(hour=23))], base
+        return [make_row(base, total_minutes=first_minutes),
+                make_row(base + timedelta(minutes=gap_minutes))], base
 
-    def test_two_runs_on_one_day_are_reported(self, tmp_path):
-        rows, base = self.two_runs_on(1)
+    def test_a_run_starting_inside_the_previous_one_is_a_warning(self, tmp_path):
+        rows, base = self.runs_on(1, first_minutes=120, gap_minutes=60)
         log = write_log(tmp_path / 'log.csv', rows)
 
         issues = analyze.analyze_city('somewhere', log, stale_days=3)
 
-        assert [i['level'] for i in issues] == ['INFO'], issues
-        assert 'Multiple runs on same day' in issues[0]['msg']
+        assert [i['level'] for i in issues] == ['WARNING'], issues
+        assert 'Overlapping runs' in issues[0]['msg']
         assert base.strftime('%Y-%m-%d') in issues[0]['msg']
 
-    def test_runs_on_distinct_days_are_not_reported(self, tmp_path):
-        log = write_log(tmp_path / 'log.csv', daily_rows(3))
+    def test_two_runs_on_one_day_that_do_not_overlap_are_not_reported(self, tmp_path):
+        """The queue's second pass: a re-run hours after the first ended is the design working, not an alert.
+        This is the row pair the old same-day rule fired on."""
+        rows, _ = self.runs_on(1, first_minutes=12, gap_minutes=300)
+        log = write_log(tmp_path / 'log.csv', rows)
 
         assert analyze.analyze_city('somewhere', log, stale_days=3) == []
 
-    def test_a_duplicate_older_than_the_window_is_not_reported(self, tmp_path):
+    def test_back_to_back_passes_are_not_an_overlap(self, tmp_path):
+        """Durations are whole minutes, rounded: an 11.6-minute pass logged as 12 and followed at once by its
+        second pass would read as a 24-second collision. The rounding granularity is tolerated."""
+        rows, _ = self.runs_on(1, first_minutes=12, gap_minutes=11.7)
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        assert analyze.analyze_city('somewhere', log, stale_days=3) == []
+
+    def test_a_start_well_inside_the_tolerance_is_still_an_overlap(self, tmp_path):
+        """The discrimination for the tolerance: it forgives rounding, not a real collision."""
+        rows, _ = self.runs_on(1, first_minutes=12, gap_minutes=5)
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        assert [i['level'] for i in analyze.analyze_city('somewhere', log, stale_days=3)] == ['WARNING']
+
+    def test_a_crashed_run_has_no_end_to_overlap(self, tmp_path):
+        """A crashed row's duration is blank (#49), so nothing can be said about what it overlapped."""
+        base = days_ago(1).replace(hour=1, minute=0, second=0, microsecond=0)
+        rows = [str(base) + ',' * (len(analyze.LOG_COLUMNS) - 1), make_row(base + timedelta(minutes=5))]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        assert not [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
+                    if 'Overlapping' in i['msg']]
+
+    def test_an_overlap_older_than_the_window_is_not_reported(self, tmp_path):
         # Only the last 30 rows are considered, so an old overlap does not stay on the report forever.
-        rows, _ = self.two_runs_on(40)
+        rows, _ = self.runs_on(40, first_minutes=120, gap_minutes=60)
         log = write_log(tmp_path / 'log.csv', rows + daily_rows(30))
 
         assert not [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
-                    if 'Multiple runs' in i['msg']]
+                    if 'Overlapping' in i['msg']]
 
 
 class TestAnUnreadableLogDoesNotAbortTheWholeSweep:
@@ -889,3 +945,651 @@ class TestTheAnalyzerParsesWhatTheRunnerWrites:
         log = write_log(tmp_path / 'log.csv', [make_row(DownloadRunner.log_timestamp())])
 
         assert analyze.analyze_city('seattle-wa', log, stale_days=3) == []
+
+
+# --- The intake never infers the file's shape (#43, the #46/#72 class) ------------------------------------
+#
+# Field 19 arrives on production files that already hold a hand-written 18-name header and years of 18-field
+# rows. Measured on pandas 3.0.5 before the change: read_csv(names=LOG_COLUMNS) cannot read that file under
+# either engine - the C parser fixes the width from the header and dies on the first 19-field row - so every
+# city would have gone CRITICAL "Could not parse log" the morning after the deploy. The intake now pads and
+# truncates each row itself, so these tests are about positions: every count must land in its own column.
+
+class TestTheIntakeNeverInfersTheShape:
+
+    OLD_HEADER = ','.join(analyze.LOG_COLUMNS[:18])
+    NEW_HEADER = ','.join(analyze.LOG_COLUMNS)
+
+    def write(self, tmp_path, rows, header):
+        lines = ([header] if header else []) + rows
+        path = tmp_path / 'log.csv'
+        path.write_text('\n'.join(lines) + '\n')
+        return path
+
+    @pytest.mark.parametrize('header', [OLD_HEADER, NEW_HEADER, None], ids=['old-header', 'new-header', 'no-header'])
+    @pytest.mark.parametrize('old_first', [True, False], ids=['old-then-new', 'new-then-old'])
+    def test_every_count_stays_in_its_own_column(self, tmp_path, header, old_first):
+        old = old_row(days_ago(2), image_success=5, total_minutes=7)
+        new = make_row(days_ago(1), image_success=5, total_minutes=7, depth_eligible=1000)
+        log = self.write(tmp_path, [old, new] if old_first else [new, old], header)
+
+        df = analyze.read_log(log)
+
+        assert list(df.columns) == analyze.LOG_COLUMNS
+        assert len(df) == 2
+        assert df['image_success'].tolist() == [5, 5]
+        assert df['total_minutes'].tolist() == [7, 7], 'the last pre-#43 field must not move'
+        assert df['depth_eligible'].isna().iloc[0], 'the old row has no corpus size'
+        assert df['depth_eligible'].iloc[1] == 1000
+
+    def test_the_production_transition_file_parses(self, tmp_path):
+        """The exact shape every city's file has the morning after the deploy: the hand-written 18-name
+        header, then the old rows, then the new ones."""
+        rows = [old_row(days_ago(n), image_total=100) for n in (4, 3, 2)] + \
+               [make_row(days_ago(n), image_total=100, depth_eligible=100) for n in (1, 0)]
+        log = self.write(tmp_path, rows, self.OLD_HEADER)
+
+        df = analyze.read_log(log)
+
+        assert len(df) == 5
+        assert df['image_total'].tolist() == [100] * 5
+
+    def test_a_row_wider_than_the_columns_is_dropped_not_shifted(self, tmp_path):
+        """One surplus field is the #46 shape: pandas answered it by taking the first column as the index and
+        shifting every count one place left, silently. Here the row is left out of the frame and counted for
+        rule 9 - not truncated into a run, which is what this test pinned until a stray comma INSIDE a row
+        (rather than after its last field) showed the truncation reading total_minutes as the corpus size."""
+        good = make_row(days_ago(1), image_success=5, depth_eligible=1000)
+        wide = make_row(days_ago(0), image_success=5, depth_eligible=1000) + ',999'
+        log = self.write(tmp_path, [good, wide], None)
+
+        df = analyze.read_log(log)
+
+        assert len(df) == 1
+        assert df['image_success'].iloc[0] == 5
+        assert df['depth_eligible'].iloc[0] == 1000
+        assert df.attrs['malformed_rows'] == 1
+
+    def test_a_lone_old_file_reads_with_a_blank_last_column(self, tmp_path):
+        log = self.write(tmp_path, [old_row(days_ago(n), image_fail=3) for n in (1, 0)], self.OLD_HEADER)
+
+        df = analyze.read_log(log)
+
+        assert df['image_fail'].tolist() == [3, 3]
+        assert df['depth_eligible'].isna().all()
+
+
+# --- Depth backfill progress (#43) -----------------------------------------------------------------------
+
+def depth_rows(n_days_ago, eligible, resolved_before, requests, ran=True, unavailable=0, transient=0,
+               **overrides):
+    """A row on which the depth phase made `requests` requests on top of `resolved_before` already in the
+    ledger - or, with ran=False, the five-zero row a stand-down writes.
+
+    The three outcomes are separated because the row cannot separate them and the analyzer must not assume
+    it can. `unavailable` is a permanent verdict: it IS ledgered, so it resolves the pano, but it is counted
+    in depth_fail alongside `transient` - which is NOT ledgered and will be re-requested next run. The
+    previous version of this helper called depth_fail "half unavailable" and so encoded the assumption that
+    every failure resolves something, which is precisely the arithmetic that let a city report "depth
+    complete" with panos that will never have depth. Both default to 0, so a plain call is a clean night.
+    """
+    if not ran:
+        return make_row(days_ago(n_days_ago), depth_eligible=eligible, **overrides)
+    saved = requests - unavailable - transient
+    return make_row(days_ago(n_days_ago), depth_success=saved, depth_fail=unavailable + transient,
+                    depth_skip=resolved_before, depth_total=resolved_before + requests, depth_minutes=12,
+                    total_minutes=12, depth_eligible=eligible, **overrides)
+
+
+class TestDepthProgress:
+    """depth_progress is the one place the backfill's figures are defined; every rule and every line of the
+    report reads them from here. So each definition is pinned against the row shape that would break it."""
+
+    def test_nothing_can_be_said_before_the_column_exists(self, tmp_path):
+        log = write_log(tmp_path / 'log.csv', [old_row(days_ago(n)) for n in (2, 1, 0)])
+
+        assert analyze.depth_progress(analyze.read_log(log)) is None
+
+    def test_resolved_is_read_from_the_newest_row_on_which_the_phase_ran(self, tmp_path):
+        """A stand-down row (block latch, --skip-depth, unwritable ledger) is five zeros. It is not "0 resolved":
+        reading it that way would report the city un-backfilled the morning after a single stand-down."""
+        log = write_log(tmp_path / 'log.csv', [depth_rows(1, 1000, 0, 590),
+                                               depth_rows(0, 1000, 0, 0, ran=False)])
+
+        progress = analyze.depth_progress(analyze.read_log(log))
+
+        assert progress['resolved'] == 590
+        assert progress['unresolved'] == 410
+        assert progress['newest_accounted'] is False
+
+    def test_two_runs_on_one_night_are_one_nights_requests(self, tmp_path):
+        """The queue's extra passes put two rows on one date; the nightly rate must not halve for it."""
+        base = days_ago(1).replace(hour=1, minute=0, second=0, microsecond=0)
+        # The old row makes the log older than the window, so the divisor is DEPTH_RATE_NIGHTS and the two
+        # dates that carry rows are not the whole span - the shape a per-logged-date average gets wrong.
+        rows = [old_row(days_ago(20)),
+                make_row(base, depth_success=300, depth_fail=290, depth_skip=0, depth_total=590,
+                         depth_eligible=5000),
+                make_row(base.replace(hour=5), depth_success=100, depth_fail=100, depth_skip=590,
+                         depth_total=790, depth_eligible=5000),
+                depth_rows(0, 5000, 790, 590)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        # Divided by DEPTH_RATE_NIGHTS calendar nights, not by the two dates that happen to carry rows.
+        assert progress['nightly'] == pytest.approx((790 + 590) / analyze.DEPTH_RATE_NIGHTS)
+        assert progress['resolved'] == 790 + 590
+
+    def test_both_rates_are_measured_over_the_same_nights(self, tmp_path):
+        """A city two nights into its log: 590 requests a night, every one saved. Requests were divided by
+        the 7-night window and panos by the log's span, so the fleet line read `+590 panos/night on +169
+        requests` - more panos resolved than requests made. Every city in its first week has this shape."""
+        rows = [depth_rows(1, 10_000, 0, 590), depth_rows(0, 10_000, 590, 590)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['nightly'] == pytest.approx(590)
+        assert progress['nightly_resolved'] == pytest.approx(590)
+        assert '+590 panos/night on +590 requests' in analyze.fleet_depth_summary({'x': progress})[1]
+
+    def test_nights_left_is_unresolved_over_the_nightly_rate(self, tmp_path):
+        rows = [depth_rows(n, 1000, 100 * (2 - n), 100) for n in (2, 1, 0)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['resolved'] == 300
+        assert progress['nights_left'] == pytest.approx(7.0)
+
+    def test_a_complete_city_has_no_eta(self, tmp_path):
+        rows = [depth_rows(1, 500, 0, 500), make_row(days_ago(0), depth_skip=500, depth_total=500,
+                                                       depth_eligible=500)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['unresolved'] == 0
+        assert progress['nights_left'] is None
+
+    def test_a_city_that_never_ran_depth_is_all_unresolved_with_no_eta(self, tmp_path):
+        rows = [depth_rows(n, 100, 0, 0, ran=False) for n in (2, 1, 0)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert (progress['resolved'], progress['unresolved']) == (0, 100)
+        assert progress['nightly'] == 0 and progress['nights_left'] is None
+        assert progress['quiet_nights'] == 3
+
+    def test_a_city_with_no_gsv_panos_has_nothing_unresolved(self, tmp_path):
+        rows = [depth_rows(0, 0, 0, 0, ran=False)]
+
+        assert analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))['unresolved'] == 0
+
+    def test_quiet_nights_count_back_from_the_newest(self, tmp_path):
+        rows = [depth_rows(4, 1000, 0, 100)] + [depth_rows(n, 1000, 100, 0) for n in (3, 2, 1, 0)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['quiet_nights'] == 4
+        assert progress['newest_accounted'] is True
+
+    def test_a_shrunken_corpus_does_not_go_negative(self, tmp_path):
+        rows = [depth_rows(1, 1000, 0, 900), depth_rows(0, 800, 900, 0)]
+
+        assert analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))['unresolved'] == 0
+
+
+class TestADepthPhaseThatStoppedMakingProgressIsFlagged:
+    """Check 7. Five zeros in the depth columns is what --skip-depth writes, what the block latch writes when
+    it stands a run down, what an unwritable ledger writes - and what a finished city writes. Only the corpus
+    size tells those apart, and only this rule reads it; nothing else in the analyzer can see the phase."""
+
+    def issues(self, tmp_path, rows):
+        return analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+
+    def test_three_quiet_nights_with_work_left_is_a_warning(self, tmp_path):
+        rows = [depth_rows(3, 1000, 0, 590)] + [depth_rows(n, 1000, 0, 0, ran=False) for n in (2, 1, 0)]
+
+        warnings = [i for i in self.issues(tmp_path, rows) if i['level'] == 'WARNING']
+
+        assert len(warnings) == 1, warnings
+        assert 'Depth backfill stalled' in warnings[0]['msg']
+        assert '410 of 1,000' in warnings[0]['msg']
+        assert 'accounted for nothing' in warnings[0]['msg']
+
+    def test_a_phase_that_ran_but_made_no_requests_names_the_budget(self, tmp_path):
+        """depth_total > 0 with no requests: the ledger was read and nothing was asked - the shape of an image
+        phase that spent the whole run. A different fix from the stand-down, so a different message."""
+        rows = [depth_rows(3, 1000, 0, 590)] + [depth_rows(n, 1000, 590, 0) for n in (2, 1, 0)]
+
+        warnings = [i for i in self.issues(tmp_path, rows) if i['level'] == 'WARNING']
+
+        assert len(warnings) == 1, warnings
+        assert '--min-depth-runtime' in warnings[0]['msg']
+        assert 'did not run' not in warnings[0]['msg']
+
+    def test_two_quiet_nights_are_not_enough(self, tmp_path):
+        rows = [depth_rows(2, 1000, 0, 590)] + [depth_rows(n, 1000, 0, 0, ran=False) for n in (1, 0)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    def test_a_single_request_on_the_newest_night_resets_the_count(self, tmp_path):
+        rows = [depth_rows(n, 1000, 0, 0, ran=False) for n in (3, 2, 1)] + [depth_rows(0, 1000, 0, 1)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    def test_a_complete_city_is_quiet_by_design(self, tmp_path):
+        rows = [depth_rows(3, 500, 0, 500)] + [depth_rows(n, 500, 500, 0) for n in (2, 1, 0)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    def test_a_city_with_no_gsv_panos_is_never_stalled(self, tmp_path):
+        rows = [depth_rows(n, 0, 0, 0, ran=False) for n in (3, 2, 1, 0)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    def test_nothing_fires_before_the_column_exists(self, tmp_path):
+        rows = [old_row(days_ago(n)) for n in (3, 2, 1, 0)]
+
+        assert self.issues(tmp_path, rows) == []
+
+
+def test_a_blank_depth_eligible_alone_is_not_an_early_end(tmp_path):
+    """Every row written before field 19 existed is blank there (#43). Six of the last seven runs blank in one
+    column is exactly the shape check 5 looks for, so without the PHASE_COLUMNS restriction the whole fleet
+    would have read as 'ended early' for a week after the deploy."""
+    rows = [old_row(days_ago(n)) for n in (6, 5, 4, 3, 2, 1)] + [make_row(days_ago(0), depth_eligible=100)]
+
+    assert not [i for i in analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+                if 'ended early' in i['msg']]
+
+
+class TestTheStatsLineReportsDepth:
+
+    def test_progress_rate_and_eta(self, tmp_path):
+        rows = [depth_rows(1, 10000, 0, 590), depth_rows(0, 10000, 590, 590)]
+
+        line = analyze.city_stats(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert 'depth 1,180/10,000 (11.8%)' in line
+        assert '+590 panos/night' in line
+        assert '~15 nights left' in line
+
+    def test_a_complete_city(self, tmp_path):
+        rows = [depth_rows(1, 500, 0, 500), depth_rows(0, 500, 500, 0)]
+
+        assert 'depth complete (500)' in analyze.city_stats(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+    def test_a_city_that_has_not_started(self, tmp_path):
+        rows = [depth_rows(0, 500, 0, 0, ran=False)]
+
+        assert 'depth not started (0/500)' in analyze.city_stats(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+    def test_before_the_column_exists_the_line_says_nothing_about_depth(self, tmp_path):
+        rows = [old_row(days_ago(n)) for n in (1, 0)]
+
+        assert 'depth' not in analyze.city_stats(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+
+class TestTheFleetDepthSummary:
+
+    def test_it_totals_the_fleet_and_names_the_longest_city(self, tmp_path, monkeypatch, capsys):
+        seattle = [depth_rows(1, 10000, 0, 590), depth_rows(0, 10000, 590, 590)]
+        newberg = [depth_rows(1, 500, 0, 500), depth_rows(0, 500, 500, 0)]
+
+        status = run_main(tmp_path, monkeypatch, '--no-download', cities=TWO_CITIES,
+                          logs=[('seattle-wa', seattle), ('newberg-or', newberg)])
+        out = squash(capsys.readouterr().out)
+
+        assert status == 0
+        assert 'DEPTH BACKFILL — 2 of 2 cities report a corpus' in out
+        assert 'resolved 1,680 of 10,500 GSV panos (16.0%)' in out
+        assert '1 complete · 0 stalled' in out
+        assert 'longest remaining: seattle-wa ~15 nights (8,820 left)' in out
+
+    def test_a_stalled_city_is_counted(self, tmp_path, monkeypatch, capsys):
+        seattle = [depth_rows(3, 1000, 0, 590)] + [depth_rows(n, 1000, 0, 0, ran=False) for n in (2, 1, 0)]
+
+        run_main(tmp_path, monkeypatch, '--no-download', logs=[('seattle-wa', seattle)])
+
+        assert '0 complete · 1 stalled' in squash(capsys.readouterr().out)
+
+    def test_nothing_is_printed_before_any_city_reports_a_corpus(self, tmp_path, monkeypatch, capsys):
+        run_main(tmp_path, monkeypatch, '--no-download',
+                 logs=[('seattle-wa', [old_row(days_ago(n)) for n in (1, 0)])])
+
+        assert 'DEPTH BACKFILL' not in capsys.readouterr().out
+
+    def test_the_function_is_empty_for_an_empty_fleet(self):
+        assert analyze.fleet_depth_summary({}) == []
+        assert analyze.fleet_depth_summary({'x': None}) == []
+
+    def test_a_fleet_with_no_eta_anywhere_has_no_longest_line(self, tmp_path, monkeypatch, capsys):
+        """Every city complete, or none started: there is a block, and nothing to rank."""
+        newberg = [depth_rows(1, 500, 0, 500), depth_rows(0, 500, 500, 0)]
+
+        run_main(tmp_path, monkeypatch, '--no-download', logs=[('seattle-wa', newberg)])
+        out = squash(capsys.readouterr().out)
+
+        assert 'DEPTH BACKFILL' in out and '1 complete' in out
+        assert 'longest remaining' not in out
+
+
+# ---------------------------------------------------------------------------
+# Review fixes (#124). Each class below pins one figure the analyzer reported
+# confidently and wrongly, and each was reproduced against the branch before it
+# was fixed.
+# ---------------------------------------------------------------------------
+
+class TestATransientFailureResolvesNothing:
+    """depth_fail carries BOTH a permanent `unavailable` verdict and a transient failure, and only the first
+    resolves a pano. depth_total adds all of it, so reading progress from it counted work that will be done
+    again tomorrow - and the last stragglers of a backfill are exactly the panos that keep failing, so this
+    is the ordinary end-state, not an exotic one."""
+
+    def test_a_night_of_transient_failure_adds_nothing_to_resolved(self, tmp_path):
+        rows = [depth_rows(1, 10_000, 0, 1000),
+                depth_rows(0, 10_000, 1000, 500, transient=500)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['resolved'] == 1000          # depth_total says 1,500
+        assert progress['unresolved'] == 9000
+
+    def test_a_city_is_not_complete_while_its_stragglers_keep_failing(self, tmp_path):
+        """The whole remaining candidate set failing transiently made depth_total reach the corpus, so the
+        city reported `depth complete` and rule 7 could not fire - it is gated on unresolved > 0, which the
+        same arithmetic had just zeroed."""
+        rows = [depth_rows(n, 1000, 900, 100, transient=100) for n in (4, 3, 2, 1, 0)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        progress = analyze.depth_progress(analyze.read_log(log))
+
+        assert progress['resolved'] == 900
+        assert progress['unresolved'] == 100
+        assert 'depth complete' not in analyze.city_stats(analyze.read_log(log))
+
+    def test_resolved_never_runs_backwards(self, tmp_path):
+        """A heavy-failure night followed by a quiet one made the reported figure DROP, which is the tell
+        that it was never a cumulative resolved count."""
+        night_1 = [depth_rows(1, 10_000, 0, 1000, transient=300)]
+        night_2 = night_1 + [depth_rows(0, 10_000, 700, 0)]
+
+        first  = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'a.csv', night_1)))
+        second = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'b.csv', night_2)))
+
+        assert first['resolved'] == 700 and second['resolved'] == 700
+
+    def test_resolved_follows_the_newest_row_when_the_corpus_retires_panos(self, tmp_path):
+        """depth_skip counts ledgered panos still in TONIGHT's corpus, so when Google retires 180 of the 900
+        the ledger holds, the ledger-derived count falls to 720. Taking the maximum over the log instead
+        reported 900 resolved of an 800-pano corpus: `depth complete`, with 80 panos never requested."""
+        rows = [depth_rows(1, 1000, 0, 900), depth_rows(0, 800, 720, 0)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        progress = analyze.depth_progress(analyze.read_log(log))
+
+        assert progress['resolved'] == 720
+        assert progress['unresolved'] == 80
+        assert 'depth complete' not in analyze.city_stats(analyze.read_log(log))
+
+    def test_an_unavailable_verdict_still_resolves_the_pano(self, tmp_path):
+        """The discrimination: `unavailable` is permanent and ledgered, so it must NOT be treated as
+        outstanding. It arrives one night late, when the next run reads it back as a skip - a lower bound
+        that converges, which is the safe direction."""
+        rows = [depth_rows(1, 1000, 0, 400, unavailable=400),
+                depth_rows(0, 1000, 400, 0)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['resolved'] == 400
+
+
+class TestACorpusOfZeroIsRefused:
+    """depth_eligible is len(gsv_panos), so an empty or source-less pano-list answer writes a plausible 0.
+    last_value skips a BLANK field but not a zero one, so one such night erased the city's entire depth
+    report - stats line, fleet block and `longest remaining` ranking - and raised nothing."""
+
+    # The corpus shrinks by ten a night, so the row the substitute is taken from is pinned: the NEWEST
+    # believable one, 183,680, not the oldest. With one value on every row, `positive[0]` passed too.
+    SEVEN_GOOD = [depth_rows(n, 183_680 + (n - 1) * 10, (7 - n) * 590, 590) for n in (7, 6, 5, 4, 3, 2, 1)]
+
+    def test_one_empty_night_does_not_erase_the_city(self, tmp_path):
+        rows = self.SEVEN_GOOD + [depth_rows(0, 0, 0, 0, ran=False)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['eligible'] == 183_680
+        assert progress['corpus_suspect'] is True
+
+    def test_it_says_so_rather_than_substituting_silently(self, tmp_path):
+        rows = self.SEVEN_GOOD + [depth_rows(0, 0, 0, 0, ran=False)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        warnings = [i for i in analyze.analyze_city('seattle-wa', log, stale_days=3)
+                    if i['level'] == 'WARNING']
+
+        assert any('not believable' in w['msg'] for w in warnings), warnings
+
+    def test_a_corpus_that_merely_shrank_is_believed(self, tmp_path):
+        """The discrimination against over-refusing. Google retires panos, so a corpus legitimately shrinks -
+        even below what the ledger holds, since those panos were resolved while they were still in it. Only 0
+        is impossible for a city that has ever reported one."""
+        rows = [depth_rows(1, 1000, 0, 900), depth_rows(0, 800, 900, 0)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['eligible'] == 800
+        assert progress['corpus_suspect'] is False
+
+    def test_a_city_with_no_gsv_panos_is_not_flagged(self, tmp_path):
+        rows = [depth_rows(n, 0, 0, 0, ran=False) for n in (2, 1, 0)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        assert analyze.depth_progress(analyze.read_log(log))['corpus_suspect'] is False
+        assert not [i for i in analyze.analyze_city('nowhere', log, stale_days=3)
+                    if 'believable' in i['msg']]
+
+
+class TestTheRateIsPerCalendarNight:
+    """A city only gets a queue slot on the nights the window reaches it (#101), and a night it never ran
+    writes no row at all - so averaging over the dates that happen to appear reads three runs spread over a
+    month as three consecutive nights."""
+
+    def test_runs_spread_over_a_month_are_not_a_nightly_rate(self, tmp_path):
+        rows = [depth_rows(31, 10_000, 0, 600),
+                depth_rows(16, 10_000, 600, 600),
+                depth_rows(0, 10_000, 1200, 600)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        # 600 requests on one of the last seven nights, not 600 a night.
+        assert progress['nightly'] == pytest.approx(600 / analyze.DEPTH_RATE_NIGHTS)
+        assert progress['nights_left'] > 90       # read as ~14 while the divisor was the logged rows
+
+    def test_the_eta_divides_panos_by_panos(self, tmp_path):
+        """nights_left used to divide unresolved PANOS by REQUESTS, so a night of heavy transient failure -
+        which spends requests and resolves nothing - read as a productive one."""
+        rows = [depth_rows(n, 10_000, 0, 1000, transient=1000) for n in (2, 1, 0)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['nightly'] > 0            # requests were certainly spent
+        assert progress['nightly_resolved'] == 0
+        assert progress['nights_left'] is None    # undefined is not zero, and not 10 nights
+
+
+class TestQuietNightsAreNights:
+    def test_quarterly_rows_are_not_three_quiet_nights(self, tmp_path):
+        """The message printed a ROW count as a night count: three rows a month apart said 'the last 3
+        nights' when it had been ninety days, and a weekly-logging city needed 21 days to reach the
+        threshold."""
+        rows = [depth_rows(90, 10_000, 0, 600)] + [depth_rows(n, 10_000, 600, 0, ran=False) for n in (60, 30, 0)]
+
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert progress['quiet_nights'] == 90
+
+
+class TestRule4CanFireWhenDepthDominatesTheRun:
+    """A mature city's image phase is a ledger read and a membership scan while depth spends the whole slot,
+    so total minus depth was 0 on essentially every row, the median was 0, and `median > 0` switched the rule
+    off for exactly the class of city the fleet is moving into."""
+
+    MATURE = [make_row(days_ago(n), image_minutes=0, depth_minutes=12, total_minutes=12,
+                       depth_success=500, depth_skip=(19 - n) * 500, depth_total=(19 - n) * 500 + 500,
+                       depth_eligible=100_000) for n in range(19, 0, -1)]
+
+    def test_a_hung_image_phase_is_flagged_though_the_median_is_zero(self, tmp_path):
+        rows = self.MATURE + [make_row(days_ago(0), image_minutes=180, depth_minutes=12, total_minutes=192,
+                                       depth_success=500, depth_skip=9500, depth_total=10_000,
+                                       depth_eligible=100_000)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        warnings = [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
+                    if 'long image phase' in i['msg']]
+
+        assert len(warnings) == 1, warnings
+        assert '180 min' in warnings[0]['msg']
+
+    def test_an_ordinary_image_phase_is_not_flagged(self, tmp_path):
+        """The other end of the same floor: at a median of 1 the threshold was 3 minutes, so a perfectly
+        ordinary 4-minute image phase warned."""
+        rows = self.MATURE + [make_row(days_ago(0), image_minutes=4, depth_minutes=12, total_minutes=16,
+                                       depth_success=500, depth_skip=9500, depth_total=10_000,
+                                       depth_eligible=100_000)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        assert not [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
+                    if 'long image phase' in i['msg']]
+
+
+class TestRule7NamesCandidatesRatherThanACause:
+    """The two-way diagnosis was wrong on BOTH shapes it exists to separate."""
+
+    def test_an_unwritable_ledger_is_not_diagnosed_as_a_budget_problem(self, tmp_path):
+        """download_depth_maps returns (0, 0, skipped, skipped) when it cannot open the ledger - not five
+        zeros - so this landed in the arm that sends the operator to tune --min-depth-runtime while the store
+        is read-only."""
+        rows = [make_row(days_ago(n), depth_success=0, depth_fail=0, depth_skip=1850, depth_total=1850,
+                         depth_minutes=0, total_minutes=1, depth_eligible=5000) for n in (3, 2, 1, 0)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        stalled = [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
+                   if 'Depth backfill stalled' in i['msg']]
+
+        assert len(stalled) == 1, stalled
+        assert 'ledger could not be written' in stalled[0]['msg']
+
+    def test_a_fresh_city_out_of_budget_is_not_told_the_phase_did_not_run(self, tmp_path):
+        """The inverse: nothing in the ledger to skip, so depth_total is 0 and the phase read as never having
+        run when it ran and simply had no time left."""
+        rows = [make_row(days_ago(n), depth_eligible=5000, total_minutes=12) for n in (3, 2, 1, 0)]
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        stalled = [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
+                   if 'Depth backfill stalled' in i['msg']]
+
+        assert len(stalled) == 1, stalled
+        assert 'image phase spending the whole budget' in stalled[0]['msg']
+        assert 'crashed before the phase' in stalled[0]['msg']
+
+
+class TestARowThatIsNotARun:
+    """A row of some other width is not a run. One stray comma shifts every count one place right, the 19th
+    field falls off the end, and the night reads as a quiet healthy one."""
+
+    def test_a_row_of_the_wrong_width_is_reported(self, tmp_path):
+        good = make_row(days_ago(1), image_success=10, depth_eligible=183_680)
+        torn = make_row(days_ago(0), image_success=10, depth_eligible=183_680) + ',12'
+        log = write_log(tmp_path / 'log.csv', [good, torn])
+
+        warnings = [i for i in analyze.analyze_city('seattle-wa', log, stale_days=3)
+                    if i['level'] == 'WARNING']
+
+        assert any('neither 18 nor 19' in w['msg'] for w in warnings), warnings
+
+    def test_a_well_formed_pre_corpus_row_is_not_reported(self, tmp_path):
+        """The discrimination: 18 fields is every row written before the corpus column existed, and a fleet
+        of those must stay silent."""
+        log = write_log(tmp_path / 'log.csv', [old_row(days_ago(n)) for n in (2, 1, 0)])
+
+        assert not [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
+                    if 'field count' in i['msg']]
+
+    def test_a_shifted_row_does_not_become_the_corpus(self, tmp_path):
+        """Reported is not enough: the first version counted the row for rule 9 and then padded it into the
+        frame anyway. A stray comma after field 5 moved every later count one place right, the corpus fell
+        off the end, total_minutes (12) landed in its place, and a 183,680-pano city read as
+        `0 total | depth 0/12 (0.0%)` - with rule 8 silent, because 12 is a believable corpus."""
+        good = [depth_rows(n, 183_680, (8 - n) * 590, 590) for n in range(7, 0, -1)]
+        parts = depth_rows(0, 183_680, 8 * 590, 590).split(',')
+        parts.insert(5, '')
+        log = write_log(tmp_path / 'log.csv', good + [','.join(parts)])
+
+        df = analyze.read_log(log)
+        progress = analyze.depth_progress(df)
+        issues = analyze.analyze_city('seattle-wa', log, stale_days=3)
+
+        assert len(df) == 7, 'the shifted row is not a run'
+        assert progress['eligible'] == 183_680
+        assert progress['resolved'] == 8 * 590, 'read from the newest row that IS a run'
+        assert 'depth 0/12' not in analyze.city_stats(df)
+        assert any('neither 18 nor 19' in i['msg'] for i in issues), issues
+        assert not any('not believable' in i['msg'] for i in issues), 'nothing suspect reached corpus_size'
+
+    def test_a_torn_last_row_is_not_tonights_run(self, tmp_path):
+        """The realistic torn write: the mount dropped mid-row and the line was cut short. It used to pad
+        into a crashed-looking run dated tonight; now the newest run is the last complete row."""
+        good = [depth_rows(n, 1000, 0, 100) for n in (2, 1)]
+        torn = ','.join(depth_rows(0, 1000, 100, 100).split(',')[:12])
+        log = write_log(tmp_path / 'log.csv', good + [torn])
+
+        df = analyze.read_log(log)
+
+        assert len(df) == 2
+        assert df.attrs['malformed_rows'] == 1
+        assert not [i for i in analyze.analyze_city('somewhere', log, stale_days=3) if 'ended early' in i['msg']]
+
+    def test_a_file_of_only_torn_rows_says_so(self, tmp_path):
+        """Dropping every row would otherwise report 'Log file is empty', and the one piece of evidence -
+        that something wrote rows of the wrong width - would be lost with the frame it was attached to."""
+        torn = [','.join(depth_rows(n, 1000, 0, 100).split(',')[:12]) for n in (1, 0)]
+        log = write_log(tmp_path / 'log.csv', torn)
+
+        issues = analyze.analyze_city('somewhere', log, stale_days=3)
+
+        assert [i['level'] for i in issues] == ['CRITICAL'], issues
+        assert 'no readable run' in issues[0]['msg'] and '2 row(s)' in issues[0]['msg']
+
+
+class TestRules2And3CountNightsNotRows:
+    """Rule 6 was rewritten because the queue's extra passes put more than one row on a night. These two were
+    left counting rows as days, and both are named in days."""
+
+    def test_two_passes_a_night_do_not_halve_the_failure_rate(self, tmp_path):
+        # 30 new permanent failures a night, over two rows a night: 15 per row.
+        rows = []
+        for night in range(9, 0, -1):
+            base = days_ago(night).replace(hour=3, minute=0, second=0, microsecond=0)
+            done = (9 - night) * 30
+            rows.append(make_row(base, image_fail=done + 15))
+            rows.append(make_row(base.replace(hour=9), image_fail=done + 30))
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        warnings = [i for i in analyze.analyze_city('somewhere', log, stale_days=3)
+                    if 'Image failures growing fast' in i['msg']]
+
+        assert len(warnings) == 1, warnings
+        assert '~30 new permanent failures/day' in warnings[0]['msg']
+
+
+class TestTheFleetBlockCountsEveryCityItReportedOn:
+    def test_a_city_whose_log_never_arrived_is_in_the_denominator(self, tmp_path, monkeypatch, capsys):
+        """main() continues past a failed download before progress is touched, so counting that dict read
+        'N of N cities report a corpus' at exactly the moment some were invisible."""
+        seattle = [depth_rows(1, 10_000, 0, 590), depth_rows(0, 10_000, 590, 590)]
+
+        run_main(tmp_path, monkeypatch, '--no-download', cities=TWO_CITIES,
+                 logs=[('seattle-wa', seattle)])
+        out = squash(capsys.readouterr().out)
+
+        assert '1 of 2 cities report a corpus' in out
