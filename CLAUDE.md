@@ -68,7 +68,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 | `docs/downloader.md` | install, options, runtime budgets, imagery sources, `config.py`, the nightly queue and its cron line |
 | `docs/cropper.md` | crop geometry, preflights, outcome taxonomy, consumer warnings |
 | `docs/depth.md` | artifact format, plane fields, ledger, migration, rate-limit behaviour, what depth is/isn't |
-| `docs/ops.md` | storage layout, resume ledgers, the 19-column `log.csv`, crashed-run semantics, the `fover` repair pass |
+| `docs/ops.md` | storage layout, resume ledgers, the 19-column `log.csv`, crashed-run semantics, the `fover` repair pass, operating the production host (deploy, rollback, adding a city, the missing-MTA alarm gap) |
 | `docs/log-analyzer.md` | SFTP settings, the per-city checks, and the depth backfill report |
 | `docs/api-fields.md` | `/adminapi/panos` and `/adminapi/labels/cvMetadata` glossaries, label type IDs |
 | `docs/testing.md` | what the suite covers |

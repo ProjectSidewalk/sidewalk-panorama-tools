@@ -628,3 +628,67 @@ holds](#reading-the-backfill-from-the-row)) climbing night over night towards fi
 large but *stable* — it counts `unavailable`, which is permanent and expected, so it is not an alert signal.
 The split goes to stdout and `scrape.log`. The analyzer's stats line puts it in one clause:
 `depth 1,753/183,680 (1.0%) · +590 panos/night · ~308 nights left`.
+
+## Operating the production host
+
+The nightly scrape runs on one small cloud instance (Ubuntu 22.04 / Python 3.10, the CI baseline) with the repo
+at `/srv/sidewalk-panorama-tools` on `master`, its virtualenv at `.venv`, the pano store sshfs-mounted at
+`/mnt/panostore` by a systemd mount unit, the city manifest at `/etc/sidewalk/cities.csv`, and the one crontab
+line from [Nightly deployment](downloader.md#nightly-deployment). Which instance, its addresses and who holds
+which key are deliberately **not** here; they live in the team's private planning repo, next to the rest of the
+account-level detail.
+
+### Deploying
+
+Merging to `master` changes nothing on the host until someone pulls — it sat 13 merged PRs behind for eleven
+days in September 2026. A deploy is:
+
+```bash
+cd /srv/sidewalk-panorama-tools && git pull --ff-only
+git log --oneline -1                                   # what is live now
+.venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
+.venv/bin/python -c "import DownloadRunner, scrape_queue"
+git diff --stat HEAD@{1} HEAD -- requirements.txt      # non-empty -> .venv/bin/pip install -r requirements.txt
+```
+
+- **Pulling while the queue is running is safe.** Every repo import is at module level, so a city already
+  running keeps the code it loaded, the next city starts on the new tree, and the queue process itself keeps
+  its old code until the next night. The 2026-09-17 deploy landed with the queue on its 30th city.
+- **Roll forward, never back, past 2026-09-17.** [`fetched_at`](#fetched_at-and-the-two-row-widths) widened
+  `pano_id_log.csv` to three fields, and a pre-#129 reader parses a three-field ledger as *empty* —
+  every permanent verdict re-requested, nightly. Behaviour rolls back by flag (below), not by checkout.
+
+### Rolling back, smallest blast radius first
+
+1. **Stop the depth backfill:** add `--skip-depth` after the `--` in the cron line. Images are unaffected.
+2. **Take one city out for a night:** prefix its manifest row with `#`.
+3. **Re-run one city through the queue's own machinery** (lock, budgets, summary):
+   `scrape_queue.py --cities … --store-root … --only <city_id> -- --all-panos`.
+4. **Reinstall an earlier crontab** from the dated backups in the user's home (`crontab <file>`). Take a new
+   backup first; one of the old ones still carries a secret and is mode 600 for that reason.
+5. **Stop everything:** `crontab -r` after backing up. The store is untouched by any of this.
+
+### Adding a city
+
+1. Append `city_id,fqdn` to the manifest. The fqdn cannot be derived from the id — read it off the app, and
+   check `https://<fqdn>/adminapi/panos` answers first.
+2. `scrape_queue.py … --dry-run` takes no lock and shows the city in the plan while the queue runs.
+3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it.
+4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
+
+### Hearing about a bad night
+
+The queue's nonzero exit is the alarm, and cron delivers it only if the host can send mail. **Check that it
+can** — the production host had no MTA as of 2026-09-17, and `syslog` said so after every nightly
+(`No MTA installed, discarding output`) with nothing else raising a flag. Until that is wired, the two channels
+that do exist are `<store-root>/scrape_queue.log` (one `ok`/`failed` line per city per night) and the
+[log analyzer](log-analyzer.md), run by hand. Whatever delivers mail, verify it the same way `BASH_ENV` was:
+a throwaway cron line that fails on purpose, then delete it.
+
+### The morning after a deploy
+
+- `scrape_queue.log`: every city `ok (exit 0)`, and `pass 2 starting` if any ran out of budget.
+- `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
+- `grep -l "backing off" */scrape.log` prints nothing — a push-back from Google would be the first sign the
+  pacer's persisted standing is too aggressive.
+- The analyzer's fleet block, for the checks it encodes.
