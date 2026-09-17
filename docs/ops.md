@@ -12,7 +12,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | [Depth artifact](depth.md#the-artifact) |
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
-| `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded` |
+| `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at` (rows written before 2026-09-10 have no `fetched_at`) |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 19-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
@@ -185,7 +185,7 @@ compares them across runs as `pose_drift`. It catches the re-poses, not the pure
 Both phases resume from an append-only ledger, and both draw the same line: **a row means the outcome is
 permanent.** Transient failures leave no row and retry automatically on the next run.
 
-**`pano_id_log.csv` gates the image phase** (`pano_id,downloaded`):
+**`pano_id_log.csv` gates the image phase** (`pano_id,downloaded,fetched_at`):
 
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano. A permanent verdict, one per source:
@@ -211,7 +211,60 @@ permanent.** Transient failures leave no row and retry automatically on the next
   the withheld tripping verdict and every pano skipped after it). Retried next run.
 
 Deleting `0` rows, or the whole file, is the manual force-retry lever; existing `.jpg`s are simply
-re-registered as skipped rather than re-downloaded.
+re-registered as skipped rather than re-downloaded — with a **blank** `fetched_at`, because the ledger has
+no evidence of when they were fetched (next section).
+
+### `fetched_at`, and the two row widths
+
+The third field is when the source answered: for a `1` row written by a download, the moment the file
+landed; for a `0` row, the moment the source's "nothing here" was read. Local time with an explicit UTC
+offset, the same `log_timestamp()` rendering as [`log.csv`'s column 1](#which-clock-each-field-is-on), so it
+says which clock it is on. It exists because [the store is an archive](#the-store-is-an-archive-not-a-cache)
+and file mtime was the only record of when a panorama was fetched — a record `refetch_panos`'s
+`already_clean` gate already leans on, and one that any `cp` or `rsync` without `-t` destroys.
+
+**A `1` row that registers a file already on disk carries a blank stamp.** That is the `skipped` verdict:
+the downloader's `os.path.isfile` short-circuit, the source never contacted. The pixels were fetched by some
+earlier run whose row is missing — killed between the atomic save and the append, the ledger deleted as the
+force-retry lever above, a torn row the reader dropped, a store assembled by copy — and the only evidence of
+*when* is the mtime. Stamping the moment of re-registration would relabel a 2019 fetch as today's, on a row
+that is never rewritten, and the next copy without `-t` would then destroy the one date that contradicted
+it. So the rule for a reader is **a non-empty stamp means we know when; a blank one, or a two-field row,
+means the pixels predate the row and mtime is all there is** — the two spellings of "unknown" mean the
+same thing.
+
+**Two widths are legal and a long-lived store holds both.** Rows written before 2026-09-10 are
+`pano_id,downloaded`; rows after it are `pano_id,downloaded,fetched_at`. Four specifics follow:
+
+* **Old rows are never backfilled.** Two fields means it predates the change and mtime is the only evidence
+  there will ever be. Inventing a timestamp from an mtime we already distrust would be worse than the blank.
+* **A store created before the change keeps its two-column header** above three-field rows, so `head -1`
+  under-reports. Deliberate: rewriting a production ledger in place is the O(n²) truncate-on-crash path
+  [#55](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/55) removed, over the only record of
+  what has been scraped. `progress_check` reads by position and skips the header by value, so a stale header
+  costs nothing. A `csv.DictReader` on such a file *will* put the stamp under the `None` key — read it
+  positionally.
+* **The stamp is the last field on purpose**, so the id and the verdict stay in columns 1 and 2: `cut -d, -f1`,
+  `cut -d, -f2` and `awk -F, '$2 == 0'` keep meaning what they meant. An end-anchored `grep ',0$'` does
+  **not** — a timestamped row ends in the stamp, so that grep matches only pre-2026-09-10 rows and would
+  count the false `0` rows after a breaker trip as zero. Match the verdict by column, never by line end.
+* **Parse the stamp defensively.** `progress_check` keeps any row whose id and verdict are intact and never
+  reads the third field, so a crash can leave a row whose stamp is torn mid-write. A consumer of `fetched_at`
+  treats an unparseable value exactly as a blank one — unknown — rather than raising.
+
+**A repaired panorama's stamp dates the pixels the repair replaced.** `refetch_panos` writes nothing to this
+ledger, and `refetch_log.csv` is `pano_id,status` with no timestamp, so after a `replaced` swap the current
+pixels' fetch time is again recorded only in the mtime. No repair pass runs today, so this is latent; the
+rule for a reader is that a `replaced` row in `refetch_log.csv` supersedes `fetched_at` for that pano. Giving
+`refetch_log.csv` a stamp of its own is a separate decision — this change deliberately widened one ledger and
+not a second.
+
+**A rollback is the one thing to be careful about.** A build older than 2026-09-10 reads rows with a hard
+`len(row) != 2` and silently skips every three-field one — so a fully-timestamped ledger parses as *empty*,
+with nothing raised: permanent `0` verdicts stop being terminal and go back to Google nightly, duplicate rows
+accumulate, and `log.csv`'s column 9 loses its prior-failure seed. Reader and writer ship in one commit, so
+this cannot happen from a partial deploy; it can only happen by deliberately deploying an older build over a
+store that has already been written. Roll forward rather than repairing.
 
 **`depth_log.csv` gates the depth phase** with the same semantics — see
 [Depth maps → The ledger](depth.md#the-ledger). The artifacts on disk are the ground truth; deleting the
@@ -535,7 +588,7 @@ is damage.
 
 They are **not** necessarily the last rows *in the file*. Only the tripped source stops; a city carrying both
 GSV and Mapillary keeps downloading and ledgering GSV afterwards, so the tail can be thousands of GSV rows.
-`pano_id_log.csv` is `pano_id,downloaded` with no source column, so match on the id shape — Mapillary ids are
+`pano_id_log.csv` has no source column, so match on the id shape — Mapillary ids are
 all-numeric, GSV's are 22-character base64, Panoramax's are UUIDs. Delete those two rows, fix the
 credentials, and the next run picks up everything the breaker skipped, because none of it was ledgered.
 
