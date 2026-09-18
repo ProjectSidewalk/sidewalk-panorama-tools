@@ -132,6 +132,25 @@ CROP_MAX_STORED_WIDTH = 1440
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
 
+# ---------------------------------------------------------------------------
+# The systemic-failure alarm (#136). When cvMetadata changed shape (#123) every label errored, and the
+# run's bookkeeping was entirely correct about it: errors == total, the invariant reconciled, main()
+# exited 1. What was wrong was the SHAPE of the signal - 260,000 identical per-row WARNINGs, where
+# "everything failed" differs from "three labels failed" only in length. And CropRunner is hand-run
+# rather than on cron, so the exit code reaches nobody by itself.
+#
+# The fraction of a run's labels that must have errored before the summary says so in its own words.
+# Not a tuned number: a half is the point where errors stop being a minority outcome - more of the run
+# failed than survived - which no per-row cause explains at scale. Two alternatives were considered and
+# rejected. Firing only at 100% is tuned to the one incident we have seen and is defeated by a single
+# label of noise: one missing pano among 260,000 failures would silence it. Firing at, say, 10% would
+# put the alarm inside the range an ordinary bad night can reach - a corrupt slice of the store is a
+# genuinely per-row fault, and the loop is built to survive exactly that.
+SYSTEMIC_ERROR_FRACTION = 0.5
+
+# The one string to grep for, in crop.log or in a terminal scrollback.
+SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
+
 
 def build_parser():
     parser = argparse.ArgumentParser()
@@ -697,6 +716,45 @@ def resolve_label_type_id(row):
     return LABEL_TYPE_IDS_BY_NAME[name]
 
 
+def systemic_failure_line(counts):
+    """One line for a run whose errors dominate it, or None when they do not (#136).
+
+    Reads the counts; never writes them. The alarm is a second reading of numbers the loop already
+    produced, so it cannot move a label between buckets and the reconciliation invariant is untouched -
+    which is the whole reason it is a separate function taking the finished dict rather than a counter
+    maintained alongside the others.
+
+    Two guards, both deliberate. `total > 0` first, because the test is `errors >= fraction * total`
+    and on an empty run that reads 0 >= 0.0, which is true: a store with nothing to do would otherwise
+    raise the alarm loudest. `errors > 0` second, for the same arithmetic reason if the fraction is
+    ever set to 0, and because "0 of 0 labels errored" is not a sentence worth printing.
+
+    The denominator is `total` - every label the run was handed - and not the subset it actually tried
+    to cut. That is the documented invariant's denominator, and it keeps the two skip outcomes honest:
+    a city whose pano store is still catching up is 100% missing_pano and is not a crop failure, while
+    a re-run over a finished store is 100% skipped_existing and did nothing wrong. The cost is a known
+    blind spot: a mature store topping up a handful of labels, all of which fail to write, is a small
+    fraction of a large total and does not trip this. That run still exits 1 and still logs a warning
+    per label - which is the whole signal it had before - and sharpening it needs a denominator with
+    its own degenerate cases, so it is left for a run that actually shows up.
+
+    >>> systemic_failure_line({'total': 0, 'errors': 0}) is None
+    True
+    >>> systemic_failure_line({'total': 100, 'errors': 3}) is None
+    True
+    >>> systemic_failure_line({'total': 100, 'errors': 100}).startswith(SYSTEMIC_FAILURE_BANNER)
+    True
+    """
+    total, errors = counts['total'], counts['errors']
+    if total <= 0 or errors <= 0 or errors < SYSTEMIC_ERROR_FRACTION * total:
+        return None
+    return ("%s: %d of %d labels errored (%.1f%%). At that rate this is one cause rather than that "
+            "many independent per-row faults - check the label metadata's shape (a cvMetadata schema "
+            "move is what did this in #123), the pano store passed to -s, and whether -o is writable, "
+            "before reading the per-label reasons in crop.log."
+            % (SYSTEMIC_FAILURE_BANNER, errors, total, 100.0 * errors / total))
+
+
 def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
@@ -719,6 +777,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
              stay inside the pano, so the crop exists but the label is off-centre in it. Adding a bucket
              here without adding it to that sum is exactly how the invariant went stale before;
              tests/test_crop_runner.py asserts the sum from the dict rather than from this docstring.
+
+             The summary ends with systemic_failure_line()'s alarm when errors dominate the run (#136).
+             That is a second READING of these numbers and adds no bucket of its own - which is what
+             keeps the invariant above out of its way.
     """
     counts = {'total': len(labels_to_crop), 'success': 0, 'skipped_existing': 0,
               'missing_pano': 0, 'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
@@ -869,6 +931,14 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     if counts['shifted_vertically']:
         print("%d of those crops were shifted to stay inside the pano, so their label is not at the "
               "crop's centre." % counts['shifted_vertically'])
+    alarm = systemic_failure_line(counts)
+    if alarm:
+        # Both channels, the depth phase's pattern, and last so it is the line left on screen: stdout
+        # is how an operator hears about it tonight, crop.log is what is still there next week. The
+        # numbers above say the same thing, but a rate has to be read off them - and the failure this
+        # exists for buries them under one warning per label.
+        logging.error('%s', alarm)
+        print(alarm)
     return counts
 
 

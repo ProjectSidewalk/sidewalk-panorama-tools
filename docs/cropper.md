@@ -174,6 +174,40 @@ The skip outcomes are **not** errors and do not affect the exit code: `missing_p
 scraped independently and legitimately lags the label list) and the two preflight rejections. Those are
 metadata the run declined to trust, not work it got wrong.
 
+### When errors dominate: `SYSTEMIC FAILURE`
+
+If at least **half** the run's labels errored, the summary ends with one extra line, to stdout **and** to
+`crop.log`, that starts with the greppable `SYSTEMIC FAILURE`
+([#136](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/136)):
+
+```
+SYSTEMIC FAILURE: 260000 of 260000 labels errored (100.0%). At that rate this is one cause rather than
+that many independent per-row faults - check the label metadata's shape ...
+```
+
+This exists because when cvMetadata changed shape
+([#123](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/123)) the bookkeeping was
+entirely correct — `errors == total`, the invariant reconciled, the exit code was 1 — and the run still
+read as ordinary noise: 260,000 identical per-row `WARNING`s, where "everything failed" differs from
+"three labels failed" only in length. `CropRunner` is hand-run rather than on cron, so unlike
+`DownloadRunner` there is no mail-on-failure carrying the exit code to anyone.
+
+`SYSTEMIC_ERROR_FRACTION = 0.5` is the threshold, and half is chosen for what it means rather than as a
+tuned number: it is the point where errors stop being a minority outcome. Firing only at 100% would be
+tuned to the one incident we have seen and defeated by a single label of noise; firing at ~10% would sit
+inside the range an ordinary bad night can reach, since a corrupt slice of the store is a genuinely
+per-row fault and the loop is built to survive it.
+
+The denominator is `total` — every label the run was handed. So the degenerate cases read correctly and
+none of them fires: a run with no labels at all, a re-run over a finished store (100% `skipped_existing`),
+and a city whose pano scrape is still catching up (100% `missing_pano`). The known blind spot is the other
+side of that choice: a mature store topping up a handful of labels, every one of which fails to write, is
+a small fraction of a large total and does not trip it. That run still exits 1 and still logs a warning
+per label.
+
+It is a second *reading* of the counts, not a bucket: nothing about the invariant above changes, the exit
+code is what it always was, and the per-outcome summary is still printed in full.
+
 **Re-running does not regenerate existing crops.** A crop already on disk is the resume marker and is never
 re-cut. A store cropped before the seam fix keeps its black-padded crops, and one cropped before crop sizes
 became deterministic holds a mix of (for example) 503- and 504-px crops for the same predicted size. There is
