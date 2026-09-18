@@ -41,6 +41,21 @@ what the values happen to look like — the inference that gave an all-numeric M
 naming the file, not a `KeyError` 200k labels in. Labels are grouped by pano so each pano JPEG is decoded
 exactly once for all of its labels.
 
+**The label's type arrives under one of two names, and both are accepted**
+([#123](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/123)). cvMetadata sent
+`label_type_id`, an integer, until
+[SidewalkWebpage#4103](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4103) replaced the
+label_type lookup table with a Postgres enum (released v11.11.0, 2026-09-02); every deployment now sends
+`label_type`, a name like `CurbRamp`, in both JSON and CSV. `resolve_label_type_id()` prefers a usable
+`label_type_id` — every archived export carries one, and a store is re-cut from whatever export produced
+it — and otherwise maps the name through `LABEL_TYPE_IDS_BY_NAME`.
+
+**The output directory is the numeric id either way.** `<crop-dir>/<label_type_id>/` is what every consumer
+reads and what an existing store is sharded by, so the name is resolved at intake rather than carried
+through. A name this map has never heard of means the enum moved upstream again: that row becomes one
+counted error naming the value, rather than a guessed id filing a crop into a real training directory with
+nothing on disk to say it was a guess.
+
 ## Crop geometry
 
 Crops are **3:2** (`CROP_ASPECT_W_OVER_H = 1.5`), and their width comes from `crop_window_width()` —

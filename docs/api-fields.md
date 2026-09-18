@@ -22,25 +22,29 @@ id alphabet. See [Downloader → Imagery sources](downloader.md#imagery-sources)
 
 ## `/adminapi/labels/cvMetadata` — the cropper's label list
 
-You won't need most of this in your work, but it's all here for reference. Everything through `notsure_count`
-might be useful; then there are a few duplicates from the endpoint above; then everything from `canvas_width`
-on probably doesn't matter for you.
+You won't need most of this in your work, but it's all here for reference. Everything through
+`unsure_count` might be useful; then there are a few duplicates from the endpoint above; then everything
+from `canvas_width` on probably doesn't matter for you.
+
+The table below is the response measured against `sidewalk-sea` on 2026-09-18, and
+`samples/cvmetadata-seattle.csv` is that response — the field names are transcribed from a capture rather
+than from memory, because the four this table used to carry were each wrong in a different way (#123).
 
 | Attribute | Definition |
 |---|---|
 | `label_id` | A unique ID for each label **within a given city**, provided by Project Sidewalk |
-| `gsv_panorama_id` | A unique ID, provided by the imagery source, for the panoramic image [same as `/adminapi/panos`] |
-| `source` | The source of the imagery (`gsv`, `mapillary`, `panoramax`, …) [same as `/adminapi/panos`] |
-| `label_type_id` | An integer ID denoting the type of label placed — see the table below |
+| `pano_id` | A unique ID, provided by the imagery source, for the panoramic image [same as `/adminapi/panos`] |
+| `label_type` | The **name** of the label type placed (`CurbRamp`, `SurfaceProblem`, …) — see the table below |
 | `pano_x` | The x-pixel location of the label on the pano, where top-left is (0,0) |
 | `pano_y` | The y-pixel location of the label on the pano, where top-left is (0,0) |
 | `agree_count` | The number of "agree" validations provided by Project Sidewalk users |
 | `disagree_count` | The number of "disagree" validations provided by Project Sidewalk users |
-| `notsure_count` | The number of "not sure" validations provided by Project Sidewalk users |
+| `unsure_count` | The number of "unsure" validations provided by Project Sidewalk users |
 | `pano_width` | The width of the pano image in pixels [same as `/adminapi/panos`] |
 | `pano_height` | The height of the pano image in pixels [same as `/adminapi/panos`] |
 | `camera_heading` | The heading (in degrees) of the center of the image with respect to true north [same as `/adminapi/panos`] |
 | `camera_pitch` | The pitch (in degrees) of the camera with respect to horizontal [same as `/adminapi/panos`] |
+| `camera_roll` | The roll (in degrees) of the camera, when the source provides one — blank/`null` for GSV, populated for Mapillary and Panoramax |
 | `canvas_width` | The width of the canvas where the user placed a label in Project Sidewalk |
 | `canvas_height` | The height of the canvas where the user placed a label in Project Sidewalk |
 | `canvas_x` | The x-pixel location where the user clicked on the canvas to place the label, where top-left is (0,0) |
@@ -48,6 +52,16 @@ on probably doesn't matter for you.
 | `heading` | The heading (in degrees) of the center of the canvas with respect to true north when the label was placed |
 | `pitch` | The pitch (in degrees) of the center of the canvas with respect to *the camera's pitch* when the label was placed |
 | `zoom` | The zoom level in the GSV interface when the user placed the label |
+
+**This endpoint does not send `source`.** `/adminapi/panos` does, and some older CSV exports have a
+column by that name, but `LabelCVMetadata` has no such field. Nothing in the cropper ever read it.
+
+**`label_type` replaced `label_type_id`, and the cropper still needs the id.** Until
+[SidewalkWebpage#4103](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4103) (released
+v11.11.0, 2026-09-02) this endpoint sent `label_type_id`, an integer. The enum migration made it the
+name. Crops are still filed under the numeric id, so `CropRunner.resolve_label_type_id` maps the name
+back through `LABEL_TYPE_IDS_BY_NAME` and accepts **either** field, since every archived export carries
+the id. An unrecognised name is one counted error naming the value, never a guessed id.
 
 Three things to know before you join on any of this:
 
@@ -64,7 +78,11 @@ Three things to know before you join on any of this:
 
 ## Label type IDs
 
-Used in both APIs, and as the crop output subdirectory name. Yes, 8 was skipped. 🤷
+`/adminapi/panos` has no label types; cvMetadata now sends the **name**, and this is the id it maps to —
+which is also the crop output subdirectory name. Yes, 8 is skipped. 🤷
+
+Skipped in the *data*, that is: id 8 (`Problem`) exists in the upstream enum, so
+`CropRunner.LABEL_TYPE_IDS_BY_NAME` carries it even though no label in the wild uses it.
 
 | `label_type_id` | Label type |
 |---|---|

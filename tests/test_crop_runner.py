@@ -11,6 +11,7 @@ into a tmp store with the production <pano_id[:2]>/<pano_id>.jpg sharding.
 """
 
 import csv
+import io
 import json
 import logging
 import logging.handlers  # not implied by `import logging`; asserted on below
@@ -1719,3 +1720,118 @@ class TestTheWindowWidthIsAnAzimuthalSpan:
         width = crop_runner.crop_window_width(INTERIOR_Y, side, side)
         assert width == crop_runner.azimuth_deg_to_px(fov, side)
         assert width == crop_runner.elevation_deg_to_px(fov, side) / 2
+
+
+class TestTheLabelTypeArrivesUnderEitherName:
+    """The crop store is sharded by the NUMERIC label type id, and since SidewalkWebpage#4103 the
+    endpoint serves the type as a NAME (#123). `resolve_label_type_id` is the one seam between them.
+
+    Measured against sidewalk-sea 2026-09-18: on master every live row raised KeyError inside the crop
+    loop's try, so a whole city came back as `N errors, of N labels total` with exit 1 and no crops. The
+    counts reconciled perfectly while doing it, which is why the invariant alone could not catch this.
+    """
+
+    def test_a_name_lands_in_the_numeric_directory(self, crop_runner, tmp_path):
+        """The behaviour the store depends on: `CurbRamp` must file under 1/, never under CurbRamp/."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type': 'CurbRamp', 'label_id': 501},
+                  {'pano_id': 'testpano0001', 'pano_x': 400, 'pano_y': INTERIOR_Y,
+                   'label_type': 'SurfaceProblem', 'label_id': 502}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['success'] == 2 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert os.path.exists(crop_path(out, 1, 501))
+        assert os.path.exists(crop_path(out, 4, 502))
+        assert not os.path.exists(os.path.join(str(out), 'CurbRamp'))
+
+    def test_the_legacy_id_still_wins_when_both_are_present(self, crop_runner, tmp_path):
+        """An export carrying both is the older shape, and its id is authoritative. Reading the NAME
+        first would be invisible on every row where the two agree - which is all of them, until one
+        does not."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type_id': 2, 'label_type': 'CurbRamp', 'label_id': 503}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['success'] == 1
+        assert os.path.exists(crop_path(out, 2, 503))
+
+    def test_a_blank_id_falls_through_to_the_name(self, crop_runner, tmp_path):
+        """A CSV cell is '' rather than absent, so preferring the id column on PRESENCE instead of on a
+        usable VALUE turns a perfectly good row into int('')."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type_id': '', 'label_type': 'Obstacle', 'label_id': 504}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['success'] == 1
+        assert os.path.exists(crop_path(out, 3, 504))
+
+    def test_an_unknown_name_is_one_counted_error_naming_the_value(self, crop_runner, tmp_path, caplog):
+        """A type this map has never heard of means the enum moved upstream. Guessing an id would file
+        the crop in a real training directory with nothing on disk to say it was a guess, so it is a
+        counted error - and, per #48, it must not take the rest of the run down with it."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type': 'SomethingNewUpstream', 'label_id': 505},
+                  {'pano_id': 'testpano0001', 'pano_x': 400, 'pano_y': INTERIOR_Y,
+                   'label_type': 'CurbRamp', 'label_id': 506}]
+
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 1 and counts['success'] == 1
+        assert reconciles(counts)
+        assert os.path.exists(crop_path(out, 1, 506))
+        assert 'SomethingNewUpstream' in caplog.text
+
+    def test_neither_column_is_one_counted_error(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y, 'label_id': 507}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 1 and counts['success'] == 0
+        assert reconciles(counts)
+
+
+class TestTheLabelTypeMapMatchesTheDocumentedTable:
+    """The map is a transcription of SidewalkWebpage's LabelTypeTable enum, and docs/api-fields.md
+    carries the same ids for human readers. Two hand-maintained copies of one upstream fact drift, and
+    the drift is silent: a wrong id files crops in the wrong training directory and nothing raises.
+    """
+
+    def _documented_ids(self):
+        """Parse the `| id | type |` table out of docs/api-fields.md."""
+        text = io.open(os.path.join(REPO_ROOT, 'docs', 'api-fields.md'), encoding='utf-8').read()
+        found = {}
+        for line in text.splitlines():
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            if len(cells) == 2 and cells[0].isdigit():
+                found[int(cells[0])] = cells[1]
+        return found
+
+    def test_every_documented_id_is_in_the_map(self, crop_runner):
+        documented = self._documented_ids()
+        assert documented, 'the label type id table went missing from docs/api-fields.md'
+        assert set(documented) <= set(crop_runner.LABEL_TYPE_IDS_BY_NAME.values())
+
+    def test_the_ids_are_unique_and_are_the_upstream_enum(self, crop_runner):
+        """Verbatim from app/models/label/LabelTypeTable.scala. 8/Problem is deliberately present
+        although the docs table skips it: the endpoint can emit any name the enum holds."""
+        assert crop_runner.LABEL_TYPE_IDS_BY_NAME == {
+            'CurbRamp': 1, 'NoCurbRamp': 2, 'Obstacle': 3, 'SurfaceProblem': 4, 'Other': 5,
+            'Occlusion': 6, 'NoSidewalk': 7, 'Problem': 8, 'Crosswalk': 9, 'Signal': 10,
+        }
+        ids = list(crop_runner.LABEL_TYPE_IDS_BY_NAME.values())
+        assert len(ids) == len(set(ids))
