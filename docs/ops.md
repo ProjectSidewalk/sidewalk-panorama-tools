@@ -12,7 +12,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | [Depth artifact](depth.md#the-artifact) |
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
-| `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at` (rows written before 2026-09-10 have no `fetched_at`) |
+| `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at` (rows written by a build older than #129 — on the production store, before 2026-09-17 — have no `fetched_at`) |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 19-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
@@ -233,8 +233,10 @@ it. So the rule for a reader is **a non-empty stamp means we know when; a blank 
 means the pixels predate the row and mtime is all there is** — the two spellings of "unknown" mean the
 same thing.
 
-**Two widths are legal and a long-lived store holds both.** Rows written before 2026-09-10 are
-`pano_id,downloaded`; rows after it are `pano_id,downloaded,fetched_at`. Four specifics follow:
+**Two widths are legal and a long-lived store holds both.** Rows written by a build older than #129 are
+`pano_id,downloaded`; rows after it are `pano_id,downloaded,fetched_at`. #129 was committed 2026-09-10 and
+reached the production store on 2026-09-17, so on the store the boundary is the 2026-09-17 run, not the commit
+date — a reader cutting a production ledger at 09-10 misfiles a week. Four specifics follow:
 
 * **Old rows are never backfilled.** Two fields means it predates the change and mtime is the only evidence
   there will ever be. Inventing a timestamp from an mtime we already distrust would be worse than the blank.
@@ -246,7 +248,7 @@ same thing.
   positionally.
 * **The stamp is the last field on purpose**, so the id and the verdict stay in columns 1 and 2: `cut -d, -f1`,
   `cut -d, -f2` and `awk -F, '$2 == 0'` keep meaning what they meant. An end-anchored `grep ',0$'` does
-  **not** — a timestamped row ends in the stamp, so that grep matches only pre-2026-09-10 rows and would
+  **not** — a timestamped row ends in the stamp, so that grep matches only two-field rows and would
   count the false `0` rows after a breaker trip as zero. Match the verdict by column, never by line end.
 * **Parse the stamp defensively.** `progress_check` keeps any row whose id and verdict are intact and never
   reads the third field, so a crash can leave a row whose stamp is torn mid-write. A consumer of `fetched_at`
@@ -259,8 +261,9 @@ rule for a reader is that a `replaced` row in `refetch_log.csv` supersedes `fetc
 `refetch_log.csv` a stamp of its own is a separate decision — this change deliberately widened one ledger and
 not a second.
 
-**A rollback is the one thing to be careful about.** A build older than 2026-09-10 reads rows with a hard
-`len(row) != 2` and silently skips every three-field one — so a fully-timestamped ledger parses as *empty*,
+**A rollback is the one thing to be careful about.** A build older than #129 reads rows with a hard
+`len(row) != 2` and silently skips every three-field one — so every verdict recorded since the widening (on
+the production store, since 2026-09-17) vanishes, and a fully-timestamped ledger parses as *empty*,
 with nothing raised: permanent `0` verdicts stop being terminal and go back to Google nightly, duplicate rows
 accumulate, and `log.csv`'s column 9 loses its prior-failure seed. Reader and writer ship in one commit, so
 this cannot happen from a partial deploy; it can only happen by deliberately deploying an older build over a
@@ -628,3 +631,86 @@ holds](#reading-the-backfill-from-the-row)) climbing night over night towards fi
 large but *stable* — it counts `unavailable`, which is permanent and expected, so it is not an alert signal.
 The split goes to stdout and `scrape.log`. The analyzer's stats line puts it in one clause:
 `depth 1,753/183,680 (1.0%) · +590 panos/night · ~308 nights left`.
+
+## Operating the production host
+
+The nightly scrape runs on one small cloud instance (Ubuntu 22.04 / Python 3.10, the CI baseline) with the repo
+at `/srv/sidewalk-panorama-tools` on `master`, its virtualenv at `.venv`, the pano store sshfs-mounted at
+`/mnt/panostore` by a systemd mount unit, the city manifest at `/etc/sidewalk/cities.csv`, and the one crontab
+line from [Nightly deployment](downloader.md#nightly-deployment). Which instance, its addresses and who holds
+which key are deliberately **not** here; they live in the team's private planning repo, next to the rest of the
+account-level detail.
+
+### Deploying
+
+Merging to `master` changes nothing on the host until someone pulls — it sat 13 merged PRs behind for eleven
+days in September 2026. A deploy is:
+
+```bash
+cd /srv/sidewalk-panorama-tools
+git status --short                                     # must be empty: a local edit (config.py has carried them) aborts the pull
+before=$(git rev-parse HEAD)
+git pull --ff-only
+git log --oneline -1                                   # what is live now
+git diff --stat "$before" HEAD -- requirements.txt     # non-empty -> .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
+.venv/bin/python -c "import DownloadRunner, scrape_queue"
+```
+
+The order matters twice: the requirements check comes *before* the import check, because a new dependency
+fails the import first and reads as a broken deploy; and it diffs against a captured SHA rather than `HEAD@{1}`,
+because a pull that brought nothing leaves `HEAD@{1}` pointing at the deploy before, so the diff would report the
+previous deploy's changes again.
+
+- **Pulling while the queue is running is safe; a `pip install` is less so.** Every repo import is at module
+  level, so a city already running keeps the code it loaded, the next city starts on the new tree, and the
+  queue process itself keeps its old code until the next night. The 2026-09-17 deploy landed with the queue on
+  its 30th city. `streetlevel` is the exception: it is imported lazily when the depth phase starts, so a city in
+  its image phase while pip rewrites the package loads whatever is half-written. If `requirements.txt` changed,
+  do the install between cities (watch `scrape_queue.log` for the `ok`/`failed` line) or when the queue is idle.
+- **Roll forward, never back, past 2026-09-17.** [`fetched_at`](#fetched_at-and-the-two-row-widths) widened
+  `pano_id_log.csv` to three fields, and a pre-#129 reader skips every three-field row — so every permanent
+  verdict recorded since that deploy is re-requested nightly, and a store that has only ever seen the new
+  build parses as *empty*. Behaviour rolls back by flag (below), not by checkout.
+
+### Rolling back, smallest blast radius first
+
+1. **Stop the depth backfill:** add `--skip-depth` after the `--` in the cron line. Images are unaffected.
+2. **Take one city out for a night:** prefix its manifest row with `#`.
+3. **Re-run one city through the queue's own machinery** (lock, budgets, summary):
+   `scrape_queue.py --cities … --store-root … --only <city_id> -- --all-panos`.
+4. **Reinstall an earlier crontab** from the dated backups in the user's home (`crontab <file>`). Take a new
+   backup first; one of the old ones still carries a secret and is mode 600 for that reason.
+5. **Stop everything:** `crontab -r` after backing up — and if a queue is running, `pkill -TERM -f scrape_queue.py`
+   as well, because removing the crontab only cancels future starts. SIGTERM is the right signal: the queue
+   translates it into an orderly exit that stops the city it is supervising, which in turn writes its `log.csv`
+   row, and releases the lock. The store is untouched by any of this.
+
+### Adding a city
+
+1. Append `city_id,fqdn` to the manifest. The fqdn cannot be derived from the id — read it off the app, and
+   check `https://<fqdn>/adminapi/panos` answers first.
+2. `scrape_queue.py … --dry-run` takes no lock and shows the city in the plan while the queue runs.
+3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it.
+4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
+
+### Hearing about a bad night
+
+The queue's nonzero exit is the alarm, and cron delivers it only if the host can send mail. **Check that it
+can** — the production host had no MTA as of 2026-09-17, and `syslog` said so after every nightly
+(`No MTA installed, discarding output`) with nothing else raising a flag. Until that is wired, the two channels
+that do exist are `<store-root>/scrape_queue.log` (one `ok`/`failed`/`timed_out` line per city per pass, and one
+`not reached` line naming the cities a truncated night skipped) and the
+[log analyzer](log-analyzer.md), run by hand. Whatever delivers mail, verify it the same way `BASH_ENV` was:
+a throwaway cron line that fails on purpose, then delete it.
+
+### The morning after a deploy
+
+- `scrape_queue.log`: every city `ok (exit 0)`, and `pass 2 starting` if any ran out of budget.
+- `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
+- `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —
+  a push-back from Google would be the first sign the pacer's persisted standing is too aggressive. The reason
+  in parentheses matters: `(network failure)` and `(unexpected failure)` are the loop's own arms, one timeout
+  anywhere in 52 cities writes one, and neither touches the persisted standing. `Google is refusing requests` in
+  any `scrape.log` is the stand-down itself.
+- The analyzer's fleet block, for the checks it encodes.
