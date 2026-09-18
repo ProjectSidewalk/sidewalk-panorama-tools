@@ -123,7 +123,7 @@ images at all. To stop the depth backfill without touching anything else, add `-
 
 **The timezone lives in the box, not in the crontab.** The first version of this line carried
 `CRON_TZ=America/Los_Angeles`, which is how cronie (Fedora/RHEL) pins a schedule to a zone — and Ubuntu 22.04
-ships Debian's ISC cron (`3.0pl1-137ubuntu3`), which silently ignores it. Measured 2026-09-17: eleven nights of
+ships Debian's Vixie cron (`3.0pl1-137ubuntu3`), which silently ignores it. Measured 2026-09-17: eleven nights of
 `queue starting` at `19:00:01` in a `scrape_queue.log` stamped in the box's then-UTC local time, i.e. **noon
 Pacific**, the working day the queue exists to stay out of
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The fix is
@@ -131,10 +131,15 @@ Pacific**, the working day the queue exists to stay out of
 queue survives it): cron schedules in the system's local time, so `0 19` is 19:00 Pacific and follows DST.
 Nothing the scraper writes depends on the box's zone — `log.csv` column 1, `pano_id_log.csv`'s `fetched_at` and
 the pacer's state file all carry their offset or are epoch values (that was the point of #101's timestamp change)
-— but `scrape_queue.log` stamps written before the switch read UTC and those after read Pacific, so a reader
-diffing the two eras should expect a seven-hour step at 2026-09-17. Do not put `CRON_TZ` back: it reads as a fix
-and is not one. A systemd timer would take `Timezone=` for real, but this is one line and cron mails failures,
-which a timer does not.
+— but `scrape_queue.log` stamps are the box's local time with **no offset**, so the switch is invisible in the
+file: `queue starting` reads `19:00:01` on both sides of it, and a reader has to know that stamps written
+before the switch are UTC and those after are Pacific, seven hours apart in real time. Do not go looking for a step
+between the two eras; there is none to find, which is exactly how eleven nights at noon went unnoticed. Do not
+put `CRON_TZ` back: it reads as a fix and is not one. A systemd timer would pin the zone for real — it goes
+*inside* the calendar spec, `OnCalendar=*-*-* 19:00 America/Los_Angeles`, there is no `Timezone=` directive —
+but this is one line, and cron's failure mail (once the host can send it; see
+[Hearing about a bad night](ops.md#hearing-about-a-bad-night)) comes for free, where a timer needs an
+`OnFailure=` unit.
 
 **Why a queue rather than 53 slots**
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The old shape was one line
@@ -193,7 +198,8 @@ To generate it from the per-city crontab it replaces:
 | `--dry-run` | Print the order and the exact command per city. Takes no lock, so it is safe to run while the queue is running. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
-**Exit codes**, since cron's mail-on-failure is the alert channel: `0` every city ran and succeeded, `1`
+**Exit codes**, since cron's mail-on-failure is the alert channel (when the host can send mail — check, per
+[Hearing about a bad night](ops.md#hearing-about-a-bad-night)): `0` every city ran and succeeded, `1`
 something failed, timed out, **or was never reached**, `2` usage, `3` another queue run holds the lock. A city
 the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53 cities a night
 is the silent failure this design exists to surface. If a night's truncation is expected and accepted, the
