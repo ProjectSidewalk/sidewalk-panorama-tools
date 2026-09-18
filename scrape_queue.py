@@ -23,6 +23,10 @@ while a full slot of the window remains, runs the cities that stopped on their b
     12-minute slot - so the five largest were 240-463 nights out while a third of every night went unused.
     Pass 1 still gives every city its guaranteed slot; the passes after it give the leftover to whoever ran
     out of budget, in equal shares no smaller than a slot.
+  - notices a launched city nobody added (#130). The manifest is the deployment fact and stays explicit,
+    but a city it does not name does not exist to the queue, which ran green for six nights while two new
+    cities went unscraped. So once a night, after the fleet, it asks one manifest host for /v3/api/cities
+    and names every public city that has no row - on stdout and in the exit code.
 
 Deliberately NOT parallel. The politeness constraint the stagger encoded is real, and the whole point here
 is that exactly one city is talking to the APIs and the store at any moment.
@@ -35,6 +39,7 @@ See docs/downloader.md, "Nightly deployment".
 
 import argparse
 import csv
+import http.client
 import importlib
 import json
 import logging
@@ -42,13 +47,17 @@ import logging.handlers
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections import namedtuple
 from contextlib import contextmanager
 from datetime import datetime
+from urllib.parse import urlsplit
 
 
 # Seconds to wait after asking a city to stop before killing it outright. DownloadRunner translates SIGTERM
@@ -80,6 +89,16 @@ CityResult = namedtuple('CityResult',
                         'city_id outcome exit_code seconds budget_minutes pass_number stop_reasons',
                         defaults=(None, 1, None))
 
+# A public city the fleet serves that the manifest does not name (#130). fqdn is the host its roster url
+# names (None when the roster publishes no url - never guessed); misnamed_as is the manifest city_id of a row
+# that points at that same host under another name, so the operator is told why the city they "already
+# added" is missing.
+Unlisted = namedtuple('Unlisted', 'city_id fqdn misnamed_as')
+
+# The outcome of one night's cross-check. roster_host is the manifest host whose roster was used, or None when
+# none of the hosts tried answered with one; attempts is [(fqdn, reason)] for each host that did not.
+ManifestCheck = namedtuple('ManifestCheck', 'roster_host public_count unlisted attempts hosts_total')
+
 # The one stop reason that means "more time would have helped". It is DownloadRunner's own vocabulary -
 # downloaders.gsv.DEPTH_STOP_MAX_RUNTIME and the image phase's matching string - repeated here rather than
 # imported, because importing downloaders.gsv would pull aiohttp and streetlevel into a driver that never
@@ -90,9 +109,27 @@ STOP_MAX_RUNTIME = 'max-runtime'
 # Name of the per-run summary file the queue asks each city to write, inside a per-run temp directory.
 _RUN_SUMMARY_NAME = 'run_summary.json'
 
+# The fleet roster (#130): every deployment serves this list of every city - city_id, url, visibility - and it
+# is the same list from every host. The manifest is compared against it once a night, after the fleet has run.
+ROSTER_PATH = '/v3/api/cities'
+# Hosts to try before giving up. Bounds the check at ROSTER_MAX_HOSTS x ROSTER_TIMEOUT_SECONDS when the whole
+# network is down; the answer would be "not cross-checked" whatever the tenth host said.
+ROSTER_MAX_HOSTS = 3
+ROSTER_TIMEOUT_SECONDS = 30.0
+# The roster measured 2026-09-17 is 19 KB for 59 cities; this is the most that will be read of anything a host
+# sends back, so a redirect to something large cannot hold the queue open past its window.
+ROSTER_MAX_BYTES = 4 * 1024 * 1024
+ROSTER_USER_AGENT = ('sidewalk-panorama-tools scrape_queue '
+                     '(+https://github.com/ProjectSidewalk/sidewalk-panorama-tools)')
+
 
 class QueueLocked(Exception):
     """Another queue run holds the lock. Raised rather than returned so no caller can ignore it."""
+
+
+class RosterUnavailable(Exception):
+    """A host did not serve a city roster: unreachable, refused, or a body that is not one. Never fatal on
+    its own - the next manifest host is tried - but named, so the report can say what each host did."""
 
 
 def _positive_minutes(value):
@@ -171,7 +208,7 @@ def default_lock_path():
     return os.path.join(tempfile.gettempdir(), _DEFAULT_LOCK_NAME)
 
 
-def read_city_list(path):
+def read_city_list(path, disabled=None):
     """Parse the manifest into City records, preserving file order.
 
     Fails loudly on a missing column rather than reading every row's city_id as blank: this is the one input
@@ -180,6 +217,13 @@ def read_city_list(path):
 
     utf-8-sig because a manifest edited in Excel carries a BOM, which would otherwise glue itself to the
     first fieldname and fire the guard on a perfectly good file.
+
+    `disabled`, when given, is a dict the '#'-prefixed rows are recorded into as city_id -> fqdn (lowercased,
+    '#' and whitespace stripped from the id), an out-parameter like run_queue's `results`. The cross-check
+    (#130) reads it so a city taken out for a night counts as decided rather than missing. It is a dict and
+    not a set because csv splits a prose comment on its commas too: `# laurens-ia, bayonne-fr launched
+    2026-09-11` reads as city_id '# laurens-ia', and crediting that id alone would silence the very city the
+    check exists for - so a disabled row is credited only when its fqdn still names the city's host.
     """
     with open(path, newline='', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
@@ -193,6 +237,9 @@ def read_city_list(path):
             fqdn = (row.get('fqdn') or '').strip()
             # '#' disables a row, replacing the "comment the crontab line out" affordance the queue removes.
             if not city_id or city_id.startswith('#'):
+                disabled_id = city_id.lstrip('#').strip()
+                if disabled is not None and disabled_id:
+                    disabled[disabled_id] = fqdn.lower()
                 continue
             if not fqdn:
                 raise ValueError("%s: city %r has no fqdn" % (path, city_id))
@@ -655,15 +702,200 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
     return results
 
 
+# --- The manifest is cross-checked against the fleet (#130) --------------------------------------------------
+#
+# laurens-ia and bayonne-fr launched on 2026-09-11 with no manifest row and the queue reported 53/53 ok for six
+# nights, until the auto-labeler's first Laurens labels showed blank Gallery cards: the app cuts AI-label crops
+# from what this scraper stores. The manifest stays the deployment fact - a default that scrapes the wrong fleet
+# is worse - so the omission is made loud instead: every deployment serves the same roster of every city, and
+# once a night the queue asks one manifest host for it and names the PUBLIC cities that have no row.
+#
+# The key is city_id, and that is a measurement, not a preference. The app reads its scraped panos from
+# <pano.images.directory>/<city-id>/<panoId[:2]>/<panoId>.jpg with its OWN id - the one the roster reports - so
+# a row under any other name scrapes into a directory the app never looks at. Bayonne's row was
+# `bayonne,sidewalk-bayonne...` for one afternoon; the app calls itself `bayonne-fr`. Keying on fqdn would have
+# let that through, and the resulting night would have been indistinguishable from the Laurens one.
+
+
+def _open_url(url, timeout):
+    """GET one URL and return at most ROSTER_MAX_BYTES of its body. The one seam that touches a socket.
+
+    An opener with an EMPTY ProxyHandler, because urllib's default honours HTTP(S)_PROXY from the environment.
+    DownloadRunner's session sets trust_env=False for exactly this host's sake (its environment is sourced from
+    BASH_ENV under cron): a proxy's login page is a 200 that is not a roster, on every night, and the check
+    would report itself unable to run for ever. Same policy, same reason.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(url, headers={'User-Agent': ROSTER_USER_AGENT,
+                                                   'Accept': 'application/json'})
+    with opener.open(request, timeout=timeout) as response:
+        return response.read(ROSTER_MAX_BYTES)
+
+
+def parse_roster(body):
+    """The roster's entries, or RosterUnavailable. A 200 is not a roster; only the measured shape is.
+
+    Positive evidence, the #99 rule: a JSON object whose `cities` is a list of objects each carrying a
+    non-empty string `city_id` and a `visibility` that is 'public' or 'private', with at least one public
+    entry. Everything else - an error envelope, a proxy's HTML, an empty list, a renamed field - is "this host
+    did not answer", so the next one is asked. The last two rules are the ones that matter: an upstream rename
+    of the visibility values would otherwise read as "every city is private", the unlisted set would be empty,
+    and the report would say "checked against 0 public cities" every night, which is a check that never runs
+    wearing the face of one that passed. A live fleet always lists at least one public city, so an empty list
+    fails on that rule too. A visibility this code does not know is refused rather than read as "not public":
+    whatever a third value would mean for the check is a decision, and refusing makes it one that gets taken.
+    """
+    try:
+        data = json.loads(body)
+    except ValueError as e:
+        raise RosterUnavailable('not JSON') from e
+    entries = data.get('cities') if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        raise RosterUnavailable('not a city roster')
+    for entry in entries:
+        if (not isinstance(entry, dict) or not isinstance(entry.get('city_id'), str) or not entry['city_id']
+                or entry.get('visibility') not in ('public', 'private')):
+            raise RosterUnavailable('not a city roster')
+    if not any(entry['visibility'] == 'public' for entry in entries):
+        raise RosterUnavailable('roster lists no public city')
+    return entries
+
+
+def _describe_failure(error):
+    """One short reason per failed host, for the report line. A timeout is the common case and is named."""
+    if isinstance(error, urllib.error.HTTPError):
+        return 'HTTP %d' % error.code
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    if isinstance(reason, socket.timeout):
+        return 'timed out'
+    if isinstance(reason, (http.client.HTTPException, UnicodeError)):
+        return '%s: %s' % (type(reason).__name__, reason)
+    return str(reason) or type(reason).__name__
+
+
+def fetch_roster(fqdn, timeout=ROSTER_TIMEOUT_SECONDS):
+    """The roster as served by one host, or RosterUnavailable naming what went wrong.
+
+    Catches http.client's exceptions and ValueError as well as OSError: a BadStatusLine or IncompleteRead
+    from a proxy is an HTTPException, not an OSError, and a decode error is a ValueError. Any of them
+    escaping here would print a traceback AFTER the summary, on the one night the check had something to say.
+    """
+    url = 'https://%s%s' % (fqdn, ROSTER_PATH)
+    try:
+        body = _open_url(url, timeout)
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        raise RosterUnavailable(_describe_failure(e)) from e
+    return parse_roster(body)
+
+
+def load_roster(hosts, fetch=None, max_hosts=ROSTER_MAX_HOSTS):
+    """Ask the hosts in order until one serves a roster: (roster, host, attempts), or (None, None, attempts).
+
+    Best-effort by design - an app being down must not decide the night on its own - but bounded, because
+    ten dead hosts at 30 s each is five minutes after the fleet has finished, for an answer the third one
+    already gave. `fetch` resolves to the module attribute at call time, so a test can replace it.
+    """
+    fetch = fetch_roster if fetch is None else fetch
+    attempts = []
+    for fqdn in list(hosts)[:max_hosts]:
+        try:
+            return fetch(fqdn), fqdn, attempts
+        except RosterUnavailable as e:
+            attempts.append((fqdn, str(e)))
+    return None, None, attempts
+
+
+def _roster_host(url):
+    """The host a roster entry's url names, lowercased, or None when it publishes none. Never guessed."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    url = url.strip()
+    parts = urlsplit(url if '//' in url else '//' + url)
+    return parts.hostname or None
+
+
+def unlisted_cities(roster, cities, disabled):
+    """The public roster cities that have no manifest row, in roster order.
+
+    A row counts when its city_id matches exactly - it is a directory name, so `Seattle-WA` is a different
+    directory - or when a disabled ('#') row carries both that id and the city's host, which is the evidence
+    that the row is this city and not a comment csv split on a comma. Hosts are compared case-insensitively:
+    that half of the comparison is DNS, not a path.
+    """
+    enabled = {c.city_id for c in cities}
+    by_host = {c.fqdn.lower(): c.city_id for c in cities}
+    unlisted = []
+    for entry in roster:
+        if entry.get('visibility') != 'public' or entry['city_id'] in enabled:
+            continue
+        host = _roster_host(entry.get('url'))
+        if host is not None and disabled.get(entry['city_id']) == host:
+            continue
+        unlisted.append(Unlisted(entry['city_id'], host, by_host.get(host) if host else None))
+    return unlisted
+
+
+def roster_hosts(cities, results):
+    """Which manifest hosts to ask, and in what order: the ones whose city ran ok tonight first, in run order,
+    then the rest in manifest order. The check runs after the fleet, so the hosts that just served
+    /adminapi/panos are the ones to spend a roster call on."""
+    ok = list(dict.fromkeys(r.city_id for r in results if r.outcome == 'ok'))
+    by_id = {c.city_id: c.fqdn for c in cities}
+    first = [by_id[c] for c in ok if c in by_id]
+    return first + [c.fqdn for c in cities if c.city_id not in set(ok)]
+
+
+def check_manifest(cities, disabled, hosts=None, fetch=None):
+    """One night's cross-check: fetch the roster from the first host that serves one and compare."""
+    hosts = [c.fqdn for c in cities] if hosts is None else list(hosts)
+    roster, host, attempts = load_roster(hosts, fetch=fetch)
+    if roster is None:
+        return ManifestCheck(None, 0, [], attempts, len(hosts))
+    public_count = sum(1 for entry in roster if entry['visibility'] == 'public')
+    return ManifestCheck(host, public_count, unlisted_cities(roster, cities, disabled), attempts, len(hosts))
+
+
+def _describe_unlisted(city):
+    if city.fqdn is None:
+        return '%s (url not published)' % city.city_id
+    if city.misnamed_as is None:
+        return '%s (%s)' % (city.city_id, city.fqdn)
+    return "%s (%s; the manifest calls it '%s', the app reads <store-root>/%s)" % (
+        city.city_id, city.fqdn, city.misnamed_as, city.city_id)
+
+
+def manifest_report(check):
+    """The report's lines about the cross-check, as (gap, status): two lists of (line, level).
+
+    The gap is what went wrong and belongs with the failures, above the totals; the status is what the check
+    rested on - or that it could not run, and what every host said - and belongs after them. Split here
+    rather than by the summary, so the summary never has to recognise a line by its wording.
+    """
+    gap, status = [], []
+    if check.unlisted:
+        gap.append(("[queue] public cities missing from the manifest: %s"
+                    % ', '.join(_describe_unlisted(c) for c in check.unlisted), logging.ERROR))
+        gap.append(("[queue]   add one city_id,fqdn row per city - city_id must be the app's own id, "
+                    "because that is the directory it reads", logging.ERROR))
+    if check.roster_host is None:
+        status.append(("[queue] WARNING: manifest not cross-checked - no roster from %s (%d of %d hosts tried)"
+                       % (', '.join('%s (%s)' % attempt for attempt in check.attempts),
+                          len(check.attempts), check.hosts_total), logging.ERROR))
+    else:
+        status.append(("[queue] manifest checked against %d public cities (roster from %s)"
+                       % (check.public_count, check.roster_host), logging.INFO))
+    return gap, status
+
+
 # The order the non-ok lines are printed in. stdout is what cron mails, so the two or three real crashes
 # have to appear before the twenty skipped_deadline lines rather than interleaved with them. Run order is
 # kept WITHIN an outcome, so "which city crashed first" is still readable off the list.
 _OUTCOME_ORDER = ('failed', 'timed_out', 'skipped_deadline')
 
 
-def summarise(results, elapsed_minutes):
+def summarise(results, elapsed_minutes, manifest_check=None):
     """The run's one-screen report: a line per run that did not simply work, the night's totals, then one
-    line per extra pass.
+    line per extra pass - and, when the manifest was cross-checked (#130), what that found.
 
     Every run gets a line in the queue log, but stdout is what cron mails, so it leads with what went wrong.
     A clean night is a few lines; a bad one names every city and why.
@@ -673,7 +905,13 @@ def summarise(results, elapsed_minutes):
     not of M + 5. The failure counts beside it are over EVERY run, because a city hard-killed in pass 2 is a
     city that was hard-killed: counting only pass 1 there printed "0 failed, 0 timed out" on a night that
     exited 1, contradicting both the exit code and the per-run lines immediately above it.
+
+    The cross-check follows the same two rules. Its gap lines go ABOVE the totals with the other things that
+    went wrong, and the totals line carries the count, so "54/54 cities ok, 0 failed, 0 timed out, 0 not
+    reached" is never printed above an exit 1 the runs did not earn. The line saying what the check rested
+    on - or that it could not run - is evidence, not an alarm, and goes last.
     """
+    gap, status = ([], []) if manifest_check is None else manifest_report(manifest_check)
     first = [r for r in results if r.pass_number == 1]
     by_outcome = {}
     for r in results:
@@ -685,11 +923,14 @@ def summarise(results, elapsed_minutes):
             code = '' if r.exit_code is None else ' (exit %d)' % r.exit_code
             which = '' if r.pass_number == 1 else ' in pass %d' % r.pass_number
             lines.append("[queue] %-24s %s%s%s%s" % (r.city_id, outcome.upper(), code, when, which))
-    lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached; %.1f min total"
+    lines += [line for line, _ in gap]
+    missing = ('' if manifest_check is None or not manifest_check.unlisted
+               else ', %d public cities missing from the manifest' % len(manifest_check.unlisted))
+    lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s; %.1f min total"
                  % (sum(1 for r in first if r.outcome == 'ok'), len(first),
                     len(by_outcome.get('failed', [])),
                     len(by_outcome.get('timed_out', [])), len(by_outcome.get('skipped_deadline', [])),
-                    elapsed_minutes))
+                    missing, elapsed_minutes))
     passes = sorted({r.pass_number for r in results if r.pass_number > 1})
     for n in passes:
         runs = [r for r in results if r.pass_number == n]
@@ -697,11 +938,13 @@ def summarise(results, elapsed_minutes):
         lines.append("[queue] pass %d: %d cities re-run in %.1f min - %s"
                      % (n, len(runs), minutes,
                         ', '.join('%s %.1f' % (r.city_id, (r.seconds or 0.0) / 60.0) for r in runs)))
+    lines += [line for line, _ in status]
     return '\n'.join(lines)
 
 
-def exit_code_for(results):
-    """0 only when every RUN succeeded - one per city in pass 1, plus one per re-run after it.
+def exit_code_for(results, manifest_check=None):
+    """0 only when every RUN succeeded - one per city in pass 1, plus one per re-run after it - and, when the
+    manifest was cross-checked, the check found a roster and no gap.
 
     So a city that succeeded in pass 1 and crashed in pass 2 makes the night nonzero, deliberately: a crash
     is a crash whichever pass it happened in. What does NOT fail the night is a city an extra pass never
@@ -712,8 +955,18 @@ def exit_code_for(results):
     quietly completing 40 of 53 cities every night - which is exactly what an un-monitored window produces -
     is the condition this whole change exists to make visible. If a night's truncation is expected and
     accepted, the window is the wrong size.
+
+    A public city with no manifest row fails the night for the same reason (#130): the fleet ran green for six
+    nights while two launched cities went unscraped, and the exit code is the one unattended alarm. So does a
+    roster that no host would serve - decided 2026-09-17: the hosts asked have just served /adminapi/panos, so
+    three of them failing this call is a broken check (an API rename, an env proxy, a moved endpoint) rather
+    than weather, and a check silently skipped every night is the failure the check exists to prevent. None
+    means the check did not run (a dry run reports it its own way; a stopped queue never gets to it).
     """
-    return 0 if all(r.outcome == 'ok' for r in results) else 1
+    runs_ok = all(r.outcome == 'ok' for r in results)
+    check_ok = (manifest_check is None
+                or (manifest_check.roster_host is not None and not manifest_check.unlisted))
+    return 0 if runs_ok and check_ok else 1
 
 
 def main(argv=None):
@@ -730,8 +983,9 @@ def main(argv=None):
     python_exe = args.python or sys.executable
     runner_path = args.runner or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'DownloadRunner.py')
 
+    disabled = {}
     try:
-        cities = read_city_list(args.cities)
+        cities = read_city_list(args.cities, disabled=disabled)
         ordered = plan_order(cities, only=args.only,
                              rotation_ordinal=None if args.no_rotate else datetime.now().toordinal())
     except (OSError, ValueError) as e:
@@ -759,7 +1013,15 @@ def main(argv=None):
         if extra_passes:
             print("Then extra passes over whichever cities ran out of budget, while a slot of the window "
                   "remains - which cities, and with what budgets, cannot be shown before pass 1 has run.")
-        return 0
+        # The same cross-check the night runs (#130), so a hand-run before a launch answers "is everything
+        # wired?" now rather than tomorrow morning. Printed only: no log is configured on a dry run, and the
+        # root logger's last-resort handler would echo every line to stderr. A gap exits 1 exactly as the
+        # night would; a roster nobody served is advisory here - this is someone at a keyboard, possibly
+        # offline, reading the plan - where the night treats it as a failed check.
+        check = check_manifest(cities, disabled)
+        gap, status = manifest_report(check)
+        print('\n'.join(line for line, _ in gap + status))
+        return 1 if check.unlisted else 0
 
     # Same warning discipline as DownloadRunner's --min-depth-runtime check: tell the operator when the
     # combination they typed cannot do what it looks like it does. A window with no per-city cap is not an
@@ -778,6 +1040,7 @@ def main(argv=None):
     started = time.monotonic()
     lock_path = args.lock or default_lock_path()
     results = []
+    check = None
     try:
         with exclusive_lock(lock_path):
             # Announced only once the lock is held, so a run that is about to be refused never prints a
@@ -791,6 +1054,11 @@ def main(argv=None):
                       max_runtime_minutes=args.max_runtime, city_max_runtime=args.city_max_runtime,
                       kill_grace_minutes=args.kill_grace, extra_passes=extra_passes,
                       results=results)
+        # After the fleet and outside the lock (a GET needs none), against the whole manifest rather than
+        # tonight's --only selection: Laurens and Bayonne launched together, and an operator re-running one
+        # by hand is the moment to hear about the other. Inside the try, so a stop landing mid-fetch still
+        # unwinds through the handler below with the night's record intact.
+        check = check_manifest(cities, disabled, hosts=roster_hosts(cities, results))
     except QueueLocked as e:
         # Loud, and nonzero: the previous night's queue still running when tonight's starts is the exact
         # condition 53 unsynchronised crontab slots could not detect. Nothing ran, so there is nothing to
@@ -809,17 +1077,23 @@ def main(argv=None):
         _report(results, started)
         raise
 
-    return _report(results, started)
+    return _report(results, started, check)
 
 
-def _report(results, started_monotonic):
-    """Print and log the summary, and return the exit code it implies."""
-    summary = summarise(results, (time.monotonic() - started_monotonic) / 60.0)
+def _report(results, started_monotonic, manifest_check=None):
+    """Print and log the summary, and return the exit code it implies.
+
+    Every line is logged at INFO except the cross-check's, which carry their own levels: a gap and an
+    unserved roster are the night's failure and are logged as one, so `grep ERROR scrape_queue.log` finds
+    them next week the way the mail finds them tonight.
+    """
+    summary = summarise(results, (time.monotonic() - started_monotonic) / 60.0, manifest_check)
     print(summary)
+    levels = {} if manifest_check is None else dict(sum(manifest_report(manifest_check), []))
     for line in summary.splitlines():
         if line.strip():
-            logging.info(line.replace('[queue] ', ''))
-    return exit_code_for(results)
+            logging.log(levels.get(line, logging.INFO), line.replace('[queue] ', ''))
+    return exit_code_for(results, manifest_check)
 
 
 if __name__ == '__main__':

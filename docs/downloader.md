@@ -148,11 +148,17 @@ columbus-oh,sidewalk-columbus.cs.washington.edu
 #richmond-va,sidewalk-richmond.cs.washington.edu
 ```
 
-* Each city is scraped into `<store-root>/<city_id>`.
+* Each city is scraped into `<store-root>/<city_id>`, **and `city_id` must be the app's own id** — the one
+  `https://<fqdn>/v3/api/cities` reports for it — because that is the directory the app reads: it cuts
+  AI-label crops from `<pano.images.directory>/<city-id>/…` with its own configured id
+  (SidewalkWebpage's `MediaDirs.cityDir`). A row under any other name scrapes into a directory the app never
+  looks at, which looks exactly like the city never having been scraped. Bayonne's row read `bayonne` for one
+  afternoon; the app calls itself `bayonne-fr`.
 * **The fqdn cannot be derived from the city_id** — `seattle-wa` is served by `sidewalk-sea`, `columbus-oh` by
-  `sidewalk-columbus` — so the two travel together.
+  `sidewalk-columbus` — so the two travel together. Both halves come from `/v3/api/cities`.
 * **A row whose `city_id` starts with `#` is skipped**, which is how a city is taken out for a night now that
-  it has no crontab line of its own to comment out.
+  it has no crontab line of its own to comment out. Keep both columns on it: the cross-check below credits a
+  disabled row as a decision only while it still names the city's host.
 * `--cities` has no default on purpose: which cities a host scrapes is a deployment fact, and a wrong default
   would quietly scrape the wrong fleet. There is a worked example at
   [`samples/scrape_queue_cities.csv`](../samples/scrape_queue_cities.csv); the real one lives on the host,
@@ -167,6 +173,54 @@ To generate it from the per-city crontab it replaces:
 } > /etc/sidewalk/cities.csv
 ```
 
+#### The manifest is cross-checked against the fleet
+
+`laurens-ia` and `bayonne-fr` launched on 2026-09-11 and neither got a row. The queue ran green — 53/53 ok,
+six nights running — because a city the manifest does not name does not exist to it, until the auto-labeler's
+first Laurens labels showed blank Gallery cards
+([SidewalkWebpage#5390](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5390); the app cuts those
+crops from what this scraper stores). The manifest stays explicit — a default that scrapes the wrong fleet is
+worse — so the omission is made loud instead
+([#130](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/130)).
+
+Every deployment serves `GET /v3/api/cities`, the same list of every city from every host: `city_id`, `url`
+(`https://<fqdn>`, or `null` for a private city) and `visibility`. After the fleet has run, the queue asks
+the first manifest host that will answer — the ones whose city ran ok tonight first, at most three — and
+names every **public** city whose `city_id` has no row. Private cities are scraped too when listed, but the
+check does not ask about them. The report takes one of three shapes:
+
+```
+[queue] public cities missing from the manifest: laurens-ia (sidewalk-laurens.cs.washington.edu), bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', the app reads <store-root>/bayonne-fr)
+[queue]   add one city_id,fqdn row per city - city_id must be the app's own id, because that is the directory it reads
+[queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, 2 public cities missing from the manifest; 610.2 min total
+```
+```
+[queue] manifest checked against 39 public cities (roster from sidewalk-sea.cs.washington.edu)
+```
+```
+[queue] WARNING: manifest not cross-checked - no roster from sidewalk-sea.cs.washington.edu (timed out), sidewalk-columbus.cs.washington.edu (HTTP 502), sidewalk-cdmx.cs.washington.edu (not JSON) (3 of 54 hosts tried)
+```
+
+The first fails the night: a missing row is the silent failure this exists to catch, and the exit code is the
+one unattended alarm. So does the third, deliberately — the hosts asked have just served `/adminapi/panos`, so
+three of them not serving the roster is a broken check (an API rename, a proxy in the box's environment, a
+moved endpoint) rather than weather, and a check that is quietly skipped every night is worse than none. The
+gap lines sit above the totals with the other things that went wrong, and the totals line carries the count,
+so "54/54 ok" is never printed above an exit 1 the runs did not earn.
+
+Only the measured shape is read as a roster (a JSON object whose `cities` list carries a string `city_id` and a
+`public`/`private` visibility on every entry, with at least one public city); anything else a host sends — an
+error envelope, a proxy's HTML — counts as that host not answering. The GET ignores `HTTP(S)_PROXY` from the
+environment for the same reason `DownloadRunner`'s session does. A `#`-disabled row counts as a decision
+rather than a gap, but only while it still names the city's host: `csv` splits a prose comment on its commas
+too, so `# laurens-ia, bayonne-fr launched 2026-09-11` reads as a row for `laurens-ia`, and crediting the id
+alone would have silenced the very city the check exists for.
+
+`--dry-run` runs the same check, so a hand-run before a launch answers "is everything wired?" without waiting
+for the night: a gap exits 1 there too; a roster nobody serves is only a WARNING on a dry run, since that is
+someone at a keyboard, possibly offline, reading the plan. Offline, a dry run now waits up to 3 × 30 s before
+saying so.
+
 ### Options that matter in production
 
 | flag | what it does |
@@ -176,14 +230,15 @@ To generate it from the per-city crontab it replaces:
 | `--only CITY_ID` | Re-run one city through the same machinery — the lock, the budgets, the summary — rather than by hand. Repeatable. |
 | `--no-rotate` | Keep manifest order. By default the starting point rotates daily, so a night that truncates does not always drop the same tail cities. |
 | `--single-pass` | Run every city once and leave the rest of the window unused — today's behaviour before [extra passes](#extra-passes). `--only` implies it. |
-| `--dry-run` | Print the order and the exact command per city. Takes no lock, so it is safe to run while the queue is running. |
+| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
-**Exit codes**, since cron's mail-on-failure is the alert channel: `0` every city ran and succeeded, `1`
-something failed, timed out, **or was never reached**, `2` usage, `3` another queue run holds the lock. A city
-the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53 cities a night
-is the silent failure this design exists to surface. If a night's truncation is expected and accepted, the
-window is the wrong size.
+**Exit codes**, since cron's mail-on-failure is the alert channel: `0` every city ran and succeeded and the
+manifest names every public city, `1` something failed, timed out, **was never reached**, **a public city has
+no manifest row**, or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
+lock. A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
+cities a night is the silent failure this design exists to surface. If a night's truncation is expected and
+accepted, the window is the wrong size.
 
 ### Extra passes
 
