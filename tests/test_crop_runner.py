@@ -2067,6 +2067,43 @@ class TestTheSystemicFailureAlarm:
         assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
         assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
 
+    def test_the_line_reports_the_run_it_was_given_not_a_run_that_failed_entirely(self, crop_runner):
+        """Every other assertion on this line's contents is made on a 100%-error input, where
+        `errors == total` makes the two numbers interchangeable and the rate 100% whichever way it is
+        computed. So `"%d of %d" % (total, errors)` and a rate of `errors / max(errors, 1)` both
+        survived the whole 240-test file: a real 4-of-6 run printed `6 of 4 ... (100.0%)` and nothing
+        went red. The line's whole job is to save an operator from counting warnings to learn the
+        share, so the share has to be pinned somewhere it is not trivially 100%.
+        """
+        line = crop_runner.systemic_failure_line(counts_dict(6, errors=4))
+
+        assert '4 of 6' in line
+        assert '66.7%' in line
+
+    def test_the_denominator_is_every_label_the_run_was_handed(self, crop_runner):
+        """The documented denominator choice, and the blind spot that comes with it, in one assertion.
+
+        `total` — not the subset the run actually tried to cut — is what keeps a lagging city quiet.
+        The two silence tests above cannot pin this: both have `errors == 0`, so the `errors > 0` guard
+        silences them whatever the denominator is. Excluding missing_pano would make this input 4 of 4
+        and fire, so this is the assertion that fails if the denominator is ever narrowed.
+        """
+        diluted = counts_dict(10, errors=4, missing_pano=6)
+
+        assert crop_runner.systemic_failure_line(diluted) is None
+
+    def test_a_zero_total_carrying_errors_cannot_divide_by_zero(self, crop_runner):
+        """What the `total > 0` guard is actually for.
+
+        It is NOT what stops an empty store alarming — `errors > 0` already does that, so dropping the
+        total guard alone leaves all 240 tests green. The only input the two guards disagree on is this
+        one, which the crop loop cannot currently produce (errors are only ever counted per label) but
+        which a caller of the pure function can hand it. Without the guard this raises
+        ZeroDivisionError inside the summary, i.e. turns the alarm into the one fatal thing in a
+        function whose contract is that nothing in it is fatal.
+        """
+        assert crop_runner.systemic_failure_line(counts_dict(0, errors=1)) is None
+
     @pytest.mark.parametrize('total', [2, 4, 10, 1000, 260000])
     def test_the_boundary_is_the_fraction_itself(self, crop_runner, total):
         """At the fraction it fires; one error below it does not. Derived from the constant rather

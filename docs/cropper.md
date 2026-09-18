@@ -205,12 +205,36 @@ tuned to the one incident we have seen and defeated by a single label of noise; 
 inside the range an ordinary bad night can reach, since a corrupt slice of the store is a genuinely
 per-row fault and the loop is built to survive it.
 
+**A corrupt pano contributes one error per label on it, not one error.** The loop decodes each pano once
+for all its labels, so a failure there does `errors += len(labels)`. Corpus-wide that barely matters
+(~2.5 labels per pano), but the `-f` route over a study subset is exactly the few-panos-many-labels shape:
+a 40-label run where one truncated file carries 22 labels prints `22 of 40 ... (55.0%)` for a single bad
+file. A one-label run that errors likewise reads 100%. Neither is wrong, and neither is harmful, but both
+are worth knowing before treating `grep SYSTEMIC FAILURE` across logs as a count of real incidents.
+
 The denominator is `total` — every label the run was handed. So the degenerate cases read correctly and
 none of them fires: a run with no labels at all, a re-run over a finished store (100% `skipped_existing`),
-and a city whose pano scrape is still catching up (100% `missing_pano`). The known blind spot is the other
-side of that choice: a mature store topping up a handful of labels, every one of which fails to write, is
-a small fraction of a large total and does not trip it. That run still exits 1 and still logs a warning
-per label.
+and a city whose pano scrape is still catching up (100% `missing_pano`). What actually keeps those quiet
+is the `errors > 0` guard rather than anything about the denominator; `total > 0` is there to guard the
+division, for a `{'total': 0, 'errors': 1}` the crop loop cannot currently produce but a caller of
+`systemic_failure_line` can.
+
+Three blind spots come with that denominator, and only the first is benign:
+
+- **A mature store topping up a handful of labels, every one of which fails to write**, is a small
+  fraction of a large total and does not trip it. That run still exits 1 and still logs a warning per
+  label — the signal it had before.
+- **`missing_pano` dilutes the denominator.** A run over a city that is 60% un-scraped, with `-o` full or
+  read-only — one of the causes the alarm's own message tells you to check — errors on every label it
+  reaches, which is 40% of `total`. Silent. The #123 shape itself is immune to this, because the up-front
+  metadata parse counts those rows as errors before the pano-existence check runs at all.
+- **A run that is 100% `dims_mismatch` or 100% `out_of_frame` is silent *and exits 0*.** Those are skip
+  buckets, so neither the alarm nor the exit code can see them. That is right for a lagging scrape and
+  wrong for a schema move that changes what the dims or `pano_x`/`pano_y` fields mean, or for Google
+  re-serving a city's panos wider than the stored frame. Zero crops, exit 0, no alarm, no cron mail — the
+  silent-completion shape [#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)
+  exists to prevent. Out of scope for #136, which is about `errors`, but it is the next gap, not a
+  theoretical one.
 
 It is a second *reading* of the counts, not a bucket: nothing about the invariant above changes, the exit
 code is what it always was, and the per-outcome summary is still printed in full.

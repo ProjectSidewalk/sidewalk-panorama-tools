@@ -744,10 +744,18 @@ def systemic_failure_line(counts):
     which is the whole reason it is a separate function taking the finished dict rather than a counter
     maintained alongside the others.
 
-    Two guards, both deliberate. `total > 0` first, because the test is `errors >= fraction * total`
-    and on an empty run that reads 0 >= 0.0, which is true: a store with nothing to do would otherwise
-    raise the alarm loudest. `errors > 0` second, for the same arithmetic reason if the fraction is
-    ever set to 0, and because "0 of 0 labels errored" is not a sentence worth printing.
+    Two guards, and it is worth being exact about which does what, because the obvious story is wrong.
+    `errors > 0` is what keeps an empty store quiet: on a run with nothing to do the test
+    `errors >= fraction * total` reads 0 >= 0.0, which is true, and this guard is what stops it. It is
+    also what keeps a 100% missing_pano or 100% skipped_existing run quiet, since neither moves errors.
+    `total > 0` guards the division, not the alarm: the only input the two disagree on is
+    {'total': 0, 'errors': 1}, which the crop loop cannot currently produce but a caller of this
+    function can, and without it that formats 100.0 * 1 / 0 and raises inside the run summary - making
+    the alarm the one fatal thing in a loop whose contract is that nothing in it is fatal.
+
+    (This said the opposite until the 2026-09-18 review, in all three places it was written down, and
+    the mutation table claimed a kill for dropping `total > 0` that does not reproduce: with the errors
+    guard still there, an empty store does not alarm either way.)
 
     The denominator is `total` - every label the run was handed - and not the subset it actually tried
     to cut. That is the documented invariant's denominator, and it keeps the two skip outcomes honest:
