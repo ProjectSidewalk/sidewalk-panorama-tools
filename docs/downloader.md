@@ -217,7 +217,7 @@ check does not ask about them. The report takes one of three shapes:
 [queue] manifest checked against 39 public cities (roster from sidewalk-sea.cs.washington.edu)
 ```
 ```
-[queue] WARNING: manifest not cross-checked - no roster from sidewalk-sea.cs.washington.edu (timed out), sidewalk-columbus.cs.washington.edu (HTTP 502), sidewalk-cdmx.cs.washington.edu (not JSON) (3 of 54 hosts tried)
+[queue] ERROR: manifest not cross-checked - no roster from sidewalk-sea.cs.washington.edu (timed out), sidewalk-columbus.cs.washington.edu (HTTP 502), sidewalk-cdmx.cs.washington.edu (not JSON) (3 of 54 hosts tried)
 ```
 
 The first fails the night: a missing row is the silent failure this exists to catch, and the exit code is the
@@ -236,9 +236,10 @@ too, so `# laurens-ia, bayonne-fr launched 2026-09-11` reads as a row for `laure
 alone would have silenced the very city the check exists for.
 
 `--dry-run` runs the same check, so a hand-run before a launch answers "is everything wired?" without waiting
-for the night: a gap exits 1 there too; a roster nobody serves is only a WARNING on a dry run, since that is
-someone at a keyboard, possibly offline, reading the plan. Offline, a dry run now waits up to 3 × 30 s before
-saying so.
+for the night: a gap exits 1 there too; a roster nobody serves is only a WARNING on a dry run (the same line,
+with that word in place of ERROR, and exit 0), since that is someone at a keyboard, possibly offline, reading
+the plan. Offline, a dry run now waits up to 3 × 30 s before saying so. Hosts are asked once each: a manifest
+with several rows on one host does not spend the whole cap on it.
 
 ### Options that matter in production
 

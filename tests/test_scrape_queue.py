@@ -1860,6 +1860,7 @@ class TestTheRosterIsReadOnPositiveEvidence:
             def open(self, request, timeout=None):
                 built['url'] = request.full_url
                 built['agent'] = request.get_header('User-agent')
+                built['timeout'] = timeout
                 return io.BytesIO(b'{}')
 
         def build_opener(*handlers):
@@ -1874,6 +1875,22 @@ class TestTheRosterIsReadOnPositiveEvidence:
         proxies = [h for h in built['handlers'] if isinstance(h, urllib.request.ProxyHandler)]
         assert len(proxies) == 1 and proxies[0].proxies == {}, built['handlers']
         assert 'sidewalk-panorama-tools' in built['agent']
+        # The timeout is the property the whole check hangs on: a host that accepts the connect and never
+        # answers would otherwise hold the queue open after the fleet, lock released, summary never printed.
+        assert built['timeout'] == 5
+
+    def test_the_body_is_read_to_the_cap_and_no_further(self, monkeypatch):
+        """A redirect to something large cannot hold the queue open past its window; the cap is what the
+        constant's comment promises, and without this test `response.read()` passes the suite."""
+        class FakeOpener:
+            def open(self, request, timeout=None):
+                return io.BytesIO(b'x' * 64)
+
+        monkeypatch.setattr(scrape_queue.urllib.request, 'build_opener', lambda *handlers: FakeOpener())
+        monkeypatch.setattr(scrape_queue, 'ROSTER_MAX_BYTES', 16)
+        monkeypatch.setattr(scrape_queue, '_open_url', REAL_OPEN_URL)
+
+        assert scrape_queue._open_url('https://sidewalk-sea.cs.washington.edu/v3/api/cities', 5) == b'x' * 16
 
 
 REAL_OPEN_URL = scrape_queue._open_url
@@ -1934,6 +1951,28 @@ class TestWhichCitiesAreMissingFromTheManifest:
         roster = [roster_entry('new-xx', url='sidewalk-new.cs.washington.edu/')]
 
         assert scrape_queue.unlisted_cities(roster, [], {})[0].fqdn == 'sidewalk-new.cs.washington.edu'
+
+    def test_a_url_that_cannot_be_parsed_is_no_host_not_a_traceback(self):
+        """urlsplit raises ValueError on a malformed bracketed host, and url is the one roster field
+        parse_roster does not validate. Unhandled, that escaped through main()'s BaseException handler and
+        discarded the whole night's check for a field the report only quotes (2026-09-18 review)."""
+        roster = [roster_entry('new-xx', url='https://[abc')]
+
+        assert scrape_queue.unlisted_cities(roster, [], {}) == [scrape_queue.Unlisted('new-xx', None, None)]
+
+    def test_a_city_the_roster_names_twice_is_reported_once(self):
+        roster = [roster_entry('new-xx'), roster_entry('new-xx')]
+
+        assert len(scrape_queue.unlisted_cities(roster, [], {})) == 1
+
+    def test_a_disabled_row_under_another_name_still_earns_the_misnamed_hint(self):
+        """`#bayonne,sidewalk-bayonne...` against a roster `bayonne-fr` is still the Bayonne mistake, and the
+        operator who "already added it" still needs telling why it is missing."""
+        roster = [roster_entry('bayonne-fr', url='https://sidewalk-bayonne.cs.washington.edu')]
+        disabled = {'bayonne': 'sidewalk-bayonne.cs.washington.edu'}
+
+        assert scrape_queue.unlisted_cities(roster, [], disabled) == [
+            scrape_queue.Unlisted('bayonne-fr', 'sidewalk-bayonne.cs.washington.edu', 'bayonne')]
 
     def test_a_disabled_row_counts_as_decided(self):
         """`#richmond-va,sidewalk-richmond...` is a city someone took out for a night, not one nobody knows
@@ -2008,6 +2047,19 @@ class TestTheRosterIsFetchedBestEffortButBounded:
         assert len(calls) == len(check.attempts) == scrape_queue.ROSTER_MAX_HOSTS == 3
         assert check.hosts_total == 10
 
+    def test_a_host_serving_several_cities_is_asked_once(self, monkeypatch):
+        """read_city_list refuses a duplicate city_id but not a duplicate fqdn. Three rows on one dead host
+        would otherwise spend the whole cap on it and report '3 of 4 hosts tried' having asked one."""
+        manifest = cities(('a', 'sidewalk-one.invalid'), ('b', 'sidewalk-one.invalid'),
+                          ('c', 'sidewalk-one.invalid'), ('d', 'sidewalk-two.invalid'))
+        calls = serve_roster(monkeypatch, hosts=[])
+
+        check = scrape_queue.check_manifest(manifest, {})
+
+        assert [c.split('//')[1].split('/')[0] for c in calls] == ['sidewalk-one.invalid', 'sidewalk-two.invalid']
+        assert [host for host, _ in check.attempts] == ['sidewalk-one.invalid', 'sidewalk-two.invalid']
+        assert check.hosts_total == 2
+
     def test_the_hosts_that_ran_ok_tonight_are_asked_first(self):
         """The check runs after the fleet, so the hosts that just served /adminapi/panos are the ones to ask;
         a host that failed its scrape is the last one whose roster call should be spent on."""
@@ -2070,17 +2122,36 @@ class TestTheReportAndTheExitCodeAgree:
         assert '2/2 cities ok, 0 failed, 0 timed out, 0 not reached;' in text
         assert scrape_queue.exit_code_for(self.clean_night(), self.gap()) == 0
 
-    def test_no_roster_is_a_warning_that_names_what_was_tried_and_fails_the_night(self):
+    def no_roster(self):
+        return scrape_queue.ManifestCheck(None, 0, [], [('sidewalk-alpha.invalid', 'timed out'),
+                                                        ('sidewalk-bravo.invalid', 'HTTP 502')], 54)
+
+    def test_no_roster_is_an_error_that_names_what_was_tried_and_fails_the_night(self):
         """Decided 2026-09-17: the hosts asked have just served /adminapi/panos, so none of them serving the
         roster is a broken check - an API rename, an env proxy, a moved endpoint - not weather, and a check
-        silently skipped every night is the failure #130 exists to prevent."""
-        check = scrape_queue.ManifestCheck(None, 0, [], [('sidewalk-alpha.invalid', 'timed out'),
-                                                         ('sidewalk-bravo.invalid', 'HTTP 502')], 54)
-        text = scrape_queue.summarise(self.clean_night(), 1.0, check)
+        silently skipped every night is the failure #130 exists to prevent. The line says ERROR because it
+        IS the night's failure: cron mails any output whatever the exit code, so the word on the line is the
+        only signal the mail carries (it said WARNING beside an exit 1 until the 2026-09-18 review)."""
+        text = scrape_queue.summarise(self.clean_night(), 1.0, self.no_roster())
 
-        assert ('WARNING: manifest not cross-checked - no roster from sidewalk-alpha.invalid (timed out), '
+        assert ('ERROR: manifest not cross-checked - no roster from sidewalk-alpha.invalid (timed out), '
                 'sidewalk-bravo.invalid (HTTP 502) (2 of 54 hosts tried)') in text
-        assert scrape_queue.exit_code_for(self.clean_night(), check) == 1
+        assert 'WARNING' not in text
+        assert scrape_queue.exit_code_for(self.clean_night(), self.no_roster()) == 1
+
+    def test_the_same_line_is_a_warning_when_advisory(self):
+        """The dry run's word, and its level, on the one line whose meaning depends on the path."""
+        _, status = scrape_queue.manifest_report(self.no_roster(), advisory=True)
+        _, nightly = scrape_queue.manifest_report(self.no_roster())
+
+        assert status == [(nightly[0][0].replace('ERROR:', 'WARNING:'), logging.WARNING)]
+        assert nightly[0][1] == logging.ERROR
+
+    def test_one_missing_city_is_singular_on_the_totals_line(self):
+        one = self.gap(scrape_queue.Unlisted('laurens-ia', 'sidewalk-laurens.cs.washington.edu', None))
+        text = scrape_queue.summarise(self.clean_night(), 1.0, one)
+
+        assert '0 not reached, 1 public city missing from the manifest;' in text
 
     def test_without_a_check_the_old_rule_stands(self):
         assert scrape_queue.exit_code_for(self.clean_night()) == 0
@@ -2109,7 +2180,7 @@ class TestTheCrossCheckEndToEnd:
 
         out = capsys.readouterr().out
         assert code == 1
-        assert '3/3 cities ok, 0 failed, 0 timed out, 0 not reached, 1 public cities missing' in out
+        assert '3/3 cities ok, 0 failed, 0 timed out, 0 not reached, 1 public city missing' in out
         assert 'laurens-ia (sidewalk-laurens.cs.washington.edu)' in out
         # Both channels (the print/logging rule): stdout is tonight's mail, the log is next week's evidence.
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -2130,15 +2201,40 @@ class TestTheCrossCheckEndToEnd:
         assert 'manifest checked against 3 public cities' in out
 
     def test_no_roster_fails_the_night_and_says_which_hosts_were_asked(self, tmp_path, fake_runner, journal,
-                                                                       capsys):
-        """Under the suite's network stub every host refuses, which is exactly the shape a broken check has."""
+                                                                       capsys, caplog):
+        """Under the suite's network stub every host refuses, which is exactly the shape a broken check has.
+        Both channels again: `grep ERROR scrape_queue.log` is what _report's docstring promises."""
+        caplog.set_level(logging.INFO)
         code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
 
         out = capsys.readouterr().out
         assert code == 1
-        assert 'WARNING: manifest not cross-checked' in out
+        assert 'ERROR: manifest not cross-checked' in out
         assert 'sidewalk-alpha.invalid (no network in tests)' in out
         assert '3 of 3 hosts tried' in out
+        logged = [r for r in caplog.records if 'manifest not cross-checked' in r.getMessage()]
+        assert [r.levelno for r in logged] == [logging.ERROR], caplog.text
+
+    def test_the_hosts_that_ran_ok_are_asked_first_from_main_too(self, tmp_path, fake_runner, journal,
+                                                                 monkeypatch, capsys):
+        """roster_hosts is tested on its own above; this is main() actually handing its order to the check,
+        which a `check_manifest(cities, disabled)` at that call site would silently drop."""
+        real_run_city = scrape_queue.run_city
+
+        def run_city(city, *args, **kwargs):
+            if city.city_id == 'alpha-aa':
+                return scrape_queue.CityResult('alpha-aa', 'failed', 1, 0.5)
+            return real_run_city(city, *args, **kwargs)
+
+        monkeypatch.setattr(scrape_queue, 'run_city', run_city)
+        calls = serve_roster(monkeypatch, roster_entry('alpha-aa', url='https://sidewalk-alpha.invalid'),
+                             roster_entry('bravo-bb', url='https://sidewalk-bravo.invalid'),
+                             roster_entry('charlie-cc', url='https://sidewalk-charlie.invalid'))
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        assert code == 1, capsys.readouterr().out  # alpha failed; the check itself was clean
+        assert calls == ['https://sidewalk-bravo.invalid/v3/api/cities']
 
     def test_a_disabled_row_counts_as_present_end_to_end(self, tmp_path, fake_runner, journal, monkeypatch,
                                                          capsys):
@@ -2155,6 +2251,8 @@ class TestTheCrossCheckEndToEnd:
         """Laurens and Bayonne launched together. The operator re-running one of them by hand is the moment
         to hear about the other."""
         serve_roster(monkeypatch, roster_entry('alpha-aa', url='https://sidewalk-alpha.invalid'),
+                     roster_entry('bravo-bb', url='https://sidewalk-bravo.invalid'),
+                     roster_entry('charlie-cc', url='https://sidewalk-charlie.invalid'),
                      roster_entry('laurens-ia'))
 
         code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--only', 'alpha-aa')
@@ -2162,7 +2260,11 @@ class TestTheCrossCheckEndToEnd:
         out = capsys.readouterr().out
         assert code == 1
         assert '1/1 cities ok' in out  # the city itself was fine
-        assert 'laurens-ia' in out
+        # Against the whole manifest, not tonight's selection: the two cities --only left out have rows.
+        gap = [ln for ln in out.splitlines() if 'missing from the manifest:' in ln]
+        assert gap == ['[queue] public cities missing from the manifest: '
+                       'laurens-ia (sidewalk-laurens.cs.washington.edu)']
+        assert '1 public city missing' in out
 
     def test_the_check_does_not_run_while_the_queue_is_being_stopped(self, tmp_path, fake_runner, journal,
                                                                      monkeypatch, capsys):
@@ -2219,6 +2321,22 @@ class TestDryRunCrossChecksToo:
         assert code == 0
         assert 'WARNING: manifest not cross-checked' in out
         assert plan_lines(out) == ['alpha-aa', 'bravo-bb', 'charlie-cc']
+
+    def test_a_disabled_row_counts_as_present_on_a_dry_run_too(self, tmp_path, fake_runner, journal,
+                                                               monkeypatch, capsys):
+        """The night's rule, on the path the docs sell as "is everything wired?" before a launch: a dry run
+        that nagged about every deliberately disabled city would teach people to ignore the line."""
+        serve_roster(monkeypatch, roster_entry('alpha-aa', url='https://sidewalk-alpha.invalid'),
+                     roster_entry('bravo-bb', url='https://sidewalk-bravo.invalid'))
+        manifest = write_manifest(tmp_path, ['alpha-aa,sidewalk-alpha.invalid',
+                                             '#bravo-bb,sidewalk-bravo.invalid'])
+
+        code = run_main(tmp_path, manifest, fake_runner, '--dry-run', '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert 'missing from the manifest' not in out
+        assert 'manifest checked against 2 public cities' in out
 
     def test_a_manifest_in_step_with_the_fleet_exits_zero(self, tmp_path, fake_runner, journal, monkeypatch,
                                                           capsys):

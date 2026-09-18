@@ -218,8 +218,9 @@ def read_city_list(path, disabled=None):
     utf-8-sig because a manifest edited in Excel carries a BOM, which would otherwise glue itself to the
     first fieldname and fire the guard on a perfectly good file.
 
-    `disabled`, when given, is a dict the '#'-prefixed rows are recorded into as city_id -> fqdn (lowercased,
-    '#' and whitespace stripped from the id), an out-parameter like run_queue's `results`. The cross-check
+    `disabled`, when given, is a dict the '#'-prefixed rows are recorded into as city_id -> fqdn (the fqdn
+    lowercased; '#' and whitespace stripped from the id, which is otherwise kept exactly - it is a directory
+    name), an out-parameter like run_queue's `results`. The cross-check
     (#130) reads it so a city taken out for a night counts as decided rather than missing. It is a dict and
     not a set because csv splits a prose comment on its commas too: `# laurens-ia, bayonne-fr launched
     2026-09-11` reads as city_id '# laurens-ia', and crediting that id alone would silence the very city the
@@ -806,11 +807,21 @@ def load_roster(hosts, fetch=None, max_hosts=ROSTER_MAX_HOSTS):
 
 
 def _roster_host(url):
-    """The host a roster entry's url names, lowercased, or None when it publishes none. Never guessed."""
+    """The host a roster entry's url names, lowercased, or None when it publishes none - or one this cannot
+    read, which is treated the same way rather than guessed at. Never guessed.
+
+    urlsplit raises ValueError on a malformed bracketed host (`https://[abc`), and url is the one roster
+    field parse_roster does not validate, because the check only quotes it. An escape here would land in
+    main()'s BaseException handler and print a traceback after the summary, discarding the whole night's
+    check over a field it never needed.
+    """
     if not isinstance(url, str) or not url.strip():
         return None
     url = url.strip()
-    parts = urlsplit(url if '//' in url else '//' + url)
+    try:
+        parts = urlsplit(url if '//' in url else '//' + url)
+    except ValueError:
+        return None
     return parts.hostname or None
 
 
@@ -821,17 +832,26 @@ def unlisted_cities(roster, cities, disabled):
     directory - or when a disabled ('#') row carries both that id and the city's host, which is the evidence
     that the row is this city and not a comment csv split on a comma. Hosts are compared case-insensitively:
     that half of the comparison is DNS, not a path.
+
+    The misnamed hint is drawn from disabled rows too: `#bayonne,sidewalk-bayonne...` against a roster
+    `bayonne-fr` is still the Bayonne mistake, and the operator who "already added it" still needs telling
+    why it is missing. A roster naming one city twice is reported once - the live roster never has, but a
+    count that can be inflated by the server is a count the totals line cannot be trusted on.
     """
     enabled = {c.city_id for c in cities}
-    by_host = {c.fqdn.lower(): c.city_id for c in cities}
-    unlisted = []
+    # Disabled rows first, so an enabled row naming the same host is the one the hint quotes.
+    by_host = {fqdn: city_id for city_id, fqdn in disabled.items() if fqdn}
+    by_host.update((c.fqdn.lower(), c.city_id) for c in cities)
+    unlisted, seen = [], set()
     for entry in roster:
-        if entry.get('visibility') != 'public' or entry['city_id'] in enabled:
+        city_id = entry['city_id']
+        if entry.get('visibility') != 'public' or city_id in enabled or city_id in seen:
             continue
+        seen.add(city_id)
         host = _roster_host(entry.get('url'))
-        if host is not None and disabled.get(entry['city_id']) == host:
+        if host is not None and disabled.get(city_id) == host:
             continue
-        unlisted.append(Unlisted(entry['city_id'], host, by_host.get(host) if host else None))
+        unlisted.append(Unlisted(city_id, host, by_host.get(host) if host else None))
     return unlisted
 
 
@@ -841,13 +861,18 @@ def roster_hosts(cities, results):
     /adminapi/panos are the ones to spend a roster call on."""
     ok = list(dict.fromkeys(r.city_id for r in results if r.outcome == 'ok'))
     by_id = {c.city_id: c.fqdn for c in cities}
-    first = [by_id[c] for c in ok if c in by_id]
-    return first + [c.fqdn for c in cities if c.city_id not in set(ok)]
+    ran_ok = set(ok)
+    return [by_id[c] for c in ok if c in by_id] + [c.fqdn for c in cities if c.city_id not in ran_ok]
 
 
 def check_manifest(cities, disabled, hosts=None, fetch=None):
-    """One night's cross-check: fetch the roster from the first host that serves one and compare."""
-    hosts = [c.fqdn for c in cities] if hosts is None else list(hosts)
+    """One night's cross-check: fetch the roster from the first host that serves one and compare.
+
+    Hosts are asked once each, in first-appearance order: read_city_list refuses a duplicate city_id but
+    not a duplicate fqdn, and three rows on one host would otherwise spend the whole ROSTER_MAX_HOSTS cap on
+    that host and report "3 of 3 hosts tried" having asked one.
+    """
+    hosts = list(dict.fromkeys([c.fqdn for c in cities] if hosts is None else hosts))
     roster, host, attempts = load_roster(hosts, fetch=fetch)
     if roster is None:
         return ManifestCheck(None, 0, [], attempts, len(hosts))
@@ -864,12 +889,17 @@ def _describe_unlisted(city):
         city.city_id, city.fqdn, city.misnamed_as, city.city_id)
 
 
-def manifest_report(check):
+def manifest_report(check, advisory=False):
     """The report's lines about the cross-check, as (gap, status): two lists of (line, level).
 
     The gap is what went wrong and belongs with the failures, above the totals; the status is what the check
     rested on - or that it could not run, and what every host said - and belongs after them. Split here
     rather than by the summary, so the summary never has to recognise a line by its wording.
+
+    `advisory` is the dry run, where a roster nobody serves does not decide the exit code and the line says
+    WARNING. On the night it does decide it, and the line says ERROR: cron mails any output regardless of the
+    exit code, so the word on the line is the only signal the mail carries, and `grep ERROR scrape_queue.log`
+    should agree with the exit code rather than find a WARNING beside an exit 1.
     """
     gap, status = [], []
     if check.unlisted:
@@ -878,9 +908,11 @@ def manifest_report(check):
         gap.append(("[queue]   add one city_id,fqdn row per city - city_id must be the app's own id, "
                     "because that is the directory it reads", logging.ERROR))
     if check.roster_host is None:
-        status.append(("[queue] WARNING: manifest not cross-checked - no roster from %s (%d of %d hosts tried)"
-                       % (', '.join('%s (%s)' % attempt for attempt in check.attempts),
-                          len(check.attempts), check.hosts_total), logging.ERROR))
+        level = logging.WARNING if advisory else logging.ERROR
+        status.append(("[queue] %s: manifest not cross-checked - no roster from %s (%d of %d hosts tried)"
+                       % (logging.getLevelName(level),
+                          ', '.join('%s (%s)' % attempt for attempt in check.attempts),
+                          len(check.attempts), check.hosts_total), level))
     else:
         status.append(("[queue] manifest checked against %d public cities (roster from %s)"
                        % (check.public_count, check.roster_host), logging.INFO))
@@ -924,8 +956,9 @@ def summarise(results, elapsed_minutes, manifest_check=None):
             which = '' if r.pass_number == 1 else ' in pass %d' % r.pass_number
             lines.append("[queue] %-24s %s%s%s%s" % (r.city_id, outcome.upper(), code, when, which))
     lines += [line for line, _ in gap]
-    missing = ('' if manifest_check is None or not manifest_check.unlisted
-               else ', %d public cities missing from the manifest' % len(manifest_check.unlisted))
+    n_missing = 0 if manifest_check is None else len(manifest_check.unlisted)
+    missing = ('' if not n_missing else ', %d public %s missing from the manifest'
+               % (n_missing, 'city' if n_missing == 1 else 'cities'))
     lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s; %.1f min total"
                  % (sum(1 for r in first if r.outcome == 'ok'), len(first),
                     len(by_outcome.get('failed', [])),
@@ -1019,7 +1052,7 @@ def main(argv=None):
         # night would; a roster nobody served is advisory here - this is someone at a keyboard, possibly
         # offline, reading the plan - where the night treats it as a failed check.
         check = check_manifest(cities, disabled)
-        gap, status = manifest_report(check)
+        gap, status = manifest_report(check, advisory=True)
         print('\n'.join(line for line, _ in gap + status))
         return 1 if check.unlisted else 0
 
