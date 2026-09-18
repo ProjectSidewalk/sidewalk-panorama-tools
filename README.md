@@ -63,7 +63,7 @@ for the nightly cron form.
 | [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, and the nightly queue |
 | [Cropper](docs/cropper.md) | Crop geometry, the two preflights, outcome taxonomy, and what to know before training on the crops |
 | [Depth maps](docs/depth.md) | The `.npz` artifact format, the plane fields, migration — and **what the depth product is and isn't** |
-| [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 19-column `log.csv`, and how a crashed run reads |
+| [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 19-column `log.csv`, how a crashed run reads, and operating the production host (deploy, rollback, adding a city) |
 | [Log analyzer](docs/log-analyzer.md) | SFTP setup, the per-city health checks, and the depth backfill report |
 | [API fields](docs/api-fields.md) | Every column of `/adminapi/panos` and `/adminapi/labels/cvMetadata`, plus the label type IDs |
 | [Testing](docs/testing.md) | What the suite covers and the three ways it is deliberately unusual |
