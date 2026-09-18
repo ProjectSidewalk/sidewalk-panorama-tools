@@ -15,7 +15,7 @@ CI runs exactly this on Ubuntu 22.04 / Python 3.10 for every push to `master` an
 
 CI reports coverage on every run and fails the build below the `fail_under` floor in
 [`.coveragerc`](../.coveragerc) ([#57](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/57)).
-The measured set is the production tree only — the ten modules at the repo root, in `downloaders/` and in
+The measured set is the production tree only — every module at the repo root, in `downloaders/` and in
 `log_analyzer/`. `reports/` is deliberately outside it: a large body of frozen one-off analysis with its own
 dense tests, and averaging it in would let the scraper's number move several points unnoticed. `flag_panos/`
 is out because its module scope writes files at import, and `assets/` is out because building the hero
@@ -48,6 +48,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
 | The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes, the [extra passes](downloader.md#extra-passes) and the run-summary channel they read (the runner's side of it is in `test_download_runner.py` and `test_depth_pacing.py`) | `test_scrape_queue.py` |
 | Log analyzer, and that its column list moves with the writer's | `test_log_analyzer.py` |
+| The [cvMetadata schema tripwire](api-fields.md#checking-the-contract-against-a-live-deployment): the verdict (a missing field named, an added one ignored, the either/or label-type pair), that the required list moves when `CropRunner`'s constants move, reading the field names off a streamed payload prefix, and the exit codes | `test_cvmetadata_schema.py` |
 | The offline depth-artifact migrator | `test_migrate_depth_artifacts.py` |
 | The display copy of a wide panorama: naming, the two writers, the switch that keeps both downloaders' hooks off and the sweep and primitives on, the one store walker and the guard against a second, what `sidecar_is_current` can and cannot see, the shared decompression-bomb ceiling, and the sweep itself | `test_downscaled_sidecar.py` |
 | The [`fover` repair pass](ops.md#repairing-fover-era-panoramas): the decision table, the byte-for-byte survival of every refusal (the display copy included), the copy being rewritten from the imagery that replaced it but never created where there was none, ledger semantics, the recovery metric, and the CLI surface | `test_refetch_panos.py` |
@@ -67,6 +68,12 @@ or macOS and needs a C compiler there).
 
 **Live re-checks against external services sit behind an opt-in env var**, so CI stays offline while the
 capture scripts that produced `tests/fixtures/` remain runnable on demand.
+
+That is also why the one check of a *live* contract is not a test. `check_cvmetadata_schema.py` asks a
+deployment which fields it serves and compares them against what `CropRunner` requires; it lives outside
+`tests/` precisely so the suite above stays offline. The suite cannot fail on a contract it never touches,
+and for 16 days in September 2026 it did not
+([#135](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/135)).
 
 **Committed-artifact tests are not code tests.** Pinning a finding against `reports/data/*.json` proves nothing
 about the function that produced it — the artifact was generated *by* the current code, so a revert stays

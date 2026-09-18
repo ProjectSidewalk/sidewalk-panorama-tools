@@ -18,6 +18,7 @@ out of the panorama. It runs unattended every night, per city, across ~50 deploy
 | [`CropRunner.py`](docs/cropper.md) | Cuts one 3:2 crop per label out of the downloaded panoramas. Works, but is being replaced — bugs may linger. |
 | [`scrape_queue.py`](docs/downloader.md#nightly-deployment) | Runs the whole fleet as one serialised queue from a single cron line, instead of a crontab slot per city. |
 | [`log_analyzer/analyze.py`](docs/log-analyzer.md) | Watches the nightly run across every city and exits nonzero when one looks broken. |
+| [`check_cvmetadata_schema.py`](docs/api-fields.md#checking-the-contract-against-a-live-deployment) | Asks a live deployment which `cvMetadata` fields it serves and exits nonzero when one `CropRunner` requires has stopped arriving. The one thing here that talks to a deployment on purpose — the suite is network-free, so nothing else can see an upstream rename. |
 | [`migrate_depth_artifacts.py`](docs/depth.md#migrating-a-pre-v2-store) | One-off, idempotent rewrite of depth artifacts written before the v2 format. |
 | [`refetch_panos.py`](docs/ops.md#repairing-fover-era-panoramas) | One-off, idempotent re-fetch of panoramas downloaded at half resolution, replacing one only when the replacement is strictly better. |
 | [`downscale_panos.py`](docs/ops.md#display-copies-of-wide-panoramas) | Idempotent sweep that writes the 8192 px display copy beside every wider panorama. **Neither downloader writes one** — that was switched off on 2026-09-09, so this is the only writer that creates one, and it runs only when you run it. |

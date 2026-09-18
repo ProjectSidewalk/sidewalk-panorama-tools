@@ -78,4 +78,8 @@ exclude_also =
 #     branch, which needs a fetch fast enough to still owe time when the next one starts.
 #   - three partial branches that need an input no caller produces - mapillary's falsy-chunk skip, and
 #     analyze.py's two loop guards.
+#   - check_cvmetadata_schema.py's _open_stream, the four lines that open a socket to a live deployment.
+#     That module is measured like any other production module - the decision #135 required - but the one
+#     function whose entire job is to leave this machine is the one the network-free suite cannot call, so
+#     its tests replace it and drive everything above it.
 fail_under = 98

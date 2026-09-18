@@ -76,6 +76,51 @@ Three things to know before you join on any of this:
   so a one-example check can pass on the wrong one. See [Depth maps → Sampling depth under a
   label](depth.md#sampling-depth-under-a-label).
 
+## Checking the contract against a live deployment
+
+This table, and `CropRunner`'s idea of the fields it will be handed, are a contract with another codebase.
+The suite here cannot check it: it is [network-free by design](testing.md), so every test of the `-d` intake
+runs against a fixture this repo wrote, and a fixture cannot notice that the server stopped agreeing with
+it. It did not notice — `label_type_id` became `label_type` on 2026-09-02, the cropper produced **zero crops
+against every live deployment for 16 days**, and CI was green for all of them
+([#135](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/135)).
+
+So one thing here talks to a deployment on purpose, and it is deliberately not a test:
+
+```bash
+python3 check_cvmetadata_schema.py --host sidewalk-sea.cs.washington.edu
+# or: PS_CVMETADATA_HOST=sidewalk-sea.cs.washington.edu python3 check_cvmetadata_schema.py
+```
+
+There is **no default host** — a wrong default silently checks a deployment nobody chose, the same reasoning
+as the log analyzer's `PS_SFTP_HOST` and the queue's `--cities`. Any deployment will do: the schema is the
+app's, not the city's, so one host answers for the fleet.
+
+It exits `0` when every field the cropper requires is served, `1` naming the ones that are not, and `3` when
+the deployment could not be read at all — a check that did not run has not passed. Nonzero is the whole
+unattended interface, so a nightly crontab line gets the failure by mail:
+
+```cron
+30 6 * * * cd /opt/sidewalk-panorama-tools && .venv/bin/python check_cvmetadata_schema.py --host sidewalk-sea.cs.washington.edu
+```
+
+Three things about it are load-bearing:
+
+* **It reads the required list off `CropRunner`** — `REQUIRED_LABEL_COLUMNS` and `LABEL_TYPE_COLUMNS`, asked
+  at call time — rather than restating it. Two copies of a field list drift silently, which is the bug being
+  fixed, not a shape to reproduce one level out.
+* **A field the server *adds* is not a failure.** Servers add fields, and a check that cried wolf on that
+  would be muted within a month; a muted tripwire is worse than none. New fields are printed, because an
+  addition is often the visible half of a rename.
+* **It reads only the first record.** cvMetadata is the city's entire label list — 183,682 rows for
+  seattle-wa — so the response is streamed and the read stops at the first complete record, whose keys *are*
+  the field names. A check that pulled the whole body nightly would cost more than the thing it guards.
+
+What it does **not** check is the fields with a documented fallback: `pano_width`/`pano_height` are read
+through `_metadata_dims`, which falls back to the older `width`/`height` and then to the image on disk, so
+their absence degrades the dims preflight rather than stopping the cropper. Adding them would mean writing a
+second field list that `CropRunner` has no constant for — the drift this check exists to prevent.
+
 ## Label type IDs
 
 `/adminapi/panos` has no label types; cvMetadata now sends the **name**, and this is the id it maps to —
