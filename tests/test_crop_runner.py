@@ -16,6 +16,7 @@ import json
 import logging
 import logging.handlers  # not implied by `import logging`; asserted on below
 import os
+import re
 import subprocess
 import sys
 
@@ -1804,6 +1805,57 @@ class TestTheLabelTypeArrivesUnderEitherName:
         assert counts['errors'] == 1 and counts['success'] == 0
         assert reconciles(counts)
 
+    def test_the_no_type_error_names_the_column_a_deployment_actually_sends(self, crop_runner):
+        """Naming only `label_type_id` sends an operator grepping their header for a column no current
+        deployment serves - the exact harm the either/or was written to avoid, reintroduced in the
+        error text. The message has to name both spellings.
+
+        Tokenised, NOT substring-matched: `label_type` is a prefix of `label_type_id`, so the obvious
+        `'label_type' in message and 'label_type_id' in message` is satisfied by the old message alone.
+        Written that way first, and the mutation that restores the bug walked straight through it.
+        """
+        with pytest.raises(KeyError) as excinfo:
+            crop_runner.resolve_label_type_id({'label_id': 1})
+
+        tokens = set(re.findall(r'[A-Za-z_]+', str(excinfo.value)))
+        assert {'label_type', 'label_type_id'} <= tokens
+
+    @pytest.mark.parametrize('bad', ['99', '0', '-3', '11', 'CurbRamp', '1.5', ''])
+    def test_an_unrecognised_id_is_refused_the_way_an_unrecognised_name_is(self, crop_runner, bad):
+        """The id path was a bare int() until 2026-09-18, so 99/0/-3 all resolved and wrote
+        <crop-dir>/99/ as a success with exit 0 - an arbitrary shard an ML consumer globbing crops/*/
+        reads as a new label type. '' is here because _absent() must keep treating a blank cell as
+        absent rather than as a bad id: a row with a blank id and a good name still has to resolve.
+        """
+        if bad == '':
+            assert crop_runner.resolve_label_type_id({'label_type_id': '', 'label_type': 'Obstacle'}) == 3
+            return
+        with pytest.raises(ValueError):
+            crop_runner.resolve_label_type_id({'label_type_id': bad})
+
+    def test_an_unrecognised_id_is_one_counted_error_not_a_stray_directory(self, crop_runner, tmp_path):
+        """The behaviour that matters: the run continues, the invariant holds, and nothing lands in a
+        directory named after an id the enum has never heard of."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type_id': 99, 'label_id': 508},
+                  {'pano_id': 'testpano0001', 'pano_x': 400, 'pano_y': INTERIOR_Y,
+                   'label_type': 'CurbRamp', 'label_id': 509}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 1 and counts['success'] == 1
+        assert reconciles(counts)
+        assert not os.path.exists(os.path.join(str(out), '99'))
+        assert os.path.exists(crop_path(out, 1, 509))
+
+    @pytest.mark.parametrize('padded', ['  CurbRamp  ', '\tCurbRamp', 'CurbRamp\n'])
+    def test_a_padded_name_still_resolves(self, crop_runner, padded):
+        """#72's battery measured ' True ' with padding as a live failure in the old pandas intake, so
+        padding is a real input class here. The .strip() survived the whole suite when deleted."""
+        assert crop_runner.resolve_label_type_id({'label_type': padded}) == 1
+
 
 class TestTheLabelTypeMapMatchesTheDocumentedTable:
     """The map is a transcription of SidewalkWebpage's LabelTypeTable enum, and docs/api-fields.md
@@ -1812,26 +1864,66 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
     """
 
     def _documented_ids(self):
-        """Parse the `| id | type |` table out of docs/api-fields.md."""
+        """Parse the `| id | enum name | display name |` table out of docs/api-fields.md.
+
+        Returns {enum_name: id}, the same shape as LABEL_TYPE_IDS_BY_NAME, so the assertion below is a
+        comparison of pairs rather than of id sets. The table used to carry display names only ("Curb
+        Ramp", "Pedestrian Signal"), which no test could match against enum keys, so the check silently
+        degraded to `set(documented_ids) <= set(map.values())` - true for any permutation.
+        """
         text = io.open(os.path.join(REPO_ROOT, 'docs', 'api-fields.md'), encoding='utf-8').read()
         found = {}
         for line in text.splitlines():
             cells = [c.strip() for c in line.strip().strip('|').split('|')]
-            if len(cells) == 2 and cells[0].isdigit():
-                found[int(cells[0])] = cells[1]
+            if len(cells) == 3 and cells[0].isdigit():
+                found[cells[1].strip('`')] = int(cells[0])
         return found
 
-    def test_every_documented_id_is_in_the_map(self, crop_runner):
+    def test_the_documented_table_is_the_map_pair_for_pair(self, crop_runner):
+        """The assertion that actually catches a swap.
+
+        Two hand-maintained copies of one upstream enum drift, and the drift is silent: a wrong id files
+        crops into the wrong training directory and nothing raises. Measured 2026-09-18: swapping
+        Crosswalk/Signal in the map killed only the literal restatement below, leaving 296 other tests
+        green - so this test exists to make the docs table a second, independent vote.
+        """
         documented = self._documented_ids()
         assert documented, 'the label type id table went missing from docs/api-fields.md'
-        assert set(documented) <= set(crop_runner.LABEL_TYPE_IDS_BY_NAME.values())
+        assert documented == crop_runner.LABEL_TYPE_IDS_BY_NAME
 
     def test_the_ids_are_unique_and_are_the_upstream_enum(self, crop_runner):
         """Verbatim from app/models/label/LabelTypeTable.scala. 8/Problem is deliberately present
-        although the docs table skips it: the endpoint can emit any name the enum holds."""
+        although no label in the wild uses it: the endpoint can emit any name the enum holds.
+
+        This is a change-detector, not a check - it is a literal restatement of the dict, so it cannot
+        catch a transcription that was wrong when both copies were written. It is kept because it names
+        the upstream file a reader has to go read; the pair-for-pair test above is what does the work,
+        and the two corpus witnesses below are what corroborate the halves no fixture covers.
+        """
         assert crop_runner.LABEL_TYPE_IDS_BY_NAME == {
             'CurbRamp': 1, 'NoCurbRamp': 2, 'Obstacle': 3, 'SurfaceProblem': 4, 'Other': 5,
             'Occlusion': 6, 'NoSidewalk': 7, 'Problem': 8, 'Crosswalk': 9, 'Signal': 10,
         }
         ids = list(crop_runner.LABEL_TYPE_IDS_BY_NAME.values())
         assert len(ids) == len(set(ids))
+
+    def test_crosswalk_is_nine_on_evidence_that_predates_the_map(self, crop_runner):
+        """`samples/cvmetadata-seattle.csv` cannot corroborate any pairing - the live schema dropped the
+        id column, so the capture has no ids at all, and it covers 7 of 10 names. Crosswalk, Signal and
+        Problem appear in no fixture, and Crosswalk/Signal are in active use in the wild: if either id is
+        wrong, every such label becomes a counted error and main() exits 1 for the whole city.
+
+        The one independent witness in the repo predates #123 by five weeks and was written when the id
+        WAS the wire field, so it cannot have been copied from this map.
+        """
+        census = io.open(os.path.join(REPO_ROOT, 'reports', '2026-08-11-mapillary-census.md'),
+                         encoding='utf-8').read()
+        assert 'Crosswalk (label type 9)' in census, \
+            'the independent witness for Crosswalk=9 moved; re-establish it before trusting the map'
+        assert crop_runner.LABEL_TYPE_IDS_BY_NAME['Crosswalk'] == 9
+
+    def test_every_enum_name_resolves_including_the_three_no_fixture_covers(self, crop_runner):
+        """Problem(8), Crosswalk(9) and Signal(10) are in no sample file. Drive them through the real
+        seam so they are at least exercised end to end rather than only restated."""
+        for name, expected in crop_runner.LABEL_TYPE_IDS_BY_NAME.items():
+            assert crop_runner.resolve_label_type_id({'label_type': name}) == expected

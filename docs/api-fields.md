@@ -44,7 +44,7 @@ than from memory, because the four this table used to carry were each wrong in a
 | `pano_height` | The height of the pano image in pixels [same as `/adminapi/panos`] |
 | `camera_heading` | The heading (in degrees) of the center of the image with respect to true north [same as `/adminapi/panos`] |
 | `camera_pitch` | The pitch (in degrees) of the camera with respect to horizontal [same as `/adminapi/panos`] |
-| `camera_roll` | The roll (in degrees) of the camera, when the source provides one — blank/`null` for GSV, populated for Mapillary and Panoramax |
+| `camera_roll` | The roll (in degrees) of the camera, when the source provides one. **Measured** blank for GSV (every row of the capture this table was transcribed from is a GSV row). Whether Mapillary and Panoramax populate it is *inferred* from those sources carrying a roll at all — unmeasured, because no capture from a non-GSV city has been taken |
 | `canvas_width` | The width of the canvas where the user placed a label in Project Sidewalk |
 | `canvas_height` | The height of the canvas where the user placed a label in Project Sidewalk |
 | `canvas_x` | The x-pixel location where the user clicked on the canvas to place the label, where top-left is (0,0) |
@@ -84,14 +84,21 @@ which is also the crop output subdirectory name. Yes, 8 is skipped. 🤷
 Skipped in the *data*, that is: id 8 (`Problem`) exists in the upstream enum, so
 `CropRunner.LABEL_TYPE_IDS_BY_NAME` carries it even though no label in the wild uses it.
 
-| `label_type_id` | Label type |
-|---|---|
-| 1 | Curb Ramp |
-| 2 | Missing Curb Ramp |
-| 3 | Obstacle in a Path |
-| 4 | Surface Problem |
-| 5 | Other |
-| 6 | Can't see the sidewalk |
-| 7 | No Sidewalk |
-| 9 | Crosswalk |
-| 10 | Pedestrian Signal |
+The middle column is the name the endpoint actually sends and the key of
+`CropRunner.LABEL_TYPE_IDS_BY_NAME`; the right-hand column is the display wording the web app shows a
+user, which is **not** what arrives over the wire. Both are here because the pairing of id to *enum*
+name is the thing that has to stay true, and a table carrying only display names cannot check it —
+`tests/test_crop_runner.py` parses this table and asserts it equals the map exactly.
+
+| `label_type_id` | `label_type` (enum name, as served) | Display name |
+|---|---|---|
+| 1 | `CurbRamp` | Curb Ramp |
+| 2 | `NoCurbRamp` | Missing Curb Ramp |
+| 3 | `Obstacle` | Obstacle in a Path |
+| 4 | `SurfaceProblem` | Surface Problem |
+| 5 | `Other` | Other |
+| 6 | `Occlusion` | Can't see the sidewalk |
+| 7 | `NoSidewalk` | No Sidewalk |
+| 8 | `Problem` | (not used in the data) |
+| 9 | `Crosswalk` | Crosswalk |
+| 10 | `Signal` | Pedestrian Signal |

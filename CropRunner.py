@@ -69,6 +69,10 @@ LABEL_TYPE_IDS_BY_NAME = {
     'Signal': 10,
 }
 
+# The same fact keyed the other way, for validating an id that arrived as an id. Derived, never written
+# out a second time: two hand-maintained copies of one upstream enum is the drift this map exists to stop.
+LABEL_TYPE_NAMES_BY_ID = {id_: name for name, id_ in LABEL_TYPE_IDS_BY_NAME.items()}
+
 # The crop window compute_crop_box resolves. `shifted` rides along rather than being recomputed by
 # callers: it is derived from the same rounding that produced `top`, so the two cannot drift apart.
 CropBox = collections.namedtuple('CropBox', ['left', 'top', 'width', 'height', 'shifted'])
@@ -674,23 +678,39 @@ def resolve_label_type_id(row):
     mapped through LABEL_TYPE_IDS_BY_NAME. A blank cell counts as absent, the _absent() rule, so a row
     carrying both columns with an empty id still resolves off the name rather than dying on int('').
 
-    Raises ValueError naming the value for an unrecognised name, and KeyError when the row has neither
-    column - both of which bulk_extract_crops already counts as one malformed row. Deliberately not a
-    silent default: a label type this map has never heard of means the enum moved upstream, and filing
-    those crops under a guessed id would poison a training directory with no way to tell afterwards.
+    Raises ValueError naming the value for an unrecognised name OR an unrecognised id, and KeyError when
+    the row has neither column - all of which bulk_extract_crops already counts as one malformed row.
+    Deliberately not a silent default: a label type this map has never heard of means the enum moved
+    upstream, and filing those crops under a guessed id would poison a training directory with no way to
+    tell afterwards.
+
+    The id path is checked against the same enum as the name path, and that symmetry is the point. An
+    unchecked int() accepted 99, 0 and -3 as label types and wrote <crop-dir>/99/ as a success, which is
+    the identical poisoning this function's name path refuses - a guarantee that held on one half of the
+    input space was worse than no guarantee, because the docstring claimed both.
 
     >>> resolve_label_type_id({'label_type': 'SurfaceProblem'})
     4
-    >>> resolve_label_type_id({'label_type_id': '2', 'label_type': 'CurbRamp'})
-    2
+    >>> resolve_label_type_id({'label_type_id': '1', 'label_type': 'CurbRamp'})
+    1
     """
     if not _absent(row.get('label_type_id')):
-        return int(row['label_type_id'])
+        raw = row['label_type_id']
+        try:
+            label_type_id = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("unrecognised label_type_id %r" % (raw,))
+        if label_type_id not in LABEL_TYPE_NAMES_BY_ID:
+            raise ValueError("unrecognised label_type_id %r" % (raw,))
+        return label_type_id
     name = row.get('label_type')
     if _absent(name):
         # Neither column carried a value. KeyError so the message names a field rather than reading as
-        # a bad cast, and so the CSV intake's up-front guard and this one fail the same way.
-        raise KeyError('label_type_id')
+        # a bad cast, and so the CSV intake's up-front guard and this one fail the same way. It names
+        # BOTH spellings: a current deployment sends only `label_type`, so an operator sent looking for
+        # `label_type_id` alone is sent after a column no endpoint serves - the harm this either/or was
+        # written to avoid, reintroduced in the error message.
+        raise KeyError('neither label_type nor label_type_id')
     name = str(name).strip()
     if name not in LABEL_TYPE_IDS_BY_NAME:
         raise ValueError("unrecognised label_type %r" % (name,))
