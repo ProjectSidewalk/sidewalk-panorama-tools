@@ -56,6 +56,13 @@ through. A name this map has never heard of means the enum moved upstream again:
 counted error naming the value, rather than a guessed id filing a crop into a real training directory with
 nothing on disk to say it was a guess.
 
+**An id is checked against the same enum as a name, and the symmetry is deliberate.** An id arriving in an
+old export is validated against `LABEL_TYPE_NAMES_BY_ID` before it is believed. Until the 2026-09-18 review
+the id path was a bare `int()`, so `label_type_id=99`, `0` and `-3` were all accepted and written to
+`<crop-dir>/99/` as a `success` with exit 0 — an arbitrary shard directory that an ML consumer globbing
+`crops/*/` reads as a new label type. That is the same poisoning the name path refuses, so a guarantee that
+held on only one half of the input space was worse than none: the docstring claimed both.
+
 ## Crop geometry
 
 Crops are **3:2** (`CROP_ASPECT_W_OVER_H = 1.5`), and their width comes from `crop_window_width()` —
