@@ -711,6 +711,11 @@ a throwaway cron line that fails on purpose, then delete it.
 ### The morning after a deploy
 
 - `scrape_queue.log`: every city `ok (exit 0)`, and `pass 2 starting` if any ran out of budget.
+- `scrape_queue.log` ends with `manifest checked against N public cities (roster from …)`, and
+  `grep ERROR scrape_queue.log` prints nothing — a `public cities missing from the manifest` or
+  `manifest not cross-checked` line is the night's failure
+  ([the cross-check](downloader.md#the-manifest-is-cross-checked-against-the-fleet)), whether or not the mail
+  arrived.
 - `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
 - `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —
   a push-back from Google would be the first sign the pacer's persisted standing is too aggressive. The reason
