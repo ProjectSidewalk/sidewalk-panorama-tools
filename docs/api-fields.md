@@ -96,13 +96,29 @@ There is **no default host** — a wrong default silently checks a deployment no
 as the log analyzer's `PS_SFTP_HOST` and the queue's `--cities`. Any deployment will do: the schema is the
 app's, not the city's, so one host answers for the fleet.
 
-It exits `0` when every field the cropper requires is served, `1` naming the ones that are not, and `3` when
-the deployment could not be read at all — a check that did not run has not passed. Nonzero is the whole
-unattended interface, so a nightly crontab line gets the failure by mail:
+It exits `0` when every field the cropper requires is served, `1` naming the ones that are not, `2` on a
+usage error (no host, or a URL where a bare FQDN belongs), and `3` when the deployment could not be read at
+all — a check that did not run has not passed. **`2` is deliberately not `1`**: a crontab line that was
+never valid must not report the same code as the upstream rename this exists to catch.
+
+Nonzero is the whole unattended interface, so a nightly crontab line gets the failure by mail:
 
 ```cron
-30 6 * * * cd /opt/sidewalk-panorama-tools && .venv/bin/python check_cvmetadata_schema.py --host sidewalk-sea.cs.washington.edu
+30 6 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
+              /srv/sidewalk-panorama-tools/check_cvmetadata_schema.py \
+              --host sidewalk-sea.cs.washington.edu
 ```
+
+The production checkout is `/srv/sidewalk-panorama-tools` ([ops](ops.md#operating-the-production-host)), and the
+interpreter is given by absolute path for the reason `docs/downloader.md` already states: cron's `PATH` is
+minimal. A `cd … && …` form is worse than it looks here — if the `cd` fails the `&&` short-circuits and cron
+reports exit `1`, which is the missing-field code.
+
+> **The mail only arrives if the host can send mail.** As of 2026-09-17 the production box had no MTA, and
+> `syslog` recorded `No MTA installed, discarding output` after every nightly run — see
+> [Hearing about a bad night](ops.md#hearing-about-a-bad-night). Until that is fixed, this check's unattended
+> path ends at the box. That is a property of the host, not of the check, and it applies equally to the
+> downloader's own cron lines.
 
 Three things about it are load-bearing:
 
@@ -116,10 +132,22 @@ Three things about it are load-bearing:
   seattle-wa — so the response is streamed and the read stops at the first complete record, whose keys *are*
   the field names. A check that pulled the whole body nightly would cost more than the thing it guards.
 
-What it does **not** check is the fields with a documented fallback: `pano_width`/`pano_height` are read
-through `_metadata_dims`, which falls back to the older `width`/`height` and then to the image on disk, so
-their absence degrades the dims preflight rather than stopping the cropper. Adding them would mean writing a
-second field list that `CropRunner` has no constant for — the drift this check exists to prevent.
+What it does **not** check, deliberately:
+
+* **The fields with a documented fallback.** `pano_width`/`pano_height` are read through `_metadata_dims`,
+  which falls back to the older `width`/`height` and then to the image on disk, so their absence degrades
+  the dims preflight rather than stopping the cropper. Adding them would mean writing a second field list
+  that `CropRunner` has no constant for — the drift this check exists to prevent.
+* **Values — only names.** A deployment serving `pano_x: null` on every row passes this check while the
+  cropper errors on every label. The check answers "are the fields still called what the cropper calls
+  them", which is the failure that actually happened; it is not a guarantee that the cropper will succeed.
+* **Any record but the first.** The keys of the first complete record are taken as the field names, which
+  assumes every record carries the same keys — true of this endpoint today, and the assumption the
+  cheapness rests on. A deployment that ever omitted null fields per-record would produce a false MISSING.
+
+One more property worth knowing before reading a red result: **a usage error exits `2`, not `1`.** If cron
+mails you a failure, the code tells you whether the schema moved (`1`), the deployment was unreachable
+(`3`), or the line itself is wrong (`2`).
 
 ## Label type IDs
 

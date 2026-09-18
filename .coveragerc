@@ -78,8 +78,9 @@ exclude_also =
 #     branch, which needs a fetch fast enough to still owe time when the next one starts.
 #   - three partial branches that need an input no caller produces - mapillary's falsy-chunk skip, and
 #     analyze.py's two loop guards.
-#   - check_cvmetadata_schema.py's _open_stream, the four lines that open a socket to a live deployment.
-#     That module is measured like any other production module - the decision #135 required - but the one
-#     function whose entire job is to leave this machine is the one the network-free suite cannot call, so
-#     its tests replace it and drive everything above it.
+#   (check_cvmetadata_schema.py's _open_stream was listed here, on the reasoning that a function whose job
+#   is to leave the machine cannot be covered offline. That was half true and the half that was false was
+#   load-bearing: the SOCKET cannot be opened here, but the OPENER can be intercepted, and the empty
+#   ProxyHandler it installs is documented as the thing standing between this check and a proxy login page
+#   reported as "cannot run" every night for ever. Deleting it failed nothing. The module is now 100%.)
 fail_under = 98

@@ -159,10 +159,27 @@ class TestReadingTheFieldNamesOffTheWire:
         assert schema.served_fields(read) == list(SERVED_TODAY)
 
     def test_it_stops_after_the_first_record(self):
+        """Bounded by the chunk size, not merely by the body.
+
+        `sum(consumed) < len(body)` was the assertion here, and it is satisfied by a single
+        `read(MAX_PREFIX_BYTES)` of 1,048,576 bytes - so the mutant that deletes the streaming loop
+        entirely survived it. The real property is that the check stops within a chunk or two of the
+        first record: 4,096 bytes of a 1,705,000-byte body, measured.
+        """
         body = payload(SERVED_TODAY, count=5000)
         read, consumed = reader_for(body)
         schema.served_fields(read, chunk_bytes=4096)
-        assert sum(consumed) < len(body), 'the whole payload was read; this must stop at the first record'
+        assert sum(consumed) <= 2 * 4096, (
+            'read %d bytes for one record; this must stop at the first record, not merely before the '
+            'end of a 1.7 MB body' % sum(consumed))
+
+    def test_a_pretty_printed_payload_is_still_read(self):
+        """`MAX_PREFIX_BYTES`' own comment cites pretty-printing as the reason it is generous, but nothing
+        exercised it: dropping the inner `.lstrip()` turns `[\\n  {...}]` into a SchemaUnavailable while
+        all 43 tests stay green."""
+        body = json.dumps([dict.fromkeys(SERVED_TODAY, 1)], indent=2).encode('utf-8')
+        read, _ = reader_for(body)
+        assert schema.served_fields(read) == list(SERVED_TODAY)
 
     def test_a_record_split_across_chunks_is_still_read(self):
         """The first record is bigger than one read() on any chunk size the caller happens to pick."""
@@ -173,13 +190,23 @@ class TestReadingTheFieldNamesOffTheWire:
         read, _ = reader_for(b'\n  ' + payload(SERVED_TODAY))
         assert schema.served_fields(read) == list(SERVED_TODAY)
 
-    def test_a_non_ascii_value_split_mid_character_does_not_decide_the_verdict(self):
+    @pytest.mark.parametrize('chunk_bytes', [1, 2, 3, 5, 7, 9, 11])
+    def test_a_non_ascii_value_split_mid_character_does_not_decide_the_verdict(self, chunk_bytes):
         """The prefix is decoded before it is complete, so a multi-byte character can be cut in half. Only
-        the keys matter, and they are ASCII, so a mangled value must not fail the read."""
+        the keys matter, and they are ASCII, so a mangled value must not fail the read.
+
+        `ensure_ascii=False` is the whole point of this test and was missing: `json.dumps` escapes
+        non-ASCII to `\\uXXXX` by default, so the body was pure ASCII, no read boundary could land
+        mid-character, and a strict `decode('utf-8')` passed every one of the 43 tests. With raw UTF-8 on
+        the wire a strict decode raises UnicodeDecodeError at several of these chunk sizes - and
+        UnicodeDecodeError is a ValueError, so it would be caught upstream and reported as exit 3 against
+        any deployment whose first label happens to carry a non-ASCII value.
+        """
         body = json.dumps([{'label_id': 1, 'pano_id': 'a', 'pano_x': 'café üñ',
-                            'pano_y': 2, 'label_type': 'CurbRamp'}]).encode('utf-8')
+                            'pano_y': 2, 'label_type': 'CurbRamp'}],
+                          ensure_ascii=False).encode('utf-8')
         read, _ = reader_for(body)
-        assert schema.served_fields(read, chunk_bytes=3)[:2] == ['label_id', 'pano_id']
+        assert schema.served_fields(read, chunk_bytes=chunk_bytes)[:2] == ['label_id', 'pano_id']
 
     def test_an_error_envelope_is_not_a_payload(self):
         """Positive evidence, the #99 rule: only a JSON array of records is a cvMetadata response. A login
@@ -274,7 +301,24 @@ class TestTheCommandLine:
         with pytest.raises(SystemExit) as excinfo:
             schema.main([])
         assert excinfo.value.code != 0
-        assert schema.HOST_ENV in str(excinfo.value)
+        assert schema.HOST_ENV in capsys.readouterr().err
+
+    @pytest.mark.parametrize('argv', [[], ['--host', 'https://sidewalk-sea.cs.washington.edu/']])
+    def test_a_usage_error_does_not_wear_the_missing_field_exit_code(self, monkeypatch, capsys, argv):
+        """The exit code is the whole unattended interface, so two different faults must not share one.
+
+        `sys.exit('<message>')` exits 1 - EXIT_MISSING_FIELDS. So a crontab line naming a directory that
+        does not exist, or an operator pasting a URL into --host, reported exactly what an upstream
+        rename reports, and the cron mail would send someone hunting a schema move that never happened.
+        Asserting `!= 0` cannot see this, which is why it was missed.
+        """
+        monkeypatch.delenv(schema.HOST_ENV, raising=False)
+        with pytest.raises(SystemExit) as excinfo:
+            schema.main(argv)
+
+        assert excinfo.value.code == schema.EXIT_USAGE
+        assert excinfo.value.code != schema.EXIT_MISSING_FIELDS
+        assert excinfo.value.code != schema.EXIT_UNAVAILABLE
 
     def test_the_host_may_come_from_the_environment(self, served, monkeypatch):
         monkeypatch.setenv(schema.HOST_ENV, 'sidewalk-cdmx.cs.washington.edu')
@@ -338,6 +382,71 @@ class TestTheNetworkSeam:
         with pytest.raises(schema.SchemaUnavailable) as excinfo:
             schema.fetch_served_fields('sidewalk-sea.cs.washington.edu')
         assert 'connection refused' in str(excinfo.value)
+
+    @pytest.mark.parametrize('failure', [
+        http.client.BadStatusLine('garbage'),
+        http.client.IncompleteRead(b'half a body'),
+        ValueError('not valid json'),
+    ])
+    def test_a_non_OSError_transport_failure_is_also_caught(self, monkeypatch, failure):
+        """The catch is `(OSError, http.client.HTTPException, ValueError)` and the docstring calls the
+        second one out by name - a BadStatusLine or IncompleteRead from a proxy is an HTTPException, NOT
+        an OSError. Nothing exercised it: narrowing the tuple to `except OSError` left all 43 tests
+        green, while the real behaviour would become a traceback out of main() and exit 1 - the
+        missing-field code, for a transport fault.
+        """
+        def fake_open(url, timeout):
+            raise failure
+
+        monkeypatch.setattr(schema, '_open_stream', fake_open)
+        with pytest.raises(schema.SchemaUnavailable):
+            schema.fetch_served_fields('sidewalk-sea.cs.washington.edu')
+
+
+class TestTheOpenerIsBuiltTheWayItSaysItIs:
+    """`_open_stream`'s socket is the one thing the suite never touches. Its OPENER is a different matter:
+    build_opener and Request can be intercepted with no network at all, and the proxy bypass is documented
+    as load-bearing, so leaving it unpinned meant a deletion nobody would notice until a proxy's login
+    page made the check report itself unable to run every night for ever.
+    """
+
+    def _intercept(self, monkeypatch):
+        seen = {}
+
+        class FakeOpener:
+            def open(self, request, timeout=None):
+                seen['request'] = request
+                seen['timeout'] = timeout
+                return io.BytesIO(b'[]')
+
+        def fake_build_opener(*handlers):
+            seen['handlers'] = handlers
+            return FakeOpener()
+
+        monkeypatch.setattr(schema.urllib.request, 'build_opener', fake_build_opener)
+        return seen
+
+    def test_environment_proxies_are_bypassed(self, monkeypatch):
+        seen = self._intercept(monkeypatch)
+        monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.invalid:3128')
+
+        schema._open_stream('https://sidewalk-sea.cs.washington.edu/x', timeout=5)
+
+        proxy_handlers = [h for h in seen['handlers']
+                          if isinstance(h, schema.urllib.request.ProxyHandler)]
+        assert proxy_handlers, 'no ProxyHandler passed; urllib would honour HTTPS_PROXY'
+        assert proxy_handlers[0].proxies == {}, (
+            'the ProxyHandler must be EMPTY - a populated one is the default behaviour this exists to '
+            'override')
+
+    def test_the_request_carries_the_documented_headers(self, monkeypatch):
+        seen = self._intercept(monkeypatch)
+
+        schema._open_stream('https://sidewalk-sea.cs.washington.edu/x', timeout=5)
+
+        assert seen['request'].get_header('User-agent') == schema.USER_AGENT
+        assert seen['request'].get_header('Accept') == 'application/json'
+        assert seen['timeout'] == 5
 
 
 class TestTheReasonAFetchFailedIsNamed:

@@ -63,7 +63,11 @@ USER_AGENT = 'sidewalk-panorama-tools cvMetadata schema check'
 
 EXIT_OK = 0
 EXIT_MISSING_FIELDS = 1
-# 2 is argparse's usage error; nothing here returns it.
+# argparse's own usage error, and ours. resolve_host used bare sys.exit('<message>'), which exits 1 - the
+# same code as "a required field is gone". A crontab line naming the wrong directory, or an operator
+# pasting a URL into --host, then reads exactly like the upstream rename this exists to catch, which
+# defeats the only unattended signal the design has.
+EXIT_USAGE = 2
 EXIT_UNAVAILABLE = 3
 
 
@@ -306,14 +310,20 @@ def resolve_host(args):
     No default, and the fqdn is checked for a scheme or a path rather than pasted into a URL: `--host
     https://sidewalk-sea.../` would build `https://https://...`, whose failure names a DNS error and not
     the typo that caused it.
+
+    Both failures exit EXIT_USAGE (2), never 1: a usage error must not wear the same exit code as a
+    missing field, or a cron line that was never valid is indistinguishable from the upstream rename
+    this check exists to catch.
     """
     host = args.host or os.environ.get(HOST_ENV)
     if not host:
-        sys.exit('No deployment to check. Pass --host <fqdn> or set %s. There is deliberately no default: '
-                 'see docs/api-fields.md.' % HOST_ENV)
+        print('No deployment to check. Pass --host <fqdn> or set %s. There is deliberately no default: '
+              'see docs/api-fields.md.' % HOST_ENV, file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     host = host.strip()
     if '/' in host or ':' in host:
-        sys.exit('--host takes a bare FQDN, not a URL: got %r' % (host,))
+        print('--host takes a bare FQDN, not a URL: got %r' % (host,), file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     return host
 
 
