@@ -716,10 +716,13 @@ class TestTheWholeQueueEndToEnd:
         assert all('--all-panos --skip-depth' in line for line in starts), starts
 
     def test_one_failing_city_does_not_stop_the_ones_behind_it(self, tmp_path, fake_runner, journal,
-                                                               monkeypatch):
+                                                               monkeypatch, fleet_in_step, capsys):
+        """fleet_in_step so the exit 1 is the failed cities' own: without it the cross-check's unserved
+        roster exits 1 whatever the cities did, and this asserted `code == 1` for the wrong reason."""
         monkeypatch.setenv('QUEUE_TEST_EXIT', '1')
         code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
         assert code == 1
+        assert '0/3 cities ok, 3 failed' in capsys.readouterr().out
         assert len([line for line in journal.read() if line.startswith('START')]) == 3
 
     def test_the_queue_log_lands_on_the_store_and_not_the_cwd(self, tmp_path, fake_runner, journal,
@@ -1991,6 +1994,15 @@ class TestWhichCitiesAreMissingFromTheManifest:
 
         assert [u.city_id for u in scrape_queue.unlisted_cities(roster, [], disabled)] == ['laurens-ia']
 
+    def test_a_disabled_row_with_no_host_is_not_credited_either(self):
+        """`#laurens-ia,` - the id with an empty fqdn - is what a one-word comment line reads as, and what the
+        docs' "keep both columns on it" is about. The prose-comment case above passes a `== host` and an
+        `in (host, '')` alike, since its junk fqdn is neither; this one is what tells them apart
+        (2026-09-18 post-merge review, a surviving mutant)."""
+        roster = [roster_entry('laurens-ia')]
+
+        assert [u.city_id for u in scrape_queue.unlisted_cities(roster, [], {'laurens-ia': ''})] == ['laurens-ia']
+
 
 class TestTheManifestRecordsItsDisabledRows:
 
@@ -2060,9 +2072,19 @@ class TestTheRosterIsFetchedBestEffortButBounded:
         assert [host for host, _ in check.attempts] == ['sidewalk-one.invalid', 'sidewalk-two.invalid']
         assert check.hosts_total == 2
 
-    def test_the_hosts_that_ran_ok_tonight_are_asked_first(self):
-        """The check runs after the fleet, so the hosts that just served /adminapi/panos are the ones to ask;
-        a host that failed its scrape is the last one whose roster call should be spent on."""
+    def test_the_hosts_that_ran_ok_tonight_are_asked_first_most_recent_first(self):
+        """The check runs after the fleet, so the host that just served /adminapi/panos is the one to ask -
+        and under a 690-minute window "just" is the LAST ok run: in run order the first host asked is the one
+        that answered eleven hours ago (2026-09-18 post-merge review). A host that failed its scrape is the
+        last one whose roster call should be spent on."""
+        manifest = cities(('a', 'ha'), ('b', 'hb'), ('c', 'hc'), ('d', 'hd'))
+        results = [result('a', outcome='failed'), result('b'), result('c', outcome='timed_out'), result('d')]
+
+        assert scrape_queue.roster_hosts(manifest, results) == ['hd', 'hb', 'ha', 'hc']
+
+    def test_a_city_re_run_in_a_later_pass_counts_by_its_latest_run(self):
+        """b ran first in pass 1 and again, last, in pass 2 - so its host is the one most recently seen up,
+        and it is asked once, not twice."""
         manifest = cities(('a', 'ha'), ('b', 'hb'), ('c', 'hc'), ('d', 'hd'))
         results = [result('a', outcome='failed'), result('b'), result('c', outcome='timed_out'),
                    result('d'), result('b', pass_number=2)]
@@ -2139,13 +2161,31 @@ class TestTheReportAndTheExitCodeAgree:
         assert 'WARNING' not in text
         assert scrape_queue.exit_code_for(self.clean_night(), self.no_roster()) == 1
 
-    def test_the_same_line_is_a_warning_when_advisory(self):
-        """The dry run's word, and its level, on the one line whose meaning depends on the path."""
-        _, status = scrape_queue.manifest_report(self.no_roster(), advisory=True)
-        _, nightly = scrape_queue.manifest_report(self.no_roster())
+    def test_no_roster_leads_the_totals_and_is_said_on_them_like_any_other_failure(self):
+        """The same ordering rule the gap has, for the third shape. Until the 2026-09-18 post-merge review the
+        ERROR line was the LAST line of the mail, under a clean '2/2 cities ok, 0 failed, 0 timed out, 0 not
+        reached' and under every extra-pass line - after up to 54 per-city lines, on a night that exited 1
+        for the reason it names. The totals line said nothing about it at all."""
+        night = self.clean_night() + [result('bravo-bb', pass_number=2, seconds=30.0)]
+        lines = scrape_queue.summarise(night, 1.0, self.no_roster()).splitlines()
 
-        assert status == [(nightly[0][0].replace('ERROR:', 'WARNING:'), logging.WARNING)]
-        assert nightly[0][1] == logging.ERROR
+        error = [i for i, ln in enumerate(lines) if 'ERROR: manifest not cross-checked' in ln][0]
+        totals = [i for i, ln in enumerate(lines) if 'cities ok' in ln][0]
+        passes = [i for i, ln in enumerate(lines) if ln.startswith('[queue] pass 2:')][0]
+        assert error < totals < passes
+        assert '2/2 cities ok, 0 failed, 0 timed out, 0 not reached, manifest not cross-checked;' in lines[totals]
+        assert lines[-1].startswith('[queue] pass 2:'), 'nothing is printed below the extra-pass lines'
+
+    def test_the_same_line_is_a_warning_when_advisory(self):
+        """The dry run's word, and its level, on the one line whose meaning depends on the path - and its
+        place: on the night it is the failure and sits with the gap; on a dry run it is advice and sits
+        with the status, under the plan."""
+        gap_adv, status_adv = scrape_queue.manifest_report(self.no_roster(), advisory=True)
+        gap_night, status_night = scrape_queue.manifest_report(self.no_roster())
+
+        assert gap_adv == [] and status_night == []
+        assert status_adv == [(gap_night[0][0].replace('ERROR:', 'WARNING:'), logging.WARNING)]
+        assert gap_night[0][1] == logging.ERROR
 
     def test_one_missing_city_is_singular_on_the_totals_line(self):
         one = self.gap(scrape_queue.Unlisted('laurens-ia', 'sidewalk-laurens.cs.washington.edu', None))
@@ -2212,13 +2252,37 @@ class TestTheCrossCheckEndToEnd:
         assert 'ERROR: manifest not cross-checked' in out
         assert 'sidewalk-alpha.invalid (no network in tests)' in out
         assert '3 of 3 hosts tried' in out
-        logged = [r for r in caplog.records if 'manifest not cross-checked' in r.getMessage()]
-        assert [r.levelno for r in logged] == [logging.ERROR], caplog.text
+        logged = [(r.levelno, r.getMessage()) for r in caplog.records
+                  if 'manifest not cross-checked' in r.getMessage()]
+        # The alarm line at ERROR, above the totals line that repeats it at INFO - and nothing else says it.
+        assert [level for level, _ in logged] == [logging.ERROR, logging.INFO], caplog.text
+        assert logged[0][1].startswith('ERROR: manifest not cross-checked - no roster from')
+        assert logged[1][1].startswith('3/3 cities ok, 0 failed, 0 timed out, 0 not reached, manifest not cross-checked;')
+        # The check narrates itself in the log as it goes: up to 90 s of attempts between the last city's
+        # line and the summary would otherwise read like a queue that died before its summary.
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(m.startswith('cross-checking the manifest: asking up to 3 of 3 hosts') for m in messages)
+        assert sum(1 for m in messages if 'served no roster (no network in tests)' in m) == 3, caplog.text
+        assert '3/3 cities ok, 0 failed, 0 timed out, 0 not reached, manifest not cross-checked;' in out
+
+    def test_under_only_the_whole_manifest_is_still_the_pool_of_hosts_to_ask(self, tmp_path, fake_runner,
+                                                                              journal, capsys):
+        """`roster_hosts(ordered, results)` at the call site survives every other test: under --only the pool
+        collapses to the one city's host, so the check reports '1 of 1 hosts tried' and a single 502 fails
+        the night (2026-09-18 post-merge review). The pool is the manifest; --only chose what to RUN."""
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--only', 'bravo-bb')
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert '3 of 3 hosts tried' in out, out
+        # And the one that ran is asked first - it is the host most recently seen up.
+        assert out.index('sidewalk-bravo.invalid (no network') < out.index('sidewalk-alpha.invalid (no network')
 
     def test_the_hosts_that_ran_ok_are_asked_first_from_main_too(self, tmp_path, fake_runner, journal,
                                                                  monkeypatch, capsys):
         """roster_hosts is tested on its own above; this is main() actually handing its order to the check,
-        which a `check_manifest(cities, disabled)` at that call site would silently drop."""
+        which a `check_manifest(cities, disabled)` at that call site would silently drop. alpha failed, bravo
+        and charlie ran ok in that order - so charlie's host, the last one seen up, is the one asked."""
         real_run_city = scrape_queue.run_city
 
         def run_city(city, *args, **kwargs):
@@ -2234,7 +2298,7 @@ class TestTheCrossCheckEndToEnd:
         code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
 
         assert code == 1, capsys.readouterr().out  # alpha failed; the check itself was clean
-        assert calls == ['https://sidewalk-bravo.invalid/v3/api/cities']
+        assert calls == ['https://sidewalk-charlie.invalid/v3/api/cities']
 
     def test_a_disabled_row_counts_as_present_end_to_end(self, tmp_path, fake_runner, journal, monkeypatch,
                                                          capsys):
@@ -2348,3 +2412,37 @@ class TestDryRunCrossChecksToo:
 
         assert code == 0
         assert 'manifest checked against 3 public cities' in capsys.readouterr().out
+
+    def test_a_dry_run_under_only_still_checks_the_whole_manifest(self, tmp_path, fake_runner, journal,
+                                                                   monkeypatch, capsys):
+        """The nightly path pins this; the dry run had no --only test, so `check_manifest(ordered, disabled)`
+        there - `ordered` being the variable the plan loop just used - survived the suite and would name
+        every city --only left out (2026-09-18 post-merge review)."""
+        serve_roster(monkeypatch, roster_entry('alpha-aa', url='https://sidewalk-alpha.invalid'),
+                     roster_entry('bravo-bb', url='https://sidewalk-bravo.invalid'),
+                     roster_entry('charlie-cc', url='https://sidewalk-charlie.invalid'))
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--only', 'alpha-aa')
+
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert plan_lines(out) == ['alpha-aa']
+        assert 'missing from the manifest' not in out
+        assert 'manifest checked against 3 public cities' in out
+
+
+class TestTheDocsQuoteTheRosterBounds:
+
+    def test_the_bound_the_docs_promise_is_the_one_the_constants_give(self):
+        """`docs/downloader.md` tells an offline operator how long a dry run waits before saying so. The
+        suite pins that the timeout is PASSED, not what it is, so a `ROSTER_TIMEOUT_SECONDS = 3000.0` left
+        every test green and the docs wrong (2026-09-18 post-merge review). Same rule as the reports: a
+        number in prose is transcribed from its source, and a test says so."""
+        docs = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs',
+                            'downloader.md')
+        with open(docs, encoding='utf-8') as f:
+            text = ' '.join(f.read().split())  # prose hard-wraps; read it as test_docs reads links
+
+        bound = '%d × %d s' % (scrape_queue.ROSTER_MAX_HOSTS, scrape_queue.ROSTER_TIMEOUT_SECONDS)
+        assert bound in text, 'docs/downloader.md no longer states the %s bound' % bound
+        assert 'at most three' in text and scrape_queue.ROSTER_MAX_HOSTS == 3
