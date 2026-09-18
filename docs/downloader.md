@@ -92,7 +92,7 @@ Three consequences worth knowing:
   reserved and the image phase keeps the whole budget.
 * **A reservation at or above `--max-runtime` zeroes the image phase.** The run downloads **no images** and
   prints `WARNING: --min-depth-runtime (X) >= --max-runtime (Y); NO images will be downloaded this run`, so a
-  misconfigured crontab shows up in cron mail instead of looking like ordinary budget exhaustion.
+  misconfigured crontab shows up in the night's message instead of looking like ordinary budget exhaustion.
 
 `--min-depth-runtime` is ignored without `--max-runtime`, and with `--skip-depth`.
 
@@ -103,8 +103,9 @@ The fleet runs as **one queue, from one crontab line**, on a box whose clock is 
 a manifest of cities and starts the next one as soon as the previous one exits — and then, while the window
 has a slot left, runs the cities that ran out of budget again ([extra passes](#extra-passes)).
 
-The line in production since 2026-09-06 (depth on; 52 cities × 12 minutes inside an 11.5-hour window that
-ends 06:30 Pacific):
+The line in production (the queue since 2026-09-06; depth on; 52 cities × 12 minutes inside an 11.5-hour window
+that ends 06:30 Pacific), wrapped in [`cron_notify.py`](ops.md#hearing-about-a-bad-night) because the host
+cannot send mail:
 
 ```cron
 # No CRON_TZ: this cron ignores it (see below). The box timezone IS the schedule.
@@ -112,6 +113,10 @@ SHELL=/bin/bash
 BASH_ENV=/home/ubuntu/.scraper.env
 
 0 19 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
+              /srv/sidewalk-panorama-tools/cron_notify.py --name scrape-queue \
+              --log /home/ubuntu/cron_notify.log \
+              --sink 'aws sns publish --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
+              -- /srv/sidewalk-panorama-tools/.venv/bin/python \
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
               --max-runtime 690 --city-max-runtime 12 \
@@ -119,7 +124,15 @@ BASH_ENV=/home/ubuntu/.scraper.env
 ```
 
 `--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
-images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the `--`.
+images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the
+queue's `--` (the second one; the first ends the wrapper's own arguments).
+
+**The wrapper is cron's mail rule with the delivery made pluggable.** It runs the queue, streams its stdout and
+stderr through, and when the queue exits hands the capture to `--sink` if there was any — any output, not
+nonzero exit alone — with the exit code, a one-line subject and a file path in the environment. The exit code
+cron sees is the queue's own. What the sink is (SNS, on the production host), what the wrapper does when the
+sink fails, how it cuts a backlog night's output to fit, and how to verify a change to it are in
+[Hearing about a bad night](ops.md#hearing-about-a-bad-night).
 
 **The timezone lives in the box, not in the crontab.** The first version of this line carried
 `CRON_TZ=America/Los_Angeles`, which is how cronie (Fedora/RHEL) pins a schedule to a zone — and Ubuntu 22.04
@@ -137,9 +150,8 @@ before the switch are UTC and those after are Pacific, seven hours apart in real
 between the two eras; there is none to find, which is exactly how eleven nights at noon went unnoticed. Do not
 put `CRON_TZ` back: it reads as a fix and is not one. A systemd timer would pin the zone for real — it goes
 *inside* the calendar spec, `OnCalendar=*-*-* 19:00 America/Los_Angeles`, there is no `Timezone=` directive —
-but this is one line, and cron's failure mail (once the host can send it; see
-[Hearing about a bad night](ops.md#hearing-about-a-bad-night)) comes for free, where a timer needs an
-`OnFailure=` unit.
+but this is one line, and cron's any-output rule — which [`cron_notify.py`](ops.md#hearing-about-a-bad-night)
+keeps, on a host that cannot mail — comes for free, where a timer needs an `OnFailure=` unit.
 
 **Why a queue rather than 53 slots**
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The old shape was one line
@@ -253,8 +265,8 @@ with several rows on one host does not spend the whole cap on it.
 | `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
-**Exit codes**, since cron's mail-on-failure is the alert channel (when the host can send mail — check, per
-[Hearing about a bad night](ops.md#hearing-about-a-bad-night)): `0` every city ran and succeeded and the
+**Exit codes**, since the exit is the alert: it is the subject line of the night's message
+([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), and it is the code cron sees: `0` every city ran and succeeded and the
 manifest names every public city, `1` something failed, timed out, **was never reached**, **a public city has
 no manifest row**, or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
 lock. A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
@@ -352,7 +364,7 @@ The queue is a driver, not a replacement for the runner. A single city is still 
 
 * **Give it the venv interpreter by absolute path.** Cron's `PATH` is minimal, and `source activate` buys
   nothing a direct path doesn't.
-* **The exit code is the run's own**, so cron's mail-on-failure is the alert channel. `SIGTERM` becomes exit
+* **The exit code is the run's own**, so the queue — and the night's message — can read it. `SIGTERM` becomes exit
   143 *after* the `finally` that writes the `log.csv` row, so stopping a run still leaves evidence.
 * **Nothing is written relative to the CWD.** `scrape.log` and `log.csv` both land in `<storage-dir>`.
 * **Sizing:** `--max-runtime` is the slot, `--min-depth-runtime 60` reserves the tail for depth. Overlapping
@@ -511,7 +523,8 @@ pano in the city.
 
 **So that path has a run-level breaker** ([#113]). Three consecutive permanent verdicts from one source stop
 this run ledgering that source: its remaining panos are left unattempted, the run says so on stdout and in
-`scrape.log`, and it exits nonzero — which `scrape_queue.py` books as a failed city, so cron mails it. The
+`scrape.log`, and it exits nonzero — which `scrape_queue.py` books as a failed city, so the night's message
+carries it. The
 verdict that trips the breaker is itself withheld, so a trip costs two false rows rather than three.
 
 It is keyed on the **source**, not on the no-rendition verdict specifically. That is broader than the shape
@@ -531,7 +544,7 @@ view other than 360 is refused one at a time, but **323 of the 1,000 pictures in
 92° photographs** — the only thing keeping them out of the corpus is that the app filters its own search to
 360, which is a property of the layer above that this scraper cannot check. A missing `hd` asset is the same
 shape one federated instance wide. If either ever goes wrong the candidates are shuffled, so the breaker
-trips within about ninety panos on the first night and cron mails it — instead of the city writing itself
+trips within about ninety panos on the first night and the night's message says so — instead of the city writing itself
 off a third at a time, silently and permanently.
 
 Only a **success** resets the count — not a transient failure, and not a skip. See
@@ -540,7 +553,7 @@ difference between a breaker that fires and one that cannot.
 
 [#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
 
-Where the reason lands: cron mail carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
+Where the reason lands: the night's message carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
 `code` and `message` are in `scrape.log` on the store, one line per pano.
 
