@@ -5,7 +5,9 @@ city_id,fqdn
 # the crontab it replaces.
 #
 # Two columns, both required. The fqdn cannot be derived from the city_id - seattle-wa is served by
-# sidewalk-sea, columbus-oh by sidewalk-columbus - so they travel together.
+# sidewalk-sea, columbus-oh by sidewalk-columbus - so they travel together. Both come from the app's own
+# /v3/api/cities: the city_id must be the app's id for that city, because that is the directory it reads
+# its crops from, and the queue reports every public city whose id has no row here (#130).
 #
 # A row whose city_id starts with # is skipped, which is how a city is taken out for a night now that it has
 # no crontab line of its own to comment out. The rows below are real, and in the order the queue would run

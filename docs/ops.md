@@ -688,9 +688,13 @@ previous deploy's changes again.
 
 ### Adding a city
 
-1. Append `city_id,fqdn` to the manifest. The fqdn cannot be derived from the id — read it off the app, and
-   check `https://<fqdn>/adminapi/panos` answers first.
-2. `scrape_queue.py … --dry-run` takes no lock and shows the city in the plan while the queue runs.
+1. Append `city_id,fqdn` to the manifest. Both halves come from `https://<fqdn>/v3/api/cities`: the `city_id`
+   must be the app's own id (it reads its crops from `<store-root>/<city_id>`, so any other name scrapes into a
+   directory it never looks at), and the fqdn cannot be derived from the id. Check
+   `https://<fqdn>/adminapi/panos` answers first.
+2. `scrape_queue.py … --dry-run` takes no lock, shows the city in the plan while the queue runs, and
+   [cross-checks the manifest](downloader.md#the-manifest-is-cross-checked-against-the-fleet) — any public
+   city still missing a row, or listed under the wrong id, is named and the dry run exits 1.
 3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it.
 4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
 
