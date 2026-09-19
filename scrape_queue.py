@@ -896,7 +896,9 @@ def roster_hosts(cities, results):
     first, then the rest in manifest order. The check runs after the fleet, so the host that just served
     /adminapi/panos is the one to spend a roster call on - and under a 690-minute window "just" is the last
     ok run, not the first: in run order the first host asked would be the one that answered eleven hours
-    ago. A city re-run in a later pass counts by its latest run, since that is when its host was last seen up.
+    ago. A city re-run in a later pass counts by its latest OK run, since that is when its host was last seen
+    up: a later run that failed or timed out is not evidence about the host - the runner's own crash and a
+    hung depth request both book that way - so it neither demotes the city nor removes it from the ok group.
     """
     ok = list(dict.fromkeys(r.city_id for r in reversed(results) if r.outcome == 'ok'))
     by_id = {c.city_id: c.fqdn for c in cities}
@@ -1100,10 +1102,12 @@ def main(argv=None):
             print("Then extra passes over whichever cities ran out of budget, while a slot of the window "
                   "remains - which cities, and with what budgets, cannot be shown before pass 1 has run.")
         # The same cross-check the night runs (#130), so a hand-run before a launch answers "is everything
-        # wired?" now rather than tomorrow morning. Printed only: no log is configured on a dry run, and the
-        # root logger's last-resort handler would echo every line to stderr. A gap exits 1 exactly as the
-        # night would; a roster nobody served is advisory here - this is someone at a keyboard, possibly
-        # offline, reading the plan - where the night treats it as a failed check.
+        # wired?" now rather than tomorrow morning. Printed only: no log is configured on a dry run, so
+        # load_roster's INFO narration goes nowhere here (the first module-level logging call installs
+        # Python's default WARNING-level stderr handler, measured, which drops it) and an offline operator
+        # simply waits up to ROSTER_MAX_HOSTS x ROSTER_TIMEOUT_SECONDS for the WARNING line. A gap exits 1
+        # exactly as the night would; a roster nobody served is advisory here - this is someone at a
+        # keyboard, possibly offline, reading the plan - where the night treats it as a failed check.
         check = check_manifest(cities, disabled)
         gap, status = manifest_report(check, advisory=True)
         print('\n'.join(line for line, _ in gap + status))

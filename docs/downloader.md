@@ -228,6 +228,7 @@ until 2026-09-19, and 20 of the 59 deployments are private). The report takes on
 [queue] cities missing from the manifest: laurens-ia (sidewalk-laurens.cs.washington.edu), bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', the app reads <store-root>/bayonne-fr), zurich (private; url not published)
 [queue]   add one city_id,fqdn row per city - city_id must be the app's own id, because that is the directory it reads; a '#city_id,fqdn' row records one that is deliberately not scraped here
 [queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, 3 cities missing from the manifest; 610.2 min total
+[queue] manifest checked against 39 public and 20 private cities (roster from sidewalk-sea.cs.washington.edu)
 ```
 ```
 [queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached; 610.2 min total
