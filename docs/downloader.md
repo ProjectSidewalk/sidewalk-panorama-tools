@@ -214,6 +214,7 @@ listed, but the check does not ask about them. The report takes one of three sha
 [queue] public cities missing from the manifest: laurens-ia (sidewalk-laurens.cs.washington.edu), bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', the app reads <store-root>/bayonne-fr)
 [queue]   add one city_id,fqdn row per city - city_id must be the app's own id, because that is the directory it reads
 [queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, 2 public cities missing from the manifest; 610.2 min total
+[queue] manifest checked against 39 public cities (roster from sidewalk-sea.cs.washington.edu)
 ```
 ```
 [queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached; 610.2 min total

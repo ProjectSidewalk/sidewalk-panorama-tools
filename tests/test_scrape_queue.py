@@ -2091,6 +2091,17 @@ class TestTheRosterIsFetchedBestEffortButBounded:
 
         assert scrape_queue.roster_hosts(manifest, results) == ['hb', 'hd', 'ha', 'hc']
 
+    def test_a_later_failed_run_does_not_demote_a_host_seen_up_earlier(self):
+        """"Latest" means latest OK run. d ran ok in pass 1 and timed out in pass 2; the timeout is not
+        evidence about the host (the runner's own crash and a hung depth request book the same way), so d
+        keeps its seat in the ok group, ranked by its pass-1 run - behind b, whose ok run is more recent.
+        A rule ranking by the latest run of ANY outcome passed every other test (2026-09-19 review)."""
+        manifest = cities(('a', 'ha'), ('b', 'hb'), ('c', 'hc'), ('d', 'hd'))
+        results = [result('a', outcome='failed'), result('d'), result('c', outcome='timed_out'),
+                   result('b'), result('d', outcome='timed_out', pass_number=2)]
+
+        assert scrape_queue.roster_hosts(manifest, results) == ['hb', 'hd', 'ha', 'hc']
+
     def test_a_body_that_is_not_a_roster_moves_on_to_the_next_host(self, monkeypatch):
         bodies = {'sidewalk-alpha.invalid': b'<html>login</html>',
                   'sidewalk-bravo.invalid': roster_body(roster_entry('alpha-aa'))}
@@ -2443,6 +2454,6 @@ class TestTheDocsQuoteTheRosterBounds:
         with open(docs, encoding='utf-8') as f:
             text = ' '.join(f.read().split())  # prose hard-wraps; read it as test_docs reads links
 
-        bound = '%d × %d s' % (scrape_queue.ROSTER_MAX_HOSTS, scrape_queue.ROSTER_TIMEOUT_SECONDS)
+        bound = '%g × %g s' % (scrape_queue.ROSTER_MAX_HOSTS, scrape_queue.ROSTER_TIMEOUT_SECONDS)
         assert bound in text, 'docs/downloader.md no longer states the %s bound' % bound
         assert 'at most three' in text and scrape_queue.ROSTER_MAX_HOSTS == 3
