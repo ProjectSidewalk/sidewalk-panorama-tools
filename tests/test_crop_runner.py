@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import logging.handlers  # not implied by `import logging`; asserted on below
+import math
 import os
 import re
 import subprocess
@@ -2002,3 +2003,279 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
         seam so they are at least exercised end to end rather than only restated."""
         for name, expected in crop_runner.LABEL_TYPE_IDS_BY_NAME.items():
             assert crop_runner.resolve_label_type_id({'label_type': name}) == expected
+
+
+# ---------------------------------------------------------------------------
+# The systemic-failure alarm (#136)
+# ---------------------------------------------------------------------------
+
+def counts_dict(total, errors=0, success=0, skipped_existing=0, missing_pano=0, dims_mismatch=0,
+                out_of_frame=0, shifted_vertically=0):
+    """A counts dict shaped exactly like bulk_extract_crops', for unit-testing the alarm alone."""
+    return {'total': total, 'success': success, 'skipped_existing': skipped_existing,
+            'missing_pano': missing_pano, 'dims_mismatch': dims_mismatch,
+            'out_of_frame': out_of_frame, 'shifted_vertically': shifted_vertically,
+            'errors': errors}
+
+
+def unparseable_rows(n, first_label_id=1):
+    """n label rows that the up-front parse rejects — the #123 shape, where the fault is in the
+    metadata rather than in any one label, so every row fails the same way."""
+    return [label_row(label_id=first_label_id + i, pano_x='not-a-number') for i in range(n)]
+
+
+class TestTheSystemicFailureAlarm:
+    """#136. The bookkeeping was already correct when cvMetadata moved (#123): errors == total, the
+    invariant held, main() exited 1. What was missing was a signal of a different SHAPE — 260,000
+    identical per-row WARNINGs differ from three of them only in length, and CropRunner is hand-run,
+    so no cron mail carries the exit code to anyone.
+
+    Every test here asserts on the alarm AND on the counts, because the one thing this must not do is
+    buy a louder summary with a bucket that shifted."""
+
+    def test_the_shipped_threshold_is_half(self, crop_runner):
+        """Pinned so a change to it is deliberate, the WRITE_DISPLAY_COPIES pattern. Half is not a
+        tuned number: it is the point where errors stop being a minority outcome, i.e. where more of
+        the run failed than survived, which no per-row cause explains at scale. The boundary tests
+        below derive from the constant, so only this one fails if it is quietly moved."""
+        assert crop_runner.SYSTEMIC_ERROR_FRACTION == 0.5
+
+    def test_an_all_errors_run_names_itself_on_both_channels(self, crop_runner, tmp_path, capsys,
+                                                             caplog):
+        """The #123 run, in miniature. stdout is what the operator reads at the end of a hand-run;
+        crop.log is what is still there tomorrow — the print/logging rule, so one channel is a fail."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        with caplog.at_level(logging.ERROR):
+            counts = crop_runner.bulk_extract_crops(unparseable_rows(12), str(store), str(out))
+        printed = capsys.readouterr().out
+
+        assert counts['errors'] == counts['total'] == 12
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed
+        assert any(record.levelno >= logging.ERROR
+                   and crop_runner.SYSTEMIC_FAILURE_BANNER in record.getMessage()
+                   for record in caplog.records), caplog.text
+
+    def test_an_export_whose_every_id_is_off_by_one_fires_too(self, crop_runner, tmp_path, capsys,
+                                                              caplog):
+        """The other systemic shape #123's review added (109650b): an id is now validated against the
+        enum instead of going through a bare int(), so a -f export with a shifted type column is a run
+        where every row is a counted error for a reason that has nothing to do with any one row. That
+        is the fault this alarm is for, and it reaches the errors bucket by a different door than the
+        unparseable-coordinate rows the tests above use."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [dict(label_row(label_id=i, pano_x=100 + 40 * i), label_type_id=90 + i)
+                  for i in range(1, 7)]
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['errors'] == counts['total'] == 6
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in caplog.text
+
+    def test_a_healthy_run_says_nothing_at_all(self, crop_runner, tmp_path, capsys, caplog):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [label_row(label_id=i, pano_x=100 + 40 * i) for i in range(1, 6)]
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['success'] == 5 and counts['errors'] == 0
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_one_bad_row_among_many_is_not_systemic(self, crop_runner, tmp_path, capsys, caplog):
+        """Discrimination for the test above it: an alarm keyed on `errors` being nonzero would say
+        nothing the exit code does not already say, and would cry wolf on the ordinary corrupt pano
+        the loop is built to survive."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [label_row(label_id=i, pano_x=100 + 40 * i) for i in range(1, 10)]
+        labels += unparseable_rows(1, first_label_id=99)
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['errors'] == 1 and counts['total'] == 10
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_a_run_with_no_labels_at_all_is_silent(self, crop_runner, tmp_path, capsys, caplog):
+        """The zero-work guard is load-bearing arithmetic, not a formality: `errors >= fraction *
+        total` reads 0 >= 0.0, which is TRUE, so an empty store would otherwise raise the alarm on a
+        run that did nothing wrong because it had nothing to do."""
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops([], str(tmp_path / 'store'),
+                                                    str(tmp_path / 'crops'))
+        assert counts['total'] == 0 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_a_rerun_over_a_finished_store_is_silent(self, crop_runner, tmp_path, capsys, caplog):
+        """Every label skipped_existing: the ordinary no-op re-run, and the degenerate case an alarm
+        keyed on 'how little did this run produce' would fire on every night of a caught-up city."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [label_row(label_id=i, pano_x=100 + 40 * i) for i in range(1, 6)]
+        crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        capsys.readouterr()
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['skipped_existing'] == 5 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_a_store_that_has_not_been_scraped_yet_is_silent(self, crop_runner, tmp_path, capsys,
+                                                             caplog):
+        """100% missing_pano. The pano store is scraped independently and legitimately lags the label
+        list, so this is the normal state of a fresh city — the same reason it does not move the exit
+        code. The alarm is about `errors`, not about a run that produced no crops."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        store.mkdir(parents=True)
+        labels = [label_row(label_id=i, pano_id='gonepano000%d' % i) for i in range(1, 6)]
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['missing_pano'] == 5 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_the_line_reports_the_run_it_was_given_not_a_run_that_failed_entirely(self, crop_runner):
+        """Every other assertion on this line's contents is made on a 100%-error input, where
+        `errors == total` makes the two numbers interchangeable and the rate 100% whichever way it is
+        computed. So `"%d of %d" % (total, errors)` and a rate of `errors / max(errors, 1)` both
+        survived the whole 240-test file: a real 4-of-6 run printed `6 of 4 ... (100.0%)` and nothing
+        went red. The line's whole job is to save an operator from counting warnings to learn the
+        share, so the share has to be pinned somewhere it is not trivially 100%.
+        """
+        line = crop_runner.systemic_failure_line(counts_dict(6, errors=4))
+
+        assert '4 of 6' in line
+        assert '66.7%' in line
+
+    def test_the_denominator_is_every_label_the_run_was_handed(self, crop_runner):
+        """The documented denominator choice, and the blind spot that comes with it, in one assertion.
+
+        `total` — not the subset the run actually tried to cut — is what keeps a lagging city quiet.
+        The two silence tests above cannot pin this: both have `errors == 0`, so the threshold test
+        silences them whatever the denominator is. Each input here is 4 of 10 (silent) but would be
+        4 of 4 (100%, fires) under a denominator that subtracted that bucket.
+
+        BOTH skip buckets, because the docstring and docs/cropper.md justify this denominator with
+        BOTH - a lagging scrape and a finished store. Pinning only missing_pano left
+        `total - skipped_existing` and `total - dims_mismatch - out_of_frame` alive, which is the same
+        half-covered shape the test was written to close, one bucket over.
+        """
+        assert crop_runner.systemic_failure_line(counts_dict(10, errors=4, missing_pano=6)) is None
+        assert crop_runner.systemic_failure_line(counts_dict(10, errors=4, skipped_existing=6)) is None
+        assert crop_runner.systemic_failure_line(
+            counts_dict(10, errors=4, dims_mismatch=3, out_of_frame=3)) is None
+
+    def test_the_123_shape_is_immune_to_missing_pano_dilution(self, crop_runner, tmp_path, capsys):
+        """docs/cropper.md claims the schema-move shape cannot be diluted by an un-scraped store, and
+        that claim rests on an ORDERING nothing pinned: the up-front metadata parse `continue`s on a bad
+        row, so it never reaches `labels_by_pano` and the pano-existence check never sees it.
+
+        Every other 100%-error test puts a pano on the store first, so folding the parse into the pano
+        loop - a plausible "why two passes?" refactor - would silently turn the documented immunity into
+        dilution with nothing going red. Here the store is EMPTY, so dilution would be maximal.
+        """
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        store.mkdir(parents=True)
+        labels = [label_row(label_id=i, pano_x='not-a-number') for i in range(1, 13)]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 12 and counts['missing_pano'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in capsys.readouterr().out
+
+    def test_a_zero_total_carrying_errors_cannot_divide_by_zero(self, crop_runner):
+        """What the `total > 0` guard is actually for.
+
+        It is NOT what stops an empty store alarming — `errors > 0` already does that, so dropping the
+        total guard alone leaves all 240 tests green. The only input the two guards disagree on is this
+        one, which the crop loop cannot currently produce (errors are only ever counted per label) but
+        which a caller of the pure function can hand it. Without the guard this raises
+        ZeroDivisionError inside the summary, i.e. turns the alarm into the one fatal thing in a
+        function whose contract is that nothing in it is fatal.
+        """
+        assert crop_runner.systemic_failure_line(counts_dict(0, errors=1)) is None
+
+    @pytest.mark.parametrize('total', [2, 4, 10, 1000, 260000])
+    def test_the_boundary_is_the_fraction_itself(self, crop_runner, total):
+        """At the fraction it fires; one error below it does not. Derived from the constant rather
+        than hard-coded, so this stays the >= test if the fraction is ever revised — a `>` in the
+        implementation fails the first assert, a `>=` written against the wrong denominator or an
+        off-by-one fails the second."""
+        at = math.ceil(crop_runner.SYSTEMIC_ERROR_FRACTION * total)
+        assert crop_runner.systemic_failure_line(counts_dict(total, errors=at)) is not None
+        assert crop_runner.systemic_failure_line(counts_dict(total, errors=at - 1)) is None
+
+    def test_the_line_is_greppable_and_names_the_numbers(self, crop_runner):
+        """It has to be actionable on its own: an operator who sees it should not have to count
+        warnings to learn what share of the run failed, and should be told this looks like one cause."""
+        line = crop_runner.systemic_failure_line(counts_dict(260000, errors=260000))
+        assert line.startswith(crop_runner.SYSTEMIC_FAILURE_BANNER)
+        assert '260000 of 260000' in line
+        assert '100.0%' in line
+        assert 'crop.log' in line
+
+    def test_the_alarm_is_the_last_thing_the_operator_sees(self, crop_runner, tmp_path, capsys):
+        """Printed after the per-outcome summary, so on a terminal it is the line still on screen —
+        the whole complaint in #136 is that the signal was buried in what came before it."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops(unparseable_rows(6), str(store), str(out))
+        lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in lines[-1]
+        # ...and it is an addition to the summary, not a replacement for it.
+        assert any('6 labels total' in line for line in lines)
+
+    def test_reading_the_counts_does_not_touch_them(self, crop_runner):
+        counts = counts_dict(10, errors=10)
+        before = dict(counts)
+        assert crop_runner.systemic_failure_line(counts) is not None
+        assert counts == before
+
+    def test_the_counts_reconcile_on_every_path_the_alarm_fires_on(self, crop_runner, tmp_path):
+        """The property most at risk: an alarm that recounted, double-counted, or moved a label into a
+        bucket of its own would leave the summary louder and the invariant broken. Asserted on a fully
+        failed run, on its re-run (crops on disk are the resume marker, and there are none), and on a
+        mixed run that still clears the threshold."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+
+        first = crop_runner.bulk_extract_crops(unparseable_rows(8), str(store), str(out))
+        assert reconciles(first)
+        assert first == counts_dict(8, errors=8)
+
+        again = crop_runner.bulk_extract_crops(unparseable_rows(8), str(store), str(out))
+        assert reconciles(again)
+        assert again == counts_dict(8, errors=8)
+
+        mixed = crop_runner.bulk_extract_crops(
+            [label_row(label_id=1, pano_x=150), label_row(label_id=2, pano_x=250)]
+            + unparseable_rows(4, first_label_id=10),
+            str(store), str(out))
+        assert reconciles(mixed)
+        assert mixed == counts_dict(6, success=2, errors=4)
+
+    def test_it_changes_neither_the_exit_code_nor_the_summary(self, crop_runner, tmp_path, capsys):
+        """Driven through main() so the durable channel is the real rotating crop.log rather than
+        caplog's handler. The exit code is unchanged by design — `errors` nonzero was already 1; what
+        #136 adds is a signal that does not depend on anyone seeing the exit code."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, unparseable_rows(5))
+
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
+
+        printed = capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed
+        assert '5 errors, of 5 labels total' in printed
+        logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read()
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged
