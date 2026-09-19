@@ -2084,13 +2084,38 @@ class TestTheSystemicFailureAlarm:
         """The documented denominator choice, and the blind spot that comes with it, in one assertion.
 
         `total` — not the subset the run actually tried to cut — is what keeps a lagging city quiet.
-        The two silence tests above cannot pin this: both have `errors == 0`, so the `errors > 0` guard
-        silences them whatever the denominator is. Excluding missing_pano would make this input 4 of 4
-        and fire, so this is the assertion that fails if the denominator is ever narrowed.
-        """
-        diluted = counts_dict(10, errors=4, missing_pano=6)
+        The two silence tests above cannot pin this: both have `errors == 0`, so the threshold test
+        silences them whatever the denominator is. Each input here is 4 of 10 (silent) but would be
+        4 of 4 (100%, fires) under a denominator that subtracted that bucket.
 
-        assert crop_runner.systemic_failure_line(diluted) is None
+        BOTH skip buckets, because the docstring and docs/cropper.md justify this denominator with
+        BOTH - a lagging scrape and a finished store. Pinning only missing_pano left
+        `total - skipped_existing` and `total - dims_mismatch - out_of_frame` alive, which is the same
+        half-covered shape the test was written to close, one bucket over.
+        """
+        assert crop_runner.systemic_failure_line(counts_dict(10, errors=4, missing_pano=6)) is None
+        assert crop_runner.systemic_failure_line(counts_dict(10, errors=4, skipped_existing=6)) is None
+        assert crop_runner.systemic_failure_line(
+            counts_dict(10, errors=4, dims_mismatch=3, out_of_frame=3)) is None
+
+    def test_the_123_shape_is_immune_to_missing_pano_dilution(self, crop_runner, tmp_path, capsys):
+        """docs/cropper.md claims the schema-move shape cannot be diluted by an un-scraped store, and
+        that claim rests on an ORDERING nothing pinned: the up-front metadata parse `continue`s on a bad
+        row, so it never reaches `labels_by_pano` and the pano-existence check never sees it.
+
+        Every other 100%-error test puts a pano on the store first, so folding the parse into the pano
+        loop - a plausible "why two passes?" refactor - would silently turn the documented immunity into
+        dilution with nothing going red. Here the store is EMPTY, so dilution would be maximal.
+        """
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        store.mkdir(parents=True)
+        labels = [label_row(label_id=i, pano_x='not-a-number') for i in range(1, 13)]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 12 and counts['missing_pano'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in capsys.readouterr().out
 
     def test_a_zero_total_carrying_errors_cannot_divide_by_zero(self, crop_runner):
         """What the `total > 0` guard is actually for.

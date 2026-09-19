@@ -214,20 +214,28 @@ are worth knowing before treating `grep SYSTEMIC FAILURE` across logs as a count
 
 The denominator is `total` — every label the run was handed. So the degenerate cases read correctly and
 none of them fires: a run with no labels at all, a re-run over a finished store (100% `skipped_existing`),
-and a city whose pano scrape is still catching up (100% `missing_pano`). What actually keeps those quiet
-is the `errors > 0` guard rather than anything about the denominator; `total > 0` is there to guard the
-division, for a `{'total': 0, 'errors': 1}` the crop loop cannot currently produce but a caller of
-`systemic_failure_line` can.
+and a city whose pano scrape is still catching up (100% `missing_pano`).
+
+What keeps those quiet is **the threshold test itself**, not either guard: with `errors == 0`,
+`errors < fraction * total` already holds for any `total > 0`. `total > 0` guards the *division* — its
+only distinguishing input is `{'total': 0, 'errors': 1}`, which the crop loop cannot produce but a caller
+of `systemic_failure_line` can — and `errors > 0` is redundant at the shipped fraction, kept as a
+statement of intent. The function's docstring carries the measured truth table; two rounds of review
+described these guards wrongly, in opposite directions, before it was written down that way.
 
 Three blind spots come with that denominator, and only the first is benign:
 
 - **A mature store topping up a handful of labels, every one of which fails to write**, is a small
   fraction of a large total and does not trip it. That run still exits 1 and still logs a warning per
   label — the signal it had before.
-- **`missing_pano` dilutes the denominator.** A run over a city that is 60% un-scraped, with `-o` full or
-  read-only — one of the causes the alarm's own message tells you to check — errors on every label it
-  reaches, which is 40% of `total`. Silent. The #123 shape itself is immune to this, because the up-front
-  metadata parse counts those rows as errors before the pano-existence check runs at all.
+- **`missing_pano` dilutes the denominator.** A run over a city that is 60% un-scraped, whose output
+  store then fills up mid-run or hits a per-file write failure, errors on every label it reaches — 40%
+  of `total`. Silent. (A *read-only* `-o` is not this case: `write_rule_marker` writes `crop_rule.json`
+  before the loop and outside any `try`, so a read-only mount raises before the first label and there is
+  no summary at all. The arithmetic of the dilution is the point; that particular cause is not reachable.)
+  The #123 shape itself is immune, because the up-front metadata parse `continue`s on a bad row so it
+  never reaches the pano-existence check — an ordering a test now pins, since folding the two passes
+  together would turn the immunity into dilution silently.
 - **A run that is 100% `dims_mismatch` or 100% `out_of_frame` is silent *and exits 0*.** Those are skip
   buckets, so neither the alarm nor the exit code can see them. That is right for a lagging scrape and
   wrong for a schema move that changes what the dims or `pano_x`/`pano_y` fields mean, or for Google

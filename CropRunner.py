@@ -744,18 +744,28 @@ def systemic_failure_line(counts):
     which is the whole reason it is a separate function taking the finished dict rather than a counter
     maintained alongside the others.
 
-    Two guards, and it is worth being exact about which does what, because the obvious story is wrong.
-    `errors > 0` is what keeps an empty store quiet: on a run with nothing to do the test
-    `errors >= fraction * total` reads 0 >= 0.0, which is true, and this guard is what stops it. It is
-    also what keeps a 100% missing_pano or 100% skipped_existing run quiet, since neither moves errors.
-    `total > 0` guards the division, not the alarm: the only input the two disagree on is
-    {'total': 0, 'errors': 1}, which the crop loop cannot currently produce but a caller of this
-    function can, and without it that formats 100.0 * 1 / 0 and raises inside the run summary - making
-    the alarm the one fatal thing in a loop whose contract is that nothing in it is fatal.
+    The two guards do NOT divide the quiet cases between them, and two rounds of review got this wrong
+    in opposite directions before it was written as a table. Measured:
 
-    (This said the opposite until the 2026-09-18 review, in all three places it was written down, and
-    the mutation table claimed a kill for dropping `total > 0` that does not reproduce: with the errors
-    guard still there, an empty store does not alarm either way.)
+        input        shipped   without errors<=0   without total<=0
+        {0,  0}      None      None                None
+        {0,  1}      None      None                ZeroDivisionError
+        {10, 0}      None      None                None
+        {10, 4}      None      None                None
+        {10, 5}      FIRES     FIRES               FIRES
+        {-2, 1}      None      None                FIRES, "(-50.0%)"
+
+    So: for any total > 0 the threshold test ALONE silences every quiet case, because errors <= 0
+    already satisfies errors < fraction * total at any positive fraction - a 100% missing_pano or 100%
+    skipped_existing run is silenced by the arithmetic, not by a guard. `total <= 0` is the only clause
+    with a distinguishing input, and it is a division guard: without it {'total': 0, 'errors': 1}
+    formats 100.0 * 1 / 0 and raises inside the run summary, making the alarm the one fatal thing in a
+    loop whose contract is that nothing in it is fatal. It also short-circuits first, so on an empty run
+    it is the clause that returns and `errors <= 0` is never evaluated.
+
+    `errors <= 0` is therefore REDUNDANT at the shipped fraction, and kept deliberately as a statement
+    of intent rather than as a load-bearing guard - which is why the mutant that drops it is equivalent
+    and cannot be killed. Do not read its presence as evidence that something needs it.
 
     The denominator is `total` - every label the run was handed - and not the subset it actually tried
     to cut. That is the documented invariant's denominator, and it keeps the two skip outcomes honest:
