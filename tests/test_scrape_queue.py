@@ -219,6 +219,20 @@ class TestTheCommittedExampleManifestIsUsable:
         assert {c.city_id for c in sample} <= known, \
             'example manifest names cities that are not in log_analyzer/cities.csv'
 
+    def test_its_disabled_row_is_the_shape_that_records_a_decision(self):
+        """The example's one '#' row is a private study deployment nobody scrapes (#143). It has to be the
+        shape the cross-check credits - both columns, a hostname in the second - or the example teaches the
+        row that fails every night. And it has to be the ONLY thing in the file that is: csv reads every
+        prose comment as a row too (fourteen of them here, one keyed 'sidewalk-sea'), which is the whole
+        reason the credit rests on the column's shape rather than on the id."""
+        disabled = {}
+        scrape_queue.read_city_list(os.path.join(REPO_ROOT, 'samples', 'scrape_queue_cities.csv'),
+                                    disabled=disabled)
+        assert len(disabled) > 1, 'the comments are read as rows; that is the trap, and the file should show it'
+        credited = [city_id for city_id, fqdn in disabled.items() if scrape_queue._disabled_row_credits(fqdn, None)]
+        assert credited == ['validation-study']
+        assert disabled['validation-study'] == 'sidewalk-validation-study.cs.washington.edu'
+
 
 # --- Ordering ----------------------------------------------------------------------------------------------
 
@@ -1908,14 +1922,54 @@ class TestWhichCitiesAreMissingFromTheManifest:
         assert scrape_queue.unlisted_cities(roster, manifest, {}) == [
             scrape_queue.Unlisted('laurens-ia', 'sidewalk-laurens.cs.washington.edu', None)]
 
-    def test_a_private_city_with_no_row_is_not_missing(self):
-        """The production manifest scrapes 15 private cities too, but it need not: the question is only
-        whether every PUBLIC city has a row. Private cities carry url null, so there would be nothing to
-        print for them anyway."""
+    def test_a_private_city_with_no_row_is_missing_too(self):
+        """This asserted the opposite until 2026-09-19 (#143): "the question is only whether every PUBLIC
+        city has a row". It is not - 20 of 59 deployments are private, the manifest scrapes ~15 of them, and
+        a private launch with no row was silent in exactly the way Laurens was. The roster withholds the
+        private url (JsNull in CitiesApiController.buildCityObject), so the city is named by id, with the
+        roster's word beside it and no host guessed."""
         roster = [roster_entry('seattle-wa'), roster_entry('zurich', url=None, visibility='private')]
 
         assert scrape_queue.unlisted_cities(roster, cities(('seattle-wa', 'sidewalk-sea.cs.washington.edu')),
-                                            {}) == []
+                                            {}) == [scrape_queue.Unlisted('zurich', None, None, 'private')]
+
+    def test_visibility_does_not_decide_membership(self):
+        """The set reported is the same with the visibility filter deleted outright: public and private,
+        in roster order, each carrying its own word. parse_roster guards the VALUE set; this guards its use,
+        so an upstream rename cannot quietly narrow the check back to one visibility."""
+        roster = [roster_entry('zurich', url=None, visibility='private'), roster_entry('laurens-ia'),
+                  roster_entry('crowdstudy', url=None, visibility='private')]
+
+        assert [(u.city_id, u.visibility) for u in scrape_queue.unlisted_cities(roster, [], {})] == [
+            ('zurich', 'private'), ('laurens-ia', 'public'), ('crowdstudy', 'private')]
+
+    def test_a_private_city_is_credited_by_a_disabled_row_shaped_like_a_hostname(self):
+        """No host to match on a private city, so the column's shape is the evidence: `#zurich,sidewalk-
+        zurich.cs.washington.edu` is a decision recorded in the manifest, which is where it belongs."""
+        roster = [roster_entry('zurich', url=None, visibility='private')]
+        disabled = {'zurich': 'sidewalk-zurich.cs.washington.edu'}
+
+        assert scrape_queue.unlisted_cities(roster, [], disabled) == []
+
+    @pytest.mark.parametrize('column', [
+        '',                                                # `#zurich,` - "keep both columns on it"
+        'bayonne-fr launched 2026-09-11 - add when live',  # a prose comment csv split on its comma
+        'sidewalk-zurich',                                 # no dot: a word, not a host
+        'sidewalk zurich.cs.washington.edu',               # a space
+        'https://sidewalk-zurich.cs.washington.edu',       # a url, not the fqdn the manifest carries
+    ])
+    def test_a_private_city_is_not_credited_by_a_column_that_is_not_a_hostname(self, column):
+        roster = [roster_entry('zurich', url=None, visibility='private')]
+
+        assert [u.city_id for u in scrape_queue.unlisted_cities(roster, [], {'zurich': column})] == ['zurich']
+
+    def test_a_public_city_keeps_the_stronger_rule_where_its_host_is_known(self):
+        """The shape rule is for the case with no host. A public city publishes one, and a hostname-shaped
+        column naming a DIFFERENT host is not evidence that the row is this city."""
+        roster = [roster_entry('laurens-ia')]
+        disabled = {'laurens-ia': 'sidewalk-bayonne.cs.washington.edu'}
+
+        assert [u.city_id for u in scrape_queue.unlisted_cities(roster, [], disabled)] == ['laurens-ia']
 
     def test_a_manifest_that_is_a_superset_is_fine(self):
         roster = [roster_entry('seattle-wa')]
@@ -2121,25 +2175,25 @@ class TestTheReportAndTheExitCodeAgree:
                          scrape_queue.Unlisted('bayonne-fr', 'sidewalk-bayonne.cs.washington.edu', 'bayonne'))
         lines = scrape_queue.summarise(self.clean_night(), 1.0, check).splitlines()
 
-        gap = [i for i, ln in enumerate(lines) if 'public cities missing from the manifest:' in ln][0]
+        gap = [i for i, ln in enumerate(lines) if 'cities missing from the manifest:' in ln][0]
         totals = [i for i, ln in enumerate(lines) if 'cities ok' in ln][0]
         assert gap < totals
         assert 'laurens-ia (sidewalk-laurens.cs.washington.edu)' in lines[gap]
         assert ("bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', "
                 "the app reads <store-root>/bayonne-fr)") in lines[gap]
-        assert '2 public cities missing from the manifest' in lines[totals]
+        assert '2 cities missing from the manifest' in lines[totals]
         assert scrape_queue.exit_code_for(self.clean_night(), check) == 1
 
     def test_a_missing_city_without_a_url_is_named_without_a_guessed_host(self):
         check = self.gap(scrape_queue.Unlisted('new-xx', None, None))
         text = scrape_queue.summarise(self.clean_night(), 1.0, check)
 
-        assert 'new-xx (url not published)' in text
+        assert 'new-xx (public; url not published)' in text
 
     def test_a_checked_manifest_says_so_and_changes_nothing(self):
         text = scrape_queue.summarise(self.clean_night(), 1.0, self.gap())
 
-        assert 'manifest checked against 3 public cities (roster from sidewalk-alpha.invalid)' in text
+        assert 'manifest checked against 3 public and 0 private cities (roster from sidewalk-alpha.invalid)' in text
         assert 'missing from the manifest' not in text
         assert '2/2 cities ok, 0 failed, 0 timed out, 0 not reached;' in text
         assert scrape_queue.exit_code_for(self.clean_night(), self.gap()) == 0
@@ -2191,7 +2245,7 @@ class TestTheReportAndTheExitCodeAgree:
         one = self.gap(scrape_queue.Unlisted('laurens-ia', 'sidewalk-laurens.cs.washington.edu', None))
         text = scrape_queue.summarise(self.clean_night(), 1.0, one)
 
-        assert '0 not reached, 1 public city missing from the manifest;' in text
+        assert '0 not reached, 1 city missing from the manifest;' in text
 
     def test_without_a_check_the_old_rule_stands(self):
         assert scrape_queue.exit_code_for(self.clean_night()) == 0
@@ -2220,7 +2274,7 @@ class TestTheCrossCheckEndToEnd:
 
         out = capsys.readouterr().out
         assert code == 1
-        assert '3/3 cities ok, 0 failed, 0 timed out, 0 not reached, 1 public city missing' in out
+        assert '3/3 cities ok, 0 failed, 0 timed out, 0 not reached, 1 city missing' in out
         assert 'laurens-ia (sidewalk-laurens.cs.washington.edu)' in out
         # Both channels (the print/logging rule): stdout is tonight's mail, the log is next week's evidence.
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -2229,16 +2283,39 @@ class TestTheCrossCheckEndToEnd:
 
     def test_a_manifest_in_step_with_the_fleet_is_a_clean_night(self, tmp_path, fake_runner, journal,
                                                                 monkeypatch, capsys):
+        """In step includes the private deployment nobody scrapes here: its '#' row is the decision."""
         serve_roster(monkeypatch, roster_entry('alpha-aa', url='https://sidewalk-alpha.invalid'),
                      roster_entry('bravo-bb', url='https://sidewalk-bravo.invalid'),
                      roster_entry('charlie-cc', url='https://sidewalk-charlie.invalid'),
                      roster_entry('zurich', url=None, visibility='private'))
+        manifest = write_manifest(tmp_path, ['alpha-aa,sidewalk-alpha.invalid', 'bravo-bb,sidewalk-bravo.invalid',
+                                             'charlie-cc,sidewalk-charlie.invalid',
+                                             '#zurich,sidewalk-zurich.invalid'])
+
+        code = run_main(tmp_path, manifest, fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert 'manifest checked against 3 public and 1 private cities' in out
+
+    def test_a_private_city_nobody_added_fails_the_night_too(self, tmp_path, fake_runner, journal, monkeypatch,
+                                                             capsys, caplog):
+        """The Laurens night with a private launch (#143): the check said nothing about these until 2026-09-19.
+        Named by id with the roster's word, no host guessed, on both channels and in the exit code."""
+        serve_roster(monkeypatch, roster_entry('alpha-aa', url='https://sidewalk-alpha.invalid'),
+                     roster_entry('bravo-bb', url='https://sidewalk-bravo.invalid'),
+                     roster_entry('charlie-cc', url='https://sidewalk-charlie.invalid'),
+                     roster_entry('zurich', url=None, visibility='private'))
+        caplog.set_level(logging.INFO)
 
         code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
 
         out = capsys.readouterr().out
-        assert code == 0, out
-        assert 'manifest checked against 3 public cities' in out
+        assert code == 1
+        assert '[queue] cities missing from the manifest: zurich (private; url not published)' in out
+        assert "a '#city_id,fqdn' row records one that is deliberately not scraped here" in out
+        assert '3/3 cities ok, 0 failed, 0 timed out, 0 not reached, 1 city missing from the manifest;' in out
+        assert any('zurich' in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
 
     def test_no_roster_fails_the_night_and_says_which_hosts_were_asked(self, tmp_path, fake_runner, journal,
                                                                        capsys, caplog):
@@ -2326,9 +2403,9 @@ class TestTheCrossCheckEndToEnd:
         assert '1/1 cities ok' in out  # the city itself was fine
         # Against the whole manifest, not tonight's selection: the two cities --only left out have rows.
         gap = [ln for ln in out.splitlines() if 'missing from the manifest:' in ln]
-        assert gap == ['[queue] public cities missing from the manifest: '
+        assert gap == ['[queue] cities missing from the manifest: '
                        'laurens-ia (sidewalk-laurens.cs.washington.edu)']
-        assert '1 public city missing' in out
+        assert '1 city missing' in out
 
     def test_the_check_does_not_run_while_the_queue_is_being_stopped(self, tmp_path, fake_runner, journal,
                                                                      monkeypatch, capsys):
@@ -2400,7 +2477,7 @@ class TestDryRunCrossChecksToo:
         out = capsys.readouterr().out
         assert code == 0, out
         assert 'missing from the manifest' not in out
-        assert 'manifest checked against 2 public cities' in out
+        assert 'manifest checked against 2 public and 0 private cities' in out
 
     def test_a_manifest_in_step_with_the_fleet_exits_zero(self, tmp_path, fake_runner, journal, monkeypatch,
                                                           capsys):
@@ -2411,7 +2488,7 @@ class TestDryRunCrossChecksToo:
         code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run')
 
         assert code == 0
-        assert 'manifest checked against 3 public cities' in capsys.readouterr().out
+        assert 'manifest checked against 3 public and 0 private cities' in capsys.readouterr().out
 
     def test_a_dry_run_under_only_still_checks_the_whole_manifest(self, tmp_path, fake_runner, journal,
                                                                    monkeypatch, capsys):
@@ -2428,7 +2505,26 @@ class TestDryRunCrossChecksToo:
         assert code == 0, out
         assert plan_lines(out) == ['alpha-aa']
         assert 'missing from the manifest' not in out
-        assert 'manifest checked against 3 public cities' in out
+        assert 'manifest checked against 3 public and 0 private cities' in out
+
+    def test_a_dry_run_lists_the_private_rows_a_manifest_still_needs(self, tmp_path, fake_runner, journal,
+                                                                     monkeypatch, capsys):
+        """The path #143 is rolled out on: the first night under the new rule names every private deployment
+        without a row, so the dry run has to name the same set beforehand - and exit 1 on it, as the night
+        will - so the '#' rows can be written before the first mail rather than after it."""
+        serve_roster(monkeypatch, roster_entry('alpha-aa', url='https://sidewalk-alpha.invalid'),
+                     roster_entry('zurich', url=None, visibility='private'),
+                     roster_entry('crowdstudy', url=None, visibility='private'))
+        manifest = write_manifest(tmp_path, ['alpha-aa,sidewalk-alpha.invalid',
+                                             '#crowdstudy,sidewalk-crowdstudy.invalid'])
+
+        code = run_main(tmp_path, manifest, fake_runner, '--dry-run', '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert journal.read() == []
+        assert '[queue] cities missing from the manifest: zurich (private; url not published)' in out
+        assert 'crowdstudy' not in out.split('missing from the manifest:')[1].splitlines()[0]
 
 
 class TestTheDocsQuoteTheRosterBounds:
