@@ -425,6 +425,74 @@ class TestLabelCsvIntake:
         assert all(isinstance(row['pano_id'], str) for row in labels)
         assert CropRunner._metadata_dims(labels[0]) == (16384, 8192)
 
+    def test_the_real_cvmetadata_sample_parses(self):
+        """samples/cvmetadata-seattle.csv is the CURRENT live response, captured from sidewalk-sea on
+        2026-09-18 (#123) - the shape the endpoint has served since SidewalkWebpage#4103.
+
+        The suite is network-free, so this file is the only record in the repo of what production
+        actually sends. It is checked in rather than synthesised so that a future header change shows
+        up as a diff against a measurement instead of against somebody's recollection.
+        """
+        path = os.path.join(REPO_ROOT, 'samples', 'cvmetadata-seattle.csv')
+
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert len(labels) > 0
+        # The point of the fixture: names, not ids, and every one of them resolves.
+        assert 'label_type_id' not in labels[0]
+        assert all(row['label_type'] in CropRunner.LABEL_TYPE_IDS_BY_NAME for row in labels)
+        assert CropRunner.resolve_label_type_id(labels[0]) == 1  # CurbRamp
+        assert CropRunner._metadata_dims(labels[0]) == (16384, 8192)
+        # camera_roll is served and blank for GSV rows; `source` is not served at all.
+        assert labels[0]['camera_roll'] == ''
+        assert 'source' not in labels[0]
+
+
+class TestTheLabelTypeColumnIsAnEitherOr:
+    """cvMetadata served `label_type_id` until SidewalkWebpage#4103 swapped in a Postgres enum and the
+    query started selecting the NAME (#123). Both shapes have to read, because every archived export
+    carries the id and a crop store is re-cut from whatever export produced it.
+
+    Measured 2026-09-18: on master, a CSV pulled from any live deployment raised
+    `missing required column(s) ['label_type_id']` and the run exited 1 without cutting a crop.
+    """
+
+    LIVE_HEADER = ('label_id,pano_id,label_type,agree_count,disagree_count,unsure_count,'
+                   'pano_width,pano_height,pano_x,pano_y\n')
+    LIVE_ROW = '9,abcdefgh0001,CurbRamp,6,0,0,16384,8192,13740,4754\n'
+
+    def test_the_live_name_column_satisfies_the_guard(self, tmp_path):
+        path = write_label_csv(tmp_path, self.LIVE_HEADER + self.LIVE_ROW)
+
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert len(labels) == 1
+        assert labels[0]['label_type'] == 'CurbRamp'
+
+    def test_the_legacy_id_column_still_satisfies_the_guard(self, tmp_path):
+        path = write_label_csv(tmp_path, LABEL_HEADER + label_csv_row())
+
+        assert len(CropRunner.fetch_label_ids_csv(path)) == 1
+
+    def test_neither_column_names_the_file_and_both_spellings(self, tmp_path):
+        """The message must offer both names. Naming only `label_type_id` - which is what listing it
+        in REQUIRED_LABEL_COLUMNS does - sends the reader looking for a column no deployment sends."""
+        path = write_label_csv(tmp_path, 'pano_id,pano_x,pano_y,label_id\nabcdefgh0001,1,2,1\n')
+
+        with pytest.raises(ValueError) as excinfo:
+            CropRunner.fetch_label_ids_csv(path)
+
+        message = str(excinfo.value)
+        assert 'label_type_id' in message and 'label_type' in message
+        assert str(path) in message
+
+    def test_a_missing_pano_id_is_still_reported_as_a_required_column(self, tmp_path):
+        """The either/or must not swallow the plain required-column guard."""
+        path = write_label_csv(tmp_path, 'panorama,pano_x,pano_y,label_type,label_id\na,1,2,CurbRamp,1\n')
+
+        with pytest.raises(ValueError, match='pano_id'):
+            CropRunner.fetch_label_ids_csv(path)
+
 
 class TestMetadataDimsTreatsBlankAsAbsent:
     """`_metadata_dims` returning None means "this row does not claim dimensions", which skips the
@@ -554,7 +622,7 @@ class TestJsonToCsvConversion:
 # Everything the scraper or the cropper runs. log_analyzer/ and reports/scripts/ are deliberately
 # absent: both still use pandas, and both are dev/ops tools rather than production code.
 PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape_queue.py',
-                      'migrate_depth_artifacts.py', 'refetch_panos.py', 'downscale_panos.py',
+                      'cron_notify.py', 'migrate_depth_artifacts.py', 'refetch_panos.py', 'downscale_panos.py',
                       'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
                       'downloaders/gsv.py', 'downloaders/mapillary.py',
