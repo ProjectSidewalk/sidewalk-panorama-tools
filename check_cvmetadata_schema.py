@@ -12,9 +12,11 @@ So this lives outside tests/ and is the one thing here that talks to a deploymen
 
   python3 check_cvmetadata_schema.py --host sidewalk-sea.cs.washington.edu
 
-It exits 0 when every field CropRunner needs is served, 1 naming the ones that are not, and 3 when the
-deployment could not be read at all - a check that did not run has not passed. Under cron, nonzero is the
-whole interface: mail-on-failure is the unattended path to a human, the same one log_analyzer uses.
+It exits 0 when every field CropRunner needs is served, 1 naming the ones that are not, 2 on a usage error
+(no host, or a URL where a bare FQDN belongs), and 3 when the deployment could not be read at all - a check
+that did not run has not passed. Under cron, nonzero is the whole interface: mail-on-failure is the
+unattended path to a human, the same one log_analyzer uses (and on a host with no MTA it reaches the box
+and stops there - see docs/api-fields.md).
 
 Three properties are load-bearing, and each is the failure mode of the obvious implementation:
 
@@ -64,9 +66,13 @@ USER_AGENT = 'sidewalk-panorama-tools cvMetadata schema check'
 EXIT_OK = 0
 EXIT_MISSING_FIELDS = 1
 # argparse's own usage error, and ours. resolve_host used bare sys.exit('<message>'), which exits 1 - the
-# same code as "a required field is gone". A crontab line naming the wrong directory, or an operator
-# pasting a URL into --host, then reads exactly like the upstream rename this exists to catch, which
-# defeats the only unattended signal the design has.
+# same code as "a required field is gone", so an operator pasting a URL into --host, or a crontab line
+# with no --host at all, read exactly like the upstream rename this exists to catch.
+#
+# It buys exactly that and no more. A crontab line whose `cd` fails still exits 1 (the shell's code, not
+# ours), a missing interpreter exits 127, and CPython's own "can't open file" is itself 2 - so this does
+# NOT make every mis-installed cron line distinguishable. What keeps the `cd` case from happening is the
+# absolute-interpreter form in docs/api-fields.md, not this constant.
 EXIT_USAGE = 2
 EXIT_UNAVAILABLE = 3
 

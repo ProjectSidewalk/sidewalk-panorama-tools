@@ -47,6 +47,23 @@ def payload(fields, count=2):
     return json.dumps(records).encode('utf-8')
 
 
+# The chunk sizes the mid-character-split test sweeps. Only some of them actually cut a multi-byte
+# character - which ones depends on the byte offsets of the field names above - so a companion test
+# asserts that at least one still does, rather than leaving the sweep to go quietly vacuous.
+NON_ASCII_CHUNK_SIZES = (1, 2, 3, 5, 7, 9, 11)
+
+
+def _non_ascii_body():
+    """A one-record body whose values are raw UTF-8, not \\uXXXX escapes.
+
+    `ensure_ascii=False` is the entire point: json.dumps escapes non-ASCII by default, which made this
+    fixture pure ASCII, made every read boundary safe, and let a strict `decode('utf-8')` pass.
+    """
+    record = {name: i for i, name in enumerate(SERVED_TODAY)}
+    record['pano_x'] = 'café üñ 😀'
+    return json.dumps([record], ensure_ascii=False).encode('utf-8')
+
+
 def reader_for(body):
     """A (read, counter) pair: `read` behaves like an HTTP response's, `counter` says how much was consumed."""
     stream = io.BytesIO(body)
@@ -190,7 +207,27 @@ class TestReadingTheFieldNamesOffTheWire:
         read, _ = reader_for(b'\n  ' + payload(SERVED_TODAY))
         assert schema.served_fields(read) == list(SERVED_TODAY)
 
-    @pytest.mark.parametrize('chunk_bytes', [1, 2, 3, 5, 7, 9, 11])
+    def test_the_non_ascii_fixture_really_does_get_split_mid_character(self):
+        """Guards the test below against becoming vacuous.
+
+        Which chunk sizes actually cut a multi-byte character is a function of the exact byte offsets of
+        these field names and values: measured, only 1, 2 and 3 of the seven sizes below split one, and
+        renaming a field or reordering the dict can silently move that to none - leaving seven green
+        parameters proving nothing. That is the same "looks like it exercises the thing" shape this file
+        was corrected for, so the premise is asserted rather than assumed.
+        """
+        body = _non_ascii_body()
+        split_sizes = []
+        for chunk_bytes in NON_ASCII_CHUNK_SIZES:
+            boundaries = range(chunk_bytes, len(body), chunk_bytes)
+            if any(body[:b].decode('utf-8', 'replace').endswith('�') for b in boundaries):
+                split_sizes.append(chunk_bytes)
+
+        assert split_sizes, (
+            'no chunk size in %r splits a multi-byte character in this fixture, so the strict-decode '
+            'mutant it exists to catch would survive' % (NON_ASCII_CHUNK_SIZES,))
+
+    @pytest.mark.parametrize('chunk_bytes', NON_ASCII_CHUNK_SIZES)
     def test_a_non_ascii_value_split_mid_character_does_not_decide_the_verdict(self, chunk_bytes):
         """The prefix is decoded before it is complete, so a multi-byte character can be cut in half. Only
         the keys matter, and they are ASCII, so a mangled value must not fail the read.
@@ -202,11 +239,12 @@ class TestReadingTheFieldNamesOffTheWire:
         UnicodeDecodeError is a ValueError, so it would be caught upstream and reported as exit 3 against
         any deployment whose first label happens to carry a non-ASCII value.
         """
-        body = json.dumps([{'label_id': 1, 'pano_id': 'a', 'pano_x': 'café üñ',
-                            'pano_y': 2, 'label_type': 'CurbRamp'}],
-                          ensure_ascii=False).encode('utf-8')
-        read, _ = reader_for(body)
-        assert schema.served_fields(read, chunk_bytes=chunk_bytes)[:2] == ['label_id', 'pano_id']
+        read, _ = reader_for(_non_ascii_body())
+
+        # The whole key list, not a [:2] prefix: pano_x is the field carrying the mangled value, and
+        # everything after it is what a mid-character split could actually disturb. Asserting two keys
+        # stopped one short of the interesting part.
+        assert schema.served_fields(read, chunk_bytes=chunk_bytes) == list(SERVED_TODAY)
 
     def test_an_error_envelope_is_not_a_payload(self):
         """Positive evidence, the #99 rule: only a JSON array of records is a cvMetadata response. A login
@@ -268,17 +306,21 @@ class TestTheCommandLine:
         assert schema.main(['--host', 'sidewalk-sea.cs.washington.edu']) == 0
         assert 'sidewalk-sea.cs.washington.edu' in capsys.readouterr().out
 
-    def test_a_missing_field_exits_nonzero_and_names_it(self, served, capsys):
+    def test_a_missing_field_exits_with_the_missing_field_code(self, served, capsys):
+        """`!= 0` is not enough, for the reason the usage-code test below spells out: three different
+        faults are nonzero and they send the reader to three different places. Asserting only that this
+        is nonzero let a mutant returning EXIT_USAGE here pass all 57 tests - a real upstream rename
+        mailed as "the cron line is wrong"."""
         served['fields'] = [f for f in SERVED_TODAY if f != 'label_type']
         code = schema.main(['--host', 'sidewalk-sea.cs.washington.edu'])
-        assert code != 0
+        assert code == schema.EXIT_MISSING_FIELDS
         out = capsys.readouterr().out
         assert 'label_type' in out and 'label_type_id' in out
 
-    def test_a_missing_required_column_exits_nonzero_and_names_it(self, served, capsys):
+    def test_a_missing_required_column_exits_with_the_missing_field_code(self, served, capsys):
         served['fields'] = [f for f in SERVED_TODAY if f != 'pano_y']
         code = schema.main(['--host', 'sidewalk-sea.cs.washington.edu'])
-        assert code != 0
+        assert code == schema.EXIT_MISSING_FIELDS
         assert 'pano_y' in capsys.readouterr().out
 
     def test_an_added_field_still_exits_zero(self, served, capsys):
@@ -303,7 +345,18 @@ class TestTheCommandLine:
         assert excinfo.value.code != 0
         assert schema.HOST_ENV in capsys.readouterr().err
 
-    @pytest.mark.parametrize('argv', [[], ['--host', 'https://sidewalk-sea.cs.washington.edu/']])
+    def test_the_usage_code_is_the_one_the_docs_promise(self):
+        """The three codes are a published interface - docs/api-fields.md states each by number - and
+        every other assertion here compares symbolically, so moving EXIT_USAGE to 4 passed the suite
+        while making the docs wrong. Pinned to argparse's own usage code, which is what it claims to
+        align with."""
+        assert schema.EXIT_USAGE == 2
+        assert len({schema.EXIT_OK, schema.EXIT_MISSING_FIELDS,
+                    schema.EXIT_USAGE, schema.EXIT_UNAVAILABLE}) == 4
+
+    @pytest.mark.parametrize('argv', [[],
+                                      ['--host', 'https://sidewalk-sea.cs.washington.edu/'],
+                                      ['--host', 'sidewalk-sea.cs.washington.edu:8080']])
     def test_a_usage_error_does_not_wear_the_missing_field_exit_code(self, monkeypatch, capsys, argv):
         """The exit code is the whole unattended interface, so two different faults must not share one.
 
@@ -444,6 +497,10 @@ class TestTheOpenerIsBuiltTheWayItSaysItIs:
 
         schema._open_stream('https://sidewalk-sea.cs.washington.edu/x', timeout=5)
 
+        # Against a literal, not against schema.USER_AGENT: comparing the module to itself passes even
+        # when the constant is emptied, which is the assertion-that-cannot-fail shape this file has now
+        # been bitten by twice. The substring keeps it from pinning wording nobody depends on.
+        assert 'sidewalk-panorama-tools' in seen['request'].get_header('User-agent')
         assert seen['request'].get_header('User-agent') == schema.USER_AGENT
         assert seen['request'].get_header('Accept') == 'application/json'
         assert seen['timeout'] == 5

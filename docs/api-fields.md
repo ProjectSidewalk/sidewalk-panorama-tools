@@ -145,9 +145,15 @@ What it does **not** check, deliberately:
   assumes every record carries the same keys — true of this endpoint today, and the assumption the
   cheapness rests on. A deployment that ever omitted null fields per-record would produce a false MISSING.
 
-One more property worth knowing before reading a red result: **a usage error exits `2`, not `1`.** If cron
-mails you a failure, the code tells you whether the schema moved (`1`), the deployment was unreachable
-(`3`), or the line itself is wrong (`2`).
+One more property worth knowing before reading a red result: **a usage error exits `2`, not `1`** — so no
+host, or a URL where a bare FQDN belongs, no longer wears the missing-field code.
+
+Be precise about what that does *not* buy, because the obvious reading is wrong. Exit `2` does not make
+every broken cron line identifiable: a failed `cd` exits **1** (the shell's code, not this script's), a
+missing interpreter exits **127**, and CPython's own "can't open file" is itself **2**. What keeps the
+`cd` case from arising is the absolute-interpreter form above, not the exit code. Read the codes as:
+`1` the schema moved *or* the shell failed before the script ran, `2` the script was invoked wrongly,
+`3` the deployment could not be read, `127` the interpreter path is wrong.
 
 ## Label type IDs
 

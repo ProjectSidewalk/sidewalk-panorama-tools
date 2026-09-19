@@ -82,5 +82,6 @@ exclude_also =
 #   is to leave the machine cannot be covered offline. That was half true and the half that was false was
 #   load-bearing: the SOCKET cannot be opened here, but the OPENER can be intercepted, and the empty
 #   ProxyHandler it installs is documented as the thing standing between this check and a proxy login page
-#   reported as "cannot run" every night for ever. Deleting it failed nothing. The module is now 100%.)
+#   reported as "cannot run" every night for ever. Deleting it failed nothing at the time;
+#   TestTheOpenerIsBuiltTheWayItSaysItIs now pins it, and the module is 100%.)
 fail_under = 98
