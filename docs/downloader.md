@@ -115,7 +115,7 @@ BASH_ENV=/home/ubuntu/.scraper.env
 0 19 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
               /srv/sidewalk-panorama-tools/cron_notify.py --name scrape-queue --only-on-failure \
               --log /home/ubuntu/cron_notify.log \
-              --sink 'aws sns publish --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
+              --sink 'aws sns publish --region us-west-2 --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
               -- /srv/sidewalk-panorama-tools/.venv/bin/python \
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \

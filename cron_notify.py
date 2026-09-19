@@ -19,7 +19,7 @@ night, silence on a good one, with the --log line as the proof the wrapper ran);
 nothing is still delivered, with a body that says so. The sink is a shell command run with the body on stdin and in the file NOTIFY_BODY_FILE
 names, NOTIFY_SUBJECT set to "<name>: exit <code> on <host>" (ASCII, one line, at most 100 characters - the
 constraints SNS puts on a subject) and NOTIFY_EXIT to the command's exit code. Production's sink is
-`aws sns publish --topic-arn ... --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE`, which
+`aws sns publish --region us-west-2 --topic-arn ... --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE`, which
 publishes with the instance role and no secret on the box; nothing here knows or cares what the sink is.
 
 The exit code is the command's own, so the queue's exit 1 still reaches whatever reads it. The one code the

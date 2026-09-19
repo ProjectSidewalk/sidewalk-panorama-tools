@@ -713,7 +713,7 @@ pluggable:
 
 ```
 cron_notify.py --name scrape-queue --only-on-failure --log /home/ubuntu/cron_notify.log \
-    --sink 'aws sns publish --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
+    --sink 'aws sns publish --region us-west-2 --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
     -- <the queue command>
 ```
 
