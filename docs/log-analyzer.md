@@ -39,7 +39,9 @@ python3 log_analyzer/analyze.py --city seattle-wa  # one city
 python3 log_analyzer/analyze.py --stale-days 5     # custom staleness threshold
 ```
 
-Exit status is `1` when any city has a CRITICAL issue, so cron's mail-on-failure does the alerting. Downloaded
+Exit status is `1` when any city has a CRITICAL issue, so cron's mail-on-failure does the alerting — where it runs
+on a host that can mail; the production scraper host cannot, and runs its own alarm through
+[`cron_notify.py`](ops.md#hearing-about-a-bad-night), which would serve this script the same way. Downloaded
 logs are cached in `log_analyzer/logs/` (gitignored).
 
 `log_analyzer/cities.csv` maps `city_id` → display name; each `city_id` must match that city's folder name on

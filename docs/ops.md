@@ -595,7 +595,8 @@ GSV and Mapillary keeps downloading and ledgering GSV afterwards, so the tail ca
 all-numeric, GSV's are 22-character base64, Panoramax's are UUIDs. Delete those two rows, fix the
 credentials, and the next run picks up everything the breaker skipped, because none of it was ledgered.
 
-The run **exits nonzero**, so `scrape_queue.py` books the city as `failed` and cron mails the queue summary.
+The run **exits nonzero**, so `scrape_queue.py` books the city as `failed` and the night's message
+([Hearing about a bad night](#hearing-about-a-bad-night)) carries the queue summary.
 Only the tripped source stops: a city carrying both GSV and Mapillary panos keeps downloading GSV. `log.csv`
 is unchanged — its fields are counts of work and the breaker is not one of them, so stdout, `scrape.log`
 and the exit code are where this lives.
@@ -681,10 +682,14 @@ previous deploy's changes again.
    `scrape_queue.py --cities … --store-root … --only <city_id> -- --all-panos`.
 4. **Reinstall an earlier crontab** from the dated backups in the user's home (`crontab <file>`). Take a new
    backup first; one of the old ones still carries a secret and is mode 600 for that reason.
-5. **Stop everything:** `crontab -r` after backing up — and if a queue is running, `pkill -TERM -f scrape_queue.py`
-   as well, because removing the crontab only cancels future starts. SIGTERM is the right signal: the queue
-   translates it into an orderly exit that stops the city it is supervising, which in turn writes its `log.csv`
-   row, and releases the lock. The store is untouched by any of this.
+5. **Stop everything:** `crontab -r` after backing up — and if a queue is running,
+   `pkill -TERM -f '^\S+/python \S+/scrape_queue\.py'` as well, because removing the crontab only cancels future
+   starts. SIGTERM is the right signal: the queue translates it into an orderly exit that stops the city it is
+   supervising, which in turn writes its `log.csv` row, and releases the lock. The pattern is anchored so it
+   matches the queue process and **not** the [`cron_notify.py`](#hearing-about-a-bad-night) wrapper around it,
+   whose own argv also contains `scrape_queue.py`: the wrapper forwards a SIGTERM it receives to the queue, so a
+   bare `pkill -f scrape_queue.py` would deliver two, and the second lands while the queue is stopping its city
+   and interrupts that stop. The store is untouched by any of this.
 
 ### Adding a city
 
@@ -700,16 +705,58 @@ previous deploy's changes again.
 
 ### Hearing about a bad night
 
-The queue's nonzero exit is the alarm, and cron delivers it only if the host can send mail. **Check that it
-can** — the production host had no MTA as of 2026-09-17, and `syslog` said so after every nightly
-(`No MTA installed, discarding output`) with nothing else raising a flag. Until that is wired, the two channels
-that do exist are `<store-root>/scrape_queue.log` (one `ok`/`failed`/`timed_out` line per city per pass, and one
-`not reached` line naming the cities a truncated night skipped) and the
-[log analyzer](log-analyzer.md), run by hand. Whatever delivers mail, verify it the same way `BASH_ENV` was:
-a throwaway cron line that fails on purpose, then delete it.
+The queue's nonzero exit is the alarm, and every doc in this repo used to say "cron mails it". **The production
+host cannot send mail** — it has no MTA, and from the day it was built (2026-09-01) until the wrapper below went
+in (#141), `syslog` recorded `No MTA installed, discarding output` after every nightly while nothing else raised a
+flag. So the crontab line runs the queue through `cron_notify.py`, which is cron's own rule with the delivery made
+pluggable:
+
+```
+cron_notify.py --name scrape-queue --only-on-failure --log /home/ubuntu/cron_notify.log \
+    --sink 'aws sns publish --region us-west-2 --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
+    -- <the queue command>
+```
+
+- **The wrapper runs the command, streams its stdout+stderr through, and when it exits hands the whole capture
+  to `--sink`.** Its default is cron's rule — deliver whenever there was any output, which is what lets a
+  `WARNING` on an otherwise clean night reach anyone — and production passes `--only-on-failure` instead
+  (decided 2026-09-18): **a message on a bad night, silence on a good one**. The subject is
+  `scrape-queue: exit N on <host>`, the body is the queue's output, and a failure that printed nothing is
+  still delivered with a body saying so. The cost is that a `WARNING` on a night that exited 0 is not mailed;
+  it is still in that city's `scrape.log`. The sink gets the body on stdin and in the file `$NOTIFY_BODY_FILE`
+  names (`aws` reads it with `file://`, which sidesteps the 128 KB single-argument limit a `"$(cat)"` would
+  hit), plus `$NOTIFY_SUBJECT` and `$NOTIFY_EXIT`.
+- **Delivery is SNS, published with the instance role** — no credential on the box, no mail-service
+  onboarding; an email subscription on the topic does the rest. The topic ARN, the role policy and who
+  subscribes are in the private runbook. Nothing in this repo knows what the sink is; a host with a working
+  MTA could pass `--sink 'mail -s "$NOTIFY_SUBJECT" ops@example.org'` instead.
+- **The exit code is the queue's own.** The one code the wrapper adds is **4**: the queue exited 0 and the sink
+  failed. A queue exit 1 plus a sink failure stays 1. Either way the wrapper prints `cron_notify: sink failed
+  ...` on stderr — which cron discards on this host, which is what `--log` is for: one line per run, `<stamp
+  with offset> exit <code> published <n> bytes` / `nothing to publish` / `sink failed (exit N)`. **A failed
+  publish is only visible there**, so `tail -1 ~/cron_notify.log` is part of the morning check below. A
+  queue that cannot be *started* (a moved interpreter, a bad path after a deploy) is reported *through* the
+  sink with exit 127, since that is precisely the night nobody would otherwise hear about.
+- **The message is the alarm, not the record.** SNS caps a message at 256 KB and a backlog night prints one
+  line per pano, so the wrapper cuts the capture to `--max-bytes` (200 000 by default), keeping the head and
+  most of the tail — the queue's summary is at the end — with a `[cron_notify] N bytes omitted` line between
+  them. The full narrative is always `<store-root>/scrape_queue.log` (one `ok`/`failed`/`timed_out` line per
+  city per pass, and one `not reached` line naming the cities a truncated night skipped) and each city's
+  `scrape.log`; the [log analyzer](log-analyzer.md) encodes the checks a reader would otherwise make by hand.
+- **Stopping the queue by hand: signal the queue, not the wrapper** — the anchored `pkill` in
+  [rollback lever 5](#rolling-back-smallest-blast-radius-first) — because the wrapper forwards a SIGTERM it
+  receives to the queue exactly once, so signalling both delivers two.
+
+**Verify any change to this the way `BASH_ENV` was:** a throwaway cron line one minute out,
+`cron_notify.py --sink '<the same sink>' -- false`, a message with `exit 1` in the subject arrives, delete the
+line. Record the date it was proven in the private runbook; a channel nobody has seen deliver is the one this
+section exists because of.
 
 ### The morning after a deploy
 
+- No message arrived — and `tail -1 ~/cron_notify.log` carries last night's date and says
+  `nothing to publish (clean run, --only-on-failure)`. The message is failure-only, so silence is ambiguous
+  on its own: it is a quiet night *or* a wrapper that never ran, and the log line is what tells them apart.
 - `scrape_queue.log`: every city `ok (exit 0)`, and `pass 2 starting` if any ran out of budget.
 - `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
 - `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —

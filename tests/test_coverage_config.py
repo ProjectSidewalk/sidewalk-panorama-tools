@@ -22,6 +22,7 @@ PRODUCTION_MODULES = {
     'check_cvmetadata_schema.py',
     'DownloadRunner.py',
     'config.py',
+    'cron_notify.py',
     'downloaders/__init__.py',
     'downloaders/common.py',
     'downloaders/gsv.py',

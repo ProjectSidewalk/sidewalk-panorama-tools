@@ -181,6 +181,72 @@ The skip outcomes are **not** errors and do not affect the exit code: `missing_p
 scraped independently and legitimately lags the label list) and the two preflight rejections. Those are
 metadata the run declined to trust, not work it got wrong.
 
+### When errors dominate: `SYSTEMIC FAILURE`
+
+If at least **half** the run's labels errored, the summary ends with one extra line, to stdout **and** to
+`crop.log`, that starts with the greppable `SYSTEMIC FAILURE`
+([#136](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/136)):
+
+```
+SYSTEMIC FAILURE: 260000 of 260000 labels errored (100.0%). At that rate this is one cause rather than
+that many independent per-row faults - check the label metadata's shape ...
+```
+
+This exists because when cvMetadata changed shape
+([#123](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/123)) the bookkeeping was
+entirely correct — `errors == total`, the invariant reconciled, the exit code was 1 — and the run still
+read as ordinary noise: 260,000 identical per-row `WARNING`s, where "everything failed" differs from
+"three labels failed" only in length. `CropRunner` is hand-run rather than on cron, so unlike
+`DownloadRunner` there is no mail-on-failure carrying the exit code to anyone.
+
+`SYSTEMIC_ERROR_FRACTION = 0.5` is the threshold, and half is chosen for what it means rather than as a
+tuned number: it is the point where errors stop being a minority outcome. Firing only at 100% would be
+tuned to the one incident we have seen and defeated by a single label of noise; firing at ~10% would sit
+inside the range an ordinary bad night can reach, since a corrupt slice of the store is a genuinely
+per-row fault and the loop is built to survive it.
+
+**A corrupt pano contributes one error per label on it, not one error.** The loop decodes each pano once
+for all its labels, so a failure there does `errors += len(labels)`. Corpus-wide that barely matters
+(~2.5 labels per pano), but the `-f` route over a study subset is exactly the few-panos-many-labels shape:
+a 40-label run where one truncated file carries 22 labels prints `22 of 40 ... (55.0%)` for a single bad
+file. A one-label run that errors likewise reads 100%. Neither is wrong, and neither is harmful, but both
+are worth knowing before treating `grep SYSTEMIC FAILURE` across logs as a count of real incidents.
+
+The denominator is `total` — every label the run was handed. So the degenerate cases read correctly and
+none of them fires: a run with no labels at all, a re-run over a finished store (100% `skipped_existing`),
+and a city whose pano scrape is still catching up (100% `missing_pano`).
+
+What keeps those quiet is **the threshold test itself**, not either guard: with `errors == 0`,
+`errors < fraction * total` already holds for any `total > 0`. `total > 0` guards the *division* — its
+only distinguishing input is `{'total': 0, 'errors': 1}`, which the crop loop cannot produce but a caller
+of `systemic_failure_line` can — and `errors > 0` is redundant at the shipped fraction, kept as a
+statement of intent. The function's docstring carries the measured truth table; two rounds of review
+described these guards wrongly, in opposite directions, before it was written down that way.
+
+Three blind spots come with that denominator, and only the first is benign:
+
+- **A mature store topping up a handful of labels, every one of which fails to write**, is a small
+  fraction of a large total and does not trip it. That run still exits 1 and still logs a warning per
+  label — the signal it had before.
+- **`missing_pano` dilutes the denominator.** A run over a city that is 60% un-scraped, whose output
+  store then fills up mid-run or hits a per-file write failure, errors on every label it reaches — 40%
+  of `total`. Silent. (A *read-only* `-o` is not this case: `write_rule_marker` writes `crop_rule.json`
+  before the loop and outside any `try`, so a read-only mount raises before the first label and there is
+  no summary at all. The arithmetic of the dilution is the point; that particular cause is not reachable.)
+  The #123 shape itself is immune, because the up-front metadata parse `continue`s on a bad row so it
+  never reaches the pano-existence check — an ordering a test now pins, since folding the two passes
+  together would turn the immunity into dilution silently.
+- **A run that is 100% `dims_mismatch` or 100% `out_of_frame` is silent *and exits 0*.** Those are skip
+  buckets, so neither the alarm nor the exit code can see them. That is right for a lagging scrape and
+  wrong for a schema move that changes what the dims or `pano_x`/`pano_y` fields mean, or for Google
+  re-serving a city's panos wider than the stored frame. Zero crops, exit 0, no alarm, no cron mail — the
+  silent-completion shape [#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)
+  exists to prevent. Out of scope for #136, which is about `errors`, but it is the next gap, not a
+  theoretical one.
+
+It is a second *reading* of the counts, not a bucket: nothing about the invariant above changes, the exit
+code is what it always was, and the per-outcome summary is still printed in full.
+
 **Re-running does not regenerate existing crops.** A crop already on disk is the resume marker and is never
 re-cut. A store cropped before the seam fix keeps its black-padded crops, and one cropped before crop sizes
 became deterministic holds a mix of (for example) 503- and 504-px crops for the same predicted size. There is
