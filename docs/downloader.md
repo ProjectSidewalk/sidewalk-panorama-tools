@@ -191,7 +191,8 @@ columbus-oh,sidewalk-columbus.cs.washington.edu
   it has no crontab line of its own to comment out. It is also the only way to say "known, and deliberately
   not scraped here" — a city with no row at all, public or private, fails every night for ever, by design.
   Keep both columns on it: the cross-check below credits a disabled row as a decision only while its fqdn is
-  the city's host — or, for a private city, whose host the roster withholds, while it is *shaped* like one —
+  the city's host — or, where the roster gives no host to match (every private city), while it is *shaped*
+  like one —
   so `#laurens-ia,` with the fqdn dropped is a gap, not a decision.
 * `--cities` has no default on purpose: which cities a host scrapes is a deployment fact, and a wrong default
   would quietly scrape the wrong fleet. There is a worked example at
@@ -261,10 +262,13 @@ A private city's roster entry carries `url: null` — the app withholds it delib
 match and the check names it by id: `zurich (private; url not published)`. That is also why the private
 deployments that are never scraped here (study and scratch instances such as `validation-study` and
 `crowdstudy`) each need a `#` row once: the manifest, not the code, records that decision, and without the
-row the city fails every night. For a private city the row is credited while its second column is shaped
-like a hostname (labels and dots, nothing else) — weaker evidence than a host match, and the strongest there
-is; the prose-comment shape and an empty column both fail it. `--dry-run` on the current manifest lists
-exactly which rows are still needed. A shared secret that would make the app publish the private urls was
+row the city fails every night. Where the roster gives no host to match — every private city, and any public
+one whose `url` the app left null or unparseable — the row is credited while its second column is shaped like
+a hostname (labels and dots, nothing else) — weaker evidence than a host match, and the strongest there is;
+the prose-comment shape and an empty column both fail it. The residual is a comment of the exact form
+`# zurich, ops.md`: a live private id before the comma and a single dotted token after it would read as a
+decision, so do not start a comment with a city id and a comma.
+`--dry-run` on the current manifest lists exactly which rows are still needed. A shared secret that would make the app publish the private urls was
 considered and is not worth building: it would buy the hint text, not the detection.
 
 `--dry-run` runs the same check, so a hand-run before a launch answers "is everything wired?" without waiting

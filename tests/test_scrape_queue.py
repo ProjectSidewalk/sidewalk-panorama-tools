@@ -1957,6 +1957,12 @@ class TestWhichCitiesAreMissingFromTheManifest:
         'sidewalk-zurich',                                 # no dot: a word, not a host
         'sidewalk zurich.cs.washington.edu',               # a space
         'https://sidewalk-zurich.cs.washington.edu',       # a url, not the fqdn the manifest carries
+        # Three the 2026-09-19 review found unpinned: each is refused by the shipped regex and accepted by
+        # a one-character loosening of it (no `$` anchor; `*` for the label after the dot; `?` on the
+        # first label), and every other test passed under each loosening.
+        'sidewalk-zurich.cs.washington.edu is the old host',  # a host followed by prose
+        'retired.',                                        # a one-word sentence
+        '.hidden',                                         # a dot with nothing before it
     ])
     def test_a_private_city_is_not_credited_by_a_column_that_is_not_a_hostname(self, column):
         roster = [roster_entry('zurich', url=None, visibility='private')]
