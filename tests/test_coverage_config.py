@@ -21,6 +21,7 @@ PRODUCTION_MODULES = {
     'CropRunner.py',
     'DownloadRunner.py',
     'config.py',
+    'cron_notify.py',
     'downloaders/__init__.py',
     'downloaders/common.py',
     'downloaders/gsv.py',
