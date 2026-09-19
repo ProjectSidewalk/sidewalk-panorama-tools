@@ -281,4 +281,8 @@ from two cities can collide on filename. Key on `(city, label_id)` when you comb
 ## Related
 
 * [API fields](api-fields.md) — what every column of `/adminapi/labels/cvMetadata` means, and the label type IDs.
+* [Checking the contract against a live deployment](api-fields.md#checking-the-contract-against-a-live-deployment)
+  — `check_cvmetadata_schema.py`, the tripwire for the next upstream field rename. The last one
+  ([SidewalkWebpage#4103](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4103)) cost 16 days of
+  zero crops against every deployment with CI green throughout.
 * [Reports](../reports/README.md) — the crop-geometry, clamp, and click-noise studies behind the numbers above.

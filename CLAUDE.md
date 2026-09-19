@@ -37,6 +37,10 @@ python3 flag_panos/json_to_csv.py --city <city> [--dir <dir>]
 # Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see docs/log-analyzer.md)
 python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days N]
 
+# Does a live deployment still serve every cvMetadata field CropRunner needs? (#135) Outside tests/ on
+# purpose - the suite is network-free. No default host. Exits 0 ok / 1 field missing / 3 unreadable.
+python3 check_cvmetadata_schema.py --host <fqdn>            # or set PS_CVMETADATA_HOST
+
 # One-off migrator for pre-v2 depth artifacts
 python3 migrate_depth_artifacts.py <storage-dir> [--dry-run]
 
@@ -75,7 +79,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 | `docs/depth.md` | artifact format, plane fields, ledger, migration, rate-limit behaviour, what depth is/isn't |
 | `docs/ops.md` | storage layout, resume ledgers, the 19-column `log.csv`, crashed-run semantics, the `fover` repair pass, operating the production host (deploy, rollback, adding a city, the missing-MTA alarm gap) |
 | `docs/log-analyzer.md` | SFTP settings, the per-city checks, and the depth backfill report |
-| `docs/api-fields.md` | `/adminapi/panos` and `/adminapi/labels/cvMetadata` glossaries, label type IDs |
+| `docs/api-fields.md` | `/adminapi/panos` and `/adminapi/labels/cvMetadata` glossaries, label type IDs, and the live schema tripwire |
 | `docs/testing.md` | what the suite covers |
 | `docs/history.md` | removed code, and why |
 
@@ -83,7 +87,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 
 **Coverage** is configured in `.coveragerc` (#57) and gated by its `fail_under`. Three things about it are load-bearing and easy to break by "simplifying":
 
-- **The measured set is the production tree only** — the fourteen top-level/`downloaders/`/`log_analyzer/` modules. `reports/*` and `flag_panos/*` are omitted, the first because averaging a large body of frozen study tooling in would let the scraper's number move several points unnoticed, the second because its module scope writes files at import. `tests/test_coverage_config.py` asserts the resolved set exactly, so adding a module is a deliberate measure-or-omit decision.
+- **The measured set is the production tree only** — every top-level/`downloaders/`/`log_analyzer/` module (a count is not written here: it has been stale twice). `reports/*` and `flag_panos/*` are omitted, the first because averaging a large body of frozen study tooling in would let the scraper's number move several points unnoticed, the second because its module scope writes files at import. `tests/test_coverage_config.py` asserts the resolved set exactly, so adding a module is a deliberate measure-or-omit decision.
 - **`source` is written as `${SIDEWALK_COVERAGE_ROOT-.}`, not `.`** — coverage resolves a relative source against each *process's* CWD, and the runner tests spawn subprocesses with `cwd=tmp_path`. `tests/conftest.py`'s `pytest_configure` sets that variable (plus `COVERAGE_PROCESS_START` and `COVERAGE_FILE`) only when the parent is itself being measured. Break any of the three and `main()`, the argparse `type=` validators and the budget carve-out all read as dead: `DownloadRunner.py` drops from 97.6% to 87.9% with nothing failing.
 - **`branch = True`** — the gap that motivated the gate was an `if` that only ever went one way (three of the log analyzer's six alert rules never fired while every line around them was green; that was the count at the time of the #57 measurement, and rule 4's `median > 0` guard turned out to be a fourth such `if` — see the log_analyzer notes below).
 
@@ -154,6 +158,15 @@ The README is a front door only; the reference material lives in `docs/` and eac
    - **The ETA divides panos by panos**, not panos by requests: a night of heavy transient failure spends requests and resolves nothing.
    - **A corpus of 0 is refused** (`corpus_size`). `depth_eligible` is `len(gsv_panos)`, so an empty pano-list answer writes a plausible `0`, and `last_value` skips blanks but not zeros — one such night erased the city from the stats line, the fleet block and the `longest remaining` ranking. Only `0` is refused: a corpus legitimately **shrinks** as Google retires panos, even below what the ledger holds, so "smaller than resolved" is not evidence of anything.
    Rule 4 reads `image_minutes` directly **with the median floored** (`LONG_RUN_MIN_MEDIAN`) — a mature city's image phase is a ledger read while depth spends the whole slot, so total-minus-depth was 0 on every row, the median was 0 and `median > 0` switched the rule off entirely; at a median of 1 it warned on an ordinary 4-minute phase. Rule 5 reads `PHASE_COLUMNS` only (field 19 is blank on every older row), rule 6 flags *overlapping* runs rather than same-day ones, rule 7 names the *candidates* for a stalled phase rather than asserting a cause (an unwritable ledger returns `(0, 0, skipped, skipped)`, **not** five zeros, so both arms of the old two-way diagnosis were wrong on the shape they existed to catch), and rules 8 and 9 report a corpus or a row width that cannot be believed — and rule 9's rows are **dropped from the frame**, not padded into runs: counted-then-padded let a stray comma turn a 183,680-pano city into `depth 0/12` with rule 8 silent. **Rules 2 and 3 group by date** for rule 6's reason.
+
+**check_cvmetadata_schema.py** (#135) — asks a LIVE deployment which fields `/adminapi/labels/cvMetadata` serves and compares them against what `CropRunner` requires. Same extracted shape as the runners (`build_parser()` / `configure_logging()` / `main(argv=None)` behind a `__main__` guard), so importing it is inert and its tests drive `main()` against a stubbed transport. It exists because `label_type_id` became `label_type` upstream (SidewalkWebpage#4103, 2026-09-02), the cropper produced zero crops against every deployment for 16 days, and CI was green for all of them — the suite is network-free by design, so every `-d` test runs against a fixture this repo wrote and a fixture cannot notice the server disagreeing with it.
+
+1. **It lives outside `tests/`, and that is the point, not a compromise.** The network-free suite is a property worth keeping; a contract with another codebase simply cannot be checked inside it. Exit codes are the unattended interface (0 ok, 1 a required field is gone, 3 the deployment could not be read — a check that did not run has not passed), so a crontab line mails the failure the way `log_analyzer` does.
+2. **The required list is read off `CropRunner` at call time** — `required_fields()` returns `REQUIRED_LABEL_COLUMNS`, `required_field_groups()` returns `LABEL_TYPE_COLUMNS` as one either/or group. Never restated: two copies of a field list drift silently, which is the bug. `TestTheFieldListComesFromCropRunner` moves the constants and asserts the verdict moves, so a copied tuple fails rather than passing every other test in the file.
+3. **A field the server ADDS is never a failure**, only `not_required` on the report. Servers add fields; a check that cried wolf gets muted, and a muted tripwire is worse than none. `Comparison.ok` deliberately does not consult `not_required`.
+4. **Only the first record is read.** cvMetadata is the city's whole label list (183,682 rows for seattle-wa), so the body is streamed and the read stops at the first complete record, whose keys *are* the field names — bounded by `MAX_PREFIX_BYTES` for a server that never completes one. A check costing more than the thing it guards does not survive contact with a monthly bill.
+5. **Only a JSON array whose first element is an object counts** (the #99 positive-evidence rule). An error envelope, a proxy's login page, a truncated body and an empty list are each `SchemaUnavailable` → exit 3, never "zero fields served" → every required field named as missing. "The endpoint moved" and "we never reached the endpoint" are two different people's problem.
+6. **No default host** (`--host`, else `$PS_CVMETADATA_HOST`, else exit) — `resolve_sftp`'s and `--cities`' rule. The schema is the app's, not the city's, so one deployment answers for the fleet. Fields with a documented fallback (`pano_width`/`pano_height`, which `_metadata_dims` degrades past) are deliberately NOT checked: they have no constant in `CropRunner`, so checking them would mean writing the second field list this whole thing exists to prevent.
 
 **migrate_depth_artifacts.py** — offline, idempotent one-off that rewrites pre-v2 (x-mirrored, unversioned) depth artifacts into v2 column order. The scraper never revisits an existing artifact, so a store scraped before #58 keeps mirrored artifacts forever without this.
 

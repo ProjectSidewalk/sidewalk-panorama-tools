@@ -19,6 +19,7 @@ COVERAGERC = os.path.join(REPO_ROOT, '.coveragerc')
 # point: a new module has to be a deliberate decision to measure or to omit, not a default of invisibility.
 PRODUCTION_MODULES = {
     'CropRunner.py',
+    'check_cvmetadata_schema.py',
     'DownloadRunner.py',
     'config.py',
     'cron_notify.py',
