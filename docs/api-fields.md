@@ -79,7 +79,8 @@ Three things to know before you join on any of this:
 ## Label type IDs
 
 `/adminapi/panos` has no label types; cvMetadata now sends the **name**, and this is the id it maps to —
-which is also the crop output subdirectory name. Yes, 8 is skipped. 🤷
+which is also the crop output subdirectory name. Yes, 8 is skipped — in the *data*, not in the table
+below, which carries all ten enum rows. 🤷
 
 Skipped in the *data*, that is: id 8 (`Problem`) exists in the upstream enum, so
 `CropRunner.LABEL_TYPE_IDS_BY_NAME` carries it even though no label in the wild uses it.

@@ -1850,6 +1850,59 @@ class TestTheLabelTypeArrivesUnderEitherName:
         assert not os.path.exists(os.path.join(str(out), '99'))
         assert os.path.exists(crop_path(out, 1, 509))
 
+    def test_every_enum_id_resolves_to_itself_by_id_too(self, crop_runner):
+        """The id path's counterpart to the name sweep below, and the gap that let the reverse map lose
+        a member silently.
+
+        Every id test here feeds a REJECTED value, and the only accepted ids anywhere in the suite were
+        1, 2 and 3 - so deriving LABEL_TYPE_NAMES_BY_ID with `if id_ != 8`, or hand-writing it without
+        10, passed everything. Failure scenario: re-cut an archived export whose rows carry
+        label_type_id=10 and every Pedestrian Signal row becomes one counted error, exiting 1 for the
+        whole city, with the suite green.
+        """
+        for id_ in crop_runner.LABEL_TYPE_IDS_BY_NAME.values():
+            assert crop_runner.resolve_label_type_id({'label_type_id': id_}) == id_
+            assert crop_runner.resolve_label_type_id({'label_type_id': str(id_)}) == id_
+
+    @pytest.mark.parametrize('raw', [3.7, True, False, b'3', '+3', '1_0', '٣', '3.0', ' '])
+    def test_an_id_that_is_not_a_plain_integer_is_refused(self, crop_runner, raw):
+        """int() is much looser than "checked against the same enum" implies, and the loose readings all
+        land on REAL ids, so enum membership cannot catch them: 3.7 truncates to 3, True is 1, and
+        '1_0' is 10 because Python reads underscores as digit grouping - a plausible cell quietly
+        becoming Pedestrian Signal. `' '` is here to hold the line with _absent: a whitespace-only cell
+        is ABSENT, so it must fall through to the name rather than raise.
+        """
+        if raw == ' ':
+            assert crop_runner.resolve_label_type_id({'label_type_id': raw,
+                                                      'label_type': 'CurbRamp'}) == 1
+            return
+        with pytest.raises(ValueError):
+            crop_runner.resolve_label_type_id({'label_type_id': raw})
+
+    def test_an_integral_float_is_still_an_id(self, crop_runner):
+        """The deliberate other half of the rule: a JSON export whose numbers went through a float layer
+        states the id exactly, so 3.0 must not break real archived data. Only non-integral is refused."""
+        assert crop_runner.resolve_label_type_id({'label_type_id': 3.0}) == 3
+
+    @pytest.mark.parametrize('raw', ['99', '1_0', True, 3.7])
+    def test_the_id_paths_errors_name_the_column_they_came_from(self, crop_runner, raw):
+        """Symmetry with the name path, whose message IS pinned. All FOUR id rejections are covered,
+        because they are four different messages: '99' fails enum membership, '1_0' fails the parse,
+        True is refused as a bool, 3.7 as non-integral. Pinning one left the other three free to be
+        reworded to a generic 'bad value' - and a message that does not name `label_type_id` sends the
+        operator to the wrong column, the harm the neither-column message was fixed for, one path over.
+
+        These four also prove the messages are REACHABLE. They were not: a try/except around the parse
+        re-raised one generic message, so three of the four strings below were dead and rewording them
+        changed nothing observable.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            crop_runner.resolve_label_type_id({'label_type_id': raw})
+
+        message = str(excinfo.value)
+        assert repr(raw) in message
+        assert re.search(r'\blabel_type_id\b', message)
+
     @pytest.mark.parametrize('padded', ['  CurbRamp  ', '\tCurbRamp', 'CurbRamp\n'])
     def test_a_padded_name_still_resolves(self, crop_runner, padded):
         """#72's battery measured ' True ' with padding as a live failure in the old pandas intake, so
@@ -1879,6 +1932,26 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
                 found[cells[1].strip('`')] = int(cells[0])
         return found
 
+    def _claude_md_ids(self):
+        """The same table as it appears in CLAUDE.md, which is a THIRD hand-maintained copy."""
+        text = io.open(os.path.join(REPO_ROOT, 'CLAUDE.md'), encoding='utf-8').read()
+        section = text.split('## Label Type IDs', 1)[-1].split('\n## ', 1)[0]
+        found = {}
+        for line in section.splitlines():
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            if len(cells) == 3 and cells[0].isdigit():
+                found[cells[1].strip('`')] = int(cells[0])
+        return found
+
+    def test_claude_mds_copy_of_the_table_agrees_too(self, crop_runner):
+        """CLAUDE.md gained the enum-name column in the same commit as docs/api-fields.md, making three
+        hand-maintained copies of one upstream enum. Swapping a pair in CLAUDE.md alone survived every
+        test - and CLAUDE.md is the agent-facing source of truth, so a wrong pair there is the one most
+        likely to be believed and propagated."""
+        documented = self._claude_md_ids()
+        assert documented, 'the label type table went missing from CLAUDE.md'
+        assert documented == crop_runner.LABEL_TYPE_IDS_BY_NAME
+
     def test_the_documented_table_is_the_map_pair_for_pair(self, crop_runner):
         """The assertion that actually catches a swap.
 
@@ -1898,7 +1971,9 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
         This is a change-detector, not a check - it is a literal restatement of the dict, so it cannot
         catch a transcription that was wrong when both copies were written. It is kept because it names
         the upstream file a reader has to go read; the pair-for-pair test above is what does the work,
-        and the two corpus witnesses below are what corroborate the halves no fixture covers.
+        and the single corpus witness below is the only outside corroboration any pairing has. (It
+        covers Crosswalk alone; the sweep beside it drives every name through the seam, which is
+        self-consistency, not evidence. Signal and Problem are corroborated by nothing.)
         """
         assert crop_runner.LABEL_TYPE_IDS_BY_NAME == {
             'CurbRamp': 1, 'NoCurbRamp': 2, 'Obstacle': 3, 'SurfaceProblem': 4, 'Other': 5,

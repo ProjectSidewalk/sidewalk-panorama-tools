@@ -304,6 +304,40 @@ def _absent(value):
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+def _exact_label_type_id(raw):
+    """The integer a label type id cell states, exactly, or ValueError.
+
+    int() is the obvious reading and is too permissive to sit behind a guarantee about which directory a
+    crop lands in. Measured on the shipped inputs it accepted: 3.7 -> 3 (silent truncation), True -> 1,
+    b'3' -> 3, '+3' -> 3, and '1_0' -> 10, because Python reads underscores as digit grouping. Every one
+    of those lands on a REAL label type, so the enum-membership check downstream cannot see them: the row
+    is filed under a type it never claimed, counted as a success, with nothing on disk to say so.
+
+    A CSV cell is always a str and a JSON export gives int or float, so the accepted shapes are an exact
+    int (never a bool - bool is an int subclass, and True would otherwise be Curb Ramp), a float that is
+    exactly integral, and a string of plain ASCII digits. `str.isdigit()` is deliberately not used: it is
+    True for superscripts and for other scripts' digits, which int() then happily converts.
+
+    3.0 is accepted and 3.7 is not, which is the line worth drawing rather than rejecting every float: a
+    JSON export that went through a layer typing its numbers as floats states the id exactly, and failing
+    it would break real archived data for no safety gained, while a non-integral value is the truncation
+    this exists to stop.
+    """
+    if isinstance(raw, bool):
+        raise ValueError('label_type_id is a bool, not an id: %r' % (raw,))
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if raw.is_integer():
+            return int(raw)
+        raise ValueError('label_type_id is not a whole number: %r' % (raw,))
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text and all(c in '0123456789' for c in text):
+            return int(text)
+    raise ValueError('label_type_id is not a plain integer: %r' % (raw,))
+
+
 def _metadata_dims(row):
     """The pano dimensions a label row claims, or None if it doesn't carry them.
 
@@ -689,6 +723,12 @@ def resolve_label_type_id(row):
     the identical poisoning this function's name path refuses - a guarantee that held on one half of the
     input space was worse than no guarantee, because the docstring claimed both.
 
+    The id is read STRICTLY, by `_exact_label_type_id`, because int() is far more permissive than the
+    docstring's "checked against the same enum" implies: it silently accepted 3.7 as 3, True as 1, '+3'
+    and b'3' as 3, and - the one that matters - '1_0' as 10, Python's underscore digit grouping turning a
+    plausible cell into Pedestrian Signal with nothing raised. Membership in the enum cannot catch those,
+    because every one of them lands on a REAL id.
+
     >>> resolve_label_type_id({'label_type': 'SurfaceProblem'})
     4
     >>> resolve_label_type_id({'label_type_id': '1', 'label_type': 'CurbRamp'})
@@ -696,10 +736,10 @@ def resolve_label_type_id(row):
     """
     if not _absent(row.get('label_type_id')):
         raw = row['label_type_id']
-        try:
-            label_type_id = int(raw)
-        except (TypeError, ValueError):
-            raise ValueError("unrecognised label_type_id %r" % (raw,))
+        # No try/except around this call: _exact_label_type_id raises ValueError, already naming the
+        # column and the value, for every shape it refuses. Wrapping it re-raised a generic message and
+        # made its three specific ones dead strings - which is why rewording them survived the suite.
+        label_type_id = _exact_label_type_id(raw)
         if label_type_id not in LABEL_TYPE_NAMES_BY_ID:
             raise ValueError("unrecognised label_type_id %r" % (raw,))
         return label_type_id
