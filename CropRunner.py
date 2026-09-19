@@ -38,7 +38,40 @@ from downloaders.common import atomic_output_path, raise_decompression_bomb_ceil
 # What the crop loop actually reads off every label row. Only the CSV intake enforces them up front (a
 # header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake keeps
 # whatever the payload had, and bulk_extract_crops counts a row missing any of them as one bad label.
-REQUIRED_LABEL_COLUMNS = ('pano_id', 'pano_x', 'pano_y', 'label_type_id', 'label_id')
+REQUIRED_LABEL_COLUMNS = ('pano_id', 'pano_x', 'pano_y', 'label_id')
+
+# The label's type arrives under one of two names, and a row needs exactly one of them (#123).
+# cvMetadata served `label_type_id`, an int, until SidewalkWebpage#4103 replaced the label_type lookup
+# table with a Postgres enum (released v11.11.0, 2026-09-02): the query now selects labelTypeName and
+# every deployment serves `label_type`, a name like 'CurbRamp', in both JSON and CSV. Measured against
+# sidewalk-sea 2026-09-18 - see samples/cvmetadata-seattle.csv, which is that response.
+#
+# Both are accepted rather than just the new one. Every archived export carries `label_type_id`, including
+# the two documented -f examples in samples/, and a store is re-cut from whatever export produced it.
+LABEL_TYPE_COLUMNS = ('label_type_id', 'label_type')
+
+# The upstream enum, verbatim from SidewalkWebpage app/models/label/LabelTypeTable.scala. The id is what
+# names the crop's output directory, so this map is the only thing standing between a name-serving endpoint
+# and a store sharded by a string.
+#
+# 8/'Problem' is here although docs/api-fields.md's table skips it. "8 is skipped" is true of labels in the
+# wild, not of the enum - and a map that omits a name the endpoint can emit turns a real row into an error.
+LABEL_TYPE_IDS_BY_NAME = {
+    'CurbRamp': 1,
+    'NoCurbRamp': 2,
+    'Obstacle': 3,
+    'SurfaceProblem': 4,
+    'Other': 5,
+    'Occlusion': 6,
+    'NoSidewalk': 7,
+    'Problem': 8,
+    'Crosswalk': 9,
+    'Signal': 10,
+}
+
+# The same fact keyed the other way, for validating an id that arrived as an id. Derived, never written
+# out a second time: two hand-maintained copies of one upstream enum is the drift this map exists to stop.
+LABEL_TYPE_NAMES_BY_ID = {id_: name for name, id_ in LABEL_TYPE_IDS_BY_NAME.items()}
 
 # The crop window compute_crop_box resolves. `shifted` rides along rather than being recomputed by
 # callers: it is derived from the same rounding that produced `top`, so the two cannot drift apart.
@@ -102,6 +135,25 @@ CROP_MAX_STORED_WIDTH = 1440
 
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
+
+# ---------------------------------------------------------------------------
+# The systemic-failure alarm (#136). When cvMetadata changed shape (#123) every label errored, and the
+# run's bookkeeping was entirely correct about it: errors == total, the invariant reconciled, main()
+# exited 1. What was wrong was the SHAPE of the signal - 260,000 identical per-row WARNINGs, where
+# "everything failed" differs from "three labels failed" only in length. And CropRunner is hand-run
+# rather than on cron, so the exit code reaches nobody by itself.
+#
+# The fraction of a run's labels that must have errored before the summary says so in its own words.
+# Not a tuned number: a half is the point where errors stop being a minority outcome - more of the run
+# failed than survived - which no per-row cause explains at scale. Two alternatives were considered and
+# rejected. Firing only at 100% is tuned to the one incident we have seen and is defeated by a single
+# label of noise: one missing pano among 260,000 failures would silence it. Firing at, say, 10% would
+# put the alarm inside the range an ordinary bad night can reach - a corrupt slice of the store is a
+# genuinely per-row fault, and the loop is built to survive exactly that.
+SYSTEMIC_ERROR_FRACTION = 0.5
+
+# The one string to grep for, in crop.log or in a terminal scrollback.
+SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 
 
 def build_parser():
@@ -181,6 +233,11 @@ def fetch_label_ids_csv(metadata_csv_path):
         if missing:
             raise ValueError("%s is missing required column(s) %r; found %r"
                              % (metadata_csv_path, missing, reader.fieldnames))
+        # The type column is an either/or, so it cannot ride in the list above: naming 'label_type_id'
+        # as missing would send a reader looking for a column no current deployment sends (#123).
+        if not any(c in fieldnames for c in LABEL_TYPE_COLUMNS):
+            raise ValueError("%s has none of the label type column(s) %r; found %r"
+                             % (metadata_csv_path, list(LABEL_TYPE_COLUMNS), reader.fieldnames))
         for row in reader:
             # Surplus fields land under the key None. pandas did something worse with the same input -
             # it consumed the first column as the frame's index, shifting every field by one.
@@ -197,9 +254,14 @@ def json_to_list(jsondata):
     """
     Transforms json like object to a list of dict to be read in bulk_extract_crops() to crop panos with label metadata
     :param jsondata: json object containing label ids and their associated properties
-    :return: A list of dicts containing the following metadata: label_id, pano_id, label_type_id, agree_count,
-    disagree_count, notsure_count, pano_width, pano_height, pano_x, pano_y, canvas_width, canvas_height, canvas_x,
-    canvas_y, zoom, heading, pitch, camera_heading, camera_pitch, source
+    :return: A list of dicts containing the following metadata: label_id, pano_id, label_type, agree_count,
+    disagree_count, unsure_count, pano_width, pano_height, pano_x, pano_y, canvas_width, canvas_height, canvas_x,
+    canvas_y, zoom, heading, pitch, camera_heading, camera_pitch, camera_roll
+
+    Measured against sidewalk-sea 2026-09-18 (#123): `label_type` is a name and replaced the older
+    `label_type_id`; `unsure_count` was documented here as `notsure_count`; `camera_roll` is served and
+    was undocumented; `source` is NOT sent by this endpoint, despite the older exports in samples/ having
+    a column by that name. Nothing here reads `source`, so only the record was wrong.
     """
     unique_label_ids = set()
     label_info = []
@@ -259,6 +321,40 @@ def _absent(value):
     a blank dims column would fail an otherwise clean run.
     """
     return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _exact_label_type_id(raw):
+    """The integer a label type id cell states, exactly, or ValueError.
+
+    int() is the obvious reading and is too permissive to sit behind a guarantee about which directory a
+    crop lands in. Measured on the shipped inputs it accepted: 3.7 -> 3 (silent truncation), True -> 1,
+    b'3' -> 3, '+3' -> 3, and '1_0' -> 10, because Python reads underscores as digit grouping. Every one
+    of those lands on a REAL label type, so the enum-membership check downstream cannot see them: the row
+    is filed under a type it never claimed, counted as a success, with nothing on disk to say so.
+
+    A CSV cell is always a str and a JSON export gives int or float, so the accepted shapes are an exact
+    int (never a bool - bool is an int subclass, and True would otherwise be Curb Ramp), a float that is
+    exactly integral, and a string of plain ASCII digits. `str.isdigit()` is deliberately not used: it is
+    True for superscripts and for other scripts' digits, which int() then happily converts.
+
+    3.0 is accepted and 3.7 is not, which is the line worth drawing rather than rejecting every float: a
+    JSON export that went through a layer typing its numbers as floats states the id exactly, and failing
+    it would break real archived data for no safety gained, while a non-integral value is the truncation
+    this exists to stop.
+    """
+    if isinstance(raw, bool):
+        raise ValueError('label_type_id is a bool, not an id: %r' % (raw,))
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if raw.is_integer():
+            return int(raw)
+        raise ValueError('label_type_id is not a whole number: %r' % (raw,))
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text and all(c in '0123456789' for c in text):
+            return int(text)
+    raise ValueError('label_type_id is not a plain integer: %r' % (raw,))
 
 
 def _metadata_dims(row):
@@ -627,6 +723,116 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
             pano.close()
 
 
+def resolve_label_type_id(row):
+    """The numeric label type id for a row, from either field name (#123).
+
+    `label_type_id` wins when the row carries a usable one, because an export that has it is the older
+    shape and its id is authoritative; `label_type` is the name every current deployment serves and is
+    mapped through LABEL_TYPE_IDS_BY_NAME. A blank cell counts as absent, the _absent() rule, so a row
+    carrying both columns with an empty id still resolves off the name rather than dying on int('').
+
+    Raises ValueError naming the value for an unrecognised name OR an unrecognised id, and KeyError when
+    the row has neither column - all of which bulk_extract_crops already counts as one malformed row.
+    Deliberately not a silent default: a label type this map has never heard of means the enum moved
+    upstream, and filing those crops under a guessed id would poison a training directory with no way to
+    tell afterwards.
+
+    The id path is checked against the same enum as the name path, and that symmetry is the point. An
+    unchecked int() accepted 99, 0 and -3 as label types and wrote <crop-dir>/99/ as a success, which is
+    the identical poisoning this function's name path refuses - a guarantee that held on one half of the
+    input space was worse than no guarantee, because the docstring claimed both.
+
+    The id is read STRICTLY, by `_exact_label_type_id`, because int() is far more permissive than the
+    docstring's "checked against the same enum" implies: it silently accepted 3.7 as 3, True as 1, '+3'
+    and b'3' as 3, and - the one that matters - '1_0' as 10, Python's underscore digit grouping turning a
+    plausible cell into Pedestrian Signal with nothing raised. Membership in the enum cannot catch those,
+    because every one of them lands on a REAL id.
+
+    >>> resolve_label_type_id({'label_type': 'SurfaceProblem'})
+    4
+    >>> resolve_label_type_id({'label_type_id': '1', 'label_type': 'CurbRamp'})
+    1
+    """
+    if not _absent(row.get('label_type_id')):
+        raw = row['label_type_id']
+        # No try/except around this call: _exact_label_type_id raises ValueError, already naming the
+        # column and the value, for every shape it refuses. Wrapping it re-raised a generic message and
+        # made its three specific ones dead strings - which is why rewording them survived the suite.
+        label_type_id = _exact_label_type_id(raw)
+        if label_type_id not in LABEL_TYPE_NAMES_BY_ID:
+            raise ValueError("unrecognised label_type_id %r" % (raw,))
+        return label_type_id
+    name = row.get('label_type')
+    if _absent(name):
+        # Neither column carried a value. KeyError so the message names a field rather than reading as
+        # a bad cast, and so the CSV intake's up-front guard and this one fail the same way. It names
+        # BOTH spellings: a current deployment sends only `label_type`, so an operator sent looking for
+        # `label_type_id` alone is sent after a column no endpoint serves - the harm this either/or was
+        # written to avoid, reintroduced in the error message.
+        raise KeyError('neither label_type nor label_type_id')
+    name = str(name).strip()
+    if name not in LABEL_TYPE_IDS_BY_NAME:
+        raise ValueError("unrecognised label_type %r" % (name,))
+    return LABEL_TYPE_IDS_BY_NAME[name]
+
+
+def systemic_failure_line(counts):
+    """One line for a run whose errors dominate it, or None when they do not (#136).
+
+    Reads the counts; never writes them. The alarm is a second reading of numbers the loop already
+    produced, so it cannot move a label between buckets and the reconciliation invariant is untouched -
+    which is the whole reason it is a separate function taking the finished dict rather than a counter
+    maintained alongside the others.
+
+    The two guards do NOT divide the quiet cases between them, and two rounds of review got this wrong
+    in opposite directions before it was written as a table. Measured:
+
+        input        shipped   without errors<=0   without total<=0
+        {0,  0}      None      None                None
+        {0,  1}      None      None                ZeroDivisionError
+        {10, 0}      None      None                None
+        {10, 4}      None      None                None
+        {10, 5}      FIRES     FIRES               FIRES
+        {-2, 1}      None      None                FIRES, "(-50.0%)"
+
+    So: for any total > 0 the threshold test ALONE silences every quiet case, because errors <= 0
+    already satisfies errors < fraction * total at any positive fraction - a 100% missing_pano or 100%
+    skipped_existing run is silenced by the arithmetic, not by a guard. `total <= 0` is the only clause
+    with a distinguishing input, and it is a division guard: without it {'total': 0, 'errors': 1}
+    formats 100.0 * 1 / 0 and raises inside the run summary, making the alarm the one fatal thing in a
+    loop whose contract is that nothing in it is fatal. It also short-circuits first, so on an empty run
+    it is the clause that returns and `errors <= 0` is never evaluated.
+
+    `errors <= 0` is therefore REDUNDANT at the shipped fraction, and kept deliberately as a statement
+    of intent rather than as a load-bearing guard - which is why the mutant that drops it is equivalent
+    and cannot be killed. Do not read its presence as evidence that something needs it.
+
+    The denominator is `total` - every label the run was handed - and not the subset it actually tried
+    to cut. That is the documented invariant's denominator, and it keeps the two skip outcomes honest:
+    a city whose pano store is still catching up is 100% missing_pano and is not a crop failure, while
+    a re-run over a finished store is 100% skipped_existing and did nothing wrong. The cost is a known
+    blind spot: a mature store topping up a handful of labels, all of which fail to write, is a small
+    fraction of a large total and does not trip this. That run still exits 1 and still logs a warning
+    per label - which is the whole signal it had before - and sharpening it needs a denominator with
+    its own degenerate cases, so it is left for a run that actually shows up.
+
+    >>> systemic_failure_line({'total': 0, 'errors': 0}) is None
+    True
+    >>> systemic_failure_line({'total': 100, 'errors': 3}) is None
+    True
+    >>> systemic_failure_line({'total': 100, 'errors': 100}).startswith(SYSTEMIC_FAILURE_BANNER)
+    True
+    """
+    total, errors = counts['total'], counts['errors']
+    if total <= 0 or errors <= 0 or errors < SYSTEMIC_ERROR_FRACTION * total:
+        return None
+    return ("%s: %d of %d labels errored (%.1f%%). At that rate this is one cause rather than that "
+            "many independent per-row faults - check the label metadata's shape (a cvMetadata schema "
+            "move is what did this in #123), the pano store passed to -s, and whether -o is writable, "
+            "before reading the per-label reasons in crop.log."
+            % (SYSTEMIC_FAILURE_BANNER, errors, total, 100.0 * errors / total))
+
+
 def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
@@ -649,6 +855,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
              stay inside the pano, so the crop exists but the label is off-centre in it. Adding a bucket
              here without adding it to that sum is exactly how the invariant went stale before;
              tests/test_crop_runner.py asserts the sum from the dict rather than from this docstring.
+
+             The summary ends with systemic_failure_line()'s alarm when errors dominate the run (#136).
+             That is a second READING of these numbers and adds no bucket of its own - which is what
+             keeps the invariant above out of its way.
     """
     counts = {'total': len(labels_to_crop), 'success': 0, 'skipped_existing': 0,
               'missing_pano': 0, 'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
@@ -677,7 +887,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 raise ValueError("empty pano_id")
             pano_x = float(row['pano_x'])
             pano_y = float(row['pano_y'])
-            label_type = int(row['label_type_id'])
+            label_type = resolve_label_type_id(row)
             label_id = int(row['label_id'])
             if not (math.isfinite(pano_x) and math.isfinite(pano_y)):
                 raise ValueError("non-finite label position (%r, %r)" % (row['pano_x'], row['pano_y']))
@@ -799,6 +1009,14 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     if counts['shifted_vertically']:
         print("%d of those crops were shifted to stay inside the pano, so their label is not at the "
               "crop's centre." % counts['shifted_vertically'])
+    alarm = systemic_failure_line(counts)
+    if alarm:
+        # Both channels, the depth phase's pattern, and last so it is the line left on screen: stdout
+        # is how an operator hears about it tonight, crop.log is what is still there next week. The
+        # numbers above say the same thing, but a rate has to be read off them - and the failure this
+        # exists for buries them under one warning per label.
+        logging.error('%s', alarm)
+        print(alarm)
     return counts
 
 
