@@ -41,6 +41,28 @@ what the values happen to look like — the inference that gave an all-numeric M
 naming the file, not a `KeyError` 200k labels in. Labels are grouped by pano so each pano JPEG is decoded
 exactly once for all of its labels.
 
+**The label's type arrives under one of two names, and both are accepted**
+([#123](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/123)). cvMetadata sent
+`label_type_id`, an integer, until
+[SidewalkWebpage#4103](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4103) replaced the
+label_type lookup table with a Postgres enum (released v11.11.0, 2026-09-02); every deployment now sends
+`label_type`, a name like `CurbRamp`, in both JSON and CSV. `resolve_label_type_id()` prefers a usable
+`label_type_id` — every archived export carries one, and a store is re-cut from whatever export produced
+it — and otherwise maps the name through `LABEL_TYPE_IDS_BY_NAME`.
+
+**The output directory is the numeric id either way.** `<crop-dir>/<label_type_id>/` is what every consumer
+reads and what an existing store is sharded by, so the name is resolved at intake rather than carried
+through. A name this map has never heard of means the enum moved upstream again: that row becomes one
+counted error naming the value, rather than a guessed id filing a crop into a real training directory with
+nothing on disk to say it was a guess.
+
+**An id is checked against the same enum as a name, and the symmetry is deliberate.** An id arriving in an
+old export is validated against `LABEL_TYPE_NAMES_BY_ID` before it is believed. Until the 2026-09-18 review
+the id path was a bare `int()`, so `label_type_id=99`, `0` and `-3` were all accepted and written to
+`<crop-dir>/99/` as a `success` with exit 0 — an arbitrary shard directory that an ML consumer globbing
+`crops/*/` reads as a new label type. That is the same poisoning the name path refuses, so a guarantee that
+held on only one half of the input space was worse than none: the docstring claimed both.
+
 ## Crop geometry
 
 Crops are **3:2** (`CROP_ASPECT_W_OVER_H = 1.5`), and their width comes from `crop_window_width()` —
