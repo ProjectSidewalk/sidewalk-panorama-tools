@@ -188,10 +188,11 @@ columbus-oh,sidewalk-columbus.cs.washington.edu
 * **The fqdn cannot be derived from the city_id** — `seattle-wa` is served by `sidewalk-sea`, `columbus-oh` by
   `sidewalk-columbus` — so the two travel together. Both halves come from `/v3/api/cities`.
 * **A row whose `city_id` starts with `#` is skipped**, which is how a city is taken out for a night now that
-  it has no crontab line of its own to comment out. It is also the only way to say "public, known, and
-  deliberately not scraped here" — a public city with no row at all fails every night for ever, by design. Keep
-  both columns on it: the cross-check below credits a disabled row as a decision only while it still names the
-  city's host, so `#laurens-ia,` with the fqdn dropped is a gap, not a decision.
+  it has no crontab line of its own to comment out. It is also the only way to say "known, and deliberately
+  not scraped here" — a city with no row at all, public or private, fails every night for ever, by design.
+  Keep both columns on it: the cross-check below credits a disabled row as a decision only while its fqdn is
+  the city's host — or, for a private city, whose host the roster withholds, while it is *shaped* like one —
+  so `#laurens-ia,` with the fqdn dropped is a gap, not a decision.
 * `--cities` has no default on purpose: which cities a host scrapes is a deployment fact, and a wrong default
   would quietly scrape the wrong fleet. There is a worked example at
   [`samples/scrape_queue_cities.csv`](../samples/scrape_queue_cities.csv); the real one lives on the host,
@@ -219,17 +220,18 @@ worse — so the omission is made loud instead
 Every deployment serves `GET /v3/api/cities`, the same list of every city from every host: `city_id`, `url`
 (`https://<fqdn>`, or `null` for a private city) and `visibility`. After the fleet has run, the queue asks
 the first manifest host that will answer — the ones whose city ran ok tonight first, most recent first, at
-most three — and names every **public** city whose `city_id` has no row. Private cities are scraped too when
-listed, but the check does not ask about them. The report takes one of three shapes:
+most three — and names every city whose `city_id` has no row, **private ones included**
+([#143](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/143); the check was public-only
+until 2026-09-19, and 20 of the 59 deployments are private). The report takes one of three shapes:
 
 ```
-[queue] public cities missing from the manifest: laurens-ia (sidewalk-laurens.cs.washington.edu), bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', the app reads <store-root>/bayonne-fr)
-[queue]   add one city_id,fqdn row per city - city_id must be the app's own id, because that is the directory it reads
-[queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, 2 public cities missing from the manifest; 610.2 min total
+[queue] cities missing from the manifest: laurens-ia (sidewalk-laurens.cs.washington.edu), bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', the app reads <store-root>/bayonne-fr), zurich (private; url not published)
+[queue]   add one city_id,fqdn row per city - city_id must be the app's own id, because that is the directory it reads; a '#city_id,fqdn' row records one that is deliberately not scraped here
+[queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, 3 cities missing from the manifest; 610.2 min total
 ```
 ```
 [queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached; 610.2 min total
-[queue] manifest checked against 39 public cities (roster from sidewalk-sea.cs.washington.edu)
+[queue] manifest checked against 39 public and 20 private cities (roster from sidewalk-sea.cs.washington.edu)
 ```
 ```
 [queue] ERROR: manifest not cross-checked - no roster from sidewalk-sea.cs.washington.edu (timed out), sidewalk-columbus.cs.washington.edu (HTTP 502), sidewalk-cdmx.cs.washington.edu (not JSON) (3 of 54 hosts tried)
@@ -254,6 +256,16 @@ rather than a gap, but only while it still names the city's host: `csv` splits a
 too, so `# laurens-ia, bayonne-fr launched 2026-09-11` reads as a row for `laurens-ia`, and crediting the id
 alone would have silenced the very city the check exists for.
 
+A private city's roster entry carries `url: null` — the app withholds it deliberately — so there is no host to
+match and the check names it by id: `zurich (private; url not published)`. That is also why the private
+deployments that are never scraped here (study and scratch instances such as `validation-study` and
+`crowdstudy`) each need a `#` row once: the manifest, not the code, records that decision, and without the
+row the city fails every night. For a private city the row is credited while its second column is shaped
+like a hostname (labels and dots, nothing else) — weaker evidence than a host match, and the strongest there
+is; the prose-comment shape and an empty column both fail it. `--dry-run` on the current manifest lists
+exactly which rows are still needed. A shared secret that would make the app publish the private urls was
+considered and is not worth building: it would buy the hint text, not the detection.
+
 `--dry-run` runs the same check, so a hand-run before a launch answers "is everything wired?" without waiting
 for the night: a gap exits 1 there too; a roster nobody serves is only a WARNING on a dry run (the same line,
 with that word in place of ERROR, and exit 0), since that is someone at a keyboard, possibly offline, reading
@@ -274,8 +286,8 @@ with several rows on one host does not spend the whole cap on it.
 
 **Exit codes**, since the exit is the alert: it is the subject line of the night's message
 ([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), and it is the code cron sees: `0` every city ran and succeeded and the
-manifest names every public city, `1` something failed, timed out, **was never reached**, **a public city has
-no manifest row**, or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
+manifest names every city, `1` something failed, timed out, **was never reached**, **a city has no manifest
+row** (private or public), or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
 lock. A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
 cities a night is the silent failure this design exists to surface. If a night's truncation is expected and
 accepted, the window is the wrong size.
