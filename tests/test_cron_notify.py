@@ -199,6 +199,43 @@ class TestTheSinkGetsTheOutput:
         assert sys.stdout.getvalue() == 'hello' + os.linesep
 
 
+# --- --only-on-failure ----------------------------------------------------------------------------------------
+
+class TestOnlyOnFailure:
+    """Production's choice (2026-09-18): one message on a bad night, silence on a good one. The rule then is
+    the exit code, not the output - a failure that printed nothing is exactly the one nobody would otherwise
+    hear about, so it is delivered with a body that says so."""
+
+    def test_a_clean_run_with_output_is_not_delivered(self, child, sink, tmp_path, monkeypatch):
+        log = tmp_path / 'notify.log'
+        code = run(child, sink, '--only-on-failure', '--log', str(log),
+                   spec='o:banner|o:WARNING something', exit_code=0, monkeypatch=monkeypatch)
+        assert code == 0
+        assert sink.calls() == 0
+        assert 'exit 0 nothing to publish (clean run, --only-on-failure)' in log.read_text()
+
+    def test_a_failed_run_is_delivered_with_its_output(self, child, sink, monkeypatch):
+        code = run(child, sink, '--only-on-failure', spec='o:banner|o:FAILED', exit_code=1,
+                   monkeypatch=monkeypatch)
+        assert code == 1
+        assert sink.calls() == 1
+        assert sink.stdin() == lines('banner', 'FAILED')
+        assert sink.env()['NOTIFY_EXIT'] == '1'
+
+    def test_a_failed_run_that_printed_nothing_is_still_delivered(self, child, sink, monkeypatch):
+        """Under cron's rule no output means no mail even on failure; here the failure is the event."""
+        code = run(child, sink, '--only-on-failure', spec='', exit_code=3, monkeypatch=monkeypatch)
+        assert code == 3
+        assert sink.calls() == 1
+        assert sink.stdin() == b'cron_notify: job exited 3 without printing anything\n'
+
+    def test_a_sink_failure_on_a_failed_run_keeps_the_runs_code(self, child, sink, monkeypatch, capsys):
+        monkeypatch.setenv('SINK_EXIT', '1')
+        code = run(child, sink, '--only-on-failure', spec='o:x', exit_code=1, monkeypatch=monkeypatch)
+        assert code == 1
+        assert 'cron_notify: sink failed' in capsys.readouterr().err
+
+
 # --- The exit code is the child's ----------------------------------------------------------------------------
 
 class TestTheExitCodeIsTheChilds:

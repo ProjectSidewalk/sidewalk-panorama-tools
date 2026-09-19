@@ -14,7 +14,9 @@ It runs the command with stdout and stderr merged, streams every line to its own
 hand-run is live, and cron mail would still carry it if an MTA ever appeared), and when the command exits
 hands the whole capture to the sink command if - and only if - there was any. That is cron's rule exactly:
 mail on any output, not on nonzero exit alone, which is what lets a WARNING on an otherwise clean night
-reach anyone. The sink is a shell command run with the body on stdin and in the file NOTIFY_BODY_FILE
+reach anyone. --only-on-failure narrows that to nonzero exits (production's choice: one message on a bad
+night, silence on a good one, with the --log line as the proof the wrapper ran); a failure that printed
+nothing is still delivered, with a body that says so. The sink is a shell command run with the body on stdin and in the file NOTIFY_BODY_FILE
 names, NOTIFY_SUBJECT set to "<name>: exit <code> on <host>" (ASCII, one line, at most 100 characters - the
 constraints SNS puts on a subject) and NOTIFY_EXIT to the command's exit code. Production's sink is
 `aws sns publish --topic-arn ... --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE`, which
@@ -98,6 +100,11 @@ def build_parser():
     parser.add_argument('--max-bytes', type=_max_bytes, default=DEFAULT_MAX_BYTES, metavar='N',
                         help='Cut the delivered output to this many bytes, keeping the head and the tail '
                              '(default %(default)d; SNS refuses a message over 256 KB).')
+    parser.add_argument('--only-on-failure', action='store_true',
+                        help='Deliver only when the command exits nonzero, instead of whenever it printed '
+                             "anything (cron's rule, the default). A failure that printed nothing is still "
+                             'delivered, with a body saying so. The cost is that a WARNING on an otherwise '
+                             'clean night is not delivered - it is still in the per-city scrape.log.')
     parser.add_argument('--log', default=None, metavar='FILE',
                         help='Append one line per run - when, the exit code, whether anything was delivered '
                              "- to this file. stderr under cron goes to the same nowhere this wrapper exists "
@@ -237,9 +244,16 @@ def main(argv=None):
 
     exit_code, body = run_command(args.command)
 
-    if not body:
-        _log_line(args.log, exit_code, 'nothing to publish')
+    if args.only_on_failure and exit_code == 0:
+        _log_line(args.log, exit_code, 'nothing to publish (clean run, --only-on-failure)')
         return exit_code
+    if not body:
+        if not args.only_on_failure:
+            _log_line(args.log, exit_code, 'nothing to publish')
+            return exit_code
+        # A failure is the event here, output or not: a command that died before printing anything is the
+        # one nobody would otherwise hear about.
+        body = ('cron_notify: %s exited %d without printing anything\n' % (name, exit_code)).encode('utf-8')
 
     body = truncate(body, args.max_bytes)
     failure = deliver(args.sink, body, subject_for(name, exit_code, hostname()), exit_code)

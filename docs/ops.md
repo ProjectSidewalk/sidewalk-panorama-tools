@@ -712,18 +712,20 @@ flag. So the crontab line runs the queue through `cron_notify.py`, which is cron
 pluggable:
 
 ```
-cron_notify.py --name scrape-queue --log /home/ubuntu/cron_notify.log \
+cron_notify.py --name scrape-queue --only-on-failure --log /home/ubuntu/cron_notify.log \
     --sink 'aws sns publish --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
     -- <the queue command>
 ```
 
 - **The wrapper runs the command, streams its stdout+stderr through, and when it exits hands the whole capture
-  to `--sink` if there was any** — any output, not nonzero exit alone, which is what lets a `WARNING` on an
-  otherwise clean night reach anyone. The queue always prints its banner, so this is **one message a night**;
-  the subject is `scrape-queue: exit N on <host>`, so a clean night is one glance and a filter on `exit 0` is
-  safe. The sink gets the body on stdin and in the file `$NOTIFY_BODY_FILE` names (`aws` reads it with
-  `file://`, which sidesteps the 128 KB single-argument limit a `"$(cat)"` would hit), plus `$NOTIFY_SUBJECT`
-  and `$NOTIFY_EXIT`.
+  to `--sink`.** Its default is cron's rule — deliver whenever there was any output, which is what lets a
+  `WARNING` on an otherwise clean night reach anyone — and production passes `--only-on-failure` instead
+  (decided 2026-09-18): **a message on a bad night, silence on a good one**. The subject is
+  `scrape-queue: exit N on <host>`, the body is the queue's output, and a failure that printed nothing is
+  still delivered with a body saying so. The cost is that a `WARNING` on a night that exited 0 is not mailed;
+  it is still in that city's `scrape.log`. The sink gets the body on stdin and in the file `$NOTIFY_BODY_FILE`
+  names (`aws` reads it with `file://`, which sidesteps the 128 KB single-argument limit a `"$(cat)"` would
+  hit), plus `$NOTIFY_SUBJECT` and `$NOTIFY_EXIT`.
 - **Delivery is SNS, published with the instance role** — no credential on the box, no mail-service
   onboarding; an email subscription on the topic does the rest. The topic ARN, the role policy and who
   subscribes are in the private runbook. Nothing in this repo knows what the sink is; a host with a working
@@ -752,9 +754,9 @@ section exists because of.
 
 ### The morning after a deploy
 
-- The night's message arrived, with `exit 0` in the subject — and `tail -1 ~/cron_notify.log` says
-  `published`, not `sink failed`. A morning with no message is a finding, not a quiet night: the wrapper
-  publishes whenever the queue printed anything, and the queue always prints.
+- No message arrived — and `tail -1 ~/cron_notify.log` carries last night's date and says
+  `nothing to publish (clean run, --only-on-failure)`. The message is failure-only, so silence is ambiguous
+  on its own: it is a quiet night *or* a wrapper that never ran, and the log line is what tells them apart.
 - `scrape_queue.log`: every city `ok (exit 0)`, and `pass 2 starting` if any ran out of budget.
 - `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
 - `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —

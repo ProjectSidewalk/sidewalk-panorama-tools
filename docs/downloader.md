@@ -113,7 +113,7 @@ SHELL=/bin/bash
 BASH_ENV=/home/ubuntu/.scraper.env
 
 0 19 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
-              /srv/sidewalk-panorama-tools/cron_notify.py --name scrape-queue \
+              /srv/sidewalk-panorama-tools/cron_notify.py --name scrape-queue --only-on-failure \
               --log /home/ubuntu/cron_notify.log \
               --sink 'aws sns publish --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
               -- /srv/sidewalk-panorama-tools/.venv/bin/python \
@@ -128,9 +128,9 @@ images at all. To stop the depth backfill without touching anything else, add `-
 queue's `--` (the second one; the first ends the wrapper's own arguments).
 
 **The wrapper is cron's mail rule with the delivery made pluggable.** It runs the queue, streams its stdout and
-stderr through, and when the queue exits hands the capture to `--sink` if there was any — any output, not
-nonzero exit alone — with the exit code, a one-line subject and a file path in the environment. The exit code
-cron sees is the queue's own. What the sink is (SNS, on the production host), what the wrapper does when the
+stderr through, and when the queue exits hands the capture to `--sink` — by default whenever there was any
+output, cron's rule; with `--only-on-failure`, production's choice, only on a nonzero exit — with the exit
+code, a one-line subject and a file path in the environment. The exit code cron sees is the queue's own. What the sink is (SNS, on the production host), what the wrapper does when the
 sink fails, how it cuts a backlog night's output to fit, and how to verify a change to it are in
 [Hearing about a bad night](ops.md#hearing-about-a-bad-night).
 
