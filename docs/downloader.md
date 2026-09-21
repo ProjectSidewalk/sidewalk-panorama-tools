@@ -92,7 +92,7 @@ Three consequences worth knowing:
   reserved and the image phase keeps the whole budget.
 * **A reservation at or above `--max-runtime` zeroes the image phase.** The run downloads **no images** and
   prints `WARNING: --min-depth-runtime (X) >= --max-runtime (Y); NO images will be downloaded this run`, so a
-  misconfigured crontab shows up in cron mail instead of looking like ordinary budget exhaustion.
+  misconfigured crontab shows up in the night's message instead of looking like ordinary budget exhaustion.
 
 `--min-depth-runtime` is ignored without `--max-runtime`, and with `--skip-depth`.
 
@@ -103,8 +103,9 @@ The fleet runs as **one queue, from one crontab line**, on a box whose clock is 
 a manifest of cities and starts the next one as soon as the previous one exits — and then, while the window
 has a slot left, runs the cities that ran out of budget again ([extra passes](#extra-passes)).
 
-The line in production since 2026-09-06 (depth on; 52 cities × 12 minutes inside an 11.5-hour window that
-ends 06:30 Pacific):
+The line in production (the queue since 2026-09-06; depth on; 52 cities × 12 minutes inside an 11.5-hour window
+that ends 06:30 Pacific), wrapped in [`cron_notify.py`](ops.md#hearing-about-a-bad-night) because the host
+cannot send mail:
 
 ```cron
 # No CRON_TZ: this cron ignores it (see below). The box timezone IS the schedule.
@@ -112,6 +113,10 @@ SHELL=/bin/bash
 BASH_ENV=/home/ubuntu/.scraper.env
 
 0 19 * * *  /srv/sidewalk-panorama-tools/.venv/bin/python \
+              /srv/sidewalk-panorama-tools/cron_notify.py --name scrape-queue --only-on-failure \
+              --log /home/ubuntu/cron_notify.log \
+              --sink 'aws sns publish --region us-west-2 --topic-arn <arn> --subject "$NOTIFY_SUBJECT" --message file://$NOTIFY_BODY_FILE' \
+              -- /srv/sidewalk-panorama-tools/.venv/bin/python \
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
               --max-runtime 690 --city-max-runtime 12 \
@@ -119,7 +124,15 @@ BASH_ENV=/home/ubuntu/.scraper.env
 ```
 
 `--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
-images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the `--`.
+images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the
+queue's `--` (the second one; the first ends the wrapper's own arguments).
+
+**The wrapper is cron's mail rule with the delivery made pluggable.** It runs the queue, streams its stdout and
+stderr through, and when the queue exits hands the capture to `--sink` — by default whenever there was any
+output, cron's rule; with `--only-on-failure`, production's choice, only on a nonzero exit — with the exit
+code, a one-line subject and a file path in the environment. The exit code cron sees is the queue's own. What the sink is (SNS, on the production host), what the wrapper does when the
+sink fails, how it cuts a backlog night's output to fit, and how to verify a change to it are in
+[Hearing about a bad night](ops.md#hearing-about-a-bad-night).
 
 **The timezone lives in the box, not in the crontab.** The first version of this line carried
 `CRON_TZ=America/Los_Angeles`, which is how cronie (Fedora/RHEL) pins a schedule to a zone — and Ubuntu 22.04
@@ -137,9 +150,8 @@ before the switch are UTC and those after are Pacific, seven hours apart in real
 between the two eras; there is none to find, which is exactly how eleven nights at noon went unnoticed. Do not
 put `CRON_TZ` back: it reads as a fix and is not one. A systemd timer would pin the zone for real — it goes
 *inside* the calendar spec, `OnCalendar=*-*-* 19:00 America/Los_Angeles`, there is no `Timezone=` directive —
-but this is one line, and cron's failure mail (once the host can send it; see
-[Hearing about a bad night](ops.md#hearing-about-a-bad-night)) comes for free, where a timer needs an
-`OnFailure=` unit.
+but this is one line, and cron's any-output rule — which [`cron_notify.py`](ops.md#hearing-about-a-bad-night)
+keeps, on a host that cannot mail — comes for free, where a timer needs an `OnFailure=` unit.
 
 **Why a queue rather than 53 slots**
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The old shape was one line
@@ -176,10 +188,12 @@ columbus-oh,sidewalk-columbus.cs.washington.edu
 * **The fqdn cannot be derived from the city_id** — `seattle-wa` is served by `sidewalk-sea`, `columbus-oh` by
   `sidewalk-columbus` — so the two travel together. Both halves come from `/v3/api/cities`.
 * **A row whose `city_id` starts with `#` is skipped**, which is how a city is taken out for a night now that
-  it has no crontab line of its own to comment out. It is also the only way to say "public, known, and
-  deliberately not scraped here" — a public city with no row at all fails every night for ever, by design. Keep
-  both columns on it: the cross-check below credits a disabled row as a decision only while it still names the
-  city's host, so `#laurens-ia,` with the fqdn dropped is a gap, not a decision.
+  it has no crontab line of its own to comment out. It is also the only way to say "known, and deliberately
+  not scraped here" — a city with no row at all, public or private, fails every night for ever, by design.
+  Keep both columns on it: the cross-check below credits a disabled row as a decision only while its fqdn is
+  the city's host — or, where the roster gives no host to match (every private city), while it is *shaped*
+  like one —
+  so `#laurens-ia,` with the fqdn dropped is a gap, not a decision.
 * `--cities` has no default on purpose: which cities a host scrapes is a deployment fact, and a wrong default
   would quietly scrape the wrong fleet. There is a worked example at
   [`samples/scrape_queue_cities.csv`](../samples/scrape_queue_cities.csv); the real one lives on the host,
@@ -207,18 +221,19 @@ worse — so the omission is made loud instead
 Every deployment serves `GET /v3/api/cities`, the same list of every city from every host: `city_id`, `url`
 (`https://<fqdn>`, or `null` for a private city) and `visibility`. After the fleet has run, the queue asks
 the first manifest host that will answer — the ones whose city ran ok tonight first, most recent first, at
-most three — and names every **public** city whose `city_id` has no row. Private cities are scraped too when
-listed, but the check does not ask about them. The report takes one of three shapes:
+most three — and names every city whose `city_id` has no row, **private ones included**
+([#143](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/143); the check was public-only
+until 2026-09-19, and 20 of the 59 deployments are private). The report takes one of three shapes:
 
 ```
-[queue] public cities missing from the manifest: laurens-ia (sidewalk-laurens.cs.washington.edu), bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', the app reads <store-root>/bayonne-fr)
-[queue]   add one city_id,fqdn row per city - city_id must be the app's own id, because that is the directory it reads
-[queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, 2 public cities missing from the manifest; 610.2 min total
-[queue] manifest checked against 39 public cities (roster from sidewalk-sea.cs.washington.edu)
+[queue] cities missing from the manifest: laurens-ia (sidewalk-laurens.cs.washington.edu), bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', the app reads <store-root>/bayonne-fr), zurich (private; url not published)
+[queue]   add one city_id,fqdn row per city - city_id must be the app's own id, because that is the directory it reads; a '#city_id,fqdn' row records one that is deliberately not scraped here
+[queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, 3 cities missing from the manifest; 610.2 min total
+[queue] manifest checked against 39 public and 20 private cities (roster from sidewalk-sea.cs.washington.edu)
 ```
 ```
 [queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached; 610.2 min total
-[queue] manifest checked against 39 public cities (roster from sidewalk-sea.cs.washington.edu)
+[queue] manifest checked against 39 public and 20 private cities (roster from sidewalk-sea.cs.washington.edu)
 ```
 ```
 [queue] ERROR: manifest not cross-checked - no roster from sidewalk-sea.cs.washington.edu (timed out), sidewalk-columbus.cs.washington.edu (HTTP 502), sidewalk-cdmx.cs.washington.edu (not JSON) (3 of 54 hosts tried)
@@ -243,6 +258,19 @@ rather than a gap, but only while it still names the city's host: `csv` splits a
 too, so `# laurens-ia, bayonne-fr launched 2026-09-11` reads as a row for `laurens-ia`, and crediting the id
 alone would have silenced the very city the check exists for.
 
+A private city's roster entry carries `url: null` — the app withholds it deliberately — so there is no host to
+match and the check names it by id: `zurich (private; url not published)`. That is also why the private
+deployments that are never scraped here (study and scratch instances such as `validation-study` and
+`crowdstudy`) each need a `#` row once: the manifest, not the code, records that decision, and without the
+row the city fails every night. Where the roster gives no host to match — every private city, and any public
+one whose `url` the app left null or unparseable — the row is credited while its second column is shaped like
+a hostname (labels and dots, nothing else) — weaker evidence than a host match, and the strongest there is;
+the prose-comment shape and an empty column both fail it. The residual is a comment of the exact form
+`# zurich, ops.md`: a live private id before the comma and a single dotted token after it would read as a
+decision, so do not start a comment with a city id and a comma.
+`--dry-run` on the current manifest lists exactly which rows are still needed. A shared secret that would make the app publish the private urls was
+considered and is not worth building: it would buy the hint text, not the detection.
+
 `--dry-run` runs the same check, so a hand-run before a launch answers "is everything wired?" without waiting
 for the night: a gap exits 1 there too; a roster nobody serves is only a WARNING on a dry run (the same line,
 with that word in place of ERROR, and exit 0), since that is someone at a keyboard, possibly offline, reading
@@ -261,10 +289,10 @@ with several rows on one host does not spend the whole cap on it.
 | `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
-**Exit codes**, since cron's mail-on-failure is the alert channel (when the host can send mail — check, per
-[Hearing about a bad night](ops.md#hearing-about-a-bad-night)): `0` every city ran and succeeded and the
-manifest names every public city, `1` something failed, timed out, **was never reached**, **a public city has
-no manifest row**, or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
+**Exit codes**, since the exit is the alert: it is the subject line of the night's message
+([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), and it is the code cron sees: `0` every city ran and succeeded and the
+manifest names every city, `1` something failed, timed out, **was never reached**, **a city has no manifest
+row** (private or public), or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
 lock. A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
 cities a night is the silent failure this design exists to surface. If a night's truncation is expected and
 accepted, the window is the wrong size.
@@ -360,7 +388,7 @@ The queue is a driver, not a replacement for the runner. A single city is still 
 
 * **Give it the venv interpreter by absolute path.** Cron's `PATH` is minimal, and `source activate` buys
   nothing a direct path doesn't.
-* **The exit code is the run's own**, so cron's mail-on-failure is the alert channel. `SIGTERM` becomes exit
+* **The exit code is the run's own**, so the queue — and the night's message — can read it. `SIGTERM` becomes exit
   143 *after* the `finally` that writes the `log.csv` row, so stopping a run still leaves evidence.
 * **Nothing is written relative to the CWD.** `scrape.log` and `log.csv` both land in `<storage-dir>`.
 * **Sizing:** `--max-runtime` is the slot, `--min-depth-runtime 60` reserves the tail for depth. Overlapping
@@ -519,7 +547,8 @@ pano in the city.
 
 **So that path has a run-level breaker** ([#113]). Three consecutive permanent verdicts from one source stop
 this run ledgering that source: its remaining panos are left unattempted, the run says so on stdout and in
-`scrape.log`, and it exits nonzero — which `scrape_queue.py` books as a failed city, so cron mails it. The
+`scrape.log`, and it exits nonzero — which `scrape_queue.py` books as a failed city, so the night's message
+carries it. The
 verdict that trips the breaker is itself withheld, so a trip costs two false rows rather than three.
 
 It is keyed on the **source**, not on the no-rendition verdict specifically. That is broader than the shape
@@ -539,7 +568,7 @@ view other than 360 is refused one at a time, but **323 of the 1,000 pictures in
 92° photographs** — the only thing keeping them out of the corpus is that the app filters its own search to
 360, which is a property of the layer above that this scraper cannot check. A missing `hd` asset is the same
 shape one federated instance wide. If either ever goes wrong the candidates are shuffled, so the breaker
-trips within about ninety panos on the first night and cron mails it — instead of the city writing itself
+trips within about ninety panos on the first night and the night's message says so — instead of the city writing itself
 off a third at a time, silently and permanently.
 
 Only a **success** resets the count — not a transient failure, and not a skip. See
@@ -548,7 +577,7 @@ difference between a breaker that fires and one that cannot.
 
 [#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
 
-Where the reason lands: cron mail carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
+Where the reason lands: the night's message carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
 `code` and `message` are in `scrape.log` on the store, one line per pano.
 

@@ -11,10 +11,13 @@ into a tmp store with the production <pano_id[:2]>/<pano_id>.jpg sharding.
 """
 
 import csv
+import io
 import json
 import logging
 import logging.handlers  # not implied by `import logging`; asserted on below
+import math
 import os
+import re
 import subprocess
 import sys
 
@@ -1719,3 +1722,560 @@ class TestTheWindowWidthIsAnAzimuthalSpan:
         width = crop_runner.crop_window_width(INTERIOR_Y, side, side)
         assert width == crop_runner.azimuth_deg_to_px(fov, side)
         assert width == crop_runner.elevation_deg_to_px(fov, side) / 2
+
+
+class TestTheLabelTypeArrivesUnderEitherName:
+    """The crop store is sharded by the NUMERIC label type id, and since SidewalkWebpage#4103 the
+    endpoint serves the type as a NAME (#123). `resolve_label_type_id` is the one seam between them.
+
+    Measured against sidewalk-sea 2026-09-18: on master every live row raised KeyError inside the crop
+    loop's try, so a whole city came back as `N errors, of N labels total` with exit 1 and no crops. The
+    counts reconciled perfectly while doing it, which is why the invariant alone could not catch this.
+    """
+
+    def test_a_name_lands_in_the_numeric_directory(self, crop_runner, tmp_path):
+        """The behaviour the store depends on: `CurbRamp` must file under 1/, never under CurbRamp/."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type': 'CurbRamp', 'label_id': 501},
+                  {'pano_id': 'testpano0001', 'pano_x': 400, 'pano_y': INTERIOR_Y,
+                   'label_type': 'SurfaceProblem', 'label_id': 502}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['success'] == 2 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert os.path.exists(crop_path(out, 1, 501))
+        assert os.path.exists(crop_path(out, 4, 502))
+        assert not os.path.exists(os.path.join(str(out), 'CurbRamp'))
+
+    def test_the_legacy_id_still_wins_when_both_are_present(self, crop_runner, tmp_path):
+        """An export carrying both is the older shape, and its id is authoritative. Reading the NAME
+        first would be invisible on every row where the two agree - which is all of them, until one
+        does not."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type_id': 2, 'label_type': 'CurbRamp', 'label_id': 503}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['success'] == 1
+        assert os.path.exists(crop_path(out, 2, 503))
+
+    def test_a_blank_id_falls_through_to_the_name(self, crop_runner, tmp_path):
+        """A CSV cell is '' rather than absent, so preferring the id column on PRESENCE instead of on a
+        usable VALUE turns a perfectly good row into int('')."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type_id': '', 'label_type': 'Obstacle', 'label_id': 504}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['success'] == 1
+        assert os.path.exists(crop_path(out, 3, 504))
+
+    def test_an_unknown_name_is_one_counted_error_naming_the_value(self, crop_runner, tmp_path, caplog):
+        """A type this map has never heard of means the enum moved upstream. Guessing an id would file
+        the crop in a real training directory with nothing on disk to say it was a guess, so it is a
+        counted error - and, per #48, it must not take the rest of the run down with it."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type': 'SomethingNewUpstream', 'label_id': 505},
+                  {'pano_id': 'testpano0001', 'pano_x': 400, 'pano_y': INTERIOR_Y,
+                   'label_type': 'CurbRamp', 'label_id': 506}]
+
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 1 and counts['success'] == 1
+        assert reconciles(counts)
+        assert os.path.exists(crop_path(out, 1, 506))
+        assert 'SomethingNewUpstream' in caplog.text
+
+    def test_neither_column_is_one_counted_error(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y, 'label_id': 507}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 1 and counts['success'] == 0
+        assert reconciles(counts)
+
+    def test_the_no_type_error_names_the_column_a_deployment_actually_sends(self, crop_runner):
+        """Naming only `label_type_id` sends an operator grepping their header for a column no current
+        deployment serves - the exact harm the either/or was written to avoid, reintroduced in the
+        error text. The message has to name both spellings.
+
+        Tokenised, NOT substring-matched: `label_type` is a prefix of `label_type_id`, so the obvious
+        `'label_type' in message and 'label_type_id' in message` is satisfied by the old message alone.
+        Written that way first, and the mutation that restores the bug walked straight through it.
+        """
+        with pytest.raises(KeyError) as excinfo:
+            crop_runner.resolve_label_type_id({'label_id': 1})
+
+        tokens = set(re.findall(r'[A-Za-z_]+', str(excinfo.value)))
+        assert {'label_type', 'label_type_id'} <= tokens
+
+    @pytest.mark.parametrize('bad', ['99', '0', '-3', '11', 'CurbRamp', '1.5', ''])
+    def test_an_unrecognised_id_is_refused_the_way_an_unrecognised_name_is(self, crop_runner, bad):
+        """The id path was a bare int() until 2026-09-18, so 99/0/-3 all resolved and wrote
+        <crop-dir>/99/ as a success with exit 0 - an arbitrary shard an ML consumer globbing crops/*/
+        reads as a new label type. '' is here because _absent() must keep treating a blank cell as
+        absent rather than as a bad id: a row with a blank id and a good name still has to resolve.
+        """
+        if bad == '':
+            assert crop_runner.resolve_label_type_id({'label_type_id': '', 'label_type': 'Obstacle'}) == 3
+            return
+        with pytest.raises(ValueError):
+            crop_runner.resolve_label_type_id({'label_type_id': bad})
+
+    def test_an_unrecognised_id_is_one_counted_error_not_a_stray_directory(self, crop_runner, tmp_path):
+        """The behaviour that matters: the run continues, the invariant holds, and nothing lands in a
+        directory named after an id the enum has never heard of."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [{'pano_id': 'testpano0001', 'pano_x': 200, 'pano_y': INTERIOR_Y,
+                   'label_type_id': 99, 'label_id': 508},
+                  {'pano_id': 'testpano0001', 'pano_x': 400, 'pano_y': INTERIOR_Y,
+                   'label_type': 'CurbRamp', 'label_id': 509}]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 1 and counts['success'] == 1
+        assert reconciles(counts)
+        assert not os.path.exists(os.path.join(str(out), '99'))
+        assert os.path.exists(crop_path(out, 1, 509))
+
+    def test_every_enum_id_resolves_to_itself_by_id_too(self, crop_runner):
+        """The id path's counterpart to the name sweep below, and the gap that let the reverse map lose
+        a member silently.
+
+        Every id test here feeds a REJECTED value, and the only accepted ids anywhere in the suite were
+        1, 2 and 3 - so deriving LABEL_TYPE_NAMES_BY_ID with `if id_ != 8`, or hand-writing it without
+        10, passed everything. Failure scenario: re-cut an archived export whose rows carry
+        label_type_id=10 and every Pedestrian Signal row becomes one counted error, exiting 1 for the
+        whole city, with the suite green.
+        """
+        for id_ in crop_runner.LABEL_TYPE_IDS_BY_NAME.values():
+            assert crop_runner.resolve_label_type_id({'label_type_id': id_}) == id_
+            assert crop_runner.resolve_label_type_id({'label_type_id': str(id_)}) == id_
+
+    @pytest.mark.parametrize('raw', [3.7, True, False, b'3', '+3', '1_0', '٣', '3.0', ' '])
+    def test_an_id_that_is_not_a_plain_integer_is_refused(self, crop_runner, raw):
+        """int() is much looser than "checked against the same enum" implies, and the loose readings all
+        land on REAL ids, so enum membership cannot catch them: 3.7 truncates to 3, True is 1, and
+        '1_0' is 10 because Python reads underscores as digit grouping - a plausible cell quietly
+        becoming Pedestrian Signal. `' '` is here to hold the line with _absent: a whitespace-only cell
+        is ABSENT, so it must fall through to the name rather than raise.
+        """
+        if raw == ' ':
+            assert crop_runner.resolve_label_type_id({'label_type_id': raw,
+                                                      'label_type': 'CurbRamp'}) == 1
+            return
+        with pytest.raises(ValueError):
+            crop_runner.resolve_label_type_id({'label_type_id': raw})
+
+    def test_an_integral_float_is_still_an_id(self, crop_runner):
+        """The deliberate other half of the rule: a JSON export whose numbers went through a float layer
+        states the id exactly, so 3.0 must not break real archived data. Only non-integral is refused."""
+        assert crop_runner.resolve_label_type_id({'label_type_id': 3.0}) == 3
+
+    @pytest.mark.parametrize('raw', ['99', '1_0', True, 3.7])
+    def test_the_id_paths_errors_name_the_column_they_came_from(self, crop_runner, raw):
+        """Symmetry with the name path, whose message IS pinned. All FOUR id rejections are covered,
+        because they are four different messages: '99' fails enum membership, '1_0' fails the parse,
+        True is refused as a bool, 3.7 as non-integral. Pinning one left the other three free to be
+        reworded to a generic 'bad value' - and a message that does not name `label_type_id` sends the
+        operator to the wrong column, the harm the neither-column message was fixed for, one path over.
+
+        These four also prove the messages are REACHABLE. They were not: a try/except around the parse
+        re-raised one generic message, so three of the four strings below were dead and rewording them
+        changed nothing observable.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            crop_runner.resolve_label_type_id({'label_type_id': raw})
+
+        message = str(excinfo.value)
+        assert repr(raw) in message
+        assert re.search(r'\blabel_type_id\b', message)
+
+    @pytest.mark.parametrize('padded', ['  CurbRamp  ', '\tCurbRamp', 'CurbRamp\n'])
+    def test_a_padded_name_still_resolves(self, crop_runner, padded):
+        """#72's battery measured ' True ' with padding as a live failure in the old pandas intake, so
+        padding is a real input class here. The .strip() survived the whole suite when deleted."""
+        assert crop_runner.resolve_label_type_id({'label_type': padded}) == 1
+
+
+class TestTheLabelTypeMapMatchesTheDocumentedTable:
+    """The map is a transcription of SidewalkWebpage's LabelTypeTable enum, and docs/api-fields.md
+    carries the same ids for human readers. Two hand-maintained copies of one upstream fact drift, and
+    the drift is silent: a wrong id files crops in the wrong training directory and nothing raises.
+    """
+
+    def _documented_ids(self):
+        """Parse the `| id | enum name | display name |` table out of docs/api-fields.md.
+
+        Returns {enum_name: id}, the same shape as LABEL_TYPE_IDS_BY_NAME, so the assertion below is a
+        comparison of pairs rather than of id sets. The table used to carry display names only ("Curb
+        Ramp", "Pedestrian Signal"), which no test could match against enum keys, so the check silently
+        degraded to `set(documented_ids) <= set(map.values())` - true for any permutation.
+        """
+        text = io.open(os.path.join(REPO_ROOT, 'docs', 'api-fields.md'), encoding='utf-8').read()
+        found = {}
+        for line in text.splitlines():
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            if len(cells) == 3 and cells[0].isdigit():
+                found[cells[1].strip('`')] = int(cells[0])
+        return found
+
+    def _claude_md_ids(self):
+        """The same table as it appears in CLAUDE.md, which is a THIRD hand-maintained copy."""
+        text = io.open(os.path.join(REPO_ROOT, 'CLAUDE.md'), encoding='utf-8').read()
+        section = text.split('## Label Type IDs', 1)[-1].split('\n## ', 1)[0]
+        found = {}
+        for line in section.splitlines():
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            if len(cells) == 3 and cells[0].isdigit():
+                found[cells[1].strip('`')] = int(cells[0])
+        return found
+
+    def test_claude_mds_copy_of_the_table_agrees_too(self, crop_runner):
+        """CLAUDE.md gained the enum-name column in the same commit as docs/api-fields.md, making three
+        hand-maintained copies of one upstream enum. Swapping a pair in CLAUDE.md alone survived every
+        test - and CLAUDE.md is the agent-facing source of truth, so a wrong pair there is the one most
+        likely to be believed and propagated."""
+        documented = self._claude_md_ids()
+        assert documented, 'the label type table went missing from CLAUDE.md'
+        assert documented == crop_runner.LABEL_TYPE_IDS_BY_NAME
+
+    def test_the_documented_table_is_the_map_pair_for_pair(self, crop_runner):
+        """The assertion that actually catches a swap.
+
+        Two hand-maintained copies of one upstream enum drift, and the drift is silent: a wrong id files
+        crops into the wrong training directory and nothing raises. Measured 2026-09-18: swapping
+        Crosswalk/Signal in the map killed only the literal restatement below, leaving 296 other tests
+        green - so this test exists to make the docs table a second, independent vote.
+        """
+        documented = self._documented_ids()
+        assert documented, 'the label type id table went missing from docs/api-fields.md'
+        assert documented == crop_runner.LABEL_TYPE_IDS_BY_NAME
+
+    def test_the_ids_are_unique_and_are_the_upstream_enum(self, crop_runner):
+        """Verbatim from app/models/label/LabelTypeTable.scala. 8/Problem is deliberately present
+        although no label in the wild uses it: the endpoint can emit any name the enum holds.
+
+        This is a change-detector, not a check - it is a literal restatement of the dict, so it cannot
+        catch a transcription that was wrong when both copies were written. It is kept because it names
+        the upstream file a reader has to go read; the pair-for-pair test above is what does the work,
+        and the single corpus witness below is the only outside corroboration any pairing has. (It
+        covers Crosswalk alone; the sweep beside it drives every name through the seam, which is
+        self-consistency, not evidence. Signal and Problem are corroborated by nothing.)
+        """
+        assert crop_runner.LABEL_TYPE_IDS_BY_NAME == {
+            'CurbRamp': 1, 'NoCurbRamp': 2, 'Obstacle': 3, 'SurfaceProblem': 4, 'Other': 5,
+            'Occlusion': 6, 'NoSidewalk': 7, 'Problem': 8, 'Crosswalk': 9, 'Signal': 10,
+        }
+        ids = list(crop_runner.LABEL_TYPE_IDS_BY_NAME.values())
+        assert len(ids) == len(set(ids))
+
+    def test_crosswalk_is_nine_on_evidence_that_predates_the_map(self, crop_runner):
+        """`samples/cvmetadata-seattle.csv` cannot corroborate any pairing - the live schema dropped the
+        id column, so the capture has no ids at all, and it covers 7 of 10 names. Crosswalk, Signal and
+        Problem appear in no fixture, and Crosswalk/Signal are in active use in the wild: if either id is
+        wrong, every such label becomes a counted error and main() exits 1 for the whole city.
+
+        The one independent witness in the repo predates #123 by five weeks and was written when the id
+        WAS the wire field, so it cannot have been copied from this map.
+        """
+        census = io.open(os.path.join(REPO_ROOT, 'reports', '2026-08-11-mapillary-census.md'),
+                         encoding='utf-8').read()
+        assert 'Crosswalk (label type 9)' in census, \
+            'the independent witness for Crosswalk=9 moved; re-establish it before trusting the map'
+        assert crop_runner.LABEL_TYPE_IDS_BY_NAME['Crosswalk'] == 9
+
+    def test_every_enum_name_resolves_including_the_three_no_fixture_covers(self, crop_runner):
+        """Problem(8), Crosswalk(9) and Signal(10) are in no sample file. Drive them through the real
+        seam so they are at least exercised end to end rather than only restated."""
+        for name, expected in crop_runner.LABEL_TYPE_IDS_BY_NAME.items():
+            assert crop_runner.resolve_label_type_id({'label_type': name}) == expected
+
+
+# ---------------------------------------------------------------------------
+# The systemic-failure alarm (#136)
+# ---------------------------------------------------------------------------
+
+def counts_dict(total, errors=0, success=0, skipped_existing=0, missing_pano=0, dims_mismatch=0,
+                out_of_frame=0, shifted_vertically=0):
+    """A counts dict shaped exactly like bulk_extract_crops', for unit-testing the alarm alone."""
+    return {'total': total, 'success': success, 'skipped_existing': skipped_existing,
+            'missing_pano': missing_pano, 'dims_mismatch': dims_mismatch,
+            'out_of_frame': out_of_frame, 'shifted_vertically': shifted_vertically,
+            'errors': errors}
+
+
+def unparseable_rows(n, first_label_id=1):
+    """n label rows that the up-front parse rejects — the #123 shape, where the fault is in the
+    metadata rather than in any one label, so every row fails the same way."""
+    return [label_row(label_id=first_label_id + i, pano_x='not-a-number') for i in range(n)]
+
+
+class TestTheSystemicFailureAlarm:
+    """#136. The bookkeeping was already correct when cvMetadata moved (#123): errors == total, the
+    invariant held, main() exited 1. What was missing was a signal of a different SHAPE — 260,000
+    identical per-row WARNINGs differ from three of them only in length, and CropRunner is hand-run,
+    so no cron mail carries the exit code to anyone.
+
+    Every test here asserts on the alarm AND on the counts, because the one thing this must not do is
+    buy a louder summary with a bucket that shifted."""
+
+    def test_the_shipped_threshold_is_half(self, crop_runner):
+        """Pinned so a change to it is deliberate, the WRITE_DISPLAY_COPIES pattern. Half is not a
+        tuned number: it is the point where errors stop being a minority outcome, i.e. where more of
+        the run failed than survived, which no per-row cause explains at scale. The boundary tests
+        below derive from the constant, so only this one fails if it is quietly moved."""
+        assert crop_runner.SYSTEMIC_ERROR_FRACTION == 0.5
+
+    def test_an_all_errors_run_names_itself_on_both_channels(self, crop_runner, tmp_path, capsys,
+                                                             caplog):
+        """The #123 run, in miniature. stdout is what the operator reads at the end of a hand-run;
+        crop.log is what is still there tomorrow — the print/logging rule, so one channel is a fail."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        with caplog.at_level(logging.ERROR):
+            counts = crop_runner.bulk_extract_crops(unparseable_rows(12), str(store), str(out))
+        printed = capsys.readouterr().out
+
+        assert counts['errors'] == counts['total'] == 12
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed
+        assert any(record.levelno >= logging.ERROR
+                   and crop_runner.SYSTEMIC_FAILURE_BANNER in record.getMessage()
+                   for record in caplog.records), caplog.text
+
+    def test_an_export_whose_every_id_is_off_by_one_fires_too(self, crop_runner, tmp_path, capsys,
+                                                              caplog):
+        """The other systemic shape #123's review added (109650b): an id is now validated against the
+        enum instead of going through a bare int(), so a -f export with a shifted type column is a run
+        where every row is a counted error for a reason that has nothing to do with any one row. That
+        is the fault this alarm is for, and it reaches the errors bucket by a different door than the
+        unparseable-coordinate rows the tests above use."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [dict(label_row(label_id=i, pano_x=100 + 40 * i), label_type_id=90 + i)
+                  for i in range(1, 7)]
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['errors'] == counts['total'] == 6
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in caplog.text
+
+    def test_a_healthy_run_says_nothing_at_all(self, crop_runner, tmp_path, capsys, caplog):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [label_row(label_id=i, pano_x=100 + 40 * i) for i in range(1, 6)]
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['success'] == 5 and counts['errors'] == 0
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_one_bad_row_among_many_is_not_systemic(self, crop_runner, tmp_path, capsys, caplog):
+        """Discrimination for the test above it: an alarm keyed on `errors` being nonzero would say
+        nothing the exit code does not already say, and would cry wolf on the ordinary corrupt pano
+        the loop is built to survive."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [label_row(label_id=i, pano_x=100 + 40 * i) for i in range(1, 10)]
+        labels += unparseable_rows(1, first_label_id=99)
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['errors'] == 1 and counts['total'] == 10
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_a_run_with_no_labels_at_all_is_silent(self, crop_runner, tmp_path, capsys, caplog):
+        """The zero-work guard is load-bearing arithmetic, not a formality: `errors >= fraction *
+        total` reads 0 >= 0.0, which is TRUE, so an empty store would otherwise raise the alarm on a
+        run that did nothing wrong because it had nothing to do."""
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops([], str(tmp_path / 'store'),
+                                                    str(tmp_path / 'crops'))
+        assert counts['total'] == 0 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_a_rerun_over_a_finished_store_is_silent(self, crop_runner, tmp_path, capsys, caplog):
+        """Every label skipped_existing: the ordinary no-op re-run, and the degenerate case an alarm
+        keyed on 'how little did this run produce' would fire on every night of a caught-up city."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        labels = [label_row(label_id=i, pano_x=100 + 40 * i) for i in range(1, 6)]
+        crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        capsys.readouterr()
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['skipped_existing'] == 5 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_a_store_that_has_not_been_scraped_yet_is_silent(self, crop_runner, tmp_path, capsys,
+                                                             caplog):
+        """100% missing_pano. The pano store is scraped independently and legitimately lags the label
+        list, so this is the normal state of a fresh city — the same reason it does not move the exit
+        code. The alarm is about `errors`, not about a run that produced no crops."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        store.mkdir(parents=True)
+        labels = [label_row(label_id=i, pano_id='gonepano000%d' % i) for i in range(1, 6)]
+        with caplog.at_level(logging.DEBUG):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['missing_pano'] == 5 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
+    def test_the_line_reports_the_run_it_was_given_not_a_run_that_failed_entirely(self, crop_runner):
+        """Every other assertion on this line's contents is made on a 100%-error input, where
+        `errors == total` makes the two numbers interchangeable and the rate 100% whichever way it is
+        computed. So `"%d of %d" % (total, errors)` and a rate of `errors / max(errors, 1)` both
+        survived the whole 240-test file: a real 4-of-6 run printed `6 of 4 ... (100.0%)` and nothing
+        went red. The line's whole job is to save an operator from counting warnings to learn the
+        share, so the share has to be pinned somewhere it is not trivially 100%.
+        """
+        line = crop_runner.systemic_failure_line(counts_dict(6, errors=4))
+
+        assert '4 of 6' in line
+        assert '66.7%' in line
+
+    def test_the_denominator_is_every_label_the_run_was_handed(self, crop_runner):
+        """The documented denominator choice, and the blind spot that comes with it, in one assertion.
+
+        `total` — not the subset the run actually tried to cut — is what keeps a lagging city quiet.
+        The two silence tests above cannot pin this: both have `errors == 0`, so the threshold test
+        silences them whatever the denominator is. Each input here is 4 of 10 (silent) but would be
+        4 of 4 (100%, fires) under a denominator that subtracted that bucket.
+
+        BOTH skip buckets, because the docstring and docs/cropper.md justify this denominator with
+        BOTH - a lagging scrape and a finished store. Pinning only missing_pano left
+        `total - skipped_existing` and `total - dims_mismatch - out_of_frame` alive, which is the same
+        half-covered shape the test was written to close, one bucket over.
+        """
+        assert crop_runner.systemic_failure_line(counts_dict(10, errors=4, missing_pano=6)) is None
+        assert crop_runner.systemic_failure_line(counts_dict(10, errors=4, skipped_existing=6)) is None
+        assert crop_runner.systemic_failure_line(
+            counts_dict(10, errors=4, dims_mismatch=3, out_of_frame=3)) is None
+
+    def test_the_123_shape_is_immune_to_missing_pano_dilution(self, crop_runner, tmp_path, capsys):
+        """docs/cropper.md claims the schema-move shape cannot be diluted by an un-scraped store, and
+        that claim rests on an ORDERING nothing pinned: the up-front metadata parse `continue`s on a bad
+        row, so it never reaches `labels_by_pano` and the pano-existence check never sees it.
+
+        Every other 100%-error test puts a pano on the store first, so folding the parse into the pano
+        loop - a plausible "why two passes?" refactor - would silently turn the documented immunity into
+        dilution with nothing going red. Here the store is EMPTY, so dilution would be maximal.
+        """
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        store.mkdir(parents=True)
+        labels = [label_row(label_id=i, pano_x='not-a-number') for i in range(1, 13)]
+
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+
+        assert counts['errors'] == 12 and counts['missing_pano'] == 0
+        assert reconciles(counts)
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in capsys.readouterr().out
+
+    def test_a_zero_total_carrying_errors_cannot_divide_by_zero(self, crop_runner):
+        """What the `total > 0` guard is actually for.
+
+        It is NOT what stops an empty store alarming — `errors > 0` already does that, so dropping the
+        total guard alone leaves all 240 tests green. The only input the two guards disagree on is this
+        one, which the crop loop cannot currently produce (errors are only ever counted per label) but
+        which a caller of the pure function can hand it. Without the guard this raises
+        ZeroDivisionError inside the summary, i.e. turns the alarm into the one fatal thing in a
+        function whose contract is that nothing in it is fatal.
+        """
+        assert crop_runner.systemic_failure_line(counts_dict(0, errors=1)) is None
+
+    @pytest.mark.parametrize('total', [2, 4, 10, 1000, 260000])
+    def test_the_boundary_is_the_fraction_itself(self, crop_runner, total):
+        """At the fraction it fires; one error below it does not. Derived from the constant rather
+        than hard-coded, so this stays the >= test if the fraction is ever revised — a `>` in the
+        implementation fails the first assert, a `>=` written against the wrong denominator or an
+        off-by-one fails the second."""
+        at = math.ceil(crop_runner.SYSTEMIC_ERROR_FRACTION * total)
+        assert crop_runner.systemic_failure_line(counts_dict(total, errors=at)) is not None
+        assert crop_runner.systemic_failure_line(counts_dict(total, errors=at - 1)) is None
+
+    def test_the_line_is_greppable_and_names_the_numbers(self, crop_runner):
+        """It has to be actionable on its own: an operator who sees it should not have to count
+        warnings to learn what share of the run failed, and should be told this looks like one cause."""
+        line = crop_runner.systemic_failure_line(counts_dict(260000, errors=260000))
+        assert line.startswith(crop_runner.SYSTEMIC_FAILURE_BANNER)
+        assert '260000 of 260000' in line
+        assert '100.0%' in line
+        assert 'crop.log' in line
+
+    def test_the_alarm_is_the_last_thing_the_operator_sees(self, crop_runner, tmp_path, capsys):
+        """Printed after the per-outcome summary, so on a terminal it is the line still on screen —
+        the whole complaint in #136 is that the signal was buried in what came before it."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops(unparseable_rows(6), str(store), str(out))
+        lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in lines[-1]
+        # ...and it is an addition to the summary, not a replacement for it.
+        assert any('6 labels total' in line for line in lines)
+
+    def test_reading_the_counts_does_not_touch_them(self, crop_runner):
+        counts = counts_dict(10, errors=10)
+        before = dict(counts)
+        assert crop_runner.systemic_failure_line(counts) is not None
+        assert counts == before
+
+    def test_the_counts_reconcile_on_every_path_the_alarm_fires_on(self, crop_runner, tmp_path):
+        """The property most at risk: an alarm that recounted, double-counted, or moved a label into a
+        bucket of its own would leave the summary louder and the invariant broken. Asserted on a fully
+        failed run, on its re-run (crops on disk are the resume marker, and there are none), and on a
+        mixed run that still clears the threshold."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+
+        first = crop_runner.bulk_extract_crops(unparseable_rows(8), str(store), str(out))
+        assert reconciles(first)
+        assert first == counts_dict(8, errors=8)
+
+        again = crop_runner.bulk_extract_crops(unparseable_rows(8), str(store), str(out))
+        assert reconciles(again)
+        assert again == counts_dict(8, errors=8)
+
+        mixed = crop_runner.bulk_extract_crops(
+            [label_row(label_id=1, pano_x=150), label_row(label_id=2, pano_x=250)]
+            + unparseable_rows(4, first_label_id=10),
+            str(store), str(out))
+        assert reconciles(mixed)
+        assert mixed == counts_dict(6, success=2, errors=4)
+
+    def test_it_changes_neither_the_exit_code_nor_the_summary(self, crop_runner, tmp_path, capsys):
+        """Driven through main() so the durable channel is the real rotating crop.log rather than
+        caplog's handler. The exit code is unchanged by design — `errors` nonzero was already 1; what
+        #136 adds is a signal that does not depend on anyone seeing the exit code."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, unparseable_rows(5))
+
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
+
+        printed = capsys.readouterr().out
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed
+        assert '5 errors, of 5 labels total' in printed
+        logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read()
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged
