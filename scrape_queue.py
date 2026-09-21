@@ -795,14 +795,24 @@ def load_roster(hosts, fetch=None, max_hosts=ROSTER_MAX_HOSTS):
     Best-effort by design - an app being down must not decide the night on its own - but bounded, because
     ten dead hosts at 30 s each is five minutes after the fleet has finished, for an answer the third one
     already gave. `fetch` resolves to the module attribute at call time, so a test can replace it.
+
+    Logged as it goes, at INFO: up to three 30 s attempts sit between the last city's line and the summary,
+    and a check hung in DNS (which the socket timeout does not bound) would otherwise look, in the log, like
+    a queue that died before its summary. Log only - the summary line is what says how it ended.
     """
     fetch = fetch_roster if fetch is None else fetch
+    hosts = list(hosts)
+    asking = hosts[:max_hosts]
+    logging.info("cross-checking the manifest: asking up to %d of %d hosts for %s",
+                 len(asking), len(hosts), ROSTER_PATH)
     attempts = []
-    for fqdn in list(hosts)[:max_hosts]:
+    for fqdn in asking:
         try:
             return fetch(fqdn), fqdn, attempts
         except RosterUnavailable as e:
             attempts.append((fqdn, str(e)))
+            logging.info("%s served no roster (%s); %s", fqdn, e,
+                         'trying the next host' if len(attempts) < len(asking) else 'no hosts left to ask')
     return None, None, attempts
 
 
@@ -856,10 +866,15 @@ def unlisted_cities(roster, cities, disabled):
 
 
 def roster_hosts(cities, results):
-    """Which manifest hosts to ask, and in what order: the ones whose city ran ok tonight first, in run order,
-    then the rest in manifest order. The check runs after the fleet, so the hosts that just served
-    /adminapi/panos are the ones to spend a roster call on."""
-    ok = list(dict.fromkeys(r.city_id for r in results if r.outcome == 'ok'))
+    """Which manifest hosts to ask, and in what order: the ones whose city ran ok tonight first, MOST RECENT
+    first, then the rest in manifest order. The check runs after the fleet, so the host that just served
+    /adminapi/panos is the one to spend a roster call on - and under a 690-minute window "just" is the last
+    ok run, not the first: in run order the first host asked would be the one that answered eleven hours
+    ago. A city re-run in a later pass counts by its latest OK run, since that is when its host was last seen
+    up: a later run that failed or timed out is not evidence about the host - the runner's own crash and a
+    hung depth request both book that way - so it neither demotes the city nor removes it from the ok group.
+    """
+    ok = list(dict.fromkeys(r.city_id for r in reversed(results) if r.outcome == 'ok'))
     by_id = {c.city_id: c.fqdn for c in cities}
     ran_ok = set(ok)
     return [by_id[c] for c in ok if c in by_id] + [c.fqdn for c in cities if c.city_id not in ran_ok]
@@ -893,13 +908,17 @@ def manifest_report(check, advisory=False):
     """The report's lines about the cross-check, as (gap, status): two lists of (line, level).
 
     The gap is what went wrong and belongs with the failures, above the totals; the status is what the check
-    rested on - or that it could not run, and what every host said - and belongs after them. Split here
-    rather than by the summary, so the summary never has to recognise a line by its wording.
+    rested on and belongs after them. Split here rather than by the summary, so the summary never has to
+    recognise a line by its wording.
 
     `advisory` is the dry run, where a roster nobody serves does not decide the exit code and the line says
     WARNING. On the night it does decide it, and the line says ERROR: cron mails any output regardless of the
     exit code, so the word on the line is the only signal the mail carries, and `grep ERROR scrape_queue.log`
-    should agree with the exit code rather than find a WARNING beside an exit 1.
+    should agree with the exit code rather than find a WARNING beside an exit 1. Which side of the split that
+    line lands on follows the same rule: on the night an unserved roster IS the failure, so it is a gap line
+    and leads the totals like the other failures; on a dry run it is status, printed after the plan. It was
+    status on both paths until the 2026-09-18 post-merge review, which put the night's ERROR line under a
+    clean "54/54 cities ok" - the exact ordering the summary's docstring promises never happens.
     """
     gap, status = [], []
     if check.unlisted:
@@ -909,10 +928,11 @@ def manifest_report(check, advisory=False):
                     "because that is the directory it reads", logging.ERROR))
     if check.roster_host is None:
         level = logging.WARNING if advisory else logging.ERROR
-        status.append(("[queue] %s: manifest not cross-checked - no roster from %s (%d of %d hosts tried)"
-                       % (logging.getLevelName(level),
-                          ', '.join('%s (%s)' % attempt for attempt in check.attempts),
-                          len(check.attempts), check.hosts_total), level))
+        (status if advisory else gap).append(
+            ("[queue] %s: manifest not cross-checked - no roster from %s (%d of %d hosts tried)"
+             % (logging.getLevelName(level),
+                ', '.join('%s (%s)' % attempt for attempt in check.attempts),
+                len(check.attempts), check.hosts_total), level))
     else:
         status.append(("[queue] manifest checked against %d public cities (roster from %s)"
                        % (check.public_count, check.roster_host), logging.INFO))
@@ -938,10 +958,11 @@ def summarise(results, elapsed_minutes, manifest_check=None):
     city that was hard-killed: counting only pass 1 there printed "0 failed, 0 timed out" on a night that
     exited 1, contradicting both the exit code and the per-run lines immediately above it.
 
-    The cross-check follows the same two rules. Its gap lines go ABOVE the totals with the other things that
-    went wrong, and the totals line carries the count, so "54/54 cities ok, 0 failed, 0 timed out, 0 not
-    reached" is never printed above an exit 1 the runs did not earn. The line saying what the check rested
-    on - or that it could not run - is evidence, not an alarm, and goes last.
+    The cross-check follows the same two rules. Its gap lines - a missing city, or a roster nobody served -
+    go ABOVE the totals with the other things that went wrong, and the totals line carries the count or says
+    the check did not run, so "54/54 cities ok, 0 failed, 0 timed out, 0 not reached" is never printed above
+    an exit 1 the runs did not earn. The line saying what the check rested on is evidence, not an alarm, and
+    goes last.
     """
     gap, status = ([], []) if manifest_check is None else manifest_report(manifest_check)
     first = [r for r in results if r.pass_number == 1]
@@ -957,8 +978,11 @@ def summarise(results, elapsed_minutes, manifest_check=None):
             lines.append("[queue] %-24s %s%s%s%s" % (r.city_id, outcome.upper(), code, when, which))
     lines += [line for line, _ in gap]
     n_missing = 0 if manifest_check is None else len(manifest_check.unlisted)
-    missing = ('' if not n_missing else ', %d public %s missing from the manifest'
-               % (n_missing, 'city' if n_missing == 1 else 'cities'))
+    if manifest_check is not None and manifest_check.roster_host is None:
+        missing = ', manifest not cross-checked'
+    else:
+        missing = ('' if not n_missing else ', %d public %s missing from the manifest'
+                   % (n_missing, 'city' if n_missing == 1 else 'cities'))
     lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s; %.1f min total"
                  % (sum(1 for r in first if r.outcome == 'ok'), len(first),
                     len(by_outcome.get('failed', [])),
@@ -1047,10 +1071,12 @@ def main(argv=None):
             print("Then extra passes over whichever cities ran out of budget, while a slot of the window "
                   "remains - which cities, and with what budgets, cannot be shown before pass 1 has run.")
         # The same cross-check the night runs (#130), so a hand-run before a launch answers "is everything
-        # wired?" now rather than tomorrow morning. Printed only: no log is configured on a dry run, and the
-        # root logger's last-resort handler would echo every line to stderr. A gap exits 1 exactly as the
-        # night would; a roster nobody served is advisory here - this is someone at a keyboard, possibly
-        # offline, reading the plan - where the night treats it as a failed check.
+        # wired?" now rather than tomorrow morning. Printed only: no log is configured on a dry run, so
+        # load_roster's INFO narration goes nowhere here (the first module-level logging call installs
+        # Python's default WARNING-level stderr handler, measured, which drops it) and an offline operator
+        # simply waits up to ROSTER_MAX_HOSTS x ROSTER_TIMEOUT_SECONDS for the WARNING line. A gap exits 1
+        # exactly as the night would; a roster nobody served is advisory here - this is someone at a
+        # keyboard, possibly offline, reading the plan - where the night treats it as a failed check.
         check = check_manifest(cities, disabled)
         gap, status = manifest_report(check, advisory=True)
         print('\n'.join(line for line, _ in gap + status))

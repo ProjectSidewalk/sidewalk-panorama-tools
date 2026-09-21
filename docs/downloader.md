@@ -188,8 +188,10 @@ columbus-oh,sidewalk-columbus.cs.washington.edu
 * **The fqdn cannot be derived from the city_id** — `seattle-wa` is served by `sidewalk-sea`, `columbus-oh` by
   `sidewalk-columbus` — so the two travel together. Both halves come from `/v3/api/cities`.
 * **A row whose `city_id` starts with `#` is skipped**, which is how a city is taken out for a night now that
-  it has no crontab line of its own to comment out. Keep both columns on it: the cross-check below credits a
-  disabled row as a decision only while it still names the city's host.
+  it has no crontab line of its own to comment out. It is also the only way to say "public, known, and
+  deliberately not scraped here" — a public city with no row at all fails every night for ever, by design. Keep
+  both columns on it: the cross-check below credits a disabled row as a decision only while it still names the
+  city's host, so `#laurens-ia,` with the fqdn dropped is a gap, not a decision.
 * `--cities` has no default on purpose: which cities a host scrapes is a deployment fact, and a wrong default
   would quietly scrape the wrong fleet. There is a worked example at
   [`samples/scrape_queue_cities.csv`](../samples/scrape_queue_cities.csv); the real one lives on the host,
@@ -216,28 +218,34 @@ worse — so the omission is made loud instead
 
 Every deployment serves `GET /v3/api/cities`, the same list of every city from every host: `city_id`, `url`
 (`https://<fqdn>`, or `null` for a private city) and `visibility`. After the fleet has run, the queue asks
-the first manifest host that will answer — the ones whose city ran ok tonight first, at most three — and
-names every **public** city whose `city_id` has no row. Private cities are scraped too when listed, but the
-check does not ask about them. The report takes one of three shapes:
+the first manifest host that will answer — the ones whose city ran ok tonight first, most recent first, at
+most three — and names every **public** city whose `city_id` has no row. Private cities are scraped too when
+listed, but the check does not ask about them. The report takes one of three shapes:
 
 ```
 [queue] public cities missing from the manifest: laurens-ia (sidewalk-laurens.cs.washington.edu), bayonne-fr (sidewalk-bayonne.cs.washington.edu; the manifest calls it 'bayonne', the app reads <store-root>/bayonne-fr)
 [queue]   add one city_id,fqdn row per city - city_id must be the app's own id, because that is the directory it reads
 [queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, 2 public cities missing from the manifest; 610.2 min total
+[queue] manifest checked against 39 public cities (roster from sidewalk-sea.cs.washington.edu)
 ```
 ```
+[queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached; 610.2 min total
 [queue] manifest checked against 39 public cities (roster from sidewalk-sea.cs.washington.edu)
 ```
 ```
 [queue] ERROR: manifest not cross-checked - no roster from sidewalk-sea.cs.washington.edu (timed out), sidewalk-columbus.cs.washington.edu (HTTP 502), sidewalk-cdmx.cs.washington.edu (not JSON) (3 of 54 hosts tried)
+[queue] 54/54 cities ok, 0 failed, 0 timed out, 0 not reached, manifest not cross-checked; 610.2 min total
 ```
 
 The first fails the night: a missing row is the silent failure this exists to catch, and the exit code is the
 one unattended alarm. So does the third, deliberately — the hosts asked have just served `/adminapi/panos`, so
 three of them not serving the roster is a broken check (an API rename, a proxy in the box's environment, a
-moved endpoint) rather than weather, and a check that is quietly skipped every night is worse than none. The
-gap lines sit above the totals with the other things that went wrong, and the totals line carries the count,
-so "54/54 ok" is never printed above an exit 1 the runs did not earn.
+moved endpoint) rather than weather, and a check that is quietly skipped every night is worse than none. Both
+failure shapes sit above the totals with the other things that went wrong, and the totals line carries the
+count or says the check did not run, so "54/54 ok" is never printed above an exit 1 the runs did not earn.
+(Until 2026-09-18 the third shape's line came *last*, under a clean totals line and every extra-pass line.)
+The attempts are also narrated in `scrape_queue.log` at INFO as they happen, so a check sitting in a 30 s
+timeout does not read, in the log, like a queue that died before its summary.
 
 Only the measured shape is read as a roster (a JSON object whose `cities` list carries a string `city_id` and a
 `public`/`private` visibility on every entry, with at least one public city); anything else a host sends — an
