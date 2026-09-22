@@ -11,7 +11,9 @@ one watches a nightly scrape across ~49 production cities with nothing else look
 
 import argparse
 import ast
+import csv
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -255,6 +257,10 @@ def run_analyzer(tmp_path, *args, cities=(('seattle-wa', 'Seattle'),), logs=()):
     """
     script = tmp_path / 'analyze.py'
     shutil.copy(os.path.join(REPO_ROOT, 'log_analyzer', 'analyze.py'), script)
+    # roster.py travels with it (#133): analyze.py loads its sibling by file location, relative to its own
+    # __file__, so a copy without it is not a runnable script. Copying it keeps the hermetic-copy trick
+    # honest rather than making the import search back into the repo.
+    shutil.copy(os.path.join(REPO_ROOT, 'log_analyzer', 'roster.py'), tmp_path / 'roster.py')
 
     with open(tmp_path / 'cities.csv', 'w', newline='') as f:
         f.write('city_id,display_name\n')
@@ -1593,3 +1599,338 @@ class TestTheFleetBlockCountsEveryCityItReportedOn:
         out = squash(capsys.readouterr().out)
 
         assert '1 of 2 cities report a corpus' in out
+
+
+# ---------------------------------------------------------------------------
+# The fleet roster cross-check (#133)
+# ---------------------------------------------------------------------------
+#
+# cities.csv has the #130 gap shape: a city with no row is not monitored, and nothing says so. It went wrong
+# twice by hand (newport-ky, then laurens-ia plus the bayonne/bayonne-fr id mismatch) and a third time live:
+# washington-dc was re-launched, served /adminapi/panos, and had no row here on 2026-09-22.
+#
+# These drive log_analyzer/roster.py and analyze.roster_check with a stand-in roster - never a live fetch.
+
+roster_mod = analyze.roster
+
+
+def roster_entry(city_id, visibility='public', url='auto'):
+    if url == 'auto':
+        url = 'https://%s.example.org' % city_id if visibility == 'public' else None
+    return {'city_id': city_id, 'visibility': visibility, 'url': url}
+
+
+def roster_body(*entries, status='OK'):
+    return json.dumps({'status': status, 'cities': list(entries)}).encode()
+
+
+def city_rows(*pairs):
+    return [{'city_id': cid, 'display_name': name} for cid, name in pairs]
+
+
+def fetch_ok(*entries):
+    def fetch(host, api_key=None):
+        return list(entries)
+    return fetch
+
+
+class TestAnUnlistedCityIsNamedAndCritical:
+    """The gap itself. A city the roster knows and cities.csv does not is CRITICAL, by name."""
+
+    def test_it_is_named_and_critical(self):
+        lines, critical = analyze.roster_check(
+            city_rows(('seattle-wa', 'Seattle')), 'host.example',
+            fetch=fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')))
+
+        assert critical is True
+        assert any('laurens-ia' in line for line in lines)
+        assert not any('seattle-wa' in line and 'not in cities.csv' in line for line in lines)
+
+    def test_a_complete_file_passes(self):
+        """No false positive: every roster city has a row, so nothing is named and the exit stays clean."""
+        lines, critical = analyze.roster_check(
+            city_rows(('seattle-wa', 'Seattle'), ('laurens-ia', 'Laurens')), 'host.example',
+            fetch=fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')))
+
+        assert critical is False
+        assert not any('not in cities.csv' in line for line in lines)
+
+    def test_an_id_that_differs_by_case_is_still_a_gap(self):
+        """city_id is a directory name on the store - <base>/<city_id>/log.csv - so Seattle-WA is a
+        different directory. This is the Bayonne finding's shape: a row one character off the id the app
+        reads its own panos under, which looked present to every eye that checked."""
+        lines, critical = analyze.roster_check(
+            city_rows(('Seattle-WA', 'Seattle')), 'host.example',
+            fetch=fetch_ok(roster_entry('seattle-wa')))
+
+        assert critical is True
+        assert any('seattle-wa' in line for line in lines)
+
+
+class TestPrivateCitiesAreNamedToo:
+    """#143's rule, adopted rather than diverged from.
+
+    The mutant this kills is the obvious "only check public cities" filter, which is what scrape_queue did
+    until 2026-09-19. Twenty of the fifty-nine deployments are private, and washington-dc - live, serving
+    /adminapi/panos - was one of them: a public-only check reports a clean sweep while the just-re-launched
+    city has no alarm at all.
+    """
+
+    def test_a_private_city_with_no_row_is_named(self):
+        lines, critical = analyze.roster_check(
+            city_rows(('seattle-wa', 'Seattle')), 'host.example',
+            fetch=fetch_ok(roster_entry('seattle-wa'),
+                           roster_entry('washington-dc', visibility='private')))
+
+        assert critical is True
+        assert any('washington-dc' in line for line in lines)
+
+    def test_a_private_city_is_reported_without_inventing_a_host(self):
+        """Its url is withheld, and the report says so rather than guessing a hostname. Guessing is exactly
+        how sidewalk-dc was found by hand, and it is not a method."""
+        lines, _ = analyze.roster_check(
+            city_rows(), 'host.example',
+            fetch=fetch_ok(roster_entry('washington-dc', visibility='private'),
+                           roster_entry('seattle-wa')))
+
+        dc = next(line for line in lines if 'washington-dc' in line)
+        assert 'private' in dc
+        assert 'sidewalk-dc' not in dc
+
+
+class TestTheCheckIsNeverSilentlySkipped:
+    """A check skipped every night is the failure it exists to prevent (#130's own rule).
+
+    Both mutants here return ([], False) and read as a passing night.
+    """
+
+    def test_no_host_configured_is_critical(self):
+        lines, critical = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')), None)
+
+        assert critical is True
+        assert any('PS_ROSTER_HOST' in line for line in lines)
+
+    def test_no_roster_served_is_critical(self):
+        def fetch(host, api_key=None):
+            raise roster_mod.RosterUnavailable('timed out')
+
+        lines, critical = analyze.roster_check(city_rows(), 'host.example', fetch=fetch)
+
+        assert critical is True
+        assert any('timed out' in line for line in lines)
+
+
+class TestARefusedCredentialIsNotADeadHost:
+    """401 is a DIFFERENT fact from "the host is down", and must not collapse into it.
+
+    The mutant is `except RosterUnavailable` alone - RosterAuthError is a subclass, so it is caught and the
+    night reports `served no roster`. That is CRITICAL either way, so nothing fails; the operator is simply
+    told the wrong cause and goes looking at the app instead of at the key. Only reachable once an
+    authenticated roster exists, which is the point of pinning it before it does.
+    """
+
+    def test_the_report_says_the_key_was_refused(self):
+        def fetch(host, api_key=None):
+            raise roster_mod.RosterAuthError('HTTP 401 - the API key was refused')
+
+        lines, critical = analyze.roster_check(city_rows(), 'host.example', fetch=fetch)
+
+        assert critical is True
+        assert any('refused' in line and 'credential' in line for line in lines)
+        assert not any('served no roster' in line for line in lines)
+
+    def test_it_is_still_a_roster_unavailable_for_an_unauthenticated_caller(self):
+        assert issubclass(roster_mod.RosterAuthError, roster_mod.RosterUnavailable)
+
+
+class TestTheOptOutMarkerIsExplicit:
+    """A '#' row is credited only when it SAYS it is an opt-out.
+
+    scrape_queue can credit a '#' row by checking its second column against the city's host - an
+    independent fact. cities.csv's second column is a display name, so there is no such fact here, and any
+    rule that merely matched the id would credit the prose comment below. Hence the literal marker.
+    """
+
+    def test_a_marked_row_is_credited(self):
+        rows = city_rows(('seattle-wa', 'Seattle'),
+                         ('#zurich-infra3d', 'not-monitored: infra3d imagery - no GSV to scrape'))
+        lines, critical = analyze.roster_check(
+            rows, 'host.example',
+            fetch=fetch_ok(roster_entry('seattle-wa'),
+                           roster_entry('zurich-infra3d', visibility='private')))
+
+        assert critical is False
+        assert not any('zurich-infra3d' in line for line in lines)
+
+    def test_a_prose_comment_naming_a_city_is_not_credited(self):
+        """`# laurens-ia, bayonne-fr launched 2026-09-11` is split by csv into a row whose city_id is
+        `# laurens-ia`. Crediting it would silence the very city the comment is about - and it is the exact
+        shape scrape_queue's credit rule was written to refuse. Without the marker it stays a comment, so
+        the city is still named, which is the safe way round."""
+        rows = city_rows(('# laurens-ia', ' bayonne-fr launched 2026-09-11'))
+        lines, critical = analyze.roster_check(
+            rows, 'host.example', fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
+
+        assert critical is True
+        assert any('laurens-ia' in line for line in lines)
+
+    def test_a_bare_hash_row_is_not_credited(self):
+        rows = city_rows(('#laurens-ia', ''))
+        _, critical = analyze.roster_check(
+            rows, 'host.example', fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
+
+        assert critical is True
+
+
+class TestTheCopyDoesNotDriftFromTheQueues:
+    """roster.py is a deliberate copy of scrape_queue's machinery, not an import: the analyzer must keep
+    working when the runners are broken. A copy with no pin is a copy that drifts, so both are driven
+    against one fixture body - including the refusals, which are where the #99 positive-evidence rule lives.
+    """
+
+    @staticmethod
+    def queue_parse():
+        import scrape_queue
+        return scrape_queue.parse_roster
+
+    def test_both_accept_the_measured_shape(self):
+        body = roster_body(roster_entry('seattle-wa'),
+                           roster_entry('washington-dc', visibility='private'))
+
+        assert ([e['city_id'] for e in roster_mod.parse_roster(body)]
+                == [e['city_id'] for e in self.queue_parse()(body)])
+
+    @pytest.mark.parametrize('body', [
+        b'not json at all',
+        json.dumps({'status': 'OK'}).encode(),
+        json.dumps({'status': 'OK', 'cities': []}).encode(),
+        json.dumps({'status': 'OK', 'cities': [{'city_id': 'seattle-wa'}]}).encode(),
+        json.dumps({'status': 'OK', 'cities': [{'city_id': '', 'visibility': 'public'}]}).encode(),
+        json.dumps({'status': 'OK', 'cities': [{'city_id': 'x', 'visibility': 'hidden'}]}).encode(),
+        json.dumps({'status': 'OK',
+                    'cities': [{'city_id': 'x', 'visibility': 'private'}]}).encode(),
+    ])
+    def test_both_refuse_the_same_bodies(self, body):
+        with pytest.raises(roster_mod.RosterUnavailable):
+            roster_mod.parse_roster(body)
+        import scrape_queue
+        with pytest.raises(scrape_queue.RosterUnavailable):
+            self.queue_parse()(body)
+
+
+class TestTheKeyNeverTravelsInCleartext:
+    """Ported from sidewalk-auto-labeler's check_endpoint_security rather than reinvented.
+
+    This is the guard #100 should have had: a Mapillary token in a URL reached scrape.log on the SHARED
+    pano store, and TokenRedactionFilter is a backstop that can only scrub a value it already knows.
+    Refusing to send beats scrubbing afterwards.
+    """
+
+    def test_a_key_over_http_to_a_remote_host_is_refused(self):
+        with pytest.raises(roster_mod.RosterUnavailable):
+            roster_mod.check_key_not_cleartext('http://sidewalk-sea.example.org/v3/api/cities', 'secret')
+
+    def test_https_is_fine(self):
+        roster_mod.check_key_not_cleartext('https://sidewalk-sea.example.org/v3/api/cities', 'secret')
+
+    def test_loopback_is_exempt(self):
+        roster_mod.check_key_not_cleartext('http://localhost:9000/v3/api/cities', 'secret')
+
+    def test_no_key_means_nothing_to_protect(self):
+        roster_mod.check_key_not_cleartext('http://sidewalk-sea.example.org/v3/api/cities', None)
+
+    def test_the_key_rides_in_a_header_never_the_url(self):
+        """#100's rule: requests puts a full URL into an HTTPError's message, and that message is logged."""
+        seen = {}
+
+        class FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, n): return roster_body(roster_entry('seattle-wa'))
+
+        class FakeOpener:
+            def open(self, request, timeout=None):
+                seen['url'] = request.full_url
+                seen['headers'] = dict(request.header_items())
+                return FakeResponse()
+
+        import urllib.request as ur
+        real = ur.build_opener
+        ur.build_opener = lambda *a, **k: FakeOpener()
+        try:
+            roster_mod.fetch_roster('host.example', api_key='super-secret')
+        finally:
+            ur.build_opener = real
+
+        assert 'super-secret' not in seen['url']
+        assert seen['headers'].get('Authorization') == 'Bearer super-secret'
+
+
+class TestTheRosterGapDecidesTheExitCode:
+    """The exit code is the only unattended alarm this script has, and a city with no row here has NO other
+    one - the queue at least books its own exit status. So the gap has to reach the return value, not just
+    the printed report.
+
+    The mutant is `return 1 if critical else 0` - the pre-#133 line, which prints the gap and exits 0.
+    """
+
+    def _run(self, tmp_path, monkeypatch, fetch, cities=(('seattle-wa', 'Seattle'),)):
+        logs_dir = tmp_path / 'logs'
+        logs_dir.mkdir(exist_ok=True)
+        cities_file = tmp_path / 'cities.csv'
+        with open(cities_file, 'w', newline='') as f:
+            f.write('city_id,display_name\n')
+            for city_id, display_name in cities:
+                f.write('%s,%s\n' % (city_id, display_name))
+
+        monkeypatch.setattr(analyze, 'LOGS_DIR', logs_dir)
+        monkeypatch.setattr(analyze, 'CITIES_FILE', cities_file)
+        # Download mode, because --no-download is offline mode and skips the check - but no store is
+        # reachable from a test, so both store seams are stood in for.
+        monkeypatch.setattr(analyze, 'resolve_sftp', lambda args: {'host': 'h', 'base': '/b', 'user': None,
+                                                                  'port': None, 'key': None})
+        monkeypatch.setattr(analyze, 'download_log', lambda city_id, dest, sftp: False)
+        monkeypatch.setattr(analyze.roster, 'fetch_roster', fetch)
+        monkeypatch.setenv('PS_ROSTER_HOST', 'host.example')
+        return analyze.main([])
+
+    def test_an_unlisted_city_exits_nonzero(self, tmp_path, monkeypatch):
+        status = self._run(tmp_path, monkeypatch,
+                           fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')))
+        assert status == 1
+
+    def test_offline_mode_skips_the_check(self, tmp_path, monkeypatch, capsys):
+        """--no-download is offline mode; the roster fetch is a network step like the log download."""
+        def explode(host, api_key=None):
+            raise AssertionError('the roster must not be fetched in offline mode')
+
+        logs_dir = tmp_path / 'logs'
+        logs_dir.mkdir(exist_ok=True)
+        cities_file = tmp_path / 'cities.csv'
+        cities_file.write_text('city_id,display_name\nseattle-wa,Seattle\n')
+        monkeypatch.setattr(analyze, 'LOGS_DIR', logs_dir)
+        monkeypatch.setattr(analyze, 'CITIES_FILE', cities_file)
+        monkeypatch.setattr(analyze.roster, 'fetch_roster', explode)
+
+        analyze.main(['--no-download'])
+
+        assert 'Roster cross-check' not in capsys.readouterr().out
+
+
+class TestTheDeployedCityListPassesItsOwnCheck:
+    """The committed cities.csv, against a roster built from itself plus the deployments we know are
+    deliberately unmonitored. Guards the file the production report actually reads."""
+
+    def test_every_row_is_unique_and_named(self):
+        with open(os.path.join(REPO_ROOT, 'log_analyzer', 'cities.csv'), newline='', encoding='utf-8') as f:
+            rows = list(csv.DictReader(f))
+        ids = [r['city_id'] for r in rows if not r['city_id'].startswith('#')]
+        assert len(ids) == len(set(ids))
+        assert all(ids)
+
+    def test_washington_dc_is_monitored(self):
+        """Re-launched and live on 2026-09-22 with no row here - the gap this check exists to catch, found
+        in the wild while #133 was being written."""
+        with open(os.path.join(REPO_ROOT, 'log_analyzer', 'cities.csv'), newline='', encoding='utf-8') as f:
+            ids = {r['city_id'] for r in csv.DictReader(f)}
+        assert 'washington-dc' in ids
