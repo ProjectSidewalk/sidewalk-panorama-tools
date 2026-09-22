@@ -1887,12 +1887,27 @@ class TestTheRosterGapDecidesTheExitCode:
         monkeypatch.setattr(analyze, 'CITIES_FILE', cities_file)
         # Download mode, because --no-download is offline mode and skips the check - but no store is
         # reachable from a test, so both store seams are stood in for.
+        #
+        # download_log must SUCCEED and leave a healthy log. A stub returning False books every city
+        # CRITICAL ("Download failed"), which makes `status == 1` true whatever the roster did - so the
+        # `return 1 if critical else 0` mutant survives and the test proves nothing. It did, on the first
+        # version of this test. The roster gap has to be the ONLY critical thing about the run.
+        def fake_download(city_id, dest, sftp):
+            write_log(dest, list(recent_rows(3)))
+            return True
+
         monkeypatch.setattr(analyze, 'resolve_sftp', lambda args: {'host': 'h', 'base': '/b', 'user': None,
                                                                   'port': None, 'key': None})
-        monkeypatch.setattr(analyze, 'download_log', lambda city_id, dest, sftp: False)
+        monkeypatch.setattr(analyze, 'download_log', fake_download)
         monkeypatch.setattr(analyze.roster, 'fetch_roster', fetch)
         monkeypatch.setenv('PS_ROSTER_HOST', 'host.example')
         return analyze.main([])
+
+    def test_a_complete_roster_on_a_healthy_fleet_exits_zero(self, tmp_path, monkeypatch):
+        """The control. Without it, the test below cannot tell "the roster gap set the exit code" from
+        "something else about this run was already CRITICAL"."""
+        status = self._run(tmp_path, monkeypatch, fetch_ok(roster_entry('seattle-wa')))
+        assert status == 0
 
     def test_an_unlisted_city_exits_nonzero(self, tmp_path, monkeypatch):
         status = self._run(tmp_path, monkeypatch,
