@@ -125,8 +125,10 @@ python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them i
 There is **no offline migration from v2 to v3**: the plane fields v3 adds were never stored by the v2 writer,
 so they can only come from a re-fetch. A v2 artifact reaches v3 by deleting the artifact *and* its
 `depth_log.csv` row, which makes the next run re-request it. (Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)
-dev and test runs ever produced a v2 artifact — no production store has run the depth phase.) The plane fields
-cost roughly 10–30 KB per pano on top of v2's 50–200 KB.
+dev and test runs ever produced a v2 artifact: the v3 writer landed 2026-08-07, a month before the depth
+phase went live fleet-wide on 2026-09-06 ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)),
+so every artifact a production store holds is v3.) The plane fields cost roughly 10–30 KB per pano on top of
+v2's 50–200 KB.
 
 ## Runtime budget
 
