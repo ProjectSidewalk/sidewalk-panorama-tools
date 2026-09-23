@@ -34,7 +34,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <cr
 # flag_panos JSON -> CSV, for one city (one-off tool; see flag_panos/README.md)
 python3 flag_panos/json_to_csv.py --city <city> [--dir <dir>]
 
-# Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; see docs/log-analyzer.md)
+# Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE, and PS_ROSTER_HOST for the roster check; see docs/log-analyzer.md)
 python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days N]
 
 # Does a live deployment still serve every cvMetadata field CropRunner needs? (#135) Outside tests/ on

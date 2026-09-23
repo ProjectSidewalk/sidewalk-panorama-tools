@@ -1795,6 +1795,26 @@ class TestTheCopyDoesNotDriftFromTheQueues:
             self.queue_parse()(body)
 
 
+class TestTheFailureWordingDoesNotDrift:
+    """The copy's other half: `_describe_failure` is what the CRITICAL line says went wrong, so the two
+    modules must name the same failure the same way."""
+
+    @pytest.mark.parametrize('error', [
+        __import__('urllib.error').error.HTTPError('https://h/v3/api/cities', 503, 'x', {}, None),
+        __import__('urllib.error').error.URLError(__import__('socket').timeout('t')),
+        __import__('urllib.error').error.URLError(ConnectionRefusedError('refused')),
+        __import__('http.client').client.IncompleteRead(b''),
+    ], ids=['http-503', 'timeout', 'refused', 'incomplete-read'])
+    def test_both_describe_it_alike(self, error):
+        import scrape_queue
+        assert roster_mod._describe_failure(error) == scrape_queue._describe_failure(error)
+
+    def test_the_constants_match(self):
+        import scrape_queue
+        for name in ('ROSTER_PATH', 'ROSTER_TIMEOUT_SECONDS', 'ROSTER_MAX_BYTES'):
+            assert getattr(roster_mod, name) == getattr(scrape_queue, name), name
+
+
 class TestTheFetchIsPlainHttps:
     """The one seam that touches a socket: https, the roster path, a named User-Agent, and no credential -
     a keyed roster was considered and rejected (2026-09-23; see roster.py's module docstring)."""
@@ -1837,7 +1857,7 @@ class TestTheRosterGapDecidesTheExitCode:
     The mutant is `return 1 if critical else 0` - the pre-#133 line, which prints the gap and exits 0.
     """
 
-    def _run(self, tmp_path, monkeypatch, fetch, cities=(('seattle-wa', 'Seattle'),)):
+    def _run(self, tmp_path, monkeypatch, fetch, cities=(('seattle-wa', 'Seattle'),), argv=()):
         logs_dir = tmp_path / 'logs'
         logs_dir.mkdir(exist_ok=True)
         cities_file = tmp_path / 'cities.csv'
@@ -1855,7 +1875,10 @@ class TestTheRosterGapDecidesTheExitCode:
         # CRITICAL ("Download failed"), which makes `status == 1` true whatever the roster did - so the
         # `return 1 if critical else 0` mutant survives and the test proves nothing. It did, on the first
         # version of this test. The roster gap has to be the ONLY critical thing about the run.
+        self.downloaded = []
+
         def fake_download(city_id, dest, sftp):
+            self.downloaded.append(city_id)
             write_log(dest, list(recent_rows(3)))
             return True
 
@@ -1864,7 +1887,7 @@ class TestTheRosterGapDecidesTheExitCode:
         monkeypatch.setattr(analyze, 'download_log', fake_download)
         monkeypatch.setattr(analyze.roster, 'fetch_roster', fetch)
         monkeypatch.setenv('PS_ROSTER_HOST', 'host.example')
-        return analyze.main([])
+        return analyze.main(list(argv))
 
     def test_a_complete_roster_on_a_healthy_fleet_exits_zero(self, tmp_path, monkeypatch):
         """The control. Without it, the test below cannot tell "the roster gap set the exit code" from
@@ -1876,6 +1899,33 @@ class TestTheRosterGapDecidesTheExitCode:
         status = self._run(tmp_path, monkeypatch,
                            fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')))
         assert status == 1
+
+    def test_following_the_opt_out_advice_exits_zero(self, tmp_path, monkeypatch, capsys):
+        """The CRITICAL line tells the operator to add `#city,"not-monitored: <why>"`. That row must silence
+        the gap AND not be analysed as a city: until the #149 review it was downloaded as `#zurich-infra3d`,
+        which fails for real (the stub here succeeds, so the download list is what is asserted), and the run
+        exited 1 whichever advice was followed."""
+        status = self._run(tmp_path, monkeypatch,
+                           fetch_ok(roster_entry('seattle-wa'),
+                                    roster_entry('zurich-infra3d', url=None, visibility='private')),
+                           cities=(('seattle-wa', 'Seattle'),
+                                   ('#zurich-infra3d', '"not-monitored: infra3d imagery"')))
+        assert status == 0
+        assert self.downloaded == ['seattle-wa']
+        out = capsys.readouterr().out
+        assert 'Cities: 1 ' in out
+        assert 'checked 1 rows' in out
+
+    def test_one_city_is_checked_against_the_whole_file(self, tmp_path, monkeypatch, capsys):
+        """`--city` narrows the report, not the cross-check: handed the one filtered row, the check named
+        every other city as missing from a file that has them, and exited 1."""
+        status = self._run(tmp_path, monkeypatch,
+                           fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')),
+                           cities=(('seattle-wa', 'Seattle'), ('laurens-ia', 'Laurens')),
+                           argv=['--city', 'seattle-wa'])
+        assert status == 0
+        assert self.downloaded == ['seattle-wa']
+        assert 'not in cities.csv' not in capsys.readouterr().out
 
     def test_offline_mode_skips_the_check(self, tmp_path, monkeypatch, capsys):
         """--no-download is offline mode; the roster fetch is a network step like the log download."""
@@ -1896,8 +1946,8 @@ class TestTheRosterGapDecidesTheExitCode:
 
 
 class TestTheDeployedCityListPassesItsOwnCheck:
-    """The committed cities.csv, against a roster built from itself plus the deployments we know are
-    deliberately unmonitored. Guards the file the production report actually reads."""
+    """Sanity checks on the committed cities.csv, the file the production report actually reads. The
+    cross-check against the live roster runs nightly in production, not here: the suite is network-free."""
 
     def test_every_row_is_unique_and_named(self):
         with open(os.path.join(REPO_ROOT, 'log_analyzer', 'cities.csv'), newline='', encoding='utf-8') as f:

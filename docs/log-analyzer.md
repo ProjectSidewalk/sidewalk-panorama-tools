@@ -26,12 +26,14 @@ wrong default would silently analyze the wrong store.
 | `PS_SFTP_USER` | `--user` | optional — omit when the ssh config supplies it |
 | `PS_SFTP_PORT` | `--port` | optional — omit for 22 |
 | `PS_SFTP_KEY`  | `--key`  | optional — omit to let ssh choose (ssh config / agent) |
+| `PS_ROSTER_HOST` | `--roster-host` | **required** in download mode — a deployment that serves `/v3/api/cities`, for the roster cross-check below. Unset, every run is CRITICAL and exits 1 |
 
 Setting up an `~/.ssh/config` `Host` alias is the tidiest option: with the user, port, and key declared there,
-only `PS_SFTP_HOST` and `PS_SFTP_BASE` are needed.
+only `PS_SFTP_HOST`, `PS_SFTP_BASE` and `PS_ROSTER_HOST` are needed.
 
 ```bash
 export PS_SFTP_HOST=... PS_SFTP_BASE=... PS_SFTP_USER=... PS_SFTP_PORT=... PS_SFTP_KEY=~/.ssh/...
+export PS_ROSTER_HOST=sidewalk-sea.cs.washington.edu
 
 python3 log_analyzer/analyze.py                    # download all city logs, then analyze
 python3 log_analyzer/analyze.py --no-download      # re-analyze the local cache
@@ -70,7 +72,7 @@ Set the host with `--roster-host` or `PS_ROSTER_HOST`. Four rules are load-beari
   under its *own* id. The Bayonne row would have matched on fqdn and still been wrong.
 - **Private cities count** ([#143](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/143)).
   Twenty of the fifty-nine deployments are private, `washington-dc` among them.
-- **It never fails open.** An unset host, a host that serves no roster, and a refused API key are each
+- **It never fails open.** An unset host and a host that serves no roster are each
   CRITICAL — a check silently skipped every night is the failure it exists to prevent. `--no-download` is
   offline mode and skips it.
 

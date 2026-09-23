@@ -719,7 +719,7 @@ def roster_check(city_rows, host, fetch=None) -> tuple[list[str], bool]:
     except roster.RosterUnavailable as e:
         return ([f"  🔴 [CRITICAL] {host} served no roster ({e}) — cities.csv was not cross-checked"], True)
 
-    have = {(r.get("city_id") or "").strip() for r in city_rows}
+    have = {cid for cid in ((r.get("city_id") or "").strip() for r in city_rows) if cid and not cid.startswith("#")}
     unlisted = roster.unlisted_cities(entries, have, roster.disabled_rows(city_rows))
     public = sum(1 for e in entries if e["visibility"] == "public")
     private = len(entries) - public
@@ -730,7 +730,7 @@ def roster_check(city_rows, host, fetch=None) -> tuple[list[str], bool]:
 
     lines = [f"  🔴  Roster cross-check — {checked}"]
     for city in unlisted:
-        where = city.host or "url withheld (private)"
+        where = city.host or ("url withheld (private)" if city.visibility == "private" else "no url published")
         lines.append(f"      🔴 [CRITICAL] not in cities.csv: {city.city_id} ({where})")
     lines.append(f"      → add a row, or record the decision with "
                  f'`#{unlisted[0].city_id},"{roster.OPT_OUT_MARKER} <why>"`')
@@ -779,7 +779,13 @@ def main(argv=None) -> int:
 
     LOGS_DIR.mkdir(exist_ok=True)
 
-    cities = load_cities(CITIES_FILE)
+    # Two views of one file. The roster check reads ALL rows, `#` opt-outs included, since they are its
+    # record of what was decided. The per-city report reads only real cities: a `#zurich-infra3d` row analysed
+    # as a city fails its download and books CRITICAL, so following the check's own advice would still exit
+    # 1. And `--city` narrows only the report - handing the check one row would name the rest of the fleet as
+    # missing from a file that has them.
+    all_rows = load_cities(CITIES_FILE)
+    cities = [c for c in all_rows if not (c.get("city_id") or "").strip().startswith("#")]
     if args.city:
         cities = [c for c in cities if c["city_id"] == args.city]
         if not cities:
@@ -851,7 +857,7 @@ def main(argv=None) -> int:
     roster_critical = False
     if args.download:
         roster_lines, roster_critical = roster_check(
-            cities,
+            all_rows,
             args.roster_host or os.environ.get("PS_ROSTER_HOST"),
         )
         print(f"\n{'━'*70}")

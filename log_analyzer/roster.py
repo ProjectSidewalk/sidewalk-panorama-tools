@@ -2,9 +2,10 @@
 """The fleet roster cross-check for the log analyzer (#133).
 
 `cities.csv` has the same silent-gap shape #130 fixed in the queue: a city the file does not name is not
-monitored, and nothing says so. It has gone wrong twice - `newport-ky` was scraped nightly for weeks while
-sitting outside the analyzer, and the 2026-09-17 sweep found `laurens-ia` with no row at all and Bayonne's
-row reading `bayonne` where the app calls itself `bayonne-fr`. Found by hand both times, by diffing this
+monitored, and nothing says so. It has gone wrong three times - `newport-ky` was scraped nightly for weeks
+while sitting outside the analyzer, the 2026-09-17 sweep found `laurens-ia` with no row at all and Bayonne's
+row reading `bayonne` where the app calls itself `bayonne-fr`, and on 2026-09-22 re-launched `washington-dc`
+had no row. Found by hand every time, by diffing this
 file against the crontab; `docs/log-analyzer.md` offered a `comm -23` one-liner "whenever the two are both
 in front of you", which is to say never on a schedule.
 
