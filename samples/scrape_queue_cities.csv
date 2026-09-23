@@ -12,8 +12,8 @@ city_id,fqdn
 # A row whose city_id starts with # is skipped, which is how a city is taken out for a night now that it has
 # no crontab line of its own to comment out - and how a deployment that is deliberately never scraped here
 # is recorded, so the check does not name it every night. Keep both columns on such a row: it is credited
-# only while its fqdn is the city's host (or, for a private city, whose url the roster withholds, while it
-# is shaped like one). The rows below are real, and in the order the queue would run them (manifest order,
+# only while its fqdn is the city's host (or, where the roster gives no host - every private city - while it
+# is shaped like one and is not another city's host). The rows below are real, and in the order the queue would run them (manifest order,
 # rotated nightly unless --no-rotate); the last is a private study deployment that is not scraped.
 seattle-wa,sidewalk-sea.cs.washington.edu
 columbus-oh,sidewalk-columbus.cs.washington.edu
