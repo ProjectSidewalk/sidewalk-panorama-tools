@@ -19,6 +19,11 @@ hardcoded here. See docs/log-analyzer.md.
   PS_SFTP_PORT  optional  omit for 22
   PS_SFTP_KEY   optional  omit to let ssh choose (ssh config / agent)
 
+and cross-checks cities.csv against the fleet roster (#133), so a city nobody added here is loud rather
+than simply unmonitored:
+
+  PS_ROSTER_HOST  required unless --roster-host  a deployment that serves /v3/api/cities
+
 Usage:
   python3 analyze.py                        # download + analyze all cities
   python3 analyze.py --no-download          # analyze already-downloaded logs
@@ -28,6 +33,7 @@ Usage:
 
 import argparse
 import csv
+import importlib.util
 import os
 import subprocess
 import sys
@@ -35,6 +41,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+
+# The roster cross-check (#133), loaded by file location rather than by name. Running this as a script puts
+# log_analyzer/ on sys.path so a plain `import roster` would work, but the tests load analyze.py with
+# importlib.spec_from_file_location and no such entry; loading it the same way here works in both cases
+# without mutating sys.path at import time (this module is deliberately side-effect-free to import).
+_roster_spec = importlib.util.spec_from_file_location(
+    "log_analyzer_roster", Path(__file__).resolve().parent / "roster.py")
+roster = importlib.util.module_from_spec(_roster_spec)
+_roster_spec.loader.exec_module(roster)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -677,6 +692,51 @@ def city_stats(df: pd.DataFrame) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+def roster_check(city_rows, host, fetch=None) -> tuple[list[str], bool]:
+    """Cross-check cities.csv against the fleet roster: (report lines, whether it is CRITICAL).
+
+    A comparison, not auto-discovery (#133). `cities.csv` stays the source of what to monitor and the roster
+    is only the cross-check; generating the file from the roster would silently pick up cities nobody has
+    decided to watch, which is a different failure from the one this closes.
+
+    Three ways it goes CRITICAL, and the middle one is the one that is easy to "simplify" away:
+
+    * **an unlisted city** - the gap itself;
+    * **no host configured** - a check that is silently skipped every night is precisely the failure it
+      exists to prevent, so an unset host is loud rather than absent. #132 made the same call for the
+      nightly path;
+    * **no roster served** - best effort on the fetch, but a check that fails open is the #130 shape again.
+
+    Returns lines rather than printing them so the whole thing is drivable in a test.
+    """
+    fetch = roster.fetch_roster if fetch is None else fetch
+    if not host:
+        return ([f"  🔴 [CRITICAL] roster cross-check not configured — set PS_ROSTER_HOST or --roster-host "
+                 f"to a deployment that serves {roster.ROSTER_PATH}"], True)
+
+    try:
+        entries = fetch(host)
+    except roster.RosterUnavailable as e:
+        return ([f"  🔴 [CRITICAL] {host} served no roster ({e}) — cities.csv was not cross-checked"], True)
+
+    have = {cid for cid in ((r.get("city_id") or "").strip() for r in city_rows) if cid and not cid.startswith("#")}
+    unlisted = roster.unlisted_cities(entries, have, roster.disabled_rows(city_rows))
+    public = sum(1 for e in entries if e["visibility"] == "public")
+    private = len(entries) - public
+    checked = f"checked {len(have)} rows against {public} public + {private} private cities on {host}"
+
+    if not unlisted:
+        return ([f"  ✅  Roster cross-check — {checked}"], False)
+
+    lines = [f"  🔴  Roster cross-check — {checked}"]
+    for city in unlisted:
+        where = city.host or ("url withheld (private)" if city.visibility == "private" else "no url published")
+        lines.append(f"      🔴 [CRITICAL] not in cities.csv: {city.city_id} ({where})")
+    lines.append(f"      → add a row, or record the decision with "
+                 f'`#{unlisted[0].city_id},"{roster.OPT_OUT_MARKER} <why>"`')
+    return (lines, True)
+
+
 def main(argv=None) -> int:
     """Download (unless --no-download), analyze every city, print the report; return the process exit code.
 
@@ -707,13 +767,25 @@ def main(argv=None) -> int:
     conn.add_argument("--user", help="SSH user; omit if the ssh config supplies it. [PS_SFTP_USER]")
     conn.add_argument("--port", help="SSH port; omit for 22. [PS_SFTP_PORT]")
     conn.add_argument("--key", help="Identity file; omit to let ssh choose. [PS_SFTP_KEY]")
+    ros = parser.add_argument_group("fleet roster cross-check (#133)")
+    ros.add_argument(
+        "--roster-host",
+        help=f"Deployment to ask for {roster.ROSTER_PATH}, e.g. sidewalk-sea.cs.washington.edu. Every "
+             f"deployment serves the same roster, so one host is enough. [PS_ROSTER_HOST]",
+    )
     args = parser.parse_args(argv)
 
     sftp = resolve_sftp(args) if args.download else None
 
     LOGS_DIR.mkdir(exist_ok=True)
 
-    cities = load_cities(CITIES_FILE)
+    # Two views of one file. The roster check reads ALL rows, `#` opt-outs included, since they are its
+    # record of what was decided. The per-city report reads only real cities: a `#zurich-infra3d` row analysed
+    # as a city fails its download and books CRITICAL, so following the check's own advice would still exit
+    # 1. And `--city` narrows only the report - handing the check one row would name the rest of the fleet as
+    # missing from a file that has them.
+    all_rows = load_cities(CITIES_FILE)
+    cities = [c for c in all_rows if not (c.get("city_id") or "").strip().startswith("#")]
     if args.city:
         cities = [c for c in cities if c["city_id"] == args.city]
         if not cities:
@@ -778,6 +850,20 @@ def main(argv=None) -> int:
         for line in fleet:
             print(line)
 
+    # The fleet roster cross-check (#133). After the per-city report, because it is a fleet-level fact and
+    # not a city's: it deliberately does NOT enter `results`, whose length is the "N cities checked"
+    # denominator. scrape_queue's summarise learned the same lesson - a fleet fact counted as a city makes
+    # the denominator lie. --no-download is offline mode, so it skips the fetch like every other network step.
+    roster_critical = False
+    if args.download:
+        roster_lines, roster_critical = roster_check(
+            all_rows,
+            args.roster_host or os.environ.get("PS_ROSTER_HOST"),
+        )
+        print(f"\n{'━'*70}")
+        for line in roster_lines:
+            print(line)
+
     # Summary
     critical = [cid for cid, iss in results.items() if any(i["level"] == "CRITICAL" for i in iss)]
     warnings = [cid for cid, iss in results.items() if any(i["level"] == "WARNING"  for i in iss)]
@@ -788,11 +874,14 @@ def main(argv=None) -> int:
     print(f"  🔴 Critical : {len(critical):>3}  {', '.join(critical) if critical else ''}")
     print(f"  🟡 Warning  : {len(warnings):>3}  {', '.join(warnings) if warnings else ''}")
     print(f"  ✅ OK       : {ok_count:>3}")
+    if roster_critical:
+        print(f"  🔴 Roster   : cities.csv did not pass the cross-check")
     print(f"{'━'*70}\n")
 
     # Non-zero status if there are critical issues - this is what cron's mail-on-failure keys on, and for
-    # most of the fleet it is the only thing that ever reports a city going dark.
-    return 1 if critical else 0
+    # most of the fleet it is the only thing that ever reports a city going dark. The roster gap counts:
+    # a city with no row here has NO alarm at all, which is the whole reason #133 exists.
+    return 1 if (critical or roster_critical) else 0
 
 
 if __name__ == "__main__":

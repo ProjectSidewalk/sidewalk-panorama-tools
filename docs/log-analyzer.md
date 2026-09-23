@@ -26,12 +26,14 @@ wrong default would silently analyze the wrong store.
 | `PS_SFTP_USER` | `--user` | optional — omit when the ssh config supplies it |
 | `PS_SFTP_PORT` | `--port` | optional — omit for 22 |
 | `PS_SFTP_KEY`  | `--key`  | optional — omit to let ssh choose (ssh config / agent) |
+| `PS_ROSTER_HOST` | `--roster-host` | **required** in download mode — a deployment that serves `/v3/api/cities`, for the roster cross-check below. Unset, every run is CRITICAL and exits 1 |
 
 Setting up an `~/.ssh/config` `Host` alias is the tidiest option: with the user, port, and key declared there,
-only `PS_SFTP_HOST` and `PS_SFTP_BASE` are needed.
+only `PS_SFTP_HOST`, `PS_SFTP_BASE` and `PS_ROSTER_HOST` are needed.
 
 ```bash
 export PS_SFTP_HOST=... PS_SFTP_BASE=... PS_SFTP_USER=... PS_SFTP_PORT=... PS_SFTP_KEY=~/.ssh/...
+export PS_ROSTER_HOST=sidewalk-sea.cs.washington.edu
 
 python3 log_analyzer/analyze.py                    # download all city logs, then analyze
 python3 log_analyzer/analyze.py --no-download      # re-analyze the local cache
@@ -47,20 +49,42 @@ logs are cached in `log_analyzer/logs/` (gitignored).
 `log_analyzer/cities.csv` maps `city_id` → display name; each `city_id` must match that city's folder name on
 the pano store **exactly**. Add a row when a new city is deployed.
 
-**A city missing from this file is not monitored, and nothing says so** — the analyzer reports on the cities it
-is given and has no way to know the fleet is larger. `newport-ky` sat outside it while being scraped nightly,
-and was found only by diffing this list against the production crontab in Sep 2026. Nothing in CI can catch
-that drift, because the fleet is a deployment fact and this file is in the repo, so it is worth diffing by hand
-whenever the two are both in front of you:
+**A city missing from this file is not monitored** — and since this *is* the monitoring layer, such a city has
+no alarm at all; the queue at least books its own exit status. That gap used to be silent, and it bit three
+times: `newport-ky` was scraped nightly for weeks while sitting outside the analyzer, the 2026-09-17 sweep found
+`laurens-ia` with no row and Bayonne's row reading `bayonne` where the app calls itself `bayonne-fr`, and on
+2026-09-22 `washington-dc` — re-launched and live — had no row either. Each was found by hand.
 
-```bash
-# on the scraper host: which scheduled cities is the analyzer not watching?
-comm -23 <(cut -d, -f1 /etc/sidewalk/cities.csv | tail -n +2 | sort) \
-         <(cut -d, -f1 log_analyzer/cities.csv | tail -n +2 | sort)
+**Since [#133](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/133) the report cross-checks
+itself.** After the per-city blocks it asks one deployment for `/v3/api/cities` — every deployment serves the
+same roster of every city — and names, at CRITICAL, each city with no row here:
+
+```
+🔴  Roster cross-check — checked 55 rows against 39 public + 20 private cities on sidewalk-sea.cs.washington.edu
+    🔴 [CRITICAL] not in cities.csv: laurens-ia (https://sidewalk-laurens.cs.washington.edu)
 ```
 
-Once the [nightly queue](downloader.md#nightly-deployment) is deployed, its manifest is the authoritative list
-to diff against; before then it is the crontab.
+Set the host with `--roster-host` or `PS_ROSTER_HOST`. Four rules are load-bearing:
+
+- **It is a comparison, not auto-discovery.** This file stays the source of what to monitor; generating it from
+  the roster would silently pick up cities nobody decided to watch.
+- **It keys on `city_id`**, because the store path is `<base>/<city_id>/log.csv` and the app reads its panos
+  under its *own* id. The Bayonne row would have matched on fqdn and still been wrong.
+- **Private cities count** ([#143](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/143)).
+  Twenty of the fifty-nine deployments are private, `washington-dc` among them.
+- **It never fails open.** An unset host and a host that serves no roster are each
+  CRITICAL — a check silently skipped every night is the failure it exists to prevent. `--no-download` is
+  offline mode and skips it.
+
+To record a deployment that is deliberately **never** monitored, give it a `#` row carrying the marker:
+
+```csv
+#zurich-infra3d,"not-monitored: infra3d imagery, nothing here to scrape"
+```
+
+The marker is required. Unlike the queue's manifest, this file has no host column to check a `#` row against,
+so without an explicit marker a prose comment (`# laurens-ia, bayonne-fr launched 2026-09-11`, which `csv`
+splits into a row for `laurens-ia`) would silence the very city it is about.
 
 ## Checks
 
