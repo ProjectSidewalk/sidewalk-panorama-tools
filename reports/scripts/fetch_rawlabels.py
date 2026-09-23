@@ -23,11 +23,14 @@ committed artifact rather than failing:
 
 **Private deployments have no URL in the cities API** (since 2026-09 it answers `"url": null` for
 them — 22 of 59 at the SidewalkWebpage#4842 post-repair sweep, including taipei, zurich, burnaby and
-validation-study, all of which the 2026-08-11 "before" census had measured). `--all` skips those with
-a warning unless `--hosts FILE` supplies their hosts, one `city_id url` pair per line; the pairs come
-from `landing-page-url.prod` in SidewalkWebpage's `conf/cityparams.conf`. `--dest DIR` lands a sweep
-in its own directory, which is how a post-repair "after" sweep is kept from being answered out of the
-"before" cache by the exists-check above.
+validation-study, all of which the 2026-08-11 "before" census had measured). `--all` fills those in
+from `landing-page-url.prod` in SidewalkWebpage's `conf/cityparams.conf`, read from the public repo
+(`CITYPARAMS_URL`). The null keeps those addresses out of crawlable link graphs (SidewalkWebpage#5259);
+it was never a secret, which is why this reads the config rather than asking the app for a keyed
+roster. `--hosts FILE` (one `city_id url` pair per line) overrides the config, e.g. offline; a private
+deployment neither names is skipped with a warning. `--dest DIR` lands a sweep in its own directory,
+which is how a post-repair "after" sweep is kept from being answered out of the "before" cache by the
+exists-check above.
 
     python reports/scripts/fetch_rawlabels.py --all --hosts prod-hosts.txt --dest reports/scripts/.cache/rawlabels-all-<date>
 """
@@ -35,12 +38,20 @@ in its own directory, which is how a post-repair "after" sweep is kept from bein
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import urllib.request
 
 # Any deployment serves the full deployment roster; Seattle is just a stable place to ask.
 CITIES_API = 'https://sidewalk-sea.cs.washington.edu/v3/api/cities'
+
+# Where the private deployments' hosts come from: the app's own config, in its public repo, on the
+# default branch. The roster still decides WHICH cities exist; this only supplies a host for one the
+# roster lists with url=null.
+CITYPARAMS_URL = ('https://raw.githubusercontent.com/ProjectSidewalk/SidewalkWebpage/develop/'
+                  'conf/cityparams.conf')
+_CONFIG_ENTRY = re.compile(r'^\s*([a-z0-9-]+)\s*=\s*"(https://[^"\s]+)"\s*$')
 
 CITIES = {
     'seattle-wa': 'https://sidewalk-sea.cs.washington.edu',
@@ -78,18 +89,59 @@ def all_cities(hosts=None):
     the same ids the study-corpus dict uses. The record bug lived in the shared client, so the
     all-cities sweep is how 'fix it everywhere' gets measured.
 
-    A private deployment is listed with `url: null`; `hosts` (city_id -> base url) fills those in,
-    and any still without a host is skipped with a warning rather than fetched from 'None/...'."""
+    A private deployment is listed with `url: null`. `hosts` (city_id -> base url, from --hosts)
+    fills those in first, then the app's config (`config_hosts`); any still without a host is
+    skipped with a warning rather than fetched from 'None/...'."""
     with urllib.request.urlopen(CITIES_API, timeout=30) as r:
         payload = json.load(r)
     cities = payload if isinstance(payload, list) else payload['cities']
     hosts = hosts or {}
     roster = {c['city_id']: c['url'] or hosts.get(c['city_id']) for c in cities}
+    if any(not v for v in roster.values()):
+        config = config_hosts()
+        roster = {k: v or config.get(k) for k, v in roster.items()}
     missing = sorted(k for k, v in roster.items() if not v)
     if missing:
-        print(f'no url for {len(missing)} private deployment(s), skipped (pass --hosts): '
-              + ', '.join(missing), file=sys.stderr)
+        print(f'no url for {len(missing)} private deployment(s), skipped (not in {CITYPARAMS_URL}; '
+              'pass --hosts): ' + ', '.join(missing), file=sys.stderr)
     return {k: v for k, v in roster.items() if v}
+
+
+def parse_landing_pages(text):
+    """The `landing-page-url { prod { ... } }` block of cityparams.conf, as city_id -> base url.
+
+    Only the plain `city = "https://..."` lines are read; a substitution or anything else in the
+    block is ignored rather than guessed at. Returns {} if the block is not there."""
+    lines = iter(text.splitlines())
+    for line in lines:
+        if line.strip() == 'landing-page-url {':
+            break
+    for line in lines:
+        if line.strip() == 'prod {':
+            break
+    hosts = {}
+    for line in lines:
+        if line.strip() == '}':
+            break
+        m = _CONFIG_ENTRY.match(line)
+        if m:
+            hosts[m.group(1)] = m.group(2).rstrip('/')
+    return hosts
+
+
+def config_hosts():
+    """Private deployments' hosts from the app's public config; {} with a warning if unavailable,
+    so the sweep degrades to skipping them (the pre-config behaviour) rather than dying."""
+    try:
+        with urllib.request.urlopen(CITYPARAMS_URL, timeout=30) as r:
+            hosts = parse_landing_pages(r.read().decode('utf-8'))
+    except Exception as e:
+        print(f'could not read {CITYPARAMS_URL} ({e})', file=sys.stderr)
+        return {}
+    if not hosts:
+        print(f'no landing-page-url.prod entries found in {CITYPARAMS_URL}; has its layout changed?',
+              file=sys.stderr)
+    return hosts
 
 
 def read_hosts(path):
@@ -136,8 +188,8 @@ def main(argv=None):
                          '.cache/rawlabels-mapillary/')
     ap.add_argument('--hosts', metavar='FILE',
                     help='with --all: `city_id url` pairs for the private deployments the cities API '
-                         'lists with url=null (from landing-page-url.prod in SidewalkWebpage\'s '
-                         'conf/cityparams.conf)')
+                         'lists with url=null; overrides the hosts read from SidewalkWebpage\'s '
+                         'conf/cityparams.conf')
     ap.add_argument('--dest', metavar='DIR',
                     help='with --all: fetch into this directory instead of .cache/rawlabels-all/ '
                          '(a re-sweep must not be answered out of the earlier cache)')

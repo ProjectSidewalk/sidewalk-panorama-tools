@@ -128,6 +128,28 @@ class TestPrivateDeploymentsAndReSweeps:
     sweep used to turn into a request for 'None/v3/api/rawLabels'. And a post-repair re-sweep must not
     be answered out of the earlier cache, which the exists-check would otherwise do."""
 
+    # A trimmed cityparams.conf: an earlier block with its own prod sub-block (a parser that skips the
+    # landing-page-url search reads it), the prod block (taipei only,
+    # plus a substitution the parser must skip), and a test block whose hosts must not be read.
+    CONFIG = (
+        'city-params {\n'
+        '  some-other-url {\n'
+        '    prod {\n'
+        '      crowdstudy = "https://decoy.example"\n'
+        '    }\n'
+        '  }\n'
+        '  landing-page-url {\n'
+        '    prod {\n'
+        '      seattle-wa = "https://sidewalk-sea.cs.washington.edu"\n'
+        '      taipei = "https://sidewalk-taipei.cs.washington.edu/"\n'
+        '      staging = ${city-params.landing-page-url.prod.seattle-wa}\n'
+        '    }\n'
+        '    test {\n'
+        '      crowdstudy = "https://sidewalk-crowdstudy.test.example"\n'
+        '    }\n'
+        '  }\n'
+        '}\n')
+
     @pytest.fixture
     def cities_api(self, monkeypatch):
         payload = {'cities': [
@@ -136,24 +158,62 @@ class TestPrivateDeploymentsAndReSweeps:
             {'city_id': 'crowdstudy', 'url': None},
         ]}
         import json
+        served = {'config': self.CONFIG.encode(), 'requests': []}
 
         def fake_urlopen(url, timeout=None):
-            assert url == fr.CITIES_API
-            return io.BytesIO(json.dumps(payload).encode())
+            served['requests'].append(url)
+            if url == fr.CITIES_API:
+                return io.BytesIO(json.dumps(payload).encode())
+            assert url == fr.CITYPARAMS_URL, url
+            if isinstance(served['config'], Exception):
+                raise served['config']
+            return io.BytesIO(served['config'])
 
         monkeypatch.setattr(fr.urllib.request, 'urlopen', fake_urlopen)
+        return payload, served
 
-    def test_a_private_deployment_with_no_host_is_skipped_with_a_warning(self, cities_api, capsys):
+    def test_the_config_fills_in_a_private_deployment(self, cities_api, capsys):
+        assert fr.all_cities() == {'seattle-wa': 'https://sidewalk-sea.cs.washington.edu',
+                                   'taipei': 'https://sidewalk-taipei.cs.washington.edu'}
+
+    def test_one_in_neither_is_skipped_with_a_warning(self, cities_api, capsys):
+        """crowdstudy is only in the config's test block and a non-landing-page block; neither is
+        prod, so it has no host and must be skipped, not fetched from a decoy."""
+        assert 'crowdstudy' not in fr.all_cities()
+        err = capsys.readouterr().err
+        assert 'crowdstudy' in err and 'taipei' not in err and '--hosts' in err
+
+    def test_hosts_override_the_config(self, cities_api, tmp_path):
+        hosts = tmp_path / 'hosts.txt'
+        hosts.write_text('# local override\ntaipei https://mirror.example/\n\n')
+        roster = fr.all_cities(fr.read_hosts(str(hosts)))
+        assert roster['taipei'] == 'https://mirror.example'
+
+    def test_an_unreachable_config_degrades_to_skipping(self, cities_api, capsys):
+        _, served = cities_api
+        served['config'] = OSError('offline')
         assert fr.all_cities() == {'seattle-wa': 'https://sidewalk-sea.cs.washington.edu'}
         err = capsys.readouterr().err
-        assert 'crowdstudy' in err and 'taipei' in err and '--hosts' in err
+        assert 'offline' in err and 'taipei' in err
 
-    def test_hosts_fill_in_the_private_deployments(self, cities_api, tmp_path):
-        hosts = tmp_path / 'hosts.txt'
-        hosts.write_text('# from cityparams.conf\ntaipei https://sidewalk-taipei.cs.washington.edu/\n\n')
-        roster = fr.all_cities(fr.read_hosts(str(hosts)))
-        assert roster == {'seattle-wa': 'https://sidewalk-sea.cs.washington.edu',
-                          'taipei': 'https://sidewalk-taipei.cs.washington.edu'}
+    def test_a_config_with_no_prod_block_says_so(self, cities_api, capsys):
+        _, served = cities_api
+        served['config'] = b'city-params {\n}\n'
+        fr.all_cities()
+        assert 'layout changed' in capsys.readouterr().err
+
+    def test_the_config_is_not_fetched_when_every_city_has_a_url(self, cities_api):
+        payload, served = cities_api
+        payload['cities'] = payload['cities'][:1]
+        fr.all_cities()
+        assert served['requests'] == [fr.CITIES_API]
+
+    def test_the_parser_reads_the_real_layout(self):
+        """Against the committed shape of SidewalkWebpage's file: prod entries only, trailing slash
+        dropped, substitutions skipped."""
+        assert fr.parse_landing_pages(self.CONFIG) == {
+            'seattle-wa': 'https://sidewalk-sea.cs.washington.edu',
+            'taipei': 'https://sidewalk-taipei.cs.washington.edu'}
 
     def test_dest_lands_the_sweep_outside_the_before_cache(self, sandbox, tmp_path):
         dest, dest_all, _, fetched = sandbox
