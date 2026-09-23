@@ -26,7 +26,7 @@ while a full slot of the window remains, runs the cities that stopped on their b
   - notices a launched city nobody added (#130). The manifest is the deployment fact and stays explicit,
     but a city it does not name does not exist to the queue, which ran green for six nights while two new
     cities went unscraped. So once a night, after the fleet, it asks one manifest host for /v3/api/cities
-    and names every public city that has no row - on stdout and in the exit code.
+    and names every city that has no row, private ones included (#143) - on stdout and in the exit code.
 
 Deliberately NOT parallel. The politeness constraint the stagger encoded is real, and the whole point here
 is that exactly one city is talking to the APIs and the store at any moment.
@@ -45,6 +45,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import shutil
 import signal
 import socket
@@ -89,15 +90,21 @@ CityResult = namedtuple('CityResult',
                         'city_id outcome exit_code seconds budget_minutes pass_number stop_reasons',
                         defaults=(None, 1, None))
 
-# A public city the fleet serves that the manifest does not name (#130). fqdn is the host its roster url
-# names (None when the roster publishes no url - never guessed); misnamed_as is the manifest city_id of a row
-# that points at that same host under another name, so the operator is told why the city they "already
-# added" is missing.
-Unlisted = namedtuple('Unlisted', 'city_id fqdn misnamed_as')
+# A city the fleet serves that the manifest does not name (#130, private cities too since #143). fqdn is the
+# host its roster url names (None when the roster publishes no url - every private city, never guessed);
+# misnamed_as is the manifest city_id of a row that points at that same host under another name, so the
+# operator is told why the city they "already added" is missing; visibility is the roster's word for it.
+Unlisted = namedtuple('Unlisted', 'city_id fqdn misnamed_as visibility', defaults=('public',))
 
 # The outcome of one night's cross-check. roster_host is the manifest host whose roster was used, or None when
 # none of the hosts tried answered with one; attempts is [(fqdn, reason)] for each host that did not.
-ManifestCheck = namedtuple('ManifestCheck', 'roster_host public_count unlisted attempts hosts_total')
+ManifestCheck = namedtuple('ManifestCheck',
+                           'roster_host public_count unlisted attempts hosts_total private_count', defaults=(0,))
+
+# What a '#' row's second column has to look like to credit a city whose roster url gives no host (every private
+# city, whose url is null) so there is no host to match: a bare hostname - at least one dot, nothing but label characters. A prose comment split on
+# its commas (` bayonne-fr launched 2026-09-11`) fails it, and so does an empty column.
+_HOSTNAME_SHAPE = re.compile(r'^[a-z0-9-]+(\.[a-z0-9-]+)+$')
 
 # The one stop reason that means "more time would have helped". It is DownloadRunner's own vocabulary -
 # downloaders.gsv.DEPTH_STOP_MAX_RUNTIME and the image phase's matching string - repeated here rather than
@@ -709,7 +716,7 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
 # nights, until the auto-labeler's first Laurens labels showed blank Gallery cards: the app cuts AI-label crops
 # from what this scraper stores. The manifest stays the deployment fact - a default that scrapes the wrong fleet
 # is worse - so the omission is made loud instead: every deployment serves the same roster of every city, and
-# once a night the queue asks one manifest host for it and names the PUBLIC cities that have no row.
+# once a night the queue asks one manifest host for it and names every city, public or private (#143), that has no row.
 #
 # The key is city_id, and that is a measurement, not a preference. The app reads its scraped panos from
 # <pano.images.directory>/<city-id>/<panoId[:2]>/<panoId>.jpg with its OWN id - the one the roster reports - so
@@ -739,11 +746,11 @@ def parse_roster(body):
     Positive evidence, the #99 rule: a JSON object whose `cities` is a list of objects each carrying a
     non-empty string `city_id` and a `visibility` that is 'public' or 'private', with at least one public
     entry. Everything else - an error envelope, a proxy's HTML, an empty list, a renamed field - is "this host
-    did not answer", so the next one is asked. The last two rules are the ones that matter: an upstream rename
-    of the visibility values would otherwise read as "every city is private", the unlisted set would be empty,
-    and the report would say "checked against 0 public cities" every night, which is a check that never runs
-    wearing the face of one that passed. A live fleet always lists at least one public city, so an empty list
-    fails on that rule too. A visibility this code does not know is refused rather than read as "not public":
+    did not answer", so the next one is asked. The last two rules are the ones that matter. Visibility no
+    longer decides membership (#143), so they are not guarding the unlisted set; they guard the report. A
+    live fleet always lists at least one public city, so an empty list or an all-private roster is a broken
+    answer, not a fleet - accepting one would print "checked against 0 public cities" every night, a check
+    that never ran wearing the face of one that passed. A visibility this code does not know is refused rather than read as "not public":
     whatever a third value would mean for the check is a decision, and refusing makes it one that gets taken.
     """
     try:
@@ -835,13 +842,36 @@ def _roster_host(url):
     return parts.hostname or None
 
 
+def _disabled_row_credits(disabled_fqdn, host, published_hosts=frozenset()):
+    """Whether a '#' row's second column is evidence that the row is this city and not a comment csv split
+    on a comma. With a published host it has to BE that host. A private city publishes none (#143), so the
+    column has to look like a hostname instead - weaker evidence, and the strongest there is: the prose that
+    fails it is ` bayonne-fr launched 2026-09-11`, and an empty column (`#zurich,`) fails it too, which is
+    what "keep both columns on it" means. The published-host rule is not relaxed where the host is known.
+
+    A column that is ANOTHER city's host - published by the roster, or on an enabled manifest row - is refused
+    even though it has the shape: it is positive evidence the row is not this city - `#zurich,sidewalk-sea.cs.washington.edu`, copied from the
+    Seattle row and never edited, would otherwise silence zurich for good."""
+    if not disabled_fqdn:
+        return False
+    if host is not None:
+        return disabled_fqdn == host
+    return _HOSTNAME_SHAPE.match(disabled_fqdn) is not None and disabled_fqdn not in published_hosts
+
+
 def unlisted_cities(roster, cities, disabled):
-    """The public roster cities that have no manifest row, in roster order.
+    """The roster cities that have no manifest row, in roster order - public and private alike.
 
     A row counts when its city_id matches exactly - it is a directory name, so `Seattle-WA` is a different
     directory - or when a disabled ('#') row carries both that id and the city's host, which is the evidence
     that the row is this city and not a comment csv split on a comma. Hosts are compared case-insensitively:
     that half of the comparison is DNS, not a path.
+
+    Visibility does not decide membership (#143). The check keyed on `public` until 2026-09-19, and 20 of the
+    59 deployments are private: a private city launched with no row was silent in exactly the way Laurens
+    was. A private city publishes no url, so for it the '#' credit rests on the column's shape instead
+    (`_disabled_row_credits`), and the study and scratch deployments that are never scraped each carry one
+    such row - the manifest, not this code, records that decision.
 
     The misnamed hint is drawn from disabled rows too: `#bayonne,sidewalk-bayonne...` against a roster
     `bayonne-fr` is still the Bayonne mistake, and the operator who "already added it" still needs telling
@@ -852,16 +882,21 @@ def unlisted_cities(roster, cities, disabled):
     # Disabled rows first, so an enabled row naming the same host is the one the hint quotes.
     by_host = {fqdn: city_id for city_id, fqdn in disabled.items() if fqdn}
     by_host.update((c.fqdn.lower(), c.city_id) for c in cities)
+    # Every host known to belong to some city: the roster's published ones, and the manifest's own enabled
+    # rows - a private city publishes no url, so without the second half a row copied from an enabled
+    # PRIVATE city's line would still be credited.
+    published = {h for h in (_roster_host(e.get('url')) for e in roster) if h}
+    published |= {c.fqdn.lower() for c in cities}
     unlisted, seen = [], set()
     for entry in roster:
         city_id = entry['city_id']
-        if entry.get('visibility') != 'public' or city_id in enabled or city_id in seen:
+        if city_id in enabled or city_id in seen:
             continue
         seen.add(city_id)
         host = _roster_host(entry.get('url'))
-        if host is not None and disabled.get(city_id) == host:
+        if _disabled_row_credits(disabled.get(city_id), host, published):
             continue
-        unlisted.append(Unlisted(city_id, host, by_host.get(host) if host else None))
+        unlisted.append(Unlisted(city_id, host, by_host.get(host) if host else None, entry['visibility']))
     return unlisted
 
 
@@ -892,12 +927,15 @@ def check_manifest(cities, disabled, hosts=None, fetch=None):
     if roster is None:
         return ManifestCheck(None, 0, [], attempts, len(hosts))
     public_count = sum(1 for entry in roster if entry['visibility'] == 'public')
-    return ManifestCheck(host, public_count, unlisted_cities(roster, cities, disabled), attempts, len(hosts))
+    return ManifestCheck(host, public_count, unlisted_cities(roster, cities, disabled), attempts, len(hosts),
+                         private_count=len(roster) - public_count)
 
 
 def _describe_unlisted(city):
     if city.fqdn is None:
-        return '%s (url not published)' % city.city_id
+        # The roster's word beside it, because a private city is the case with no url and the one whose row
+        # the operator most often has to write as "known, never scraped here" rather than "add it".
+        return '%s (%s; url not published)' % (city.city_id, city.visibility)
     if city.misnamed_as is None:
         return '%s (%s)' % (city.city_id, city.fqdn)
     return "%s (%s; the manifest calls it '%s', the app reads <store-root>/%s)" % (
@@ -922,10 +960,11 @@ def manifest_report(check, advisory=False):
     """
     gap, status = [], []
     if check.unlisted:
-        gap.append(("[queue] public cities missing from the manifest: %s"
+        gap.append(("[queue] cities missing from the manifest: %s"
                     % ', '.join(_describe_unlisted(c) for c in check.unlisted), logging.ERROR))
         gap.append(("[queue]   add one city_id,fqdn row per city - city_id must be the app's own id, "
-                    "because that is the directory it reads", logging.ERROR))
+                    "because that is the directory it reads; a '#city_id,fqdn' row records one that is "
+                    "deliberately not scraped here", logging.ERROR))
     if check.roster_host is None:
         level = logging.WARNING if advisory else logging.ERROR
         (status if advisory else gap).append(
@@ -934,8 +973,8 @@ def manifest_report(check, advisory=False):
                 ', '.join('%s (%s)' % attempt for attempt in check.attempts),
                 len(check.attempts), check.hosts_total), level))
     else:
-        status.append(("[queue] manifest checked against %d public cities (roster from %s)"
-                       % (check.public_count, check.roster_host), logging.INFO))
+        status.append(("[queue] manifest checked against %d public and %d private cities (roster from %s)"
+                       % (check.public_count, check.private_count, check.roster_host), logging.INFO))
     return gap, status
 
 
@@ -981,7 +1020,7 @@ def summarise(results, elapsed_minutes, manifest_check=None):
     if manifest_check is not None and manifest_check.roster_host is None:
         missing = ', manifest not cross-checked'
     else:
-        missing = ('' if not n_missing else ', %d public %s missing from the manifest'
+        missing = ('' if not n_missing else ', %d %s missing from the manifest'
                    % (n_missing, 'city' if n_missing == 1 else 'cities'))
     lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s; %.1f min total"
                  % (sum(1 for r in first if r.outcome == 'ok'), len(first),
@@ -1013,8 +1052,9 @@ def exit_code_for(results, manifest_check=None):
     is the condition this whole change exists to make visible. If a night's truncation is expected and
     accepted, the window is the wrong size.
 
-    A public city with no manifest row fails the night for the same reason (#130): the fleet ran green for six
-    nights while two launched cities went unscraped, and the exit code is the one unattended alarm. So does a
+    A city with no manifest row, private or public (#143), fails the night for the same reason (#130): the
+    fleet ran green for six nights while two launched cities went unscraped, and the exit code is the one
+    unattended alarm. So does a
     roster that no host would serve - decided 2026-09-17: the hosts asked have just served /adminapi/panos, so
     three of them failing this call is a broken check (an API rename, an env proxy, a moved endpoint) rather
     than weather, and a check silently skipped every night is the failure the check exists to prevent. None

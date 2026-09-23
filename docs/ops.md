@@ -698,8 +698,9 @@ previous deploy's changes again.
    directory it never looks at), and the fqdn cannot be derived from the id. Check
    `https://<fqdn>/adminapi/panos` answers first.
 2. `scrape_queue.py … --dry-run` takes no lock, shows the city in the plan while the queue runs, and
-   [cross-checks the manifest](downloader.md#the-manifest-is-cross-checked-against-the-fleet) — any public
-   city still missing a row, or listed under the wrong id, is named and the dry run exits 1.
+   [cross-checks the manifest](downloader.md#the-manifest-is-cross-checked-against-the-fleet) — any city
+   still missing a row, or listed under the wrong id, is named and the dry run exits 1. A private deployment
+   that is deliberately not scraped here gets a `#city_id,fqdn` row instead, once.
 3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it.
 4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
 
@@ -758,8 +759,8 @@ section exists because of.
   `nothing to publish (clean run, --only-on-failure)`. The message is failure-only, so silence is ambiguous
   on its own: it is a quiet night *or* a wrapper that never ran, and the log line is what tells them apart.
 - `scrape_queue.log`: every city `ok (exit 0)`, and `pass 2 starting` if any ran out of budget.
-- `scrape_queue.log` ends with `manifest checked against N public cities (roster from …)`, and
-  `grep ERROR scrape_queue.log` prints nothing — a `public cities missing from the manifest` or
+- `scrape_queue.log` ends with `manifest checked against N public and M private cities (roster from …)`, and
+  `grep ERROR scrape_queue.log` prints nothing — a `cities missing from the manifest` or
   `manifest not cross-checked` line is the night's failure
   ([the cross-check](downloader.md#the-manifest-is-cross-checked-against-the-fleet)), whether or not the mail
   arrived.
