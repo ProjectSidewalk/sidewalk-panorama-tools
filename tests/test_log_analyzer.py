@@ -1697,6 +1697,17 @@ class TestPrivateCitiesAreNamedToo:
         assert 'private' in dc
         assert 'sidewalk-dc' not in dc
 
+    def test_a_public_city_with_no_url_is_not_called_private(self):
+        """The label follows the roster's visibility, not the missing url: a public entry with a null url is
+        an upstream fault, and calling it "withheld (private)" would send the operator the wrong way."""
+        lines, _ = analyze.roster_check(
+            city_rows(), 'host.example',
+            fetch=fetch_ok(roster_entry('laurens-ia', url=None), roster_entry('seattle-wa')))
+
+        laurens = next(line for line in lines if 'laurens-ia' in line)
+        assert 'no url published' in laurens
+        assert 'private' not in laurens
+
 
 class TestTheCheckIsNeverSilentlySkipped:
     """A check skipped every night is the failure it exists to prevent (#130's own rule).
