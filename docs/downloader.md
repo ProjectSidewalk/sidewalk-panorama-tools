@@ -192,8 +192,8 @@ columbus-oh,sidewalk-columbus.cs.washington.edu
   not scraped here" — a city with no row at all, public or private, fails every night for ever, by design.
   Keep both columns on it: the cross-check below credits a disabled row as a decision only while its fqdn is
   the city's host — or, where the roster gives no host to match (every private city), while it is *shaped*
-  like one —
-  so `#laurens-ia,` with the fqdn dropped is a gap, not a decision.
+  like one and is not another roster city's host — so `#laurens-ia,` with the fqdn dropped is a gap, not a
+  decision.
 * `--cities` has no default on purpose: which cities a host scrapes is a deployment fact, and a wrong default
   would quietly scrape the wrong fleet. There is a worked example at
   [`samples/scrape_queue_cities.csv`](../samples/scrape_queue_cities.csv); the real one lives on the host,

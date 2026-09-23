@@ -101,8 +101,8 @@ Unlisted = namedtuple('Unlisted', 'city_id fqdn misnamed_as visibility', default
 ManifestCheck = namedtuple('ManifestCheck',
                            'roster_host public_count unlisted attempts hosts_total private_count', defaults=(0,))
 
-# What a '#' row's second column has to look like to credit a PRIVATE city, whose roster url is null so there is
-# no host to match: a bare hostname - at least one dot, nothing but label characters. A prose comment split on
+# What a '#' row's second column has to look like to credit a city whose roster url gives no host (every private
+# city, whose url is null) so there is no host to match: a bare hostname - at least one dot, nothing but label characters. A prose comment split on
 # its commas (` bayonne-fr launched 2026-09-11`) fails it, and so does an empty column.
 _HOSTNAME_SHAPE = re.compile(r'^[a-z0-9-]+(\.[a-z0-9-]+)+$')
 
@@ -716,7 +716,7 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
 # nights, until the auto-labeler's first Laurens labels showed blank Gallery cards: the app cuts AI-label crops
 # from what this scraper stores. The manifest stays the deployment fact - a default that scrapes the wrong fleet
 # is worse - so the omission is made loud instead: every deployment serves the same roster of every city, and
-# once a night the queue asks one manifest host for it and names the PUBLIC cities that have no row.
+# once a night the queue asks one manifest host for it and names every city, public or private (#143), that has no row.
 #
 # The key is city_id, and that is a measurement, not a preference. The app reads its scraped panos from
 # <pano.images.directory>/<city-id>/<panoId[:2]>/<panoId>.jpg with its OWN id - the one the roster reports - so
@@ -746,11 +746,11 @@ def parse_roster(body):
     Positive evidence, the #99 rule: a JSON object whose `cities` is a list of objects each carrying a
     non-empty string `city_id` and a `visibility` that is 'public' or 'private', with at least one public
     entry. Everything else - an error envelope, a proxy's HTML, an empty list, a renamed field - is "this host
-    did not answer", so the next one is asked. The last two rules are the ones that matter: an upstream rename
-    of the visibility values would otherwise read as "every city is private", the unlisted set would be empty,
-    and the report would say "checked against 0 public cities" every night, which is a check that never runs
-    wearing the face of one that passed. A live fleet always lists at least one public city, so an empty list
-    fails on that rule too. A visibility this code does not know is refused rather than read as "not public":
+    did not answer", so the next one is asked. The last two rules are the ones that matter. Visibility no
+    longer decides membership (#143), so they are not guarding the unlisted set; they guard the report. A
+    live fleet always lists at least one public city, so an empty list or an all-private roster is a broken
+    answer, not a fleet - accepting one would print "checked against 0 public cities" every night, a check
+    that never ran wearing the face of one that passed. A visibility this code does not know is refused rather than read as "not public":
     whatever a third value would mean for the check is a decision, and refusing makes it one that gets taken.
     """
     try:
@@ -842,17 +842,21 @@ def _roster_host(url):
     return parts.hostname or None
 
 
-def _disabled_row_credits(disabled_fqdn, host):
+def _disabled_row_credits(disabled_fqdn, host, published_hosts=frozenset()):
     """Whether a '#' row's second column is evidence that the row is this city and not a comment csv split
     on a comma. With a published host it has to BE that host. A private city publishes none (#143), so the
     column has to look like a hostname instead - weaker evidence, and the strongest there is: the prose that
     fails it is ` bayonne-fr launched 2026-09-11`, and an empty column (`#zurich,`) fails it too, which is
-    what "keep both columns on it" means. The published-host rule is not relaxed where the host is known."""
+    what "keep both columns on it" means. The published-host rule is not relaxed where the host is known.
+
+    A column that is ANOTHER roster city's published host is refused even though it has the shape: it is
+    positive evidence the row is not this city - `#zurich,sidewalk-sea.cs.washington.edu`, copied from the
+    Seattle row and never edited, would otherwise silence zurich for good."""
     if not disabled_fqdn:
         return False
     if host is not None:
         return disabled_fqdn == host
-    return _HOSTNAME_SHAPE.match(disabled_fqdn) is not None
+    return _HOSTNAME_SHAPE.match(disabled_fqdn) is not None and disabled_fqdn not in published_hosts
 
 
 def unlisted_cities(roster, cities, disabled):
@@ -878,6 +882,7 @@ def unlisted_cities(roster, cities, disabled):
     # Disabled rows first, so an enabled row naming the same host is the one the hint quotes.
     by_host = {fqdn: city_id for city_id, fqdn in disabled.items() if fqdn}
     by_host.update((c.fqdn.lower(), c.city_id) for c in cities)
+    published = {h for h in (_roster_host(e.get('url')) for e in roster) if h}
     unlisted, seen = [], set()
     for entry in roster:
         city_id = entry['city_id']
@@ -885,7 +890,7 @@ def unlisted_cities(roster, cities, disabled):
             continue
         seen.add(city_id)
         host = _roster_host(entry.get('url'))
-        if _disabled_row_credits(disabled.get(city_id), host):
+        if _disabled_row_credits(disabled.get(city_id), host, published):
             continue
         unlisted.append(Unlisted(city_id, host, by_host.get(host) if host else None, entry['visibility']))
     return unlisted

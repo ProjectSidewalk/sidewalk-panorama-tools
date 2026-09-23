@@ -1969,6 +1969,17 @@ class TestWhichCitiesAreMissingFromTheManifest:
 
         assert [u.city_id for u in scrape_queue.unlisted_cities(roster, [], {'zurich': column})] == ['zurich']
 
+    def test_a_private_city_is_not_credited_by_another_citys_published_host(self):
+        """The column has the shape, but it is Seattle's host - positive evidence the row is NOT zurich. The
+        copy-paste this catches (`#zurich,sidewalk-sea...`, the Seattle row duplicated and never edited)
+        would otherwise silence zurich for good. Case-insensitive, like every host comparison here."""
+        roster = [roster_entry('seattle-wa', url='https://Sidewalk-Sea.cs.washington.edu'),
+                  roster_entry('zurich', url=None, visibility='private')]
+        disabled = {'zurich': 'sidewalk-sea.cs.washington.edu'}
+        manifest = cities(('seattle-wa', 'sidewalk-sea.cs.washington.edu'))
+
+        assert [u.city_id for u in scrape_queue.unlisted_cities(roster, manifest, disabled)] == ['zurich']
+
     def test_a_public_city_keeps_the_stronger_rule_where_its_host_is_known(self):
         """The shape rule is for the case with no host. A public city publishes one, and a hostname-shaped
         column naming a DIFFERENT host is not evidence that the row is this city."""
