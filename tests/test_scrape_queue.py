@@ -1980,6 +1980,18 @@ class TestWhichCitiesAreMissingFromTheManifest:
 
         assert [u.city_id for u in scrape_queue.unlisted_cities(roster, manifest, disabled)] == ['zurich']
 
+    def test_nor_by_another_private_citys_manifest_host(self):
+        """The same copy-paste from a PRIVATE city's row: the roster publishes no url for washington-dc, so
+        its host is known only from the manifest, and that is enough to know the row is not zurich."""
+        roster = [roster_entry('seattle-wa'),
+                  roster_entry('washington-dc', url=None, visibility='private'),
+                  roster_entry('zurich', url=None, visibility='private')]
+        manifest = cities(('seattle-wa', 'sidewalk-sea.cs.washington.edu'),
+                          ('washington-dc', 'Sidewalk-DC.cs.washington.edu'))
+        disabled = {'zurich': 'sidewalk-dc.cs.washington.edu'}
+
+        assert [u.city_id for u in scrape_queue.unlisted_cities(roster, manifest, disabled)] == ['zurich']
+
     def test_a_public_city_keeps_the_stronger_rule_where_its_host_is_known(self):
         """The shape rule is for the case with no host. A public city publishes one, and a hostname-shaped
         column naming a DIFFERENT host is not evidence that the row is this city."""

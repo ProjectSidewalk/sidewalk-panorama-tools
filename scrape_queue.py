@@ -849,8 +849,8 @@ def _disabled_row_credits(disabled_fqdn, host, published_hosts=frozenset()):
     fails it is ` bayonne-fr launched 2026-09-11`, and an empty column (`#zurich,`) fails it too, which is
     what "keep both columns on it" means. The published-host rule is not relaxed where the host is known.
 
-    A column that is ANOTHER roster city's published host is refused even though it has the shape: it is
-    positive evidence the row is not this city - `#zurich,sidewalk-sea.cs.washington.edu`, copied from the
+    A column that is ANOTHER city's host - published by the roster, or on an enabled manifest row - is refused
+    even though it has the shape: it is positive evidence the row is not this city - `#zurich,sidewalk-sea.cs.washington.edu`, copied from the
     Seattle row and never edited, would otherwise silence zurich for good."""
     if not disabled_fqdn:
         return False
@@ -882,7 +882,11 @@ def unlisted_cities(roster, cities, disabled):
     # Disabled rows first, so an enabled row naming the same host is the one the hint quotes.
     by_host = {fqdn: city_id for city_id, fqdn in disabled.items() if fqdn}
     by_host.update((c.fqdn.lower(), c.city_id) for c in cities)
+    # Every host known to belong to some city: the roster's published ones, and the manifest's own enabled
+    # rows - a private city publishes no url, so without the second half a row copied from an enabled
+    # PRIVATE city's line would still be credited.
     published = {h for h in (_roster_host(e.get('url')) for e in roster) if h}
+    published |= {c.fqdn.lower() for c in cities}
     unlisted, seen = [], set()
     for entry in roster:
         city_id = entry['city_id']
