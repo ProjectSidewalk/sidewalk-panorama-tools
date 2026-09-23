@@ -17,12 +17,11 @@ when the runners are broken, and importing the fleet driver would couple the ala
 `tests/test_log_analyzer.py` pins this module's `parse_roster` and `scrape_queue.parse_roster` against the
 same fixture body, so the copy cannot drift without a test saying so.
 
-**The fetch is one seam, and it takes an optional API key.** Project Sidewalk's internal endpoints
-authenticate with a shared `INTERNAL_API_KEY` sent as `Authorization: Bearer`, the paradigm
-`sidewalk-auto-labeler/send_to_ps.py` already uses. The public `/v3/api/cities` needs no key - it lists
-every city, private ones included, which is all this comparison needs - so `api_key` is None in production
-today. It exists so an authenticated fleet roster (which would carry `url` for private cities and let
-`_disabled_row_credits`' hostname heuristic be deleted) drops in here without redesign.
+**The fetch is unauthenticated, deliberately.** The public roster lists every city, private ones included,
+which is all this comparison needs. A keyed variant that would also return private cities' `url` was
+considered and rejected (2026-09-23): the app withholds those urls only to keep them out of crawlable link
+graphs (SidewalkWebpage#5259), and they are published in SidewalkWebpage's public `conf/cityparams.conf`,
+so a credential here would guard nothing secret while adding one more to store and rotate.
 """
 
 import http.client
@@ -35,8 +34,7 @@ from collections import namedtuple
 from urllib.parse import urlsplit
 
 # Every deployment serves this list of every city - city_id, url, visibility - and it is the same list from
-# every host, which is why asking one host is enough and why a fleet-level credential would suit it better
-# than the per-instance keys the ingest endpoint uses.
+# every host, which is why asking one host is enough.
 ROSTER_PATH = '/v3/api/cities'
 ROSTER_TIMEOUT_SECONDS = 30.0
 # The roster measured 2026-09-22 is 19 KB for 59 cities; this is the most that will be read of anything a
@@ -57,61 +55,16 @@ class RosterUnavailable(Exception):
     """No roster from this host: it did not answer, or what it answered is not a roster."""
 
 
-class RosterAuthError(RosterUnavailable):
-    """The host refused the credential (401/403).
-
-    A subclass so an unauthenticated caller needs no new handling, but a DISTINCT fact: "the key is wrong or
-    expired" is not "the host is down", and collapsing them would report a stale credential as `no host
-    served a roster`, which is CRITICAL for the wrong reason on every night until someone reads the log.
-    Only reachable once an authenticated endpoint exists; the public roster never returns it.
-    """
-
-
-def _is_loopback(hostname):
-    """Whether a hostname never reaches the wire. Ported from sidewalk-auto-labeler's send_to_ps.py."""
-    if not hostname:
-        return False
-    return hostname in ('localhost', '127.0.0.1', '::1', '0.0.0.0') or hostname.startswith('127.')
-
-
-def check_key_not_cleartext(url, api_key):
-    """Refuse to send an API key over a cleartext remote URL.
-
-    Ported from `sidewalk-auto-labeler/send_to_ps.py::check_endpoint_security` rather than reinvented. The
-    key is a shared Project Sidewalk secret, so an `http://` host would leak it to every hop in between -
-    and a leak is silent, because the request otherwise succeeds.
-
-    This is a PREVENTIVE guard, and it is the one this repo should have had in #100: a token in a URL
-    reached `scrape.log` on the SHARED pano store, and `TokenRedactionFilter` is a backstop that can only
-    scrub a value it already knows. Refusing to send beats scrubbing afterwards.
-
-    No key means nothing to protect, so plain HTTP is fine; loopback is exempt.
-    """
-    if not api_key:
-        return
-    parts = urlsplit(url)
-    if parts.scheme == 'https' or _is_loopback(parts.hostname):
-        return
-    raise RosterUnavailable(
-        "refusing to send the API key over %s:// to remote host %r - it would travel in cleartext"
-        % (parts.scheme or 'an unknown scheme', parts.hostname))
-
-
-def _open_url(url, timeout, api_key=None):
+def _open_url(url, timeout):
     """GET one URL and return at most ROSTER_MAX_BYTES of its body. The one seam that touches a socket.
 
     An opener with an EMPTY ProxyHandler, because urllib's default honours HTTP(S)_PROXY from the
     environment. `DownloadRunner`'s session sets `trust_env=False` for the same reason and on the same host
     (its environment is sourced from BASH_ENV under cron): a proxy's login page is a 200 that is not a
     roster, on every night, and the check would report itself unable to run for ever.
-
-    The key rides in an `Authorization: Bearer` header, never in the URL or a query parameter - #100's rule.
     """
-    check_key_not_cleartext(url, api_key)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     headers = {'User-Agent': ROSTER_USER_AGENT, 'Accept': 'application/json'}
-    if api_key:
-        headers['Authorization'] = 'Bearer %s' % api_key
     request = urllib.request.Request(url, headers=headers)
     with opener.open(request, timeout=timeout) as response:
         return response.read(ROSTER_MAX_BYTES)
@@ -162,22 +115,16 @@ def _describe_failure(error):
     return str(reason) or type(reason).__name__
 
 
-def fetch_roster(fqdn, timeout=ROSTER_TIMEOUT_SECONDS, api_key=None):
+def fetch_roster(fqdn, timeout=ROSTER_TIMEOUT_SECONDS):
     """The roster as served by one host, or RosterUnavailable naming what went wrong.
 
     Catches http.client's exceptions and ValueError as well as OSError: a BadStatusLine or IncompleteRead
     from a proxy is an HTTPException, not an OSError, and a decode error is a ValueError. Any of them
     escaping here would print a traceback after the summary, on the one night the check had something to say.
-
-    A 401/403 becomes RosterAuthError so a rejected credential stays distinguishable from a dead host.
     """
     url = 'https://%s%s' % (fqdn, ROSTER_PATH)
     try:
-        body = _open_url(url, timeout, api_key)
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            raise RosterAuthError('HTTP %d - the API key was refused' % e.code) from e
-        raise RosterUnavailable(_describe_failure(e)) from e
+        body = _open_url(url, timeout)
     except (OSError, http.client.HTTPException, ValueError) as e:
         raise RosterUnavailable(_describe_failure(e)) from e
     return parse_roster(body)

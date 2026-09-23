@@ -22,8 +22,7 @@ hardcoded here. See docs/log-analyzer.md.
 and cross-checks cities.csv against the fleet roster (#133), so a city nobody added here is loud rather
 than simply unmonitored:
 
-  PS_ROSTER_HOST       required unless --roster-host  a deployment that serves /v3/api/cities
-  PS_ROSTER_API_KEY    optional  bearer key for an authenticated roster; the public one needs none
+  PS_ROSTER_HOST  required unless --roster-host  a deployment that serves /v3/api/cities
 
 Usage:
   python3 analyze.py                        # download + analyze all cities
@@ -693,7 +692,7 @@ def city_stats(df: pd.DataFrame) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
-def roster_check(city_rows, host, api_key=None, fetch=None) -> tuple[list[str], bool]:
+def roster_check(city_rows, host, fetch=None) -> tuple[list[str], bool]:
     """Cross-check cities.csv against the fleet roster: (report lines, whether it is CRITICAL).
 
     A comparison, not auto-discovery (#133). `cities.csv` stays the source of what to monitor and the roster
@@ -716,10 +715,7 @@ def roster_check(city_rows, host, api_key=None, fetch=None) -> tuple[list[str], 
                  f"to a deployment that serves {roster.ROSTER_PATH}"], True)
 
     try:
-        entries = fetch(host, api_key=api_key)
-    except roster.RosterAuthError as e:
-        return ([f"  🔴 [CRITICAL] {host} refused the roster credential ({e}) — the key is wrong or expired, "
-                 f"which is not the same as the host being down"], True)
+        entries = fetch(host)
     except roster.RosterUnavailable as e:
         return ([f"  🔴 [CRITICAL] {host} served no roster ({e}) — cities.csv was not cross-checked"], True)
 
@@ -776,13 +772,6 @@ def main(argv=None) -> int:
         "--roster-host",
         help=f"Deployment to ask for {roster.ROSTER_PATH}, e.g. sidewalk-sea.cs.washington.edu. Every "
              f"deployment serves the same roster, so one host is enough. [PS_ROSTER_HOST]",
-    )
-    ros.add_argument(
-        "--roster-key-env", default="PS_ROSTER_API_KEY", metavar="VAR",
-        help="Environment variable holding a Project Sidewalk internal API key, sent as an "
-             "Authorization: Bearer header (the sidewalk-auto-labeler paradigm). The public roster needs "
-             "none, so this is normally unset. Point it elsewhere to keep several instances' keys side by "
-             "side. (default: %(default)s)",
     )
     args = parser.parse_args(argv)
 
@@ -864,7 +853,6 @@ def main(argv=None) -> int:
         roster_lines, roster_critical = roster_check(
             cities,
             args.roster_host or os.environ.get("PS_ROSTER_HOST"),
-            api_key=os.environ.get(args.roster_key_env),
         )
         print(f"\n{'━'*70}")
         for line in roster_lines:

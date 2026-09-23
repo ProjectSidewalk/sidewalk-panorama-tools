@@ -84,9 +84,6 @@ The marker is required. Unlike the queue's manifest, this file has no host colum
 so without an explicit marker a prose comment (`# laurens-ia, bayonne-fr launched 2026-09-11`, which `csv`
 splits into a row for `laurens-ia`) would silence the very city it is about.
 
-An authenticated roster would let this carry `url` for private cities too; `PS_ROSTER_API_KEY` sends a bearer
-key the way `sidewalk-auto-labeler` does, and the public roster needs none.
-
 ## Checks
 
 | Level | Condition |

@@ -1629,7 +1629,7 @@ def city_rows(*pairs):
 
 
 def fetch_ok(*entries):
-    def fetch(host, api_key=None):
+    def fetch(host):
         return list(entries)
     return fetch
 
@@ -1711,36 +1711,13 @@ class TestTheCheckIsNeverSilentlySkipped:
         assert any('PS_ROSTER_HOST' in line for line in lines)
 
     def test_no_roster_served_is_critical(self):
-        def fetch(host, api_key=None):
+        def fetch(host):
             raise roster_mod.RosterUnavailable('timed out')
 
         lines, critical = analyze.roster_check(city_rows(), 'host.example', fetch=fetch)
 
         assert critical is True
         assert any('timed out' in line for line in lines)
-
-
-class TestARefusedCredentialIsNotADeadHost:
-    """401 is a DIFFERENT fact from "the host is down", and must not collapse into it.
-
-    The mutant is `except RosterUnavailable` alone - RosterAuthError is a subclass, so it is caught and the
-    night reports `served no roster`. That is CRITICAL either way, so nothing fails; the operator is simply
-    told the wrong cause and goes looking at the app instead of at the key. Only reachable once an
-    authenticated roster exists, which is the point of pinning it before it does.
-    """
-
-    def test_the_report_says_the_key_was_refused(self):
-        def fetch(host, api_key=None):
-            raise roster_mod.RosterAuthError('HTTP 401 - the API key was refused')
-
-        lines, critical = analyze.roster_check(city_rows(), 'host.example', fetch=fetch)
-
-        assert critical is True
-        assert any('refused' in line and 'credential' in line for line in lines)
-        assert not any('served no roster' in line for line in lines)
-
-    def test_it_is_still_a_roster_unavailable_for_an_unauthenticated_caller(self):
-        assert issubclass(roster_mod.RosterAuthError, roster_mod.RosterUnavailable)
 
 
 class TestTheOptOutMarkerIsExplicit:
@@ -1818,29 +1795,11 @@ class TestTheCopyDoesNotDriftFromTheQueues:
             self.queue_parse()(body)
 
 
-class TestTheKeyNeverTravelsInCleartext:
-    """Ported from sidewalk-auto-labeler's check_endpoint_security rather than reinvented.
+class TestTheFetchIsPlainHttps:
+    """The one seam that touches a socket: https, the roster path, a named User-Agent, and no credential -
+    a keyed roster was considered and rejected (2026-09-23; see roster.py's module docstring)."""
 
-    This is the guard #100 should have had: a Mapillary token in a URL reached scrape.log on the SHARED
-    pano store, and TokenRedactionFilter is a backstop that can only scrub a value it already knows.
-    Refusing to send beats scrubbing afterwards.
-    """
-
-    def test_a_key_over_http_to_a_remote_host_is_refused(self):
-        with pytest.raises(roster_mod.RosterUnavailable):
-            roster_mod.check_key_not_cleartext('http://sidewalk-sea.example.org/v3/api/cities', 'secret')
-
-    def test_https_is_fine(self):
-        roster_mod.check_key_not_cleartext('https://sidewalk-sea.example.org/v3/api/cities', 'secret')
-
-    def test_loopback_is_exempt(self):
-        roster_mod.check_key_not_cleartext('http://localhost:9000/v3/api/cities', 'secret')
-
-    def test_no_key_means_nothing_to_protect(self):
-        roster_mod.check_key_not_cleartext('http://sidewalk-sea.example.org/v3/api/cities', None)
-
-    def test_the_key_rides_in_a_header_never_the_url(self):
-        """#100's rule: requests puts a full URL into an HTTPError's message, and that message is logged."""
+    def test_the_request_it_sends(self):
         seen = {}
 
         class FakeResponse:
@@ -1852,18 +1811,22 @@ class TestTheKeyNeverTravelsInCleartext:
             def open(self, request, timeout=None):
                 seen['url'] = request.full_url
                 seen['headers'] = dict(request.header_items())
+                seen['timeout'] = timeout
                 return FakeResponse()
 
         import urllib.request as ur
         real = ur.build_opener
         ur.build_opener = lambda *a, **k: FakeOpener()
         try:
-            roster_mod.fetch_roster('host.example', api_key='super-secret')
+            entries = roster_mod.fetch_roster('host.example')
         finally:
             ur.build_opener = real
 
-        assert 'super-secret' not in seen['url']
-        assert seen['headers'].get('Authorization') == 'Bearer super-secret'
+        assert [e['city_id'] for e in entries] == ['seattle-wa']
+        assert seen['url'] == 'https://host.example' + roster_mod.ROSTER_PATH
+        assert seen['headers'].get('User-agent') == roster_mod.ROSTER_USER_AGENT
+        assert 'Authorization' not in seen['headers']
+        assert seen['timeout'] == roster_mod.ROSTER_TIMEOUT_SECONDS
 
 
 class TestTheRosterGapDecidesTheExitCode:
@@ -1916,7 +1879,7 @@ class TestTheRosterGapDecidesTheExitCode:
 
     def test_offline_mode_skips_the_check(self, tmp_path, monkeypatch, capsys):
         """--no-download is offline mode; the roster fetch is a network step like the log download."""
-        def explode(host, api_key=None):
+        def explode(host):
             raise AssertionError('the roster must not be fetched in offline mode')
 
         logs_dir = tmp_path / 'logs'
