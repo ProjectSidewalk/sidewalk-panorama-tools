@@ -19,7 +19,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `-d <fqdn>` | Fetch label metadata from a Project Sidewalk server's `/adminapi/labels/cvMetadata`. Mutually exclusive with `-f`; one is required. |
 | `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. |
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
-| `-o <dir>` | **Required.** Where crops are written. `crop.log` goes here too. |
+| `-o <dir>` | **Required.** Where crops are written. `crop.log`, `crop_rule.json` and `crop_provenance.csv` go here too — see [What a crop store holds](#what-a-crop-store-holds). |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
 
 Example:
@@ -280,7 +280,72 @@ re-cut. A store cropped before the seam fix keeps its black-padded crops, and on
 became deterministic holds a mix of (for example) 503- and 504-px crops for the same predicted size. There is
 no `--force`: delete the crops you want re-cut.
 
+## What a crop store holds
+
+| Path | What |
+|---|---|
+| `<label_type_id>/<label_id>.jpg` | One crop per label. Its existence is the resume marker: it is never re-cut. |
+| `crop_rule.json` | Which sizing rule cut the store, plus whether the provenance manifest covers it (below). |
+| `crop_provenance.csv` | One row per crop: where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)). |
+| `crop.log` | The rotating run log (10 MB × 3). |
+
+### The provenance manifest, `crop_provenance.csv`
+
+A crop is a bare JPEG and every consumer of this store is an ML dataset, so the record of where a crop's
+pixels came from has to travel with the crop rather than stay with the app. The manifest is that record:
+
+```
+label_id,pano_id,source,copyright,license,crop_rule_version
+```
+
+* **One row per crop, appended as it lands** — after the JPEG is on disk, flushed per row, through one
+  handle held for the run. That is the two nightly ledgers' contract (`pano_id_log.csv`, `depth_log.csv`),
+  so a run killed at any point leaves a truthful partial file: a header, and a row for each crop that
+  exists. Nothing else gets a row — not a skip, a preflight rejection, or a failed write. The file is
+  append-only, so a crop that is ever re-cut gets a second row, and the later one describes the file.
+* **`source`, `copyright` and `license` are copied from the label metadata verbatim, and written empty when
+  the metadata does not state them** — never inferred from the source or anything else. `copyright` is
+  the field the app keeps the producer credit under (`pano_data.copyright`, which it renders beside
+  `pano_data.license`), so the column keeps that name rather than being renamed on the way through.
+  **Today cvMetadata sends none of the three** ([API fields](api-fields.md#adminapilabelscvmetadata--the-croppers-label-list)),
+  so a `-d` run writes all three empty, and older CSV exports fill `source` and sometimes `copyright`.
+  They fill in by themselves if the endpoint starts sending them; none of them is a required column, on
+  any of the three intakes.
+* **`crop_rule_version` is per row**, because a store can hold more than one geometry (see
+  [Crop geometry](#crop-geometry)).
+* **A failed append does not lose the crop, and is not counted as an error.** The crop is already on disk
+  and is the resume marker, so a re-run skips it and could never write the row: counting it in `errors`
+  would break the promise that errors retry, and would put one label in two buckets. Each one is logged to
+  `crop.log` (under the same per-kind cap as the other per-label warnings, as `provenance_unrecorded`),
+  and the run summary prints how many crops went unrecorded, on both channels. The counts and the exit code
+  are unchanged. Opening the manifest at all is different: if it cannot be opened the run stops before
+  cutting anything, exactly as it does when `crop_rule.json` cannot be written.
+
+**Crops cut before the manifest existed have no rows**, since they are never re-cut. `crop_rule.json` says
+whether a store's manifest can be read as covering every crop in it:
+
+| Key | Meaning |
+|---|---|
+| `provenance_manifest` | The manifest's file name. |
+| `provenance_manifest_started_under` | The crop rule in force when the manifest was started. |
+| `provenance_manifest_complete_from_start` | `true` if the store held no crops when the manifest was started, `false` if it did, `null` if a manifest is present with no record of how it started. |
+
+The last two are set once, by the run that starts the manifest, and carried forward unchanged by every
+later run — by then the crops on disk are the manifest's own. Deleting the manifest restarts it, and the
+restarted one is recorded as partial. A `false` or `null` store has crops with no row; a backfill is out
+of scope here, and would be a one-off in the shape of `migrate_depth_artifacts.py`. Even for a `true`
+store, the manifest's rows against the crops on disk is the ground truth: a crop whose append failed has no
+row either.
+
 ## Before you train on these crops
+
+**Crops from `mapillary` and `panoramax` panoramas carry a licence, and it has to follow them into any
+dataset.** Both sources publish imagery under open licences that require attribution — Mapillary uniformly
+under CC BY-SA 4.0, Panoramax per picture, with the contributor choosing among `CC-BY-SA-4.0`, `CC-BY-4.0`
+and `etalab-2.0`. `crop_provenance.csv` is where a crop's source, producer credit (`copyright`) and
+licence are recorded; carry those rows with the crops. An empty `license` means the metadata did not state
+one, not that there is none.
+
 
 **Crops produced before `--mark-label` existed all carry a burned-in dark-red (128, 0, 0) dot at the label
 position.** Marking used to be a `MARK_LABEL = True` constant at the top of the file, on for every run. That

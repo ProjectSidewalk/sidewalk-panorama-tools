@@ -301,7 +301,8 @@ def json_to_list(jsondata):
     Measured against sidewalk-sea 2026-09-18 (#123): `label_type` is a name and replaced the older
     `label_type_id`; `unsure_count` was documented here as `notsure_count`; `camera_roll` is served and
     was undocumented; `source` is NOT sent by this endpoint, despite the older exports in samples/ having
-    a column by that name. Nothing here reads `source`, so only the record was wrong.
+    a column by that name. Nor does it send `copyright` or `license`; the provenance manifest (#111)
+    copies all three when a row carries them and writes them empty otherwise.
     """
     unique_label_ids = set()
     label_info = []
