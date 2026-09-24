@@ -869,6 +869,31 @@ class TestAFailedAppendLeavesNoRowBehind:
         manifest.close()
         assert manifest.torn_rows_cut == 0
 
+    def test_a_failed_last_append_whose_reopen_fails_still_closes_cleanly(self, crop_runner, tmp_path,
+                                                                          monkeypatch, capsys):
+        """The one run that ends with no handle: its last append failed and so did the reopen. close()
+        then has nothing to close and must not raise, or the finally would report a failed close for a
+        row it already counted as unrecorded."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 3)
+        opened = []
+        wrapped_open = crop_runner.open
+
+        def reopen_fails(file, mode='r', *args, **kwargs):
+            if os.path.basename(str(file)) == crop_runner.PROVENANCE_MANIFEST and 'a' in mode:
+                opened.append(mode)
+                if len(opened) == 2:
+                    raise OSError(5, 'Input/output error on reopen')
+            return wrapped_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(crop_runner, 'open', reopen_fails, raising=False)
+        counts = crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        assert counts['success'] == 2 and len(opened) == 2
+        printed = capsys.readouterr().out
+        assert '1 crops were written without a row' in printed
+        assert 'could not be closed' not in printed
+
     def test_a_reopen_that_fails_leaves_the_next_row_to_reopen_it(self, crop_runner, tmp_path,
                                                                   monkeypatch, capsys, caplog):
         """The reopen after a failed append is best-effort: if it cannot open the file, the handle stays
