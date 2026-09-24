@@ -820,7 +820,7 @@ def _store_holds_crops(destination_dir):
                     # tool and its sidecar hazard does not exist here: crop shards hold <label_id>.jpg
                     # and, mid-write, <label_id>.jpg.part, never a .w8192.jpg. Any crop is enough - even
                     # a mis-named one would mean "the store already held crops", the only question asked.
-                    if any(os.path.splitext(crop.name)[1] == '.jpg' for crop in shard):
+                    if any(crop.name.endswith('.jpg') for crop in shard):
                         return True
     except PermissionError as e:
         raise PermissionError(

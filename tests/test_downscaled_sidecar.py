@@ -369,6 +369,12 @@ class TestThePanoramaxDownloaderHonoursTheSwitch:
         assert 'display copy not written' in caplog.text
 
 
+# A hand-rolled "is this a .jpg" test, in either spelling. See
+# TestTheOneStoreWalker.test_no_production_module_re_derives_the_predicate.
+JPG_PREDICATE = re.compile(r"""endswith\(\s*['"]\.jpg['"]"""
+                           r"""|splitext\(.*?\)\s*\[\s*(?:1|-1)\s*\]\s*==\s*['"]\.jpg['"]""")
+
+
 class TestTheOneStoreWalker:
     """`common.walk_store_panos` is the single definition of "this file is a panorama".
 
@@ -436,19 +442,39 @@ class TestTheOneStoreWalker:
         assert summary.scanned == 2, 'the sweep must examine the two panoramas and neither sidecar'
         assert (summary.narrow, summary.failed) == (2, 0)
 
+    @pytest.mark.parametrize('source, matches', [
+        ("name.endswith('.jpg')", True),
+        ('name.endswith( ".jpg")', True),
+        ("os.path.splitext(crop.name)[1] == '.jpg'", True),
+        ("os.path.splitext(os.path.basename(p))[-1] == '.jpg'", True),
+        ("extension = os.path.splitext(label_metadata_file)[1]", False),
+        ("name.endswith('.jpg.part')", False),
+    ])
+    def test_the_guard_matches_both_spellings_of_the_predicate(self, source, matches):
+        """#153 n3: the guard below is only as good as this pattern, and no production file carries the
+        splitext spelling any more to show that it is still caught."""
+        assert bool(JPG_PREDICATE.search(source)) is matches
+
     def test_no_production_module_re_derives_the_predicate(self):
         """The guard the two tests above cannot give: they pin the walkers that exist today.
 
         A hand-rolled `filename.endswith('.jpg')` over a shard listing is the shape that forgets the sidecar
-        clause, so exactly one file in the production tree may contain it - the one defining
-        walk_store_panos. Same standing rule as the no-pandas assertion in test_csv_intake.py.
+        clause, so only the file defining walk_store_panos may contain it, plus one named exemption below.
+        Same standing rule as the no-pandas assertion in test_csv_intake.py.
+
+        The `os.path.splitext(name)[1] == '.jpg'` spelling is matched too (#153 n3): it is the same
+        predicate, and it is how the crop-store walker once got past a guard that knew only `endswith`,
+        which the next pano-store walker could have done silently.
         """
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        pattern = re.compile(r"""endswith\(\s*['"]\.jpg['"]""")
         offenders = [m for m in PRODUCTION_MODULES
-                     if pattern.search(open(os.path.join(repo_root, m), encoding='utf-8').read())]
+                     if JPG_PREDICATE.search(open(os.path.join(repo_root, m), encoding='utf-8').read())]
 
-        assert offenders == ['downloaders/common.py'], (
+        # CropRunner.py is exempt, and named rather than pattern-excluded so a second use in it still
+        # has to be read: _store_holds_crops walks the CROP store, whose shards hold <label_id>.jpg and
+        # never a display copy, so walk_store_panos() is the wrong tool there and its sidecar hazard
+        # cannot arise.
+        assert offenders == ['CropRunner.py', 'downloaders/common.py'], (
             'a second store walker: call downloaders.common.walk_store_panos() instead, or it will take a '
             '<id>.w8192.jpg sidecar for a panorama named <id>.w8192 -- silently. Offenders: %s' % offenders)
 
