@@ -680,7 +680,11 @@ def _store_holds_crops(destination_dir):
         if not (entry.is_dir() and entry.name and all(c in '0123456789' for c in entry.name)):
             continue
         with os.scandir(entry.path) as shard:
-            if any(crop.name.endswith('.jpg') for crop in shard):
+            # This walks the CROP store, not the pano store, so walk_store_panos() is the wrong tool and
+            # its sidecar hazard does not exist here: crop shards hold <label_id>.jpg and, mid-write,
+            # <label_id>.jpg.part, never a .w8192.jpg. Any crop is enough - even a mis-named one would
+            # mean "the store already held crops", which is the only question asked.
+            if any(os.path.splitext(crop.name)[1] == '.jpg' for crop in shard):
                 return True
     return False
 
