@@ -315,7 +315,11 @@ def download_single_pano(storage_path, pano_info):
             # all (an error page, an empty body, a PNG), and NOT a JPEG truncated after its header, which
             # still reports its full dimensions from 5% of its bytes. That gap is covered upstream instead:
             # a short read raises out of iter_content before this line, and the .part never lands.
-            if jpeg_dimensions(tmp_path) is None:
+            dims = jpeg_dimensions(tmp_path)
+            if dims is None:
                 raise MapillaryErrorResponse("Mapillary image response for %s was not a JPEG" % pano_id)
+    # After the rename, so the #121 tripwire cannot cost the download anything. The Graph API record carries
+    # no dimensions; the JPEG header just read is the first place this path learns the width.
+    common.warn_if_wider_than_viewer_ceiling(pano_id, dims[0], 'mapillary')
     _write_display_copy(out_image_name, pano_id)
     return DownloadResult.success

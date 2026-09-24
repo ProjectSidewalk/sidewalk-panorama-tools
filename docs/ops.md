@@ -76,8 +76,56 @@ full raster" half of #115's rationale is retired too.
 every 8192-class GPU — every Mali-G710-era Android, which is most of the non-Apple fleet — stops rendering
 stored panoramas natively, and the affected population jumps from ~2% of mobile to most of Android. **This
 repo is the only place that sees GSV's reported frame width at the moment it changes**
-(`downloaders/gsv.py::resolve_zoom_and_dims`, tracked by #121). So the switch stays one line away rather
-than in the history.
+(`downloaders/gsv.py::resolve_zoom_and_dims`), and it now says so when it does — see
+[the width tripwire](#the-width-tripwire) below. So the switch stays one line away rather than in the history.
+
+#### The width tripwire
+
+[#121](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/121). Every downloader warns when a
+source hands it a panorama **wider than `VIEWER_MAX_PANO_WIDTH` (16384)** in `downloaders/common.py`. It should
+never fire: 16384 is GSV's widest frame today and the fleet's normal, so 16384 itself is silent and 16385 is the
+first width that warns.
+
+* **Where it looks.** GSV: in `resolve_zoom_and_dims`, on the width `/adminapi/panos` reports, before any request
+  is spent, so a probe that then fails cannot swallow it (`refetch_panos.py` goes through the same seam, so a
+  repair pass warns on a stored frame that wide too). Mapillary and Panoramax: on the downloaded JPEG's own
+  header, after the file is in place — the width of the file actually stored, which is what a viewer is
+  handed, rather than anything either source's metadata says.
+* **Never a gate.** It does not refuse, alter or delay a download and writes nothing to the store.
+* **Both channels, one line per wide pano**, each carrying the whole message: `IMAGEDOWNLOAD: <source> pano
+  <id> is <width> px wide, over the viewer ceiling of 16384 (#121) …` in that city's `scrape.log` at
+  `WARNING`, and the same text after `IMAGEDOWNLOAD: WARNING -` on stdout. No once-per-run latch, deliberately:
+  stdout already carries one `Processing pano` line per pano attempted, and the alarm wrapper
+  [cuts the middle](#hearing-about-a-bad-night) of a long night's output, where a single announcement is the
+  line most likely to be lost.
+* **Where you will actually see it: `scrape.log`, not the alarm.** Production runs the queue with
+  `--only-on-failure`, and the tripwire does not change any exit code, so on a night that otherwise exits 0
+  its stdout line is never delivered. `grep -l "over the viewer ceiling" */scrape.log` is in
+  [the morning check](#the-morning-after-a-deploy) for that reason.
+* **Not a `log.csv` column, and so not a log-analyzer rule — on purpose, not an oversight.** `log.csv` is a
+  fixed set of positional fields that the analyzer and other tooling read by position, and #121 asks for any
+  persisted width to be proposed there first. The [log analyzer](log-analyzer.md) reads nothing but `log.csv`,
+  so without a column there is nothing for a rule to read. Don't file the missing rule as a gap; propose the
+  column.
+* **Why 16384, and why it is not `2 × DOWNSCALED_MAX_WIDTH`** although it equals that today: the ceiling is
+  what 8192-class GPUs can texture (2 × 8192, [above](#why-it-is-off-2026-09-09)); the display-copy cap is how
+  wide a copy to write, a separate choice that can be lowered to save disk without changing what any device
+  renders. A test pins that the ceiling is not written in terms of the cap.
+
+**When it fires.** First check it is real: the width is in the line, and `jpeg_dimensions` on the stored file
+confirms it. Then:
+
+1. Set `WRITE_DISPLAY_COPIES = True` in `downloaders/common.py`. It is a code change on purpose, and
+   `TestTheSwitch::test_the_shipped_default_is_off` pins the shipped `False`, so that test changes in the same
+   commit, saying why.
+2. Run `downscale_panos.py` on each affected store — [by hand](#running-the-sweep-by-hand), `--dry-run` first.
+   **Budget the disk before you do:** the sweep writes a copy for every panorama wider than
+   `DOWNSCALED_MAX_WIDTH` (8192), which is nearly every modern panorama and not only the ones over the ceiling,
+   so this is the fleet-wide +63% below, not a copy of the new frames alone.
+3. Tell the web app's maintainers: the on-demand downscale
+   ([SidewalkWebpage#5256](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5256)) absorbs a wider
+   frame silently at a cost per view, and its `pano.downscaled.max-width` has to agree with
+   `DOWNSCALED_MAX_WIDTH` for it to find the copies.
 
 #### Running the sweep by hand
 
@@ -770,4 +818,7 @@ section exists because of.
   in parentheses matters: `(network failure)` and `(unexpected failure)` are the loop's own arms, one timeout
   anywhere in 52 cities writes one, and neither touches the persisted standing. `Google is refusing requests` in
   any `scrape.log` is the stand-down itself.
+- `grep -l "over the viewer ceiling" */scrape.log` prints nothing. A hit is [the width
+  tripwire](#the-width-tripwire): a source now serves panoramas wider than 8192-class GPUs can render. It never
+  fails a night, so this grep is the only place it reliably surfaces.
 - The analyzer's fleet block, for the checks it encodes.

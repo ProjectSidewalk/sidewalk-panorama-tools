@@ -387,7 +387,12 @@ def download_single_pano(storage_path, pano_info):
             # discarded and the pano retries (#41). Same header-only test, and the same gap, as the
             # Mapillary path: it refuses a body that is not a JPEG at all, not one truncated after its
             # header, which a short read out of iter_content has already raised on.
-            if jpeg_dimensions(tmp_path) is None:
+            dims = jpeg_dimensions(tmp_path)
+            if dims is None:
                 raise PanoramaxErrorResponse("Panoramax image response for %s was not a JPEG" % pano_id)
+    # After the rename, so the #121 tripwire cannot cost the download anything. From the stored JPEG's header
+    # rather than the item's optional `sensor_array_dimensions`: the header is the width of the file the viewer
+    # will actually be handed, whatever the item says about the sensor.
+    common.warn_if_wider_than_viewer_ceiling(pano_id, dims[0], 'panoramax')
     _write_display_copy(out_image_name, pano_id)
     return DownloadResult.success

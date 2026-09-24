@@ -383,6 +383,10 @@ def resolve_zoom_and_dims(pano_info):
     if final_image_width is None or final_image_height is None:
         return None
 
+    # The reported width is Google's own number and is in hand before any request, so the #121 tripwire runs
+    # here: a probe that then fails transiently must not swallow the warning. An observation, never a gate.
+    common.warn_if_wider_than_viewer_ceiling(pano_id, final_image_width, 'gsv')
+
     # Session scoped to the zoom/dimension probes; the tile fan-out uses its own aiohttp session. This runs
     # once per pano, so leaving it unclosed would pile up connection pools until GC (#51).
     with _request_session() as session:
