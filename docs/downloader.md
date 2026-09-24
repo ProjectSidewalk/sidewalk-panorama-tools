@@ -493,6 +493,12 @@ live in [`downloaders/`](../downloaders). Three sources are supported: `gsv` and
 and are deliberately **not** written to `pano_id_log.csv`, so a later run (or a later release) can still
 pick them up.
 
+All three sources also carry the **width tripwire**: a panorama wider than 16384 px — the widest an
+8192-class GPU can render — gets an `over the viewer ceiling` warning in `scrape.log` and on stdout, and is
+downloaded exactly as it would have been otherwise. It never changes the exit code, so on a clean night the
+alarm does not carry it; `scrape.log` is where it lands. What it means and what to do is in
+[Operations](ops.md#the-width-tripwire).
+
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
 `cbk?output=tile` endpoint into one equirectangular JPEG: it determines a working zoom level (5 preferred,
 falling back to 3 — a fully black tile at both means there is no imagery), fans the tiles out concurrently
