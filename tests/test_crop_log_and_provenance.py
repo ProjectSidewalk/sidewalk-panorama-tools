@@ -26,8 +26,8 @@ if REPO_ROOT not in sys.path:
 # crop_runner and the autouse logging isolation are fixtures: importing them into this module's namespace
 # is what makes pytest apply them here.
 from test_crop_runner import (  # noqa: F401
-    PANO_SIZE, _isolate_logging_state, crop_path, crop_runner, label_row, put_pano, reconciles,
-    write_labels_csv)
+    PANO_SIZE, _isolate_logging_state, block_scandir, crop_path, crop_runner, label_row, put_pano,
+    reconciles, write_labels_csv)
 
 
 MALFORMED_PREFIX = 'Skipping malformed label row'
@@ -950,6 +950,40 @@ class TestTheMarkerSaysWhetherTheManifestHasAKnownGap:
         os.remove(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST))
         crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out))
         assert read_marker(out, crop_runner)['provenance_manifest_no_known_gap'] is False
+
+
+class TestWhetherTheStoreAlreadyHoldsCrops:
+    """_store_holds_crops decides the gap flag's starting value, so it has to find a crop in ANY numeric
+    shard, and it has to refuse to guess about one it cannot read."""
+
+    @pytest.mark.parametrize('empty, full', [('1', '9'), ('9', '1')])
+    def test_an_empty_shard_does_not_hide_a_crop_in_another(self, crop_runner, tmp_path, empty, full):
+        """Surviving mutant: returning after the first numeric shard. Both orders, because scandir order
+        is the filesystem's - alphabetical on NTFS, hash order on ext4."""
+        (tmp_path / empty).mkdir()
+        write_crop_file(tmp_path, full, 5)
+        assert crop_runner._store_holds_crops(str(tmp_path)) is True
+
+    def test_empty_shards_hold_no_crops(self, crop_runner, tmp_path):
+        (tmp_path / '1').mkdir()
+        (tmp_path / '9').mkdir()
+        assert crop_runner._store_holds_crops(str(tmp_path)) is False
+
+    def test_an_unreadable_shard_stops_the_run_before_any_crop(self, crop_runner, tmp_path, monkeypatch):
+        """#153 m1's second half. The production guard never lists numeric shards (they are this tool's
+        own ~400k crops), so an unreadable one first meets _store_holds_crops. Skipping it could record a
+        pre-manifest store as gap-free; crashing mid-run would be worse. So it raises before anything is
+        cut, naming the shard, as a manifest that cannot be opened does."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        (out / '7').mkdir(parents=True)
+        block_scandir(crop_runner, monkeypatch, out / '7')
+        with pytest.raises(PermissionError) as raised:
+            crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert os.path.join(str(out), '7') in str(raised.value)
+        assert 'already holds crops' in str(raised.value)
+        assert not (out / '1').exists()
+        assert not (out / crop_runner.PROVENANCE_MANIFEST).exists()
 
 
 class TestAKnownGapTurnsTheMarkerFalseForGood:

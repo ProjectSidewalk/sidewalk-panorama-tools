@@ -47,6 +47,13 @@ since `crop.log` would be a write into the store being refused — if it finds e
 * a `crop_*.png` file in `-o` or up to two directories below it — so `-o` at the production root, at one city
   or at one label type directory is caught.
 
+A directory named for a label type refuses even when it is **empty**, deliberately: a city directory holds its
+type directories before it holds a single capture. The cost is that an ordinary folder that happens to be
+called `Other` or `Signal` refuses `-o`; the message names it. A directory the scan **cannot list** —
+`lost+found` at the root of an ext4 volume, `System Volume Information` at a Windows drive's — is refused the
+same way, naming it, since what cannot be read cannot be ruled out
+([#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153)).
+
 It **refuses rather than warns**. The two layouts happen to be disjoint on every name component, so this tool
 could not overwrite a capture today — but that is a coincidence of naming, not a guard, and it does nothing
 for a re-cut campaign that deletes "the crop store" first, which is the mistake `--force` makes more likely.

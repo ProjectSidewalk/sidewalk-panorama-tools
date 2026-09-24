@@ -695,6 +695,14 @@ class ProductionCropStoreError(Exception):
 _LABEL_TYPE_NAMES_FOLDED = frozenset(name.casefold() for name in LABEL_TYPE_IDS_BY_NAME)
 
 
+def _is_numeric_name(name):
+    """A label-type shard's name: ASCII digits only. The one spelling both scanners use - the production
+    guard to skip this tool's own shards, _store_holds_crops to find them - so they cannot disagree about
+    which directories those are. isascii() first because str.isdigit() also accepts other scripts' digits
+    and superscripts, none of which this tool ever writes."""
+    return name.isascii() and name.isdigit()
+
+
 def _is_canvas_capture(name):
     """crop_<labelId>.png, the production store's file name. Our own crop_rule.json shares the prefix,
     which is why the extension is part of the test and the prefix alone is not."""
@@ -730,6 +738,15 @@ def refuse_production_crop_store(destination_dir):
     * a `crop_*.png` file in the destination or up to PRODUCTION_STORE_SCAN_DEPTH directories below
       it - catches -o at a label type directory (depth 0) and at the store root (depth 2).
 
+    A directory named for a label type refuses even when it is EMPTY, deliberately: a city directory
+    holds its type directories before it holds a single capture, and an ordinary folder that happens to
+    be called `Other` or `Signal` is the accepted cost - the message names it, and renaming it is cheap.
+
+    A directory the scan cannot LIST (a PermissionError: lost+found at an ext4 volume's root, System
+    Volume Information at a Windows drive's) is refused too, naming it (#153 m1). What cannot be read
+    cannot be ruled out, and skipping it would pass a store the guard never looked at; crashing, which
+    it used to, was exit 1 with a traceback before logging existed.
+
     Cheap by construction, because a formula store is ~400k files on a network mount: bounded depth,
     os.scandir, an early exit on the first hit, and no descent into all-digit directories. Those are
     this tool's own type shards; the production layout never puts a capture in one, and listing them
@@ -746,6 +763,12 @@ def refuse_production_crop_store(destination_dir):
             listing = os.scandir(directory)
         except (FileNotFoundError, NotADirectoryError):
             continue
+        except PermissionError as e:
+            raise ProductionCropStoreError(
+                "Refusing to write crops into %s: %s cannot be read (%s), so it cannot be ruled out as "
+                "part of the production crop store SidewalkWebpage serves, whose canvas captures cannot "
+                "be regenerated. Point -o at a directory whose contents this user can list, or at a new "
+                "directory." % (destination_dir, directory, e.strerror or e)) from e
         with listing:
             for entry in listing:
                 found = None
@@ -753,8 +776,7 @@ def refuse_production_crop_store(destination_dir):
                     if depth == 0 and entry.name.casefold() in _LABEL_TYPE_NAMES_FOLDED:
                         found = ("a directory named for label type %r (this tool names them by numeric id)"
                                  % entry.name)
-                    elif depth < PRODUCTION_STORE_SCAN_DEPTH and not (entry.name.isascii()
-                                                                      and entry.name.isdigit()):
+                    elif depth < PRODUCTION_STORE_SCAN_DEPTH and not _is_numeric_name(entry.name):
                         pending.append((entry.path, depth + 1))
                 elif _is_canvas_capture(entry.name):
                     found = "a canvas capture, %s" % entry.path
@@ -774,17 +796,28 @@ def _store_holds_crops(destination_dir):
     a walk - which matters over sshfs, where a full walk of a city's ~400k crops is a round trip each. A
     `.jpg.part` is a write that never landed, and crop.log / crop_rule.json sit at the root, so neither is
     mistaken for one.
+
+    Raises PermissionError, naming the directory, if the store or a shard cannot be listed (#153 m1):
+    skipping it could record a store that already held crops as having no known gap, so the run stops
+    here - before any crop is cut, like a manifest that cannot be opened.
     """
-    for entry in os.scandir(destination_dir):
-        if not (entry.is_dir() and entry.name and all(c in '0123456789' for c in entry.name)):
-            continue
-        with os.scandir(entry.path) as shard:
-            # This walks the CROP store, not the pano store, so walk_store_panos() is the wrong tool and
-            # its sidecar hazard does not exist here: crop shards hold <label_id>.jpg and, mid-write,
-            # <label_id>.jpg.part, never a .w8192.jpg. Any crop is enough - even a mis-named one would
-            # mean "the store already held crops", which is the only question asked.
-            if any(os.path.splitext(crop.name)[1] == '.jpg' for crop in shard):
-                return True
+    try:
+        with os.scandir(destination_dir) as listing:
+            for entry in listing:
+                if not (entry.is_dir() and _is_numeric_name(entry.name)):
+                    continue
+                with os.scandir(entry.path) as shard:
+                    # This walks the CROP store, not the pano store, so walk_store_panos() is the wrong
+                    # tool and its sidecar hazard does not exist here: crop shards hold <label_id>.jpg
+                    # and, mid-write, <label_id>.jpg.part, never a .w8192.jpg. Any crop is enough - even
+                    # a mis-named one would mean "the store already held crops", the only question asked.
+                    if any(os.path.splitext(crop.name)[1] == '.jpg' for crop in shard):
+                        return True
+    except PermissionError as e:
+        raise PermissionError(
+            e.errno, "Cannot list %s to tell whether crop store %s already holds crops, which the "
+            "provenance record needs (%s); nothing has been cut. Make it readable, then re-run."
+            % (e.filename, destination_dir, e.strerror)) from e
     return False
 
 

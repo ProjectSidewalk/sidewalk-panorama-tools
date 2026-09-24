@@ -2453,6 +2453,20 @@ def tree_snapshot(root):
     return snapshot
 
 
+def block_scandir(crop_runner, monkeypatch, *paths):
+    """os.scandir raising PermissionError for exactly these paths - lost+found at an ext4 volume's root,
+    System Volume Information at a Windows drive's. Monkeypatched because Windows has no cheap chmod 000."""
+    blocked = {os.path.normcase(os.path.normpath(str(p))) for p in paths}
+    real_scandir = os.scandir
+
+    def scandir(path='.'):
+        if os.path.normcase(os.path.normpath(str(path))) in blocked:
+            raise PermissionError(13, 'Permission denied', str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(crop_runner.os, 'scandir', scandir)
+
+
 class TestTheProductionCropStoreGuard:
     """#83's scope correction. `-o` pointed at the store SidewalkWebpage serves could not overwrite a
     canvas capture today, because the two layouts are disjoint on every name component - but that is
@@ -2580,6 +2594,60 @@ class TestTheProductionCropStoreGuard:
         monkeypatch.setattr(crop_runner.os, 'scandir', recording_scandir)
         crop_runner.refuse_production_crop_store(str(out))
         assert sorted(listed) == ['.', 'a', os.path.join('a', 'b')]
+
+    def test_an_unreadable_subdirectory_is_refused_not_crashed_on(self, crop_runner, tmp_path, monkeypatch):
+        """#153 m1. The guard caught FileNotFoundError and NotADirectoryError only, so -o at a volume
+        root crashed every run with a PermissionError traceback, exit 1. A directory it cannot read
+        cannot be ruled safe, so it is refused, and the message names it."""
+        out = tmp_path / 'out'
+        (out / 'lost+found').mkdir(parents=True)
+        block_scandir(crop_runner, monkeypatch, out / 'lost+found')
+        with pytest.raises(crop_runner.ProductionCropStoreError, match='lost\\+found') as refused:
+            crop_runner.refuse_production_crop_store(str(out))
+        assert 'cannot be read' in str(refused.value)
+
+    def test_an_unreadable_destination_is_refused(self, crop_runner, tmp_path, monkeypatch):
+        out = tmp_path / 'out'
+        out.mkdir()
+        block_scandir(crop_runner, monkeypatch, out)
+        with pytest.raises(crop_runner.ProductionCropStoreError, match='cannot be read'):
+            crop_runner.refuse_production_crop_store(str(out))
+
+    def test_main_refuses_an_unreadable_subdirectory_with_exit_3_on_both_channels(
+            self, crop_runner, tmp_path, monkeypatch, capsys, caplog):
+        store, out = tmp_path / 'store', tmp_path / 'out'
+        put_pano(store, 'testpano0001')
+        (out / 'lost+found').mkdir(parents=True)
+        before = tree_snapshot(out)
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row()])
+        block_scandir(crop_runner, monkeypatch, out / 'lost+found')
+        with caplog.at_level(logging.ERROR):
+            code = crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)])
+        assert code == crop_runner.EXIT_REFUSED_DESTINATION
+        assert 'lost+found' in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and 'lost+found' in r.getMessage() for r in caplog.records)
+        assert tree_snapshot(out) == before
+
+    def test_only_ascii_digits_make_a_shard_the_scan_skips(self, crop_runner, tmp_path):
+        """str.isdigit() alone accepts superscripts and other scripts' digits, which this tool never
+        writes; a capture under such a directory is not in a formula shard and must still be found.
+        _store_holds_crops reads the same helper (#153 n5), so it ignores the directory too."""
+        odd = tmp_path / 'out' / '²٣'
+        odd.mkdir(parents=True)
+        Image.new('RGB', (4, 4)).save(str(odd / 'crop_3.png'), format='PNG')
+        with pytest.raises(crop_runner.ProductionCropStoreError, match='crop_3.png'):
+            crop_runner.refuse_production_crop_store(str(tmp_path / 'out'))
+        (odd / '4.jpg').write_bytes(b'x')
+        assert crop_runner._store_holds_crops(str(tmp_path / 'out')) is False
+
+    def test_a_label_type_named_directory_refuses_even_when_empty(self, crop_runner, tmp_path):
+        """#153 n4, deliberate: the name alone is the signal, because a city directory holds its type
+        directories before it holds a single capture. The cost - an ordinary folder that happens to be
+        called Other or Signal refuses -o - is accepted, and the message names the directory."""
+        (tmp_path / 'out' / 'Signal').mkdir(parents=True)
+        with pytest.raises(crop_runner.ProductionCropStoreError, match="'Signal'"):
+            crop_runner.refuse_production_crop_store(str(tmp_path / 'out'))
 
     def test_main_refuses_with_a_message_on_both_channels_and_writes_nothing(self, crop_runner, tmp_path,
                                                                             capsys, caplog):
