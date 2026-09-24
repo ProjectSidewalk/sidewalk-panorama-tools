@@ -445,7 +445,8 @@ class TestPredictCropSize:
 
 
 class TestTheRuleMarker:
-    """A crop store is derived data with no other provenance, and existing crops are never re-cut.
+    """A crop store is derived data with no other provenance, and existing crops are not re-cut without
+    --force.
 
     So a mixed store is the ORDINARY consequence of changing the rule, not an edge case: run v2 over a
     directory cut under v1 and the new crops are 3:2 while the old ones stay square, and a consumer
@@ -492,6 +493,42 @@ class TestTheRuleMarker:
             marker = json.load(f)
         assert marker['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
         assert marker['previous_crop_rule_version'] == 'v1'
+
+    @staticmethod
+    def v1_store(crop_runner, tmp_path):
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            json.dump({'crop_rule_version': 'v1'}, f)
+
+    def test_without_force_it_says_to_re_run_with_force(self, crop_runner, tmp_path, capsys, caplog):
+        self.v1_store(crop_runner, tmp_path)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path))
+        printed = capsys.readouterr().out
+        assert 're-run with --force' in printed and 'now holds both geometries' in printed
+        assert 're-run with --force' in caplog.text
+
+    def test_under_force_it_says_the_run_is_recutting_and_not_to_re_run(self, crop_runner, tmp_path,
+                                                                        capsys, caplog):
+        """#153 m3. A forced run used to print 're-run with --force' and then 'N crops were re-cut
+        (--force)' - contradicting itself. Under force it says what the run is doing instead, and that
+        the marker already names the new rule, so the store is not one geometry until the run ends."""
+        self.v1_store(crop_runner, tmp_path)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), force=True)
+        printed = capsys.readouterr().out
+        assert 're-run with --force' not in printed and 'now holds both geometries' not in printed
+        assert 're-cutting every label it reaches under %s' % crop_runner.CROP_RULE_VERSION in printed
+        assert 'finish the run before training' in printed
+        assert 'finish the run before training' in caplog.text
+
+    def test_a_forced_run_passes_force_to_the_marker(self, crop_runner, tmp_path, capsys):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        out.mkdir()
+        self.v1_store(crop_runner, out)
+        crop_runner.bulk_extract_crops([label_row()], str(store), str(out), force=True)
+        printed = capsys.readouterr().out
+        assert 're-run with --force' not in printed and 'finish the run before training' in printed
 
     def test_rewriting_the_same_rule_is_silent(self, crop_runner, tmp_path, caplog):
         """Discrimination: the warning must be about a CHANGE, not about the marker existing — every

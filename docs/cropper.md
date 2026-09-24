@@ -116,7 +116,9 @@ result of changing the rule: existing crops are the resume marker and are not re
 over a v1 store leaves square v1 crops accreting 3:2 ones beside them. `--force` re-cuts every label the run reaches
 under the running rule ([below](#re-cutting-a-store-with---force)); note that the marker is rewritten at the *start*
 of the run, so a forced run that is interrupted leaves a store the marker describes as all-v2 while part of it
-is still v1 — finish the run before training on it.
+is still v1 — finish the run before training on it. The warning says which case it is: without `--force` it
+reports a store left holding both geometries and names `--force` as the remedy; under `--force` it says this
+run is re-cutting every label it reaches and that the marker already names the new rule.
 
 The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top, width, height, shifted)`:
 

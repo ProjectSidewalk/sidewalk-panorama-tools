@@ -966,7 +966,7 @@ def _provenance_value(value):
     return str(value)
 
 
-def write_rule_marker(destination_dir):
+def write_rule_marker(destination_dir, force=False):
     """Record which sizing rule cut this crop store, in the store, and warn if it disagrees.
 
     A crop directory is derived data with no other provenance: a JPEG does not say what geometry
@@ -979,6 +979,12 @@ def write_rule_marker(destination_dir):
     past on a cron run. A disagreement is a warning and not an error: the mixed store is a real thing
     an operator may be deliberately topping up, and refusing to run would strand it. What must not
     happen is that it goes unrecorded.
+
+    `force` changes only what that warning says (#153 m3). Without it the store is left mixed and the
+    remedy is a --force run. With it, THIS run is the remedy: it re-cuts every label it reaches under the
+    running rule, and the marker is rewritten now, at the start, so the store is not one geometry until
+    the run finishes (and not even then for a label it skips - see bulk_extract_crops' stale_kept). A
+    forced run used to be told to re-run with --force, and then report its own re-cuts.
 
     It also says whether the provenance manifest (#111) has a KNOWN gap (MANIFEST_NO_KNOWN_GAP). The rule
     version cannot answer that - a v2 store cropped before the manifest existed and one cropped after both
@@ -1015,7 +1021,16 @@ def write_rule_marker(destination_dir):
         manifest_started_under = CROP_RULE_VERSION
         no_known_gap = not _store_holds_crops(destination_dir)
 
-    if previous is not None and previous != CROP_RULE_VERSION:
+    if previous is not None and previous != CROP_RULE_VERSION and force:
+        message = ("Crop store %s was cut under sizing rule %s and this run uses %s. This run is "
+                   "re-cutting every label it reaches under %s (--force), and %s is rewritten now to name "
+                   "%s: until the run finishes, crops it has not reached are still %s, so finish the run "
+                   "before training on the store."
+                   % (destination_dir, previous, CROP_RULE_VERSION, CROP_RULE_VERSION, CROP_RULE_MARKER,
+                      CROP_RULE_VERSION, previous))
+        print(message)
+        logging.warning(message)
+    elif previous is not None and previous != CROP_RULE_VERSION:
         message = ("Crop store %s was cut under sizing rule %s and this run uses %s. Existing crops "
                    "are re-cut only under --force, so without it this store now holds both "
                    "geometries; re-run with --force to re-cut it under %s."
@@ -1326,7 +1341,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     # Before any crop is cut, so a run that dies partway still leaves the store saying what it holds.
     os.makedirs(destination_dir, exist_ok=True)
-    write_rule_marker(destination_dir)
+    write_rule_marker(destination_dir, force=force)
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
