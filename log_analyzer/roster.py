@@ -35,9 +35,12 @@ from collections import namedtuple
 from urllib.parse import urlsplit
 
 # Every deployment serves this list of every city - city_id, url, visibility - and it is the same list from
-# every host, which is why asking one host is enough.
+# every host, which is why any host that answers is enough.
 ROSTER_PATH = '/v3/api/cities'
 ROSTER_TIMEOUT_SECONDS = 30.0
+# The most hosts one check asks, in order, before giving up: each dead one costs up to the timeout above, so an
+# unbounded list is minutes of silence before the report ends. The same bound as scrape_queue's.
+ROSTER_MAX_HOSTS = 3
 # The roster measured 2026-09-22 is 19 KB for 59 cities; this is the most that will be read of anything a
 # host sends back, so a redirect to something large cannot hold the report open.
 ROSTER_MAX_BYTES = 4 * 1024 * 1024

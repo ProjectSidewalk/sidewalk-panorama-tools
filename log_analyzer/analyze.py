@@ -725,7 +725,7 @@ def roster_check(city_rows, hosts, fetch=None) -> tuple[list[str], bool]:
     is only the cross-check; generating the file from the roster would silently pick up cities nobody has
     decided to watch, which is a different failure from the one this closes.
 
-    `hosts` are asked in order until one serves a roster. Two ways it goes CRITICAL, and the second is the
+    `hosts` are asked in order until one serves a roster, at most roster.ROSTER_MAX_HOSTS of them. Two ways it goes CRITICAL, and the second is the
     one that is easy to "simplify" away:
 
     * **an unlisted city** - the gap itself;
@@ -736,7 +736,7 @@ def roster_check(city_rows, hosts, fetch=None) -> tuple[list[str], bool]:
     """
     fetch = roster.fetch_roster if fetch is None else fetch
     failures = []
-    for host in hosts:
+    for host in hosts[:roster.ROSTER_MAX_HOSTS]:
         try:
             entries = fetch(host)
             break
@@ -751,6 +751,11 @@ def roster_check(city_rows, hosts, fetch=None) -> tuple[list[str], bool]:
     public = sum(1 for e in entries if e["visibility"] == "public")
     private = len(entries) - public
     checked = f"checked {len(have)} rows against {public} public + {private} private cities on {host}"
+
+    # A host that failed before this one answered is still reported: Seattle gets releases first, so a
+    # Seattle that fails every night would otherwise go unseen until the fallback fails too.
+    if failures:
+        checked += f" (after {'; '.join(failures)})"
 
     if not unlisted:
         return ([f"  ✅  Roster cross-check — {checked}"], False)

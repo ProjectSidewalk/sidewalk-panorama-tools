@@ -55,8 +55,8 @@ times: `newport-ky` was scraped nightly for weeks while sitting outside the anal
 2026-09-22 `washington-dc` — re-launched and live — had no row either. Each was found by hand.
 
 **Since [#133](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/133) the report cross-checks
-itself.** After the per-city blocks it asks one deployment for `/v3/api/cities` — every deployment serves the
-same roster of every city — and names, at CRITICAL, each city with no row here:
+itself.** After the per-city blocks it asks a deployment for `/v3/api/cities`, falling back to the next if one
+does not answer (at most three) — every deployment serves the same roster of every city — and names, at CRITICAL, each city with no row here:
 
 ```
 🔴  Roster cross-check — checked 55 rows against 39 public + 20 private cities on sidewalk-sea.cs.washington.edu

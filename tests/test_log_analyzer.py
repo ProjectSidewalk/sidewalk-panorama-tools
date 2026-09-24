@@ -1784,6 +1784,30 @@ class TestTheNextHostIsTriedWhenOneIsDown:
         assert critical is False
         assert any('on b.example' in line for line in lines), 'the report must name the host that answered'
 
+    def test_the_answer_says_which_hosts_failed_first(self):
+        def fetch(host):
+            if host == 'a.example':
+                raise roster_mod.RosterUnavailable('HTTP 503')
+            return [roster_entry('seattle-wa')]
+
+        lines, _ = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')),
+                                        ('a.example', 'b.example'), fetch=fetch)
+
+        assert any('on b.example' in line and 'a.example: HTTP 503' in line for line in lines)
+
+    def test_at_most_max_hosts_are_asked(self):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            raise roster_mod.RosterUnavailable('down')
+
+        hosts = tuple('h%d.example' % i for i in range(roster_mod.ROSTER_MAX_HOSTS + 2))
+        _, critical = analyze.roster_check(city_rows(), hosts, fetch=fetch)
+
+        assert asked == list(hosts[:roster_mod.ROSTER_MAX_HOSTS])
+        assert critical is True
+
     def test_a_live_first_host_is_the_only_one_asked(self):
         asked = []
 
@@ -1887,7 +1911,7 @@ class TestTheFailureWordingDoesNotDrift:
 
     def test_the_constants_match(self):
         import scrape_queue
-        for name in ('ROSTER_PATH', 'ROSTER_TIMEOUT_SECONDS', 'ROSTER_MAX_BYTES'):
+        for name in ('ROSTER_PATH', 'ROSTER_TIMEOUT_SECONDS', 'ROSTER_MAX_BYTES', 'ROSTER_MAX_HOSTS'):
             assert getattr(roster_mod, name) == getattr(scrape_queue, name), name
 
 
@@ -2052,6 +2076,26 @@ class TestTheRosterHostNeedsNoConfiguration(_RosterMainHarness):
         "no host served a roster" every night. Both hosts were checked to serve the roster on 2026-09-24."""
         assert analyze.DEFAULT_ROSTER_HOSTS == ('sidewalk-sea.cs.washington.edu',
                                                 'sidewalk-chicago.cs.washington.edu')
+
+    def test_unset_resolves_to_both_real_hosts(self):
+        """The resolver, not just the constant: `return DEFAULT_ROSTER_HOSTS[:1]` passed every other test,
+        because none needs a second host on the unset path."""
+        assert analyze.resolve_roster_hosts(None, None) == ('sidewalk-sea.cs.washington.edu',
+                                                            'sidewalk-chicago.cs.washington.edu')
+
+    def test_unset_falls_back_to_chicago_when_seattle_is_down(self, tmp_path, monkeypatch):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            if host == 'sidewalk-sea.cs.washington.edu':
+                raise roster_mod.RosterUnavailable('HTTP 503')
+            return [roster_entry('seattle-wa')]
+
+        status = self._run(tmp_path, monkeypatch, fetch, env_host=None)
+
+        assert asked == ['sidewalk-sea.cs.washington.edu', 'sidewalk-chicago.cs.washington.edu']
+        assert status == 0
 
     def test_unset_uses_the_default_and_passes(self, tmp_path, monkeypatch):
         """The mutant is losing the default: the check is then CRITICAL and the run exits 1."""
