@@ -8,6 +8,7 @@ No network anywhere. Panos are synthetic JPEGs in a tmp store; metadata is built
 as the -f file / stubbed session the three intakes read.
 """
 
+import builtins
 import csv
 import io
 import json
@@ -557,6 +558,132 @@ class TestAFailedAppendDoesNotLoseTheCrop:
         put_pano(store, 'testpano0001')
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
         assert 'without a row' not in capsys.readouterr().out
+
+
+class _FaultyHandle:
+    """A manifest file handle whose raw writes and close fail on a schedule the RawWriterFaults owns."""
+
+    def __init__(self, real, faults):
+        self._real = real
+        self._faults = faults
+
+    def write(self, data):
+        self._faults.writes += 1
+        n = self._faults.writes
+        if n in self._faults.tear:
+            # Half the bytes reach the file, then the device gives out: the torn-row shape.
+            self._real.write(data[:len(data) // 2])
+            raise OSError(28, 'No space left on device (torn)')
+        if self._faults.fail(n):
+            raise OSError(28, 'No space left on device')
+        return self._real.write(data)
+
+    def close(self):
+        self._real.close()
+        if self._faults.close_fails:
+            raise OSError(5, 'Input/output error on close')
+
+    @property
+    def closed(self):
+        return self._real.closed
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class RawWriterFaults:
+    """Stands between ProvenanceManifest and the file it appends to, below whatever buffering the
+    manifest does: a write here is what reaches the OS. Only handles opened for appending to the
+    manifest are wrapped, so crop_rule.json, the panos and a read-back are untouched.
+
+    `fail(n)` decides, per 1-based write call across every handle (the header is write 1 on a fresh
+    manifest), whether that write raises; `tear` names writes that put half their bytes on disk first.
+    Every wrapped handle is kept, so a test can ask whether each was closed."""
+
+    def __init__(self, crop_runner, monkeypatch, fail=lambda n: False, tear=(), close_fails=False):
+        self.fail, self.tear, self.close_fails = fail, set(tear), close_fails
+        self.writes = 0
+        self.handles = []
+        real_open = builtins.open
+
+        def fake_open(file, mode='r', *args, **kwargs):
+            handle = real_open(file, mode, *args, **kwargs)
+            if os.path.basename(str(file)) == crop_runner.PROVENANCE_MANIFEST and 'a' in mode:
+                handle = _FaultyHandle(handle, self)
+                self.handles.append(handle)
+            return handle
+
+        monkeypatch.setattr(crop_runner, 'open', fake_open, raising=False)
+
+
+class TestAFailingManifestCannotTakeTheSummaryDown:
+    """#153 M1. A failed append was caught and counted, but its bytes could still be waiting in the
+    writer, and manifest.close() ran after the loop unguarded: on the full-store night the close
+    flushed, hit ENOSPC again and raised out of bulk_extract_crops, so the summary, the unrecorded total
+    and the #136 alarm - the lines that night exists to produce - were never written."""
+
+    def test_a_raw_writer_failing_from_the_second_write_leaves_the_whole_summary(
+            self, crop_runner, tmp_path, monkeypatch, capsys, caplog):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n >= 2, close_fails=True)
+        # Two crops that land, and three malformed rows so errors dominate and the alarm must fire.
+        labels = [labelled(1), labelled(2)] + bad_rows(3, first_label_id=10)
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['success'] == 2 and counts['errors'] == 3 and reconciles(counts)
+        printed = capsys.readouterr().out
+        assert '2 crops extracted' in printed
+        assert '2 crops were written without a row' in printed
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed.splitlines()[-1]
+        assert any(crop_runner.SYSTEMIC_FAILURE_BANNER in m for m in caplog.messages)
+
+    def test_a_close_that_raises_is_reported_on_both_channels_not_raised(
+            self, crop_runner, tmp_path, monkeypatch, capsys, caplog):
+        """The close itself failing - an sshfs mount reporting a deferred write error at close(2) - with
+        every append having succeeded. The crops are fine; whether their rows reached the store is not
+        known, so it is said on both channels and the run still returns its counts."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        real_close = crop_runner.ProvenanceManifest.close
+
+        def close_then_fail(self):
+            real_close(self)
+            raise OSError(5, 'Input/output error on close')
+
+        monkeypatch.setattr(crop_runner.ProvenanceManifest, 'close', close_then_fail)
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert counts['success'] == 1 and reconciles(counts)
+        printed = capsys.readouterr().out
+        assert 'could not be closed' in printed and 'Input/output error on close' in printed
+        assert any('could not be closed' in m for m in caplog.messages)
+        assert 'Crop sizing rule' in printed
+
+    def test_the_handle_is_closed_after_a_normal_run(self, crop_runner, tmp_path, monkeypatch):
+        """Surviving mutant: `manifest.close()` deleted. Nothing noticed the handle left open."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        faults = RawWriterFaults(crop_runner, monkeypatch)
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        assert faults.handles and all(h.closed for h in faults.handles)
+
+    def test_the_handle_is_closed_after_a_raise(self, crop_runner, tmp_path, monkeypatch):
+        """KeyboardInterrupt escapes the loop as a kill would; the finally still closes the handle."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        faults = RawWriterFaults(crop_runner, monkeypatch)
+        real = crop_runner.make_single_crop
+
+        def killed_at_2(pano, pano_x, pano_y, output_filename, draw_mark=False):
+            if os.path.basename(output_filename) == '2.jpg':
+                raise KeyboardInterrupt
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+
+        monkeypatch.setattr(crop_runner, 'make_single_crop', killed_at_2)
+        with pytest.raises(KeyboardInterrupt):
+            crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        assert faults.handles and all(h.closed for h in faults.handles)
 
 
 class TestTheMarkerSaysWhetherTheManifestIsComplete:
