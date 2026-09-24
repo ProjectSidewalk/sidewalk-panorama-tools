@@ -2,6 +2,7 @@ import contextlib
 import enum
 import errno
 import importlib
+import logging
 import os
 import re
 import struct
@@ -364,6 +365,52 @@ def write_downscaled_sidecar_from_file(pano_path, max_width=None, quality=None):
         image.draft('RGB', size)
         image.load()
         return _write_reduced(image, size, downscaled_sidecar_path(pano_path, max_width), quality)
+
+
+#: The widest panorama the viewer fleet renders natively (#121). Pannellum uploads an equirectangular image as
+#: two half-width textures, so a device's ceiling is 2 x its MAX_TEXTURE_SIZE; the 8192-class GPUs (a Pixel 7
+#: Pro's Mali-G710, measured, and most of the non-Apple fleet with it) therefore stop at 16384 - which is
+#: exactly GSV's widest frame today. GSV has widened once already (13312 -> 16384), so the margin is zero.
+#:
+#: Written from the device's number, NOT as 2 * DOWNSCALED_MAX_WIDTH, although it equals that today and #115's
+#: cap was set from the same 8192. The two are different facts: the cap is how wide a copy to write, a choice
+#: that can be lowered to save disk, and the ceiling is what the devices can texture, which lowering the cap
+#: does not change. Derived from the cap, the tripwire would silently move with it. A test pins that it is not.
+VIEWER_MAX_PANO_WIDTH = 2 * 8192
+
+
+def warn_if_wider_than_viewer_ceiling(pano_id, width, source):
+    """Warn, on both channels, when a source reports a frame wider than VIEWER_MAX_PANO_WIDTH (#121).
+
+    A tripwire, never a gate: it does not refuse, alter or delay the download, and it writes nothing to the
+    store (in particular it is not a caller of the sidecar primitives above). It should never fire. The day
+    it does, the 8192-class devices can no longer render newly stored panoramas natively, and this repo is
+    the only place that sees the width at the moment it changes.
+
+    `logging.warning` for scrape.log, which is what is still there next week, and `print` for stdout, which is
+    what the alarm wrapper delivers - the repo's rule for a warning that matters. Both, once per wide pano,
+    deliberately with no once-per-run latch: the stdout narrative is already one `Processing pano` line per
+    pano attempted, so this adds at most one line per NEW pano on the nights it fires; the alarm wrapper cuts
+    the middle of a long night's output, so a lone announcement is the line most likely to be cut; and a
+    latch would be process-global mutable state for every test to reset. Each line therefore carries the
+    whole message, remedy included.
+
+    Usage, where a downloader has just learned the frame's width::
+
+        warn_if_wider_than_viewer_ceiling(pano_id, width, 'gsv')
+
+    @param width  An int. Callers coerce first: '9000' > '16384' as strings.
+    @return Whether it fired.
+    """
+    if width <= VIEWER_MAX_PANO_WIDTH:
+        return False
+    message = ("%s pano %s is %d px wide, over the viewer ceiling of %d (#121); 8192-class GPUs cannot "
+               "render it natively. Set WRITE_DISPLAY_COPIES = True in downloaders/common.py and run "
+               "downscale_panos.py on this store - see docs/ops.md, 'Display copies of wide panoramas'."
+               % (source, pano_id, width, VIEWER_MAX_PANO_WIDTH))
+    logging.warning("IMAGEDOWNLOAD: %s", message)
+    print("IMAGEDOWNLOAD: WARNING - %s" % message)
+    return True
 
 
 def retrying_session():
