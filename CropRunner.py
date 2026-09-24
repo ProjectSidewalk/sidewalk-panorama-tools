@@ -162,6 +162,11 @@ PROVENANCE_FIELDS = ('source', 'copyright', 'license')
 
 PROVENANCE_COLUMNS = ('label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
 
+# crop_rule.json's answer to "may the manifest be read as covering every crop here?" (#153 M3). Named for
+# what it records - that no run has KNOWN of a crop without a row - because that is all a marker can
+# record: coverage itself is the manifest's rows against the crops on disk. See write_rule_marker.
+MANIFEST_NO_KNOWN_GAP = 'provenance_manifest_no_known_gap'
+
 # ---------------------------------------------------------------------------
 # The systemic-failure alarm (#136). When cvMetadata changed shape (#123) every label errored, and the
 # run's bookkeeping was entirely correct about it: errors == total, the invariant reconciled, main()
@@ -933,13 +938,20 @@ def write_rule_marker(destination_dir):
     an operator may be deliberately topping up, and refusing to run would strand it. What must not
     happen is that it goes unrecorded.
 
-    It also says whether the provenance manifest (#111) can be read as covering every crop in the store.
-    The rule version cannot answer that - a v2 store cropped before the manifest existed and one cropped
-    after both say v2 - and existing crops are never re-cut, so they never get a row. So when the manifest
-    is about to be started (it is not on disk yet) this records the rule starting it and whether the store
-    already held crops, and every later run carries those two answers forward unchanged: by then the
-    crops on disk are the manifest's own, and re-deriving from them would call a complete manifest
-    partial. A manifest on disk with no such record is `null` for both - unknown, not complete.
+    It also says whether the provenance manifest (#111) has a KNOWN gap (MANIFEST_NO_KNOWN_GAP). The rule
+    version cannot answer that - a v2 store cropped before the manifest existed and one cropped after both
+    say v2 - and a crop cut before the manifest gets a row only if a --force pass re-cuts it. So when the
+    manifest is about to be started (it is not on disk yet) this records the rule starting it and whether
+    the store already held crops, and every later run carries those two answers forward: by then the
+    crops on disk are the manifest's own, and re-deriving from them would call a whole manifest partial.
+    A manifest on disk with no such record is `null` for both - unknown, not whole.
+
+    The flag only ever goes from true to false (#153 M3). bulk_extract_crops turns it false through
+    _record_manifest_gap when a run knows it left a crop without a row, and this carries the false
+    forward like the true. Nothing turns it back, --force included: a forced pass cannot tell from here
+    that it reached every row-less crop (one whose label is absent from its metadata keeps no row), and a
+    re-derivation that could would be a walk of the whole store. So the flag is a record of what runs
+    reported, never a coverage check - a run killed between a crop's rename and its row reports nothing.
 
     :return: the rule version already on disk, or None if this is a fresh store.
     """
@@ -956,10 +968,10 @@ def write_rule_marker(destination_dir):
 
     if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST)):
         manifest_started_under = marker.get('provenance_manifest_started_under')
-        manifest_complete = marker.get('provenance_manifest_complete_from_start')
+        no_known_gap = marker.get(MANIFEST_NO_KNOWN_GAP)
     else:
         manifest_started_under = CROP_RULE_VERSION
-        manifest_complete = not _store_holds_crops(destination_dir)
+        no_known_gap = not _store_holds_crops(destination_dir)
 
     if previous is not None and previous != CROP_RULE_VERSION:
         message = ("Crop store %s was cut under sizing rule %s and this run uses %s. Existing crops "
@@ -980,9 +992,32 @@ def write_rule_marker(destination_dir):
                        'previous_crop_rule_version': previous,
                        'provenance_manifest': PROVENANCE_MANIFEST,
                        'provenance_manifest_started_under': manifest_started_under,
-                       'provenance_manifest_complete_from_start': manifest_complete},
+                       MANIFEST_NO_KNOWN_GAP: no_known_gap},
                       f, indent=1, sort_keys=True)
     return previous
+
+
+def _record_manifest_gap(destination_dir):
+    """Turn crop_rule.json's MANIFEST_NO_KNOWN_GAP false, keeping every other key (#153 M3).
+
+    Called at the end of a run that knows it left a crop without a row. Rewritten atomically like the
+    marker itself; a marker that cannot be read is rebuilt around the one key, since the rule keys were
+    written at the start of this same run and a lost marker is write_rule_marker's to repair next time.
+    Raises on a failed write - the caller reports it, because the crops are fine and it is the RECORD of
+    the gap that did not land.
+    """
+    path = os.path.join(destination_dir, CROP_RULE_MARKER)
+    try:
+        with open(path, encoding='utf-8') as f:
+            marker = json.load(f)
+    except (OSError, ValueError):
+        marker = {}
+    if not isinstance(marker, dict):
+        marker = {}
+    marker[MANIFEST_NO_KNOWN_GAP] = False
+    with atomic_output_path(path) as tmp_path:
+        with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(marker, f, indent=1, sort_keys=True)
 
 
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
@@ -1421,6 +1456,17 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                        % (PROVENANCE_MANIFEST, e))
             logging.error('%s', message)
             print(message)
+        # Also in the finally, so a run killed after losing a row still says so in the marker. Each of
+        # the three is a crop on disk this run knows has no row, or may not (a failed close).
+        if unrecorded or close_failure is not None or manifest.torn_rows_cut:
+            try:
+                _record_manifest_gap(destination_dir)
+            except Exception as e:
+                message = ("CropRunner could not record the gap in %s (%s): its %s still reads as it did "
+                           "when this run started, but this run left crops without a row in %s."
+                           % (CROP_RULE_MARKER, e, MANIFEST_NO_KNOWN_GAP, PROVENANCE_MANIFEST))
+                logging.error('%s', message)
+                print(message)
 
     print("Finished.")
     # Echoed here as well as written to <crop-dir>/crop_rule.json, because the summary is what an
@@ -1438,6 +1484,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     if counts['recut']:
         print("%d of those crops were re-cut over one already on disk (--force)." % counts['recut'])
 
+    if manifest.torn_rows_cut:
+        # Both channels: a previous run was killed mid-append, and the crop that row was for is on disk.
+        message = ("%s ended in a torn row, which was cut away: a previous run was killed while appending "
+                   "it, so one crop on disk has no row. %s in %s is now false."
+                   % (PROVENANCE_MANIFEST, MANIFEST_NO_KNOWN_GAP, CROP_RULE_MARKER))
+        logging.warning('%s', message)
+        print(message)
     if unrecorded:
         # Both channels: the crops are fine, but a consumer reading the manifest as "every crop here"
         # would now be wrong about these, and nothing else will ever record them.

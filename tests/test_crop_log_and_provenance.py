@@ -849,11 +849,23 @@ class TestTheOpenTimeRepairCutsBackToTheLastWholeLine:
         assert row_ids(out, crop_runner) == ['1']
 
 
-class TestTheMarkerSaysWhetherTheManifestIsComplete:
-    """Crops cut before the manifest existed are never re-cut, so they never get a row. A consumer needs
-    to know whether a manifest can be read as 'every crop here', and the rule version cannot tell it: a v2
-    store cropped before this change and one cropped after both say v2. So crop_rule.json records whether
-    the store already held crops when the manifest was started, and keeps that answer on later runs."""
+class TestTheMarkerSaysWhetherTheManifestHasAKnownGap:
+    """Crops cut before the manifest existed have no row unless a --force pass re-cuts them. A consumer
+    needs to know whether a manifest can be read as 'every crop here', and the rule version cannot tell
+    it: a v2 store cropped before this change and one cropped after both say v2. So crop_rule.json
+    records whether the store already held crops when the manifest was started, keeps that answer on
+    later runs, and turns it false - for good - the first time a run knows it left a crop without a row
+    (#153 M3). It is named for what it records: no KNOWN gap, not coverage."""
+
+    def test_the_key_is_named_for_what_it_records(self, crop_runner, tmp_path):
+        """#153 M3(b). It was `provenance_manifest_complete_from_start`, which a --force pass that
+        re-cut every crop could never make true and which a later lost row never made false."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        marker = read_marker(out, crop_runner)
+        assert 'provenance_manifest_complete_from_start' not in marker
+        assert marker['provenance_manifest_no_known_gap'] is True
 
     def test_a_fresh_store_records_a_complete_manifest(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
@@ -862,14 +874,14 @@ class TestTheMarkerSaysWhetherTheManifestIsComplete:
         marker = read_marker(out, crop_runner)
         assert marker['provenance_manifest'] == crop_runner.PROVENANCE_MANIFEST
         assert marker['provenance_manifest_started_under'] == crop_runner.CROP_RULE_VERSION
-        assert marker['provenance_manifest_complete_from_start'] is True
+        assert marker['provenance_manifest_no_known_gap'] is True
 
     def test_a_store_with_crops_but_no_manifest_records_a_partial_one(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         write_crop_file(out, 1, 99)
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
-        assert read_marker(out, crop_runner)['provenance_manifest_complete_from_start'] is False
+        assert read_marker(out, crop_runner)['provenance_manifest_no_known_gap'] is False
 
     def test_files_that_are_not_crops_do_not_make_it_partial(self, crop_runner, tmp_path):
         """crop.log and a half-written .part sit in the store without being crops, and a stray
@@ -881,7 +893,7 @@ class TestTheMarkerSaysWhetherTheManifestIsComplete:
             with open(os.path.join(str(out), name), 'w') as f:
                 f.write('x')
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
-        assert read_marker(out, crop_runner)['provenance_manifest_complete_from_start'] is True
+        assert read_marker(out, crop_runner)['provenance_manifest_no_known_gap'] is True
 
     def test_the_answer_is_kept_on_later_runs(self, crop_runner, tmp_path):
         """The second run finds crops on disk - the first run's - and must not re-derive 'partial' from
@@ -891,7 +903,7 @@ class TestTheMarkerSaysWhetherTheManifestIsComplete:
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
         crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
         marker = read_marker(out, crop_runner)
-        assert marker['provenance_manifest_complete_from_start'] is True
+        assert marker['provenance_manifest_no_known_gap'] is True
         assert marker['provenance_manifest_started_under'] == crop_runner.CROP_RULE_VERSION
 
     def test_the_starting_rule_is_kept_when_the_rule_moves(self, crop_runner, tmp_path, monkeypatch):
@@ -917,7 +929,7 @@ class TestTheMarkerSaysWhetherTheManifestIsComplete:
             f.write(','.join(crop_runner.PROVENANCE_COLUMNS) + '\n')
         crop_runner.write_rule_marker(str(out))
         marker = read_marker(out, crop_runner)
-        assert marker['provenance_manifest_complete_from_start'] is None
+        assert marker['provenance_manifest_no_known_gap'] is None
         assert marker['provenance_manifest_started_under'] is None
 
     def test_a_marker_that_is_json_but_not_an_object_is_rewritten(self, crop_runner, tmp_path):
@@ -937,7 +949,150 @@ class TestTheMarkerSaysWhetherTheManifestIsComplete:
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
         os.remove(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST))
         crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out))
-        assert read_marker(out, crop_runner)['provenance_manifest_complete_from_start'] is False
+        assert read_marker(out, crop_runner)['provenance_manifest_no_known_gap'] is False
+
+
+class TestAKnownGapTurnsTheMarkerFalseForGood:
+    """#153 M3(a). The flag used to stay true after a run wrote crops without rows, and every later run
+    carried the true forward - so the marker a consumer is told to trust said 'no gap' for good on
+    exactly the store that had one."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        store = tmp_path / 'store'
+        put_pano(store, 'testpano0001')
+        return store
+
+    def gap(self, out, crop_runner):
+        return read_marker(out, crop_runner)['provenance_manifest_no_known_gap']
+
+    def test_an_unrecorded_row_turns_it_false(self, crop_runner, tmp_path, store, monkeypatch):
+        out = tmp_path / 'crops'
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 3)
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        assert self.gap(out, crop_runner) is False
+
+    def test_the_flip_keeps_every_other_key(self, crop_runner, tmp_path, store, monkeypatch):
+        out = tmp_path / 'crops'
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 2)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        marker = read_marker(out, crop_runner)
+        assert marker['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
+        assert marker['provenance_manifest_started_under'] == crop_runner.CROP_RULE_VERSION
+        assert marker['crop_max_stored_width'] == crop_runner.CROP_MAX_STORED_WIDTH
+
+    @pytest.mark.parametrize('content', [None, '{not json', '[1, 2]'], ids=['absent', 'unparseable',
+                                                                           'not-an-object'])
+    def test_a_marker_it_cannot_read_is_rebuilt_around_the_flag(self, crop_runner, tmp_path, content):
+        """The rule keys were written at the start of this same run, so a marker unreadable by the end
+        of it is write_rule_marker's to repair next time; the gap is recorded regardless."""
+        if content is not None:
+            (tmp_path / crop_runner.CROP_RULE_MARKER).write_text(content, encoding='utf-8')
+        crop_runner._record_manifest_gap(str(tmp_path))
+        assert read_marker(tmp_path, crop_runner) == {'provenance_manifest_no_known_gap': False}
+
+    def test_a_clean_run_leaves_it_true(self, crop_runner, tmp_path, store):
+        """Discrimination for the above: the flip is keyed on a gap, not on the run ending."""
+        out = tmp_path / 'crops'
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        assert self.gap(out, crop_runner) is True
+
+    def test_false_is_sticky_across_later_clean_runs(self, crop_runner, tmp_path, store, monkeypatch):
+        out = tmp_path / 'crops'
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 3)
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        monkeypatch.undo()
+        crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        crop_runner.bulk_extract_crops([labelled(4)], str(store), str(out), force=True)
+        assert self.gap(out, crop_runner) is False
+
+    def test_a_close_that_fails_turns_it_false(self, crop_runner, tmp_path, store, monkeypatch):
+        """#153 M1's path: whether the last rows reached the store is unknown, so it is not 'no gap'."""
+        out = tmp_path / 'crops'
+        real_close = crop_runner.ProvenanceManifest.close
+
+        def close_then_fail(self):
+            real_close(self)
+            raise OSError(5, 'Input/output error on close')
+
+        monkeypatch.setattr(crop_runner.ProvenanceManifest, 'close', close_then_fail)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert self.gap(out, crop_runner) is False
+
+    def test_a_torn_row_cut_at_open_turns_it_false(self, crop_runner, tmp_path, store, capsys, caplog):
+        """A torn last row is a previous run killed mid-append: its crop is on disk with no row now.
+        Said on both channels, since nothing else will ever mention that crop."""
+        out = tmp_path / 'crops'
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'a', encoding='utf-8') as f:
+            f.write('2,testpano0001,gs')
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        assert self.gap(out, crop_runner) is False
+        assert 'ended in a torn row' in capsys.readouterr().out
+        assert any('ended in a torn row' in m for m in caplog.messages)
+
+    def test_a_clean_run_says_nothing_about_a_torn_row(self, crop_runner, tmp_path, store, capsys):
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(tmp_path / 'crops'))
+        assert 'torn row' not in capsys.readouterr().out
+
+    def test_a_torn_header_is_not_a_gap(self, crop_runner, tmp_path, store):
+        """A torn HEADER means no row was ever written after it, so no crop lost one."""
+        out = tmp_path / 'crops'
+        os.makedirs(str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'w', encoding='utf-8') as f:
+            f.write('label_id,pa')
+        crop_runner.write_rule_marker(str(out))
+        marker = read_marker(out, crop_runner)
+        marker['provenance_manifest_no_known_gap'] = True
+        with open(os.path.join(str(out), crop_runner.CROP_RULE_MARKER), 'w', encoding='utf-8') as f:
+            json.dump(marker, f)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert self.gap(out, crop_runner) is True
+
+    def test_the_gap_is_recorded_even_when_the_run_is_killed(self, crop_runner, tmp_path, store,
+                                                             monkeypatch):
+        out = tmp_path / 'crops'
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 2)
+        real = crop_runner.make_single_crop
+
+        def killed_at_2(pano, pano_x, pano_y, output_filename, draw_mark=False):
+            if os.path.basename(output_filename) == '2.jpg':
+                raise KeyboardInterrupt
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+
+        monkeypatch.setattr(crop_runner, 'make_single_crop', killed_at_2)
+        with pytest.raises(KeyboardInterrupt):
+            crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        assert self.gap(out, crop_runner) is False
+
+    def test_a_forced_recut_of_every_crop_does_not_clear_it(self, crop_runner, tmp_path, store):
+        """#153 M3(b), decided: the marker records what runs REPORTED, and a forced pass cannot tell
+        from the marker that it filled every gap - a pre-manifest crop whose label is not in this run's
+        metadata stays row-less. So false stays false; coverage is rows against crops on disk."""
+        out = tmp_path / 'crops'
+        write_crop_file(out, 1, 1)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), force=True)
+        assert self.gap(out, crop_runner) is False
+        assert row_ids(out, crop_runner) == ['1']
+
+    def test_a_marker_that_cannot_be_updated_is_said_not_raised(self, crop_runner, tmp_path, store,
+                                                               monkeypatch, capsys, caplog):
+        out = tmp_path / 'crops'
+
+        def refuse(destination_dir):
+            raise OSError(28, 'No space left on device')
+
+        monkeypatch.setattr(crop_runner, '_record_manifest_gap', refuse, raising=False)
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 2)
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert counts['success'] == 1
+        printed = capsys.readouterr().out
+        assert 'could not record the gap' in printed and 'No space left' in printed
+        assert any('could not record the gap' in m for m in caplog.messages)
+        assert 'crops were written without a row' in printed
 
 
 # ---------------------------------------------------------------------------

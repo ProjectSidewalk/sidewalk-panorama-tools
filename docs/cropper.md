@@ -346,44 +346,67 @@ pixels came from has to travel with the crop rather than stay with the app. The 
 label_id,pano_id,source,copyright,license,crop_rule_version
 ```
 
-* **One row per crop, appended as it lands** — after the JPEG is on disk, flushed per row, through one
-  handle held for the run. That is the two nightly ledgers' contract (`pano_id_log.csv`, `depth_log.csv`),
-  so a run killed at any point leaves a truthful partial file: a header, and a row for each crop that
-  exists. Nothing else gets a row — not a skip, a preflight rejection, or a failed write. The file is
-  append-only, so a crop that is ever re-cut gets a second row, and the later one describes the file.
+* **One row per crop, appended as it lands** — after the JPEG is on disk, through one handle held for the
+  run. That is the two nightly ledgers' contract (`pano_id_log.csv`, `depth_log.csv`), so a run killed at
+  any point leaves a truthful partial file: a header, and a row for each crop that exists. Nothing else
+  gets a row — not a skip, a preflight rejection, or a failed write. The file is append-only, so every
+  re-cut appends a row; the last row for a label describes the file.
+* **A row reaches the file whole or not at all**
+  ([#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153)). The handle is unbuffered
+  and each row is one write, so a row whose append failed cannot sit in a buffer and be written later by
+  the next row's flush. After a failed append the handle is dropped and the next row reopens it, and
+  reopening — like every run's first open — cuts the file back to its last complete line. So half a row
+  can never sit in the middle of the file, and a torn last row (a run killed mid-append) is cut away
+  rather than closed off with a newline, which inside a quoted `copyright` would swallow every later row.
+  If nothing is left, the header is written again.
 * **`source`, `copyright` and `license` are copied from the label metadata verbatim, and written empty when
   the metadata does not state them** — never inferred from the source or anything else. `copyright` is
   the field the app keeps the producer credit under (`pano_data.copyright`, which it renders beside
   `pano_data.license`), so the column keeps that name rather than being renamed on the way through.
-  **Today cvMetadata sends none of the three** ([API fields](api-fields.md#adminapilabelscvmetadata--the-croppers-label-list)),
-  so a `-d` run writes all three empty, and older CSV exports fill `source` and sometimes `copyright`.
-  They fill in by themselves if the endpoint starts sending them; none of them is a required column, on
-  any of the three intakes.
+  **Today cvMetadata sends none of the three**
+  ([API fields](api-fields.md#adminapilabelscvmetadata--the-croppers-label-list)), so a `-d` run writes
+  all three empty, and older CSV exports fill `source` and sometimes `copyright`. They fill in by
+  themselves if the endpoint starts sending them; none of them is a required column, on any of the three
+  intakes.
 * **`crop_rule_version` is per row**, because a store can hold more than one geometry (see
   [Crop geometry](#crop-geometry)).
+* **`(pano_id, label_id)` is the key when manifests from more than one city are combined.** The manifest
+  has no `city` column, and `label_id` restarts at 1 in every city's database; `pano_id` does not collide
+  across cities, so the pair is unique where `label_id` alone is not. Within one store, `label_id` is
+  what matches a row to its crop file, `<label_type_id>/<label_id>.jpg`.
 * **A failed append does not lose the crop, and is not counted as an error.** The crop is already on disk
-  and is the resume marker, so a re-run skips it and could never write the row: counting it in `errors`
-  would break the promise that errors retry, and would put one label in two buckets. Each one is logged to
-  `crop.log` (under the same per-kind cap as the other per-label warnings, as `provenance_unrecorded`),
-  and the run summary prints how many crops went unrecorded, on both channels. The counts and the exit code
-  are unchanged. Opening the manifest at all is different: if it cannot be opened the run stops before
-  cutting anything, exactly as it does when `crop_rule.json` cannot be written.
+  and is the resume marker, so a plain re-run skips it and could never write the row: counting it in
+  `errors` would break the promise that errors retry, and would put one label in two buckets. Each one is
+  logged to `crop.log` (under the same per-kind cap as the other per-label warnings, as
+  `provenance_unrecorded`), and the run summary prints how many crops went unrecorded, on both channels.
+  The counts and the exit code are unchanged. Opening the manifest at all is different: if it cannot be
+  opened the run stops before cutting anything, exactly as it does when `crop_rule.json` cannot be written.
+  A handle that cannot be *closed* cleanly (a network mount reporting a deferred write error) is said on
+  both channels and does not stop the run summary.
 
-**Crops cut before the manifest existed have no rows**, since they are not re-cut without `--force` (a `--force` pass over them adds their rows). `crop_rule.json` says
-whether a store's manifest can be read as covering every crop in it:
+**Crops cut before the manifest existed have no rows**, since they are not re-cut without `--force` (a
+`--force` pass that reaches them adds their rows). `crop_rule.json` records what the runs know about gaps:
 
 | Key | Meaning |
 |---|---|
 | `provenance_manifest` | The manifest's file name. |
 | `provenance_manifest_started_under` | The crop rule in force when the manifest was started. |
-| `provenance_manifest_complete_from_start` | `true` if the store held no crops when the manifest was started, `false` if it did, `null` if a manifest is present with no record of how it started. |
+| `provenance_manifest_no_known_gap` | `true` if the store held no crops when the manifest was started and no run since has known of a crop left without a row; `false` once either is known; `null` if a manifest is present with no record of how it started. |
 
-The last two are set once, by the run that starts the manifest, and carried forward unchanged by every
-later run — by then the crops on disk are the manifest's own. Deleting the manifest restarts it, and the
-restarted one is recorded as partial. A `false` or `null` store has crops with no row; a backfill is out
-of scope here, and would be a one-off in the shape of `migrate_depth_artifacts.py`. Even for a `true`
-store, the manifest's rows against the crops on disk is the ground truth: a crop whose append failed has no
-row either.
+The first two are set by the run that starts the manifest and carried forward by every later run.
+`provenance_manifest_no_known_gap` starts the same way and only ever goes from `true` to `false`: a run
+turns it `false` when an append fails, when the manifest cannot be closed cleanly, or when it finds and
+cuts a torn row a killed run left behind — and the `false` is kept for good, even through a `--force` pass
+that re-cuts every crop, because nothing in the marker can tell that such a pass reached every row-less
+crop (one whose label is absent from its metadata keeps no row). Deleting the manifest restarts it, and
+the restarted one is recorded as `false` if the store already holds crops.
+
+**The key is a record of what runs reported, not a coverage check.** A run killed between a crop's rename
+and its row reports nothing, so even a `true` store can hold a crop with no row. Coverage is the
+manifest's rows against the crops on disk, matched on `label_id` within one store — the only complete
+answer, and the one to compute before relying on the manifest for a `false` or `null` store, or for a
+`true` one that matters. A backfill is out of scope here, and would be a one-off in the shape of
+`migrate_depth_artifacts.py`.
 
 ## Before you train on these crops
 
