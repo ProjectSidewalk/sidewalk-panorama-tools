@@ -1542,18 +1542,22 @@ class TestTheDisplayCopyFollowsTheSwap:
     def test_a_failed_write_with_no_copy_to_replace_deletes_nothing(self, tmp_path, monkeypatch, small_cap,
                                                                      copies_on, caplog):
         """Switch on, no copy on the store, and the first write fails: there is nothing stale, so nothing to
-        delete, and the missing copy is exactly what the sweep fills. Logged, not fatal, shard unchanged."""
+        delete, and the missing copy is exactly what the sweep fills. Logged, not fatal, shard unchanged.
+
+        Logged at WARNING, like the successful delete (#153 final F7): both are states the next sweep
+        repairs, and ERROR is kept for the one a person has to clear."""
         pano, sidecar = self.store(tmp_path, with_sidecar=False)
         bystanders = self.plant_bystanders(tmp_path, pano)
         self.refuse_rewrite(monkeypatch)
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.WARNING):
             assert self.swap(tmp_path, monkeypatch) == 'replaced'
 
         assert not os.path.exists(sidecar)
         for path, before in bystanders.items():
             assert open(path, 'rb').read() == before, path
-        assert 'display copy not written' in caplog.text
+        (record,) = [r for r in caplog.records if 'display copy not written' in r.getMessage()]
+        assert record.levelno == logging.WARNING
 
     @pytest.mark.parametrize('outcome', ['absent', 'unreadable', 'not_affected', 'already_clean',
                                          'dims_changed', 'transient'])
