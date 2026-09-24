@@ -6,7 +6,8 @@ A display copy is a stored pano re-encoded at the width a viewer can texture: `<
 not at the cap.
 
 THIS SCRIPT IS THE ONLY WRITER THAT CREATES ONE. Since 2026-09-09 `downloaders.common.WRITE_DISPLAY_COPIES`
-is False, so neither downloader writes a copy and `refetch_panos` only refreshes one that already exists.
+is False, so neither downloader writes a copy and `refetch_panos` only refreshes one that already exists -
+deleting it instead when that refresh fails (#122), which leaves an absent copy for this sweep to recreate.
 Nothing schedules this script; it writes when a person runs it and not otherwise.
 
 #115 built the feature on the premise that Pannellum renders an equirectangular image as ONE WebGL texture,
@@ -51,7 +52,9 @@ def sidecar_is_current(pano_path, pano_dims, max_width):
     It still cannot see a sidecar that is stale in CONTENT at the right size - the panorama's bytes replaced
     under an unchanged frame. Nothing on disk can, short of a decode per pano, which is the whole cost this
     sweep exists to avoid. The one thing that does that is refetch_panos._refresh_display_copy, which rewrites
-    the copy at the moment of the swap; this check is not a substitute for it.
+    the copy at the moment of the swap; this check is not a substitute for it. When that rewrite fails it
+    DELETES the copy (#122) rather than leaving one this check would pass for ever, so the failure reaches
+    this sweep as an ABSENT copy - which it recreates from the new panorama like any other missing one.
     """
     expected = downscaled_size(pano_dims[0], pano_dims[1], max_width)
     return jpeg_dimensions(downscaled_sidecar_path(pano_path, max_width)) == expected

@@ -404,28 +404,64 @@ def _refresh_display_copy(storage_path, pano_id, image):
     at. That is the one asymmetry in the whole change, and it is the point: the switch says "stop making a
     new artifact nobody asked for", not "start lying in the one that already exists". Doing nothing here
     instead would re-introduce precisely the staleness the paragraph above describes, by choice, on the exact
-    panoramas this pass rewrites. Deleting it instead would be cheaper still - but this tool's whole design
-    is that it does not remove imagery, and a display copy on a store whose panorama Google no longer serves
-    is not obviously worthless.
+    panoramas this pass rewrites.
+
+    IF THE REWRITE FAILS, THE COPY IS DELETED (#122). Leaving it is the one outcome nothing can ever repair:
+    downscale_panos.sidecar_is_current judges from dimensions alone, because a decode per panorama is the
+    entire cost that sweep exists to avoid, and every gate above refuses a swap that changes the frame - so
+    a copy left stale here has EXACTLY the dimensions the sweep expects, reads as `current` for ever, and the
+    viewer serves the imagery this pass replaced. A MISSING copy, by contrast, heals itself: the next sweep
+    sees it absent and cuts a fresh one from the new panorama, and until then the web app serves the native
+    file, which is correct, just larger. This is the only thing the tool ever deletes, and it does not break
+    the no-destroy design, because that design is about PANORAMAS - ~52% of labelled ones exist nowhere
+    else. A display copy is a derivative, a pure function of the panorama beside it, and the panorama it is
+    a function of is the one that just landed. So the delete is gated as narrowly as the write it stands in
+    for: only here, which runs only after a swap has landed (every refusal returns before it), and only the
+    exact common.downscaled_sidecar_path for the current cap - never the panorama, never a copy at another
+    cap, never anything else in the shard. The atomic write matters here: common.atomic_output_path renames
+    into place only on success, so a failed rewrite always leaves the OLD file behind, never a torn one, and
+    that old file is the thing being deleted.
 
     Never fatal, and for a sharper reason than in the downloaders: the swap has ALREADY landed. Raising here
     would leave the panorama unledgered, so the next run would spend another ~512 tile requests to redo a
-    replacement that is already on disk. A stale sidecar is much the cheaper failure - but it is NOT one the
-    sweep can repair, so the log line is the whole remedy and has to be acted on.
+    replacement that is already on disk. That holds for the delete too: if it fails, that is logged and this
+    returns.
 
-    downscale_panos.sidecar_is_current judges from dimensions alone, because a decode per panorama is the
-    entire cost that sweep exists to avoid, and every gate above refuses a swap that changes the frame. So a
-    copy left stale here has EXACTLY the dimensions the sweep expects and it reports `current`, writing
-    nothing, for ever. The fix is to delete the named .w<cap>.jpg and then run the sweep, which will see it
-    absent and cut a fresh one; docs/ops.md says so where an operator will look.
+    Channels. A delete that succeeded goes to the log only: the store is left in a state the next sweep
+    repairs by itself, so there is nothing for a person to do, and stdout on this tool is its per-pano
+    narrative plus the things someone must act on. A delete that FAILED is the one case that still needs a
+    person - the copy is back to reading as current for ever - so it goes to both, the rule for a warning
+    that matters: stdout for whoever is running the pass, the log for next week.
     """
     pano_path = _stored_path(storage_path, pano_id)
-    if not common.WRITE_DISPLAY_COPIES and not os.path.exists(common.downscaled_sidecar_path(pano_path)):
+    sidecar = common.downscaled_sidecar_path(pano_path)
+    if not common.WRITE_DISPLAY_COPIES and not os.path.exists(sidecar):
         return
     try:
         write_downscaled_sidecar(image, pano_path)
-    except Exception as e:
-        logging.error("REFETCH: pano %s: display copy not rewritten after the swap: %r", pano_id, e)
+    except Exception as write_error:
+        _discard_stale_display_copy(pano_id, sidecar, write_error)
+
+
+def _discard_stale_display_copy(pano_id, sidecar, write_error):
+    """Delete the copy a failed post-swap rewrite left behind; never raises. See _refresh_display_copy."""
+    try:
+        os.remove(sidecar)
+    except FileNotFoundError:
+        # The switch is on and there was no copy to begin with: nothing is stale, and the absence is what
+        # the sweep fills.
+        logging.error("REFETCH: pano %s: display copy not written after the swap: %r", pano_id, write_error)
+    except Exception as remove_error:
+        message = ("pano %s: display copy could not be rewritten after the swap (%r) and the stale copy could "
+                   "not be deleted either (%r). It now reads as current to downscale_panos.py for ever: "
+                   "delete %s by hand, then run downscale_panos.py."
+                   % (pano_id, write_error, remove_error, sidecar))
+        logging.error("REFETCH: %s", message)
+        print("REFETCH: %s" % (message,))
+    else:
+        logging.error("REFETCH: pano %s: display copy could not be rewritten after the swap (%r), so the stale "
+                      "copy %s was deleted; the next downscale_panos.py sweep recreates it from the new "
+                      "panorama.", pano_id, write_error, sidecar)
 
 
 def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measurements):
