@@ -838,8 +838,8 @@ def systemic_failure_line(counts):
     a re-run over a finished store is 100% skipped_existing and did nothing wrong. The cost is a known
     blind spot: a mature store topping up a handful of labels, all of which fail to write, is a small
     fraction of a large total and does not trip this. That run still exits 1 and still logs a warning
-    per label - which is the whole signal it had before - and sharpening it needs a denominator with
-    its own degenerate cases, so it is left for a run that actually shows up.
+    per label, up to LOG_WARNINGS_PER_KIND - which is the whole signal it had before - and sharpening
+    it needs a denominator with its own degenerate cases, so it is left for a run that actually shows up.
 
     >>> systemic_failure_line({'total': 0, 'errors': 0}) is None
     True
@@ -1046,8 +1046,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 if not 0 <= pano_y < pano.size[1]:
                     counts['out_of_frame'] += 1
                     budget.warning(
-                        'out_of_frame', "Label %d on pano %s: pano_y %s is outside the %dx%d image; skipping rather "
-                        "than clamping it to a pole", label_id, pano_id, pano_y,
+                        'out_of_frame', "Label %d on pano %s: pano_y %s is outside the %dx%d image; "
+                        "skipping rather than clamping it to a pole", label_id, pano_id, pano_y,
                         pano.size[0], pano.size[1])
                     continue
 

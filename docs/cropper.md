@@ -181,6 +181,34 @@ The skip outcomes are **not** errors and do not affect the exit code: `missing_p
 scraped independently and legitimately lags the label list) and the two preflight rejections. Those are
 metadata the run declined to trust, not work it got wrong.
 
+### `crop.log` stays bounded under a flood
+
+Every per-label warning goes to `crop.log`, which is the durable record of *which* labels failed and why.
+Under one systemic fault that record used to destroy itself
+([#139](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/139)): the malformed-row warning
+carried the whole row, ~300–500 B repr'd, so the
+[#123](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/123) run's ~260,000 of them came
+to ~100 MB through the `10 MB × 3` rotation — every earlier run's history rotated out, and about 70% of the
+flood's own lines with it. Two bounds now apply, and both are needed:
+
+* **One line is bounded.** The malformed-row warning names `label_id` and `pano_id` first (`?` when the row
+  does not carry a readable one), then the reason and the row, each clipped to `LOG_ROW_REPR_MAX_CHARS`
+  (200) with `...`. An ordinary bad row keeps its detail; a pathological one cannot make one line huge.
+* **One run is bounded.** Each *kind* of per-label warning is logged at most `LOG_WARNINGS_PER_KIND` (100)
+  times per run. The first line dropped is replaced by one notice naming the kind, and the end of the run
+  logs one total — `Suppressed N per-label warnings this run (malformed_row: …, crop_failed: …)` — ahead of
+  the `SYSTEMIC FAILURE` line, which stays the last thing written. The kinds are `malformed_row`,
+  `crop_failed` (a failed write: a full or read-only store), `cannot_open` (a pano that exists but will not
+  open: a dead mount that still answers a stat), `dims_mismatch` (a city re-served wider than the store) and
+  `out_of_frame`. Each has its own budget, so a flood of one cannot hide the first lines of another, which
+  may be the actual cause.
+
+**Suppression drops lines, never counts.** Every label is still counted in its bucket, so the summary, the
+invariant above, the alarm below and the exit code all read exactly what they read before; stdout is
+unchanged. `missing_pano` is deliberately **not** capped: it is the normal state of a city whose scrape is
+catching up rather than a fault, it is one line per pano rather than per label, and which panos are missing
+is what an operator topping up a store wants listed.
+
 ### When errors dominate: `SYSTEMIC FAILURE`
 
 If at least **half** the run's labels errored, the summary ends with one extra line, to stdout **and** to
@@ -227,7 +255,7 @@ Three blind spots come with that denominator, and only the first is benign:
 
 - **A mature store topping up a handful of labels, every one of which fails to write**, is a small
   fraction of a large total and does not trip it. That run still exits 1 and still logs a warning per
-  label — the signal it had before.
+  label (up to the per-kind cap above) — the signal it had before.
 - **`missing_pano` dilutes the denominator.** A run over a city that is 60% un-scraped, whose output
   store then fills up mid-run or hits a per-file write failure, errors on every label it reaches — 40%
   of `total`. Silent. (A *read-only* `-o` is not this case: `write_rule_marker` writes `crop_rule.json`
