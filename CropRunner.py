@@ -136,6 +136,21 @@ CROP_MAX_STORED_WIDTH = 1440
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
 
+# The per-crop provenance manifest (#111), beside the marker: one row per crop, appended as it lands. A
+# crop is a bare JPEG and every consumer of this store is an ML dataset, so where its pixels came from -
+# and, for Mapillary and Panoramax imagery, under which licence - has to travel with it. See
+# ProvenanceManifest.
+PROVENANCE_MANIFEST = 'crop_provenance.csv'
+
+# The label-row fields copied into the manifest verbatim when the row carries them, and written EMPTY when
+# it does not - never inferred from anything else (the #99 rule). cvMetadata sends none of the three today
+# (docs/api-fields.md); older CSV exports carry `source` and `copyright`. `copyright` is the app's own name
+# for the producer credit (pano_data.copyright, which ImageryAttribution.line reads beside
+# pano_data.license, SidewalkWebpage#5202), so a value that arrives under it needs no renaming here.
+PROVENANCE_FIELDS = ('source', 'copyright', 'license')
+
+PROVENANCE_COLUMNS = ('label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+
 # ---------------------------------------------------------------------------
 # The systemic-failure alarm (#136). When cvMetadata changed shape (#123) every label errored, and the
 # run's bookkeeping was entirely correct about it: errors == total, the invariant reconciled, main()
@@ -652,6 +667,79 @@ def downscale_for_storage(crop):
     return crop.resize((CROP_MAX_STORED_WIDTH, max(1, int(round(height * scale)))), Image.LANCZOS)
 
 
+def _store_holds_crops(destination_dir):
+    """True if any label-type shard (<destination_dir>/<digits>/) holds a crop (a *.jpg).
+
+    Stops at the first crop found, so on a populated store it costs a directory listing or two rather than
+    a walk - which matters over sshfs, where a full walk of a city's ~400k crops is a round trip each. A
+    `.jpg.part` is a write that never landed, and crop.log / crop_rule.json sit at the root, so neither is
+    mistaken for one.
+    """
+    for entry in os.scandir(destination_dir):
+        if not (entry.is_dir() and entry.name and all(c in '0123456789' for c in entry.name)):
+            continue
+        with os.scandir(entry.path) as shard:
+            if any(crop.name.endswith('.jpg') for crop in shard):
+                return True
+    return False
+
+
+class ProvenanceManifest:
+    """<crop-dir>/crop_provenance.csv, held open for a run and appended one row per crop as it lands (#111).
+
+    The contract is the two nightly ledgers' (DownloadRunner's pano_id_log.csv, gsv's depth_log.csv): one
+    handle held for the run, a row written and flushed per item, so a run killed at any point leaves a
+    truthful partial file - a header, then one row for each crop that is on disk. Append-only: a row is
+    never rewritten, so a crop that is re-cut gets a second row and the later one describes the file.
+
+    The header is written when the file is EMPTY, not merely when it is new: a crash between creating it
+    and writing the header leaves zero bytes, and "the file exists" would then skip the header for good.
+    A last line with no newline (a crash mid-append) is closed first, so it stays one bad line instead of
+    swallowing the next good row.
+
+    Opening it can raise, exactly like write_rule_marker's write just before it in the same directory:
+    that is a store that cannot record provenance at all, and it fails before any crop is cut rather
+    than producing crops with no record. A failed append for ONE crop does not raise out of the loop -
+    bulk_extract_crops handles that - because by then the crop is already on disk.
+    """
+
+    def __init__(self, destination_dir):
+        self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
+        size, torn = 0, False
+        if os.path.exists(self.path):
+            with open(self.path, 'rb') as f:
+                size = f.seek(0, os.SEEK_END)
+                if size:
+                    f.seek(-1, os.SEEK_END)
+                    torn = f.read(1) != b'\n'
+        self._file = open(self.path, 'a', newline='', encoding='utf-8')
+        # '\n', the ledgers' pin: csv.writer's excel default is '\r\n', which hands every grep a trailing
+        # carriage return on the last column.
+        self._writer = csv.writer(self._file, lineterminator='\n')
+        if torn:
+            self._file.write('\n')
+        if not size:
+            self._writer.writerow(PROVENANCE_COLUMNS)
+        self._file.flush()
+
+    def record(self, label_id, pano_id, provenance):
+        """Append one crop's row and flush it. `provenance` is PROVENANCE_FIELDS' values, in order."""
+        self._writer.writerow((label_id, pano_id) + tuple(provenance) + (CROP_RULE_VERSION,))
+        self._file.flush()
+
+    def close(self):
+        self._file.close()
+
+
+def _provenance_value(value):
+    """A provenance field as the manifest writes it: the value as given, or '' when the row does not state
+    one - absent, null, a blank cell, or a NaN from a caller that built its rows with pandas. Never a
+    default: an empty cell is the honest record of 'not stated'."""
+    if _absent(value) or (isinstance(value, float) and math.isnan(value)):
+        return ''
+    return str(value)
+
+
 def write_rule_marker(destination_dir):
     """Record which sizing rule cut this crop store, in the store, and warn if it disagrees.
 
@@ -666,15 +754,33 @@ def write_rule_marker(destination_dir):
     an operator may be deliberately topping up, and refusing to run would strand it. What must not
     happen is that it goes unrecorded.
 
+    It also says whether the provenance manifest (#111) can be read as covering every crop in the store.
+    The rule version cannot answer that - a v2 store cropped before the manifest existed and one cropped
+    after both say v2 - and existing crops are never re-cut, so they never get a row. So when the manifest
+    is about to be started (it is not on disk yet) this records the rule starting it and whether the store
+    already held crops, and every later run carries those two answers forward unchanged: by then the
+    crops on disk are the manifest's own, and re-deriving from them would call a complete manifest
+    partial. A manifest on disk with no such record is `null` for both - unknown, not complete.
+
     :return: the rule version already on disk, or None if this is a fresh store.
     """
     path = os.path.join(destination_dir, CROP_RULE_MARKER)
-    previous = None
+    marker = {}
     try:
         with open(path, encoding='utf-8') as f:
-            previous = json.load(f).get('crop_rule_version')
+            marker = json.load(f)
     except (OSError, ValueError):
         pass
+    if not isinstance(marker, dict):
+        marker = {}
+    previous = marker.get('crop_rule_version')
+
+    if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST)):
+        manifest_started_under = marker.get('provenance_manifest_started_under')
+        manifest_complete = marker.get('provenance_manifest_complete_from_start')
+    else:
+        manifest_started_under = CROP_RULE_VERSION
+        manifest_complete = not _store_holds_crops(destination_dir)
 
     if previous is not None and previous != CROP_RULE_VERSION:
         message = ("Crop store %s was cut under sizing rule %s and this run uses %s. Existing crops "
@@ -691,7 +797,10 @@ def write_rule_marker(destination_dir):
                        'crop_max_fov_deg': CROP_MAX_FOV_DEG,
                        'crop_aspect_w_over_h': CROP_ASPECT_W_OVER_H,
                        'crop_max_stored_width': CROP_MAX_STORED_WIDTH,
-                       'previous_crop_rule_version': previous},
+                       'previous_crop_rule_version': previous,
+                       'provenance_manifest': PROVENANCE_MANIFEST,
+                       'provenance_manifest_started_under': manifest_started_under,
+                       'provenance_manifest_complete_from_start': manifest_complete},
                       f, indent=1, sort_keys=True)
     return previous
 
@@ -954,6 +1063,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     labels_by_pano = {}
     # Every per-label warning below goes through this, so a systemic fault cannot flood crop.log (#139).
     budget = WarningBudget()
+    # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
+    manifest = ProvenanceManifest(destination_dir)
+    unrecorded = 0
     for row in labels_to_crop:
         try:
             raw_id = row['pano_id']
@@ -975,6 +1087,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             if not (math.isfinite(pano_x) and math.isfinite(pano_y)):
                 raise ValueError("non-finite label position (%r, %r)" % (row['pano_x'], row['pano_y']))
             meta_dims = _metadata_dims(row)
+            provenance = tuple(_provenance_value(row.get(field)) for field in PROVENANCE_FIELDS)
         except (KeyError, TypeError, ValueError) as e:
             counts['errors'] += 1
             # Named fields first, then the reason and the row clipped: a whole row repr'd is ~300-500 B,
@@ -985,7 +1098,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                            _identifying_field(row, 'pano_id'),
                            _clip(str(e), LOG_ROW_REPR_MAX_CHARS), _clip(repr(row), LOG_ROW_REPR_MAX_CHARS))
             continue
-        labels_by_pano.setdefault(pano_id, []).append((pano_x, pano_y, label_type, label_id, meta_dims))
+        labels_by_pano.setdefault(pano_id, []).append(
+            (pano_x, pano_y, label_type, label_id, meta_dims, provenance))
 
     processed = counts['errors']
     made_dirs = set()
@@ -1013,7 +1127,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
         # close() is what actually releases the decoded buffer, which is the whole cost decode-once
         # accepts (~250 MB for a 13312x6656 pano, 384 MB for a 16384x8192 one).
         try:
-            for pano_x, pano_y, label_type, label_id, meta_dims in labels:
+            for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                 processed += 1
                 print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
 
@@ -1073,6 +1187,17 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                                    label_id, pano_id, e)
                     continue
                 counts['success'] += 1
+                # After the crop is on disk and counted, never instead of it (#111). A failed append is
+                # NOT an error: the crop is the resume marker, so a re-run skips it and could never write
+                # the row - counting it would break "errors retry next run" and put one label in two
+                # buckets. It is logged per label and totalled in the summary instead.
+                try:
+                    manifest.record(label_id, pano_id, provenance)
+                except Exception as e:
+                    unrecorded += 1
+                    budget.warning('provenance_unrecorded',
+                                   "Label %d on pano %s: cropped, but its provenance row was not written "
+                                   "to %s (%s)", label_id, pano_id, PROVENANCE_MANIFEST, e)
                 if box.shifted:
                     # The crop is real imagery containing the label, but the label is not at its
                     # centre. Counted rather than merely logged: a consumer that assumes centring
@@ -1085,6 +1210,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
         finally:
             pano.close()
+
+    manifest.close()
 
     print("Finished.")
     # Echoed here as well as written to <crop-dir>/crop_rule.json, because the summary is what an
@@ -1099,6 +1226,14 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     if counts['shifted_vertically']:
         print("%d of those crops were shifted to stay inside the pano, so their label is not at the "
               "crop's centre." % counts['shifted_vertically'])
+    if unrecorded:
+        # Both channels: the crops are fine, but a consumer reading the manifest as "every crop here"
+        # would now be wrong about these, and nothing else will ever record them.
+        message = ("%d crops were written without a row in %s (see crop.log for which); their provenance "
+                   "is not recorded, and a re-run will not record it because the crops now exist."
+                   % (unrecorded, PROVENANCE_MANIFEST))
+        logging.warning('%s', message)
+        print(message)
     suppressed = budget.summary()
     if suppressed:
         # crop.log only: the lines it accounts for were never on stdout, whose summary above is whole.

@@ -630,6 +630,17 @@ class TestTheMarkerSaysWhetherTheManifestIsComplete:
         assert marker['provenance_manifest_complete_from_start'] is None
         assert marker['provenance_manifest_started_under'] is None
 
+    def test_a_marker_that_is_json_but_not_an_object_is_rewritten(self, crop_runner, tmp_path):
+        """Reading more than one key out of the marker means reading it as a dict. Valid JSON that is
+        not an object (a hand edit, a truncation that happens to parse) used to die on `.get` with an
+        AttributeError the OSError/ValueError guard does not catch; it is provenance, not a lock."""
+        out = tmp_path / 'crops'
+        os.makedirs(str(out))
+        with open(os.path.join(str(out), crop_runner.CROP_RULE_MARKER), 'w') as f:
+            f.write('[1, 2]')
+        assert crop_runner.write_rule_marker(str(out)) is None
+        assert read_marker(out, crop_runner)['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
+
     def test_a_deleted_manifest_is_restarted_as_partial(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
