@@ -219,7 +219,7 @@ Errors are retried on the next run. The exit statuses, all of them:
 | Status | Meaning |
 |---|---|
 | `0` | Every label landed in a non-error bucket (a crop, or a skip the run chose). |
-| `1` | At least one label errored; re-running retries them. Also: a label-type shard of `-o` (`<crop-dir>/<digits>/`) that cannot be listed, which stops the run before any crop with the shard named on stdout and in `crop.log` (not `3`: nothing judged `-o` to be the production store — the provenance record needs to know whether the store already holds crops, and could not find out); and what an uncaught exception exits with — a manifest that cannot be opened stops the run before any crop, with a traceback. |
+| `1` | At least one label errored; re-running retries them. Also: a `-d` fetch of cvMetadata that fails (`Cannot fetch metadata from webserver`, the reason in `crop.log`); an `-f` file whose extension is neither `.csv` nor `.json` (the message on stderr); a label-type shard of `-o` (`<crop-dir>/<digits>/`) that cannot be listed, which stops the run before any crop with the shard named on stdout and in `crop.log` (not `3`: nothing judged `-o` to be the production store — the provenance record needs to know whether the store already holds crops, and could not find out); and what an uncaught exception exits with — a manifest that cannot be opened stops the run before any crop, with a traceback. |
 | `2` | argparse's usage error: a missing `-s`/`-o`, both or neither of `-d`/`-f`. |
 | `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list. Nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
 
@@ -368,7 +368,7 @@ guard refuses with or without `--force`.
 |---|---|
 | `<label_type_id>/<label_id>.jpg` | One crop per label. Its existence is the resume marker: it is not re-cut unless `--force` is passed. |
 | `crop_rule.json` | Which sizing rule cut the store, plus whether the provenance manifest has a known gap (below). |
-| `crop_provenance.csv` | One row per crop: where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)). |
+| `crop_provenance.csv` | One row per crop cut (a re-cut appends one; the last row for a label describes the file): where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)). |
 | `crop.log` | The rotating run log (10 MB × 3). |
 
 ### The provenance manifest, `crop_provenance.csv`
@@ -382,7 +382,7 @@ label_id,pano_id,source,copyright,license,crop_rule_version
 
 * **One row per crop, appended as it lands** — after the JPEG is on disk, through one handle held for the
   run. That is the two nightly ledgers' contract (`pano_id_log.csv`, `depth_log.csv`), so a run killed at
-  any point leaves a truthful partial file: a header, and a row for each crop that exists. Nothing else
+  any point leaves a truthful partial file: a header, and rows in which every row describes a crop this tool cut, and a kill can leave at most the crop in flight without its row (a torn row is cut back at the next open and recorded as a gap). Nothing else
   gets a row — not a skip, a preflight rejection, or a failed write. The file is append-only, so every
   re-cut appends a row; the last row for a label describes the file.
 * **A row reaches the file whole or not at all**
@@ -430,8 +430,11 @@ label_id,pano_id,source,copyright,license,crop_rule_version
 
 The first two are set by the run that starts the manifest and carried forward by every later run.
 `provenance_manifest_no_known_gap` starts the same way and only ever goes from `true` to `false`: a run
-turns it `false` when an append fails, when the manifest cannot be closed cleanly, or when it finds and
-cuts a torn row a killed run left behind — and the `false` is kept for good, even through a `--force` pass
+turns it `false` when an append fails, when the manifest cannot be closed cleanly, or when it finds a
+torn row a killed run left behind — that one is recorded *before* the row is cut, so a run killed straight
+after still leaves `false`, and a run that cannot record it stops before cutting anything. A marker the run
+cannot read is left as it is rather than rebuilt, and the failure to record is said on both channels. The
+`false` is kept for good, even through a `--force` pass
 that re-cuts every crop, because nothing in the marker can tell that such a pass reached every row-less
 crop (one whose label is absent from its metadata keeps no row). Deleting the manifest restarts it, and
 the restarted one is recorded as `false` if the store already holds crops.

@@ -867,8 +867,13 @@ class ProvenanceManifest:
 
     The contract is the two nightly ledgers' (DownloadRunner's pano_id_log.csv, gsv's depth_log.csv): one
     handle held for the run and a row on disk per item, so a run killed at any point leaves a truthful
-    partial file - a header, then one row for each crop that is on disk. Append-only: a row is never
-    rewritten, so every re-cut appends a row and the last one for a label describes the file.
+    partial file - a header, then rows in which every row describes a crop this tool cut, and a kill can
+    leave at most the crop in flight without its row (a torn row is cut back at the next open and recorded
+    as a gap). Append-only: a row is never rewritten, so every re-cut appends a row and the last one for a
+    label describes the file.
+
+    One CropRunner per store: nothing locks the manifest, and a second run's first open would cut this
+    run's in-flight row as torn.
 
     **A row is written whole or not at all (#153 M2).** The handle is UNBUFFERED and each row is one
     encoded line handed to the OS, so there is no buffer in which a failed row can wait to be flushed by
