@@ -449,15 +449,16 @@ def _refresh_display_copy(storage_path, pano_id, image):
 def _discard_stale_display_copy(pano_id, sidecar, write_error):
     """Delete the copy a failed post-swap rewrite left behind; never raises. See _refresh_display_copy.
 
-    A successful delete is logged at WARNING (the next sweep, whenever one is run, recreates the copy); a
-    delete that fails is logged at ERROR and printed, because only a person can clear it.
+    A successful delete, and a copy that was never there, are logged at WARNING (the next sweep, whenever
+    one is run, writes the copy - #153 m7, final F7); a delete that fails is logged at ERROR and printed,
+    because only a person can clear it.
     """
     try:
         os.remove(sidecar)
     except FileNotFoundError:
         # The switch is on and there was no copy to begin with: nothing is stale, and the absence is what
-        # the sweep fills.
-        logging.error("REFETCH: pano %s: display copy not written after the swap: %r", pano_id, write_error)
+        # the sweep fills. WARNING like the successful delete below, for the same reason (#153 final F7).
+        logging.warning("REFETCH: pano %s: display copy not written after the swap: %r", pano_id, write_error)
     except Exception as remove_error:
         message = ("pano %s: display copy could not be rewritten after the swap (%r) and the stale copy could "
                    "not be deleted either (%r). It now reads as current to downscale_panos.py for ever: "

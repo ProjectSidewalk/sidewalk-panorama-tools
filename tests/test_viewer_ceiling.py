@@ -24,6 +24,7 @@ import builtins
 import io
 import logging
 import os
+import pathlib
 
 import pytest
 from PIL import Image
@@ -132,10 +133,21 @@ class TestTheHelper:
         moved into tmp_path so a relative write the guards missed would still show up there.
 
         Kills: the helper calling write_downscaled_sidecar / write_downscaled_sidecar_from_file /
-        _write_reduced, saving an Image, or opening any file for writing.
+        _write_reduced, saving an Image, opening any file for writing (builtins.open, io.open, os.open with a
+        writing flag), or Path.write_text / write_bytes (#153 final F8) - including behind an
+        `except BaseException`, which would swallow pytest.fail: every guard also records what reached it,
+        and the list is asserted empty after the call.
+
+        Not a complete guard on its own, and not meant to be (#153 final F16): it sees only the path the
+        helper takes for this width and source. The lexical test below is its pair - a writer under a
+        condition this call does not set up passes here and is caught there, and a writer spelled in a way
+        the lexical set does not name (a new API) passes there and is caught here if this call reaches it.
         """
+        reached = []
+
         def forbidden(name):
             def fail(*args, **kwargs):
+                reached.append(name)
                 pytest.fail('the tripwire reached %s' % name)
             return fail
 
@@ -144,26 +156,44 @@ class TestTheHelper:
             monkeypatch.setattr(common, name, forbidden('common.%s' % name))
         monkeypatch.setattr(Image.Image, 'save', forbidden('PIL.Image.Image.save'))
         monkeypatch.setattr(os, 'replace', forbidden('os.replace'))
-        real_open = builtins.open
+        monkeypatch.setattr(pathlib.Path, 'write_text', forbidden('pathlib.Path.write_text'))
+        monkeypatch.setattr(pathlib.Path, 'write_bytes', forbidden('pathlib.Path.write_bytes'))
+        real_open, real_os_open = builtins.open, os.open
 
         def read_only_open(file, mode='r', *args, **kwargs):
             if any(flag in mode for flag in 'wax+'):
+                reached.append('open(%r, %r)' % (file, mode))
                 pytest.fail('the tripwire opened %r with mode %r' % (file, mode))
             return real_open(file, mode, *args, **kwargs)
 
+        writing_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+
+        def read_only_os_open(path, flags, *args, **kwargs):
+            if flags & writing_flags:
+                reached.append('os.open(%r, %#x)' % (path, flags))
+                pytest.fail('the tripwire os.open()ed %r for writing' % (path,))
+            return real_os_open(path, flags, *args, **kwargs)
+
         monkeypatch.setattr(builtins, 'open', read_only_open)
+        monkeypatch.setattr(io, 'open', read_only_open)
+        monkeypatch.setattr(os, 'open', read_only_os_open)
         monkeypatch.chdir(tmp_path)
 
         with caplog.at_level(logging.WARNING):
             assert common.warn_if_wider_than_viewer_ceiling('panoIdX', WIDE, 'gsv') is True
 
+        assert reached == []
         assert len(tripwire_records(caplog)) == 1       # it really fired, so the guards were really in play
         assert list(tmp_path.iterdir()) == []
 
     def test_its_body_names_no_sidecar_primitive(self):
         """The lexical half. The runtime guard above sees only the path the helper takes today; a writer
         reached under a condition that test does not set up (a width, a source) would pass it. So the
-        function's own source may not reference any of the primitives at all."""
+        function's own source may not reference any of the primitives at all.
+
+        The two kill mutants as a PAIR (#153 final F16), not each alone: this one cannot see a writer it
+        has no name for, and the runtime one cannot see a branch its call does not take. `open` covers
+        builtins.open, io.open and os.open alike, since an attribute is matched by its name."""
         with open(os.path.join(REPO_ROOT, 'downloaders', 'common.py'), encoding='utf-8') as f:
             tree = ast.parse(f.read())
         (helper,) = [node for node in tree.body if isinstance(node, ast.FunctionDef)
@@ -172,7 +202,8 @@ class TestTheHelper:
         referenced |= {n.attr for n in ast.walk(helper) if isinstance(n, ast.Attribute)}
 
         writers = {'write_downscaled_sidecar', 'write_downscaled_sidecar_from_file', '_write_reduced',
-                   'atomic_output_path', 'downscaled_sidecar_path', 'save', 'open'}
+                   'atomic_output_path', 'downscaled_sidecar_path', 'save', 'open', 'write_text',
+                   'write_bytes'}
         assert referenced & writers == set()
 
 

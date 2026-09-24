@@ -849,7 +849,7 @@ section exists because of.
 - `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
   tripwire](#the-width-tripwire): a source now serves panoramas wider than 8192-class GPUs can render. It never
   fails a night and is never mailed on a clean one, so this grep is the only place it surfaces — and it runs
-  only when someone runs it, here or under [routine checks](#routine-checks).
+  only when someone runs it, here or under [routine checks](#routine-checks). A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
 - The analyzer's fleet block, for the checks it encodes.
 
 ### Routine checks
@@ -860,6 +860,6 @@ the fleet, beyond the analyzer:
 
 - `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
   tripwire](#the-width-tripwire); it is never mailed on a clean night, so this grep is the only place it
-  surfaces.
+  surfaces. A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
 - `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
   [only there](#hearing-about-a-bad-night).

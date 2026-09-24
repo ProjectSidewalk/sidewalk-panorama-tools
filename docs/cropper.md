@@ -50,9 +50,11 @@ since `crop.log` would be a write into the store being refused — if it finds e
 A directory named for a label type refuses even when it is **empty**, deliberately: a city directory holds its
 type directories before it holds a single capture. The cost is that an ordinary folder that happens to be
 called `Other` or `Signal` refuses `-o`; the message names it. A directory the scan **cannot list** —
-`lost+found` at the root of an ext4 volume, `System Volume Information` at a Windows drive's — is refused the
-same way, naming it, since what cannot be read cannot be ruled out
-([#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153)).
+`lost+found` at the root of an ext4 volume, `System Volume Information` at a Windows drive's (a permission
+error, or Windows' `WinError 1920`), whether the listing fails to open or fails partway through — is refused
+the same way, naming it, since what cannot be read cannot be ruled out
+([#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153)). Any other I/O error is not
+read as a refusal and stops the run as itself.
 
 It **refuses rather than warns**. The two layouts happen to be disjoint on every name component, so this tool
 could not overwrite a capture today — but that is a coincidence of naming, not a guard, and it does nothing
@@ -207,8 +209,8 @@ path, including re-runs:
 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total
 ```
 
-(`shifted_vertically` and `recut` annotate a success, and `stale_kept` annotates a preflight skip under
-`--force` — see below — so they are deliberately not in that sum.)
+(`shifted_vertically` and `recut` annotate a success, and `stale_kept` annotates a label `--force` never
+reached the write for — see below — so they are deliberately not in that sum.)
 
 The run writes a rotating `crop.log` into the crop directory, prints a per-outcome summary, and **exits 1 if
 any label errored** — a corrupt pano, a malformed metadata row, a failed write — so a cron wrapper can alert.
@@ -217,7 +219,7 @@ Errors are retried on the next run. The exit statuses, all of them:
 | Status | Meaning |
 |---|---|
 | `0` | Every label landed in a non-error bucket (a crop, or a skip the run chose). |
-| `1` | At least one label errored; re-running retries them. Also what an uncaught exception exits with — a manifest or a crop shard that cannot be opened stops the run before any crop, with a traceback. |
+| `1` | At least one label errored; re-running retries them. Also: a `-d` fetch of cvMetadata that fails (`Cannot fetch metadata from webserver`, the reason in `crop.log`); an `-f` file whose extension is neither `.csv` nor `.json` (the message on stderr); a label-type shard of `-o` (`<crop-dir>/<digits>/`) that cannot be listed, which stops the run before any crop with the shard named on stdout and in `crop.log` (not `3`: nothing judged `-o` to be the production store — the provenance record needs to know whether the store already holds crops, and could not find out); and what an uncaught exception exits with — a manifest that cannot be opened stops the run before any crop, with a traceback. |
 | `2` | argparse's usage error: a missing `-s`/`-o`, both or neither of `-d`/`-f`. |
 | `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list. Nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
 
@@ -346,13 +348,16 @@ guard refuses with or without `--force`.
 * **Nothing else changes.** Missing panos, the two preflights and errors behave exactly as without it, so a
   label the run skips keeps whatever crop it already had — a forced run over a half-scraped pano store is
   not a whole-store re-cut. Check the summary's skip counts before relying on a store being one geometry.
-* **Known limit: a label that now fails a preflight keeps its old crop.** The `dims_mismatch` and
-  `out_of_frame` checks run before the "does a crop exist" check, so a label whose crop is on disk but whose
-  metadata now fails one is skipped with that crop untouched — cut under whatever rule cut it, while
-  `crop_rule.json` names the new one. A forced run counts these as `stale_kept` (an annotation of the skip,
-  outside the sum above) and ends with `N labels skipped by a preflight kept a crop already on disk`, on
-  stdout and in `crop.log`, whose per-label lines name them under those two kinds. The crop is **not**
-  deleted: whether a forced run should remove a crop it can no longer vouch for is an open decision, not
+* **Known limit: a label skipped before its write keeps its old crop.** A preflight skip, a missing pano
+  or an unreadable pano all come before the "does a crop exist" check: the `dims_mismatch` and
+  `out_of_frame` checks run first, and a pano that is missing or cannot be opened skips every label on it.
+  A label whose crop is on disk is then skipped with that crop untouched — cut under whatever rule cut it,
+  while `crop_rule.json` names the new one. A forced run counts these as `stale_kept` (an annotation of the
+  skip or error, outside the sum above) and ends with `N labels skipped under --force - by a preflight, a
+  missing pano or an unreadable pano - kept a crop already on disk`, on stdout and in `crop.log`.
+  `crop.log`'s `dims_mismatch`, `out_of_frame` and `cannot_open` lines (up to `LOG_WARNINGS_PER_KIND` of
+  each) and its missing-pano lines include them, without marking which kept an old crop. The crop is
+  **not** deleted: whether a forced run should remove a crop it can no longer vouch for is an open decision, not
   something this tool does on its own.
 * **It re-cuts the labels you hand it, not the directory.** A crop on disk whose label is absent from the
   metadata (deleted upstream, or outside a `-f` subset) is left alone.
@@ -363,7 +368,7 @@ guard refuses with or without `--force`.
 |---|---|
 | `<label_type_id>/<label_id>.jpg` | One crop per label. Its existence is the resume marker: it is not re-cut unless `--force` is passed. |
 | `crop_rule.json` | Which sizing rule cut the store, plus whether the provenance manifest has a known gap (below). |
-| `crop_provenance.csv` | One row per crop: where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)). |
+| `crop_provenance.csv` | One row per crop cut (a re-cut appends one; the last row for a label describes the file): where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)). |
 | `crop.log` | The rotating run log (10 MB × 3). |
 
 ### The provenance manifest, `crop_provenance.csv`
@@ -377,15 +382,16 @@ label_id,pano_id,source,copyright,license,crop_rule_version
 
 * **One row per crop, appended as it lands** — after the JPEG is on disk, through one handle held for the
   run. That is the two nightly ledgers' contract (`pano_id_log.csv`, `depth_log.csv`), so a run killed at
-  any point leaves a truthful partial file: a header, and a row for each crop that exists. Nothing else
+  any point leaves a truthful partial file: a header, and rows in which every row describes a crop this tool cut, and a kill can leave at most the crop in flight without its row (a torn row is cut back at the next open and recorded as a gap). Nothing else
   gets a row — not a skip, a preflight rejection, or a failed write. The file is append-only, so every
   re-cut appends a row; the last row for a label describes the file.
 * **A row reaches the file whole or not at all**
   ([#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153)). The handle is unbuffered
   and each row is one write, so a row whose append failed cannot sit in a buffer and be written later by
-  the next row's flush. After a failed append the handle is dropped and the next row reopens it, and
+  the next row's flush. After a failed append the handle is dropped and reopened at once, and
   reopening — like every run's first open — cuts the file back to its last complete line. So half a row
-  can never sit in the middle of the file, and a torn last row (a run killed mid-append) is cut away
+  can never sit in the middle of the file, a run whose last append tore does not end torn, and a torn last
+  row (a run killed mid-append) is cut away
   rather than closed off with a newline, which inside a quoted `copyright` would swallow every later row.
   If nothing is left, the header is written again.
 * **`source`, `copyright` and `license` are copied from the label metadata verbatim, and written empty when
@@ -424,8 +430,11 @@ label_id,pano_id,source,copyright,license,crop_rule_version
 
 The first two are set by the run that starts the manifest and carried forward by every later run.
 `provenance_manifest_no_known_gap` starts the same way and only ever goes from `true` to `false`: a run
-turns it `false` when an append fails, when the manifest cannot be closed cleanly, or when it finds and
-cuts a torn row a killed run left behind — and the `false` is kept for good, even through a `--force` pass
+turns it `false` when an append fails, when the manifest cannot be closed cleanly, or when it finds a
+torn row a killed run left behind — that one is recorded *before* the row is cut, so a run killed straight
+after still leaves `false`, and a run that cannot record it stops before cutting anything. A marker the run
+cannot read is left as it is rather than rebuilt, and the failure to record is said on both channels. The
+`false` is kept for good, even through a `--force` pass
 that re-cuts every crop, because nothing in the marker can tell that such a pass reached every row-less
 crop (one whose label is absent from its metadata keeps no row). Deleting the manifest restarts it, and
 the restarted one is recorded as `false` if the store already holds crops.

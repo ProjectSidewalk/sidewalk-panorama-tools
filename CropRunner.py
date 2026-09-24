@@ -188,9 +188,11 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 
 # bulk_extract_crops' counts, beside 'total'. Every label lands in exactly one DISJOINT_OUTCOMES bucket, so
 # those sum to total on every path; a COUNT_ANNOTATIONS entry qualifies a label already in one of them and
-# is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a
-# dims_mismatch or out_of_frame skip under --force that left an old crop in place (#153 m2). A new key goes
-# in exactly one of the two, and tests/test_crop_runner.py asserts the dict holds nothing else.
+# is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a label
+# under --force that left an old crop in place because the run never reached its write: a dims_mismatch or
+# out_of_frame skip (#153 m2), a missing_pano, or the errors of a pano that cannot be opened (#153 final
+# F3). A new key goes in exactly one of the two, and tests/test_crop_runner.py asserts the dict holds
+# nothing else.
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch', 'out_of_frame',
                      'errors')
 COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
@@ -700,6 +702,26 @@ class ProductionCropStoreError(Exception):
     See refuse_production_crop_store."""
 
 
+class CropStoreUnlistableError(OSError):
+    """_store_holds_crops could not list the crop store or one of its shards (#153 m1, final F6).
+
+    Its own class so main() can report exactly this - on both channels, exit 1 - without also catching
+    every other OSError a run can raise."""
+
+
+# Windows errors a directory listing raises for a directory this user cannot list that are NOT a
+# PermissionError. ERROR_NOT_READY (21) already arrives as one - Python maps it to EACCES - but
+# ERROR_CANT_ACCESS_FILE (1920), which some drive-root system directories give, arrives as a plain OSError
+# (EINVAL). Both are listed so the intent does not rest on that mapping.
+_UNLISTABLE_WINERRORS = frozenset({21, 1920})
+
+
+def _is_unlistable(error):
+    """Whether an OSError from listing a directory means "this user cannot list it", as opposed to an
+    I/O fault, which both scanners let propagate as itself."""
+    return isinstance(error, PermissionError) or getattr(error, 'winerror', None) in _UNLISTABLE_WINERRORS
+
+
 # Compared case-folded: the store can sit on, or be copied through, a case-insensitive filesystem.
 _LABEL_TYPE_NAMES_FOLDED = frozenset(name.casefold() for name in LABEL_TYPE_IDS_BY_NAME)
 
@@ -752,7 +774,9 @@ def refuse_production_crop_store(destination_dir):
     be called `Other` or `Signal` is the accepted cost - the message names it, and renaming it is cheap.
 
     A directory the scan cannot LIST (a PermissionError: lost+found at an ext4 volume's root, System
-    Volume Information at a Windows drive's) is refused too, naming it (#153 m1). What cannot be read
+    Volume Information at a Windows drive's, or its WinError 1920 - see _is_unlistable) is refused too,
+    naming it (#153 m1), whether the listing fails to open or fails partway through (#153 final F6).
+    What cannot be read
     cannot be ruled out, and skipping it would pass a store the guard never looked at; crashing, which
     it used to, was exit 1 with a traceback before logging existed.
 
@@ -768,35 +792,39 @@ def refuse_production_crop_store(destination_dir):
     pending = [(destination_dir, 0)]
     while pending:
         directory, depth = pending.pop()
+        found = None
+        # The whole listing is inside the try, not just the scandir call (#153 final F6): iterating it,
+        # and an entry's is_dir(), can raise the same errors partway through.
         try:
-            listing = os.scandir(directory)
+            with os.scandir(directory) as listing:
+                for entry in listing:
+                    if entry.is_dir():
+                        if depth == 0 and entry.name.casefold() in _LABEL_TYPE_NAMES_FOLDED:
+                            found = ("a directory named for label type %r (this tool names them by "
+                                     "numeric id)" % entry.name)
+                            break
+                        if depth < PRODUCTION_STORE_SCAN_DEPTH and not _is_numeric_name(entry.name):
+                            pending.append((entry.path, depth + 1))
+                    elif _is_canvas_capture(entry.name):
+                        found = "a canvas capture, %s" % entry.path
+                        break
         except (FileNotFoundError, NotADirectoryError):
             continue
-        except PermissionError as e:
+        except OSError as e:
+            if not _is_unlistable(e):
+                raise
             raise ProductionCropStoreError(
                 "Refusing to write crops into %s: %s cannot be read (%s), so it cannot be ruled out as "
                 "part of the production crop store SidewalkWebpage serves, whose canvas captures cannot "
                 "be regenerated. Point -o at a directory whose contents this user can list, or at a new "
                 "directory." % (destination_dir, directory, e.strerror or e)) from e
-        with listing:
-            for entry in listing:
-                found = None
-                if entry.is_dir():
-                    if depth == 0 and entry.name.casefold() in _LABEL_TYPE_NAMES_FOLDED:
-                        found = ("a directory named for label type %r (this tool names them by numeric id)"
-                                 % entry.name)
-                    elif depth < PRODUCTION_STORE_SCAN_DEPTH and not _is_numeric_name(entry.name):
-                        pending.append((entry.path, depth + 1))
-                elif _is_canvas_capture(entry.name):
-                    found = "a canvas capture, %s" % entry.path
-                if found is None:
-                    continue
-                raise ProductionCropStoreError(
-                    "Refusing to write crops into %s: it holds %s, the layout of the production crop "
-                    "store SidewalkWebpage serves (<city-id>/<LabelType>/crop_<labelId>.png). Those "
-                    "are canvas captures taken at label time and cannot be regenerated. CropRunner "
-                    "writes <label_type_id>/<label_id>.jpg - point -o at a formula crop store, or at a "
-                    "new directory." % (destination_dir, found))
+        if found is not None:
+            raise ProductionCropStoreError(
+                "Refusing to write crops into %s: it holds %s, the layout of the production crop "
+                "store SidewalkWebpage serves (<city-id>/<LabelType>/crop_<labelId>.png). Those "
+                "are canvas captures taken at label time and cannot be regenerated. CropRunner "
+                "writes <label_type_id>/<label_id>.jpg - point -o at a formula crop store, or at a "
+                "new directory." % (destination_dir, found))
 
 def _store_holds_crops(destination_dir):
     """True if any label-type shard (<destination_dir>/<digits>/) holds a crop (a *.jpg).
@@ -806,9 +834,11 @@ def _store_holds_crops(destination_dir):
     `.jpg.part` is a write that never landed, and crop.log / crop_rule.json sit at the root, so neither is
     mistaken for one.
 
-    Raises PermissionError, naming the directory, if the store or a shard cannot be listed (#153 m1):
+    Raises CropStoreUnlistableError, naming the directory, if the store or a shard cannot be listed
+    (#153 m1) - by this user (see _is_unlistable), at the scandir call or partway through the listing:
     skipping it could record a store that already held crops as having no known gap, so the run stops
-    here - before any crop is cut, like a manifest that cannot be opened.
+    here - before any crop is cut, like a manifest that cannot be opened. main() reports it on both
+    channels and exits 1 (#153 final F6). Any other OSError propagates as itself.
     """
     try:
         with os.scandir(destination_dir) as listing:
@@ -822,8 +852,10 @@ def _store_holds_crops(destination_dir):
                     # a mis-named one would mean "the store already held crops", the only question asked.
                     if any(crop.name.endswith('.jpg') for crop in shard):
                         return True
-    except PermissionError as e:
-        raise PermissionError(
+    except OSError as e:
+        if not _is_unlistable(e):
+            raise
+        raise CropStoreUnlistableError(
             e.errno, "Cannot list %s to tell whether crop store %s already holds crops, which the "
             "provenance record needs (%s); nothing has been cut. Make it readable, then re-run."
             % (e.filename, destination_dir, e.strerror)) from e
@@ -835,15 +867,21 @@ class ProvenanceManifest:
 
     The contract is the two nightly ledgers' (DownloadRunner's pano_id_log.csv, gsv's depth_log.csv): one
     handle held for the run and a row on disk per item, so a run killed at any point leaves a truthful
-    partial file - a header, then one row for each crop that is on disk. Append-only: a row is never
-    rewritten, so every re-cut appends a row and the last one for a label describes the file.
+    partial file - a header, then rows in which every row describes a crop this tool cut, and a kill can
+    leave at most the crop in flight without its row (a torn row is cut back at the next open and recorded
+    as a gap). Append-only: a row is never rewritten, so every re-cut appends a row and the last one for a
+    label describes the file.
+
+    One CropRunner per store: nothing locks the manifest, and a second run's first open would cut this
+    run's in-flight row as torn.
 
     **A row is written whole or not at all (#153 M2).** The handle is UNBUFFERED and each row is one
     encoded line handed to the OS, so there is no buffer in which a failed row can wait to be flushed by
     the next successful one - which is how rows the run reported as unrecorded used to turn up in the
-    file. When an append fails the handle is dropped, and the next row reopens it; reopening cuts the
-    file back to its last complete line, so a write that failed partway cannot leave half a row in the
-    middle of the file with whole ones after it.
+    file. When an append fails the handle is dropped and reopened at once (#153 final F4), and reopening
+    cuts the file back to its last complete line, so a write that failed partway cannot leave half a row
+    in the middle of the file with whole ones after it, nor at the end of a run whose LAST append tore.
+    If that reopen fails, the next row's record() reopens instead.
 
     **The repair cuts back; it never closes off (#153 n2).** A last line with no newline - a crash
     mid-append, or the partial write above - is truncated away rather than terminated with a '\\n': when
@@ -866,21 +904,31 @@ class ProvenanceManifest:
     def __init__(self, destination_dir):
         self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
         self._file = None
-        self.torn_rows_cut = int(self._open())
+        self.torn_rows_cut = int(self._open(first=True))
 
-    def _open(self):
+    def _open(self, first=False):
         """Cut any torn tail back to the last complete line, then open for unbuffered appends.
 
-        :return: True if a torn ROW was cut (a torn header costs no crop its row)."""
+        On the FIRST open, a torn row is recorded as a gap in crop_rule.json BEFORE it is cut (#153 final
+        F1): the fragment is the only evidence that a crop lost its row, so recording it at the end of
+        the run would lose it to anything that ends a run without a finally - SIGKILL, an OOM on a 384 MB
+        decode, a SIGTERM (CropRunner installs no handler) - or to this open itself raising just after the
+        cut. A record that cannot be written raises out of here with nothing cut, which stops the run
+        before any crop: the torn row is then still on disk for the next run to find.
+
+        :return: True if the first open cut a torn ROW (a torn header costs no crop its row)."""
         keep, cut_row = 0, False
         if os.path.exists(self.path):
             with open(self.path, 'r+b') as f:
                 size = f.seek(0, os.SEEK_END)
                 keep = _end_of_last_line(f, size)
                 if keep != size:
+                    # A torn HEADER (keep == 0) cost no crop its row; anything after a header did. A tear
+                    # a later reopen finds is this run's own failed append, already counted unrecorded.
+                    if keep and first:
+                        _record_manifest_gap(os.path.dirname(self.path))
+                        cut_row = True
                     f.truncate(keep)
-                    # A torn HEADER (keep == 0) cost no crop its row; anything after a header did.
-                    cut_row = bool(keep)
         handle = open(self.path, 'ab', buffering=0)
         try:
             if not keep:
@@ -895,7 +943,11 @@ class ProvenanceManifest:
         """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order.
 
         Raises if the row did not reach the file; the handle is dropped first, so nothing of the row
-        survives to be written later and the next call starts from a clean line."""
+        survives to be written later, and then reopened at once, which cuts any part of the row that did
+        land (#153 final F4). Cutting here rather than at the next row's open means no run ends torn - a
+        tear left by the run's LAST append used to be cut by the next run's first open and reported as a
+        previous run killed mid-append, about a row this run had already reported as unrecorded. The
+        reopen is best-effort: if it fails, the handle stays dropped and the next call reopens instead."""
         line = _csv_line((label_id, pano_id) + tuple(provenance) + (CROP_RULE_VERSION,))
         if self._file is None:
             self._open()
@@ -904,6 +956,10 @@ class ProvenanceManifest:
         except BaseException:
             _close_quietly(self._file)
             self._file = None
+            try:
+                self._open()
+            except Exception:
+                pass
             raise
 
     def close(self):
@@ -1060,20 +1116,29 @@ def write_rule_marker(destination_dir, force=False):
 def _record_manifest_gap(destination_dir):
     """Turn crop_rule.json's MANIFEST_NO_KNOWN_GAP false, keeping every other key (#153 M3).
 
-    Called at the end of a run that knows it left a crop without a row. Rewritten atomically like the
-    marker itself; a marker that cannot be read is rebuilt around the one key, since the rule keys were
-    written at the start of this same run and a lost marker is write_rule_marker's to repair next time.
-    Raises on a failed write - the caller reports it, because the crops are fine and it is the RECORD of
-    the gap that did not land.
+    Called at the end of a run that knows it left a crop without a row, and by the manifest's first open
+    just before it cuts a previous run's torn row (#153 final F1). Rewritten atomically like the
+    marker itself.
+
+    An ABSENT marker is rebuilt around the one key: there is nothing on disk to lose, and
+    write_rule_marker restores the rule keys next run. A marker that exists but cannot be read - a
+    transient read error, unparseable JSON, JSON that is not an object - is NOT overwritten, and this
+    raises instead (#153 final F2): rebuilding it around the one key threw away every constant,
+    crop_rule_version, provenance_manifest_started_under (for good, since the next run carries it forward)
+    and previous_crop_rule_version (so a real rule change got no mixed-store warning).
+
+    Raises on a failed read or write - the caller reports it, because the crops are fine and it is the
+    RECORD of the gap that did not land.
     """
     path = os.path.join(destination_dir, CROP_RULE_MARKER)
     try:
         with open(path, encoding='utf-8') as f:
             marker = json.load(f)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         marker = {}
     if not isinstance(marker, dict):
-        marker = {}
+        raise ValueError("%s holds %s, not a JSON object; left as it is"
+                         % (CROP_RULE_MARKER, type(marker).__name__))
     marker[MANIFEST_NO_KNOWN_GAP] = False
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
@@ -1325,9 +1390,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
              Those six are DISJOINT_OUTCOMES. The COUNT_ANNOTATIONS are NOT among them:
              shifted_vertically annotates a success whose window had to move to stay inside the pano, so
              the crop exists but the label is off-centre in it; recut annotates a success that replaced a
-             crop already on disk (force=True only); stale_kept annotates a dims_mismatch or out_of_frame
-             skip, under force=True, whose label already had a crop - which therefore stays as whatever
-             rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
+             crop already on disk (force=True only); stale_kept annotates a label, under force=True,
+             that the run skipped before its write - a dims_mismatch or out_of_frame skip, a missing_pano,
+             or an error because its pano could not be opened - and whose crop was already on disk, which
+             therefore stays as whatever rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
              went stale before; tests/test_crop_runner.py asserts the sum, and the key set, from the dict
              rather than from this docstring.
 
@@ -1349,6 +1415,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
     labels_by_pano = {}
+
+    def crops_on_disk(labels):
+        """How many of a pano's labels already have a crop - stale_kept for a pano the run cannot use.
+        A stat per label, but only on the slow paths that call it (a missing or unreadable pano)."""
+        return sum(os.path.exists(os.path.join(destination_dir, str(label[2]), str(label[3]) + '.jpg'))
+                   for label in labels)
+
     # Every per-label warning below goes through this, so a systemic fault cannot flood crop.log (#139).
     budget = WarningBudget()
     # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
@@ -1399,6 +1472,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             if not os.path.exists(pano_img_path):
                 counts['missing_pano'] += len(labels)
                 processed += len(labels)
+                if force:
+                    counts['stale_kept'] += crops_on_disk(labels)
                 print("Panorama image not found: %s (%d labels skipped)" % (pano_img_path, len(labels)))
                 logging.warning("Skipped %d labels on pano %s due to missing image.", len(labels), pano_id)
                 continue
@@ -1408,6 +1483,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             except Exception as e:
                 counts['errors'] += len(labels)
                 processed += len(labels)
+                if force:
+                    counts['stale_kept'] += crops_on_disk(labels)
                 budget.warning('cannot_open', "Skipped %d labels on pano %s: cannot open %s (%s)",
                                len(labels), pano_id, pano_img_path, e)
                 continue
@@ -1523,8 +1600,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             logging.error('%s', message)
             print(message)
         # Also in the finally, so a run killed after losing a row still says so in the marker. Each of
-        # the three is a crop on disk this run knows has no row, or may not (a failed close).
-        if unrecorded or close_failure is not None or manifest.torn_rows_cut:
+        # the two is a crop on disk this run knows has no row, or may not (a failed close). A torn row
+        # found at open is the third, and was recorded before it was cut (ProvenanceManifest._open).
+        if unrecorded or close_failure is not None:
             try:
                 _record_manifest_gap(destination_dir)
             except Exception as e:
@@ -1552,10 +1630,14 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     if counts['stale_kept']:
         # Both channels: a forced run promises a store cut under one rule, and these labels break it.
         # Whether to delete such a crop is a decision nobody has made, so it is counted and said instead.
-        message = ("%d labels skipped by a preflight kept a crop already on disk (--force): their metadata "
-                   "now fails the dims_mismatch or out_of_frame check, so the old crop was neither re-cut "
-                   "nor removed and stays as whatever rule cut it, while %s says %s. crop.log names them "
-                   "under those two kinds." % (counts['stale_kept'], CROP_RULE_MARKER, CROP_RULE_VERSION))
+        # crop.log's lines are not promised to name them (#153 final F5): three of the four kinds are
+        # capped per run, and none says whether its label kept an old crop.
+        message = ("%d labels skipped under --force - by a preflight, a missing pano or an unreadable pano - "
+                   "kept a crop already on disk: the run never reached their write, so the old crop was "
+                   "neither re-cut nor removed and stays as whatever rule cut it, while %s says %s. "
+                   "crop.log's dims_mismatch, out_of_frame and cannot_open lines (up to %d of each) and its "
+                   "missing-pano lines include them, without marking which kept an old crop."
+                   % (counts['stale_kept'], CROP_RULE_MARKER, CROP_RULE_VERSION, LOG_WARNINGS_PER_KIND))
         logging.warning('%s', message)
         print(message)
 
@@ -1610,8 +1692,10 @@ def main(argv=None):
     Exceptions propagate, argparse errors exit 2, and an unrecognized -f extension exits with a message -
     not the NameError it used to be.
 
-    :return: 0; 1 if any label errored; EXIT_REFUSED_DESTINATION if -o looks like the production
-             crop store (nothing is created or written, crop.log included). 1 is deliberately not keyed
+    :return: 0; 1 if any label errored, or if a label-type shard of -o cannot be listed (said on
+             both channels, nothing cut); EXIT_REFUSED_DESTINATION if -o looks like the production
+             crop store, or holds a directory the guard cannot list (nothing is created or written,
+             crop.log included). 1 is deliberately not keyed
              on "did every label produce a crop": missing panos are the normal state of a city whose
              scrape is still catching up, while `errors` only ever counts things that should not have
              happened - a corrupt pano, a malformed row, a failed write - so it is the half worth
@@ -1640,8 +1724,16 @@ def main(argv=None):
 
     raise_decompression_bomb_ceiling()
 
-    counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
-                 crop_destination_path=args.o, mark_label=args.mark_label, force=args.force)
+    try:
+        counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
+                     crop_destination_path=args.o, mark_label=args.mark_label, force=args.force)
+    except CropStoreUnlistableError as e:
+        # Both channels, and into crop.log, which is configured by now: as a traceback it reached stderr
+        # only (#153 final F6). Exit 1, not EXIT_REFUSED_DESTINATION - nothing judged -o to be the
+        # production store; it could not be read, and nothing was cut.
+        logging.error('%s', e)
+        print("CropRunner: %s" % e)
+        return 1
     return 1 if counts['errors'] else 0
 
 
