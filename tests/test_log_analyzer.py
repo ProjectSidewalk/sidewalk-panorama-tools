@@ -1868,7 +1868,8 @@ class TestTheRosterGapDecidesTheExitCode:
     The mutant is `return 1 if critical else 0` - the pre-#133 line, which prints the gap and exits 0.
     """
 
-    def _run(self, tmp_path, monkeypatch, fetch, cities=(('seattle-wa', 'Seattle'),), argv=()):
+    def _run(self, tmp_path, monkeypatch, fetch, cities=(('seattle-wa', 'Seattle'),), argv=(),
+             env_host='host.example'):
         logs_dir = tmp_path / 'logs'
         logs_dir.mkdir(exist_ok=True)
         cities_file = tmp_path / 'cities.csv'
@@ -1897,7 +1898,10 @@ class TestTheRosterGapDecidesTheExitCode:
                                                                   'port': None, 'key': None})
         monkeypatch.setattr(analyze, 'download_log', fake_download)
         monkeypatch.setattr(analyze.roster, 'fetch_roster', fetch)
-        monkeypatch.setenv('PS_ROSTER_HOST', 'host.example')
+        if env_host is None:
+            monkeypatch.delenv('PS_ROSTER_HOST', raising=False)
+        else:
+            monkeypatch.setenv('PS_ROSTER_HOST', env_host)
         return analyze.main(list(argv))
 
     def test_a_complete_roster_on_a_healthy_fleet_exits_zero(self, tmp_path, monkeypatch):
@@ -1954,6 +1958,44 @@ class TestTheRosterGapDecidesTheExitCode:
         analyze.main(['--no-download'])
 
         assert 'Roster cross-check' not in capsys.readouterr().out
+
+
+class TestTheRosterHostNeedsNoConfiguration(TestTheRosterGapDecidesTheExitCode):
+    """Every deployment serves the same roster, so the host has a default and setting nothing still runs the
+    check. The order is flag, then PS_ROSTER_HOST, then DEFAULT_ROSTER_HOST.
+
+    Subclassing reuses `_run`; the inherited exit-code tests run a second time here, which costs nothing.
+    """
+
+    def _asked(self, tmp_path, monkeypatch, **kw):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            return [roster_entry('seattle-wa')]
+
+        status = self._run(tmp_path, monkeypatch, fetch, **kw)
+        return status, asked
+
+    def test_unset_uses_the_default_and_passes(self, tmp_path, monkeypatch):
+        """The mutant is dropping `or DEFAULT_ROSTER_HOST`: the check is then CRITICAL and the run exits 1."""
+        status, asked = self._asked(tmp_path, monkeypatch, env_host=None)
+        assert asked == [analyze.DEFAULT_ROSTER_HOST]
+        assert status == 0
+
+    def test_an_empty_env_var_is_unset_not_an_empty_host(self, tmp_path, monkeypatch):
+        status, asked = self._asked(tmp_path, monkeypatch, env_host='')
+        assert asked == [analyze.DEFAULT_ROSTER_HOST]
+        assert status == 0
+
+    def test_the_env_var_overrides_the_default(self, tmp_path, monkeypatch):
+        _, asked = self._asked(tmp_path, monkeypatch, env_host='env.example')
+        assert asked == ['env.example']
+
+    def test_the_flag_overrides_the_env_var(self, tmp_path, monkeypatch):
+        _, asked = self._asked(tmp_path, monkeypatch, env_host='env.example',
+                               argv=('--roster-host', 'flag.example'))
+        assert asked == ['flag.example']
 
 
 class TestTheDeployedCityListPassesItsOwnCheck:

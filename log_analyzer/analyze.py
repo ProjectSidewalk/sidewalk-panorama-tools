@@ -22,7 +22,7 @@ hardcoded here. See docs/log-analyzer.md.
 and cross-checks cities.csv against the fleet roster (#133), so a city nobody added here is loud rather
 than simply unmonitored:
 
-  PS_ROSTER_HOST  required unless --roster-host  a deployment that serves /v3/api/cities
+  PS_ROSTER_HOST  optional  a deployment that serves /v3/api/cities; omit for sidewalk-sea
 
 Usage:
   python3 analyze.py                        # download + analyze all cities
@@ -57,6 +57,12 @@ _roster_spec.loader.exec_module(roster)
 SCRIPT_DIR  = Path(__file__).parent
 LOGS_DIR    = SCRIPT_DIR / "logs"
 CITIES_FILE = SCRIPT_DIR / "cities.csv"
+
+# Where the roster cross-check (#133) asks for /v3/api/cities. Unlike the SFTP host and base, this one can
+# safely have a default: every deployment serves the same fleet-wide roster, so no host can be the "wrong"
+# one - only an unreachable one, which roster_check already reports as CRITICAL. --roster-host /
+# PS_ROSTER_HOST override it for when Seattle is down.
+DEFAULT_ROSTER_HOST = "sidewalk-sea.cs.washington.edu"
 
 # ---------------------------------------------------------------------------
 # log.csv format
@@ -702,9 +708,9 @@ def roster_check(city_rows, host, fetch=None) -> tuple[list[str], bool]:
     Three ways it goes CRITICAL, and the middle one is the one that is easy to "simplify" away:
 
     * **an unlisted city** - the gap itself;
-    * **no host configured** - a check that is silently skipped every night is precisely the failure it
-      exists to prevent, so an unset host is loud rather than absent. #132 made the same call for the
-      nightly path;
+    * **no host** - a check that is silently skipped every night is precisely the failure it exists to
+      prevent, so an empty host is loud rather than absent. main() always supplies DEFAULT_ROSTER_HOST
+      now, so this guards the function's own contract rather than a configuration step;
     * **no roster served** - best effort on the fetch, but a check that fails open is the #130 shape again.
 
     Returns lines rather than printing them so the whole thing is drivable in a test.
@@ -770,8 +776,9 @@ def main(argv=None) -> int:
     ros = parser.add_argument_group("fleet roster cross-check (#133)")
     ros.add_argument(
         "--roster-host",
-        help=f"Deployment to ask for {roster.ROSTER_PATH}, e.g. sidewalk-sea.cs.washington.edu. Every "
-             f"deployment serves the same roster, so one host is enough. [PS_ROSTER_HOST]",
+        help=f"Deployment to ask for {roster.ROSTER_PATH}. Every deployment serves the same roster, so any "
+             f"one will do; override only when the default is down. [PS_ROSTER_HOST, "
+             f"default {DEFAULT_ROSTER_HOST}]",
     )
     args = parser.parse_args(argv)
 
@@ -858,7 +865,7 @@ def main(argv=None) -> int:
     if args.download:
         roster_lines, roster_critical = roster_check(
             all_rows,
-            args.roster_host or os.environ.get("PS_ROSTER_HOST"),
+            args.roster_host or os.environ.get("PS_ROSTER_HOST") or DEFAULT_ROSTER_HOST,
         )
         print(f"\n{'━'*70}")
         for line in roster_lines:
