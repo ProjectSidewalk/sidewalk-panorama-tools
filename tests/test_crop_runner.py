@@ -102,7 +102,8 @@ def crop_path(out_dir, label_type_id, label_id):
 # The disjoint outcome buckets, in one place so a newly added one cannot quietly fall out of the
 # invariant — which is exactly how it went stale when dims_mismatch arrived. shifted_vertically is
 # deliberately absent: it annotates a success (the crop was written, just de-centred), so counting it
-# as its own bucket would double-count.
+# as its own bucket would double-count. recut (#83) is absent for the same reason: a crop re-cut under
+# --force over one already on disk is a success that happened to replace something.
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch',
                      'out_of_frame', 'errors')
 
@@ -262,7 +263,7 @@ class TestMetadataIntake:
         labels = crop_runner.fetch_label_ids_csv(str(csv_file))
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 2, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
-                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 1}
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'recut': 0, 'errors': 1}
         assert os.path.exists(crop_path(out, 1, 1))
 
     def test_csv_missing_required_column_fails_loudly(self, crop_runner, tmp_path):
@@ -540,7 +541,7 @@ class TestBulkExtractCrops:
                   label_row(label_id=3, pano_id='gonepano0001')]
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 3, 'success': 2, 'skipped_existing': 0, 'missing_pano': 1,
-                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'recut': 0,
                           'errors': 0}
 
     def test_rerun_skips_existing_and_still_reconciles(self, crop_runner, tmp_path):
@@ -550,7 +551,7 @@ class TestBulkExtractCrops:
         crop_runner.bulk_extract_crops(labels, str(store), str(out))
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 2, 'success': 0, 'skipped_existing': 2, 'missing_pano': 0,
-                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'recut': 0,
                           'errors': 0}
 
     def test_every_outcome_is_accounted_for_exactly_once(self, crop_runner, tmp_path):
@@ -577,7 +578,7 @@ class TestBulkExtractCrops:
 
         assert sum(counts[k] for k in DISJOINT_OUTCOMES) == counts['total'] == 7
         assert counts == {'total': 7, 'success': 2, 'skipped_existing': 1, 'missing_pano': 1,
-                          'dims_mismatch': 1, 'out_of_frame': 1, 'shifted_vertically': 1,
+                          'dims_mismatch': 1, 'out_of_frame': 1, 'shifted_vertically': 1, 'recut': 0,
                           'errors': 1}
 
     def test_a_corrupt_pano_does_not_kill_the_run(self, crop_runner, tmp_path, caplog):
@@ -681,7 +682,7 @@ class TestBulkExtractCrops:
                   + [label_row(pano_id='goodpano0001', label_id=6)])
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 6, 'success': 1, 'skipped_existing': 0, 'missing_pano': 3,
-                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 2}
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'recut': 0, 'errors': 2}
         assert reconciles(counts)
 
     def test_a_truncated_pano_is_one_error_per_label(self, crop_runner, tmp_path, caplog):
@@ -698,7 +699,7 @@ class TestBulkExtractCrops:
         with caplog.at_level(logging.WARNING):
             counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 3, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
-                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 2}
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'recut': 0, 'errors': 2}
         assert 'Failed to crop label' in caplog.text
         # A failed crop must leave nothing behind: the crop file is the resume marker, so a stub here
         # would be read as done on the next run.
@@ -727,7 +728,7 @@ class TestBulkExtractCrops:
         counts = crop_runner.bulk_extract_crops(
             [label_row(pano_id='', label_id=1), label_row(pano_id='   ', label_id=2)], str(store), str(out))
         assert counts == {'total': 2, 'success': 0, 'skipped_existing': 0, 'missing_pano': 0,
-                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 2}
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'recut': 0, 'errors': 2}
 
     def test_an_unusable_output_directory_is_one_error_not_a_dead_run(self, crop_runner, tmp_path):
         """os.makedirs sat outside the try, so an OSError on the output side — a full store, a read-only
@@ -741,7 +742,7 @@ class TestBulkExtractCrops:
         labels = [label_row(label_id=1, label_type_id=1), label_row(label_id=2, label_type_id=2)]
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 2, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
-                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 1}
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'recut': 0, 'errors': 1}
         assert os.path.exists(crop_path(out, 2, 2))
 
     def test_the_label_type_directory_is_made_once_per_type(self, crop_runner, tmp_path, monkeypatch):
@@ -2010,11 +2011,11 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
 # ---------------------------------------------------------------------------
 
 def counts_dict(total, errors=0, success=0, skipped_existing=0, missing_pano=0, dims_mismatch=0,
-                out_of_frame=0, shifted_vertically=0):
+                out_of_frame=0, shifted_vertically=0, recut=0):
     """A counts dict shaped exactly like bulk_extract_crops', for unit-testing the alarm alone."""
     return {'total': total, 'success': success, 'skipped_existing': skipped_existing,
             'missing_pano': missing_pano, 'dims_mismatch': dims_mismatch,
-            'out_of_frame': out_of_frame, 'shifted_vertically': shifted_vertically,
+            'out_of_frame': out_of_frame, 'shifted_vertically': shifted_vertically, 'recut': recut,
             'errors': errors}
 
 
@@ -2279,3 +2280,317 @@ class TestTheSystemicFailureAlarm:
         assert '5 errors, of 5 labels total' in printed
         logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read()
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged
+
+
+# ---------------------------------------------------------------------------
+# --force (#83): the re-cut path a changed crop rule needs
+# ---------------------------------------------------------------------------
+
+def plant_stale_crop(out_dir, label_type_id=1, label_id=1):
+    """A crop already on disk that is plainly not what the current rule cuts: 10x10 solid red.
+
+    Stands in for a v1 (square, pre-#88) crop. Its bytes are returned so a test can tell "replaced"
+    from "left alone" on the file itself rather than on a counter."""
+    path = crop_path(out_dir, label_type_id, label_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Image.new('RGB', (10, 10), (255, 0, 0)).save(path, format='JPEG')
+    with open(path, 'rb') as f:
+        return f.read()
+
+
+class TestForceRecut:
+    """#83. Existing crops are the resume marker, so a store cut under sizing rule v1 kept every v1 crop
+    for ever and the only repair was deleting the store. --force re-cuts a label whose crop exists.
+
+    The counts invariant does not move: a re-cut is a `success`, and `recut` annotates it the way
+    `shifted_vertically` does. Every test asserts the file as well as the counters, because a counter
+    that says "re-cut" over an untouched file is the silent version of this feature failing."""
+
+    def test_force_is_off_by_default(self, crop_runner):
+        args = crop_runner.build_parser().parse_args(['-d', 'x.invalid', '-s', '/panos', '-o', '/out'])
+        assert args.force is False
+
+    def test_force_is_a_flag(self, crop_runner):
+        args = crop_runner.build_parser().parse_args(
+            ['-d', 'x.invalid', '-s', '/panos', '-o', '/out', '--force'])
+        assert args.force is True
+
+    def test_without_force_a_stale_crop_is_left_alone(self, crop_runner, tmp_path):
+        """The default is unchanged: the file on disk is the resume marker. Discrimination for the
+        test below, which would also pass if every run re-cut unconditionally."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        stale = plant_stale_crop(out)
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
+        assert counts['skipped_existing'] == 1 and counts['success'] == 0 and counts['recut'] == 0
+        with open(crop_path(out, 1, 1), 'rb') as f:
+            assert f.read() == stale
+
+    def test_force_recuts_an_existing_crop_to_what_a_fresh_run_cuts(self, crop_runner, tmp_path):
+        """Against the file: the re-cut crop is byte-identical to the one a run over an empty store
+        writes. Kills a no-op --force (the stale bytes survive) outright."""
+        store, out, fresh = tmp_path / 'store', tmp_path / 'crops', tmp_path / 'fresh'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row()], str(store), str(fresh))
+        stale = plant_stale_crop(out)
+
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out), force=True)
+
+        assert counts == {'total': 1, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
+                          'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'recut': 1,
+                          'errors': 0}
+        with open(crop_path(out, 1, 1), 'rb') as f:
+            recut = f.read()
+        with open(crop_path(fresh, 1, 1), 'rb') as f:
+            assert recut == f.read() != stale
+
+    def test_a_recut_is_a_success_and_stays_out_of_the_disjoint_sum(self, crop_runner, tmp_path):
+        """One fresh label and one re-cut in the same run: both are successes, recut counts only the
+        one that replaced something, and the six disjoint buckets still sum to total. An
+        implementation that files a re-cut under `recut` INSTEAD of `success` reconciles only if recut
+        is put in the sum - which is the double-count this annotation exists to avoid."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        plant_stale_crop(out, label_id=1)
+        labels = [label_row(label_id=1, pano_x=150), label_row(label_id=2, pano_x=250)]
+        counts = crop_runner.bulk_extract_crops(labels, str(store), str(out), force=True)
+        assert counts['success'] == 2
+        assert counts['recut'] == 1
+        assert counts['skipped_existing'] == 0
+        assert 'recut' not in DISJOINT_OUTCOMES
+        assert reconciles(counts)
+
+    def test_force_over_an_empty_store_recuts_nothing(self, crop_runner, tmp_path):
+        """`recut` means "replaced a crop that was there", not "ran under --force"."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out), force=True)
+        assert counts['success'] == 1 and counts['recut'] == 0
+
+    def test_a_recut_that_dies_mid_write_leaves_the_old_crop_intact(self, crop_runner, tmp_path,
+                                                                     monkeypatch):
+        """The write goes through atomic_output_path, so the old crop is replaced only by a finished
+        new one. Without --force that contract protected a resume marker; with it, it protects the
+        only crop the label has. The failing save writes junk to whatever path it was handed before
+        raising, so a save straight to the final path would leave the junk where the crop was."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        stale = plant_stale_crop(out)
+
+        def junk_then_die(self, fp, *args, **kwargs):
+            with open(fp, 'wb') as f:
+                f.write(b'half a jpeg')
+            raise OSError('disk full marker')
+
+        monkeypatch.setattr(Image.Image, 'save', junk_then_die)
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out), force=True)
+
+        assert counts['errors'] == 1 and counts['success'] == 0 and counts['recut'] == 0
+        assert reconciles(counts)
+        with open(crop_path(out, 1, 1), 'rb') as f:
+            assert f.read() == stale
+        assert sorted(p.name for p in (out / '1').iterdir()) == ['1.jpg']   # no .part left behind
+
+    def test_the_summary_says_how_many_were_recut(self, crop_runner, tmp_path, capsys):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        plant_stale_crop(out, label_id=1)
+        crop_runner.bulk_extract_crops([label_row(label_id=1, pano_x=150),
+                                        label_row(label_id=2, pano_x=250)],
+                                       str(store), str(out), force=True)
+        assert '1 of those crops were re-cut' in capsys.readouterr().out
+
+    def test_a_run_that_recut_nothing_does_not_mention_it(self, crop_runner, tmp_path, capsys):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row()], str(store), str(out), force=True)
+        assert 're-cut' not in capsys.readouterr().out
+
+    def test_force_reaches_the_crop_through_main(self, crop_runner, tmp_path):
+        """build_parser -> main -> run -> bulk_extract_crops: dropping the flag at any hop leaves the
+        stale crop in place with exit 0."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        stale = plant_stale_crop(out)
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row()])
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out), '--force']) == 0
+        with open(crop_path(out, 1, 1), 'rb') as f:
+            assert f.read() != stale
+
+
+# ---------------------------------------------------------------------------
+# The production-crop-store guard (#83)
+# ---------------------------------------------------------------------------
+
+# The layout SidewalkWebpage serves its canvas captures from (PanoDataService.cropFile): label type
+# NAME, a crop_ prefix, .png. Every file in it is a screenshot of an annotator's viewport at label time
+# and cannot be regenerated from anything this repo holds.
+PRODUCTION_CITY = 'seattle-wa'
+
+
+def make_production_store(root):
+    """<root>/<city-id>/<LabelType>/crop_<labelId>.png, two types with one capture each."""
+    for label_type, label_id in (('CurbRamp', 101), ('NoCurbRamp', 102)):
+        type_dir = os.path.join(str(root), PRODUCTION_CITY, label_type)
+        os.makedirs(type_dir, exist_ok=True)
+        Image.new('RGB', (4, 4), (0, 128, 0)).save(os.path.join(type_dir, 'crop_%d.png' % label_id),
+                                                   format='PNG')
+    return root
+
+
+def tree_snapshot(root):
+    """Every path under root with its bytes (None for a directory) - "nothing was written" asserted
+    on the filesystem rather than on a return value."""
+    snapshot = {}
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        for d in dirnames:
+            snapshot[os.path.relpath(os.path.join(dirpath, d), str(root))] = None
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            with open(path, 'rb') as f:
+                snapshot[os.path.relpath(path, str(root))] = f.read()
+    return snapshot
+
+
+class TestTheProductionCropStoreGuard:
+    """#83's scope correction. `-o` pointed at the store SidewalkWebpage serves could not overwrite a
+    canvas capture today, because the two layouts are disjoint on every name component - but that is
+    a coincidence of naming, not a guard, and a re-cut campaign ("delete the store, then re-cut") is
+    exactly where a wrong root gets used. So the destination is checked before anything is written,
+    and a production-shaped one is REFUSED."""
+
+    @pytest.mark.parametrize('target', ['', PRODUCTION_CITY, os.path.join(PRODUCTION_CITY, 'CurbRamp')])
+    def test_every_level_of_the_production_store_is_refused(self, crop_runner, tmp_path, target):
+        """The store root, one city, and one label type directory - the three places an operator could
+        plausibly point -o at. Nothing is written, not even the rule marker: that is the first write a
+        run makes, and the guard has to precede it."""
+        store, prod = tmp_path / 'store', tmp_path / 'prod'
+        put_pano(store, 'testpano0001')
+        make_production_store(prod)
+        before = tree_snapshot(prod)
+        destination = os.path.join(str(prod), target) if target else str(prod)
+
+        with pytest.raises(crop_runner.ProductionCropStoreError):
+            crop_runner.bulk_extract_crops([label_row()], str(store), destination, force=True)
+
+        assert tree_snapshot(prod) == before
+
+    def test_a_label_type_named_directory_alone_is_refused(self, crop_runner, tmp_path):
+        """No capture in it at all - the name is the signal. Discriminates the name check from the
+        crop_*.png check: with the name check removed this destination passes."""
+        (tmp_path / 'out' / 'CurbRamp').mkdir(parents=True)
+        with pytest.raises(crop_runner.ProductionCropStoreError, match='CurbRamp'):
+            crop_runner.refuse_production_crop_store(str(tmp_path / 'out'))
+
+    def test_every_label_type_name_is_recognised(self, crop_runner, tmp_path):
+        """Taken from LABEL_TYPE_IDS_BY_NAME, the upstream enum, so a type added upstream is guarded
+        the day it is added to the map rather than whenever someone remembers this list. The nine the
+        production store is known to hold are spelled out too, so the map shrinking cannot pass."""
+        known = {'CurbRamp', 'NoCurbRamp', 'Obstacle', 'SurfaceProblem', 'Other', 'Occlusion',
+                 'NoSidewalk', 'Crosswalk', 'Signal'}
+        names = set(crop_runner.LABEL_TYPE_IDS_BY_NAME) | known
+        for name in sorted(names):
+            out = tmp_path / ('out-' + name)
+            (out / name).mkdir(parents=True)
+            with pytest.raises(crop_runner.ProductionCropStoreError):
+                crop_runner.refuse_production_crop_store(str(out))
+
+    def test_the_name_match_ignores_case(self, crop_runner, tmp_path):
+        """The store may sit on a case-insensitive filesystem, or be copied through one."""
+        (tmp_path / 'out' / 'curbramp').mkdir(parents=True)
+        with pytest.raises(crop_runner.ProductionCropStoreError):
+            crop_runner.refuse_production_crop_store(str(tmp_path / 'out'))
+
+    def test_a_canvas_capture_alone_is_refused(self, crop_runner, tmp_path):
+        """No named directory - a single crop_*.png. Discriminates the file check from the name check."""
+        out = tmp_path / 'out' / 'misc'
+        out.mkdir(parents=True)
+        Image.new('RGB', (4, 4)).save(str(out / 'crop_7.png'), format='PNG')
+        with pytest.raises(crop_runner.ProductionCropStoreError, match='crop_7.png'):
+            crop_runner.refuse_production_crop_store(str(tmp_path / 'out'))
+
+    def test_a_label_type_named_file_is_not_a_label_type_directory(self, crop_runner, tmp_path):
+        out = tmp_path / 'out'
+        out.mkdir()
+        (out / 'Other').write_text('a note, not a directory')
+        crop_runner.refuse_production_crop_store(str(out))
+
+    def test_a_destination_that_does_not_exist_yet_passes(self, crop_runner, tmp_path):
+        crop_runner.refuse_production_crop_store(str(tmp_path / 'not' / 'yet'))
+        assert not (tmp_path / 'not').exists()
+
+    def test_a_genuine_formula_store_passes_and_keeps_working(self, crop_runner, tmp_path):
+        """The store this tool writes - numeric type directories, <label_id>.jpg, crop_rule.json,
+        crop.log - must never trip it. crop_rule.json and the crop_ prefix are the near miss: our own
+        marker starts with crop_, so the file check has to be about .png, not about the prefix."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row(label_id=1, label_type_id=1),
+                                    label_row(label_id=2, label_type_id=2, pano_x=260)])
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
+        (out / 'crop_provenance.csv').write_text('label_id\n')
+        assert (out / crop_runner.CROP_RULE_MARKER).is_file() and (out / 'crop.log').is_file()
+
+        crop_runner.refuse_production_crop_store(str(out))
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out), '--force']) == 0
+
+    def test_the_scan_never_lists_a_numeric_shard(self, crop_runner, tmp_path, monkeypatch):
+        """A formula store holds ~400k crops in its numeric type directories, over sshfs. Listing them
+        to rule out a crop_*.png that the production layout never puts there would make the guard the
+        most expensive thing a re-run does. So it does not descend into them."""
+        out = tmp_path / 'crops'
+        for type_id in ('1', '2', '10'):
+            (out / type_id).mkdir(parents=True)
+            (out / type_id / '5.jpg').write_bytes(b'x')
+        listed = []
+        real_scandir = os.scandir
+
+        def recording_scandir(path='.'):
+            listed.append(os.path.normpath(str(path)))
+            return real_scandir(path)
+
+        monkeypatch.setattr(crop_runner.os, 'scandir', recording_scandir)
+        crop_runner.refuse_production_crop_store(str(out))
+        assert listed == [os.path.normpath(str(out))]
+
+    def test_the_scan_stops_two_levels_down(self, crop_runner, tmp_path, monkeypatch):
+        """Bounded depth: the production root puts its captures two directories down
+        (<city-id>/<LabelType>/), so that is how far it looks, and no further."""
+        out = tmp_path / 'out'
+        deep = out / 'a' / 'b' / 'c'
+        deep.mkdir(parents=True)
+        Image.new('RGB', (4, 4)).save(str(deep / 'crop_9.png'), format='PNG')
+        listed = []
+        real_scandir = os.scandir
+
+        def recording_scandir(path='.'):
+            listed.append(os.path.relpath(str(path), str(out)))
+            return real_scandir(path)
+
+        monkeypatch.setattr(crop_runner.os, 'scandir', recording_scandir)
+        crop_runner.refuse_production_crop_store(str(out))
+        assert sorted(listed) == ['.', 'a', os.path.join('a', 'b')]
+
+    def test_main_refuses_with_a_message_on_both_channels_and_writes_nothing(self, crop_runner, tmp_path,
+                                                                            capsys, caplog):
+        """main() creates -o and opens crop.log inside it before run() - so the guard has to run first
+        there too, or the refusal itself would leave a crop.log in the production store."""
+        store, prod = tmp_path / 'store', tmp_path / 'prod'
+        put_pano(store, 'testpano0001')
+        make_production_store(prod)
+        before = tree_snapshot(prod)
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row()])
+        target = os.path.join(str(prod), PRODUCTION_CITY)
+
+        with caplog.at_level(logging.ERROR):
+            code = crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', target, '--force'])
+
+        assert code != 0 and code == crop_runner.EXIT_REFUSED_DESTINATION
+        assert code != 1   # 1 means "some labels errored"; this run never looked at a label
+        printed = capsys.readouterr().out
+        assert 'Refusing' in printed and target in printed
+        assert any(r.levelno == logging.ERROR and 'Refusing' in r.getMessage() for r in caplog.records)
+        assert tree_snapshot(prod) == before
