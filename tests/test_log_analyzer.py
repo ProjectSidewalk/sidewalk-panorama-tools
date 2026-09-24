@@ -31,6 +31,21 @@ _spec = importlib.util.spec_from_file_location(
 analyze = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(analyze)
 
+REAL_OPEN_URL = analyze.roster._open_url
+
+
+@pytest.fixture(autouse=True)
+def _no_roster_network(monkeypatch):
+    """The suite is network-free, and since the roster host gained a default (#151) a download-mode main()
+    that forgets to stub the fetch would reach sidewalk-sea for real - and still pass, whenever something
+    else already made the run CRITICAL. So the one socket-touching seam raises something fetch_roster does
+    NOT catch: a forgotten stub is a test error, not a quiet CRITICAL line. Tests of the fetch itself
+    install their own _open_url over this."""
+    def refuse(url, timeout):
+        raise AssertionError('a test reached the network for the roster: %s' % url)
+
+    monkeypatch.setattr(analyze.roster, '_open_url', refuse)
+
 
 def runner_constant(name):
     """Read a module-level constant out of DownloadRunner.py without importing it.
@@ -810,6 +825,8 @@ class TestTheWholeReport:
             return city_id != 'seattle-wa'   # the first city in the list is the one that fails
 
         monkeypatch.setattr(analyze, 'download_log', fake_download)
+        monkeypatch.setattr(analyze.roster, 'fetch_roster',
+                            fetch_ok(roster_entry('seattle-wa'), roster_entry('newberg-or')))
 
         status = run_main(tmp_path, monkeypatch, cities=TWO_CITIES,
                           logs=[self.healthy('seattle-wa'), self.healthy('newberg-or')])
@@ -1634,12 +1651,15 @@ def fetch_ok(*entries):
     return fetch
 
 
+ONE_HOST = ('host.example',)
+
+
 class TestAnUnlistedCityIsNamedAndCritical:
     """The gap itself. A city the roster knows and cities.csv does not is CRITICAL, by name."""
 
     def test_it_is_named_and_critical(self):
         lines, critical = analyze.roster_check(
-            city_rows(('seattle-wa', 'Seattle')), 'host.example',
+            city_rows(('seattle-wa', 'Seattle')), ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')))
 
         assert critical is True
@@ -1649,7 +1669,7 @@ class TestAnUnlistedCityIsNamedAndCritical:
     def test_a_complete_file_passes(self):
         """No false positive: every roster city has a row, so nothing is named and the exit stays clean."""
         lines, critical = analyze.roster_check(
-            city_rows(('seattle-wa', 'Seattle'), ('laurens-ia', 'Laurens')), 'host.example',
+            city_rows(('seattle-wa', 'Seattle'), ('laurens-ia', 'Laurens')), ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')))
 
         assert critical is False
@@ -1660,7 +1680,7 @@ class TestAnUnlistedCityIsNamedAndCritical:
         different directory. This is the Bayonne finding's shape: a row one character off the id the app
         reads its own panos under, which looked present to every eye that checked."""
         lines, critical = analyze.roster_check(
-            city_rows(('Seattle-WA', 'Seattle')), 'host.example',
+            city_rows(('Seattle-WA', 'Seattle')), ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa')))
 
         assert critical is True
@@ -1678,7 +1698,7 @@ class TestPrivateCitiesAreNamedToo:
 
     def test_a_private_city_with_no_row_is_named(self):
         lines, critical = analyze.roster_check(
-            city_rows(('seattle-wa', 'Seattle')), 'host.example',
+            city_rows(('seattle-wa', 'Seattle')), ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa'),
                            roster_entry('washington-dc', visibility='private')))
 
@@ -1689,7 +1709,7 @@ class TestPrivateCitiesAreNamedToo:
         """Its url is withheld, and the report says so rather than guessing a hostname. Guessing is exactly
         how sidewalk-dc was found by hand, and it is not a method."""
         lines, _ = analyze.roster_check(
-            city_rows(), 'host.example',
+            city_rows(), ONE_HOST,
             fetch=fetch_ok(roster_entry('washington-dc', visibility='private'),
                            roster_entry('seattle-wa')))
 
@@ -1701,7 +1721,7 @@ class TestPrivateCitiesAreNamedToo:
         """The label follows the roster's visibility, not the missing url: a public entry with a null url is
         an upstream fault, and calling it "withheld (private)" would send the operator the wrong way."""
         lines, _ = analyze.roster_check(
-            city_rows(), 'host.example',
+            city_rows(), ONE_HOST,
             fetch=fetch_ok(roster_entry('laurens-ia', url=None), roster_entry('seattle-wa')))
 
         laurens = next(line for line in lines if 'laurens-ia' in line)
@@ -1715,20 +1735,65 @@ class TestTheCheckIsNeverSilentlySkipped:
     Both mutants here return ([], False) and read as a passing night.
     """
 
-    def test_no_host_configured_is_critical(self):
-        lines, critical = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')), None)
+    def test_no_hosts_is_critical(self):
+        """main() can no longer get here - it always passes the defaults - so this is the function's own
+        contract: an empty list must not skip the loop and read as a clean check."""
+        lines, critical = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')), ())
 
         assert critical is True
-        assert any('PS_ROSTER_HOST' in line for line in lines)
+        assert any('no hosts given' in line for line in lines)
 
     def test_no_roster_served_is_critical(self):
         def fetch(host):
             raise roster_mod.RosterUnavailable('timed out')
 
-        lines, critical = analyze.roster_check(city_rows(), 'host.example', fetch=fetch)
+        lines, critical = analyze.roster_check(city_rows(), ONE_HOST, fetch=fetch)
 
         assert critical is True
         assert any('timed out' in line for line in lines)
+
+    def test_every_host_failing_is_critical_and_names_each(self):
+        """Falling back must not turn "the last host failed" into "the check passed", and the operator needs
+        every host's reason, not just the last one's."""
+        def fetch(host):
+            raise roster_mod.RosterUnavailable('down at ' + host)
+
+        lines, critical = analyze.roster_check(city_rows(), ('a.example', 'b.example'), fetch=fetch)
+
+        assert critical is True
+        assert any('down at a.example' in line and 'down at b.example' in line for line in lines)
+
+
+class TestTheNextHostIsTriedWhenOneIsDown:
+    """Unlike the SFTP host, the roster host is interchangeable, so one deployment being down is no reason to
+    skip the check. scrape_queue.load_roster already asks several; this is the analyzer's version."""
+
+    def test_the_second_host_answers_for_a_dead_first(self):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            if host == 'a.example':
+                raise roster_mod.RosterUnavailable('HTTP 503')
+            return [roster_entry('seattle-wa')]
+
+        lines, critical = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')),
+                                               ('a.example', 'b.example'), fetch=fetch)
+
+        assert asked == ['a.example', 'b.example']
+        assert critical is False
+        assert any('on b.example' in line for line in lines), 'the report must name the host that answered'
+
+    def test_a_live_first_host_is_the_only_one_asked(self):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            return [roster_entry('seattle-wa')]
+
+        analyze.roster_check(city_rows(('seattle-wa', 'Seattle')), ('a.example', 'b.example'), fetch=fetch)
+
+        assert asked == ['a.example']
 
 
 class TestTheOptOutMarkerIsExplicit:
@@ -1743,7 +1808,7 @@ class TestTheOptOutMarkerIsExplicit:
         rows = city_rows(('seattle-wa', 'Seattle'),
                          ('#zurich-infra3d', 'not-monitored: infra3d imagery - no GSV to scrape'))
         lines, critical = analyze.roster_check(
-            rows, 'host.example',
+            rows, ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa'),
                            roster_entry('zurich-infra3d', visibility='private')))
 
@@ -1757,7 +1822,7 @@ class TestTheOptOutMarkerIsExplicit:
         the city is still named, which is the safe way round."""
         rows = city_rows(('# laurens-ia', ' bayonne-fr launched 2026-09-11'))
         lines, critical = analyze.roster_check(
-            rows, 'host.example', fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
+            rows, ONE_HOST, fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
 
         assert critical is True
         assert any('laurens-ia' in line for line in lines)
@@ -1765,7 +1830,7 @@ class TestTheOptOutMarkerIsExplicit:
     def test_a_bare_hash_row_is_not_credited(self):
         rows = city_rows(('#laurens-ia', ''))
         _, critical = analyze.roster_check(
-            rows, 'host.example', fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
+            rows, ONE_HOST, fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
 
         assert critical is True
 
@@ -1830,7 +1895,9 @@ class TestTheFetchIsPlainHttps:
     """The one seam that touches a socket: https, the roster path, a named User-Agent, and no credential -
     a keyed roster was considered and rejected (2026-09-23; see roster.py's module docstring)."""
 
-    def test_the_request_it_sends(self):
+    def test_the_request_it_sends(self, monkeypatch):
+        # The suite-wide refusal has to be lifted for this one test: it is _open_url itself under test.
+        monkeypatch.setattr(roster_mod, '_open_url', REAL_OPEN_URL)
         seen = {}
 
         class FakeResponse:
@@ -1860,13 +1927,9 @@ class TestTheFetchIsPlainHttps:
         assert seen['timeout'] == roster_mod.ROSTER_TIMEOUT_SECONDS
 
 
-class TestTheRosterGapDecidesTheExitCode:
-    """The exit code is the only unattended alarm this script has, and a city with no row here has NO other
-    one - the queue at least books its own exit status. So the gap has to reach the return value, not just
-    the printed report.
-
-    The mutant is `return 1 if critical else 0` - the pre-#133 line, which prints the gap and exits 0.
-    """
+class _RosterMainHarness:
+    """Drives main() in download mode with the store stubbed out and a stand-in roster. No tests of its own,
+    so the classes below share `_run` without re-running each other's tests."""
 
     def _run(self, tmp_path, monkeypatch, fetch, cities=(('seattle-wa', 'Seattle'),), argv=(),
              env_host='host.example'):
@@ -1903,6 +1966,15 @@ class TestTheRosterGapDecidesTheExitCode:
         else:
             monkeypatch.setenv('PS_ROSTER_HOST', env_host)
         return analyze.main(list(argv))
+
+
+class TestTheRosterGapDecidesTheExitCode(_RosterMainHarness):
+    """The exit code is the only unattended alarm this script has, and a city with no row here has NO other
+    one - the queue at least books its own exit status. So the gap has to reach the return value, not just
+    the printed report.
+
+    The mutant is `return 1 if critical else 0` - the pre-#133 line, which prints the gap and exits 0.
+    """
 
     def test_a_complete_roster_on_a_healthy_fleet_exits_zero(self, tmp_path, monkeypatch):
         """The control. Without it, the test below cannot tell "the roster gap set the exit code" from
@@ -1960,12 +2032,9 @@ class TestTheRosterGapDecidesTheExitCode:
         assert 'Roster cross-check' not in capsys.readouterr().out
 
 
-class TestTheRosterHostNeedsNoConfiguration(TestTheRosterGapDecidesTheExitCode):
-    """Every deployment serves the same roster, so the host has a default and setting nothing still runs the
-    check. The order is flag, then PS_ROSTER_HOST, then DEFAULT_ROSTER_HOST.
-
-    Subclassing reuses `_run`; the inherited exit-code tests run a second time here, which costs nothing.
-    """
+class TestTheRosterHostNeedsNoConfiguration(_RosterMainHarness):
+    """Every deployment serves the same roster, so the hosts have a default and setting nothing still runs
+    the check. The order is flag, then PS_ROSTER_HOST, then DEFAULT_ROSTER_HOSTS."""
 
     def _asked(self, tmp_path, monkeypatch, **kw):
         asked = []
@@ -1977,15 +2046,23 @@ class TestTheRosterHostNeedsNoConfiguration(TestTheRosterGapDecidesTheExitCode):
         status = self._run(tmp_path, monkeypatch, fetch, **kw)
         return status, asked
 
+    def test_the_defaults_are_the_real_hosts(self):
+        """Written out, not read back from the constant: every other test here compares the constant with
+        itself, so a typo in a hostname would pass them all and fail only in production, as a CRITICAL
+        "no host served a roster" every night. Both hosts were checked to serve the roster on 2026-09-24."""
+        assert analyze.DEFAULT_ROSTER_HOSTS == ('sidewalk-sea.cs.washington.edu',
+                                                'sidewalk-chicago.cs.washington.edu')
+
     def test_unset_uses_the_default_and_passes(self, tmp_path, monkeypatch):
-        """The mutant is dropping `or DEFAULT_ROSTER_HOST`: the check is then CRITICAL and the run exits 1."""
+        """The mutant is losing the default: the check is then CRITICAL and the run exits 1."""
         status, asked = self._asked(tmp_path, monkeypatch, env_host=None)
-        assert asked == [analyze.DEFAULT_ROSTER_HOST]
+        assert asked == [analyze.DEFAULT_ROSTER_HOSTS[0]]
         assert status == 0
 
-    def test_an_empty_env_var_is_unset_not_an_empty_host(self, tmp_path, monkeypatch):
-        status, asked = self._asked(tmp_path, monkeypatch, env_host='')
-        assert asked == [analyze.DEFAULT_ROSTER_HOST]
+    @pytest.mark.parametrize('blank', ['', '   ', ' , '], ids=['empty', 'spaces', 'only-commas'])
+    def test_a_blank_env_var_is_unset_not_a_host(self, tmp_path, monkeypatch, blank):
+        status, asked = self._asked(tmp_path, monkeypatch, env_host=blank)
+        assert asked == [analyze.DEFAULT_ROSTER_HOSTS[0]]
         assert status == 0
 
     def test_the_env_var_overrides_the_default(self, tmp_path, monkeypatch):
@@ -1996,6 +2073,12 @@ class TestTheRosterHostNeedsNoConfiguration(TestTheRosterGapDecidesTheExitCode):
         _, asked = self._asked(tmp_path, monkeypatch, env_host='env.example',
                                argv=('--roster-host', 'flag.example'))
         assert asked == ['flag.example']
+
+    def test_a_list_is_split_and_stripped(self):
+        assert analyze.resolve_roster_hosts(None, ' a.example , ,b.example ') == ('a.example', 'b.example')
+
+    def test_a_blank_flag_falls_through_to_the_env_var(self):
+        assert analyze.resolve_roster_hosts(' ', 'env.example') == ('env.example',)
 
 
 class TestTheDeployedCityListPassesItsOwnCheck:
