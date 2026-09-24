@@ -466,7 +466,8 @@ class TestTheProvenanceManifest:
 
     def test_a_torn_last_line_does_not_swallow_the_next_row(self, crop_runner, tmp_path):
         """A crash mid-append can leave a line with no newline. Appending straight after it would glue the
-        next crop's row onto the torn one, corrupting a good row as well as the bad."""
+        next crop's row onto the torn one, corrupting a good row as well as the bad - so the torn line
+        is cut away (#153 n2) and the next row starts on a line of its own."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         os.makedirs(str(out))
@@ -475,8 +476,7 @@ class TestTheProvenanceManifest:
             f.write(','.join(crop_runner.PROVENANCE_COLUMNS) + '\n' + '99,torn')
         crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out))
         rows = manifest_rows(out, crop_runner)
-        assert rows[1] == ['99', 'torn']
-        assert rows[2] == ['1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]
+        assert rows[1:] == [['1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]]
 
     def test_an_empty_manifest_file_still_gets_its_header(self, crop_runner, tmp_path):
         """A crash between creating the file and writing the header leaves it zero bytes. 'The file
@@ -560,16 +560,40 @@ class TestAFailedAppendDoesNotLoseTheCrop:
         assert 'without a row' not in capsys.readouterr().out
 
 
-class _FaultyHandle:
-    """A manifest file handle whose raw writes and close fail on a schedule the RawWriterFaults owns."""
+class _FaultyRaw(io.RawIOBase):
+    """The raw (unbuffered) layer under a manifest handle: what a write here does is what the OS did.
+    Writes and the close fail on the schedule the owning RawWriterFaults sets."""
 
     def __init__(self, real, faults):
+        super().__init__()
         self._real = real
         self._faults = faults
+
+    def writable(self):
+        return True
+
+    def seekable(self):
+        return self._real.seekable()
+
+    def readable(self):
+        return self._real.readable()
+
+    def fileno(self):
+        return self._real.fileno()
+
+    def seek(self, *args):
+        return self._real.seek(*args)
+
+    def tell(self):
+        return self._real.tell()
+
+    def truncate(self, *args):
+        return self._real.truncate(*args)
 
     def write(self, data):
         self._faults.writes += 1
         n = self._faults.writes
+        data = bytes(data)
         if n in self._faults.tear:
             # Half the bytes reach the file, then the device gives out: the torn-row shape.
             self._real.write(data[:len(data) // 2])
@@ -579,26 +603,24 @@ class _FaultyHandle:
         return self._real.write(data)
 
     def close(self):
+        if self.closed:
+            return
         self._real.close()
+        super().close()
         if self._faults.close_fails:
             raise OSError(5, 'Input/output error on close')
 
-    @property
-    def closed(self):
-        return self._real.closed
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
 
 class RawWriterFaults:
-    """Stands between ProvenanceManifest and the file it appends to, below whatever buffering the
-    manifest does: a write here is what reaches the OS. Only handles opened for appending to the
-    manifest are wrapped, so crop_rule.json, the panos and a read-back are untouched.
+    """Stands between ProvenanceManifest and the file it appends to, at the RAW layer: the injected
+    handle is built the way open() builds one - FileIO, then BufferedWriter and TextIOWrapper when the
+    mode asks for them - with the fault under the buffer, so a row the manifest's own buffering keeps
+    after a failed write is visible here exactly as it would be on a full disk. Only handles opened for
+    appending to the manifest are wrapped; crop_rule.json, the panos and every read are untouched.
 
-    `fail(n)` decides, per 1-based write call across every handle (the header is write 1 on a fresh
-    manifest), whether that write raises; `tear` names writes that put half their bytes on disk first.
-    Every wrapped handle is kept, so a test can ask whether each was closed."""
+    `fail(n)` decides, per 1-based raw write across every handle (on a fresh manifest the header is
+    write 1), whether that write raises; `tear` names writes that put half their bytes on disk first.
+    Every returned handle is kept, so a test can ask whether each was closed."""
 
     def __init__(self, crop_runner, monkeypatch, fail=lambda n: False, tear=(), close_fails=False):
         self.fail, self.tear, self.close_fails = fail, set(tear), close_fails
@@ -606,11 +628,18 @@ class RawWriterFaults:
         self.handles = []
         real_open = builtins.open
 
-        def fake_open(file, mode='r', *args, **kwargs):
-            handle = real_open(file, mode, *args, **kwargs)
-            if os.path.basename(str(file)) == crop_runner.PROVENANCE_MANIFEST and 'a' in mode:
-                handle = _FaultyHandle(handle, self)
-                self.handles.append(handle)
+        def fake_open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+            if os.path.basename(str(file)) != crop_runner.PROVENANCE_MANIFEST or 'a' not in mode:
+                return real_open(file, mode, buffering, encoding, errors, newline)
+            raw = _FaultyRaw(io.FileIO(file, mode.replace('b', '').replace('t', '')), self)
+            if buffering == 0:
+                handle = raw
+            elif 'b' in mode:
+                handle = io.BufferedWriter(raw)
+            else:
+                handle = io.TextIOWrapper(io.BufferedWriter(raw), encoding=encoding, errors=errors,
+                                          newline=newline)
+            self.handles.append(handle)
             return handle
 
         monkeypatch.setattr(crop_runner, 'open', fake_open, raising=False)
@@ -684,6 +713,140 @@ class TestAFailingManifestCannotTakeTheSummaryDown:
         with pytest.raises(KeyboardInterrupt):
             crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
         assert faults.handles and all(h.closed for h in faults.handles)
+
+
+def row_ids(out_dir, crop_runner):
+    """The label ids of the manifest's rows, after checking the header and that every row is whole."""
+    header, *rows = manifest_rows(out_dir, crop_runner)
+    assert header == list(crop_runner.PROVENANCE_COLUMNS)
+    assert all(len(row) == len(header) for row in rows), rows
+    return [row[0] for row in rows]
+
+
+class TestAFailedAppendLeavesNoRowBehind:
+    """#153 M2. The unrecorded count has to be true in both directions. A failed append used to leave its
+    row in the writer's buffer, and the next successful flush wrote it - so rows reported as "not
+    recorded" were in the file. And a raw write that failed partway left half a row in the MIDDLE of
+    the file, followed by whole ones, where the open-time repair never looks."""
+
+    def test_rows_whose_append_failed_are_not_in_the_file(self, crop_runner, tmp_path, monkeypatch,
+                                                          capsys):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        # Raw write 1 is the header, so appends 2 and 3 are writes 3 and 4; 4 and 5 then succeed.
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n in (3, 4))
+        counts = crop_runner.bulk_extract_crops([labelled(i) for i in range(1, 6)], str(store), str(out))
+        assert counts['success'] == 5
+        assert row_ids(out, crop_runner) == ['1', '4', '5']
+        assert '2 crops were written without a row' in capsys.readouterr().out
+
+    def test_a_write_torn_partway_leaves_no_half_row_mid_file(self, crop_runner, tmp_path, monkeypatch,
+                                                              capsys):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        RawWriterFaults(crop_runner, monkeypatch, tear=(3,))
+        crop_runner.bulk_extract_crops([labelled(i, copyright='Doe, J') for i in range(1, 5)],
+                                       str(store), str(out))
+        assert row_ids(out, crop_runner) == ['1', '3', '4']
+        assert '1 crops were written without a row' in capsys.readouterr().out
+
+    def test_the_torn_bytes_are_gone_even_when_nothing_follows_them(self, crop_runner, tmp_path,
+                                                                     monkeypatch):
+        """The tear on the LAST append of the run: nothing reopens the manifest in this run, so the
+        next run's open is what cuts it back."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        RawWriterFaults(crop_runner, monkeypatch, tear=(3,))
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        monkeypatch.undo()
+        crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        assert row_ids(out, crop_runner) == ['1', '3']
+
+
+class TestTheRawWriteHelpers:
+    """The two helpers under the manifest's all-or-nothing row, driven directly: the shapes they exist
+    for (a short raw write, a torn tail longer than one read) do not occur on a local test disk."""
+
+    class _Trickle:
+        """A raw handle that takes at most `per_call` bytes per write, or returns `answer` instead."""
+
+        TRICKLE = object()
+
+        def __init__(self, per_call=3, answer=TRICKLE):
+            self.data, self.per_call, self.answer = b'', per_call, answer
+
+        def write(self, view):
+            if self.answer is not self.TRICKLE:
+                return self.answer
+            taken = bytes(view[:self.per_call])
+            self.data += taken
+            return len(taken)
+
+    def test_a_short_write_is_continued_until_the_row_is_whole(self, crop_runner):
+        handle = self._Trickle(per_call=3)
+        crop_runner._write_all(handle, b'1,testpano0001,,,,v2\n')
+        assert handle.data == b'1,testpano0001,,,,v2\n'
+
+    @pytest.mark.parametrize('answer', [0, None])
+    def test_a_write_that_takes_nothing_raises_rather_than_spinning(self, crop_runner, answer):
+        with pytest.raises(OSError, match='short write'):
+            crop_runner._write_all(self._Trickle(answer=answer), b'row\n')
+
+    @pytest.mark.parametrize('content, expected', [
+        (b'', 0),
+        (b'header\n', 7),
+        (b'header\nrow', 7),
+        (b'no newline at all', 0),
+        # A tail longer than one 64 KiB read: the scan has to step back a chunk to find the newline.
+        (b'header\n' + b'x' * 70000, 7),
+        (b'y' * 70000, 0),
+    ], ids=['empty', 'whole', 'torn-row', 'torn-header', 'long-torn-row', 'long-torn-header'])
+    def test_the_end_of_the_last_whole_line(self, crop_runner, content, expected):
+        assert crop_runner._end_of_last_line(io.BytesIO(content), len(content)) == expected
+
+    def test_a_header_that_cannot_be_written_stops_the_run_before_any_crop(self, crop_runner, tmp_path,
+                                                                            monkeypatch):
+        """The header is the first write, so a store that cannot take it cannot record provenance at
+        all: that is the open failing, and it raises before a crop or a type directory exists."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        faults = RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: True)
+        with pytest.raises(OSError, match='No space left'):
+            crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert not (out / '1').exists()
+        assert all(h.closed for h in faults.handles)
+
+
+class TestTheOpenTimeRepairCutsBackToTheLastWholeLine:
+    """#153 n2. A crash mid-append leaves a last line with no newline. The repair used to append a '\\n'
+    after it - which, when the tear fell inside a quoted field, sat inside the open quote, so the csv
+    reader swallowed every following row into that field. The torn row's crop is on disk and cannot
+    be recorded by anything now, so the row is cut back to the last '\\n' rather than closed off."""
+
+    def write_manifest(self, crop_runner, out, text):
+        os.makedirs(str(out), exist_ok=True)
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'w', newline='',
+                  encoding='utf-8') as f:
+            f.write(text)
+
+    def test_a_tear_inside_a_quoted_field_does_not_swallow_later_rows(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        header = ','.join(crop_runner.PROVENANCE_COLUMNS)
+        good = '98,testpano0001,mapillary,"Doe, J",CC-BY-SA-4.0,v2'
+        self.write_manifest(crop_runner, out,
+                            header + '\n' + good + '\n' + '99,testpano0001,mapillary,"Roe, R')
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        assert row_ids(out, crop_runner) == ['98', '1', '2']
+        assert manifest_by_label(out, crop_runner)['98']['copyright'] == 'Doe, J'
+
+    def test_a_torn_header_is_rewritten(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        self.write_manifest(crop_runner, out, 'label_id,pano_id,sou')
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert manifest_rows(out, crop_runner)[0] == list(crop_runner.PROVENANCE_COLUMNS)
+        assert row_ids(out, crop_runner) == ['1']
 
 
 class TestTheMarkerSaysWhetherTheManifestIsComplete:

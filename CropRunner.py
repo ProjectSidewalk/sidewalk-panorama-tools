@@ -16,6 +16,7 @@ are the seams, and `python3 CropRunner.py ...` behaviour lives under the __main_
 import argparse
 import collections
 import csv
+import io
 import json
 import logging
 import logging.handlers
@@ -783,50 +784,130 @@ def _store_holds_crops(destination_dir):
 
 
 class ProvenanceManifest:
-    """<crop-dir>/crop_provenance.csv, held open for a run and appended one row per crop as it lands (#111).
+    """<crop-dir>/crop_provenance.csv, appended one row per crop as it lands (#111).
 
     The contract is the two nightly ledgers' (DownloadRunner's pano_id_log.csv, gsv's depth_log.csv): one
-    handle held for the run, a row written and flushed per item, so a run killed at any point leaves a
-    truthful partial file - a header, then one row for each crop that is on disk. Append-only: a row is
-    never rewritten, so a crop that is re-cut gets a second row and the later one describes the file.
+    handle held for the run and a row on disk per item, so a run killed at any point leaves a truthful
+    partial file - a header, then one row for each crop that is on disk. Append-only: a row is never
+    rewritten, so every re-cut appends a row and the last one for a label describes the file.
 
-    The header is written when the file is EMPTY, not merely when it is new: a crash between creating it
-    and writing the header leaves zero bytes, and "the file exists" would then skip the header for good.
-    A last line with no newline (a crash mid-append) is closed first, so it stays one bad line instead of
-    swallowing the next good row.
+    **A row is written whole or not at all (#153 M2).** The handle is UNBUFFERED and each row is one
+    encoded line handed to the OS, so there is no buffer in which a failed row can wait to be flushed by
+    the next successful one - which is how rows the run reported as unrecorded used to turn up in the
+    file. When an append fails the handle is dropped, and the next row reopens it; reopening cuts the
+    file back to its last complete line, so a write that failed partway cannot leave half a row in the
+    middle of the file with whole ones after it.
+
+    **The repair cuts back; it never closes off (#153 n2).** A last line with no newline - a crash
+    mid-append, or the partial write above - is truncated away rather than terminated with a '\\n': when
+    the tear fell inside a quoted field (a comma in `copyright`), an appended newline sits inside the
+    open quote and the csv reader swallows every following row into it. The torn row's crop is on disk
+    and nothing can record it now, so losing the fragment loses nothing that was usable. `torn_rows_cut`
+    counts the rows cut this way, which bulk_extract_crops reads as a known gap. If nothing is left - a
+    torn header - the header is written again, as for an empty file: the header is written when the
+    file is EMPTY, not merely when it is new, since a crash between creating it and writing the header
+    leaves zero bytes and "the file exists" would then skip the header for good.
 
     Opening it can raise, exactly like write_rule_marker's write just before it in the same directory:
     that is a store that cannot record provenance at all, and it fails before any crop is cut rather
-    than producing crops with no record. A failed append for ONE crop does not raise out of the loop -
-    bulk_extract_crops handles that - because by then the crop is already on disk.
+    than producing crops with no record. A failed append for ONE crop raises out of record() and not out
+    of the loop - bulk_extract_crops counts it - because by then the crop is already on disk.
     """
 
     def __init__(self, destination_dir):
         self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
-        size, torn = 0, False
+        self.torn_rows_cut = 0
+        self._file = None
+        self._open()
+
+    def _open(self):
+        """Cut any torn tail back to the last complete line, then open for unbuffered appends."""
+        keep = 0
         if os.path.exists(self.path):
-            with open(self.path, 'rb') as f:
+            with open(self.path, 'r+b') as f:
                 size = f.seek(0, os.SEEK_END)
-                if size:
-                    f.seek(-1, os.SEEK_END)
-                    torn = f.read(1) != b'\n'
-        self._file = open(self.path, 'a', newline='', encoding='utf-8')
-        # '\n', the ledgers' pin: csv.writer's excel default is '\r\n', which hands every grep a trailing
-        # carriage return on the last column.
-        self._writer = csv.writer(self._file, lineterminator='\n')
-        if torn:
-            self._file.write('\n')
-        if not size:
-            self._writer.writerow(PROVENANCE_COLUMNS)
-        self._file.flush()
+                keep = _end_of_last_line(f, size)
+                if keep != size:
+                    f.truncate(keep)
+                    # A torn HEADER (keep == 0) cost no crop its row; anything after a header did.
+                    if keep:
+                        self.torn_rows_cut += 1
+        handle = open(self.path, 'ab', buffering=0)
+        try:
+            if not keep:
+                _write_all(handle, _csv_line(PROVENANCE_COLUMNS))
+        except BaseException:
+            _close_quietly(handle)
+            raise
+        self._file = handle
 
     def record(self, label_id, pano_id, provenance):
-        """Append one crop's row and flush it. `provenance` is PROVENANCE_FIELDS' values, in order."""
-        self._writer.writerow((label_id, pano_id) + tuple(provenance) + (CROP_RULE_VERSION,))
-        self._file.flush()
+        """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order.
+
+        Raises if the row did not reach the file; the handle is dropped first, so nothing of the row
+        survives to be written later and the next call starts from a clean line."""
+        line = _csv_line((label_id, pano_id) + tuple(provenance) + (CROP_RULE_VERSION,))
+        if self._file is None:
+            self._open()
+        try:
+            _write_all(self._file, line)
+        except BaseException:
+            _close_quietly(self._file)
+            self._file = None
+            raise
 
     def close(self):
-        self._file.close()
+        handle, self._file = self._file, None
+        if handle is not None:
+            handle.close()
+
+
+def _csv_line(values):
+    """One manifest row, encoded. '\\n', the ledgers' pin: csv.writer's excel default is '\\r\\n', which
+    hands every grep a trailing carriage return on the last column."""
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator='\n').writerow(values)
+    return buffer.getvalue().encode('utf-8')
+
+
+def _write_all(handle, data):
+    """Hand all of data to an unbuffered handle. A raw write may take only part of it; a zero or None
+    return is treated as the failure it is rather than looped on."""
+    view = memoryview(data)
+    while view:
+        written = handle.write(view)
+        if not written:
+            raise OSError("short write to %s" % PROVENANCE_MANIFEST)
+        view = view[written:]
+
+
+def _close_quietly(handle):
+    """Close a handle already known to be failing. Its own error adds nothing to the one being raised."""
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+def _end_of_last_line(f, size):
+    """The offset just past the last b'\\n' in the first `size` bytes of f, or 0 if there is none.
+
+    Reads backwards in chunks, so the ordinary case - a file ending in '\\n' - costs one one-byte read,
+    and a torn row costs one chunk, not a read of the whole manifest."""
+    if not size:
+        return 0
+    f.seek(size - 1)
+    if f.read(1) == b'\n':
+        return size
+    end = size
+    while end > 0:
+        start = max(0, end - 65536)
+        f.seek(start)
+        found = f.read(end - start).rfind(b'\n')
+        if found >= 0:
+            return start + found + 1
+        end = start
+    return 0
 
 
 def _provenance_value(value):
