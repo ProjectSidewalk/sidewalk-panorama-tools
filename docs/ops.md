@@ -104,10 +104,21 @@ first width that warns.
   stdout already carries one `Processing pano` line per pano attempted, and the alarm wrapper
   [cuts the middle](#hearing-about-a-bad-night) of a long night's output, where a single announcement is the
   line most likely to be lost.
-* **Where you will actually see it: `scrape.log`, not the alarm.** Production runs the queue with
-  `--only-on-failure`, and the tripwire does not change any exit code, so on a night that otherwise exits 0
-  its stdout line is never delivered. `grep -l "over the viewer ceiling" */scrape.log` is in
-  [the morning check](#the-morning-after-a-deploy) for that reason.
+* **Where you will actually see it: only where someone greps for it. This is not a daily watch.**
+  Production runs the queue under `cron_notify.py --only-on-failure`, and the tripwire does not change any
+  exit code, so on an ordinary night — the queue exits 0 — its stdout line is **not delivered anywhere a person
+  looks**; the warning sits in `scrape.log` until someone reads it. The check is
+
+  ```bash
+  grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*
+  ```
+
+  (the `*` after `.log` takes in the rotated `.1`–`.3` files; `-s` quiets a store with no `refetch.log`). It is
+  listed under [routine checks](#routine-checks) and [the morning after a deploy](#the-morning-after-a-deploy),
+  but **nothing runs it routinely**, so a widened frame goes unnoticed for as long as nobody looks. Making the
+  tripwire reach a person on its own is an open decision between two options: the queue exits nonzero on a
+  night a frame over the ceiling was seen, so the existing alarm carries it, or the width is persisted as a
+  `log.csv` column, proposed on #121 first, that the log analyzer can then rule on.
 * **Not a `log.csv` column, and so not a log-analyzer rule — on purpose, not an oversight.** `log.csv` is a
   fixed set of positional fields that the analyzer and other tooling read by position, and #121 asks for any
   persisted width to be proposed there first. The [log analyzer](log-analyzer.md) reads nothing but `log.csv`,
@@ -835,7 +846,20 @@ section exists because of.
   in parentheses matters: `(network failure)` and `(unexpected failure)` are the loop's own arms, one timeout
   anywhere in 52 cities writes one, and neither touches the persisted standing. `Google is refusing requests` in
   any `scrape.log` is the stand-down itself.
-- `grep -l "over the viewer ceiling" */scrape.log` prints nothing. A hit is [the width
+- `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
   tripwire](#the-width-tripwire): a source now serves panoramas wider than 8192-class GPUs can render. It never
-  fails a night, so this grep is the only place it reliably surfaces.
+  fails a night and is never mailed on a clean one, so this grep is the only place it surfaces — and it runs
+  only when someone runs it, here or under [routine checks](#routine-checks).
 - The analyzer's fleet block, for the checks it encodes.
+
+### Routine checks
+
+The alarm carries only a nonzero exit, so some things that matter never reach anyone on a night that exits 0.
+**Nothing runs these, and no schedule is set for them** — they are what to look at whenever someone looks at
+the fleet, beyond the analyzer:
+
+- `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
+  tripwire](#the-width-tripwire); it is never mailed on a clean night, so this grep is the only place it
+  surfaces.
+- `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
+  [only there](#hearing-about-a-bad-night).
