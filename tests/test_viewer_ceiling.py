@@ -100,7 +100,12 @@ class TestTheHelper:
     def test_each_channel_names_the_pano_the_width_the_source_and_what_to_do(self, caplog, capsys, channel):
         """Each channel must stand on its own: `scrape.log` is read next week by someone who never saw the
         mail, and the alarm wrapper cuts the middle of a long night's stdout, so a line that only makes sense
-        next to another line may arrive alone."""
+        next to another line may arrive alone.
+
+        What to do is "verify, then budget the disk", pointing at the runbook section - NOT "set the switch
+        and run downscale_panos.py" (#153 m6). The line is written to be acted on alone, and that remedy is
+        a fleet-wide +63% sweep whose disk budget docs/ops.md puts first; a line that skips the budget is an
+        instruction to fill the store."""
         with caplog.at_level(logging.WARNING):
             common.warn_if_wider_than_viewer_ceiling('panoIdX', 20480, 'panoramax')
 
@@ -108,9 +113,11 @@ class TestTheHelper:
             (text,) = [r.getMessage() for r in tripwire_records(caplog)]
         else:
             (text,) = tripwire_lines(capsys.readouterr().out)
-        for fragment in ('panoIdX', '20480', '16384', 'panoramax', 'WRITE_DISPLAY_COPIES', 'downscale_panos.py',
-                         'docs/ops.md', '#121'):
+        for fragment in ('panoIdX', '20480', '16384', 'panoramax', '#121', 'Verify',
+                         'budget the disk before any sweep', "docs/ops.md, 'The width tripwire'"):
             assert fragment in text, fragment
+        assert 'Set WRITE_DISPLAY_COPIES' not in text
+        assert "'Display copies of wide panoramas'" not in text
 
     def test_it_writes_nothing_to_the_store(self, tmp_path, caplog, capsys):
         """An observation, not a writer: no display copy, no file of any kind. The switch-reading rule in

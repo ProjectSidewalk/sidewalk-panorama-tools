@@ -89,13 +89,18 @@ first width that warns.
 
 * **Where it looks.** GSV: in `resolve_zoom_and_dims`, on the width `/adminapi/panos` reports, before any request
   is spent, so a probe that then fails cannot swallow it (`refetch_panos.py` goes through the same seam, so a
-  repair pass warns on a stored frame that wide too). Mapillary and Panoramax: on the downloaded JPEG's own
+  repair pass warns on a stored frame that wide too — but there the line lands in that pass's **`refetch.log`**
+  and its stdout, not in `scrape.log`, and keeps the `IMAGEDOWNLOAD:` prefix in the middle of the pass's
+  `REFETCH:` narrative, so grep a refetched store's `refetch.log*` as well). Mapillary and Panoramax: on the downloaded JPEG's own
   header, after the file is in place — the width of the file actually stored, which is what a viewer is
   handed, rather than anything either source's metadata says.
 * **Never a gate.** It does not refuse, alter or delay a download and writes nothing to the store.
 * **Both channels, one line per wide pano**, each carrying the whole message: `IMAGEDOWNLOAD: <source> pano
   <id> is <width> px wide, over the viewer ceiling of 16384 (#121) …` in that city's `scrape.log` at
-  `WARNING`, and the same text after `IMAGEDOWNLOAD: WARNING -` on stdout. No once-per-run latch, deliberately:
+  `WARNING` (`refetch.log` for a repair pass, above), and the same text after `IMAGEDOWNLOAD: WARNING -` on
+  stdout. The line's own remedy is deliberately only a pointer — verify the width, then budget the disk
+  before any sweep, and read **When it fires** below — because the steps end in a fleet-wide sweep and
+  a line acted on alone would skip the budget. No once-per-run latch, deliberately:
   stdout already carries one `Processing pano` line per pano attempted, and the alarm wrapper
   [cuts the middle](#hearing-about-a-bad-night) of a long night's output, where a single announcement is the
   line most likely to be lost.

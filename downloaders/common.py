@@ -393,7 +393,7 @@ def warn_if_wider_than_viewer_ceiling(pano_id, width, source):
     pano attempted, so this adds at most one line per NEW pano on the nights it fires; the alarm wrapper cuts
     the middle of a long night's output, so a lone announcement is the line most likely to be cut; and a
     latch would be process-global mutable state for every test to reset. Each line therefore carries the
-    whole message, remedy included.
+    whole message, including a pointer to the remedy (not the remedy itself - #153 m6, see the message).
 
     Usage, where a downloader has just learned the frame's width::
 
@@ -404,9 +404,12 @@ def warn_if_wider_than_viewer_ceiling(pano_id, width, source):
     """
     if width <= VIEWER_MAX_PANO_WIDTH:
         return False
+    # The remedy is deliberately a pointer, not the steps (#153 m6): the line is written to be acted on alone,
+    # and the steps end in a fleet-wide +63% sweep whose disk budget the runbook puts first.
     message = ("%s pano %s is %d px wide, over the viewer ceiling of %d (#121); 8192-class GPUs cannot "
-               "render it natively. Set WRITE_DISPLAY_COPIES = True in downloaders/common.py and run "
-               "downscale_panos.py on this store - see docs/ops.md, 'Display copies of wide panoramas'."
+               "render it natively. Verify the stored file's width, then budget the disk before any sweep: "
+               "the remedy writes a copy of nearly every panorama on the store, not only this one. See "
+               "docs/ops.md, 'The width tripwire'."
                % (source, pano_id, width, VIEWER_MAX_PANO_WIDTH))
     logging.warning("IMAGEDOWNLOAD: %s", message)
     print("IMAGEDOWNLOAD: WARNING - %s" % message)
