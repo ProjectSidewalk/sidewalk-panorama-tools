@@ -188,9 +188,11 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 
 # bulk_extract_crops' counts, beside 'total'. Every label lands in exactly one DISJOINT_OUTCOMES bucket, so
 # those sum to total on every path; a COUNT_ANNOTATIONS entry qualifies a label already in one of them and
-# is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a
-# dims_mismatch or out_of_frame skip under --force that left an old crop in place (#153 m2). A new key goes
-# in exactly one of the two, and tests/test_crop_runner.py asserts the dict holds nothing else.
+# is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a label
+# under --force that left an old crop in place because the run never reached its write: a dims_mismatch or
+# out_of_frame skip (#153 m2), a missing_pano, or the errors of a pano that cannot be opened (#153 final
+# F3). A new key goes in exactly one of the two, and tests/test_crop_runner.py asserts the dict holds
+# nothing else.
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch', 'out_of_frame',
                      'errors')
 COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
@@ -1344,9 +1346,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
              Those six are DISJOINT_OUTCOMES. The COUNT_ANNOTATIONS are NOT among them:
              shifted_vertically annotates a success whose window had to move to stay inside the pano, so
              the crop exists but the label is off-centre in it; recut annotates a success that replaced a
-             crop already on disk (force=True only); stale_kept annotates a dims_mismatch or out_of_frame
-             skip, under force=True, whose label already had a crop - which therefore stays as whatever
-             rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
+             crop already on disk (force=True only); stale_kept annotates a label, under force=True,
+             that the run skipped before its write - a dims_mismatch or out_of_frame skip, a missing_pano,
+             or an error because its pano could not be opened - and whose crop was already on disk, which
+             therefore stays as whatever rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
              went stale before; tests/test_crop_runner.py asserts the sum, and the key set, from the dict
              rather than from this docstring.
 
@@ -1368,6 +1371,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
     labels_by_pano = {}
+
+    def crops_on_disk(labels):
+        """How many of a pano's labels already have a crop - stale_kept for a pano the run cannot use.
+        A stat per label, but only on the slow paths that call it (a missing or unreadable pano)."""
+        return sum(os.path.exists(os.path.join(destination_dir, str(label[2]), str(label[3]) + '.jpg'))
+                   for label in labels)
+
     # Every per-label warning below goes through this, so a systemic fault cannot flood crop.log (#139).
     budget = WarningBudget()
     # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
@@ -1418,6 +1428,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             if not os.path.exists(pano_img_path):
                 counts['missing_pano'] += len(labels)
                 processed += len(labels)
+                if force:
+                    counts['stale_kept'] += crops_on_disk(labels)
                 print("Panorama image not found: %s (%d labels skipped)" % (pano_img_path, len(labels)))
                 logging.warning("Skipped %d labels on pano %s due to missing image.", len(labels), pano_id)
                 continue
@@ -1427,6 +1439,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             except Exception as e:
                 counts['errors'] += len(labels)
                 processed += len(labels)
+                if force:
+                    counts['stale_kept'] += crops_on_disk(labels)
                 budget.warning('cannot_open', "Skipped %d labels on pano %s: cannot open %s (%s)",
                                len(labels), pano_id, pano_img_path, e)
                 continue
@@ -1572,10 +1586,14 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     if counts['stale_kept']:
         # Both channels: a forced run promises a store cut under one rule, and these labels break it.
         # Whether to delete such a crop is a decision nobody has made, so it is counted and said instead.
-        message = ("%d labels skipped by a preflight kept a crop already on disk (--force): their metadata "
-                   "now fails the dims_mismatch or out_of_frame check, so the old crop was neither re-cut "
-                   "nor removed and stays as whatever rule cut it, while %s says %s. crop.log names them "
-                   "under those two kinds." % (counts['stale_kept'], CROP_RULE_MARKER, CROP_RULE_VERSION))
+        # crop.log's lines are not promised to name them (#153 final F5): three of the four kinds are
+        # capped per run, and none says whether its label kept an old crop.
+        message = ("%d labels skipped under --force - by a preflight, a missing pano or an unreadable pano - "
+                   "kept a crop already on disk: the run never reached their write, so the old crop was "
+                   "neither re-cut nor removed and stays as whatever rule cut it, while %s says %s. "
+                   "crop.log's dims_mismatch, out_of_frame and cannot_open lines (up to %d of each) and its "
+                   "missing-pano lines include them, without marking which kept an old crop."
+                   % (counts['stale_kept'], CROP_RULE_MARKER, CROP_RULE_VERSION, LOG_WARNINGS_PER_KIND))
         logging.warning('%s', message)
         print(message)
 

@@ -2339,6 +2339,12 @@ class TestTheSystemicFailureAlarm:
 # --force (#83): the re-cut path a changed crop rule needs
 # ---------------------------------------------------------------------------
 
+# The head of the stale_kept summary line, %d the count. One place, so the preflight and lost-pano tests
+# pin the same sentence.
+STALE_KEPT_SUMMARY = ('%d labels skipped under --force - by a preflight, a missing pano or an unreadable '
+                      'pano - kept a crop already on disk')
+
+
 def plant_stale_crop(out_dir, label_type_id=1, label_id=1):
     """A crop already on disk that is plainly not what the current rule cuts: 10x10 solid red.
 
@@ -2482,9 +2488,72 @@ class TestForceRecut:
         with open(crop_path(out, 1, 1), 'rb') as f:
             assert f.read() == stale
         printed = capsys.readouterr().out
-        assert '1 labels skipped by a preflight kept a crop already on disk' in printed
-        assert any('1 labels skipped by a preflight kept a crop already on disk' in m
-                   for m in caplog.messages)
+        assert STALE_KEPT_SUMMARY % 1 in printed
+        assert any(STALE_KEPT_SUMMARY % 1 in m for m in caplog.messages)
+
+    def test_the_stale_kept_summary_does_not_promise_crop_log_marks_them(self, crop_runner, tmp_path,
+                                                                        capsys):
+        """#153 final F5. It said crop.log "names them under those two kinds", but the dims_mismatch and
+        out_of_frame lines are capped per kind and do not say which label kept an old crop."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        plant_stale_crop(out)
+        crop_runner.bulk_extract_crops([label_row(pano_y=5000)], str(store), str(out), force=True)
+        printed = capsys.readouterr().out
+        assert 'names them under' not in printed
+        assert ("crop.log's dims_mismatch, out_of_frame and cannot_open lines (up to %d of each) and its "
+                "missing-pano lines include them, without marking which kept an old crop"
+                % crop_runner.LOG_WARNINGS_PER_KIND) in printed
+
+    def corrupt_pano(self, store):
+        path = put_pano(store, 'testpano0001')
+        with open(path, 'wb') as f:
+            f.write(b'not a jpeg')
+
+    @pytest.mark.parametrize('lose_the_pano, bucket', [
+        (lambda self, store, path: os.remove(path), 'missing_pano'),
+        (lambda self, store, path: self.corrupt_pano(store), 'errors'),
+    ], ids=['missing_pano', 'cannot_open'])
+    def test_a_lost_pano_that_keeps_an_old_crop_is_counted_and_said(
+            self, crop_runner, tmp_path, capsys, caplog, lose_the_pano, bucket):
+        """#153 final F3. Only the two preflights counted stale_kept, so a forced run whose pano had
+        gone missing or become unreadable kept an old-rule crop with no annotation at all. Two labels on
+        the pano, only one with a crop on disk: stale_kept counts the crop, not the label."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        pano_path = put_pano(store, 'testpano0001')
+        labels = [label_row(label_id=1, pano_x=150), label_row(label_id=2, pano_x=250)]
+        crop_runner.bulk_extract_crops(labels[:1], str(store), str(out))
+        with open(crop_path(out, 1, 1), 'rb') as f:
+            cut = f.read()
+        lose_the_pano(self, store, pano_path)
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out), force=True)
+        assert counts[bucket] == 2 and counts['stale_kept'] == 1 and counts['success'] == 0
+        assert reconciles(counts)
+        with open(crop_path(out, 1, 1), 'rb') as f:
+            assert f.read() == cut
+        printed = capsys.readouterr().out
+        assert STALE_KEPT_SUMMARY % 1 in printed
+        assert any(STALE_KEPT_SUMMARY % 1 in m for m in caplog.messages)
+
+    @pytest.mark.parametrize('lose_the_pano', [
+        lambda self, store, path: os.remove(path),
+        lambda self, store, path: self.corrupt_pano(store),
+    ], ids=['missing_pano', 'cannot_open'])
+    @pytest.mark.parametrize('force, crop_on_disk', [(False, True), (True, False)],
+                             ids=['no-force', 'no-crop'])
+    def test_a_lost_pano_is_not_stale_without_force_or_without_a_crop(
+            self, crop_runner, tmp_path, capsys, lose_the_pano, force, crop_on_disk):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        pano_path = put_pano(store, 'testpano0001')
+        if crop_on_disk:
+            plant_stale_crop(out)
+        lose_the_pano(self, store, pano_path)
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out), force=force)
+        assert counts['missing_pano'] + counts['errors'] == 1
+        assert counts['stale_kept'] == 0
+        assert 'kept a crop already on disk' not in capsys.readouterr().out
 
     def test_a_preflight_skip_with_no_old_crop_is_not_stale(self, crop_runner, tmp_path, capsys):
         store, out = tmp_path / 'store', tmp_path / 'crops'
