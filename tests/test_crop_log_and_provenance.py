@@ -1087,15 +1087,56 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         assert marker['provenance_manifest_started_under'] == crop_runner.CROP_RULE_VERSION
         assert marker['crop_max_stored_width'] == crop_runner.CROP_MAX_STORED_WIDTH
 
-    @pytest.mark.parametrize('content', [None, '{not json', '[1, 2]'], ids=['absent', 'unparseable',
-                                                                           'not-an-object'])
-    def test_a_marker_it_cannot_read_is_rebuilt_around_the_flag(self, crop_runner, tmp_path, content):
-        """The rule keys were written at the start of this same run, so a marker unreadable by the end
-        of it is write_rule_marker's to repair next time; the gap is recorded regardless."""
-        if content is not None:
-            (tmp_path / crop_runner.CROP_RULE_MARKER).write_text(content, encoding='utf-8')
+    def test_an_absent_marker_is_rebuilt_around_the_flag(self, crop_runner, tmp_path):
+        """Nothing is on disk to lose, so the gap is recorded on its own; write_rule_marker restores the
+        rule keys on the next run."""
         crop_runner._record_manifest_gap(str(tmp_path))
         assert read_marker(tmp_path, crop_runner) == {'provenance_manifest_no_known_gap': False}
+
+    @pytest.mark.parametrize('content', ['{not json', '[1, 2]'], ids=['unparseable', 'not-an-object'])
+    def test_a_marker_it_cannot_read_is_left_as_it_is(self, crop_runner, tmp_path, content):
+        """#153 final F2. Rebuilding around the one key threw away every constant, crop_rule_version,
+        provenance_manifest_started_under (for good: the next run carries None forward) and
+        previous_crop_rule_version. A marker it cannot read is not overwritten; the raise reaches the
+        caller's "could not record the gap" message."""
+        path = tmp_path / crop_runner.CROP_RULE_MARKER
+        path.write_text(content, encoding='utf-8')
+        with pytest.raises((OSError, ValueError)):
+            crop_runner._record_manifest_gap(str(tmp_path))
+        assert path.read_text(encoding='utf-8') == content
+
+    def test_a_transient_read_failure_leaves_the_marker_byte_identical_and_is_said(
+            self, crop_runner, tmp_path, store, monkeypatch, capsys, caplog):
+        out = tmp_path / 'crops'
+        marker_path = os.path.join(str(out), crop_runner.CROP_RULE_MARKER)
+        real_gap, real_load = crop_runner._record_manifest_gap, json.load
+        seen = {}
+
+        def gap_whose_first_read_fails(destination_dir):
+            with open(marker_path, 'rb') as f:
+                seen['before'] = f.read()
+            calls = []
+
+            def flaky_load(fp, *args, **kwargs):
+                calls.append(1)
+                if len(calls) == 1:
+                    raise OSError(5, 'Input/output error (transient)')
+                return real_load(fp, *args, **kwargs)
+
+            with monkeypatch.context() as m:
+                m.setattr(json, 'load', flaky_load)
+                return real_gap(destination_dir)
+
+        monkeypatch.setattr(crop_runner, '_record_manifest_gap', gap_whose_first_read_fails)
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 2)
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert counts['success'] == 1
+        with open(marker_path, 'rb') as f:
+            assert f.read() == seen['before']
+        printed = capsys.readouterr().out
+        assert 'could not record the gap' in printed and 'transient' in printed
+        assert any('could not record the gap' in m and 'transient' in m for m in caplog.messages)
 
     def test_a_clean_run_leaves_it_true(self, crop_runner, tmp_path, store):
         """Discrimination for the above: the flip is keyed on a gap, not on the run ending."""

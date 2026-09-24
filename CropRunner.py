@@ -1072,19 +1072,27 @@ def _record_manifest_gap(destination_dir):
 
     Called at the end of a run that knows it left a crop without a row, and by the manifest's first open
     just before it cuts a previous run's torn row (#153 final F1). Rewritten atomically like the
-    marker itself; a marker that cannot be read is rebuilt around the one key, since the rule keys were
-    written at the start of this same run and a lost marker is write_rule_marker's to repair next time.
-    Raises on a failed write - the caller reports it, because the crops are fine and it is the RECORD of
-    the gap that did not land.
+    marker itself.
+
+    An ABSENT marker is rebuilt around the one key: there is nothing on disk to lose, and
+    write_rule_marker restores the rule keys next run. A marker that exists but cannot be read - a
+    transient read error, unparseable JSON, JSON that is not an object - is NOT overwritten, and this
+    raises instead (#153 final F2): rebuilding it around the one key threw away every constant,
+    crop_rule_version, provenance_manifest_started_under (for good, since the next run carries it forward)
+    and previous_crop_rule_version (so a real rule change got no mixed-store warning).
+
+    Raises on a failed read or write - the caller reports it, because the crops are fine and it is the
+    RECORD of the gap that did not land.
     """
     path = os.path.join(destination_dir, CROP_RULE_MARKER)
     try:
         with open(path, encoding='utf-8') as f:
             marker = json.load(f)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         marker = {}
     if not isinstance(marker, dict):
-        marker = {}
+        raise ValueError("%s holds %s, not a JSON object; left as it is"
+                         % (CROP_RULE_MARKER, type(marker).__name__))
     marker[MANIFEST_NO_KNOWN_GAP] = False
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
