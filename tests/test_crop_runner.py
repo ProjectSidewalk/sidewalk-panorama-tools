@@ -2510,6 +2510,14 @@ class TestTheProductionCropStoreGuard:
         with pytest.raises(crop_runner.ProductionCropStoreError, match='crop_7.png'):
             crop_runner.refuse_production_crop_store(str(tmp_path / 'out'))
 
+    def test_a_png_without_the_crop_prefix_is_not_a_canvas_capture(self, crop_runner, tmp_path):
+        """The file signal is the production NAME, crop_<labelId>.png - not any .png. A contact sheet or
+        figure saved beside a formula store must not lock the operator out of it."""
+        out = tmp_path / 'out' / 'figures'
+        out.mkdir(parents=True)
+        Image.new('RGB', (4, 4)).save(str(out / 'overview.png'), format='PNG')
+        crop_runner.refuse_production_crop_store(str(tmp_path / 'out'))
+
     def test_a_label_type_named_file_is_not_a_label_type_directory(self, crop_runner, tmp_path):
         out = tmp_path / 'out'
         out.mkdir()
