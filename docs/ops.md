@@ -175,19 +175,22 @@ over it: the panorama is already on disk at that point, and re-fetching it would
 work that has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
 `refetch_log.csv`.
 
-**If that rewrite fails, the copy is deleted (#122), and the state heals itself.** Leaving it would be the one
+**If that rewrite fails, the copy is deleted (#122), and the next sweep repairs it — whenever one is run.**
+Leaving it would be the one
 outcome nothing could ever repair: the write is atomic, so a failed rewrite leaves the *old* copy intact, and
 `sidecar_is_current` judges from dimensions alone (a decode per panorama is the whole cost the sweep exists
 to avoid) while every gate in `refetch_panos` refuses a swap that changes the frame — so that old copy would
 have *exactly* the expected dimensions, and every later sweep would report it `current` and write nothing. A
 *missing* copy is what the sweep fills: the next `downscale_panos.py` run sees it absent and cuts a fresh one
 from the repaired panorama, and until then the web app serves the native file, which is correct, just larger.
-The swap is ledgered `replaced` either way, and `refetch.log` gets one line saying the copy was deleted.
+**Nothing schedules that sweep** — it runs only when a person [runs it](#running-the-sweep-by-hand) — so the
+copy stays missing until someone does; that is a correct state, not one that repairs itself. The swap is
+ledgered `replaced` either way, and `refetch.log` gets one `WARNING` line saying the copy was deleted.
 Only that one file goes — the exact `.w<cap>.jpg` for the current cap, never the panorama, a copy at
 another cap, or anything else in the shard — and only after a swap has landed, never on a refusal.
 
 > **The one case that needs a person:** if the delete *also* fails, the stale copy is back to reading as
-> `current` for ever. That is reported on stdout as well as in `refetch.log`, naming the file: delete it by
+> `current` for ever. That is reported on stdout as well as in `refetch.log` (at `ERROR`), naming the file: delete it by
 > hand, then run `downscale_panos.py`.
 
 **Copies already on a store are left alone.** They cost disk and nothing else: every walker excludes them by
