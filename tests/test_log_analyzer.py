@@ -1752,6 +1752,22 @@ class TestTheCheckIsNeverSilentlySkipped:
         assert critical is True
         assert any('timed out' in line for line in lines)
 
+    def test_an_unexpected_error_is_not_absorbed_as_a_failed_host(self):
+        """Only RosterUnavailable means "this host did not answer". Widening the catch "for robustness" would
+        turn a bug in the check into a routine CRITICAL line - and would silently disarm _no_roster_network,
+        whose whole job is to raise something this does NOT catch."""
+        def fetch(host):
+            raise RuntimeError('a bug, not a dead host')
+
+        with pytest.raises(RuntimeError):
+            analyze.roster_check(city_rows(), ('a.example', 'b.example'), fetch=fetch)
+
+    def test_the_network_guard_fires_through_the_real_fetch(self):
+        """End to end: with no fetch stub the real fetch_roster reaches the autouse guard, and the guard's
+        error escapes roster_check rather than becoming a report line."""
+        with pytest.raises(AssertionError, match='reached the network'):
+            analyze.roster_check(city_rows(), ONE_HOST)
+
     def test_every_host_failing_is_critical_and_names_each(self):
         """Falling back must not turn "the last host failed" into "the check passed", and the operator needs
         every host's reason, not just the last one's."""
@@ -1807,6 +1823,16 @@ class TestTheNextHostIsTriedWhenOneIsDown:
 
         assert asked == list(hosts[:roster_mod.ROSTER_MAX_HOSTS])
         assert critical is True
+
+    def test_hosts_past_the_cap_are_counted_not_dropped_silently(self):
+        def fetch(host):
+            raise roster_mod.RosterUnavailable('down')
+
+        n = roster_mod.ROSTER_MAX_HOSTS
+        hosts = tuple('h%d.example' % i for i in range(n + 2))
+        lines, _ = analyze.roster_check(city_rows(), hosts, fetch=fetch)
+
+        assert any('%d of %d hosts asked' % (n, n + 2) in line for line in lines)
 
     def test_a_live_first_host_is_the_only_one_asked(self):
         asked = []

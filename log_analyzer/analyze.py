@@ -725,8 +725,8 @@ def roster_check(city_rows, hosts, fetch=None) -> tuple[list[str], bool]:
     is only the cross-check; generating the file from the roster would silently pick up cities nobody has
     decided to watch, which is a different failure from the one this closes.
 
-    `hosts` are asked in order until one serves a roster, at most roster.ROSTER_MAX_HOSTS of them. Two ways it goes CRITICAL, and the second is the
-    one that is easy to "simplify" away:
+    `hosts` are asked in order until one serves a roster, at most roster.ROSTER_MAX_HOSTS of them. Two ways
+    it goes CRITICAL, and the second is the one that is easy to "simplify" away:
 
     * **an unlisted city** - the gap itself;
     * **no host served a roster** - best effort on the fetch, but a check that fails open is the #130 shape
@@ -743,7 +743,9 @@ def roster_check(city_rows, hosts, fetch=None) -> tuple[list[str], bool]:
         except roster.RosterUnavailable as e:
             failures.append(f"{host}: {e}")
     else:
-        return ([f"  🔴 [CRITICAL] no host served a roster ({'; '.join(failures) or 'no hosts given'}) — "
+        skipped = len(hosts) - len(failures)
+        asked = f"; {len(failures)} of {len(hosts)} hosts asked" if skipped > 0 and failures else ""
+        return ([f"  🔴 [CRITICAL] no host served a roster ({'; '.join(failures) or 'no hosts given'}{asked}) — "
                  f"cities.csv was not cross-checked"], True)
 
     have = {cid for cid in ((r.get("city_id") or "").strip() for r in city_rows) if cid and not cid.startswith("#")}
