@@ -105,6 +105,20 @@ class TestTheMalformedRowWarningIsBoundedAndNamesTheLabel:
         assert 'non-finite' in message
         assert len(message) < 3 * crop_runner.LOG_ROW_REPR_MAX_CHARS
 
+    def test_a_huge_label_id_is_clipped_at_the_front_of_the_line(self, crop_runner, tmp_path, caplog):
+        """Review survivor: LOG_ID_MAX_CHARS was never applied in any test, because every 'huge' test
+        put its bulk in another field. The id named first is clipped on its own, so the line stays
+        bounded even when the id itself is the pathological field."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        row = label_row(label_id='7' * 5000, pano_x='not-a-number')
+        with caplog.at_level(logging.WARNING):
+            crop_runner.bulk_extract_crops([row], str(store), str(out))
+        [message] = warnings_starting(caplog, MALFORMED_PREFIX)
+        named = message.split('label_id=', 1)[1].split(', pano_id=', 1)[0]
+        assert named == repr('7' * 5000)[:crop_runner.LOG_ID_MAX_CHARS] + '...'
+        assert len(message) < 3 * crop_runner.LOG_ROW_REPR_MAX_CHARS
+
     def test_a_short_row_is_not_clipped(self, crop_runner, tmp_path, caplog):
         """Discrimination for the two above: clipping is for the long tail, not a blanket truncation
         that would lose the detail of an ordinary bad row."""
@@ -155,7 +169,7 @@ class TestThePerLabelWarningsAreCappedPerRun:
         assert 'malformed_row' in notices[0]
         assert 'exact' in notices[0]
         # The total at the end: seven of ten were not logged.
-        assert '7' in notices[1]
+        assert notices[1].startswith('Suppressed 7 ')
 
     def test_exactly_at_the_cap_nothing_is_said_to_be_suppressed(self, crop_runner, tmp_path, caplog,
                                                                  monkeypatch):
@@ -371,7 +385,7 @@ class TestTheProvenanceManifest:
 
     def test_a_field_the_metadata_does_not_carry_is_empty_not_guessed(self, crop_runner, tmp_path):
         """Absent, JSON null and a blank cell all mean 'not stated'. Mapillary's licence is uniform and a
-        GSV row has no licence at all, so a default would be easy to write and would be a claim nobody
+        GSV row states no licence, so a default would be easy to write and would be a claim nobody
         made: an empty cell is the honest record, and it fills in when cvMetadata starts sending it."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
@@ -413,6 +427,40 @@ class TestTheProvenanceManifest:
                           'dims_mismatch': 1, 'out_of_frame': 1, 'shifted_vertically': 0, 'errors': 2,
                           'recut': 0, 'stale_kept': 0}
         assert list(manifest_by_label(out, crop_runner)) == ['1']
+
+    def test_a_recut_crop_gets_a_second_row_and_the_last_names_the_current_rule(
+            self, crop_runner, tmp_path, monkeypatch):
+        """Review survivor: `if not existed: manifest.record(...)` - nothing tested --force and the
+        manifest together, since they were built on separate branches. Every re-cut appends a row, and
+        the last row for a label is the one that describes the file."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out))
+        monkeypatch.setattr(crop_runner, 'CROP_RULE_VERSION', 'v3-test')
+        counts = crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out),
+                                                force=True)
+        assert counts['recut'] == 1
+        rows = [row for row in manifest_rows(out, crop_runner)[1:] if row[0] == '1']
+        assert [row[-1] for row in rows] == ['v2', 'v3-test']
+
+    def test_a_manifest_that_cannot_be_opened_raises_before_any_crop(self, crop_runner, tmp_path,
+                                                                     monkeypatch):
+        """Review survivor: a swallowed open failure would let the run cut every crop with no record.
+        Opening it is the store saying it cannot record provenance, so it raises before a crop or a type
+        directory exists - after crop_rule.json, which is written first and is not a crop."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        real_open = builtins.open
+
+        def refuse_manifest(file, mode='r', *args, **kwargs):
+            if os.path.basename(str(file)) == crop_runner.PROVENANCE_MANIFEST:
+                raise PermissionError(13, 'Permission denied', str(file))
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(crop_runner, 'open', refuse_manifest, raising=False)
+        with pytest.raises(PermissionError):
+            crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert sorted(os.listdir(str(out))) == [crop_runner.CROP_RULE_MARKER]
 
     def test_each_row_is_on_disk_as_its_crop_lands(self, crop_runner, tmp_path, monkeypatch):
         """Read through a second handle while the run is still going: the row for the first crop must
@@ -536,7 +584,23 @@ class TestAFailedAppendDoesNotLoseTheCrop:
         assert len([m for m in caplog.messages if 'provenance row was not written' in m]) == 2
         assert 'Input/output error' in caplog.text
         printed = capsys.readouterr().out
-        assert '2 crops were written without a row in %s' % crop_runner.PROVENANCE_MANIFEST in printed
+        summary = '2 crops were written without a row in %s' % crop_runner.PROVENANCE_MANIFEST
+        assert summary in printed
+        # Both channels (review survivor: the logging.warning deleted, with only stdout asserted).
+        assert any(m.startswith(summary) for m in caplog.messages)
+
+    def test_the_summary_promises_only_what_is_true(self, crop_runner, tmp_path, failing_record,
+                                                    capsys):
+        """#153 m4. It said 'see crop.log for which' - but crop.log names at most LOG_WARNINGS_PER_KIND
+        of them - and 'a re-run will not record it', which a --force re-run does."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        printed = capsys.readouterr().out
+        assert '(crop.log names up to %d of them)' % crop_runner.LOG_WARNINGS_PER_KIND in printed
+        assert ('a plain re-run skips existing crops and will not record it; --force re-cuts them and '
+                'writes their rows') in printed
+        assert 'see crop.log for which' not in printed
 
     def test_the_exit_code_is_unchanged(self, crop_runner, tmp_path, failing_record):
         store, out = tmp_path / 'store', tmp_path / 'crops'

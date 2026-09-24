@@ -2651,7 +2651,6 @@ class TestTheProductionCropStoreGuard:
         write_labels_csv(csv_file, [label_row(label_id=1, label_type_id=1),
                                     label_row(label_id=2, label_type_id=2, pano_x=260)])
         assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
-        (out / 'crop_provenance.csv').write_text('label_id\n')
         assert (out / crop_runner.CROP_RULE_MARKER).is_file() and (out / 'crop.log').is_file()
 
         crop_runner.refuse_production_crop_store(str(out))

@@ -1565,10 +1565,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
         print(message)
     if unrecorded:
         # Both channels: the crops are fine, but a consumer reading the manifest as "every crop here"
-        # would now be wrong about these, and nothing else will ever record them.
-        message = ("%d crops were written without a row in %s (see crop.log for which); their provenance "
-                   "is not recorded, and a re-run will not record it because the crops now exist."
-                   % (unrecorded, PROVENANCE_MANIFEST))
+        # would now be wrong about these. Each promise is the exact one (#153 m4): crop.log's lines are
+        # capped per kind, and a --force re-run is the one thing that does write their rows.
+        message = ("%d crops were written without a row in %s (crop.log names up to %d of them); their "
+                   "provenance is not recorded: a plain re-run skips existing crops and will not record "
+                   "it; --force re-cuts them and writes their rows."
+                   % (unrecorded, PROVENANCE_MANIFEST, LOG_WARNINGS_PER_KIND))
         logging.warning('%s', message)
         print(message)
     suppressed = budget.summary()
