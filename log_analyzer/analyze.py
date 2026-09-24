@@ -22,7 +22,8 @@ hardcoded here. See docs/log-analyzer.md.
 and cross-checks cities.csv against the fleet roster (#133), so a city nobody added here is loud rather
 than simply unmonitored:
 
-  PS_ROSTER_HOST  required unless --roster-host  a deployment that serves /v3/api/cities
+  PS_ROSTER_HOST  optional  deployment(s) serving /v3/api/cities, comma-separated, tried in order;
+                            omit for sidewalk-sea, then sidewalk-chicago
 
 Usage:
   python3 analyze.py                        # download + analyze all cities
@@ -57,6 +58,15 @@ _roster_spec.loader.exec_module(roster)
 SCRIPT_DIR  = Path(__file__).parent
 LOGS_DIR    = SCRIPT_DIR / "logs"
 CITIES_FILE = SCRIPT_DIR / "cities.csv"
+
+# Where the roster cross-check (#133) asks for /v3/api/cities, in order until one answers. Unlike the SFTP
+# host and base, these can safely have a default: every deployment on the current release serves the same
+# fleet-wide roster, so the choice of host decides only whether the check runs, never what it compares
+# against - and a check that cannot run is CRITICAL in roster_check. Seattle first because it is the
+# flagship and the first to get a release. The fallback is a second app stage, not a second machine: it
+# covers one deployment being restarted or broken, not the app host being down. --roster-host /
+# PS_ROSTER_HOST replace the whole list.
+DEFAULT_ROSTER_HOSTS = ("sidewalk-sea.cs.washington.edu", "sidewalk-chicago.cs.washington.edu")
 
 # ---------------------------------------------------------------------------
 # log.csv format
@@ -692,38 +702,62 @@ def city_stats(df: pd.DataFrame) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
-def roster_check(city_rows, host, fetch=None) -> tuple[list[str], bool]:
+def resolve_roster_hosts(flag, env) -> tuple[str, ...]:
+    """The hosts to ask for the roster: the flag, else PS_ROSTER_HOST, else DEFAULT_ROSTER_HOSTS.
+
+    Each is a comma-separated list. Blank entries are dropped, so an empty or whitespace-only setting counts
+    as unset rather than becoming a host of " " that reports itself unable to serve a roster.
+
+        >>> resolve_roster_hosts(None, " a.example , b.example ")
+        ('a.example', 'b.example')
+    """
+    for setting in (flag, env):
+        hosts = tuple(h.strip() for h in (setting or "").split(",") if h.strip())
+        if hosts:
+            return hosts
+    return DEFAULT_ROSTER_HOSTS
+
+
+def roster_check(city_rows, hosts, fetch=None) -> tuple[list[str], bool]:
     """Cross-check cities.csv against the fleet roster: (report lines, whether it is CRITICAL).
 
     A comparison, not auto-discovery (#133). `cities.csv` stays the source of what to monitor and the roster
     is only the cross-check; generating the file from the roster would silently pick up cities nobody has
     decided to watch, which is a different failure from the one this closes.
 
-    Three ways it goes CRITICAL, and the middle one is the one that is easy to "simplify" away:
+    `hosts` are asked in order until one serves a roster, at most roster.ROSTER_MAX_HOSTS of them. Two ways
+    it goes CRITICAL, and the second is the one that is easy to "simplify" away:
 
     * **an unlisted city** - the gap itself;
-    * **no host configured** - a check that is silently skipped every night is precisely the failure it
-      exists to prevent, so an unset host is loud rather than absent. #132 made the same call for the
-      nightly path;
-    * **no roster served** - best effort on the fetch, but a check that fails open is the #130 shape again.
+    * **no host served a roster** - best effort on the fetch, but a check that fails open is the #130 shape
+      again. An empty `hosts` lands here too, through the loop's `else`, so it cannot read as a clean check.
 
     Returns lines rather than printing them so the whole thing is drivable in a test.
     """
     fetch = roster.fetch_roster if fetch is None else fetch
-    if not host:
-        return ([f"  🔴 [CRITICAL] roster cross-check not configured — set PS_ROSTER_HOST or --roster-host "
-                 f"to a deployment that serves {roster.ROSTER_PATH}"], True)
-
-    try:
-        entries = fetch(host)
-    except roster.RosterUnavailable as e:
-        return ([f"  🔴 [CRITICAL] {host} served no roster ({e}) — cities.csv was not cross-checked"], True)
+    failures = []
+    for host in hosts[:roster.ROSTER_MAX_HOSTS]:
+        try:
+            entries = fetch(host)
+            break
+        except roster.RosterUnavailable as e:
+            failures.append(f"{host}: {e}")
+    else:
+        skipped = len(hosts) - len(failures)
+        asked = f"; {len(failures)} of {len(hosts)} hosts asked" if skipped > 0 and failures else ""
+        return ([f"  🔴 [CRITICAL] no host served a roster ({'; '.join(failures) or 'no hosts given'}{asked}) — "
+                 f"cities.csv was not cross-checked"], True)
 
     have = {cid for cid in ((r.get("city_id") or "").strip() for r in city_rows) if cid and not cid.startswith("#")}
     unlisted = roster.unlisted_cities(entries, have, roster.disabled_rows(city_rows))
     public = sum(1 for e in entries if e["visibility"] == "public")
     private = len(entries) - public
     checked = f"checked {len(have)} rows against {public} public + {private} private cities on {host}"
+
+    # A host that failed before this one answered is still reported: Seattle gets releases first, so a
+    # Seattle that fails every night would otherwise go unseen until the fallback fails too.
+    if failures:
+        checked += f" (after {'; '.join(failures)})"
 
     if not unlisted:
         return ([f"  ✅  Roster cross-check — {checked}"], False)
@@ -770,8 +804,9 @@ def main(argv=None) -> int:
     ros = parser.add_argument_group("fleet roster cross-check (#133)")
     ros.add_argument(
         "--roster-host",
-        help=f"Deployment to ask for {roster.ROSTER_PATH}, e.g. sidewalk-sea.cs.washington.edu. Every "
-             f"deployment serves the same roster, so one host is enough. [PS_ROSTER_HOST]",
+        help=f"Deployment(s) to ask for {roster.ROSTER_PATH}, comma-separated, tried in order. Every "
+             f"deployment serves the same roster, so override only when the defaults are down. "
+             f"[PS_ROSTER_HOST, default {','.join(DEFAULT_ROSTER_HOSTS)}]",
     )
     args = parser.parse_args(argv)
 
@@ -858,7 +893,7 @@ def main(argv=None) -> int:
     if args.download:
         roster_lines, roster_critical = roster_check(
             all_rows,
-            args.roster_host or os.environ.get("PS_ROSTER_HOST"),
+            resolve_roster_hosts(args.roster_host, os.environ.get("PS_ROSTER_HOST")),
         )
         print(f"\n{'━'*70}")
         for line in roster_lines:
