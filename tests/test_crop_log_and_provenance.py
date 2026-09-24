@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 
 import pytest
@@ -1137,6 +1138,69 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         assert self.gap(out, crop_runner) is False
         assert 'ended in a torn row' in capsys.readouterr().out
         assert any('ended in a torn row' in m for m in caplog.messages)
+
+    def plant_torn_row_under_a_true_flag(self, crop_runner, store, out):
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert self.gap(out, crop_runner) is True
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'a', encoding='utf-8') as f:
+            f.write('2,testpano0001,gs')
+
+    def test_a_run_killed_outright_after_the_cut_still_leaves_the_gap_recorded(self, crop_runner,
+                                                                               tmp_path, store):
+        """#153 final F1. The open cuts the torn row - the only evidence of it - so the gap has to be on
+        disk before the cut, not in the run's finally: a SIGKILL, an OOM on a 384 MB decode or an
+        unhandled SIGTERM runs no finally at all. os._exit is that kill, in a real process."""
+        out = tmp_path / 'crops'
+        self.plant_torn_row_under_a_true_flag(crop_runner, store, out)
+        script = (
+            "import os, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import CropRunner\n"
+            "def killed(*args, **kwargs):\n"
+            "    os._exit(9)\n"
+            "CropRunner.make_single_crop = killed\n"
+            "CropRunner.bulk_extract_crops([{'pano_id': 'testpano0001', 'pano_x': 300, 'pano_y': 512,\n"
+            "                                'label_type_id': 1, 'label_id': 3}], sys.argv[2], sys.argv[3])\n"
+            "os._exit(0)\n")
+        done = subprocess.run([sys.executable, '-c', script, REPO_ROOT, str(store), str(out)],
+                              capture_output=True, timeout=120)
+        assert done.returncode == 9, done.stderr
+        assert self.gap(out, crop_runner) is False
+        assert row_ids(out, crop_runner) == ['1']
+
+    def test_an_append_open_that_fails_after_the_cut_still_leaves_the_gap_recorded(
+            self, crop_runner, tmp_path, store, monkeypatch):
+        out = tmp_path / 'crops'
+        self.plant_torn_row_under_a_true_flag(crop_runner, store, out)
+        real_open = builtins.open
+
+        def no_append(file, mode='r', *args, **kwargs):
+            if os.path.basename(str(file)) == crop_runner.PROVENANCE_MANIFEST and 'a' in mode:
+                raise OSError(5, 'Input/output error')
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(crop_runner, 'open', no_append, raising=False)
+        with pytest.raises(OSError, match='Input/output error'):
+            crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        monkeypatch.undo()
+        assert self.gap(out, crop_runner) is False
+
+    def test_a_gap_that_cannot_be_recorded_fails_the_run_and_keeps_the_torn_row(
+            self, crop_runner, tmp_path, store, monkeypatch):
+        """If the record cannot land, the cut must not happen either: the torn row is then the only
+        evidence left, and the run stops before any crop rather than cutting on regardless."""
+        out = tmp_path / 'crops'
+        self.plant_torn_row_under_a_true_flag(crop_runner, store, out)
+
+        def refuse(destination_dir):
+            raise OSError(28, 'No space left on device')
+
+        monkeypatch.setattr(crop_runner, '_record_manifest_gap', refuse)
+        with pytest.raises(OSError, match='No space left'):
+            crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), encoding='utf-8') as f:
+            assert f.read().endswith('\n2,testpano0001,gs')
+        assert not os.path.exists(crop_path(out, 1, 3))
 
     def test_a_clean_run_says_nothing_about_a_torn_row(self, crop_runner, tmp_path, store, capsys):
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(tmp_path / 'crops'))

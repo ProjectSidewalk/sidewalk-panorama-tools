@@ -866,21 +866,31 @@ class ProvenanceManifest:
     def __init__(self, destination_dir):
         self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
         self._file = None
-        self.torn_rows_cut = int(self._open())
+        self.torn_rows_cut = int(self._open(first=True))
 
-    def _open(self):
+    def _open(self, first=False):
         """Cut any torn tail back to the last complete line, then open for unbuffered appends.
 
-        :return: True if a torn ROW was cut (a torn header costs no crop its row)."""
+        On the FIRST open, a torn row is recorded as a gap in crop_rule.json BEFORE it is cut (#153 final
+        F1): the fragment is the only evidence that a crop lost its row, so recording it at the end of
+        the run would lose it to anything that ends a run without a finally - SIGKILL, an OOM on a 384 MB
+        decode, a SIGTERM (CropRunner installs no handler) - or to this open itself raising just after the
+        cut. A record that cannot be written raises out of here with nothing cut, which stops the run
+        before any crop: the torn row is then still on disk for the next run to find.
+
+        :return: True if the first open cut a torn ROW (a torn header costs no crop its row)."""
         keep, cut_row = 0, False
         if os.path.exists(self.path):
             with open(self.path, 'r+b') as f:
                 size = f.seek(0, os.SEEK_END)
                 keep = _end_of_last_line(f, size)
                 if keep != size:
+                    # A torn HEADER (keep == 0) cost no crop its row; anything after a header did. A tear
+                    # a later reopen finds is this run's own failed append, already counted unrecorded.
+                    if keep and first:
+                        _record_manifest_gap(os.path.dirname(self.path))
+                        cut_row = True
                     f.truncate(keep)
-                    # A torn HEADER (keep == 0) cost no crop its row; anything after a header did.
-                    cut_row = bool(keep)
         handle = open(self.path, 'ab', buffering=0)
         try:
             if not keep:
@@ -1060,7 +1070,8 @@ def write_rule_marker(destination_dir, force=False):
 def _record_manifest_gap(destination_dir):
     """Turn crop_rule.json's MANIFEST_NO_KNOWN_GAP false, keeping every other key (#153 M3).
 
-    Called at the end of a run that knows it left a crop without a row. Rewritten atomically like the
+    Called at the end of a run that knows it left a crop without a row, and by the manifest's first open
+    just before it cuts a previous run's torn row (#153 final F1). Rewritten atomically like the
     marker itself; a marker that cannot be read is rebuilt around the one key, since the rule keys were
     written at the start of this same run and a lost marker is write_rule_marker's to repair next time.
     Raises on a failed write - the caller reports it, because the crops are fine and it is the RECORD of
@@ -1523,8 +1534,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             logging.error('%s', message)
             print(message)
         # Also in the finally, so a run killed after losing a row still says so in the marker. Each of
-        # the three is a crop on disk this run knows has no row, or may not (a failed close).
-        if unrecorded or close_failure is not None or manifest.torn_rows_cut:
+        # the two is a crop on disk this run knows has no row, or may not (a failed close). A torn row
+        # found at open is the third, and was recorded before it was cut (ProvenanceManifest._open).
+        if unrecorded or close_failure is not None:
             try:
                 _record_manifest_gap(destination_dir)
             except Exception as e:
