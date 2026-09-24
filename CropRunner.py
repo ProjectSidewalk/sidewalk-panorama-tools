@@ -155,6 +155,31 @@ SYSTEMIC_ERROR_FRACTION = 0.5
 # The one string to grep for, in crop.log or in a terminal scrollback.
 SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 
+# ---------------------------------------------------------------------------
+# Bounding crop.log under a systemic fault (#139). The crop loop logs one WARNING per failed label, which
+# is right for the three bad labels of an ordinary run and ruinous for the #123 shape: ~260,000
+# malformed rows, each warning carrying the whole row repr'd (~300-500 B), is ~100 MB through the
+# 10 MB x 3 rotation. That rotates away every earlier run's history AND ~70% of the flood's own lines.
+#
+# Two bounds, both needed. The per-line one keeps an ordinary bad row's detail readable; the per-run
+# one is what actually bounds the file, since even a 100-byte line times 260,000 is 26 MB.
+#
+# Lines of one KIND (a malformed row, a failed write, an unopenable pano, a dims mismatch, a label out
+# of frame, an unrecorded provenance row) logged per run before the rest are suppressed. Per kind, not
+# shared, so a flood of one cannot silence the first lines of another, which may be the actual cause.
+# Six kinds x 100 lines x ~300 B stays under 1 MB, a tenth of one rotation segment. Suppression is of
+# LINES only: every label is still counted, which is what the summary, the #136 alarm and the exit
+# code read.
+LOG_WARNINGS_PER_KIND = 100
+
+# The longest a repr'd label row, or an exception's text, may run inside one warning before it is
+# clipped with '...'. An ordinary cvMetadata row repr's to ~300-500 B, so a whole ordinary row does not
+# fit - the identifying fields are named separately at the front of the line for exactly that reason.
+LOG_ROW_REPR_MAX_CHARS = 200
+
+# The same, for one identifying field (label_id, pano_id) named at the front of the line.
+LOG_ID_MAX_CHARS = 60
+
 
 def build_parser():
     parser = argparse.ArgumentParser()
@@ -833,6 +858,62 @@ def systemic_failure_line(counts):
             % (SYSTEMIC_FAILURE_BANNER, errors, total, 100.0 * errors / total))
 
 
+def _clip(text, limit):
+    """text, or its first `limit` characters and '...' when it is longer."""
+    return text if len(text) <= limit else text[:limit] + '...'
+
+
+def _identifying_field(row, key):
+    """repr of row[key], clipped, or '?' when it cannot be read: an absent key, a blank or null value,
+    or a row that is not a mapping at all. For naming a label in a warning about the row being bad, so
+    it must never raise itself."""
+    value = row.get(key) if isinstance(row, dict) else None
+    if _absent(value):
+        return '?'
+    return _clip(repr(value), LOG_ID_MAX_CHARS)
+
+
+class WarningBudget:
+    """A per-run, per-kind cap on the crop loop's per-label warnings (#139).
+
+    `warning(kind, ...)` logs like logging.warning until LOG_WARNINGS_PER_KIND lines of that kind have
+    been written, logs ONE notice when it first drops one, and after that only counts. It never touches
+    the crop loop's counts dict - the caller increments its bucket unconditionally and then calls this,
+    so what is logged can never change what is counted. `summary()` is the one end-of-run line.
+
+    The cap is read from the module at each call rather than frozen at construction, so a test can
+    lower it with monkeypatch.
+
+    >>> budget = WarningBudget()
+    >>> budget.summary() is None
+    True
+    """
+
+    def __init__(self):
+        self.logged = collections.Counter()
+        self.suppressed = collections.Counter()
+
+    def warning(self, kind, message, *args):
+        if self.logged[kind] < LOG_WARNINGS_PER_KIND:
+            self.logged[kind] += 1
+            logging.warning(message, *args)
+            return
+        if not self.suppressed[kind]:
+            logging.warning("Logged %d %s warnings this run; further ones are suppressed for the rest of "
+                            "it, and the counts in the run summary stay exact.",
+                            LOG_WARNINGS_PER_KIND, kind)
+        self.suppressed[kind] += 1
+
+    def summary(self):
+        """The end-of-run total, or None if nothing was suppressed."""
+        total = sum(self.suppressed.values())
+        if not total:
+            return None
+        by_kind = ', '.join('%s: %d' % (kind, n) for kind, n in self.suppressed.items())
+        return ("Suppressed %d per-label warnings this run (%s); every one of those labels is still "
+                "counted in the run summary." % (total, by_kind))
+
+
 def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
@@ -871,6 +952,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
     labels_by_pano = {}
+    # Every per-label warning below goes through this, so a systemic fault cannot flood crop.log (#139).
+    budget = WarningBudget()
     for row in labels_to_crop:
         try:
             raw_id = row['pano_id']
@@ -894,7 +977,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             meta_dims = _metadata_dims(row)
         except (KeyError, TypeError, ValueError) as e:
             counts['errors'] += 1
-            logging.warning("Skipping malformed label row %r: %s", row, e)
+            # Named fields first, then the reason and the row clipped: a whole row repr'd is ~300-500 B,
+            # and it was 260,000 of those that flooded crop.log (#139). The count above is not
+            # conditional on the line being written.
+            budget.warning('malformed_row', "Skipping malformed label row (label_id=%s, pano_id=%s): %s; "
+                           "row: %s", _identifying_field(row, 'label_id'),
+                           _identifying_field(row, 'pano_id'),
+                           _clip(str(e), LOG_ROW_REPR_MAX_CHARS), _clip(repr(row), LOG_ROW_REPR_MAX_CHARS))
             continue
         labels_by_pano.setdefault(pano_id, []).append((pano_x, pano_y, label_type, label_id, meta_dims))
 
@@ -915,8 +1004,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
         except Exception as e:
             counts['errors'] += len(labels)
             processed += len(labels)
-            logging.warning("Skipped %d labels on pano %s: cannot open %s (%s)",
-                            len(labels), pano_id, pano_img_path, e)
+            budget.warning('cannot_open', "Skipped %d labels on pano %s: cannot open %s (%s)",
+                           len(labels), pano_id, pano_img_path, e)
             continue
 
         # Not `with pano:` - Image.__exit__ has been a no-op since Pillow 11, so the `with` form silently
@@ -942,8 +1031,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 # not a dims comparison (#54).
                 if meta_dims is not None and meta_dims != pano.size:
                     counts['dims_mismatch'] += 1
-                    logging.warning(
-                        "Label %d on pano %s: metadata says %dx%d but the stored image is %dx%d; "
+                    budget.warning(
+                        'dims_mismatch', "Label %d on pano %s: metadata says %dx%d but the stored image is %dx%d; "
                         "skipping rather than mis-centring the crop",
                         label_id, pano_id, meta_dims[0], meta_dims[1], pano.size[0], pano.size[1])
                     continue
@@ -956,8 +1045,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 # seam modulo, and rows storing pano_x == pano_width crop fine.
                 if not 0 <= pano_y < pano.size[1]:
                     counts['out_of_frame'] += 1
-                    logging.warning(
-                        "Label %d on pano %s: pano_y %s is outside the %dx%d image; skipping rather "
+                    budget.warning(
+                        'out_of_frame', "Label %d on pano %s: pano_y %s is outside the %dx%d image; skipping rather "
                         "than clamping it to a pole", label_id, pano_id, pano_y,
                         pano.size[0], pano.size[1])
                     continue
@@ -980,7 +1069,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                                            draw_mark=mark_label)
                 except Exception as e:
                     counts['errors'] += 1
-                    logging.warning("Failed to crop label %d on pano %s: %s", label_id, pano_id, e)
+                    budget.warning('crop_failed', "Failed to crop label %d on pano %s: %s",
+                                   label_id, pano_id, e)
                     continue
                 counts['success'] += 1
                 if box.shifted:
@@ -1009,6 +1099,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     if counts['shifted_vertically']:
         print("%d of those crops were shifted to stay inside the pano, so their label is not at the "
               "crop's centre." % counts['shifted_vertically'])
+    suppressed = budget.summary()
+    if suppressed:
+        # crop.log only: the lines it accounts for were never on stdout, whose summary above is whole.
+        logging.warning('%s', suppressed)
     alarm = systemic_failure_line(counts)
     if alarm:
         # Both channels, the depth phase's pattern, and last so it is the line left on screen: stdout
