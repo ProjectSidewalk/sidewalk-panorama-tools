@@ -186,6 +186,15 @@ SYSTEMIC_ERROR_FRACTION = 0.5
 # The one string to grep for, in crop.log or in a terminal scrollback.
 SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 
+# bulk_extract_crops' counts, beside 'total'. Every label lands in exactly one DISJOINT_OUTCOMES bucket, so
+# those sum to total on every path; a COUNT_ANNOTATIONS entry qualifies a label already in one of them and
+# is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a
+# dims_mismatch or out_of_frame skip under --force that left an old crop in place (#153 m2). A new key goes
+# in exactly one of the two, and tests/test_crop_runner.py asserts the dict holds nothing else.
+DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch', 'out_of_frame',
+                     'errors')
+COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
+
 # ---------------------------------------------------------------------------
 # Bounding crop.log under a systemic fault (#139). The crop loop logs one WARNING per failed label, which
 # is right for the three bad labels of an ordinary run and ruinous for the #123 shape: ~260,000
@@ -1295,19 +1304,21 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                  success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors
                      == total
 
-             shifted_vertically is NOT one of them - it annotates a success whose window had to move to
-             stay inside the pano, so the crop exists but the label is off-centre in it. Nor is recut,
-             which annotates a success that replaced a crop already on disk (force=True only). Adding a bucket
-             here without adding it to that sum is exactly how the invariant went stale before;
-             tests/test_crop_runner.py asserts the sum from the dict rather than from this docstring.
+             Those six are DISJOINT_OUTCOMES. The COUNT_ANNOTATIONS are NOT among them:
+             shifted_vertically annotates a success whose window had to move to stay inside the pano, so
+             the crop exists but the label is off-centre in it; recut annotates a success that replaced a
+             crop already on disk (force=True only); stale_kept annotates a dims_mismatch or out_of_frame
+             skip, under force=True, whose label already had a crop - which therefore stays as whatever
+             rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
+             went stale before; tests/test_crop_runner.py asserts the sum, and the key set, from the dict
+             rather than from this docstring.
 
              The summary ends with systemic_failure_line()'s alarm when errors dominate the run (#136).
              That is a second READING of these numbers and adds no bucket of its own - which is what
              keeps the invariant above out of its way.
     """
-    counts = {'total': len(labels_to_crop), 'success': 0, 'skipped_existing': 0,
-              'missing_pano': 0, 'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-              'recut': 0, 'errors': 0}
+    counts = dict.fromkeys(DISJOINT_OUTCOMES + COUNT_ANNOTATIONS, 0)
+    counts['total'] = len(labels_to_crop)
 
     # Before the first write of any kind - the makedirs included - because what it protects cannot be
     # regenerated.
@@ -1392,6 +1403,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     processed += 1
                     print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
 
+                    destination_folder = os.path.join(destination_dir, str(label_type))
+                    crop_destination = os.path.join(destination_folder, str(label_id) + ".jpg")
+
                     # Store integrity: the metadata's pano dims describe the CURRENT pano, and the image on
                     # disk was stitched to whatever /adminapi/panos reported when it was downloaded. A
                     # disagreement means the store is stale relative to the metadata (or, on the Mapillary
@@ -1406,6 +1420,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     # not a dims comparison (#54).
                     if meta_dims is not None and meta_dims != pano.size:
                         counts['dims_mismatch'] += 1
+                        if force and os.path.exists(crop_destination):
+                            counts['stale_kept'] += 1
                         budget.warning(
                             'dims_mismatch', "Label %d on pano %s: metadata says %dx%d but the stored image is %dx%d; "
                             "skipping rather than mis-centring the crop",
@@ -1420,14 +1436,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     # seam modulo, and rows storing pano_x == pano_width crop fine.
                     if not 0 <= pano_y < pano.size[1]:
                         counts['out_of_frame'] += 1
+                        if force and os.path.exists(crop_destination):
+                            counts['stale_kept'] += 1
                         budget.warning(
                             'out_of_frame', "Label %d on pano %s: pano_y %s is outside the %dx%d image; "
                             "skipping rather than clamping it to a pole", label_id, pano_id, pano_y,
                             pano.size[0], pano.size[1])
                         continue
-
-                    destination_folder = os.path.join(destination_dir, str(label_type))
-                    crop_destination = os.path.join(destination_folder, str(label_id) + ".jpg")
 
                     existed = os.path.exists(crop_destination)
                     if existed and not force:
@@ -1516,6 +1531,15 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
               "crop's centre." % counts['shifted_vertically'])
     if counts['recut']:
         print("%d of those crops were re-cut over one already on disk (--force)." % counts['recut'])
+    if counts['stale_kept']:
+        # Both channels: a forced run promises a store cut under one rule, and these labels break it.
+        # Whether to delete such a crop is a decision nobody has made, so it is counted and said instead.
+        message = ("%d labels skipped by a preflight kept a crop already on disk (--force): their metadata "
+                   "now fails the dims_mismatch or out_of_frame check, so the old crop was neither re-cut "
+                   "nor removed and stays as whatever rule cut it, while %s says %s. crop.log names them "
+                   "under those two kinds." % (counts['stale_kept'], CROP_RULE_MARKER, CROP_RULE_VERSION))
+        logging.warning('%s', message)
+        print(message)
 
     if manifest.torn_rows_cut:
         # Both channels: a previous run was killed mid-append, and the crop that row was for is on disk.

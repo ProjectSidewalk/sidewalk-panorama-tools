@@ -205,7 +205,8 @@ path, including re-runs:
 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total
 ```
 
-(`shifted_vertically` and `recut` annotate a success, so they are deliberately not in that sum.)
+(`shifted_vertically` and `recut` annotate a success, and `stale_kept` annotates a preflight skip under
+`--force` — see below — so they are deliberately not in that sum.)
 
 The run writes a rotating `crop.log` into the crop directory, prints a per-outcome summary, and **exits 1 if
 any label errored** — a corrupt pano, a malformed metadata row, a failed write — so a cron wrapper can alert.
@@ -332,6 +333,14 @@ guard refuses with or without `--force`.
 * **Nothing else changes.** Missing panos, the two preflights and errors behave exactly as without it, so a
   label the run skips keeps whatever crop it already had — a forced run over a half-scraped pano store is
   not a whole-store re-cut. Check the summary's skip counts before relying on a store being one geometry.
+* **Known limit: a label that now fails a preflight keeps its old crop.** The `dims_mismatch` and
+  `out_of_frame` checks run before the "does a crop exist" check, so a label whose crop is on disk but whose
+  metadata now fails one is skipped with that crop untouched — cut under whatever rule cut it, while
+  `crop_rule.json` names the new one. A forced run counts these as `stale_kept` (an annotation of the skip,
+  outside the sum above) and ends with `N labels skipped by a preflight kept a crop already on disk`, on
+  stdout and in `crop.log`, whose per-label lines name them under those two kinds. The crop is **not**
+  deleted: whether a forced run should remove a crop it can no longer vouch for is an open decision, not
+  something this tool does on its own.
 * **It re-cuts the labels you hand it, not the directory.** A crop on disk whose label is absent from the
   metadata (deleted upstream, or outside a `-f` subset) is left alone.
 
