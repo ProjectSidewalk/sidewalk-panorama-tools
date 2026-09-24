@@ -19,7 +19,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `-d <fqdn>` | Fetch label metadata from a Project Sidewalk server's `/adminapi/labels/cvMetadata`. Mutually exclusive with `-f`; one is required. |
 | `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. |
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
-| `-o <dir>` | **Required.** Where crops are written. `crop.log` goes here too. |
+| `-o <dir>` | **Required.** Where crops are written. `crop.log`, `crop_rule.json` and `crop_provenance.csv` go here too — see [What a crop store holds](#what-a-crop-store-holds). |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
 | `--force` | Re-cut a label whose crop already exists instead of skipping it — the repair for a store cut under an older rule. Off by default. See [Re-cutting a store](#re-cutting-a-store-with---force). |
 
@@ -208,6 +208,34 @@ The skip outcomes are **not** errors and do not affect the exit code: `missing_p
 scraped independently and legitimately lags the label list) and the two preflight rejections. Those are
 metadata the run declined to trust, not work it got wrong.
 
+### `crop.log` stays bounded under a flood
+
+Every per-label warning goes to `crop.log`, which is the durable record of *which* labels failed and why.
+Under one systemic fault that record used to destroy itself
+([#139](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/139)): the malformed-row warning
+carried the whole row, ~300–500 B repr'd, so the
+[#123](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/123) run's ~260,000 of them came
+to ~100 MB through the `10 MB × 3` rotation — every earlier run's history rotated out, and about 70% of the
+flood's own lines with it. Two bounds now apply, and both are needed:
+
+* **One line is bounded.** The malformed-row warning names `label_id` and `pano_id` first (`?` when the row
+  does not carry a readable one), then the reason and the row, each clipped to `LOG_ROW_REPR_MAX_CHARS`
+  (200) with `...`. An ordinary bad row keeps its detail; a pathological one cannot make one line huge.
+* **One run is bounded.** Each *kind* of per-label warning is logged at most `LOG_WARNINGS_PER_KIND` (100)
+  times per run. The first line dropped is replaced by one notice naming the kind, and the end of the run
+  logs one total — `Suppressed N per-label warnings this run (malformed_row: …, crop_failed: …)` — ahead of
+  the `SYSTEMIC FAILURE` line, which stays the last thing written. The kinds are `malformed_row`,
+  `crop_failed` (a failed write: a full or read-only store), `cannot_open` (a pano that exists but will not
+  open: a dead mount that still answers a stat), `dims_mismatch` (a city re-served wider than the store) and
+  `out_of_frame`. Each has its own budget, so a flood of one cannot hide the first lines of another, which
+  may be the actual cause.
+
+**Suppression drops lines, never counts.** Every label is still counted in its bucket, so the summary, the
+invariant above, the alarm below and the exit code all read exactly what they read before; stdout is
+unchanged. `missing_pano` is deliberately **not** capped: it is the normal state of a city whose scrape is
+catching up rather than a fault, it is one line per pano rather than per label, and which panos are missing
+is what an operator topping up a store wants listed.
+
 ### When errors dominate: `SYSTEMIC FAILURE`
 
 If at least **half** the run's labels errored, the summary ends with one extra line, to stdout **and** to
@@ -254,7 +282,7 @@ Three blind spots come with that denominator, and only the first is benign:
 
 - **A mature store topping up a handful of labels, every one of which fails to write**, is a small
   fraction of a large total and does not trip it. That run still exits 1 and still logs a warning per
-  label — the signal it had before.
+  label (up to the per-kind cap above) — the signal it had before.
 - **`missing_pano` dilutes the denominator.** A run over a city that is 60% un-scraped, whose output
   store then fills up mid-run or hits a per-file write failure, errors on every label it reaches — 40%
   of `total`. Silent. (A *read-only* `-o` is not this case: `write_rule_marker` writes `crop_rule.json`
@@ -300,7 +328,72 @@ guard refuses with or without `--force`.
 * **It re-cuts the labels you hand it, not the directory.** A crop on disk whose label is absent from the
   metadata (deleted upstream, or outside a `-f` subset) is left alone.
 
+## What a crop store holds
+
+| Path | What |
+|---|---|
+| `<label_type_id>/<label_id>.jpg` | One crop per label. Its existence is the resume marker: it is not re-cut unless `--force` is passed. |
+| `crop_rule.json` | Which sizing rule cut the store, plus whether the provenance manifest covers it (below). |
+| `crop_provenance.csv` | One row per crop: where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)). |
+| `crop.log` | The rotating run log (10 MB × 3). |
+
+### The provenance manifest, `crop_provenance.csv`
+
+A crop is a bare JPEG and every consumer of this store is an ML dataset, so the record of where a crop's
+pixels came from has to travel with the crop rather than stay with the app. The manifest is that record:
+
+```
+label_id,pano_id,source,copyright,license,crop_rule_version
+```
+
+* **One row per crop, appended as it lands** — after the JPEG is on disk, flushed per row, through one
+  handle held for the run. That is the two nightly ledgers' contract (`pano_id_log.csv`, `depth_log.csv`),
+  so a run killed at any point leaves a truthful partial file: a header, and a row for each crop that
+  exists. Nothing else gets a row — not a skip, a preflight rejection, or a failed write. The file is
+  append-only, so a crop that is ever re-cut gets a second row, and the later one describes the file.
+* **`source`, `copyright` and `license` are copied from the label metadata verbatim, and written empty when
+  the metadata does not state them** — never inferred from the source or anything else. `copyright` is
+  the field the app keeps the producer credit under (`pano_data.copyright`, which it renders beside
+  `pano_data.license`), so the column keeps that name rather than being renamed on the way through.
+  **Today cvMetadata sends none of the three** ([API fields](api-fields.md#adminapilabelscvmetadata--the-croppers-label-list)),
+  so a `-d` run writes all three empty, and older CSV exports fill `source` and sometimes `copyright`.
+  They fill in by themselves if the endpoint starts sending them; none of them is a required column, on
+  any of the three intakes.
+* **`crop_rule_version` is per row**, because a store can hold more than one geometry (see
+  [Crop geometry](#crop-geometry)).
+* **A failed append does not lose the crop, and is not counted as an error.** The crop is already on disk
+  and is the resume marker, so a re-run skips it and could never write the row: counting it in `errors`
+  would break the promise that errors retry, and would put one label in two buckets. Each one is logged to
+  `crop.log` (under the same per-kind cap as the other per-label warnings, as `provenance_unrecorded`),
+  and the run summary prints how many crops went unrecorded, on both channels. The counts and the exit code
+  are unchanged. Opening the manifest at all is different: if it cannot be opened the run stops before
+  cutting anything, exactly as it does when `crop_rule.json` cannot be written.
+
+**Crops cut before the manifest existed have no rows**, since they are not re-cut without `--force` (a `--force` pass over them adds their rows). `crop_rule.json` says
+whether a store's manifest can be read as covering every crop in it:
+
+| Key | Meaning |
+|---|---|
+| `provenance_manifest` | The manifest's file name. |
+| `provenance_manifest_started_under` | The crop rule in force when the manifest was started. |
+| `provenance_manifest_complete_from_start` | `true` if the store held no crops when the manifest was started, `false` if it did, `null` if a manifest is present with no record of how it started. |
+
+The last two are set once, by the run that starts the manifest, and carried forward unchanged by every
+later run — by then the crops on disk are the manifest's own. Deleting the manifest restarts it, and the
+restarted one is recorded as partial. A `false` or `null` store has crops with no row; a backfill is out
+of scope here, and would be a one-off in the shape of `migrate_depth_artifacts.py`. Even for a `true`
+store, the manifest's rows against the crops on disk is the ground truth: a crop whose append failed has no
+row either.
+
 ## Before you train on these crops
+
+**Crops from `mapillary` and `panoramax` panoramas carry a licence, and it has to follow them into any
+dataset.** Both sources publish imagery under open licences that require attribution — Mapillary uniformly
+under CC BY-SA 4.0, Panoramax per picture, with the contributor choosing among `CC-BY-SA-4.0`, `CC-BY-4.0`
+and `etalab-2.0`. `crop_provenance.csv` is where a crop's source, producer credit (`copyright`) and
+licence are recorded; carry those rows with the crops. An empty `license` means the metadata did not state
+one, not that there is none.
+
 
 **Crops produced before `--mark-label` existed all carry a burned-in dark-red (128, 0, 0) dot at the label
 position.** Marking used to be a `MARK_LABEL = True` constant at the top of the file, on for every run. That
