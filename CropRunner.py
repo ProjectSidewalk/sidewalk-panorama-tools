@@ -850,7 +850,9 @@ class ProvenanceManifest:
     the tear fell inside a quoted field (a comma in `copyright`), an appended newline sits inside the
     open quote and the csv reader swallows every following row into it. The torn row's crop is on disk
     and nothing can record it now, so losing the fragment loses nothing that was usable. `torn_rows_cut`
-    counts the rows cut this way, which bulk_extract_crops reads as a known gap. If nothing is left - a
+    counts the rows cut this way by the FIRST open - a previous run killed mid-append - which
+    bulk_extract_crops reads as a known gap. A fragment cut by a reopen is this run's own failed append,
+    already counted as unrecorded, so it is not counted again here. If nothing is left - a
     torn header - the header is written again, as for an empty file: the header is written when the
     file is EMPTY, not merely when it is new, since a crash between creating it and writing the header
     leaves zero bytes and "the file exists" would then skip the header for good.
@@ -863,13 +865,14 @@ class ProvenanceManifest:
 
     def __init__(self, destination_dir):
         self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
-        self.torn_rows_cut = 0
         self._file = None
-        self._open()
+        self.torn_rows_cut = int(self._open())
 
     def _open(self):
-        """Cut any torn tail back to the last complete line, then open for unbuffered appends."""
-        keep = 0
+        """Cut any torn tail back to the last complete line, then open for unbuffered appends.
+
+        :return: True if a torn ROW was cut (a torn header costs no crop its row)."""
+        keep, cut_row = 0, False
         if os.path.exists(self.path):
             with open(self.path, 'r+b') as f:
                 size = f.seek(0, os.SEEK_END)
@@ -877,8 +880,7 @@ class ProvenanceManifest:
                 if keep != size:
                     f.truncate(keep)
                     # A torn HEADER (keep == 0) cost no crop its row; anything after a header did.
-                    if keep:
-                        self.torn_rows_cut += 1
+                    cut_row = bool(keep)
         handle = open(self.path, 'ab', buffering=0)
         try:
             if not keep:
@@ -887,6 +889,7 @@ class ProvenanceManifest:
             _close_quietly(handle)
             raise
         self._file = handle
+        return cut_row
 
     def record(self, label_id, pano_id, provenance):
         """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order.

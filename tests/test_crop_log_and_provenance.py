@@ -814,7 +814,12 @@ class TestAFailedAppendLeavesNoRowBehind:
         crop_runner.bulk_extract_crops([labelled(i, copyright='Doe, J') for i in range(1, 5)],
                                        str(store), str(out))
         assert row_ids(out, crop_runner) == ['1', '3', '4']
-        assert '1 crops were written without a row' in capsys.readouterr().out
+        printed = capsys.readouterr().out
+        assert '1 crops were written without a row' in printed
+        # The fragment this run's own failed append left is cut on the reopen, but it is THIS run's row,
+        # already counted as unrecorded - not a previous run killed mid-append, which is what that notice
+        # reports.
+        assert 'ended in a torn row' not in printed
 
     def test_the_torn_bytes_are_gone_even_when_nothing_follows_them(self, crop_runner, tmp_path,
                                                                      monkeypatch):
