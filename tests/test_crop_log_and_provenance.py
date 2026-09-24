@@ -822,17 +822,58 @@ class TestAFailedAppendLeavesNoRowBehind:
         # reports.
         assert 'ended in a torn row' not in printed
 
-    def test_the_torn_bytes_are_gone_even_when_nothing_follows_them(self, crop_runner, tmp_path,
-                                                                     monkeypatch):
-        """The tear on the LAST append of the run: nothing reopens the manifest in this run, so the
-        next run's open is what cuts it back."""
+    def test_a_tear_on_the_last_append_is_cut_by_the_same_run(self, crop_runner, tmp_path, monkeypatch,
+                                                              capsys, caplog):
+        """#153 final F4. The tear on the LAST append of the run used to stay on disk until the next
+        run's first open cut it - which then reported it as "a previous run was killed while appending
+        it", about a row the tearing run had already reported as unrecorded. The failed append now
+        reopens (and so cuts) at once, so no run ends torn."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         RawWriterFaults(crop_runner, monkeypatch, tear=(3,))
         crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
         monkeypatch.undo()
-        crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'rb') as f:
+            assert f.read().endswith(b'\n')
+        assert row_ids(out, crop_runner) == ['1']
+        assert '1 crops were written without a row' in capsys.readouterr().out
+
+        with caplog.at_level(logging.WARNING):
+            crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        assert 'torn row' not in capsys.readouterr().out
+        assert not any('torn row' in m for m in caplog.messages)
         assert row_ids(out, crop_runner) == ['1', '3']
+        manifest = crop_runner.ProvenanceManifest(str(out))
+        manifest.close()
+        assert manifest.torn_rows_cut == 0
+
+    def test_a_reopen_that_fails_leaves_the_next_row_to_reopen_it(self, crop_runner, tmp_path,
+                                                                  monkeypatch, capsys, caplog):
+        """The reopen after a failed append is best-effort: if it cannot open the file, the handle stays
+        dropped and the next row's record() reopens - and cuts - instead. The label's warning names the
+        append's own failure, not the reopen's."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        faults = RawWriterFaults(crop_runner, monkeypatch, tear=(3,))
+        opened = []
+        wrapped_open = crop_runner.open
+
+        def second_append_open_fails(file, mode='r', *args, **kwargs):
+            if os.path.basename(str(file)) == crop_runner.PROVENANCE_MANIFEST and 'a' in mode:
+                opened.append(mode)
+                if len(opened) == 2:
+                    raise OSError(5, 'Input/output error on reopen')
+            return wrapped_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(crop_runner, 'open', second_append_open_fails, raising=False)
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops([labelled(i) for i in (1, 2, 3)], str(store), str(out))
+        assert counts['success'] == 3 and len(opened) == 3
+        [unrecorded] = [m for m in caplog.messages if 'provenance row was not written' in m]
+        assert '(torn)' in unrecorded and 'on reopen' not in unrecorded
+        assert row_ids(out, crop_runner) == ['1', '3']
+        assert '1 crops were written without a row' in capsys.readouterr().out
+        assert faults.handles and all(h.closed for h in faults.handles)
 
 
 class TestTheRawWriteHelpers:

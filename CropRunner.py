@@ -843,9 +843,10 @@ class ProvenanceManifest:
     **A row is written whole or not at all (#153 M2).** The handle is UNBUFFERED and each row is one
     encoded line handed to the OS, so there is no buffer in which a failed row can wait to be flushed by
     the next successful one - which is how rows the run reported as unrecorded used to turn up in the
-    file. When an append fails the handle is dropped, and the next row reopens it; reopening cuts the
-    file back to its last complete line, so a write that failed partway cannot leave half a row in the
-    middle of the file with whole ones after it.
+    file. When an append fails the handle is dropped and reopened at once (#153 final F4), and reopening
+    cuts the file back to its last complete line, so a write that failed partway cannot leave half a row
+    in the middle of the file with whole ones after it, nor at the end of a run whose LAST append tore.
+    If that reopen fails, the next row's record() reopens instead.
 
     **The repair cuts back; it never closes off (#153 n2).** A last line with no newline - a crash
     mid-append, or the partial write above - is truncated away rather than terminated with a '\\n': when
@@ -907,7 +908,11 @@ class ProvenanceManifest:
         """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order.
 
         Raises if the row did not reach the file; the handle is dropped first, so nothing of the row
-        survives to be written later and the next call starts from a clean line."""
+        survives to be written later, and then reopened at once, which cuts any part of the row that did
+        land (#153 final F4). Cutting here rather than at the next row's open means no run ends torn - a
+        tear left by the run's LAST append used to be cut by the next run's first open and reported as a
+        previous run killed mid-append, about a row this run had already reported as unrecorded. The
+        reopen is best-effort: if it fails, the handle stays dropped and the next call reopens instead."""
         line = _csv_line((label_id, pano_id) + tuple(provenance) + (CROP_RULE_VERSION,))
         if self._file is None:
             self._open()
@@ -916,6 +921,10 @@ class ProvenanceManifest:
         except BaseException:
             _close_quietly(self._file)
             self._file = None
+            try:
+                self._open()
+            except Exception:
+                pass
             raise
 
     def close(self):

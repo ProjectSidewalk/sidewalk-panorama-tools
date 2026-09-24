@@ -386,9 +386,10 @@ label_id,pano_id,source,copyright,license,crop_rule_version
 * **A row reaches the file whole or not at all**
   ([#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153)). The handle is unbuffered
   and each row is one write, so a row whose append failed cannot sit in a buffer and be written later by
-  the next row's flush. After a failed append the handle is dropped and the next row reopens it, and
+  the next row's flush. After a failed append the handle is dropped and reopened at once, and
   reopening — like every run's first open — cuts the file back to its last complete line. So half a row
-  can never sit in the middle of the file, and a torn last row (a run killed mid-append) is cut away
+  can never sit in the middle of the file, a run whose last append tore does not end torn, and a torn last
+  row (a run killed mid-append) is cut away
   rather than closed off with a newline, which inside a quoted `copyright` would swallow every later row.
   If nothing is left, the header is written again.
 * **`source`, `copyright` and `license` are copied from the label metadata verbatim, and written empty when
