@@ -749,8 +749,14 @@ cron_notify.py --name scrape-queue --only-on-failure --log /home/ubuntu/cron_not
   receives to the queue exactly once, so signalling both delivers two.
 
 **Verify any change to this the way `BASH_ENV` was:** a throwaway cron line one minute out,
-`cron_notify.py --sink '<the same sink>' -- false`, a message with `exit 1` in the subject arrives, delete the
-line. Record the date it was proven in the private runbook; a channel nobody has seen deliver is the one this
+`cron_notify.py --name probe --only-on-failure --log /home/ubuntu/cron_notify.log --sink '<the same sink>' -- false`,
+a message with `probe: exit 1` in the subject arrives and the log's last line says `published`, delete the line.
+**`--only-on-failure` is not optional in the probe.** Without it the wrapper is under cron's rule — deliver
+when the command *printed* something — and `false` prints nothing, so the sink is never called and the probe
+"passes" by producing nothing to deliver; the first recipe here omitted it, and the 2026-09-19 probe was run
+that way twice before anyone read the decision in `main()`. `--log` is there so a probe whose publish fails
+still leaves `sink failed` somewhere; stderr under cron goes to the same nowhere this section is about.
+Record the date it was proven in the private runbook; a channel nobody has seen deliver is the one this
 section exists because of.
 
 ### The morning after a deploy
