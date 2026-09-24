@@ -410,9 +410,10 @@ def _refresh_display_copy(storage_path, pano_id, image):
     downscale_panos.sidecar_is_current judges from dimensions alone, because a decode per panorama is the
     entire cost that sweep exists to avoid, and every gate above refuses a swap that changes the frame - so
     a copy left stale here has EXACTLY the dimensions the sweep expects, reads as `current` for ever, and the
-    viewer serves the imagery this pass replaced. A MISSING copy, by contrast, heals itself: the next sweep
-    sees it absent and cuts a fresh one from the new panorama, and until then the web app serves the native
-    file, which is correct, just larger. This is the only thing the tool ever deletes, and it does not break
+    viewer serves the imagery this pass replaced. A MISSING copy, by contrast, is repaired by the next sweep,
+    whenever one is run - nothing schedules downscale_panos.py - which sees it absent and cuts a fresh one
+    from the new panorama; until then the web app serves the native file, which is correct, just larger.
+    This is the only thing the tool ever deletes, and it does not break
     the no-destroy design, because that design is about PANORAMAS - ~52% of labelled ones exist nowhere
     else. A display copy is a derivative, a pure function of the panorama beside it, and the panorama it is
     a function of is the one that just landed. So the delete is gated as narrowly as the write it stands in
@@ -427,11 +428,13 @@ def _refresh_display_copy(storage_path, pano_id, image):
     replacement that is already on disk. That holds for the delete too: if it fails, that is logged and this
     returns.
 
-    Channels. A delete that succeeded goes to the log only: the store is left in a state the next sweep
-    repairs by itself, so there is nothing for a person to do, and stdout on this tool is its per-pano
-    narrative plus the things someone must act on. A delete that FAILED is the one case that still needs a
-    person - the copy is back to reading as current for ever - so it goes to both, the rule for a warning
-    that matters: stdout for whoever is running the pass, the log for next week.
+    Channels and levels. A delete that succeeded goes to the log only, at WARNING: the store is left in a
+    state the next sweep repairs, whenever one is run, and until then it serves correct (native) imagery -
+    not an error, and nothing to act on beyond the sweep someone runs anyway; stdout on this tool is its
+    per-pano narrative plus the things someone must act on. A delete that FAILED is the one case that still
+    needs a person - the copy is back to reading as current for ever, and no sweep will repair it - so it
+    goes to both, at ERROR, the rule for a warning that matters: stdout for whoever is running the pass, the
+    log for next week.
     """
     pano_path = _stored_path(storage_path, pano_id)
     sidecar = common.downscaled_sidecar_path(pano_path)
@@ -444,7 +447,11 @@ def _refresh_display_copy(storage_path, pano_id, image):
 
 
 def _discard_stale_display_copy(pano_id, sidecar, write_error):
-    """Delete the copy a failed post-swap rewrite left behind; never raises. See _refresh_display_copy."""
+    """Delete the copy a failed post-swap rewrite left behind; never raises. See _refresh_display_copy.
+
+    A successful delete is logged at WARNING (the next sweep, whenever one is run, recreates the copy); a
+    delete that fails is logged at ERROR and printed, because only a person can clear it.
+    """
     try:
         os.remove(sidecar)
     except FileNotFoundError:
@@ -459,9 +466,12 @@ def _discard_stale_display_copy(pano_id, sidecar, write_error):
         logging.error("REFETCH: %s", message)
         print("REFETCH: %s" % (message,))
     else:
-        logging.error("REFETCH: pano %s: display copy could not be rewritten after the swap (%r), so the stale "
-                      "copy %s was deleted; the next downscale_panos.py sweep recreates it from the new "
-                      "panorama.", pano_id, write_error, sidecar)
+        # WARNING, not ERROR: the store is in a state the next sweep repairs (#153 m7). Not "nothing to do"
+        # either - nothing schedules downscale_panos.py, so the line says the copy returns only when one runs.
+        logging.warning("REFETCH: pano %s: display copy could not be rewritten after the swap (%r), so the "
+                        "stale copy %s was deleted. The next downscale_panos.py sweep, whenever one is run, "
+                        "recreates it from the new panorama; until then the web app serves the native file.",
+                        pano_id, write_error, sidecar)
 
 
 def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measurements):

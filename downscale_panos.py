@@ -54,7 +54,8 @@ def sidecar_is_current(pano_path, pano_dims, max_width):
     sweep exists to avoid. The one thing that does that is refetch_panos._refresh_display_copy, which rewrites
     the copy at the moment of the swap; this check is not a substitute for it. When that rewrite fails it
     DELETES the copy (#122) rather than leaving one this check would pass for ever, so the failure reaches
-    this sweep as an ABSENT copy - which it recreates from the new panorama like any other missing one.
+    this sweep as an ABSENT copy - which it recreates from the new panorama like any other missing one, the
+    next time a person runs it (nothing schedules it; until then the web app serves the native file).
     """
     expected = downscaled_size(pano_dims[0], pano_dims[1], max_width)
     return jpeg_dimensions(downscaled_sidecar_path(pano_path, max_width)) == expected

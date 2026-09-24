@@ -1460,21 +1460,23 @@ class TestTheDisplayCopyFollowsTheSwap:
                                                                             small_cap, caplog, capsys):
         """#122. Leaving the old copy is the one outcome nothing can ever repair: it has EXACTLY the
         dimensions the sweep expects, so sidecar_is_current reads it as current for ever and the viewer
-        serves the imagery this pass replaced. Deleting it leaves a state the next sweep heals by itself.
+        serves the imagery this pass replaced. Deleting it leaves a state the next sweep repairs, whenever one
+        is run; until then the web app serves the native file.
 
         Still never fatal - the swap has landed, and raising would leave the panorama unledgered at ~512 tile
         requests to redo. The log line now reports a delete, not an instruction to `rm` by hand; and it goes
-        to the log only, because nothing is left for a person to do (the docstring argues the channel).
+        to the log only, at WARNING, because the store is in a state the next sweep repairs and nothing is
+        left for a person to do beyond running one (the docstring argues the channel and the level).
 
         Kills: no delete at all (the copy survives); a delete aimed at the panorama's path (the panorama is
         gone); a delete at a different cap (this cap's copy survives, or the .w512 bystander dies); a glob
-        over the shard (a bystander dies).
+        over the shard (a bystander dies); the delete logged at ERROR (#153 m7).
         """
         pano, sidecar = self.store(tmp_path)
         bystanders = self.plant_bystanders(tmp_path, pano)
         self.refuse_rewrite(monkeypatch)
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.WARNING):
             outcome = self.swap(tmp_path, monkeypatch)
 
         assert outcome == 'replaced'
@@ -1484,13 +1486,15 @@ class TestTheDisplayCopyFollowsTheSwap:
             assert open(path, 'rb').read() == before, path
         assert sorted(os.listdir(tmp_path / PANO[:2])) == sorted(
             [PANO + '.jpg'] + [os.path.basename(p) for p in bystanders])
-        assert 'deleted' in caplog.text and 'downscale_panos.py' in caplog.text
-        assert PANO in caplog.text
+        (deleted,) = [r for r in caplog.records if 'deleted' in r.getMessage()]
+        assert deleted.levelno == logging.WARNING
+        assert 'downscale_panos.py' in deleted.getMessage() and PANO in deleted.getMessage()
         assert 'display copy' not in capsys.readouterr().out
 
     def test_after_the_delete_the_next_sweep_recreates_the_copy_from_the_NEW_imagery(
             self, tmp_path, monkeypatch, small_cap):
-        """The reason to delete rather than leave: the failure becomes self-healing. Before #122 the same
+        """The reason to delete rather than leave: the failure becomes repairable by the next sweep, whenever
+        one is run (nothing schedules it). Before #122 the same
         sequence ended with the sweep reporting the stale copy `current` and writing nothing, for ever."""
         pano, sidecar = self.store(tmp_path)
         self.refuse_rewrite(monkeypatch)
@@ -1510,7 +1514,8 @@ class TestTheDisplayCopyFollowsTheSwap:
         whoever is running the pass, the log for next week. Returning `replaced` regardless is the point:
         the swap landed and must be ledgered.
 
-        Kills: a delete that lets its own exception escape (the swap would go unledgered).
+        Kills: a delete that lets its own exception escape (the swap would go unledgered); this case logged
+        at WARNING along with the successful delete (#153 m7 - only the self-repairing case is demoted).
         """
         pano, sidecar = self.store(tmp_path)
         self.refuse_rewrite(monkeypatch)
@@ -1529,7 +1534,8 @@ class TestTheDisplayCopyFollowsTheSwap:
         self.assert_pano_shows_new_imagery(pano)
         self.assert_copy_shows(sidecar, self.OLD)           # still there, and still stale
         out = capsys.readouterr().out
-        assert os.path.basename(sidecar) in caplog.text
+        (record,) = [r for r in caplog.records if os.path.basename(sidecar) in r.getMessage()]
+        assert record.levelno == logging.ERROR
         assert os.path.basename(sidecar) in out
         assert 'downscale_panos.py' in out
 

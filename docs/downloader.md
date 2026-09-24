@@ -496,7 +496,8 @@ pick them up.
 All three sources also carry the **width tripwire**: a panorama wider than 16384 px — the widest an
 8192-class GPU can render — gets an `over the viewer ceiling` warning in `scrape.log` and on stdout, and is
 downloaded exactly as it would have been otherwise. It never changes the exit code, so on a clean night the
-alarm does not carry it; `scrape.log` is where it lands. What it means and what to do is in
+alarm does not carry it and it reaches no one: it sits in `scrape.log` until someone greps for it, and
+nothing does that routinely. What it means, the grep, and what to do are in
 [Operations](ops.md#the-width-tripwire).
 
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
