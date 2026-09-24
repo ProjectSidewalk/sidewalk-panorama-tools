@@ -32,7 +32,8 @@ directory it likes, and a relative path scatters every per-pano failure detail s
 > **Switched off 2026-09-09.** `WRITE_DISPLAY_COPIES` in `downloaders/common.py` is `False`, so neither
 > downloader writes a display copy any more. Two writers remain, both narrow: `downscale_panos.py`, which
 > only runs when a person runs it, and `refetch_panos.py`, which **refreshes a copy already on the store
-> after a swap but never creates one** ([why](#a-repaired-panoramas-copy-is-refreshed-never-created)).
+> after a swap but never creates one**, and deletes it if that refresh fails
+> ([why](#a-repaired-panoramas-copy-is-refreshed-never-created)).
 > **Why the feature is off**, and why the code is kept rather than reverted, is
 > [directly below](#why-it-is-off-2026-09-09). Read that before turning it back on.
 
@@ -126,16 +127,24 @@ over it: the panorama is already on disk at that point, and re-fetching it would
 work that has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
 `refetch_log.csv`.
 
-> ⚠ **If that rewrite fails, the sweep cannot repair it — delete the sidecar first.**
-> `scrape.log` gets one `display copy not rewritten` line and the swap is ledgered `replaced` regardless.
-> But `sidecar_is_current` judges from dimensions alone (a decode per panorama is the whole cost the sweep
-> exists to avoid), and every gate in `refetch_panos` refuses a swap that changes the frame — so the stale
-> copy has *exactly* the expected dimensions and every later sweep reports it `current`, writing nothing.
-> `rm` the named `.w8192.jpg`, then run `downscale_panos.py`, which will see it absent and cut a fresh one.
+**If that rewrite fails, the copy is deleted (#122), and the state heals itself.** Leaving it would be the one
+outcome nothing could ever repair: the write is atomic, so a failed rewrite leaves the *old* copy intact, and
+`sidecar_is_current` judges from dimensions alone (a decode per panorama is the whole cost the sweep exists
+to avoid) while every gate in `refetch_panos` refuses a swap that changes the frame — so that old copy would
+have *exactly* the expected dimensions, and every later sweep would report it `current` and write nothing. A
+*missing* copy is what the sweep fills: the next `downscale_panos.py` run sees it absent and cuts a fresh one
+from the repaired panorama, and until then the web app serves the native file, which is correct, just larger.
+The swap is ledgered `replaced` either way, and `refetch.log` gets one line saying the copy was deleted.
+Only that one file goes — the exact `.w<cap>.jpg` for the current cap, never the panorama, a copy at
+another cap, or anything else in the shard — and only after a swap has landed, never on a refusal.
+
+> **The one case that needs a person:** if the delete *also* fails, the stale copy is back to reading as
+> `current` for ever. That is reported on stdout as well as in `refetch.log`, naming the file: delete it by
+> hand, then run `downscale_panos.py`.
 
 **Copies already on a store are left alone.** They cost disk and nothing else: every walker excludes them by
 name, so a sidecar can never be mistaken for a panorama, and the web app serves whichever of the two it
-finds. Removing them is an operator decision, not something any tool here does.
+finds. Removing them is an operator decision; the only copy any tool here deletes is the stale one above.
 
 ## The store is an archive, not a cache
 

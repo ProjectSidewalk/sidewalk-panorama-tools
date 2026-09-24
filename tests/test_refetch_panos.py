@@ -4,7 +4,8 @@ The property this file exists to hold is narrow and load-bearing: **the stored p
 path but `replaced`**. About half of the labelled panoramas in the store no longer exist at Google, so
 for a large share of any work-list the file on disk is the only copy there will ever be, and a repair
 tool that can lose one is worse than no repair tool. So every refusal is asserted byte-for-byte against
-the original, not merely by its return value.
+the original, not merely by its return value. Since #122 the display copy beside it is held to the same
+rule: the only path that may delete one is a failed rewrite after a swap has landed.
 
 Network-free: the three gsv seams (#73's extraction) are stubbed, which is what they were extracted for.
 The one place real bytes are used is the recovery measurement, which is pinned against the committed
@@ -1288,6 +1289,12 @@ class TestTheDisplayCopyFollowsTheSwap:
     asymmetry is deliberate and is what the first three tests pin: the switch says stop making a new
     artifact, not start lying in the one already on the store. Do-nothing here would re-introduce the
     staleness the paragraph above describes, by choice, on precisely the panoramas this pass rewrites.
+
+    A REWRITE THAT FAILS DELETES THE COPY (#122), for the same reason: the old copy would be stale at exactly
+    the right size, while a missing one is what the sweep fills. That delete is the tool's one destructive
+    step outside the swap, so it gets the battery's treatment - the refusal tests here and in
+    TestRefetchPanoRefusals assert the copy survives every other path byte for byte, and the failed-rewrite
+    tests assert the panorama and every bystander in the shard do.
     """
 
     CAP = 1024
