@@ -702,6 +702,26 @@ class ProductionCropStoreError(Exception):
     See refuse_production_crop_store."""
 
 
+class CropStoreUnlistableError(OSError):
+    """_store_holds_crops could not list the crop store or one of its shards (#153 m1, final F6).
+
+    Its own class so main() can report exactly this - on both channels, exit 1 - without also catching
+    every other OSError a run can raise."""
+
+
+# Windows errors a directory listing raises for a directory this user cannot list that are NOT a
+# PermissionError. ERROR_NOT_READY (21) already arrives as one - Python maps it to EACCES - but
+# ERROR_CANT_ACCESS_FILE (1920), which some drive-root system directories give, arrives as a plain OSError
+# (EINVAL). Both are listed so the intent does not rest on that mapping.
+_UNLISTABLE_WINERRORS = frozenset({21, 1920})
+
+
+def _is_unlistable(error):
+    """Whether an OSError from listing a directory means "this user cannot list it", as opposed to an
+    I/O fault, which both scanners let propagate as itself."""
+    return isinstance(error, PermissionError) or getattr(error, 'winerror', None) in _UNLISTABLE_WINERRORS
+
+
 # Compared case-folded: the store can sit on, or be copied through, a case-insensitive filesystem.
 _LABEL_TYPE_NAMES_FOLDED = frozenset(name.casefold() for name in LABEL_TYPE_IDS_BY_NAME)
 
@@ -754,7 +774,9 @@ def refuse_production_crop_store(destination_dir):
     be called `Other` or `Signal` is the accepted cost - the message names it, and renaming it is cheap.
 
     A directory the scan cannot LIST (a PermissionError: lost+found at an ext4 volume's root, System
-    Volume Information at a Windows drive's) is refused too, naming it (#153 m1). What cannot be read
+    Volume Information at a Windows drive's, or its WinError 1920 - see _is_unlistable) is refused too,
+    naming it (#153 m1), whether the listing fails to open or fails partway through (#153 final F6).
+    What cannot be read
     cannot be ruled out, and skipping it would pass a store the guard never looked at; crashing, which
     it used to, was exit 1 with a traceback before logging existed.
 
@@ -770,35 +792,39 @@ def refuse_production_crop_store(destination_dir):
     pending = [(destination_dir, 0)]
     while pending:
         directory, depth = pending.pop()
+        found = None
+        # The whole listing is inside the try, not just the scandir call (#153 final F6): iterating it,
+        # and an entry's is_dir(), can raise the same errors partway through.
         try:
-            listing = os.scandir(directory)
+            with os.scandir(directory) as listing:
+                for entry in listing:
+                    if entry.is_dir():
+                        if depth == 0 and entry.name.casefold() in _LABEL_TYPE_NAMES_FOLDED:
+                            found = ("a directory named for label type %r (this tool names them by "
+                                     "numeric id)" % entry.name)
+                            break
+                        if depth < PRODUCTION_STORE_SCAN_DEPTH and not _is_numeric_name(entry.name):
+                            pending.append((entry.path, depth + 1))
+                    elif _is_canvas_capture(entry.name):
+                        found = "a canvas capture, %s" % entry.path
+                        break
         except (FileNotFoundError, NotADirectoryError):
             continue
-        except PermissionError as e:
+        except OSError as e:
+            if not _is_unlistable(e):
+                raise
             raise ProductionCropStoreError(
                 "Refusing to write crops into %s: %s cannot be read (%s), so it cannot be ruled out as "
                 "part of the production crop store SidewalkWebpage serves, whose canvas captures cannot "
                 "be regenerated. Point -o at a directory whose contents this user can list, or at a new "
                 "directory." % (destination_dir, directory, e.strerror or e)) from e
-        with listing:
-            for entry in listing:
-                found = None
-                if entry.is_dir():
-                    if depth == 0 and entry.name.casefold() in _LABEL_TYPE_NAMES_FOLDED:
-                        found = ("a directory named for label type %r (this tool names them by numeric id)"
-                                 % entry.name)
-                    elif depth < PRODUCTION_STORE_SCAN_DEPTH and not _is_numeric_name(entry.name):
-                        pending.append((entry.path, depth + 1))
-                elif _is_canvas_capture(entry.name):
-                    found = "a canvas capture, %s" % entry.path
-                if found is None:
-                    continue
-                raise ProductionCropStoreError(
-                    "Refusing to write crops into %s: it holds %s, the layout of the production crop "
-                    "store SidewalkWebpage serves (<city-id>/<LabelType>/crop_<labelId>.png). Those "
-                    "are canvas captures taken at label time and cannot be regenerated. CropRunner "
-                    "writes <label_type_id>/<label_id>.jpg - point -o at a formula crop store, or at a "
-                    "new directory." % (destination_dir, found))
+        if found is not None:
+            raise ProductionCropStoreError(
+                "Refusing to write crops into %s: it holds %s, the layout of the production crop "
+                "store SidewalkWebpage serves (<city-id>/<LabelType>/crop_<labelId>.png). Those "
+                "are canvas captures taken at label time and cannot be regenerated. CropRunner "
+                "writes <label_type_id>/<label_id>.jpg - point -o at a formula crop store, or at a "
+                "new directory." % (destination_dir, found))
 
 def _store_holds_crops(destination_dir):
     """True if any label-type shard (<destination_dir>/<digits>/) holds a crop (a *.jpg).
@@ -808,9 +834,11 @@ def _store_holds_crops(destination_dir):
     `.jpg.part` is a write that never landed, and crop.log / crop_rule.json sit at the root, so neither is
     mistaken for one.
 
-    Raises PermissionError, naming the directory, if the store or a shard cannot be listed (#153 m1):
+    Raises CropStoreUnlistableError, naming the directory, if the store or a shard cannot be listed
+    (#153 m1) - by this user (see _is_unlistable), at the scandir call or partway through the listing:
     skipping it could record a store that already held crops as having no known gap, so the run stops
-    here - before any crop is cut, like a manifest that cannot be opened.
+    here - before any crop is cut, like a manifest that cannot be opened. main() reports it on both
+    channels and exits 1 (#153 final F6). Any other OSError propagates as itself.
     """
     try:
         with os.scandir(destination_dir) as listing:
@@ -824,8 +852,10 @@ def _store_holds_crops(destination_dir):
                     # a mis-named one would mean "the store already held crops", the only question asked.
                     if any(crop.name.endswith('.jpg') for crop in shard):
                         return True
-    except PermissionError as e:
-        raise PermissionError(
+    except OSError as e:
+        if not _is_unlistable(e):
+            raise
+        raise CropStoreUnlistableError(
             e.errno, "Cannot list %s to tell whether crop store %s already holds crops, which the "
             "provenance record needs (%s); nothing has been cut. Make it readable, then re-run."
             % (e.filename, destination_dir, e.strerror)) from e
@@ -1657,8 +1687,10 @@ def main(argv=None):
     Exceptions propagate, argparse errors exit 2, and an unrecognized -f extension exits with a message -
     not the NameError it used to be.
 
-    :return: 0; 1 if any label errored; EXIT_REFUSED_DESTINATION if -o looks like the production
-             crop store (nothing is created or written, crop.log included). 1 is deliberately not keyed
+    :return: 0; 1 if any label errored, or if a label-type shard of -o cannot be listed (said on
+             both channels, nothing cut); EXIT_REFUSED_DESTINATION if -o looks like the production
+             crop store, or holds a directory the guard cannot list (nothing is created or written,
+             crop.log included). 1 is deliberately not keyed
              on "did every label produce a crop": missing panos are the normal state of a city whose
              scrape is still catching up, while `errors` only ever counts things that should not have
              happened - a corrupt pano, a malformed row, a failed write - so it is the half worth
@@ -1687,8 +1719,16 @@ def main(argv=None):
 
     raise_decompression_bomb_ceiling()
 
-    counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
-                 crop_destination_path=args.o, mark_label=args.mark_label, force=args.force)
+    try:
+        counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
+                     crop_destination_path=args.o, mark_label=args.mark_label, force=args.force)
+    except CropStoreUnlistableError as e:
+        # Both channels, and into crop.log, which is configured by now: as a traceback it reached stderr
+        # only (#153 final F6). Exit 1, not EXIT_REFUSED_DESTINATION - nothing judged -o to be the
+        # production store; it could not be read, and nothing was cut.
+        logging.error('%s', e)
+        print("CropRunner: %s" % e)
+        return 1
     return 1 if counts['errors'] else 0
 
 

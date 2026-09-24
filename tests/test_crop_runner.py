@@ -2635,6 +2635,123 @@ def block_scandir(crop_runner, monkeypatch, *paths):
     monkeypatch.setattr(crop_runner.os, 'scandir', scandir)
 
 
+def winerror_1920(path):
+    """What Windows raises listing some drive-root system directories: ERROR_CANT_ACCESS_FILE, which
+    Python maps to a plain OSError (EINVAL), not a PermissionError. (WinError 21, ERROR_NOT_READY, already
+    arrives as a PermissionError.) The attribute is set by hand so the test runs off Windows too."""
+    error = OSError(22, 'The file cannot be accessed by the system', str(path))
+    error.winerror = 1920
+    return error
+
+
+def fail_scandir(crop_runner, monkeypatch, path, make_error, during_iteration=False):
+    """os.scandir failing for exactly `path`, with make_error(path) - raised by the call itself, or,
+    with during_iteration, by the listing after it has opened (the shape a directory that becomes
+    unreadable mid-listing, or an entry's is_dir(), produces)."""
+    target = os.path.normcase(os.path.normpath(str(path)))
+    real_scandir = os.scandir
+
+    class FailingListing:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def close(self):
+            pass
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise make_error(path)
+
+    def scandir(p='.'):
+        if os.path.normcase(os.path.normpath(str(p))) == target:
+            if during_iteration:
+                return FailingListing()
+            raise make_error(path)
+        return real_scandir(p)
+
+    monkeypatch.setattr(crop_runner.os, 'scandir', scandir)
+
+
+class TestAnUnlistableDirectoryIsNamedNotCrashedOn:
+    """#153 final F6. Both scanners caught only a PermissionError raised by the os.scandir call itself:
+    one raised while ITERATING the listing, or a Windows drive root's WinError 1920 (a plain OSError),
+    still escaped as a traceback. And _store_holds_crops' PermissionError reached only stderr, as a
+    traceback after crop.log was configured, with nothing in crop.log."""
+
+    def test_the_guard_refuses_a_listing_that_fails_while_iterating(self, crop_runner, tmp_path,
+                                                                    monkeypatch):
+        out = tmp_path / 'out'
+        (out / 'sub').mkdir(parents=True)
+        fail_scandir(crop_runner, monkeypatch, out / 'sub',
+                     lambda p: PermissionError(13, 'Permission denied', str(p)), during_iteration=True)
+        with pytest.raises(crop_runner.ProductionCropStoreError, match='cannot be read'):
+            crop_runner.refuse_production_crop_store(str(out))
+
+    def test_the_guard_refuses_a_windows_drive_roots_unlistable_directory(self, crop_runner, tmp_path,
+                                                                          monkeypatch):
+        out = tmp_path / 'out'
+        (out / 'System Volume Information').mkdir(parents=True)
+        fail_scandir(crop_runner, monkeypatch, out / 'System Volume Information', winerror_1920)
+        with pytest.raises(crop_runner.ProductionCropStoreError, match='System Volume Information'):
+            crop_runner.refuse_production_crop_store(str(out))
+
+    def test_the_guard_does_not_swallow_an_unrelated_os_error(self, crop_runner, tmp_path, monkeypatch):
+        """An I/O error is not "this user cannot list it": it propagates as itself."""
+        out = tmp_path / 'out'
+        (out / 'sub').mkdir(parents=True)
+        fail_scandir(crop_runner, monkeypatch, out / 'sub', lambda p: OSError(5, 'Input/output error'))
+        with pytest.raises(OSError, match='Input/output error') as raised:
+            crop_runner.refuse_production_crop_store(str(out))
+        assert not isinstance(raised.value, crop_runner.ProductionCropStoreError)
+
+    @pytest.mark.parametrize('make_error, during_iteration', [
+        (lambda p: PermissionError(13, 'Permission denied', str(p)), True),
+        (winerror_1920, False),
+    ], ids=['permission-while-iterating', 'winerror-1920'])
+    def test_the_crop_scan_names_an_unlistable_shard(self, crop_runner, tmp_path, monkeypatch,
+                                                     make_error, during_iteration):
+        (tmp_path / '1').mkdir()
+        fail_scandir(crop_runner, monkeypatch, tmp_path / '1', make_error, during_iteration)
+        with pytest.raises(crop_runner.CropStoreUnlistableError) as raised:
+            crop_runner._store_holds_crops(str(tmp_path))
+        assert os.path.join(str(tmp_path), '1') in str(raised.value)
+
+    def test_the_crop_scan_does_not_wrap_an_unrelated_os_error(self, crop_runner, tmp_path, monkeypatch):
+        (tmp_path / '1').mkdir()
+        fail_scandir(crop_runner, monkeypatch, tmp_path / '1', lambda p: OSError(5, 'Input/output error'))
+        with pytest.raises(OSError, match='Input/output error') as raised:
+            crop_runner._store_holds_crops(str(tmp_path))
+        assert not isinstance(raised.value, crop_runner.CropStoreUnlistableError)
+
+    def test_main_reports_an_unlistable_shard_on_both_channels_and_exits_1(self, crop_runner, tmp_path,
+                                                                            monkeypatch, capsys):
+        """Exit 1, not EXIT_REFUSED_DESTINATION: the destination was not judged to be the production
+        store, it could not be read. crop.log is configured by then, so the reason has to be in it."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        (out / '1').mkdir(parents=True)
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row()])
+        block_scandir(crop_runner, monkeypatch, out / '1')
+        code = crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)])
+        assert code == 1
+        shard = os.path.join(str(out), '1')
+        printed = capsys.readouterr().out
+        assert shard in printed and 'already holds crops' in printed
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        with io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8') as f:
+            logged = f.read()
+        assert 'ERROR' in logged and shard in logged and 'already holds crops' in logged
+        assert os.listdir(shard) == []
+        assert not (out / crop_runner.PROVENANCE_MANIFEST).exists()
+
+
 class TestTheProductionCropStoreGuard:
     """#83's scope correction. `-o` pointed at the store SidewalkWebpage serves could not overwrite a
     canvas capture today, because the two layouts are disjoint on every name component - but that is

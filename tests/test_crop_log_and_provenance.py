@@ -1091,7 +1091,7 @@ class TestWhetherTheStoreAlreadyHoldsCrops:
         put_pano(store, 'testpano0001')
         (out / '7').mkdir(parents=True)
         block_scandir(crop_runner, monkeypatch, out / '7')
-        with pytest.raises(PermissionError) as raised:
+        with pytest.raises(crop_runner.CropStoreUnlistableError) as raised:
             crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
         assert os.path.join(str(out), '7') in str(raised.value)
         assert 'already holds crops' in str(raised.value)
