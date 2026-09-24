@@ -538,6 +538,16 @@ class TestTheRuleMarker:
             assert crop_runner.write_rule_marker(str(tmp_path)) == crop_runner.CROP_RULE_VERSION
         assert 'sizing rule' not in caplog.text
 
+    def test_a_forced_run_over_the_same_rule_is_silent_too(self, crop_runner, tmp_path, caplog, capsys):
+        """#153 final F11. The forced message was not pinned to an actual rule change: a --force run over
+        a store already cut under this rule would say it is re-cutting "from" the rule it is running."""
+        crop_runner.write_rule_marker(str(tmp_path))
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), force=True) == crop_runner.CROP_RULE_VERSION
+        assert 'sizing rule' not in caplog.text
+        assert 'sizing rule' not in capsys.readouterr().out
+
     def test_an_unreadable_marker_does_not_stop_the_run(self, crop_runner, tmp_path):
         """It is provenance, not a lock. A truncated or hand-edited marker is rewritten."""
         with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
@@ -2555,23 +2565,34 @@ class TestForceRecut:
         assert counts['stale_kept'] == 0
         assert 'kept a crop already on disk' not in capsys.readouterr().out
 
-    def test_a_preflight_skip_with_no_old_crop_is_not_stale(self, crop_runner, tmp_path, capsys):
+    @pytest.mark.parametrize('failing_row', [
+        dict(label_row(), pano_width=4096, pano_height=2048),     # dims_mismatch
+        label_row(pano_y=5000),                                      # out_of_frame
+    ], ids=['dims_mismatch', 'out_of_frame'])
+    def test_a_preflight_skip_with_no_old_crop_is_not_stale(self, crop_runner, tmp_path, capsys,
+                                                            failing_row):
+        """Over both preflights (#153 final F10): the dims_mismatch branch's exists check was unpinned,
+        because this negative only ever ran out_of_frame."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        counts = crop_runner.bulk_extract_crops([label_row(pano_y=5000)], str(store), str(out),
-                                                force=True)
-        assert counts['out_of_frame'] == 1 and counts['stale_kept'] == 0
+        counts = crop_runner.bulk_extract_crops([failing_row], str(store), str(out), force=True)
+        assert counts['dims_mismatch'] + counts['out_of_frame'] == 1 and counts['stale_kept'] == 0
         assert 'kept a crop already on disk' not in capsys.readouterr().out
 
+    @pytest.mark.parametrize('failing_row', [
+        dict(label_row(), pano_width=4096, pano_height=2048),     # dims_mismatch
+        label_row(pano_y=5000),                                      # out_of_frame
+    ], ids=['dims_mismatch', 'out_of_frame'])
     def test_without_force_an_old_crop_behind_a_preflight_skip_is_not_counted(self, crop_runner,
-                                                                              tmp_path, capsys):
+                                                                              tmp_path, capsys, failing_row):
         """Without --force nothing claims the store is one geometry, and every existing crop is kept by
-        design; the annotation is about a forced run falling short of what it promises."""
+        design; the annotation is about a forced run falling short of what it promises. Over both
+        preflights, for the reason above."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         plant_stale_crop(out)
-        counts = crop_runner.bulk_extract_crops([label_row(pano_y=5000)], str(store), str(out))
-        assert counts['out_of_frame'] == 1 and counts['stale_kept'] == 0
+        counts = crop_runner.bulk_extract_crops([failing_row], str(store), str(out))
+        assert counts['dims_mismatch'] + counts['out_of_frame'] == 1 and counts['stale_kept'] == 0
         assert 'kept a crop already on disk' not in capsys.readouterr().out
 
     def test_force_reaches_the_crop_through_main(self, crop_runner, tmp_path):

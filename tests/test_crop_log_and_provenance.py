@@ -734,6 +734,25 @@ class TestAFailingManifestCannotTakeTheSummaryDown:
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed.splitlines()[-1]
         assert any(crop_runner.SYSTEMIC_FAILURE_BANNER in m for m in caplog.messages)
 
+    def test_a_close_that_raises_after_a_failed_append_is_reported_too(
+            self, crop_runner, tmp_path, monkeypatch, capsys, caplog):
+        """#153 final F12. The test above never reached the close: every append failed, so each handle
+        was dropped through _close_quietly and close() had nothing left to close. Here the first append
+        fails and the later ones land, so the run ends holding a live handle whose close raises."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 2, close_fails=True)
+        labels = [labelled(1), labelled(2), labelled(3)] + bad_rows(5, first_label_id=10)
+        with caplog.at_level(logging.WARNING):
+            counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
+        assert counts['success'] == 3 and counts['errors'] == 5 and reconciles(counts)
+        printed = capsys.readouterr().out
+        assert 'could not be closed' in printed and 'Input/output error on close' in printed
+        assert any('could not be closed' in m for m in caplog.messages)
+        assert '1 crops were written without a row' in printed
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed.splitlines()[-1]
+        assert read_marker(out, crop_runner)['provenance_manifest_no_known_gap'] is False
+
     def test_a_close_that_raises_is_reported_on_both_channels_not_raised(
             self, crop_runner, tmp_path, monkeypatch, capsys, caplog):
         """The close itself failing - an sshfs mount reporting a deferred write error at close(2) - with
@@ -801,11 +820,14 @@ class TestAFailedAppendLeavesNoRowBehind:
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         # Raw write 1 is the header, so appends 2 and 3 are writes 3 and 4; 4 and 5 then succeed.
-        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n in (3, 4))
+        faults = RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n in (3, 4))
         counts = crop_runner.bulk_extract_crops([labelled(i) for i in range(1, 6)], str(store), str(out))
         assert counts['success'] == 5
         assert row_ids(out, crop_runner) == ['1', '4', '5']
         assert '2 crops were written without a row' in capsys.readouterr().out
+        # #153 final F13: each failed append drops its handle, and dropping it must close it - a handle
+        # per failed row left to the garbage collector is a descriptor leak on the full-store night.
+        assert len(faults.handles) == 3 and all(h.closed for h in faults.handles)
 
     def test_a_write_torn_partway_leaves_no_half_row_mid_file(self, crop_runner, tmp_path, monkeypatch,
                                                               capsys):
@@ -830,9 +852,9 @@ class TestAFailedAppendLeavesNoRowBehind:
         reopens (and so cuts) at once, so no run ends torn."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        RawWriterFaults(crop_runner, monkeypatch, tear=(3,))
-        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
-        monkeypatch.undo()
+        with monkeypatch.context() as scoped:
+            RawWriterFaults(crop_runner, scoped, tear=(3,))
+            crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
         with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'rb') as f:
             assert f.read().endswith(b'\n')
         assert row_ids(out, crop_runner) == ['1']
@@ -1069,12 +1091,35 @@ class TestWhetherTheStoreAlreadyHoldsCrops:
     """_store_holds_crops decides the gap flag's starting value, so it has to find a crop in ANY numeric
     shard, and it has to refuse to guess about one it cannot read."""
 
-    @pytest.mark.parametrize('empty, full', [('1', '9'), ('9', '1')])
-    def test_an_empty_shard_does_not_hide_a_crop_in_another(self, crop_runner, tmp_path, empty, full):
-        """Surviving mutant: returning after the first numeric shard. Both orders, because scandir order
-        is the filesystem's - alphabetical on NTFS, hash order on ext4."""
-        (tmp_path / empty).mkdir()
-        write_crop_file(tmp_path, full, 5)
+    @pytest.mark.parametrize('empty_first', [True, False], ids=['empty-first', 'empty-second'])
+    def test_an_empty_shard_does_not_hide_a_crop_in_another(self, crop_runner, tmp_path, monkeypatch,
+                                                            empty_first):
+        """Surviving mutant: returning after the first numeric shard. The listing order is forced rather
+        than left to the filesystem (#153 final F15) - alphabetical on NTFS, hash order on ext4, so a
+        test relying on it killed that mutant on one platform only."""
+        (tmp_path / '1').mkdir()
+        write_crop_file(tmp_path, '9', 5)
+        root = os.path.normcase(os.path.normpath(str(tmp_path)))
+        real_scandir = os.scandir
+
+        class Ordered:
+            def __init__(self, entries):
+                self.entries = entries
+
+            def __enter__(self):
+                return iter(self.entries)
+
+            def __exit__(self, *exc):
+                return False
+
+        def ordered_scandir(path='.'):
+            if os.path.normcase(os.path.normpath(str(path))) != root:
+                return real_scandir(path)
+            with real_scandir(path) as listing:
+                entries = sorted(listing, key=lambda e: (e.name != '1') == empty_first)
+            return Ordered(entries)
+
+        monkeypatch.setattr(crop_runner.os, 'scandir', ordered_scandir)
         assert crop_runner._store_holds_crops(str(tmp_path)) is True
 
     def test_empty_shards_hold_no_crops(self, crop_runner, tmp_path):
@@ -1187,9 +1232,9 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
 
     def test_false_is_sticky_across_later_clean_runs(self, crop_runner, tmp_path, store, monkeypatch):
         out = tmp_path / 'crops'
-        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 3)
-        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
-        monkeypatch.undo()
+        with monkeypatch.context() as scoped:
+            RawWriterFaults(crop_runner, scoped, fail=lambda n: n == 3)
+            crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
         crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
         crop_runner.bulk_extract_crops([labelled(4)], str(store), str(out), force=True)
         assert self.gap(out, crop_runner) is False
@@ -1261,10 +1306,10 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
                 raise OSError(5, 'Input/output error')
             return real_open(file, mode, *args, **kwargs)
 
-        monkeypatch.setattr(crop_runner, 'open', no_append, raising=False)
-        with pytest.raises(OSError, match='Input/output error'):
-            crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
-        monkeypatch.undo()
+        with monkeypatch.context() as scoped:
+            scoped.setattr(crop_runner, 'open', no_append, raising=False)
+            with pytest.raises(OSError, match='Input/output error'):
+                crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
         assert self.gap(out, crop_runner) is False
 
     def test_a_gap_that_cannot_be_recorded_fails_the_run_and_keeps_the_torn_row(
@@ -1283,6 +1328,21 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), encoding='utf-8') as f:
             assert f.read().endswith('\n2,testpano0001,gs')
         assert not os.path.exists(crop_path(out, 1, 3))
+
+    def test_a_torn_row_and_an_unrecorded_row_in_one_run_are_both_said(
+            self, crop_runner, tmp_path, store, monkeypatch, capsys, caplog):
+        """#153 final F14. Each notice was pinned only on its own, so one suppressing the other went
+        unseen: a previous run's torn row AND this run's failed append, both lines on both channels."""
+        out = tmp_path / 'crops'
+        self.plant_torn_row_under_a_true_flag(crop_runner, store, out)
+        capsys.readouterr()
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 1)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        printed = capsys.readouterr().out
+        for line in ('ended in a torn row', '1 crops were written without a row'):
+            assert line in printed, line
+            assert any(line in m for m in caplog.messages), line
 
     def test_a_clean_run_says_nothing_about_a_torn_row(self, crop_runner, tmp_path, store, capsys):
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(tmp_path / 'crops'))
