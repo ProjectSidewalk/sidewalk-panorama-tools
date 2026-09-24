@@ -20,6 +20,7 @@ same fakes their own test modules use.
 """
 
 import ast
+import builtins
 import io
 import logging
 import os
@@ -119,13 +120,60 @@ class TestTheHelper:
         assert 'Set WRITE_DISPLAY_COPIES' not in text
         assert "'Display copies of wide panoramas'" not in text
 
-    def test_it_writes_nothing_to_the_store(self, tmp_path, caplog, capsys):
+    def test_it_writes_nothing_when_it_fires(self, tmp_path, monkeypatch, caplog, capsys):
         """An observation, not a writer: no display copy, no file of any kind. The switch-reading rule in
-        tests/test_downscaled_sidecar.py::TestTheSwitch is about callers of the sidecar primitives, and this
-        helper must never become one."""
-        common.warn_if_wider_than_viewer_ceiling('panoIdX', WIDE, 'gsv')
+        tests/test_downscaled_sidecar.py::TestTheSwitch is about callers of the sidecar primitives and
+        exempts common.py, where this helper lives - so this test is the only guard that it never becomes one.
 
+        The helper takes no path, so "the store is still empty" alone proves nothing (#153 m15: the test this
+        replaces asserted exactly that, against a tmp_path nothing had been pointed at). Instead every way a
+        write could happen is made to fail the test the moment it is reached - the sidecar primitives, the
+        encoder they end in, the atomic rename, and `open` in any writing mode - with the working directory
+        moved into tmp_path so a relative write the guards missed would still show up there.
+
+        Kills: the helper calling write_downscaled_sidecar / write_downscaled_sidecar_from_file /
+        _write_reduced, saving an Image, or opening any file for writing.
+        """
+        def forbidden(name):
+            def fail(*args, **kwargs):
+                pytest.fail('the tripwire reached %s' % name)
+            return fail
+
+        for name in ('write_downscaled_sidecar', 'write_downscaled_sidecar_from_file', '_write_reduced',
+                     'atomic_output_path'):
+            monkeypatch.setattr(common, name, forbidden('common.%s' % name))
+        monkeypatch.setattr(Image.Image, 'save', forbidden('PIL.Image.Image.save'))
+        monkeypatch.setattr(os, 'replace', forbidden('os.replace'))
+        real_open = builtins.open
+
+        def read_only_open(file, mode='r', *args, **kwargs):
+            if any(flag in mode for flag in 'wax+'):
+                pytest.fail('the tripwire opened %r with mode %r' % (file, mode))
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, 'open', read_only_open)
+        monkeypatch.chdir(tmp_path)
+
+        with caplog.at_level(logging.WARNING):
+            assert common.warn_if_wider_than_viewer_ceiling('panoIdX', WIDE, 'gsv') is True
+
+        assert len(tripwire_records(caplog)) == 1       # it really fired, so the guards were really in play
         assert list(tmp_path.iterdir()) == []
+
+    def test_its_body_names_no_sidecar_primitive(self):
+        """The lexical half. The runtime guard above sees only the path the helper takes today; a writer
+        reached under a condition that test does not set up (a width, a source) would pass it. So the
+        function's own source may not reference any of the primitives at all."""
+        with open(os.path.join(REPO_ROOT, 'downloaders', 'common.py'), encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+        (helper,) = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name == 'warn_if_wider_than_viewer_ceiling']
+        referenced = {n.id for n in ast.walk(helper) if isinstance(n, ast.Name)}
+        referenced |= {n.attr for n in ast.walk(helper) if isinstance(n, ast.Attribute)}
+
+        writers = {'write_downscaled_sidecar', 'write_downscaled_sidecar_from_file', '_write_reduced',
+                   'atomic_output_path', 'downscaled_sidecar_path', 'save', 'open'}
+        assert referenced & writers == set()
 
 
 class TestGsvWiring:
