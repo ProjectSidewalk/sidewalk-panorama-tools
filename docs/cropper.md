@@ -11,7 +11,7 @@ Consumer requirements and the open geometry questions are tracked in
 ## Usage
 
 ```bash
-python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> [--mark-label]
+python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> [--mark-label] [--force]
 ```
 
 | Flag | What it does |
@@ -21,6 +21,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
 | `-o <dir>` | **Required.** Where crops are written. `crop.log` goes here too. |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
+| `--force` | Re-cut a label whose crop already exists instead of skipping it — the repair for a store cut under an older rule. Off by default. See [Re-cutting a store](#re-cutting-a-store-with---force). |
 
 Example:
 
@@ -28,6 +29,30 @@ Example:
 python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu \
   -s /sidewalk/columbus/panos/ -o /sidewalk/columbus/crops/
 ```
+
+**`-o` must never be the production crop store, and a destination that looks like one is refused.**
+SidewalkWebpage serves the Gallery, the label cards and the social preview from a different crop store,
+`<root>/<city-id>/<LabelType>/crop_<labelId>.png`. Those are **canvas captures the browser took at label
+time** — the annotator's own viewport and zoom, over the imagery Google served that day — so none of them can
+be regenerated from anything this repo holds, and a deleted one is gone. This tool's store is
+`<crop-dir>/<label_type_id>/<label_id>.jpg`, cut from the pano store and reproducible at will
+([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)).
+
+Before it writes anything — before it creates `-o`, opens `crop.log` or writes `crop_rule.json` — the run
+checks the destination and exits with status **3** — a message on stdout, and the same at `ERROR` on stderr,
+since `crop.log` would be a write into the store being refused — if it finds either:
+
+* an immediate subdirectory named for a label type (`CurbRamp`, `NoCurbRamp`, … any name in
+  `LABEL_TYPE_IDS_BY_NAME`, ignoring case) — this tool names them by numeric id; or
+* a `crop_*.png` file in `-o` or up to two directories below it — so `-o` at the production root, at one city
+  or at one label type directory is caught.
+
+It **refuses rather than warns**. The two layouts happen to be disjoint on every name component, so this tool
+could not overwrite a capture today — but that is a coincidence of naming, not a guard, and it does nothing
+for a re-cut campaign that deletes "the crop store" first, which is the mistake `--force` makes more likely.
+The scan is cheap by construction: bounded depth, one directory listing per level, stopping at the first hit,
+and it never lists the numeric type directories that hold a formula store's crops. A new, empty directory, or
+an existing formula store, passes.
 
 Both paths used to have defaults — `/crops/` and `/tmp/download_dest/`, the filesystem root and a Docker-only
 scratch path — so forgetting one wrote an ML training corpus somewhere nobody would look for it. Since
@@ -80,9 +105,11 @@ tightest crops. Every v2 constant is one measured number:
 **Which rule cut a store is recorded in `<crop-dir>/crop_rule.json` — check it before training on a
 directory.** `write_rule_marker()` writes `CROP_RULE_VERSION` plus every constant before anything is cut, and
 *warns* rather than refusing when the marker disagrees with the running rule. A mixed store is the ordinary
-result of changing the rule: existing crops are the resume marker and are never re-cut, so running v2 over a
-v1 store leaves square v1 crops accreting 3:2 ones beside them. Deleting the store is the only way to get one
-geometry throughout.
+result of changing the rule: existing crops are the resume marker and are not re-cut by default, so running v2
+over a v1 store leaves square v1 crops accreting 3:2 ones beside them. `--force` re-cuts every label the run reaches
+under the running rule ([below](#re-cutting-a-store-with---force)); note that the marker is rewritten at the *start*
+of the run, so a forced run that is interrupted leaves a store the marker describes as all-v2 while part of it
+is still v1 — finish the run before training on it.
 
 The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top, width, height, shifted)`:
 
@@ -171,7 +198,7 @@ path, including re-runs:
 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total
 ```
 
-(`shifted_vertically` annotates a success, so it is deliberately not in that sum.)
+(`shifted_vertically` and `recut` annotate a success, so they are deliberately not in that sum.)
 
 The run writes a rotating `crop.log` into the crop directory, prints a per-outcome summary, and **exits 1 if
 any label errored** — a corrupt pano, a malformed metadata row, a failed write — so a cron wrapper can alert.
@@ -247,10 +274,31 @@ Three blind spots come with that denominator, and only the first is benign:
 It is a second *reading* of the counts, not a bucket: nothing about the invariant above changes, the exit
 code is what it always was, and the per-outcome summary is still printed in full.
 
-**Re-running does not regenerate existing crops.** A crop already on disk is the resume marker and is never
-re-cut. A store cropped before the seam fix keeps its black-padded crops, and one cropped before crop sizes
-became deterministic holds a mix of (for example) 503- and 504-px crops for the same predicted size. There is
-no `--force`: delete the crops you want re-cut.
+**Re-running does not regenerate existing crops — unless you pass `--force`.** By default a crop already on
+disk is the resume marker and is skipped (`skipped_existing`). A store cropped before the seam fix keeps its
+black-padded crops, one cropped before crop sizes became deterministic holds a mix of (for example) 503- and
+504-px crops for the same predicted size, and — the case that matters now — every crop cut under sizing rule
+v1 is the wrong size and shape for v2.
+
+### Re-cutting a store with `--force`
+
+`--force` ([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)) re-cuts a label whose
+crop already exists instead of skipping it. It is the repair for a store cut under an older rule, and it is
+**for the ML crop store this tool writes, only** — the directory `-o` points at, never the production
+canvas-capture store described [under Usage](#usage), which nothing can re-create and which the destination
+guard refuses with or without `--force`.
+
+* **Each crop is replaced atomically.** The new crop is written to `<label_id>.jpg.part` and renamed over the
+  old one, so a run that dies mid-write leaves the old crop whole rather than a truncated file.
+* **A re-cut is a `success`.** The summary adds one line, `N of those crops were re-cut over one already on
+  disk (--force).`, and the counts dict carries `recut` — an annotation of `success`, like
+  `shifted_vertically`, so the invariant above is unchanged. A label whose crop did not exist is a plain
+  success and is not counted as re-cut.
+* **Nothing else changes.** Missing panos, the two preflights and errors behave exactly as without it, so a
+  label the run skips keeps whatever crop it already had — a forced run over a half-scraped pano store is
+  not a whole-store re-cut. Check the summary's skip counts before relying on a store being one geometry.
+* **It re-cuts the labels you hand it, not the directory.** A crop on disk whose label is absent from the
+  metadata (deleted upstream, or outside a `-f` subset) is left alone.
 
 ## Before you train on these crops
 

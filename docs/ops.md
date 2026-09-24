@@ -384,7 +384,7 @@ the pano stops at `dims_changed` rather than being silently re-framed, because c
 moves every label's pixel coordinates relative to the image.
 
 **Replacing a pano does not refresh crops already cut from it.** [Existing crops are the cropper's resume
-marker and are never re-cut](cropper.md#outcomes-exit-code-and-re-runs), so after a pass every crop cut from a `replaced` pano's
+marker and are not re-cut without `--force`](cropper.md#outcomes-exit-code-and-re-runs), so after a pass every crop cut from a `replaced` pano's
 polar band is still the half-resolution one, and nothing on disk says so. The ledger is the list: delete the
 crops of every pano with a `replaced` row (`grep ,replaced refetch_log.csv`) and re-run the cropper to pick the
 repair up. The crops are the point of the pass, so plan that step with it.
