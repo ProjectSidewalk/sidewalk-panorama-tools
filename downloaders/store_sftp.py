@@ -348,11 +348,14 @@ def run_sftp_batch(settings, batch_text):
 
     Bytes in, UTF-8, whatever the locale: text=True encoded with the locale's codec, so a non-ASCII storage
     path raised UnicodeEncodeError on a cp1252 box - not the OSError pull_batch catches, so past its .part
-    cleanup - and on Windows it also turned every '\\n' into '\\r\\n'. stderr comes back decoded with
+    cleanup - and on Windows it also turned every '\\n' into '\\r\\n'. With surrogateescape, so a POSIX
+    directory name that is not valid UTF-8 (a lone surrogate in the str Python hands us) goes to sftp as the
+    bytes the filesystem holds instead of raising UnicodeEncodeError; sftp is byte-transparent there. stderr comes back decoded with
     errors='replace', so no byte sftp or ssh prints can raise past the redaction. Returns a CompletedProcess
     whose stderr is str.
     """
-    result = subprocess.run(sftp_argv(settings), input=batch_text.encode('utf-8'), capture_output=True)
+    result = subprocess.run(sftp_argv(settings), input=batch_text.encode('utf-8', 'surrogateescape'),
+                            capture_output=True)
     return subprocess.CompletedProcess(result.args, result.returncode,
                                        result.stdout.decode('utf-8', errors='replace'),
                                        result.stderr.decode('utf-8', errors='replace'))

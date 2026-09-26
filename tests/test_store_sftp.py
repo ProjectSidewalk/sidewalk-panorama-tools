@@ -48,8 +48,9 @@ import shlex
 import sys
 
 argv = sys.argv[1:]
-# Real sftp is byte-transparent and store_sftp sends UTF-8; read it as such whatever this host's locale is.
-batch = sys.stdin.buffer.read().decode('utf-8')
+# Real sftp is byte-transparent and store_sftp sends UTF-8 (a POSIX non-UTF-8 name as its original bytes, via
+# surrogateescape); read it back the same way, which is how Python's os functions see such a name.
+batch = sys.stdin.buffer.read().decode('utf-8', 'surrogateescape')
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 record = os.environ.get('FAKE_SFTP_RECORD')
@@ -829,6 +830,39 @@ class TestPullBatch:
         storage = tmp_path / 'store_\u03a9_Jos\u00e9'
         assert self.pull(make_settings(base, tmp_path), storage, ['abcdef']) == {'abcdef': PullOutcome.pulled}
         assert (storage / 'ab' / 'abcdef.jpg').exists()
+
+    def test_a_surrogate_escaped_path_reaches_sftp_as_its_original_bytes(self, tmp_path, monkeypatch):
+        """On POSIX a directory name that is not valid UTF-8 (byte 0xFF, say) reaches Python as a str with a
+        lone surrogate ('\\udcff'), and os functions turn it back into the original byte. A strict
+        .encode('utf-8') raised UnicodeEncodeError - a traceback after scrape.log exists - where
+        surrogateescape hands sftp, which is byte-transparent on POSIX, the name the filesystem holds.
+        Platform-independent: the encoding is checked at the subprocess boundary."""
+        seen = {}
+
+        def fake_run(argv, input, capture_output):
+            seen['input'] = input
+            return subprocess.CompletedProcess(argv, 0, b'', b'')
+
+        monkeypatch.setattr(store_sftp.subprocess, 'run', fake_run)
+        store_sftp.run_sftp_batch(make_settings('/panos', tmp_path), '-get "./ab/abcdef.jpg" "/d/\udcff/x"\n')
+        assert b'"/d/\xff/x"' in seen['input']
+
+    @pytest.mark.skipif(sys.platform == 'win32',
+                        reason='Windows paths are UTF-16 and bytes paths are strict UTF-8: no surrogate-escaped '
+                               'name to make')
+    def test_a_non_utf8_storage_dir_is_pulled_on_posix(self, tmp_path, monkeypatch):
+        """End to end on a real non-UTF-8 directory name. macOS (APFS) refuses to create one; skip there."""
+        write_fake_sftp(tmp_path, monkeypatch)
+        base = make_remote(tmp_path, {'abcdef.jpg': small_jpeg()})
+        raw = os.path.join(os.fsencode(str(tmp_path)), b'store_\xff')
+        try:
+            os.mkdir(raw)
+        except OSError:
+            pytest.skip('this filesystem refuses a non-UTF-8 name')
+        storage = os.fsdecode(raw)
+        assert '\udcff' in storage
+        assert self.pull(make_settings(base, tmp_path), storage, ['abcdef']) == {'abcdef': PullOutcome.pulled}
+        assert os.path.exists(os.path.join(raw, b'ab', b'abcdef.jpg'))
 
     def test_undecodable_error_output_is_still_a_session_error(self, tmp_path, monkeypatch):
         """Bytes no codec accepts (0x81 is undefined in cp1252 and invalid UTF-8) must reach the summary as
