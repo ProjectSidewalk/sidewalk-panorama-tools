@@ -505,6 +505,20 @@ class TestTheProbeArmChecksTheFrame:
         assert jpeg_dimensions(str(tmp_path / PANO[:2] / (PANO + '.jpg'))) == frame
         assert tiles, 'the fan-out ran'
 
+    def test_the_check_asks_at_the_zoom_the_probe_chose(self, tmp_path, monkeypatch):
+        """Round two: a check hard-coded to zoom 5 survived every test above, since each one that reaches it at
+        zoom 3 has a frame that passes - and it would switch the check off for every zoom-3 fallback. A
+        four-level pano (3328 top) whose app frame is its zoom-2 level, 1664x832: the probe finds zoom 5 black
+        and zoom 3 live, so the fan-out would be a 4x2 grid at zoom 3, the top-left quarter of a 7x4 level. At
+        zoom 5 the check finds nothing past any grid and passes it."""
+        stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
+        requested = serve_pyramid(monkeypatch, SERIES_3328)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a refused frame must not fan out'))
+
+        with pytest.raises(gsv.FrameDisagreementError):
+            gsv.download_single_pano(str(tmp_path), pano_info(1664, 832))
+        assert requested[2:] and all('zoom=3' in url for url in requested[2:])
+
     def test_the_check_is_not_spent_when_photometa_answered(self, tmp_path, monkeypatch):
         stub_photometa(monkeypatch, SERIES_16384)
         monkeypatch.setattr(gsv, 'frame_covers_pano', lambda *a: pytest.fail('photometa already decided'))
@@ -600,6 +614,27 @@ class TestPhotometaFailuresAreRememberedForTheRun:
         red_tiles(monkeypatch)
 
         download_all(tmp_path, 6, 'flakyPano')
+
+        assert len(asked) == 6
+
+    def test_a_not_found_is_an_answer_and_resets_the_count(self, tmp_path, monkeypatch):
+        """Round two: "only a levels answer resets the count" survived. Code 2 is photometa answering, so fail,
+        fail, not-found, fail, fail leaves the count at 2 and the sixth pano still asks."""
+        asked = []
+        script = ['fail', 'fail', 'gone', 'fail', 'fail', 'levels']
+
+        def fake_fetch_image_levels(pano_id, session):
+            asked.append(pano_id)
+            answer = script.pop(0)
+            if answer == 'fail':
+                raise gsv.DepthPayloadError('photometa down')
+            return None if answer == 'gone' else gsv.ImageLevels([tuple(size) for size in TWO_LEVELS], (512, 512))
+
+        monkeypatch.setattr(gsv, '_fetch_image_levels', fake_fetch_image_levels)
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 6, 'goneResetsPano')
 
         assert len(asked) == 6
 
