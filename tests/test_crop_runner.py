@@ -2483,7 +2483,7 @@ class TestGeometricWindow:
         assert (fov == crop_runner.CROP_MAX_FOV_DEG) is at_cap
 
     def test_the_cap_onset_is_deeper_than_v2s(self, crop_runner):
-        """v2 hits 90 deg from 26.75 deg of depression; v3 later, so fewer near-field crops are capped."""
+        """v2 hits 90 deg from 26.55 deg of depression; v3 later, so fewer near-field crops are capped."""
         dep = 30.0
         assert crop_runner.crop_window_fov_deg(pano_y_at(dep, 8192), 8192) == crop_runner.CROP_MAX_FOV_DEG
         assert (crop_runner.crop_window_fov_deg(pano_y_at(dep, 8192), 8192, sizing_rule='v3')

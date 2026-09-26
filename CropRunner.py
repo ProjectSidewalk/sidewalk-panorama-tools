@@ -82,9 +82,10 @@ CropBox = collections.namedtuple('CropBox', ['left', 'top', 'width', 'height', '
 # no other provenance on disk: a store cut under one rule and topped up under another is otherwise
 # indistinguishable from a consistent one, and every consumer here trains on whole directories.
 #
-# This is the DEFAULT rule, and it stays v2 until switching is decided deliberately: v3 moves ~40% of
-# windows by more than 10%, so flipping it means re-cutting every store whole, which waits on a re-cut
-# path (#83). --sizing-rule selects between the rules below.
+# This is the DEFAULT rule, and it stays v2 until switching is decided deliberately: v3 moves ~40% of the
+# 658 gold ramps' windows by more than 10%, so flipping it means re-cutting every store whole, which waits
+# on a re-cut path (#83) and belongs in the #84 recrop campaign. --sizing-rule selects between the rules
+# below.
 CROP_RULE_VERSION = 'v2'
 CROP_RULE_VERSIONS = ('v2', 'v3')
 
@@ -200,10 +201,11 @@ def build_parser():
     parser.add_argument('-o', required=True, help='crop_output_directory - path to location for saving the crops')
     parser.add_argument('--mark-label', action='store_true', help='Draw a dot at the label position in every crop. Debugging aid - deliberately OFF by default, because these crops are ML training data and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.')
     parser.add_argument('--sizing-rule', choices=CROP_RULE_VERSIONS, default=CROP_RULE_VERSION,
-                        help='Which crop sizing rule to cut with. v2 (default) is the rule every current store was '
-                             'cut under. v3 sizes from the lle #3 cotangent distance instead of the 2013 linear one '
-                             '(#32); it moves ~40%% of windows by more than 10%%, so a store cut under v2 should be '
-                             're-cut whole, not topped up. Recorded in crop_rule.json either way.')
+                        help='Which crop sizing rule to cut with. v2 is the default, and has been since #88 (stores '
+                             'cut before that are v1, #83). v3 sizes from the lle #3 cotangent distance instead of '
+                             'the 2013 linear one (#32); it moves ~40%% of the 658 gold ramps\' windows by more '
+                             'than 10%%, so a store cut under v2 should be re-cut whole, not topped up. Recorded in '
+                             'crop_rule.json either way.')
     return parser
 
 
@@ -533,11 +535,13 @@ def blend_distance_m(depression_deg, camera_height_m=V3_CAMERA_HEIGHT_M, blend_d
                      cap_m=V3_DIST_CAP_M):
     """Camera-to-label ground distance in metres: the lle #3 horizon-saturating cotangent blend.
 
-    At or below `blend_deg` of depression it is plain trigonometry, camera_height / tan(depression). Above
-    that - towards the horizon, where the cotangent diverges and a degree of click noise is metres of
-    distance - it is the straight line matching the cotangent's value AND slope at the blend point, so
-    the curve is smooth there and saturates at the horizon (23.85 m with the shipped calibration) rather
-    than diverging. A label above the horizon gets the horizon's distance. Clipped to [0, cap_m].
+    At depressions of `blend_deg` or more (the 11.25-degree ray and every steeper one, nearer the
+    camera) it is plain trigonometry, camera_height / tan(depression). At shallower depressions - towards
+    the horizon, where the cotangent diverges and a degree of click noise is metres of distance - it is
+    the straight line matching the cotangent's value AND slope at the blend point, so the curve is smooth
+    there and saturates at the horizon (23.85 m with the shipped calibration) rather than diverging. A
+    label above the horizon gets the horizon's distance. Clipped to [0, cap_m]; with the shipped
+    calibration the 50 m cap never binds, since the blend tops out at the horizon's 23.85 m.
 
     A scalar port of reports/scripts/pov_replay.predict_blend_distance, pinned equal to it by a test. The
     tail's slope is written with math.radians(1.0) - d(cot)/d(degree) - rather than a literal, because

@@ -22,7 +22,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
 | `-o <dir>` | **Required.** Where crops are written. `crop.log` goes here too. |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
-| `--sizing-rule {v2,v3}` | Which crop sizing rule to cut with. **`v2` is the default** and what every existing store was cut under; `v3` is opt-in — see [Sizing rule v3](#sizing-rule-v3-opt-in). Recorded in `crop_rule.json` either way. |
+| `--sizing-rule {v2,v3}` | Which crop sizing rule to cut with. **`v2` is the default**, and has been since [#88](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/88) (stores cut before it are v1, [#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)); `v3` is opt-in — see [Sizing rule v3](#sizing-rule-v3-opt-in). Recorded in `crop_rule.json` either way. |
 
 Example:
 
@@ -106,9 +106,11 @@ Three named steps, composed in `crop_window_fov_deg()`:
 
 1. `label_depression_deg(pano_y, pano_height)` — the label's angle below the horizon, through the elevation
    primitive. A #54 tilt correction, once measured, is an addend here and nowhere else.
-2. `blend_distance_m(depression)` — `h / tan(depression)` at and below 11.25°, and above it the straight line
-   matching the cotangent's value and slope there, clipped to [0, 50 m]; `h = 2.3412 m`. It saturates at
-   23.85 m at the horizon, so a label above the horizon gets the horizon's window.
+2. `blend_distance_m(depression)` — `h / tan(depression)` for depressions of 11.25° and steeper; between the
+   horizon and 11.25°, the straight line matching the cotangent's value and slope at 11.25°; `h = 2.3412 m`.
+   It saturates at 23.85 m at the horizon, so a label above the horizon gets the horizon's window. It is
+   clipped to [0, 50 m], but the 50 m cap is inert under the blend (it tops out at 23.85 m); it matters only
+   to the depth-distance spec it was copied from.
 3. `geometric_window_fov_deg(distance)` — `2·atan(W / 2d)` with `W = V3_CONTEXT_WIDTH_M = 5.8 m`, clamped to
    v2's 8°–90°. It takes metres, so a measured distance (the depth artifact) would plug in unchanged.
 
@@ -120,10 +122,15 @@ same 658 gold aprons; the three distance constants are a transcribed copy of
 
 Measured in [reports/2026-09-26-crop-sizing-v3.md](../reports/2026-09-26-crop-sizing-v3.md): at the same
 median crop, v3's fill is less dispersed and its window tracks the apron better in every city — but it
-moves about 40% of windows by more than 10%. **The default stays v2**: since existing crops are never
+moves about 40% of the 658 gold ramps' windows by more than 10%. (The report also sets out the minimal
+alternative, the blend distance fed into v2's power law, which trades the other way on several columns;
+the choice is a decision on the PR, not a settled result.) **The default stays v2**: since existing crops are never
 re-cut, flipping it on a store cut under v2 would mix the geometries, so the flip waits for a re-cut path
 ([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)). Until then, run v3 into a
-fresh `-o`, not over a v2 store; `crop_rule.json` warns if you do, and on every run after.
+fresh `-o`, not over a v2 store; `crop_rule.json` warns if you do, and on every run after. If the default
+does flip, fold it into the recrop campaign
+[#84](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/84) coordinates (after [#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153)'s
+`--force` lands) rather than re-cutting the stores a second time on its own.
 
 The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top, width, height, shifted)`:
 
