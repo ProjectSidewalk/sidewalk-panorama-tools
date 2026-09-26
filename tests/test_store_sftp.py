@@ -25,6 +25,7 @@ import re
 import shlex
 import stat
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -140,6 +141,17 @@ def sessions(record):
     if not record.exists():
         return []
     return [json.loads(line) for line in record.read_text().splitlines() if line.strip()]
+
+
+def write_fake_ssh_g(tmp_path, monkeypatch, output):
+    """Point store_sftp's `ssh -G` at a stand-in that prints `output`; returns the file its argv (the part
+    after the interpreter and script) is written to."""
+    script = tmp_path / 'fake_ssh_g.py'
+    record = tmp_path / 'ssh_g_argv.txt'
+    script.write_text('import sys\nopen(%r, "w").write(" ".join(sys.argv[1:]))\nsys.stdout.write(%r)\n'
+                      % (str(record), output))
+    monkeypatch.setattr(store_sftp, 'SSH_CONFIG_COMMAND', [sys.executable, str(script), '-G'])
+    return record
 
 
 def make_remote(tmp_path, files, city=CITY):
@@ -399,6 +411,87 @@ class TestRedaction:
 
     def test_an_empty_stderr_still_says_something(self):
         assert store_sftp.summarize_stderr('', self.settings())
+
+    # --- What ssh prints that the configured strings do not cover (#155 review item 2) ----------------
+    # Each case isolates ONE mechanism: its text carries nothing any other rule would catch.
+
+    def test_the_configured_port_is_redacted_wherever_it_appears(self):
+        """Only settings.port covers this: no `port N`, no `]:N` for the contextual rules to see."""
+        out = store_sftp.redact("ssh: Bad port '2222' for store.example", self.settings(port='2222'))
+        assert out == "ssh: Bad port '<port>' for <host>"
+
+    def test_the_known_hosts_port_form_is_redacted_even_when_not_configured(self):
+        out = store_sftp.redact("Warning: Permanently added '[store.example]:2200' (ED25519)",
+                                self.settings(port=None))
+        assert out == "Warning: Permanently added '[<host>]:<port>' (ED25519)"
+
+    def test_a_port_named_as_such_is_redacted_even_when_not_configured(self):
+        out = store_sftp.redact('ssh: connect to host <host> port 2200: Connection refused',
+                                self.settings(port=None))
+        assert '2200' not in out and 'port <port>' in out
+
+    @pytest.mark.parametrize('ip', ['128.208.1.2', '2001:db8::1', 'fe80::1ff:fe23:4567:890a', '::1',
+                                    '::ffff:10.0.0.7'])
+    def test_an_ip_literal_is_redacted(self, ip):
+        """An ssh-config alias resolves to an address nothing in settings names."""
+        assert store_sftp.redact('Connection closed by %s port 22' % ip, self.settings()) \
+            == 'Connection closed by <ip> port <port>'
+        assert store_sftp.redact('Connection to %s closed.' % ip, self.settings()) == 'Connection to <ip> closed.'
+
+    def test_any_user_at_prefix_is_redacted(self):
+        """With the user unset, ~/.ssh/config's User is what ssh prints; the configured strings cannot know it."""
+        out = store_sftp.redact('realuser@psstore: Permission denied (publickey).', self.settings(user=None))
+        assert 'realuser' not in out and out.startswith('<user>@')
+
+    def test_ordinary_messages_survive_the_patterns(self):
+        for text in ('Connection closed', 'stat remote: No such file or directory', 'sftp exited 255',
+                     'Permission denied (publickey).', 'client_loop: send disconnect: Broken pipe'):
+            assert store_sftp.redact(text, self.settings()) == text
+
+    def test_the_values_ssh_config_resolves_are_redacted(self, tmp_path, monkeypatch):
+        """An alias's HostName, User and Port as `ssh -G <host>` resolves them: none is in settings, and
+        none of them, in these positions, is something the patterns alone would catch."""
+        record = write_fake_ssh_g(tmp_path, monkeypatch, 'hostname real-store.cs.example\nuser realuser\n'
+                                                         'port 2201\nidentityfile ~/.ssh/id_x\n')
+        settings = self.settings(host='psstore', user=None, key=None)
+        summary = store_sftp.summarize_stderr(
+            'ssh: Could not resolve hostname real-store.cs.example: Name or service not known\n'
+            'Load key "/home/realuser/.ssh/id_x": invalid format\n'
+            "Warning: Permanently added '[psstore]:2201' (ED25519)\n", settings)
+        for secret in ('real-store.cs.example', 'realuser', '2201', 'psstore'):
+            assert secret not in summary, summary
+        assert record.read_text().split() == ['-G', 'psstore']
+
+    def test_ssh_config_is_asked_with_the_configured_user_and_port(self, tmp_path, monkeypatch):
+        record = write_fake_ssh_g(tmp_path, monkeypatch, 'hostname h\n')
+        store_sftp.ssh_config_values(self.settings(port='2222'))
+        assert record.read_text().split() == ['-G', '-p', '2222', '-l', USER, HOST]
+
+    def test_a_generic_resolved_value_is_replaced_only_as_a_whole_word(self, tmp_path, monkeypatch):
+        """ssh -G always prints a user and a port - on a plain host, the LOCAL login and 22 - so a resolved
+        value is replaced only where it stands alone, never inside an id or another word."""
+        write_fake_ssh_g(tmp_path, monkeypatch, 'hostname store.example\nuser ab\nport 22\n')
+        summary = store_sftp.summarize_stderr('sftp exited 1: 22abc ab-x cab 22 ab', self.settings())
+        assert summary == 'sftp exited 1: 22abc ab-x cab <port> <user>'
+
+    @pytest.mark.parametrize('behaviour', ['missing', 'fails', 'garbage', 'hangs'])
+    def test_ssh_config_trouble_never_stops_the_redaction(self, tmp_path, monkeypatch, behaviour):
+        if behaviour == 'missing':
+            monkeypatch.setattr(store_sftp, 'SSH_CONFIG_COMMAND', [str(tmp_path / 'no-such-ssh'), '-G'])
+        else:
+            script = tmp_path / 'ssh_g.py'
+            script.write_text({
+                # A nonzero exit is not trusted even when something was printed first.
+                'fails': 'import sys\nsys.stdout.write("hostname half-read\\n")\nsys.exit(255)\n',
+                'garbage': 'import sys\nsys.stdout.buffer.write(bytes([255, 254]) + b" hostname\\n\\n x")\n',
+                'hangs': 'import time\ntime.sleep(20)\nprint("hostname too-late")\n'}[behaviour])
+            monkeypatch.setattr(store_sftp, 'SSH_CONFIG_COMMAND', [sys.executable, str(script), '-G'])
+            monkeypatch.setattr(store_sftp, 'SSH_CONFIG_TIMEOUT_SECONDS', 0.5)
+        started = time.monotonic()
+        assert not any(store_sftp.ssh_config_values(self.settings()).values())
+        assert time.monotonic() - started < 10, 'the lookup must be bounded by SSH_CONFIG_TIMEOUT_SECONDS'
+        summary = store_sftp.summarize_stderr('collab@store.example: Permission denied', self.settings())
+        assert summary == '<user>@<host>: Permission denied'
 
 
 class TestVerifiers:

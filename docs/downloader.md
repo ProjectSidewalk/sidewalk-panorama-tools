@@ -176,8 +176,12 @@ signal](ops.md#the-depth-failure-count-is-not-an-alert-signal).
   unreachable — does the same. `sftp` runs with `BatchMode=yes`, so it fails in about a second instead of
   waiting on a prompt nothing can answer. The panoramas it did not reach are not counted and retry next run.
 * **A changed host key is refused** (`StrictHostKeyChecking=accept-new`: an unknown host is trusted once).
-* `sftp`'s error output is summarised with the host, user and key path replaced by `<host>`, `<user>` and
-  `<key>` before it reaches stdout or `scrape.log`. Raw error output is never logged.
+* `sftp`'s error output is summarised and redacted before it reaches stdout or `scrape.log`; raw error output
+  is never logged. **Redacted:** the host, user, port and key path you configured, wherever they appear; what
+  `ssh -G <host>` says an `~/.ssh/config` alias resolves to (its `HostName`, `User` and `Port`, as whole
+  words), when `ssh` is installed; and, by pattern, `port N`, `[host]:N`, IPv4 and IPv6 literals, and any
+  `name@`. **Not redacted:** a host name `ssh` prints that neither your settings nor `ssh -G` name (a
+  `ProxyJump` hop, say), and file paths other than the key. Check a summary before pasting it anywhere public.
 * `--skip-depth`, `--min-depth-runtime`, `--max-depth-requests`, `--depth-block-latch` and
   `--depth-pace-state` have no effect in this mode and each prints a warning saying so.
 * A `.part` file is a transfer in progress; one left by a killed run is removed before the next session

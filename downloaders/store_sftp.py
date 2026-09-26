@@ -68,6 +68,22 @@ SERVER_ALIVE_INTERVAL_SECONDS = 15
 STDERR_SUMMARY_LINES = 5
 STDERR_SUMMARY_CHARS = 200
 
+#: How the redaction learns what an ~/.ssh/config Host alias resolves to (see ssh_config_values). A test seam
+#: too: tests/conftest.py points it at a binary that does not exist, so the suite never reads a real config.
+SSH_CONFIG_COMMAND = ['ssh', '-G']
+#: `ssh -G` only reads config files, so anything slower than this is something wrong; redaction carries on.
+SSH_CONFIG_TIMEOUT_SECONDS = 10
+
+# What ssh prints that no configured string names (#155 review item 2). Over-redaction is the safe
+# direction: this text goes to scrape.log on a shared store and into the night's message.
+#   `port 2222`, and the `[host]:2222` form of known_hosts messages.
+_PORT_PATTERNS = (re.compile(r'\bport \d+'), re.compile(r'\]:\d+'))
+#   An IPv4 literal, and an IPv6 one (two or more colons among hex digits, dots allowed for ::ffff:a.b.c.d).
+_IPV4 = re.compile(r'(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w)(?!\.\d)')
+_IPV6 = re.compile(r'(?<![\w:.])(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(?![\w:])')
+#   Any `name@`: ssh embeds the user it authenticated as, which may be one ~/.ssh/config supplied.
+_USER_AT = re.compile(r'[^\s@"\'<>\[\]()]+@')
+
 IMAGE_SUFFIX = '.jpg'
 #: == gsv.DEPTH_ARTIFACT_SUFFIX; a test asserts the equality rather than this module importing gsv.
 DEPTH_SUFFIX = '.depth.npz'
@@ -231,23 +247,76 @@ def sftp_argv(settings):
     return argv
 
 
-def redact(text, settings):
-    """Replace the key path, host and user with <key>, <host>, <user>.
+def ssh_config_values(settings):
+    """What ssh will actually connect as, from `ssh -G [-p PORT] [-l USER] HOST`: {'hostname', 'user', 'port'}.
 
-    ssh's own messages embed `user@host`, so its stderr is never safe to log as-is - wherever the log lives.
-    Empty values are skipped: ''.replace would insert the placeholder between every character. The key goes
-    first because its path often contains the user name.
+    PS_SFTP_HOST may be an ~/.ssh/config alias - the docs invite one - and then ssh's messages carry the
+    alias's resolved HostName (or an IP), User and Port, none of which the configured strings name. `ssh -G`
+    prints the resolved configuration without connecting. Every failure - ssh missing, too old for -G, a
+    nonzero exit, a timeout, undecodable output - returns {} and the redaction carries on with what it has:
+    this is a best effort on top of the patterns in redact(), never a reason to lose the error message.
     """
-    for value, placeholder in ((settings.key, '<key>'), (settings.host, '<host>'), (settings.user, '<user>')):
+    argv = list(SSH_CONFIG_COMMAND)
+    if settings.port:
+        argv += ['-p', settings.port]
+    if settings.user:
+        argv += ['-l', settings.user]
+    argv.append(settings.host)
+    try:
+        result = subprocess.run(argv, capture_output=True, encoding='utf-8', errors='replace',
+                                timeout=SSH_CONFIG_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    values = {}
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() in ('hostname', 'user', 'port'):
+            values[parts[0].lower()] = parts[1].strip()
+    return values
+
+
+def _replace_word(text, value, placeholder):
+    """Replace value only where it stands alone - not inside an id, a longer name or a longer number."""
+    return re.sub(r'(?<![\w.-])%s(?![\w-])' % re.escape(value), placeholder, text)
+
+
+def redact(text, settings, resolved=None):
+    """Replace connection details in ssh/sftp output with placeholders. Four layers, in this order:
+
+    1. The configured strings, wherever they appear: the key path (<key>) first, because it often contains
+       the user name; then the host (<host>), the user (<user>) and the port (<port>).
+    2. `resolved` - ssh_config_values()'s hostname, user and port, what an ~/.ssh/config alias expands to -
+       replaced only as whole words, since `ssh -G` always reports SOME user and port (on a plain host, the
+       local login and 22) and those must not be carved out of pano ids.
+    3. Patterns for what neither names: `port N` and `]:N`, IPv4 and IPv6 literals (<ip>), and any `name@`.
+
+    NOT redacted: a host name that ssh prints on its own and that neither the settings nor `ssh -G` know
+    (e.g. a ProxyJump hop's), and paths other than the key. Empty values are skipped: ''.replace would put
+    the placeholder between every character.
+    """
+    for value, placeholder in ((settings.key, '<key>'), (settings.host, '<host>'), (settings.user, '<user>'),
+                               (settings.port, '<port>')):
         if value:
             text = text.replace(value, placeholder)
-    return text
+    for name, placeholder in (('hostname', '<host>'), ('user', '<user>'), ('port', '<port>')):
+        value = (resolved or {}).get(name)
+        if value:
+            text = _replace_word(text, value, placeholder)
+    text = _PORT_PATTERNS[0].sub('port <port>', text)
+    text = _PORT_PATTERNS[1].sub(']:<port>', text)
+    text = _IPV6.sub('<ip>', text)   # first, so ::ffff:a.b.c.d goes as one address
+    text = _IPV4.sub('<ip>', text)
+    return _USER_AT.sub('<user>@', text)
 
 
 def summarize_stderr(text, settings):
     """One redacted, capped line for a log or a cron mail: the first STDERR_SUMMARY_LINES non-blank lines,
-    each at most STDERR_SUMMARY_CHARS, joined with ' | '."""
-    lines = [line.strip() for line in redact(text or '', settings).splitlines() if line.strip()]
+    each at most STDERR_SUMMARY_CHARS, joined with ' | '. Asks `ssh -G` what the host resolves to (see
+    ssh_config_values) - once per failed session, which stops the pass, so at most twice a run."""
+    redacted = redact(text or '', settings, ssh_config_values(settings))
+    lines = [line.strip() for line in redacted.splitlines() if line.strip()]
     lines = [line[:STDERR_SUMMARY_CHARS] for line in lines[:STDERR_SUMMARY_LINES]]
     return ' | '.join(lines) if lines else '(no error output)'
 
