@@ -2715,6 +2715,60 @@ class TestStoreMode:
         assert 'STOREPULL: WARNING' in result.stdout
         assert STORE_HOST not in result.stdout + result.stderr
 
+    def test_a_depth_session_failure_exits_1_and_leaves_the_image_counts(self, monkeypatch, tmp_path):
+        """Every image already local, so the only session is the depth pass's - and it fails."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        for p in STORE_IDS:
+            (run.storage / p[:2]).mkdir(parents=True, exist_ok=True)
+            (run.storage / p[:2] / (p + '.jpg')).write_bytes(store_jpeg())
+        monkeypatch.setenv('FAKE_SFTP_FAIL_AUTH', '1')
+        assert run.main(store_csv_rows(), '--with-depth') == 1
+        assert len(sessions(run.record)) == 1
+        assert run.fields()[6:11] == ['0', '0', '0', '3', '3']
+        assert run.fields()[12:16] == ['0', '0', '0', '0']
+
+    def test_an_image_session_failure_does_not_go_on_to_the_depth_pass(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        monkeypatch.setenv('FAKE_SFTP_FAIL_AUTH', '1')
+        assert run.main(store_csv_rows(), '--with-depth') == 1
+        assert len(sessions(run.record)) == 1
+        assert not any('.depth.npz' in s['batch'] for s in sessions(run.record))
+
+    def test_the_depth_pass_stops_on_the_budget_and_says_so(self, monkeypatch, tmp_path, capsys):
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        # One simulated minute per session: the image pass spends it, the depth pass finds it gone.
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: 60.0 * len(sessions(run.record)))
+        summary = tmp_path / 'summary.json'
+        run.main(store_csv_rows([pano]), '--with-depth', '--max-runtime', '0.5', '--run-summary-file',
+                 str(summary))
+        assert json.loads(summary.read_text()) == {'image_stop': None,
+                                                   'depth_stop': DownloadRunner.STOP_MAX_RUNTIME}
+        assert 'STOREDEPTH: Max runtime of 0.5 minutes reached' in capsys.readouterr().out
+        assert run.fields()[12:16] == ['0', '0', '0', '0']
+
+    def test_the_phase_functions_run_without_the_out_parameters(self, monkeypatch, tmp_path):
+        """Both out-parameters are optional, as they are for download_panorama_images."""
+        base = make_remote(tmp_path, {})
+        write_fake_sftp(tmp_path, monkeypatch)
+        settings = store_sftp.StoreSettings(STORE_HOST, base, None, None, None, STORE_CITY)
+        (tmp_path / 's').mkdir()
+        infos = [{'pano_id': p, 'source': 'gsv'} for p in STORE_IDS]
+        spent = time.monotonic() - 600
+        assert DownloadRunner.pull_panos_from_store(str(tmp_path / 's'), infos, settings, run_start_monotonic=spent,
+                                                    max_runtime_minutes=1) == (0, 0, 0, 0, 0)
+        assert DownloadRunner.pull_depth_from_store(str(tmp_path / 's'), infos, settings, run_start_monotonic=spent,
+                                                    max_runtime_minutes=1) == (0, 0, 0, 0)
+        monkeypatch.setenv('FAKE_SFTP_FAIL_AUTH', '1')
+        assert DownloadRunner.pull_depth_from_store(str(tmp_path / 's'), infos, settings) == (0, 0, 0, 0)
+
+    def test_a_depth_id_the_batch_cannot_carry_is_counted_not_sent(self, monkeypatch, tmp_path):
+        bad = 'bad*panoAAAAAAAAAAAAAA'
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.main(store_csv_rows([STORE_IDS[0], bad]), '--with-depth')
+        assert run.fields()[12:16] == ['0', '2', '0', '2']
+        assert not any(bad in line for line in run.get_lines())
+
     def test_store_mode_is_not_in_the_breaker_table(self):
         assert store_sftp.STORE_SOURCE_NAME not in DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES
         assert DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES == {'mapillary': 3, 'panoramax': 3}
