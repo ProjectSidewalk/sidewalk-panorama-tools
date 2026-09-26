@@ -439,7 +439,11 @@ def canonical_command(argv, bundles):
                 else token
         elif flag in ('--write', '--figure'):
             absolute = os.path.abspath(token)
-            if os.path.commonpath([absolute, REPO_ROOT]) == REPO_ROOT:
+            try:
+                inside = os.path.commonpath([absolute, REPO_ROOT]) == REPO_ROOT
+            except ValueError:  # another drive (Windows): outside the repo, so recorded as given
+                inside = False
+            if inside:
                 token = os.path.relpath(absolute, REPO_ROOT).replace(os.sep, '/')
         out.append(token)
         flag = token if token.startswith('--') else None

@@ -421,6 +421,16 @@ class TestStudyLogic:
             ['--figure', os.path.join(csv3.REPO_ROOT, 'reports', 'figures', 'f.jpg')], {})
         assert command.endswith('--figure reports/figures/f.jpg')
 
+    def test_canonical_command_survives_an_output_on_another_drive(self, monkeypatch):
+        """On Windows commonpath raises ValueError for paths on two drives (--write D:/x.json from a
+        checkout on C:), and it raised inside build_summary - after the whole study, before anything was
+        written. Such a path is outside the repo, so it is recorded as given (#157 final review)."""
+        def across_drives(paths):
+            raise ValueError("Paths don't have the same drive")
+        monkeypatch.setattr(csv3.os.path, 'commonpath', across_drives)
+        assert csv3.canonical_command(['--write', 'Z:/out/x.json', '--figure', 'Z:/out/f.jpg'], {}) == (
+            'python reports/scripts/crop_sizing_v3.py --write Z:/out/x.json --figure Z:/out/f.jpg')
+
 
 def assert_every_key_is_claimed_once(summary):
     """Every top-level key is computed on exactly one named population, or declared to be on none."""
