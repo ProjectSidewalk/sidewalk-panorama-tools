@@ -2398,3 +2398,410 @@ class TestTheDepthCorpusSizeReachesLogCsv:
     def test_the_field_is_the_last_one(self):
         """Appending is what keeps every existing position - and every existing reader - unmoved."""
         assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT
+
+
+# --- Store mode: --from-store CITY_ID (#30) -------------------------------------------------------------------
+#
+# Driven in-process through main() against the fake `sftp -b -` in tests/test_store_sftp.py, which reads a local
+# directory tree as the "remote" store. download_pano and the depth phase are replaced with stand-ins that FAIL
+# the test if called: store mode must never contact Google, Mapillary or Panoramax, so a routing mistake shows up
+# as an AssertionError here rather than as a request nobody sees.
+
+from test_store_sftp import (  # noqa: E402  (a sibling test module: the fake and its fixtures have one home)
+    CITY as STORE_CITY, HOST as STORE_HOST, USER as STORE_USER, FAKE_SFTP_SCRIPT, make_remote, sessions,
+    small_jpeg as store_jpeg, small_npz as store_npz, write_fake_sftp)
+from downloaders import store_sftp  # noqa: E402
+import re  # noqa: E402
+
+STORE_IDS = ['storePanoAAAAAAAAAAAAA', 'storePanoBBBBBBBBBBBBB', 'storePanoCCCCCCCCCCCCC']
+
+
+def store_csv_rows(ids=STORE_IDS, source='gsv'):
+    return ''.join('%s,16384,8192,47.6,-122.3,180.0,0.0,%s,True\n' % (p, source) for p in ids)
+
+
+def contacted_a_provider(*args, **kwargs):
+    raise AssertionError('store mode contacted an imagery provider')
+
+
+class StoreRun:
+    """One in-process main() in store mode, against a fake store under tmp_path/remote."""
+
+    def __init__(self, monkeypatch, tmp_path, remote_files):
+        self.monkeypatch, self.tmp_path = monkeypatch, tmp_path
+        self.record = write_fake_sftp(tmp_path, monkeypatch)
+        self.base = make_remote(tmp_path, remote_files)
+        self.storage = tmp_path / 'storage'
+        self.key = str(tmp_path / 'keys' / 'id_ed25519')
+        monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
+        monkeypatch.setenv('PS_SFTP_BASE', self.base)
+        monkeypatch.setenv('PS_SFTP_USER', STORE_USER)
+        monkeypatch.setenv('PS_SFTP_KEY', self.key)
+        monkeypatch.delenv('PS_SFTP_PORT', raising=False)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', contacted_a_provider)
+        monkeypatch.setattr(DownloadRunner.gsv, 'download_depth_maps', contacted_a_provider)
+        monkeypatch.setattr(DownloadRunner.gsv, 'count_unresolved_depth', contacted_a_provider)
+        monkeypatch.chdir(tmp_path)
+
+    def add_remote(self, name, data):
+        path = os.path.join(self.base, STORE_CITY, name[:2], name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(data)
+
+    def main(self, csv_rows, *extra):
+        csv_path = self.tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + csv_rows)
+        return DownloadRunner.main(['sidewalk-test.invalid', str(self.storage), '-c', str(csv_path),
+                                    '--from-store', STORE_CITY, *extra])
+
+    def fields(self):
+        return last_log_fields(self.storage)
+
+    def get_lines(self):
+        return [line for s in sessions(self.record) for line in s['batch'].splitlines() if 'get ' in line]
+
+
+def jpgs(ids=STORE_IDS):
+    return {p + '.jpg': store_jpeg() for p in ids}
+
+
+class TestStoreMode:
+    def test_pulls_from_the_store_and_never_calls_a_downloader(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        assert run.main(store_csv_rows()) == 0
+        for p in STORE_IDS:
+            assert (run.storage / p[:2] / (p + '.jpg')).read_bytes() == (tmp_path / 'remote' / 'panos' / STORE_CITY
+                                                                        / p[:2] / (p + '.jpg')).read_bytes()
+        assert ledger_verdict_rows(run.storage) == sorted('%s,1' % p for p in STORE_IDS)
+
+    def test_a_pulled_row_has_a_blank_fetched_at(self, monkeypatch, tmp_path):
+        """The provider was not contacted tonight and the pull does not know when it was: blank = unknown,
+        the rule docs/ops.md gives a store assembled by copy."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        rows = (run.storage / 'pano_id_log.csv').read_text().splitlines()
+        assert rows == ['pano_id,downloaded,fetched_at', '%s,1,' % STORE_IDS[0]]
+
+    def test_absent_on_the_store_is_counted_failed_and_not_ledgered(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs([STORE_IDS[0], STORE_IDS[2]]))
+        assert run.main(store_csv_rows()) == 0
+        fields = run.fields()
+        assert fields[6:11] == ['2', '0', '1', '0', '3']
+        assert ledger_verdict_rows(run.storage) == sorted('%s,1' % p for p in (STORE_IDS[0], STORE_IDS[2]))
+
+        # The scrape adds it tomorrow; the next pull picks it up, because nothing wrote it off.
+        run.add_remote(STORE_IDS[1] + '.jpg', store_jpeg())
+        assert run.main(store_csv_rows()) == 0
+        assert ledger_verdict_rows(run.storage) == sorted('%s,1' % p for p in STORE_IDS)
+        assert (run.storage / STORE_IDS[1][:2] / (STORE_IDS[1] + '.jpg')).exists()
+
+    def test_a_truncated_pull_leaves_no_resume_marker_and_retries_next_run(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        monkeypatch.setenv('FAKE_SFTP_TRUNCATE', STORE_IDS[0] + '.jpg')
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        final = run.storage / STORE_IDS[0][:2] / (STORE_IDS[0] + '.jpg')
+        assert not final.exists() and not (run.storage / STORE_IDS[0][:2] / (STORE_IDS[0] + '.jpg.part')).exists()
+        assert ledger_verdict_rows(run.storage) == []
+        assert run.fields()[8] == '1'
+
+        monkeypatch.delenv('FAKE_SFTP_TRUNCATE')
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        assert final.exists()
+        assert ledger_verdict_rows(run.storage) == ['%s,1' % STORE_IDS[0]]
+
+    def test_a_local_pano_is_skipped_and_ledgered_like_the_scrape(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        for p in STORE_IDS:
+            (run.storage / p[:2]).mkdir(parents=True, exist_ok=True)
+            (run.storage / p[:2] / (p + '.jpg')).write_bytes(store_jpeg())
+        assert run.main(store_csv_rows()) == 0
+        assert run.fields()[6:11] == ['0', '0', '0', '3', '3']
+        assert ledger_verdict_rows(run.storage) == sorted('%s,1' % p for p in STORE_IDS)
+        assert sessions(run.record) == [], 'an already-complete store must cost zero sessions'
+
+    def test_the_local_ledger_gates_the_next_run(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        opened = len(sessions(run.record))
+        run.main(store_csv_rows())
+        assert len(sessions(run.record)) == opened
+        # prior counters are seeded exactly as the image loop seeds them
+        assert run.fields()[6:11] == ['0', '0', '0', '3', '3']
+
+    def test_candidates_are_shuffled_before_chunking(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        monkeypatch.setattr(store_sftp, 'BATCH_SIZE', 1)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: seq.reverse())
+        run.main(store_csv_rows())
+        order = [re.search(r'/(\w+)\.jpg"', line).group(1) for line in run.get_lines()]
+        assert order == list(reversed(STORE_IDS))
+
+    def test_batches_are_bounded_by_batch_size(self, monkeypatch, tmp_path):
+        ids = ['storePano%sAAAAAAAAAAAA' % c for c in 'VWXYZ']
+        run = StoreRun(monkeypatch, tmp_path, jpgs(ids))
+        monkeypatch.setattr(store_sftp, 'BATCH_SIZE', 2)
+        run.main(store_csv_rows(ids))
+        assert [len(s['batch'].splitlines()) - 1 for s in sessions(run.record)] == [2, 2, 1]
+        assert run.fields()[6] == '5'
+
+    def test_max_runtime_is_checked_between_batches(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        monkeypatch.setattr(store_sftp, 'BATCH_SIZE', 1)
+        # One simulated minute per session the fake has recorded.
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: 60.0 * len(sessions(run.record)))
+        summary = tmp_path / 'summary.json'
+        run.main(store_csv_rows(), '--max-runtime', '1.5', '--run-summary-file', str(summary))
+        assert len(sessions(run.record)) == 2
+        assert run.fields()[6] == '2'
+        assert 'STOREPULL: Max runtime of 1.5 minutes reached' in capsys.readouterr().out
+        assert json.loads(summary.read_text())['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+
+    def test_a_pull_that_finishes_inside_the_budget_reports_no_stop(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        summary = tmp_path / 'summary.json'
+        run.main(store_csv_rows(), '--max-runtime', '600', '--run-summary-file', str(summary))
+        assert json.loads(summary.read_text()) == {'image_stop': None, 'depth_stop': None}
+
+    def test_the_depth_phase_is_skipped(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        assert run.main(store_csv_rows()) == 0
+        assert run.fields()[12:16] == ['0', '0', '0', '0']
+        assert not (run.storage / 'depth_log.csv').exists()
+        assert not any('.depth.npz' in line for line in run.get_lines())
+
+    def test_with_depth_pulls_npz_and_writes_no_depth_ledger_row(self, monkeypatch, tmp_path):
+        gsv_id, mly_id = STORE_IDS[0], '123456789012345'
+        files = {gsv_id + '.jpg': store_jpeg(), gsv_id + '.depth.npz': store_npz(), mly_id + '.jpg': store_jpeg()}
+        run = StoreRun(monkeypatch, tmp_path, files)
+        monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
+        rows = store_csv_rows([gsv_id]) + store_csv_rows([mly_id], source='mapillary')
+        assert run.main(rows, '--with-depth') == 0
+        assert (run.storage / gsv_id[:2] / (gsv_id + '.depth.npz')).exists()
+        assert not (run.storage / 'depth_log.csv').exists()
+        assert run.fields()[12:16] == ['1', '0', '0', '1']
+        assert not any(mly_id + '.depth.npz' in line for line in run.get_lines())
+        # the corpus-size field still counts the GSV panos, as it does in every run
+        assert run.fields()[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == '1'
+
+    def test_with_depth_covers_panos_already_local(self, monkeypatch, tmp_path):
+        """Depth is the full GSV corpus, not tonight's image candidates: a re-run with --with-depth after an
+        image-only pull must still fetch the artifacts."""
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        run.main(store_csv_rows([pano]))
+        assert not (run.storage / pano[:2] / (pano + '.depth.npz')).exists()
+        run.main(store_csv_rows([pano]), '--with-depth')
+        assert (run.storage / pano[:2] / (pano + '.depth.npz')).exists()
+        assert run.fields()[6:11] == ['0', '0', '0', '1', '1']
+
+    def test_with_depth_skips_an_artifact_already_local(self, monkeypatch, tmp_path):
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        run.main(store_csv_rows([pano]), '--with-depth')
+        opened = len(sessions(run.record))
+        run.main(store_csv_rows([pano]), '--with-depth')
+        assert len(sessions(run.record)) == opened
+        assert run.fields()[12:16] == ['0', '0', '1', '1']
+
+    def test_with_depth_absent_artifact_is_counted_in_field_14_and_unledgered(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.main(store_csv_rows(STORE_IDS[:1]), '--with-depth')
+        assert run.fields()[12:16] == ['0', '1', '0', '1']
+        assert not (run.storage / 'depth_log.csv').exists()
+
+    def test_with_depth_is_not_narrowed_by_the_image_selection(self, monkeypatch, tmp_path):
+        """An unlabelled pano gets no image without --all-panos, but its depth artifact is still pulled -
+        the depth phase's own view of the corpus."""
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        run.main(store_csv_rows([pano]).replace(',True', ',False'), '--with-depth')
+        assert not (run.storage / pano[:2] / (pano + '.jpg')).exists()
+        assert (run.storage / pano[:2] / (pano + '.depth.npz')).exists()
+
+    def test_mapillary_panos_are_pulled_without_a_token_and_without_the_token_warning(self, monkeypatch, tmp_path,
+                                                                                      capsys, caplog):
+        mly_id = '123456789012345'
+        run = StoreRun(monkeypatch, tmp_path, jpgs([mly_id]))
+        monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
+        with caplog.at_level(logging.WARNING):
+            assert run.main(store_csv_rows([mly_id], source='mapillary')) == 0
+        assert (run.storage / mly_id[:2] / (mly_id + '.jpg')).exists()
+        assert 'Mapillary panos skipped' not in capsys.readouterr().out
+        assert 'Mapillary panos skipped' not in caplog.text
+
+    def test_unknown_sources_are_still_dropped_with_the_warning(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows(STORE_IDS[:1], source='infra3d'))
+        assert "unsupported source 'infra3d' skipped" in capsys.readouterr().out
+        assert sessions(run.record) == []
+
+    def test_an_id_the_batch_cannot_carry_is_counted_failed_and_never_sent(self, monkeypatch, tmp_path, caplog):
+        bad = 'bad*panoAAAAAAAAAAAAAA'
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        with caplog.at_level(logging.WARNING):
+            run.main(store_csv_rows([STORE_IDS[0], bad]))
+        assert run.fields()[6:11] == ['1', '0', '1', '0', '2']
+        assert not any(bad in line for line in run.get_lines())
+        assert ledger_verdict_rows(run.storage) == ['%s,1' % STORE_IDS[0]]
+        assert bad in caplog.text
+
+    def test_the_log_csv_row_keeps_its_width_and_a_zero_fallback_column(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        fields = run.fields()
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT == 19
+        assert fields[7] == '0'
+        assert all(f != '' for f in fields), 'a completed store run leaves no blank field'
+
+    def test_the_run_summary_reaches_stdout(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:2]))
+        run.main(store_csv_rows())
+        out = capsys.readouterr().out
+        assert 'Store mode: pulling already-scraped panoramas for %s' % STORE_CITY in out
+        assert 'STOREPULL: Completed 3 of 3 (2 pulled, 1 failed, 0 skipped)' in out
+        assert 'STOREPULL: 1 pano(s) not on the store tonight' in out
+        for secret in (STORE_HOST, STORE_USER, run.key):
+            assert secret not in out
+
+    def test_a_pulled_pano_is_logged_per_pano_and_an_absent_one_warned(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.main(store_csv_rows(STORE_IDS[:2]))
+        text = (run.storage / 'scrape.log').read_text()
+        assert 'STOREPULL: pano %s pulled' % STORE_IDS[0] in text
+        assert 'WARNING' in text and 'STOREPULL: pano %s absent' % STORE_IDS[1] in text
+
+    def test_a_session_failure_stops_the_phase_writes_the_row_and_exits_1(self, monkeypatch, tmp_path, capsys,
+                                                                            caplog):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        monkeypatch.setattr(store_sftp, 'BATCH_SIZE', 1)
+        monkeypatch.setenv('FAKE_SFTP_FAIL_AUTH', '1')
+        with caplog.at_level(logging.WARNING):
+            rc = run.main(store_csv_rows())
+        assert rc == 1
+        assert len(sessions(run.record)) == 1, 'the phase stops at the first failed session'
+        fields = run.fields()
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[6:11] == ['0', '0', '0', '0', '0'], 'unattempted panos are not counted'
+        assert all(f != '' for f in fields), 'a session failure is a stop, not a crash'
+        assert ledger_verdict_rows(run.storage) == []
+        out = capsys.readouterr().out
+        assert 'STOREPULL: WARNING' in out and 'Permission denied' in out
+        assert 'STOREPULL: WARNING' in caplog.text and 'Permission denied' in caplog.text
+        scrape_log = (run.storage / 'scrape.log').read_text()
+        for secret in (STORE_HOST, STORE_USER, run.key):
+            assert secret not in out
+            assert secret not in caplog.text
+            assert secret not in scrape_log
+
+    def test_a_session_failure_exits_nonzero_as_a_PROCESS(self, tmp_path):
+        """`sys.exit(main())` sits under the excluded __main__ guard, so only a real interpreter can see a
+        mutant that drops the exit status - the 2026-09-09 review's reason for the breaker's twin test."""
+        script = tmp_path / 'fake_sftp.py'
+        script.write_text(FAKE_SFTP_SCRIPT)
+        driver = tmp_path / 'store_driver.py'
+        driver.write_text(STORE_PROCESS_DRIVER % {'repo_root': REPO_ROOT, 'runner': RUNNER,
+                                                  'command': [sys.executable, str(script)]})
+        base = make_remote(tmp_path, jpgs(STORE_IDS[:1]))
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + store_csv_rows(STORE_IDS[:1]))
+        env = dict(os.environ, PS_SFTP_HOST=STORE_HOST, PS_SFTP_BASE=base, PS_SFTP_USER=STORE_USER,
+                   FAKE_SFTP_FAIL_AUTH='1', FAKE_SFTP_RECORD=str(tmp_path / 'sessions.jsonl'))
+        result = subprocess.run(
+            [sys.executable, str(driver), 'sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+             '--from-store', STORE_CITY],
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env)
+        assert result.returncode == 1, result.stdout[-2000:] + result.stderr[-2000:]
+        assert 'STOREPULL: WARNING' in result.stdout
+        assert STORE_HOST not in result.stdout + result.stderr
+
+    def test_store_mode_is_not_in_the_breaker_table(self):
+        assert store_sftp.STORE_SOURCE_NAME not in DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES
+        assert DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES == {'mapillary': 3, 'panoramax': 3}
+
+
+STORE_PROCESS_DRIVER = '''\
+"""Test-only driver: run the real DownloadRunner.py as a script with store_sftp pointed at the fake sftp."""
+import runpy
+import sys
+
+sys.path.insert(0, %(repo_root)r)
+
+from downloaders import store_sftp
+
+store_sftp.SFTP_COMMAND = %(command)r
+sys.argv = ['DownloadRunner.py'] + sys.argv[1:]
+runpy.run_path(%(runner)r, run_name='__main__')
+'''
+
+
+class TestStoreModeCli:
+    def csv(self, tmp_path):
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + store_csv_rows())
+        return str(csv_path)
+
+    def test_from_store_without_connection_settings_exits_2_naming_the_variables(self, monkeypatch, tmp_path,
+                                                                                 capsys):
+        for name in store_sftp.SFTP_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        storage = tmp_path / 'storage'
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', self.csv(tmp_path),
+                                 '--from-store', STORE_CITY])
+        assert e.value.code == 2
+        err = capsys.readouterr().err
+        assert 'PS_SFTP_HOST' in err and 'PS_SFTP_BASE' in err
+        assert not storage.exists(), 'settings are resolved before the storage dir or scrape.log is created'
+
+    @pytest.mark.parametrize('city', ['a/b', '..', ''])
+    def test_from_store_rejects_a_bad_city_id_at_parse_time(self, tmp_path, city):
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '--from-store', city])
+        assert e.value.code == 2
+
+    def test_a_bad_port_is_a_usage_error(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
+        monkeypatch.setenv('PS_SFTP_BASE', '/panos')
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '--from-store', STORE_CITY,
+                                 '--sftp-port', 'twenty-two'])
+        assert e.value.code == 2
+        assert 'PS_SFTP_PORT' in capsys.readouterr().err
+
+    def test_with_depth_without_from_store_is_a_usage_error(self, tmp_path):
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '--with-depth'])
+        assert e.value.code == 2
+
+    @pytest.mark.parametrize('flag', [['--skip-depth'], ['--min-depth-runtime', '5'], ['--max-depth-requests', '1'],
+                                      ['--depth-block-latch', 'x'], ['--depth-pace-state', 'x']])
+    def test_depth_flags_warn_they_have_no_effect_in_store_mode(self, monkeypatch, tmp_path, capsys, flag):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        assert run.main(store_csv_rows(), *flag) == 0
+        assert 'WARNING: %s has no effect in store mode' % flag[0] in capsys.readouterr().out
+
+    def test_a_store_run_with_no_depth_flags_prints_no_depth_warning(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        assert 'has no effect' not in capsys.readouterr().out
+
+    def test_sftp_flags_without_from_store_warn(self, monkeypatch, tmp_path, capsys):
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--sftp-host', 'other.example')
+        out = capsys.readouterr().out
+        assert 'WARNING: --sftp-host has no effect without --from-store' in out
+        assert 'other.example' not in out
+
+    def test_sftp_flags_beat_the_environment_end_to_end(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows(), '--sftp-host', 'other.example', '--sftp-port', '2222')
+        argv = sessions(run.record)[0]['argv']
+        assert argv[-1] == '%s@other.example' % STORE_USER
+        assert argv[argv.index('-P') + 1] == '2222'
+        assert argv[argv.index('-i') + 1] == run.key
+
+    def test_the_help_text_says_the_default_is_to_scrape_yourself(self):
+        text = ' '.join(DownloadRunner.build_parser().format_help().split())
+        assert 'The default, without this flag, is to download from the provider yourself' in text
+        assert 'collaborators' in text
+        assert 'PS_SFTP_HOST' in text
