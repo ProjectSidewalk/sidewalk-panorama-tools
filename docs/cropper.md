@@ -129,7 +129,8 @@ Measured in [reports/2026-09-26-crop-sizing-v3.md](../reports/2026-09-26-crop-si
 median crop, v3's fill is less dispersed and its window tracks the apron better in every city — but it
 moves about 40% of the 658 gold ramps' windows by more than 10%. (The report also sets out the minimal
 alternative, the blend distance fed into v2's power law, which trades the other way on several columns;
-the choice is a decision on the PR, not a settled result.) **The default stays v2**: since existing crops are never
+the choice is decision D7 on [#157](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/157) and
+the report's §4, not a settled result.) **The default stays v2**: since existing crops are never
 re-cut, flipping it on a store cut under v2 would mix the geometries, so the flip waits for a re-cut path
 ([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)). Until then, run v3 into a
 fresh `-o`, not over a v2 store; `crop_rule.json` warns if you do, and on every run after. If the default

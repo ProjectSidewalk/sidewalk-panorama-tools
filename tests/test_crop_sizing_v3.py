@@ -682,6 +682,10 @@ class TestReportMatchesTheArtifact:
         assert "nearest rule v2's (%.3f)" % sel['target_fill_p50'] in report
         assert 'The answer is **%.1f m**' % sel['matched_context_width_m'] in report
         assert 'gives **%.1f m**' % sel['band_centre_width_m'] in report
+        steps = round((sel['band_centre_width_m'] - sel['matched_context_width_m']) / sel['grid_step_m'])
+        words = {1: 'one', 2: 'two', 3: 'three', 4: 'four'}
+        assert ('(fill p50 nearest %.2f) gives **%.1f m**, %s grid steps away'
+                % (sel['band_centre_fill'], sel['band_centre_width_m'], words[steps])) in report
         assert '%.1f to %.1f m' % (sel['grid_min_m'], sel['grid_max_m']) in report
         assert '%.1f m grid' % sel['grid_step_m'] in report
 
