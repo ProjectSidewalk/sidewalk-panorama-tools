@@ -13,11 +13,14 @@ scored against the same 658 hand-drawn curb-ramp extents as [rule v2](2026-08-19
 >     --bundle sao_paulo=<RampNet>/benchmark/sao_paulo \
 >     --bundle paterson=<RampNet>/benchmark/paterson \
 >     --bundle annapolis=<RampNet>/benchmark/annapolis \
->     --write reports/data/2026-09-26-crop-sizing-v3.json
+>     --write reports/data/2026-09-26-crop-sizing-v3.json \
+>     --figure reports/figures/2026-09-26-crop-sizing-v3-examples.jpg
 > ```
-> Run from the repo root with the bundle paths the artifact's `meta.bundles` records, the output is
-> byte-identical to the committed file. This corrects the v2 report's reproduce note: Paterson's and
-> Annapolis' boxes are no longer only on data branches; all four are on `main`.
+> `meta.bundles` records each bundle relative to the RampNet checkout and `generated_by` writes
+> `<RampNet>/` in its place, so run from this repo's root against any checkout at that commit, the JSON
+> is byte-identical to the committed file. `RAMPNET_ROOT=<RampNet> pytest tests/test_crop_sizing_v3.py`
+> re-runs it and compares everything but `generated_by`. This corrects the v2 report's reproduce note:
+> Paterson's and Annapolis' boxes are no longer only on data branches; all four are on `main`.
 
 ## 1. The question
 
@@ -37,7 +40,8 @@ quoting RampNet's (§2). A better estimator can only move a rule towards it.
 
 Same gold, same instruments as the v2 study: 658 boxed aprons in four cities, windows cut through
 `CropRunner.compute_crop_box` exactly as the cropper cuts them, and the v2 rows recomputed live (they
-match the v2 artifact to the bit, which a test asserts).
+match the v2 artifact to the bit on every key the two artifacts share, which a test asserts; the window
+angles agree only because every gold pano is 2:1, since the v2 study took them on the elevation axis).
 
 **Rule v3** is three named steps. `label_depression_deg` turns `pano_y` into an angle;
 `blend_distance_m` is the lle #3 distance (camera height 2.3412 m, blend at 11.25°, capped at 50 m); and
@@ -59,7 +63,9 @@ width), both in degrees so resolution cannot enter.
 
 **The ceiling is an isotonic fit**: the best non-decreasing function of depression, fitted to log(apron
 width). Both rules are monotone in depression and an R² is the best affine map of the log window, which
-is itself monotone, so this bounds both, in-sample. The plan proposed a three-parameter smooth fit
+is itself monotone, so this bounds both, in-sample — given a positive slope, and up to integer-pixel
+rounding of the cut widths (about 0.1%). Being in-sample, it is also optimistic, so the share of the gap
+a rule closes against it is a lower bound. The plan proposed a three-parameter smooth fit
 (`log dep`, `dep`, intercept); it is reported too, and it is *not* a bound — v3 beats it pooled.
 
 ## 3. Finding 1 — the 2013 line is not distance-shaped
@@ -75,8 +81,10 @@ is itself monotone, so this bounds both, in-sample. The plan proposed a three-pa
 | 35° | 0.08 m | 3.34 m | 90.0° | 81.9° |
 | 45° | 0.00 m | 2.34 m | 90.0° | 90.0° |
 
-The linear line reaches **0 m at 35.15°** of depression and stays there, so below that the 1500-px clamp,
-not a distance, sizes every v2 crop; the blend lands at the camera height at 45°, as a 45° ray must.
+The linear line reaches **0 m at 35.15°** of depression and stays there. Under v1 the 1500-px clamp then
+sized every crop; under v2 this is moot, because the 90° cap already binds from **26.55°**, so past that
+depression no v2 window depends on the distance at all. The blend lands at the camera height at 45°, as a
+45° ray must.
 
 Against the aprons themselves, the log-log slope of angular width on distance (geometry says −1) and
 the share of variance each distance explains:
@@ -93,7 +101,7 @@ In every city the blend explains more of the apron's width and sits nearer −1.
 excludes the ramps where it has already hit zero (8 pooled), and its slope is dominated by its approach
 to zero rather than by anything about the ramps.
 
-## 4. Finding 2 — at the same median crop, v3 is tighter and tracks the apron better, everywhere
+## 4. Finding 2 — at the same median crop, v3 is less dispersed than v2 and tracks the apron better, everywhere
 
 v2 / v3 in each cell:
 
@@ -114,12 +122,30 @@ containment dips (**0.983 / 0.975**); no other city's falls.
 
 **Option A**, the minimal edit — the blend distance fed into v2's own power law — was scored at its own
 median-matched scale (**×2.2**, fill p50 **0.368**) so the comparison is like for like. It is a real
-alternative, not a strawman: its fill is marginally *less* dispersed pooled (log-sd **0.402** against v3's
-0.406, p90/p10 **2.73** against 2.78), while it tracks the apron less well in every city (pooled R²
-**0.604** against 0.612; São Paulo **0.782**, Paterson **0.792**, Richmond **0.587**, Annapolis **0.522**).
-v3 ships on geometry rather than on a margin: it is the exact subtended angle with one constant in
-metres, where A keeps the −1.192 exponent that was fit with the 2013 line inside it, and v3's distance
-seam takes a measured distance unchanged. Which of the two to prefer is decision D7 in the PR.
+alternative, not a strawman, and the two rules split the metrics. Pooled, A's fill is less dispersed
+(log-sd **0.402** against v3's 0.406, p90/p10 **2.73** against 2.78) and it clears the "too tight"
+threshold more often (**77.4%** against 75.2%) at the same containment; v3 tracks the apron better in
+every city (pooled R² **0.604** against 0.612; São Paulo **0.782**, Paterson **0.792**, Richmond **0.587**,
+Annapolis **0.522**). Per city, A's fill log-sd is lower in three of four (all but Annapolis), p90/p10
+splits two and two, and A clears more in all four — including **Annapolis, 48.9% against 44.3%**, which
+is above the 45% per-city floor the v2 report set, at containment **0.840** against v3's 0.855. Per-city
+fill medians are not matched (only the pooled one is), and clearing and containment are monotone in
+window size, so those two columns partly reflect where each rule's median crop landed in that city.
+
+Option A / v3 in each cell (A at ×2.2, v3 at 5.8 m):
+
+| city | n | fill p50 | fill log-sd | fill p90/p10 | R² log window ~ log apron | clearing "too tight" | containment |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| richmond | 299 | 0.395 / 0.394 | 0.400 / 0.402 | 2.79 / 2.79 | 0.587 / 0.595 | 75.9% / 74.6% | 0.953 / 0.953 |
+| sao_paulo | 119 | 0.312 / 0.332 | 0.295 / 0.312 | 1.89 / 1.91 | 0.782 / 0.790 | 95.8% / 95.0% | 0.983 / 0.975 |
+| annapolis | 131 | 0.506 / 0.513 | 0.429 / 0.427 | 2.95 / 2.81 | 0.522 / 0.530 | 48.9% / 44.3% | 0.840 / 0.855 |
+| paterson | 109 | 0.323 / 0.329 | 0.279 / 0.296 | 2.01 / 1.89 | 0.792 / 0.798 | 95.4% / 92.7% | 1.000 / 0.991 |
+| **pooled** | **658** | **0.368 / 0.370** | **0.402 / 0.406** | **2.73 / 2.78** | **0.604 / 0.612** | **77.4% / 75.2%** | **0.944 / 0.944** |
+
+The case for shipping v3 rather than A is geometric rather than a margin on these columns: v3 is the
+exact subtended angle with one constant in metres, where A keeps the −1.192 exponent that was fit with
+the 2013 line inside it, and v3's distance seam takes a measured distance unchanged. Which of the two to
+prefer is decision D7 in the PR.
 
 ## 5. Finding 3 — what moves
 
@@ -152,11 +178,19 @@ Where production's curb ramps sit, from the 2026-08-09 clamp census (149,837 Cur
 The median production curb ramp would get a wider window, and the near-field decile a much narrower one.
 That is a whole-store change, which is why §7 does not flip the default.
 
+**What it looks like.** The v2 report's eight example ramps (two per city, spanning the depression
+range), each cut under v2 (left) and v3 (right), the gold apron outlined in both; every panel is drawn at
+the same width, so a wider window reads as more context at lower magnification. The captions are
+`figure_examples` in the artifact.
+
+![Eight gold curb ramps, each cropped under v2 and under v3](figures/2026-09-26-crop-sizing-v3-examples.jpg)
+
 ## 6. What this does not fix
 
-* **Annapolis.** Its clearing moves from 42.7% to **44.3%** and is still under the 45% per-city floor.
-  Its ramps subtend the largest angle in the corpus; that is an extent problem, not a distance problem,
-  and one global context width cannot fix it any more than one global scale could.
+* **Annapolis, under v3.** Its clearing moves from 42.7% to **44.3%** and is still under the 45%
+  per-city floor. Its ramps subtend the largest angle in the corpus. Option A at its matched scale does
+  clear it (48.9%, at containment 0.840 against v3's 0.855; §4), so the shortfall is partly a property
+  of v3's shape and not only an extent problem that no single global constant could reach.
 * **The ceiling.** No depression-only rule passes 0.647 pooled. The rest is ramp size, which needs an
   input other than `pano_y` (label type, or the apron itself).
 * **Placement error.** The window is centred on the stored click; #54's tilt term is not in either rule.
@@ -177,25 +211,28 @@ That waits on a re-cut path (#83) and is Jon's decision, not this report's.
 ## 8. Wrong turns
 
 * **The pilot's legacy exponent did not reproduce.** The planning pilot reported −0.40 against the
-  2013 line; fitting log(apron width in degrees) on log(distance) gives −1.28. The finding that survives
-  is the R² and the distance from −1, both of which favour the blend in every city.
+  2013 line; fitting log(apron width in degrees) on log(distance) gives −1.28. The pilot's regression
+  was not recorded, so the cause is not identified. The finding that survives is the R² and the
+  distance from −1, both of which favour the blend in every city.
 * **The ceiling was going to be a smooth fit.** The three-parameter `log dep, dep` fit came out *below*
   v3 pooled (0.598 against 0.612), because a `2·atan(W/2d)` window is outside its span. A ceiling that
   a rule can beat is not a ceiling, so the bound is now isotonic.
 * **Option A was going to be one row at ×2.5.** At v2's scale its median fill is 0.325 — wider than
   either rule — so its dispersion was being compared at a different crop. Median-matched, it narrowly
-  wins on dispersion (§4).
+  wins on dispersion pooled and in three of four cities (§4).
 * **Two constants are one.** `CROP_SIZE_SCALE × object width` would have been two multiplicative
   constants carrying one degree of freedom, and scaling an angle is only the small-angle approximation of
   scaling the span; v3 has a single width in metres.
-* **No figure.** `crop_sizing_v2.render_examples` captions its panels v1/v2, so reusing it for v2/v3
-  would mislabel them; a v2/v3 contact sheet is left for the default-flip decision.
+* **No figure, at first.** `crop_sizing_v2.render_examples` captioned its panels v1/v2, so the first
+  draft shipped without one. It now takes the pair of rules as a parameter (the v1/v2 caption is
+  unchanged), and the figure below is the v2/v3 twin of the v2 report's examples sheet.
 
 ## 9. Where things live
 
 * Rule: `CropRunner.label_depression_deg`, `blend_distance_m`, `geometric_window_fov_deg`,
   `crop_window_fov_deg(..., sizing_rule='v3')`; constants `V3_*`.
-* Study: `reports/scripts/crop_sizing_v3.py` → `reports/data/2026-09-26-crop-sizing-v3.json`.
+* Study: `reports/scripts/crop_sizing_v3.py` → `reports/data/2026-09-26-crop-sizing-v3.json` and
+  `reports/figures/2026-09-26-crop-sizing-v3-examples.jpg`.
 * Tests: `tests/test_crop_runner.py` (the rule, the flag, the marker, the byte-identical v2 table) and
   `tests/test_crop_sizing_v3.py` (study logic on synthetic ramps, the committed findings, and this
   report's numbers against the artifact).

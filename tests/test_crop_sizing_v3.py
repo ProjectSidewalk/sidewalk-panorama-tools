@@ -623,9 +623,11 @@ class TestReportMatchesTheArtifact:
 
     def test_the_selection(self, summary, report):
         sel = summary['selection']
-        assert _has(report, sel['target_fill_p50'])
-        assert '%.1f m' % sel['matched_context_width_m'] in report
-        assert '%.1f m' % sel['band_centre_width_m'] in report
+        # In their sentences (#157 review item 9): 0.371 is also a table cell and 6.0 m recurs in the
+        # prose, so a bare search passes a report that got either wrong.
+        assert "nearest rule v2's (%.3f)" % sel['target_fill_p50'] in report
+        assert 'The answer is **%.1f m**' % sel['matched_context_width_m'] in report
+        assert 'gives **%.1f m**' % sel['band_centre_width_m'] in report
         assert '%.1f to %.1f m' % (sel['grid_min_m'], sel['grid_max_m']) in report
         assert '%.1f m grid' % sel['grid_step_m'] in report
 
@@ -691,6 +693,46 @@ class TestReportMatchesTheArtifact:
                             ('richmond', 'Richmond'), ('annapolis', 'Annapolis')):
             assert '%s **%.3f**' % (label, a['cities_matched'][city]['r2']) in report, city
         assert _has(report, a['pooled_at_v2_scale']['fill_p50'])
+
+    def test_the_option_a_table(self, summary, report):
+        """#157 review item 2: the per-city A-vs-v3 table is computed by the script, not typed."""
+        for line in csv3.rule_a_table(summary):
+            assert ' '.join(line.split()) in report, line
+
+    def test_option_a_clears_annapolis_and_the_report_says_so(self, summary, report):
+        """The evidence the first draft left out, pinned in its sentences - in §4 and in §6."""
+        a = summary['rule_a_blend_powerlaw']
+        ann_a, ann_v3 = a['cities_matched']['annapolis'], summary['cities']['annapolis']['v3']
+        assert ann_a['frac_clearing_too_tight'] >= 0.45 > ann_v3['frac_clearing_too_tight']
+        assert '**Annapolis, %.1f%% against %.1f%%**' % (100 * ann_a['frac_clearing_too_tight'],
+                                                        100 * ann_v3['frac_clearing_too_tight']) in report
+        assert 'at containment **%.3f** against v3\'s %.3f' % (ann_a['containment'],
+                                                             ann_v3['containment']) in report
+        assert 'clear it (%.1f%%, at containment %.3f against v3\'s %.3f; §4)' % (
+            100 * ann_a['frac_clearing_too_tight'], ann_a['containment'], ann_v3['containment']) in report
+        m, v3 = a['pooled_matched'], summary['pooled']['v3']
+        assert '(**%.1f%%** against %.1f%%)' % (100 * m['frac_clearing_too_tight'],
+                                               100 * v3['frac_clearing_too_tight']) in report
+        lower = [c for c, b in a['cities_matched'].items()
+                 if b['fill_log_sd'] < summary['cities'][c]['v3']['fill_log_sd']]
+        assert sorted(lower) == ['paterson', 'richmond', 'sao_paulo']
+        assert "A's fill log-sd is lower in three of four (all but Annapolis)" in report
+        spread = [c for c, b in a['cities_matched'].items()
+                  if b['fill_p90_over_p10'] < summary['cities'][c]['v3']['fill_p90_over_p10']]
+        assert len(spread) == 2 and 'p90/p10 splits two and two' in report
+        assert all(b['frac_clearing_too_tight'] > summary['cities'][c]['v3']['frac_clearing_too_tight']
+                   for c, b in a['cities_matched'].items())
+        assert 'A clears more in all four' in report
+        assert 'any more than one global scale could' not in report
+
+    def test_the_v2_cap_sentence(self, summary, report):
+        g = summary['rule_geometry']
+        assert '**0 m at %.2f°**' % g['legacy_zero_crossing_deg'] in report
+        assert 'the 90° cap already binds from **%.2f°**' % g['v2_cap_onset_deg'] in report
+        assert 'the 1500-px clamp, not a distance, sizes every v2 crop' not in report
+
+    def test_the_figure_is_in_the_report(self, report):
+        assert '(figures/2026-09-26-crop-sizing-v3-examples.jpg)' in report
 
     def test_what_moves(self, summary, report):
         wc = summary['window_change']
