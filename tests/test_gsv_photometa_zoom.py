@@ -514,6 +514,21 @@ class TestTheProbeArmChecksTheFrame:
         assert gsv.download_single_pano(str(tmp_path), pano_info(16384, 8192)) == DownloadResult.success
 
 
+class TestTheRefusalNamesItsReason:
+    def test_a_non_512_tile_refusal_says_tiles_not_levels(self, tmp_path, monkeypatch):
+        """The reviewers' repro read "no reported level admits it" over two identical frames (NIT)."""
+        stub_photometa(monkeypatch, SERIES_16384, tile_size=(256, 256))
+        deny_probe(monkeypatch)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a refused frame must not fan out'))
+
+        with pytest.raises(gsv.FrameDisagreementError) as refused:
+            gsv.download_single_pano(str(tmp_path), pano_info(16384, 8192))
+
+        assert 'frame disagreement' in str(refused.value)
+        assert 'tiles that are not 512 px' in str(refused.value)
+        assert 'no reported level' not in str(refused.value)
+
+
 class TestOneErrorLinePerRefusal:
     def test_the_runner_logs_one_error_naming_the_disagreement(self, tmp_path, monkeypatch, caplog):
         """scrape.log carries one ERROR per refused pano - DownloadRunner's, with the exception text - so
