@@ -326,10 +326,26 @@ class TestStudyLogic:
         assert csv3.bundle_spec(str(bundle)) == 'benchmark/richmond'
         command = csv3.canonical_command(
             ['--bundle', 'richmond=%s' % bundle, '--write',
-             os.path.join(REPO_ROOT, 'reports', 'data', 'x.json')], {'richmond': str(bundle)})
+             os.path.join(REPO_ROOT, 'reports', 'data', 'x.json')])
         assert command == ('python reports/scripts/crop_sizing_v3.py --bundle '
                            'richmond=<RampNet>/benchmark/richmond --write reports/data/x.json')
         assert str(tmp_path) not in command
+
+    def test_the_equals_form_is_redacted_too(self, tmp_path):
+        """argparse accepts --bundle=city=path and --write=path, and those tokens reached generated_by
+        verbatim, machine path and all (#157 Gemini follow-up)."""
+        root = tmp_path / 'RampNet'
+        bundle = root / 'benchmark' / 'richmond'
+        bundle.mkdir(parents=True)
+        subprocess.run(['git', 'init', '-q', str(root)], check=True)
+        command = csv3.canonical_command(
+            ['--bundle=richmond=%s' % bundle,
+             '--write=%s' % os.path.join(REPO_ROOT, 'reports', 'data', 'x.json'),
+             '--figure=%s' % os.path.join(REPO_ROOT, 'reports', 'figures', 'f.jpg')])
+        assert command == ('python reports/scripts/crop_sizing_v3.py --bundle '
+                           'richmond=<RampNet>/benchmark/richmond --write reports/data/x.json '
+                           '--figure reports/figures/f.jpg')
+        assert str(tmp_path) not in command and REPO_ROOT not in command
 
     def test_a_bundle_outside_a_checkout_is_recorded_as_given(self, tmp_path):
         bundle = tmp_path / 'loose'
@@ -418,7 +434,7 @@ class TestStudyLogic:
 
     def test_canonical_command_relativises_the_figure_too(self):
         command = csv3.canonical_command(
-            ['--figure', os.path.join(csv3.REPO_ROOT, 'reports', 'figures', 'f.jpg')], {})
+            ['--figure', os.path.join(csv3.REPO_ROOT, 'reports', 'figures', 'f.jpg')])
         assert command.endswith('--figure reports/figures/f.jpg')
 
     def test_canonical_command_survives_an_output_on_another_drive(self, monkeypatch):
@@ -428,7 +444,7 @@ class TestStudyLogic:
         def across_drives(paths):
             raise ValueError("Paths don't have the same drive")
         monkeypatch.setattr(csv3.os.path, 'commonpath', across_drives)
-        assert csv3.canonical_command(['--write', 'Z:/out/x.json', '--figure', 'Z:/out/f.jpg'], {}) == (
+        assert csv3.canonical_command(['--write', 'Z:/out/x.json', '--figure', 'Z:/out/f.jpg']) == (
             'python reports/scripts/crop_sizing_v3.py --write Z:/out/x.json --figure Z:/out/f.jpg')
 
 

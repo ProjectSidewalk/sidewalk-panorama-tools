@@ -427,11 +427,21 @@ def bundle_spec(path):
     return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace(os.sep, '/')
 
 
-def canonical_command(argv, bundles):
+PATH_FLAGS = ('--bundle', '--write', '--figure')
+
+
+def canonical_command(argv):
     """The command line as `generated_by` records it: bundle paths under `<RampNet>/`, output paths
-    relative to this repo when they are inside it. Nothing machine-specific survives."""
+    relative to this repo when they are inside it. Nothing machine-specific survives.
+
+    A `--flag=value` token for a path flag is split into `--flag value` first, since argparse accepts
+    that form and it would otherwise be recorded verbatim, machine path and all."""
     out, flag = ['python reports/scripts/crop_sizing_v3.py'], None
+    tokens = []
     for token in argv:
+        name, eq, value = token.partition('=')
+        tokens.extend([name, value] if eq and name in PATH_FLAGS else [token])
+    for token in tokens:
         if flag == '--bundle' and '=' in token:
             city, path = token.split('=', 1)
             spec = bundle_spec(path)
@@ -530,7 +540,7 @@ def build_summary(by_city, bundles, argv, examples=None):
     summary = {
         'meta': {'rampnet_commit': rampnet_commit(next(iter(bundles.values()))),
                  'bundles': {c: bundle_spec(p) for c, p in sorted(bundles.items())},
-                 'generated_by': canonical_command(argv, bundles)},
+                 'generated_by': canonical_command(argv)},
         'constants': {
             'v2': {'scale': CropRunner.CROP_SIZE_SCALE, 'min_fov_deg': CropRunner.CROP_MIN_FOV_DEG,
                    'max_fov_deg': CropRunner.CROP_MAX_FOV_DEG,
