@@ -498,10 +498,11 @@ class TestTheRuleMarker:
         assert 'sizing rule' not in caplog.text
 
     def test_an_unreadable_marker_does_not_stop_the_run(self, crop_runner, tmp_path):
-        """It is provenance, not a lock. A truncated or hand-edited marker is rewritten."""
+        """It is provenance, not a lock. A truncated or hand-edited marker is rewritten (and kept aside,
+        and warned about - TestTheMarkerKeepsItsHistory)."""
         with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
             f.write('{not json')
-        assert crop_runner.write_rule_marker(str(tmp_path)) is None
+        assert crop_runner.write_rule_marker(str(tmp_path)) == 'unknown'
         with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
             assert json.load(f)['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
 
@@ -2279,3 +2280,703 @@ class TestTheSystemicFailureAlarm:
         assert '5 errors, of 5 labels total' in printed
         logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read()
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged
+
+
+# ---------------------------------------------------------------------------
+# #32: an opt-in sizing rule v3. The default path must not move by a pixel.
+# ---------------------------------------------------------------------------
+
+# Captured from origin/master (c5d2ad7) BEFORE #32 touched the sizing path, by running master's own
+# compute_crop_box(x, y, crop_window_width(y, w, h), w, h) over these inputs and pasting the result.
+# Literals, compared with ==: "v2 crops are byte-identical under the default" is the claim, and an
+# approx would pass for a rule that had merely drifted a little. The rows cover four pano sizes
+# (including the non-2:1 square), the horizon, 5/15/30/45 degrees below it, 20 degrees above it, both
+# sides of the seam, and all four pole-clamped shapes.
+MASTER_V2_WINDOWS = [
+        ((8192.0, 4096.0, 16384, 8192), (7810, 3842, 764, 509, False)),
+        ((8192.0, 4323.555555555556, 16384, 8192), (7734, 4018, 917, 611, False)),
+        ((8192.0, 4778.666666666667, 16384, 8192), (7450, 4284, 1483, 989, False)),
+        ((8192.0, 5461.333333333333, 16384, 8192), (6144, 4096, 4096, 2731, False)),
+        ((8192.0, 6144.0, 16384, 8192), (6144, 4778, 4096, 2731, False)),
+        ((8192.0, 3185.777777777778, 16384, 8192), (7968, 3037, 447, 298, False)),
+        ((6656.0, 3328.0, 13312, 6656), (6346, 3121, 621, 414, False)),
+        ((6656.0, 3512.8888888888887, 13312, 6656), (6284, 3264, 745, 497, False)),
+        ((6656.0, 3882.6666666666665, 13312, 6656), (6054, 3481, 1205, 803, False)),
+        ((6656.0, 4437.333333333333, 13312, 6656), (4992, 3328, 3328, 2219, False)),
+        ((6656.0, 4992.0, 13312, 6656), (4992, 3882, 3328, 2219, False)),
+        ((6656.0, 2588.4444444444443, 13312, 6656), (6474, 2467, 363, 242, False)),
+        ((1024.0, 512.0, 2048, 1024), (976, 480, 96, 64, False)),
+        ((1024.0, 540.4444444444445, 2048, 1024), (966, 502, 115, 77, False)),
+        ((1024.0, 597.3333333333334, 2048, 1024), (932, 536, 185, 123, False)),
+        ((1024.0, 682.6666666666666, 2048, 1024), (768, 512, 512, 341, False)),
+        ((1024.0, 768.0, 2048, 1024), (768, 598, 512, 341, False)),
+        ((1024.0, 398.22222222222223, 2048, 1024), (996, 380, 56, 37, False)),
+        ((512.0, 512.0, 1024, 1024), (488, 496, 48, 32, False)),
+        ((512.0, 540.4444444444445, 1024, 1024), (484, 521, 57, 38, False)),
+        ((512.0, 597.3333333333334, 1024, 1024), (466, 566, 93, 62, False)),
+        ((512.0, 682.6666666666666, 1024, 1024), (384, 597, 256, 171, False)),
+        ((512.0, 768.0, 1024, 1024), (384, 682, 256, 171, False)),
+        ((512.0, 398.22222222222223, 1024, 1024), (498, 389, 28, 19, False)),
+        ((10, 4778.666666666667, 16384, 8192), (15652, 4284, 1483, 989, False)),
+        ((16380, 3512.8888888888887, 13312, 6656), (2696, 3264, 745, 497, False)),
+        ((13300, 3512.8888888888887, 13312, 6656), (12928, 3264, 745, 497, False)),
+        ((1000, 8, 2048, 1024), (977, 0, 46, 31, True)),
+        ((1000, 1020, 2048, 1024), (744, 683, 512, 341, True)),
+        ((500, 8191, 16384, 8192), (14836, 5461, 4096, 2731, True)),
+        ((0, 0, 1024, 1024), (1012, 0, 23, 15, True)),
+        # Two floor-bound rows at production resolution (#157 review item 8): the floor-bound rows above
+        # are 1024/2048 px wide, where 1% of 8 degrees is under a pixel, so a floor retuned by 1% passed
+        # the table. Captured from origin/master c5d2ad7 the same way.
+        ((8192, 100, 16384, 8192), (8010, 0, 364, 243, True)),
+        ((6656, 50, 13312, 6656), (6508, 0, 296, 197, True)),
+]
+
+
+class TestTheDefaultWindowIsByteIdentical:
+    """The contract of the #32 PR: adding rule v3 moves no v2 window. A default flipped to v3, or v3
+    code reached from the v2 branch, changes rows of this table."""
+
+    @pytest.mark.parametrize('args, expected', MASTER_V2_WINDOWS)
+    def test_compute_crop_box_under_the_default_matches_master(self, crop_runner, args, expected):
+        x, y, w, h = args
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
+        assert tuple(box) == expected
+
+    def test_the_default_rule_is_v2(self, crop_runner):
+        """The flip to v3 is a decision pending a re-cut path (#83), not something this PR takes."""
+        assert crop_runner.CROP_RULE_VERSION == 'v2'
+        assert crop_runner.CROP_RULE_VERSIONS == ('v2', 'v3')
+        args = crop_runner.build_parser().parse_args(['-d', 'x.invalid', '-s', '/panos', '-o', '/out'])
+        assert args.sizing_rule == 'v2'
+        for y, h in ((512, 1024), (5000, 8192), (100, 6656)):
+            assert (crop_runner.crop_window_fov_deg(y, h)
+                    == crop_runner.crop_window_fov_deg(y, h, sizing_rule='v2'))
+
+    def test_v3_constants_do_not_reach_the_default_path(self, crop_runner, monkeypatch):
+        """Discrimination for the table: a v2 branch that consulted any v3 constant would move here."""
+        monkeypatch.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 100.0)
+        monkeypatch.setattr(crop_runner, 'V3_CAMERA_HEIGHT_M', 0.01)
+        for (x, y, w, h), expected in MASTER_V2_WINDOWS:
+            box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
+            assert tuple(box) == expected
+
+
+def pano_y_at(depression_deg, pano_height):
+    """The pano row `depression_deg` below the horizon, written without the 180 literal."""
+    import CropRunner
+    return pano_height / 2 + CropRunner.elevation_deg_to_px(depression_deg, pano_height)
+
+
+@pytest.fixture
+def pov_replay():
+    """The study port the production copy of the lle #3 calibration must agree with."""
+    scripts = os.path.join(REPO_ROOT, 'reports', 'scripts')
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import pov_replay
+    return pov_replay
+
+
+class TestLabelDepression:
+    """The one place a stored pano_y becomes an angle under v3 - and the seam #54's tilt term adds to."""
+
+    @pytest.mark.parametrize('pano_height', [1024, 1664, 6656, 8192])
+    def test_the_horizon_and_the_poles(self, crop_runner, pano_height):
+        assert crop_runner.label_depression_deg(pano_height / 2, pano_height) == 0
+        assert crop_runner.label_depression_deg(pano_height, pano_height) == pytest.approx(90.0)
+        assert crop_runner.label_depression_deg(0, pano_height) == pytest.approx(-90.0)
+
+    def test_positive_is_down(self, crop_runner):
+        """Sign pin: a label below the horizon (larger pano_y) is a positive depression."""
+        assert crop_runner.label_depression_deg(700, 1024) > 0
+        assert crop_runner.label_depression_deg(300, 1024) < 0
+
+    @pytest.mark.parametrize('rel_y', [0.0, 0.1, 0.5, 0.55, 0.62, 0.8, 0.999])
+    @pytest.mark.parametrize('pano_height', [1024, 4000, 8192])
+    def test_it_is_the_study_ports_depression(self, crop_runner, pov_replay, rel_y, pano_height):
+        y = rel_y * pano_height
+        assert crop_runner.label_depression_deg(y, pano_height) == pytest.approx(
+            float(pov_replay.depression_from_pano_y(y, pano_height)), abs=1e-12)
+
+    def test_it_reads_the_height_not_the_width(self, crop_runner):
+        """On a square pano the azimuth conversion would report half the angle; the elevation one is
+        the only one that puts the bottom row at the nadir."""
+        side = 1024
+        assert crop_runner.label_depression_deg(side, side) == pytest.approx(90.0)
+
+
+BLEND_GRID = [-10.0, 0.0, 0.5, 2.0, 5.0, 11.24, 11.25, 11.26, 20.0, 45.0, 60.0, 89.0]
+
+
+class TestBlendDistanceMatchesTheStudyPort:
+    """CropRunner carries a COPY of the lle #3 calibration (production must not import reports/scripts),
+    so the copy is pinned equal to the study port on a grid that straddles the blend point."""
+
+    def test_the_constants_are_the_study_ports(self, crop_runner, pov_replay):
+        assert crop_runner.V3_CAMERA_HEIGHT_M == pov_replay.BLEND_CAMERA_HEIGHT_M
+        assert crop_runner.V3_BLEND_DEG == pov_replay.BLEND_DEG
+        assert crop_runner.V3_DIST_CAP_M == pov_replay.DIST_CAP_M
+
+    @pytest.mark.parametrize('dep', BLEND_GRID)
+    def test_equal_on_the_grid(self, crop_runner, pov_replay, dep):
+        assert crop_runner.blend_distance_m(dep) == pytest.approx(
+            float(pov_replay.predict_blend_distance(dep)), rel=1e-12)
+
+    def test_the_horizon_is_bounded_and_the_45_degree_ray_lands_at_camera_height(self, crop_runner):
+        assert crop_runner.blend_distance_m(0.0) == pytest.approx(23.848261259830384, rel=1e-12)
+        assert crop_runner.blend_distance_m(-30.0) == crop_runner.blend_distance_m(0.0)
+        assert crop_runner.blend_distance_m(45.0) == pytest.approx(crop_runner.V3_CAMERA_HEIGHT_M)
+
+    def test_it_decreases_with_depression(self, crop_runner):
+        distances = [crop_runner.blend_distance_m(d) for d in BLEND_GRID[1:]]
+        assert all(a > b for a, b in zip(distances, distances[1:]))
+
+    def test_the_cap_is_honoured(self, crop_runner):
+        """With the shipped height the cap never binds (the horizon is 23.85 m), so it is exercised with
+        a tall camera - which is how a cap that went missing would show."""
+        assert crop_runner.blend_distance_m(0.0, camera_height_m=10.0) == crop_runner.V3_DIST_CAP_M
+        assert crop_runner.blend_distance_m(2.0, camera_height_m=10.0, cap_m=30.0) == 30.0
+
+    def test_the_floor_is_zero_past_the_nadir(self, crop_runner, pov_replay):
+        """The cotangent turns negative past 90 deg; the lower clip is what keeps a distance a distance."""
+        assert crop_runner.blend_distance_m(100.0) == 0.0
+        assert float(pov_replay.predict_blend_distance(100.0)) == 0.0
+
+
+def v3_fov(crop_runner, distance_m, width_m=None):
+    """The v3 angle by the textbook formula, unclamped: 2 atan(W / 2d)."""
+    width_m = crop_runner.V3_CONTEXT_WIDTH_M if width_m is None else width_m
+    return math.degrees(2 * math.atan(width_m / (2 * distance_m)))
+
+
+class TestGeometricWindow:
+    """v3's window is the angle a fixed frontal span of world subtends at the label's distance."""
+
+    @pytest.mark.parametrize('distance_m, width_m', [(4.0, 5.8), (10.0, 5.8), (23.0, 6.0), (6.4, 4.0)])
+    def test_it_is_the_subtended_angle_inside_the_clamps(self, crop_runner, distance_m, width_m):
+        got = crop_runner.geometric_window_fov_deg(distance_m, context_width_m=width_m)
+        assert crop_runner.CROP_MIN_FOV_DEG < got < crop_runner.CROP_MAX_FOV_DEG
+        assert got == pytest.approx(v3_fov(crop_runner, distance_m, width_m), rel=1e-12)
+
+    def test_the_clamps_apply(self, crop_runner):
+        assert crop_runner.geometric_window_fov_deg(0.5, 5.8) == crop_runner.CROP_MAX_FOV_DEG
+        assert crop_runner.geometric_window_fov_deg(0.0, 5.8) == crop_runner.CROP_MAX_FOV_DEG
+        assert crop_runner.geometric_window_fov_deg(-1.0, 5.8) == crop_runner.CROP_MAX_FOV_DEG
+        assert crop_runner.geometric_window_fov_deg(500.0, 5.8) == crop_runner.CROP_MIN_FOV_DEG
+
+    def test_it_never_grows_with_distance(self, crop_runner):
+        fovs = [crop_runner.geometric_window_fov_deg(d) for d in (0.1, 1, 2, 3, 5, 8, 13, 21, 50, 200)]
+        assert all(a >= b for a, b in zip(fovs, fovs[1:]))
+
+    def test_the_floor_is_unreachable_at_the_shipped_width(self, crop_runner):
+        """The horizon saturates the distance, so the narrowest v3 window is the horizon's - and at the
+        shipped width it sits above the 8 degree floor. Stated so nobody tunes the floor for v3."""
+        horizon = crop_runner.crop_window_fov_deg(512, 1024, sizing_rule='v3')
+        assert horizon > crop_runner.CROP_MIN_FOV_DEG
+        assert crop_runner.crop_window_fov_deg(0, 1024, sizing_rule='v3') == horizon
+
+    @pytest.mark.parametrize('dep', [5.0, 20.0, 30.0, 35.0, 38.0, 39.0, 40.0, 45.0, 60.0])
+    def test_the_cap_binds_exactly_where_the_span_reaches_the_label(self, crop_runner, dep):
+        """90 deg is the angle a span W subtends at d = W/2, so the cap binds iff d <= W/2."""
+        fov = crop_runner.crop_window_fov_deg(pano_y_at(dep, 8192), 8192, sizing_rule='v3')
+        at_cap = crop_runner.blend_distance_m(dep) <= crop_runner.V3_CONTEXT_WIDTH_M / 2
+        assert (fov == crop_runner.CROP_MAX_FOV_DEG) is at_cap
+
+    def test_the_cap_onset_is_deeper_than_v2s(self, crop_runner):
+        """v2 hits 90 deg from 26.55 deg of depression; v3 later, so fewer near-field crops are capped."""
+        dep = 30.0
+        assert crop_runner.crop_window_fov_deg(pano_y_at(dep, 8192), 8192) == crop_runner.CROP_MAX_FOV_DEG
+        assert (crop_runner.crop_window_fov_deg(pano_y_at(dep, 8192), 8192, sizing_rule='v3')
+                < crop_runner.CROP_MAX_FOV_DEG)
+
+    @pytest.mark.parametrize('rel_y', [0.0, 0.3, 0.5, 0.55, 0.6, 0.62, 0.7, 0.9, 0.999])
+    def test_the_composition_is_the_rule(self, crop_runner, rel_y):
+        """The #54 door: depression -> distance -> angle, three named steps. A tilt correction is an
+        addend to label_depression_deg; a measured (depth) distance replaces blend_distance_m. A
+        refactor that fuses the three must fail here."""
+        h = 6656
+        y = rel_y * h
+        assert crop_runner.crop_window_fov_deg(y, h, sizing_rule='v3') == crop_runner.geometric_window_fov_deg(
+            crop_runner.blend_distance_m(crop_runner.label_depression_deg(y, h)))
+
+    @pytest.mark.parametrize('rule', ['v2', 'v3'])
+    @pytest.mark.parametrize('dep', [0.0, 10.0, 20.0])
+    def test_the_window_is_an_angle_independent_of_resolution(self, crop_runner, rule, dep):
+        degs = []
+        for h in (1664, 2048, 4000, 6656, 8192):
+            width = crop_runner.crop_window_width(pano_y_at(dep, h), 2 * h, h, sizing_rule=rule)
+            degs.append(crop_runner.azimuth_px_to_deg(width, 2 * h))
+        assert max(degs) == pytest.approx(min(degs), rel=1e-12)
+
+    @pytest.mark.parametrize('rule', ['v2', 'v3'])
+    def test_the_width_is_converted_on_the_azimuth_axis(self, crop_runner, rule):
+        """The non-2:1 case, for both rules: a square pano has half the azimuth px per degree."""
+        side = 1024
+        y = pano_y_at(12.0, side)
+        fov = crop_runner.crop_window_fov_deg(y, side, sizing_rule=rule)
+        width = crop_runner.crop_window_width(y, side, side, sizing_rule=rule)
+        assert width == crop_runner.azimuth_deg_to_px(fov, side)
+        assert width == crop_runner.elevation_deg_to_px(fov, side) / 2
+
+    def test_v3_differs_from_v2_where_the_estimators_disagree(self, crop_runner):
+        """At 20 deg the blend distance is ~6.4 m and the 2013 line says ~8.5 m, so the rules differ."""
+        y, h = pano_y_at(20.0, 8192), 8192
+        assert (crop_runner.crop_window_fov_deg(y, h, sizing_rule='v3')
+                != pytest.approx(crop_runner.crop_window_fov_deg(y, h), rel=0.01))
+
+
+class TestSizingRuleSelection:
+
+    def test_an_unknown_rule_is_refused_by_the_rule(self, crop_runner):
+        with pytest.raises(ValueError, match='v1'):
+            crop_runner.crop_window_fov_deg(512, 1024, sizing_rule='v1')
+
+    def test_an_unknown_rule_is_refused_before_the_marker_is_written(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        with pytest.raises(ValueError):
+            crop_runner.bulk_extract_crops([label_row()], str(store), str(out), sizing_rule='v4')
+        # Not even the directory: the check is the first thing the loop does, so a typo'd rule leaves
+        # nothing behind that a later run could mistake for a store.
+        assert not out.exists()
+
+    def test_an_unknown_rule_is_refused_by_the_marker(self, crop_runner, tmp_path):
+        with pytest.raises(ValueError):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v4')
+        assert not (tmp_path / crop_runner.CROP_RULE_MARKER).exists()
+
+    def test_the_parser_accepts_the_two_rules_and_nothing_else(self, crop_runner):
+        base = ['-d', 'x.invalid', '-s', '/panos', '-o', '/out']
+        assert crop_runner.build_parser().parse_args(base + ['--sizing-rule', 'v3']).sizing_rule == 'v3'
+        assert crop_runner.build_parser().parse_args(base + ['--sizing-rule', 'v2']).sizing_rule == 'v2'
+        with pytest.raises(SystemExit) as e:
+            crop_runner.build_parser().parse_args(base + ['--sizing-rule', 'v1'])
+        assert e.value.code == 2
+
+    def test_a_v3_run_cuts_the_v3_window(self, crop_runner, tmp_path):
+        """Twenty degrees below the horizon on the 2048x1024 fixture: the two rules cut different
+        widths, and the bulk loop must cut the one it was asked for."""
+        w, h = PANO_SIZE
+        y = int(round(pano_y_at(20.0, h)))
+        widths = {}
+        for rule in ('v2', 'v3'):
+            store, out = tmp_path / ('store' + rule), tmp_path / ('crops' + rule)
+            put_pano(store, 'testpano0001')
+            counts = crop_runner.bulk_extract_crops([label_row(pano_x=1000, pano_y=y)], str(store),
+                                                    str(out), sizing_rule=rule)
+            assert counts['success'] == 1
+            with Image.open(crop_path(out, 1, 1)) as crop:
+                widths[rule] = crop.size[0]
+            expected = crop_runner.compute_crop_box(
+                1000, y, crop_runner.crop_window_width(y, w, h, sizing_rule=rule), w, h).width
+            assert widths[rule] == min(expected, crop_runner.CROP_MAX_STORED_WIDTH), rule
+        assert widths['v2'] != widths['v3']
+
+    def test_main_threads_the_flag_into_the_store(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row()])
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out),
+                                 '--sizing-rule', 'v3']) == 0
+        with open(out / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            marker = json.load(f)
+        assert marker['crop_rule_version'] == 'v3'
+        assert marker['distance_estimator'] == 'lle3-cotangent-blend'
+
+    def test_run_passes_the_rule_through(self, crop_runner, monkeypatch):
+        seen = {}
+
+        def fake_bulk(labels, pano_dir, out_dir, **kwargs):
+            seen.update(kwargs)
+            return {}
+        monkeypatch.setattr(crop_runner, 'bulk_extract_crops', fake_bulk)
+        monkeypatch.setattr(crop_runner, 'load_label_metadata', lambda d, f: [])
+        crop_runner.run(None, 'x.csv', '/panos', '/out', sizing_rule='v3')
+        assert seen['sizing_rule'] == 'v3'
+
+    def test_make_single_crop_cuts_the_rule_it_is_given_and_registration_holds(self, crop_runner,
+                                                                              tmp_path):
+        """The v3 window through make_single_crop, with the label found in the saved file by the one
+        registration function. A landmark block rather than one pixel, because the file is a JPEG."""
+        w, h = PANO_SIZE
+        x, y = 1000, int(round(pano_y_at(20.0, h)))
+        pano = Image.new('RGB', (w, h), (0, 0, 255))
+        for dx in range(-8, 8):
+            for dy in range(-8, 8):
+                pano.putpixel((x + dx, y + dy), (255, 0, 0))
+        out = str(tmp_path / 'v3.jpg')
+        box = crop_runner.make_single_crop(pano, x, y, out, sizing_rule='v3')
+        assert box == crop_runner.compute_crop_box(
+            x, y, crop_runner.crop_window_width(y, w, h, sizing_rule='v3'), w, h)
+        assert box != crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
+        with Image.open(out) as crop:
+            px, py = crop_runner.label_position_in_crop(x, y, box, w, scale=crop.size[0] / box.width)
+            r, g, b = crop.getpixel((int(px), int(py)))
+        assert r > 200 and b < 60
+
+    def test_a_v3_window_wider_than_the_storage_cap_is_downscaled(self, crop_runner, tmp_path,
+                                                                  monkeypatch):
+        """No other v3 test cuts a window wider than CROP_MAX_STORED_WIDTH (the fixture is 2048 wide),
+        so skipping downscale_for_storage under v3 passed (#157 review item 7, mutant K11)."""
+        monkeypatch.setattr(crop_runner, 'CROP_MAX_STORED_WIDTH', 64)
+        w, h = PANO_SIZE
+        y = pano_y_at(20.0, h)
+        out = str(tmp_path / 'c.jpg')
+        box = crop_runner.make_single_crop(Image.new('RGB', (w, h), (255, 255, 255)), 1000, y, out,
+                                           sizing_rule='v3')
+        assert box.width > 64
+        with Image.open(out) as crop:
+            assert crop.size[0] == 64
+
+    def test_the_mark_follows_the_label_under_v3(self, crop_runner, tmp_path):
+        """--mark-label under v3, on a shifted near-bottom window: the dot is where the label is."""
+        w, h = PANO_SIZE
+        x, y = 1000, NEAR_BOTTOM_Y
+        pano = Image.new('RGB', (w, h), (255, 255, 255))
+        out = str(tmp_path / 'marked.jpg')
+        box = crop_runner.make_single_crop(pano, x, y, out, draw_mark=True, sizing_rule='v3')
+        assert box.shifted
+        with Image.open(out) as crop:
+            px, py = crop_runner.label_position_in_crop(x, y, box, w, scale=crop.size[0] / box.width)
+            assert sum(crop.getpixel((int(px), int(py)))) < 600
+            assert sum(crop.getpixel((crop.size[0] // 2, crop.size[1] // 2))) > 600
+
+
+class TestTheRuleMarkerUnderTwoRules:
+    """With two rules, the mixed-store check has to compare the rule THIS run selected."""
+
+    def _marker(self, path):
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+
+    @pytest.mark.parametrize('on_disk, selected', [('v2', 'v3'), ('v3', 'v2')])
+    def test_switching_rules_warns_on_both_channels(self, crop_runner, tmp_path, caplog, capsys,
+                                                    on_disk, selected):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule=on_disk)
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            previous = crop_runner.write_rule_marker(str(tmp_path), sizing_rule=selected)
+        assert previous == on_disk
+        printed = capsys.readouterr().out
+        for channel in (caplog.text, printed):
+            assert 'cut under sizing rule %s and this run uses %s' % (on_disk, selected) in channel
+        marker = self._marker(tmp_path / crop_runner.CROP_RULE_MARKER)
+        assert marker['crop_rule_version'] == selected
+        assert marker['previous_crop_rule_version'] == on_disk
+
+    def test_rewriting_a_v3_store_under_v3_is_silent(self, crop_runner, tmp_path, caplog):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'v3'
+        assert 'sizing rule' not in caplog.text
+
+    def test_a_fresh_v3_store_records_its_estimator_and_constants(self, crop_runner, tmp_path):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        marker = self._marker(tmp_path / crop_runner.CROP_RULE_MARKER)
+        assert marker['crop_rule_version'] == 'v3'
+        assert marker['distance_estimator'] == 'lle3-cotangent-blend'
+        assert marker['v3_camera_height_m'] == crop_runner.V3_CAMERA_HEIGHT_M
+        assert marker['v3_blend_deg'] == crop_runner.V3_BLEND_DEG
+        assert marker['v3_dist_cap_m'] == crop_runner.V3_DIST_CAP_M
+        assert marker['v3_context_width_m'] == crop_runner.V3_CONTEXT_WIDTH_M
+        assert marker['crop_min_fov_deg'] == crop_runner.CROP_MIN_FOV_DEG
+
+    def test_a_fresh_v2_store_keeps_every_key_it_had_and_names_its_estimator(self, crop_runner,
+                                                                            tmp_path):
+        crop_runner.write_rule_marker(str(tmp_path))
+        marker = self._marker(tmp_path / crop_runner.CROP_RULE_MARKER)
+        assert {'crop_rule_version', 'crop_size_scale', 'crop_min_fov_deg', 'crop_max_fov_deg',
+                'crop_aspect_w_over_h', 'crop_max_stored_width',
+                'previous_crop_rule_version'} <= set(marker)
+        assert marker['crop_rule_version'] == 'v2'
+        assert marker['distance_estimator'] == 'linear-2013'
+
+    def test_the_summary_line_names_the_selected_rule(self, crop_runner, tmp_path, capsys):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row()], str(store), str(out), sizing_rule='v3')
+        assert 'Crop sizing rule v3 (recorded in' in capsys.readouterr().out
+
+
+class TestTheMarkerNoticesRetunedConstants:
+    """Same rule id, different constants: the silent mix once two rules coexist and one is being fit (D5).
+
+    v3's width is a fitted number, so a later refit would still call itself v3; the marker has always
+    recorded the constants, and this is the check that reads them back.
+    """
+
+    def _edit_marker(self, crop_runner, path, **changes):
+        marker_path = path / crop_runner.CROP_RULE_MARKER
+        with open(marker_path, encoding='utf-8') as f:
+            marker = json.load(f)
+        marker.update(changes)
+        with open(marker_path, 'w', encoding='utf-8') as f:
+            json.dump(marker, f)
+
+    def test_a_retuned_v3_width_is_named_on_both_channels(self, crop_runner, tmp_path, caplog, capsys):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        self._edit_marker(crop_runner, tmp_path, v3_context_width_m=6.4)
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        expected = 'v3_context_width_m=6.4 and this run uses %r' % crop_runner.V3_CONTEXT_WIDTH_M
+        assert expected in caplog.text
+        assert expected in capsys.readouterr().out
+
+    def test_a_retuned_v2_scale_is_named_under_v2(self, crop_runner, tmp_path, caplog):
+        crop_runner.write_rule_marker(str(tmp_path))
+        self._edit_marker(crop_runner, tmp_path, crop_size_scale=3.0)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path))
+        assert 'crop_size_scale=3.0 and this run uses 2.5' in caplog.text
+
+    @pytest.mark.parametrize('key, value', [('crop_max_fov_deg', 80.0), ('crop_min_fov_deg', 9.0)])
+    def test_a_retuned_clamp_is_named_under_v3(self, crop_runner, tmp_path, caplog, key, value):
+        """v3 reads the two clamps as well as its own constants; dropping them from
+        RULE_MARKER_CONSTANT_KEYS['v3'] left a store with a retuned 90-degree cap mixing silently
+        (#157 review item 7, mutant K7)."""
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        self._edit_marker(crop_runner, tmp_path, **{key: value})
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert '%s=%r and this run uses' % (key, value) in caplog.text
+
+    def test_the_marker_records_the_constants_at_call_time(self, crop_runner, tmp_path, monkeypatch):
+        """_rule_constants promises call-time reads; a hard-coded or import-time snapshot would record
+        the pre-refit width in a refit store (#157 review item 7, mutant K12)."""
+        monkeypatch.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 6.4)
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            assert json.load(f)['v3_context_width_m'] == 6.4
+
+    def test_a_constant_the_rule_does_not_use_is_not_a_warning(self, crop_runner, tmp_path, caplog):
+        """A v2 store rerun after v3 is refit: its crops are unaffected, so crying wolf would train
+        operators to ignore the one warning that matters."""
+        crop_runner.write_rule_marker(str(tmp_path))
+        self._edit_marker(crop_runner, tmp_path, v3_context_width_m=6.4)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path))
+        assert 'this run uses' not in caplog.text
+
+    def test_a_marker_from_before_the_constants_were_recorded_is_silent(self, crop_runner, tmp_path,
+                                                                       caplog):
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            json.dump({'crop_rule_version': 'v2'}, f)
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path)) == 'v2'
+        assert caplog.text == ''
+
+    def test_a_rule_change_is_reported_as_that_not_as_constants(self, crop_runner, tmp_path, caplog):
+        """Different rules differ in constants by definition; the rule-change message covers it."""
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        # A constant BOTH rules read, so a check that also ran on a rule change would name it.
+        self._edit_marker(crop_runner, tmp_path, crop_max_fov_deg=80.0)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert 'cut under sizing rule v2 and this run uses v3' in caplog.text
+        assert 'crop_max_fov_deg=' not in caplog.text
+
+    def test_a_marker_that_is_valid_json_but_not_an_object_is_rewritten(self, crop_runner, tmp_path):
+        """Reading the whole marker (rather than .get on it) must not turn a hand-edited `[]` into a crash:
+        it is provenance, not a lock, so the run goes on - but the prior rule is now unknown, and says so."""
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            json.dump(['v2'], f)
+        assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'unknown'
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            assert json.load(f)['crop_rule_version'] == 'v3'
+
+
+def _read_marker(crop_runner, path):
+    with open(path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+        return json.load(f)
+
+
+class TestTheMarkerKeepsItsHistory:
+    """#157 review item 1: one warned run used to be enough to lose a mixed store's provenance.
+
+    Cut a v2 store, run v3 over it (0 crops cut, one warning, marker v3/previous v2), run v3 again: the
+    second run was silent and left `v3`/`previous v3` over a store of v2 crops. A v2/v3 mix is 3:2 on
+    both sides, so the marker is the only evidence there is. `rules_seen` is append-only, and the
+    warning fires on every run whose rule is not the only one the store has seen.
+    """
+
+    def test_the_transcript_keeps_both_rules_and_warns_on_every_run(self, crop_runner, tmp_path,
+                                                                     caplog, capsys):
+        """Three v3 runs, not two: on the second, previous_crop_rule_version still names v2, so a
+        history seeded from the top-level keys alone - ignoring the stored rules_seen - passes. By the
+        third, previous is v3 and only rules_seen remembers the v2 crops (#157 final review)."""
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        for run in (1, 2, 3):
+            capsys.readouterr()
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+            printed = capsys.readouterr().out
+            for channel in (caplog.text, printed):
+                assert 'cut under sizing rule v2 and this run uses v3' in channel, run
+            assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v2', 'v3'], run
+
+    def test_the_warning_does_not_claim_this_run_cut_anything(self, crop_runner, tmp_path, caplog):
+        """It is written before a crop is cut, so it cannot know; the old text said 'now holds both
+        geometries' on a run that added nothing."""
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert 'now holds both' not in caplog.text
+        assert 'any crop this run cuts' in caplog.text
+
+    def test_the_remedy_is_a_recut_not_a_deletion(self, crop_runner, tmp_path, caplog):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert "re-cut under this run's constants" in caplog.text
+        assert 'delete' not in caplog.text
+
+    def test_rules_seen_is_ordered_by_first_use_and_deduplicated(self, crop_runner, tmp_path):
+        for rule in ('v3', 'v2', 'v3', 'v2', 'v2'):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule=rule)
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v3', 'v2']
+
+    def test_a_fresh_store_has_seen_one_rule(self, crop_runner, tmp_path):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v3']
+
+    def test_a_marker_from_before_rules_seen_is_seeded_from_what_it_names(self, crop_runner, tmp_path,
+                                                                         caplog):
+        """The lossy shape this PR's head wrote: current and previous are all it can say."""
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            json.dump({'crop_rule_version': 'v3', 'previous_crop_rule_version': 'v2'}, f)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v2', 'v3']
+        assert 'cut under sizing rule v2 and this run uses v3' in caplog.text
+
+    def test_a_retuned_constant_is_remembered_after_the_warned_run(self, crop_runner, tmp_path, caplog,
+                                                                   monkeypatch):
+        """Item 6: the same-id warning was one-shot too - the rewrite recorded the new constants and the
+        old value survived only as a log line. The store is first cut under a 6.4 m v3, then refit."""
+        with monkeypatch.context() as m:
+            m.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 6.4)
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        expected = 'v3_context_width_m=6.4 and this run uses %r' % crop_runner.V3_CONTEXT_WIDTH_M
+        for run in (1, 2):
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+            assert expected in caplog.text, run
+            assert "re-cut under this run's constants" in caplog.text and 'delete' not in caplog.text
+        seen = _read_marker(crop_runner, tmp_path)['constants_seen']['v3']['v3_context_width_m']
+        assert seen == [6.4, crop_runner.V3_CONTEXT_WIDTH_M]
+
+    @pytest.mark.parametrize('content', ['{not json', '[]', '"v2"', '{"rules_seen": "v2"}',
+                                         '{"constants_seen": []}',
+                                         '{"constants_seen": {"v2": {"crop_size_scale": 2.5}}}',
+                                         '{"constants_seen": {"v2": []}}',
+                                         '{"rules_seen": ["v2", 3]}'])
+    def test_an_unreadable_marker_warns_and_is_kept(self, crop_runner, tmp_path, caplog, capsys, content):
+        """Provenance destroyed must not read as a clean store: warn on both channels, record the prior
+        rule as unknown for good, and keep the bytes rather than overwrite them."""
+        marker_path = tmp_path / crop_runner.CROP_RULE_MARKER
+        marker_path.write_text(content, encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'unknown'
+        printed = capsys.readouterr().out
+        for channel in (caplog.text, printed):
+            assert 'could not be read' in channel
+        marker = _read_marker(crop_runner, tmp_path)
+        assert marker['previous_crop_rule_version'] == 'unknown'
+        assert marker['rules_seen'] == ['unknown', 'v3']
+        kept = list(tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
+        assert len(kept) == 1 and kept[0].read_text(encoding='utf-8') == content
+        # And it stays marked: the next run is not a clean one either.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert 'cut under sizing rule unknown and this run uses v3' in caplog.text
+
+    @pytest.mark.parametrize('field', ['crop_rule_version', 'previous_crop_rule_version',
+                                       'crop_size_scale'])
+    @pytest.mark.parametrize('bad', [[], {}])
+    def test_a_field_that_is_not_a_string_or_number_is_unreadable_not_a_crash(
+            self, crop_runner, tmp_path, caplog, capsys, field, bad):
+        """crop_rule_version [] or {} passed the history checks and then raised TypeError (unhashable)
+        looking up that rule's constant keys, before any crop was cut (#157 final review)."""
+        content = json.dumps({'crop_rule_version': 'v2', field: bad})
+        (tmp_path / crop_runner.CROP_RULE_MARKER).write_text(content, encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2') == 'unknown'
+        printed = capsys.readouterr().out
+        for channel in (caplog.text, printed):
+            assert 'could not be read' in channel
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['unknown', 'v2']
+        kept = list(tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
+        assert len(kept) == 1 and kept[0].read_text(encoding='utf-8') == content
+
+    def test_deleting_the_marker_is_the_reset_after_a_whole_recut(self, crop_runner, tmp_path, caplog):
+        """docs/cropper.md and CLAUDE.md name this as the reset: the history only grows, so after a whole
+        store is re-cut under one rule, deleting crop_rule.json (never a crop) is what quiets it."""
+        for rule in ('v2', 'v3', 'v3'):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule=rule)
+        crop = tmp_path / '1' / '7.jpg'
+        crop.parent.mkdir()
+        crop.write_bytes(b'crop')
+        (tmp_path / crop_runner.CROP_RULE_MARKER).unlink()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') is None
+        assert caplog.text == ''
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v3']
+        assert crop.read_bytes() == b'crop'
+
+    def test_the_unreadable_run_warns_once_not_twice(self, crop_runner, tmp_path, caplog):
+        """On the run that finds the marker unreadable, 'unknown' is this run's own finding and is
+        already warned; a second 'cut under sizing rule unknown' line on the same run is noise."""
+        (tmp_path / crop_runner.CROP_RULE_MARKER).write_text('{bad', encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        assert 'could not be read' in caplog.text
+        assert 'cut under sizing rule unknown' not in caplog.text
+
+    def test_a_kept_name_already_taken_is_not_overwritten(self, crop_runner, tmp_path, monkeypatch):
+        """Two unreadable markers inside one clock tick must not overwrite each other's kept copy."""
+        import datetime as real_datetime
+
+        class Frozen(real_datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real_datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=tz)
+        monkeypatch.setattr(crop_runner.datetime, 'datetime', Frozen)
+        marker_path = tmp_path / crop_runner.CROP_RULE_MARKER
+        for content in ('{one', '{two', '{three'):
+            marker_path.write_text(content, encoding='utf-8')
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        kept = sorted(p.read_text(encoding='utf-8')
+                      for p in tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
+        assert kept == ['{one', '{three', '{two']
+
+    def test_a_marker_that_cannot_be_moved_aside_is_still_replaced(self, crop_runner, tmp_path, caplog,
+                                                                  monkeypatch):
+        """Keeping the bytes is best effort: if the move fails the run says so and goes on, as before."""
+        real_replace = crop_runner.os.replace
+
+        def refuse_the_keep(src, dst):
+            if '.unreadable-' in str(dst):
+                raise PermissionError('locked')
+            return real_replace(src, dst)
+        monkeypatch.setattr(crop_runner.os, 'replace', refuse_the_keep)
+        (tmp_path / crop_runner.CROP_RULE_MARKER).write_text('{bad', encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'unknown'
+        assert 'Could not keep unreadable' in caplog.text and 'could not be read' in caplog.text
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['unknown', 'v3']
+
+    def test_two_unreadable_markers_are_both_kept(self, crop_runner, tmp_path):
+        marker_path = tmp_path / crop_runner.CROP_RULE_MARKER
+        for content in ('{one', '{two'):
+            marker_path.write_text(content, encoding='utf-8')
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        kept = sorted(p.read_text(encoding='utf-8')
+                      for p in tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
+        assert kept == ['{one', '{two']

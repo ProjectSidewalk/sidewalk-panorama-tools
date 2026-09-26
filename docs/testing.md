@@ -80,6 +80,9 @@ and for 16 days in September 2026 it did not
 **Committed-artifact tests are not code tests.** Pinning a finding against `reports/data/*.json` proves nothing
 about the function that produced it — the artifact was generated *by* the current code, so a revert stays
 green. Every finding needs a synthetic, code-level test beside its corpus pin. Three mutation sweeps in a row
-surfaced survivors of exactly this shape.
+surfaced survivors of exactly this shape. The one test that regenerates a study artifact from its gold,
+`test_crop_sizing_v3.py`'s `test_the_committed_artifact_reproduces_from_source`, runs only when
+`RAMPNET_ROOT` points at a RampNet checkout and skips otherwise, CI included; there the v3 study's figure and
+provenance plumbing is covered by the synthetic tests in its `TestStudyLogic`.
 
 Tests asserting POSIX file modes skip themselves on Windows; everything else runs on a Windows dev box.

@@ -11,7 +11,8 @@ Consumer requirements and the open geometry questions are tracked in
 ## Usage
 
 ```bash
-python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> [--mark-label]
+python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> [--mark-label] \
+    [--sizing-rule {v2,v3}]
 ```
 
 | Flag | What it does |
@@ -21,6 +22,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
 | `-o <dir>` | **Required.** Where crops are written. `crop.log` goes here too. |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
+| `--sizing-rule {v2,v3}` | Which crop sizing rule to cut with. **`v2` is the default**, and has been since [#88](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/88) (stores cut before it are v1, [#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)); `v3` is opt-in — see [Sizing rule v3](#sizing-rule-v3-opt-in). Recorded in `crop_rule.json` either way. |
 
 Example:
 
@@ -78,11 +80,63 @@ tightest crops. Every v2 constant is one measured number:
 [reports/2026-08-19-crop-sizing-v2.md](../reports/2026-08-19-crop-sizing-v2.md).
 
 **Which rule cut a store is recorded in `<crop-dir>/crop_rule.json` — check it before training on a
-directory.** `write_rule_marker()` writes `CROP_RULE_VERSION` plus every constant before anything is cut, and
-*warns* rather than refusing when the marker disagrees with the running rule. A mixed store is the ordinary
+directory.** `write_rule_marker()` writes the rule the run selected (`crop_rule_version`), its
+`distance_estimator`, and every rule's constants before anything is cut, and *warns* — on stdout and in
+`crop.log` — rather than refusing when the marker disagrees with the rule this run selected, or, under the
+same rule id, when a constant that rule reads has changed (a refit v3 would still call itself v3). A mixed store is the ordinary
 result of changing the rule: existing crops are the resume marker and are never re-cut, so running v2 over a
-v1 store leaves square v1 crops accreting 3:2 ones beside them. Deleting the store is the only way to get one
-geometry throughout.
+v1 store leaves square v1 crops accreting 3:2 ones beside them.
+
+The marker's history is **sticky**: `rules_seen` lists every rule the store has been run under, in order of
+first use, and `constants_seen` every value each rule's constants have had. Both are only ever appended to,
+and the warnings fire on *every* run whose rule or constants are not the only ones the store has seen — not
+just the first. That matters for v2 and v3 in particular, because both cut 3:2 crops, so a mixed store is
+indistinguishable on disk and the marker is the only evidence. The warning is written before any crop is cut,
+so it says what the store holds and what any crop this run cuts will be, not that this run added anything. A
+marker that exists but cannot be read (bad JSON, a malformed history, or a field that is not a string, a number
+or null) is warned about, recorded as `unknown` (for good, in `rules_seen`), and
+kept beside the new one as `crop_rule.json.unreadable-<UTC timestamp>`. Getting one geometry throughout means
+re-cutting the store under one rule's constants; there is no re-cut path yet
+([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)). **The reset:** once the whole
+store has been re-cut under one rule, delete `crop_rule.json` — the marker only, never a crop — and the
+history is cleared; the next run writes a fresh marker naming only its own rule. Do it only after a
+*whole* re-cut: over a store that still holds crops from another rule, deleting the marker makes a mixed
+store read as a clean one.
+
+### Sizing rule v3 (opt-in)
+
+`--sizing-rule v3` ([#32](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/32)) replaces the
+2013 linear distance with the lle #3 calibrated one, and the power law with the geometry it approximates.
+Three named steps, composed in `crop_window_fov_deg()`:
+
+1. `label_depression_deg(pano_y, pano_height)` — the label's angle below the horizon, through the elevation
+   primitive. A #54 tilt correction, once measured, is an addend here and nowhere else.
+2. `blend_distance_m(depression)` — `h / tan(depression)` for depressions of 11.25° and steeper; between the
+   horizon and 11.25°, the straight line matching the cotangent's value and slope at 11.25°; `h = 2.3412 m`.
+   It saturates at 23.85 m at the horizon, so a label above the horizon gets the horizon's window. It is
+   clipped to [0, 50 m], but the 50 m cap is inert under the blend (it tops out at 23.85 m); it matters only
+   to the depth-distance spec it was copied from.
+3. `geometric_window_fov_deg(distance)` — `2·atan(W / 2d)` with `W = V3_CONTEXT_WIDTH_M = 5.8 m`, clamped to
+   v2's 8°–90°. It takes metres, so a measured distance (the depth artifact) would plug in unchanged.
+
+Everything downstream — 3:2, the seam, the shift, the 1440 px storage cap — is v2's. Two consequences of the
+constants: **the 8° floor is unreachable** (the horizon window is 13.87°), and **the 90° cap binds from 38.91°**
+of depression rather than v2's 26.55°. `W` is the one fitted number, chosen to give v2's median fill on the
+same 658 gold aprons; the three distance constants are a transcribed copy of
+`reports/scripts/pov_replay.py`'s, pinned equal by `TestBlendDistanceMatchesTheStudyPort`.
+
+Measured in [reports/2026-09-26-crop-sizing-v3.md](../reports/2026-09-26-crop-sizing-v3.md): at the same
+median crop, v3's fill is less dispersed and its window tracks the apron better in every city — but it
+moves about 40% of the 658 gold ramps' windows by more than 10%. (The report also sets out the minimal
+alternative, the blend distance fed into v2's power law, which trades the other way on several columns;
+the choice is decision D7 on [#157](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/157) and
+the report's §4, not a settled result.) **The default stays v2**: since existing crops are never
+re-cut, flipping it on a store cut under v2 would mix the geometries, so the flip waits for a re-cut path
+([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)). Until then, run v3 into a
+fresh `-o`, not over a v2 store; `crop_rule.json` warns if you do, and on every run after. If the default
+does flip, fold it into the recrop campaign
+[#84](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/84) coordinates (after [#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153)'s
+`--force` lands) rather than re-cutting the stores a second time on its own.
 
 The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top, width, height, shifted)`:
 
@@ -250,7 +304,9 @@ code is what it always was, and the per-outcome summary is still printed in full
 **Re-running does not regenerate existing crops.** A crop already on disk is the resume marker and is never
 re-cut. A store cropped before the seam fix keeps its black-padded crops, and one cropped before crop sizes
 became deterministic holds a mix of (for example) 503- and 504-px crops for the same predicted size. There is
-no `--force`: delete the crops you want re-cut.
+no `--force`: delete the crops you want re-cut. If that re-cuts the whole store under one rule, delete
+`crop_rule.json` too (see [the reset](#crop-geometry) under crop geometry), or the marker keeps warning about the rule the
+deleted crops were cut under.
 
 ## Before you train on these crops
 
