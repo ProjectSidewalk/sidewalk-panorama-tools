@@ -170,8 +170,17 @@ def is_batch_safe_id(pano_id):
     return isinstance(pano_id, str) and _SAFE_ID.fullmatch(pano_id) is not None
 
 
-def remote_path(settings, pano_id, suffix):
-    return '%s/%s/%s/%s%s' % (settings.base, settings.remote_city, pano_id[:2], pano_id, suffix)
+def remote_path(pano_id, suffix):
+    """The remote path of one pano's file, RELATIVE to the city directory the batch's `cd` probe entered:
+    `./<id[:2]>/<id><suffix>`.
+
+    Never `<base>/<city>/...`: after the `cd`, sftp resolves a relative path against the NEW cwd, so a
+    relative PS_SFTP_BASE would send every get to `<base>/<city>/<base>/<city>/...` - every pano "absent",
+    exit 0, the silent completion the probe exists to prevent (measured on OpenSSH 9.0p1). The leading `./`
+    also keeps an id that begins with '-' from reaching `get`'s option parser: real sftp accepted
+    `./-3/-3Kx.jpg` where a bare `-3/...` was `Invalid flag`.
+    """
+    return './%s/%s%s' % (pano_id[:2], pano_id, suffix)
 
 
 def local_final_path(storage_path, pano_id, suffix):
@@ -182,8 +191,9 @@ def local_final_path(storage_path, pano_id, suffix):
 
 def build_batch(settings, storage_path, pano_ids, suffix):
     """The batch text for one session: an unprefixed `cd` probe, then one `-get` per id. See the module
-    docstring for why each prefix is what it is. Every path is absolute and double-quoted; the local target
-    is `<final>.part`, which is what atomic_output_path(<final>) yields. No user, host, port or key appears."""
+    docstring for why each prefix is what it is. Every path is double-quoted; each remote path is relative to
+    the probed directory (see remote_path) and each local one is absolute, the `<final>.part` that
+    atomic_output_path(<final>) yields. No user, host, port or key appears."""
     if any(c in str(storage_path) for c in _UNQUOTABLE):
         raise ValueError("the storage path contains a quote or a line break, which the sftp batch cannot "
                          "express")
@@ -191,7 +201,7 @@ def build_batch(settings, storage_path, pano_ids, suffix):
     for pano_id in pano_ids:
         if not is_batch_safe_id(pano_id):
             raise ValueError("pano id %r cannot be written into an sftp batch" % (pano_id,))
-        lines.append('-get "%s" "%s"' % (remote_path(settings, pano_id, suffix),
+        lines.append('-get "%s" "%s"' % (remote_path(pano_id, suffix),
                                          local_final_path(storage_path, pano_id, suffix) + '.part'))
     return '\n'.join(lines) + '\n'
 

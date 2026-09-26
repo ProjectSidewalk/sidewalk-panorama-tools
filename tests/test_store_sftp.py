@@ -261,16 +261,20 @@ class TestBatchText:
                                       store_sftp.DEPTH_SUFFIX)
         assert {batch_tokens(line)[0] for line in text.splitlines()} == {'cd', 'get'}
 
-    def test_paths_are_absolute_and_double_quoted(self, tmp_path):
-        """Absolute because an id beginning with '-' would, as a relative path after the cd, be parsed by
-        `get` as flags. Quoted because a collaborator's storage path may contain a space."""
+    def test_remote_paths_are_dot_relative_to_the_probed_dir_and_double_quoted(self, tmp_path):
+        """Remote paths are `./<id[:2]>/<id><suffix>`, relative to the directory the `cd` probe just proved
+        exists. Not `<base>/<city>/...`: after the `cd`, sftp resolves a RELATIVE base against the new cwd, so
+        a relative PS_SFTP_BASE turned every get into `<base>/<city>/<base>/<city>/...` and every pano into
+        "absent" with exit 0 (measured on OpenSSH 9.0p1). The `./` also keeps an id beginning with '-' from
+        being parsed by `get` as a flag. The local target is absolute for the same reason. Quoted because a
+        collaborator's storage path may contain a space."""
         storage = tmp_path / 'my store'
         lines = store_sftp.build_batch(self.settings(), str(storage), [DASH_ID, UNDERSCORE_ID],
                                        store_sftp.IMAGE_SUFFIX).splitlines()
         for line, pano_id in zip(lines[1:], [DASH_ID, UNDERSCORE_ID]):
             tokens = batch_tokens(line)
             assert len(tokens) == 3, line
-            assert tokens[1] == '/panos/seattle-wa/%s/%s.jpg' % (pano_id[:2], pano_id)
+            assert tokens[1] == './%s/%s.jpg' % (pano_id[:2], pano_id)
             assert tokens[2].startswith(os.path.abspath(str(storage)))
             assert '"%s"' % tokens[1] in line and '"%s"' % tokens[2] in line
 
@@ -297,7 +301,7 @@ class TestBatchText:
         line = store_sftp.build_batch(self.settings(), str(tmp_path), ['abcdef'],
                                       store_sftp.DEPTH_SUFFIX).splitlines()[1]
         remote, local = batch_tokens(line)[1:]
-        assert remote == '/panos/seattle-wa/ab/abcdef.depth.npz'
+        assert remote == './ab/abcdef.depth.npz'
         assert local == os.path.join(os.path.abspath(str(tmp_path)), 'ab', 'abcdef.depth.npz.part')
 
     def test_depth_suffix_matches_gsvs(self):
@@ -459,6 +463,17 @@ class TestPullBatch:
         outcomes = self.pull(make_settings(base, tmp_path), tmp_path / 'local', ['aaaaaa', 'bbbbbb', 'cccccc'])
         assert outcomes == {'aaaaaa': PullOutcome.pulled, 'bbbbbb': PullOutcome.absent,
                             'cccccc': PullOutcome.pulled}
+
+    def test_a_relative_base_is_pulled_not_read_as_absent(self, tmp_path, monkeypatch):
+        """PS_SFTP_BASE relative to the login directory (the fake's cwd is ours). Before the `./` gets, the
+        probe passed and every get looked under <base>/<city>/<base>/<city>: all absent, exit 0."""
+        write_fake_sftp(tmp_path, monkeypatch)
+        make_remote(tmp_path, {'abcdef.jpg': small_jpeg()})
+        monkeypatch.chdir(tmp_path)
+        storage = tmp_path / 'local'
+        outcomes = self.pull(make_settings('remote/panos', tmp_path), storage, ['abcdef', DASH_ID])
+        assert outcomes == {'abcdef': PullOutcome.pulled, DASH_ID: PullOutcome.absent}
+        assert (storage / 'ab' / 'abcdef.jpg').exists()
 
     def test_an_id_beginning_with_a_dash_is_pulled(self, tmp_path, monkeypatch):
         """The fake rejects a get argument that starts with '-', as real sftp's option parser would."""
