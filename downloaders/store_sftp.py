@@ -32,6 +32,7 @@ If that shows up in practice, the fallback is comparing against a remote size fr
 import argparse
 import enum
 import os
+import posixpath
 import re
 import stat
 import subprocess
@@ -197,7 +198,9 @@ def build_batch(settings, storage_path, pano_ids, suffix):
     if any(c in str(storage_path) for c in _UNQUOTABLE):
         raise ValueError("the storage path contains a quote or a line break, which the sftp batch cannot "
                          "express")
-    lines = ['cd "%s/%s"' % (settings.base, settings.remote_city)]
+    # posixpath, not '%s/%s' and not os.path: the remote is POSIX whatever this host is, and a chroot base
+    # of '/' must probe "/<city>", not "//<city>".
+    lines = ['cd "%s"' % posixpath.join(settings.base, settings.remote_city)]
     for pano_id in pano_ids:
         if not is_batch_safe_id(pano_id):
             raise ValueError("pano id %r cannot be written into an sftp batch" % (pano_id,))

@@ -255,6 +255,15 @@ class TestBatchText:
         assert len(lines) == 3
         assert all(line.startswith('-get ') for line in lines[1:])
 
+    @pytest.mark.parametrize('base,probe', [('/', 'cd "/seattle-wa"'), ('//', 'cd "/seattle-wa"'),
+                                            ('/srv/panos/', 'cd "/srv/panos/seattle-wa"'),
+                                            ('remote/panos', 'cd "remote/panos/seattle-wa"')])
+    def test_the_probe_joins_base_and_city_without_a_doubled_slash(self, tmp_path, base, probe):
+        """A chroot base of '/' is exactly the restricted-SFTP case; it used to probe `cd "//seattle-wa"`."""
+        settings = store_sftp.resolve_settings(CITY, environ={'PS_SFTP_HOST': HOST, 'PS_SFTP_BASE': base})
+        assert store_sftp.build_batch(settings, str(tmp_path), ['abcdef'],
+                                      store_sftp.IMAGE_SUFFIX).splitlines()[0] == probe
+
     def test_the_only_verbs_are_cd_and_get(self, tmp_path):
         """No writes to the store, ever: not put, not mkdir, not rename."""
         text = store_sftp.build_batch(self.settings(), str(tmp_path), ['abcdef', DASH_ID],
