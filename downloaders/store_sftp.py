@@ -23,10 +23,7 @@ Each file lands as `<final>.part` (exactly the name common.atomic_output_path yi
 then renamed into place through atomic_output_path itself - a saved `.jpg` is the image loop's resume marker,
 so a truncated transfer must never become one.
 
-Known limit of the JPEG verifier: it requires the file to END with the EOI marker. A JPEG carrying trailing
-bytes after EOI (possible for Mapillary/Panoramax originals, which are stored verbatim; never for GSV, which
-this repo encodes) would be refused every run - a loud transient failure in scrape.log, never corruption.
-If that shows up in practice, the fallback is comparing against a remote size from an `ls -l` batch.
+The JPEG verifier accepts bytes after the end-of-image marker, within limits: see is_complete_jpeg.
 """
 
 import argparse
@@ -39,7 +36,7 @@ import subprocess
 import zipfile
 from typing import NamedTuple, Optional
 
-from .common import atomic_output_path, jpeg_dimensions
+from .common import STANDALONE_JPEG_MARKERS, atomic_output_path, jpeg_dimensions
 
 # The log analyzer's names, copied on purpose: log_analyzer/analyze.py::resolve_sftp is the twin, and
 # tests/test_store_sftp.py asserts the two lists agree, so a collaborator's one set of variables serves both.
@@ -83,6 +80,9 @@ _IPV4 = re.compile(r'(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w)(?!\.\d)')
 _IPV6 = re.compile(r'(?<![\w:.])(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(?![\w:])')
 #   Any `name@`: ssh embeds the user it authenticated as, which may be one ~/.ssh/config supplied.
 _USER_AT = re.compile(r'[^\s@"\'<>\[\]()]+@')
+
+#: How far before the end of a JPEG its end-of-image marker may sit: see is_complete_jpeg (#155 review item 23).
+TRAILING_BYTES_WINDOW = 64 * 1024
 
 IMAGE_SUFFIX = '.jpg'
 #: == gsv.DEPTH_ARTIFACT_SUFFIX; a test asserts the equality rather than this module importing gsv.
@@ -347,20 +347,82 @@ def run_sftp_batch(settings, batch_text):
                                        result.stderr.decode('utf-8', errors='replace'))
 
 
+def _first_scan_offset(f):
+    """Offset of the first byte of the main image's entropy-coded data - just past its first SOS header - by
+    walking the marker segments from SOI, or None if the header ends (or breaks) before a scan begins.
+
+    Walking by segment LENGTH is the point: an EXIF thumbnail is a whole JPEG, EOI included, inside an APP1
+    segment, and the walk steps over it without reading it.
+    """
+    f.seek(0)
+    if f.read(2) != b'\xff\xd8':
+        return None
+    while True:
+        byte = f.read(1)
+        if byte != b'\xff':
+            return None                     # between segments there must be a marker
+        while byte == b'\xff':              # fill bytes
+            byte = f.read(1)
+        if not byte:
+            return None
+        marker = byte[0]
+        if marker == 0xD9:
+            return None                     # EOI before any scan
+        if marker in STANDALONE_JPEG_MARKERS:
+            continue
+        header = f.read(2)
+        if len(header) < 2:
+            return None
+        seglen = int.from_bytes(header, 'big')
+        if seglen < 2:
+            return None
+        start = f.tell()
+        f.seek(seglen - 2, os.SEEK_CUR)
+        if marker == 0xDA:                  # SOS
+            return start + seglen - 2
+
+
 def is_complete_jpeg(path):
-    """A readable SOF header AND a trailing EOI (FF D9).
+    """A readable SOF header AND an end-of-image marker (FF D9) that closes the main image.
 
     The header alone is not enough here. The HTTP downloaders never see a short file (a short read raises
     out of iter_content before any check), but a `get` that dies mid-transfer leaves a half file whose SOF
     header is intact and reports full dimensions. A false refusal is the harmless direction: a transient
     failure, retried next run, never a resume marker.
+
+    The rule (#155 review item 23). Either the file ENDS with FF D9 - every JPEG this repo writes, so every
+    GSV pano - or an FF D9 lies in its last TRAILING_BYTES_WINDOW (64 KB) bytes AND after the start of the
+    main image's first scan (_first_scan_offset). The second arm exists because Mapillary and Panoramax
+    originals are stored verbatim, and a camera JPEG can carry bytes after its EOI (a vendor trailer,
+    padding); under the strict rule such a file was refused, deleted and re-pulled every night, for ever.
+
+    Why the second arm is still safe against a transfer cut short:
+      * Inside entropy-coded data an FF byte is always followed by 00 (stuffing) or an RSTn marker, never by
+        D9. So a file cut mid-scan contains no FF D9 after its scan start - there is nothing to find.
+      * An FF D9 BEFORE the scan start can exist: an EXIF thumbnail is a complete JPEG inside APP1, and on a
+        small file it sits well inside the last 64 KB. The scan-start bound is exactly what refuses it; the
+        segment walk steps over the thumbnail by length rather than reading it.
+      * The window bounds how much trailing data is believed; beyond it the file is refused as before.
+    Residual, accepted: a progressive JPEG's between-scan segments (DHT, COM) could in principle hold the
+    bytes FF D9 in their payload; a truncation within 64 KB after one would pass. No standard Huffman
+    symbol is 0xFF, and the scraper's own GSV files take the first arm, so this is theoretical. An MPO
+    (primary image, then a second JPEG) passes on the primary's EOI - which is complete - whatever state
+    the second image is in.
     """
     if jpeg_dimensions(path) is None:
         return False
     # A readable SOF means the file is far longer than two bytes, so the seek cannot fail on a short file.
     with open(path, 'rb') as f:
         f.seek(-2, os.SEEK_END)
-        return f.read(2) == b'\xff\xd9'
+        if f.read(2) == b'\xff\xd9':
+            return True
+        size = f.seek(0, os.SEEK_END)
+        scan_start = _first_scan_offset(f)
+        if scan_start is None:
+            return False
+        window_start = max(scan_start, size - TRAILING_BYTES_WINDOW)
+        f.seek(window_start)
+        return b'\xff\xd9' in f.read(size - window_start)
 
 
 def is_complete_npz(path):

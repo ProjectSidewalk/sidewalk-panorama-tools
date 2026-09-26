@@ -122,6 +122,14 @@ def small_jpeg(size=(64, 32)):
     return buf.getvalue()
 
 
+def with_thumbnail(jpeg):
+    """`jpeg` with an EXIF-style APP1 segment inserted after its SOI, holding a whole second JPEG - the
+    embedded-thumbnail shape - so the file contains an FF D9 long before its own scan begins."""
+    thumb = small_jpeg((16, 8))
+    payload = b'Exif\x00\x00' + thumb
+    return jpeg[:2] + b'\xff\xe1' + (len(payload) + 2).to_bytes(2, 'big') + payload + jpeg[2:]
+
+
 def small_npz():
     buf = io.BytesIO()
     np.savez(buf, depth=np.arange(64, dtype=np.float32).reshape(8, 8))
@@ -551,6 +559,68 @@ class TestVerifiers:
         assert not store_sftp.is_complete_jpeg(str(tmp_path / 'empty.jpg'))
         (tmp_path / 'one.jpg').write_bytes(b'\xd9')
         assert not store_sftp.is_complete_jpeg(str(tmp_path / 'one.jpg'))
+
+    # --- Bytes after the end-of-image marker (#155 review item 23) --------------------------------------
+    # Mapillary and Panoramax originals are stored verbatim, and a camera JPEG may carry trailing bytes (a
+    # vendor trailer, padding). The strict "ends with FF D9" rule refused, deleted and re-pulled such a file
+    # every night. The rule now also accepts an EOI in the file's last TRAILING_BYTES_WINDOW bytes, provided
+    # it lies after the start of the main image's first scan - which no thumbnail's EOI can.
+
+    def test_a_jpeg_with_trailing_bytes_after_its_eoi_passes(self, tmp_path):
+        p = tmp_path / 'a.jpg'
+        p.write_bytes(small_jpeg() + b'\x00' * 1000 + b'VENDOR-TRAILER')
+        assert store_sftp.is_complete_jpeg(str(p))
+
+    def test_trailing_bytes_beyond_the_window_are_refused(self, tmp_path):
+        p = tmp_path / 'a.jpg'
+        p.write_bytes(small_jpeg() + b'\x00' * (store_sftp.TRAILING_BYTES_WINDOW + 1))
+        assert not store_sftp.is_complete_jpeg(str(p))
+
+    def test_a_trailing_window_that_ends_exactly_at_the_limit_passes(self, tmp_path):
+        p = tmp_path / 'a.jpg'
+        p.write_bytes(small_jpeg() + b'\x00' * (store_sftp.TRAILING_BYTES_WINDOW - 2))
+        assert store_sftp.is_complete_jpeg(str(p))
+
+    def test_a_truncation_cannot_pass_on_an_embedded_thumbnails_eoi(self, tmp_path):
+        """An EXIF thumbnail is a whole JPEG, FF D9 included, inside an APP1 segment before the main image.
+        A transfer cut short a little way into the main scan has that EOI well inside the window."""
+        data = with_thumbnail(small_jpeg())
+        sos = data.index(b'\xff\xda', data.index(b'\xff\xd9') + 2)
+        p = tmp_path / 'a.jpg'
+        p.write_bytes(data)
+        assert store_sftp.is_complete_jpeg(str(p)), 'the whole file, thumbnail and all, is complete'
+        for cut in (sos + 40, sos + 2, sos - 10):
+            p.write_bytes(data[:cut])
+            assert not store_sftp.is_complete_jpeg(str(p)), cut
+
+    def test_a_half_jpeg_with_a_thumbnail_still_fails(self, tmp_path):
+        data = with_thumbnail(small_jpeg())
+        p = tmp_path / 'a.jpg'
+        p.write_bytes(data[:len(data) // 2])
+        assert jpeg_dimensions(str(p)) is not None
+        assert not store_sftp.is_complete_jpeg(str(p))
+
+    def test_a_jpeg_with_no_scan_fails(self, tmp_path):
+        """A header with an EOI but no SOS: nothing to say the image data is there at all."""
+        data = small_jpeg()
+        p = tmp_path / 'a.jpg'
+        p.write_bytes(data[:data.index(b'\xff\xda')] + b'\xff\xd9' + b'\x00' * 10)
+        assert not store_sftp.is_complete_jpeg(str(p))
+
+    @pytest.mark.parametrize('data,offset', [
+        (b'NOTAJPEG', None),                                          # no SOI
+        (b'\xff\xd8\x00\xff\xda', None),                              # a non-marker byte between segments
+        (b'\xff\xd8\xff\xff', None),                                  # fill bytes, then the end of the file
+        (b'\xff\xd8\xff\xd9\xff\xda\x00\x02', None),                  # EOI before any scan
+        (b'\xff\xd8\xff\xe0\x00\x01\xff\xda\x00\x02', None),          # a segment length below its own 2 bytes
+        (b'\xff\xd8\xff\xe0\x00', None),                              # the header ends inside a length
+        (b'\xff\xd8\xff\xd0\xff\xff\xda\x00\x04ab' + b'scan', 11),    # RSTn standalone, fill, SOS
+    ])
+    def test_the_scan_start_walk(self, tmp_path, data, offset):
+        p = tmp_path / 'h.bin'
+        p.write_bytes(data)
+        with open(p, 'rb') as f:
+            assert store_sftp._first_scan_offset(f) == offset
 
     def test_the_npz_verifier(self, tmp_path):
         data = small_npz()
