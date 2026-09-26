@@ -2915,10 +2915,16 @@ class TestStoreModeCli:
         assert not storage.exists(), 'settings are resolved before the storage dir or scrape.log is created'
 
     @pytest.mark.parametrize('city', ['a/b', '..', ''])
-    def test_from_store_rejects_a_bad_city_id_at_parse_time(self, tmp_path, city):
+    def test_from_store_rejects_a_bad_city_id_at_parse_time(self, monkeypatch, tmp_path, capsys, city):
+        """Host and base are SET, so the missing-settings error cannot be what exits 2: the city check is."""
+        monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
+        monkeypatch.setenv('PS_SFTP_BASE', '/panos')
         with pytest.raises(SystemExit) as e:
             DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '--from-store', city])
         assert e.value.code == 2
+        err = capsys.readouterr().err
+        assert '--from-store' in err and 'not a store city id' in err
+        assert not (tmp_path / 'storage').exists()
 
     def test_a_bad_port_is_a_usage_error(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
