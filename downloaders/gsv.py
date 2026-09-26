@@ -369,17 +369,27 @@ ImageLevels = collections.namedtuple('ImageLevels', ['sizes', 'tile_size'])
 #                   (choose_zoom). Always True when the probe answered, which cannot tell.
 #   served_dims   - Google's top level, or None when the probe answered.
 #   evidence      - 'photometa' or 'probe'.
+#   refusal       - why photometa's answer is not stitchable, when consistent is False: 'frame' (no reported
+#                   level is the caller's grid) or 'tile_size' (the levels are not cut in 512 px tiles). None
+#                   otherwise, including on the probe arm, whose frame check is download_single_pano's.
 ResolvedFrame = collections.namedtuple('ResolvedFrame',
-                                       ['width', 'height', 'zoom', 'consistent', 'served_dims', 'evidence'])
+                                       ['width', 'height', 'zoom', 'consistent', 'served_dims', 'evidence',
+                                        'refusal'], defaults=(None,))
 
 
 class FrameDisagreementError(Exception):
-    """Google's reported levels do not admit the frame the caller asked for (or its tiles are not 512 px).
+    """The pano Google serves is not the frame the caller asked for, so stitching it would save a crop.
+
+    Three ways to know that: photometa's reported levels do not admit the frame, photometa's tiles are not
+    512 px, or - when the probe answered instead of photometa - a tile past the frame's grid has imagery
+    (frame_covers_pano). The message names which, after the words "frame disagreement", which is what
+    to grep scrape.log for.
 
     Raised by download_single_pano - never by resolve_frame or resolve_zoom_and_dims - so it is TRANSIENT
     under the #41 ledger: counted in tonight's failures, not ledgered, re-attempted next run at the cost of one
-    photometa request. Deliberately not a permanent verdict: the app's frame can catch up (gsv_data refreshes),
-    and a permanent verdict on a brand-new evidence source, for a source with no breaker, is the wrong default.
+    photometa request (or four probe requests on the fallback). Deliberately not a permanent verdict: the
+    app's frame can catch up (a SidewalkWebpage gsv_data refresh is the remedy), and a permanent verdict on a
+    brand-new evidence source, for a source with no breaker, is the wrong default.
     """
 
 
@@ -539,9 +549,10 @@ def resolve_frame(pano_info, block_latch_path=None):
         # one this stitcher can fetch correctly at any zoom.
         logging.warning("IMAGEDOWNLOAD: pano %s: photometa reports %sx%s tiles, not %d", pano_id,
                         levels.tile_size[0], levels.tile_size[1], TILE_SIZE)
-        return ResolvedFrame(width, height, len(levels.sizes) - 1, False, served_dims, 'photometa')
+        return ResolvedFrame(width, height, len(levels.sizes) - 1, False, served_dims, 'photometa', 'tile_size')
     zoom, consistent = choose_zoom(levels.sizes, width, height)
-    return ResolvedFrame(width, height, zoom, consistent, served_dims, 'photometa')
+    return ResolvedFrame(width, height, zoom, consistent, served_dims, 'photometa',
+                         None if consistent else 'frame')
 
 
 def resolve_zoom_and_dims(pano_info):
@@ -566,9 +577,10 @@ def frame_covers_pano(pano_id, width, height, zoom):
     on real bytes in tests/test_gsv_tile_contract.py), so imagery there means the real pano is larger than
     the frame we were about to fetch.
 
-    The nightly downloader never needs this: it sizes the grid from /adminapi/panos, which is Google's own
-    number for a pano Google is currently serving. refetch_panos.py does, because it fetches at the frame
-    the STORED file has, which is a scrape-time archive - and Google re-serves panos larger (measured at
+    The nightly downloader needs this only when the tile probe chose the zoom (_frame_refusal): when photometa
+    answers, its reported levels already say whether the app's frame is one of them. /adminapi/panos is not
+    always Google's current number (#74, #121). refetch_panos.py needs it for every pano, because it fetches
+    at the frame the STORED file has, which is a scrape-time archive - and Google re-serves panos larger (measured at
     4.6% of a sampled store, reports/2026-08-10-store-coverage.md). Fetching a 26x13 grid for a pano Google
     now holds at 32x16 does not return a smaller version of the pano; it returns the top-left 81% of it, at
     the stored file's exact dimensions, with no undersized tile and no black to give it away. That is a
@@ -666,6 +678,29 @@ def _write_display_copy(image, out_image_name, pano_id):
         logging.error("IMAGEDOWNLOAD: pano %s: display copy not written: %r", pano_id, e)
 
 
+def _frame_refusal(pano_id, frame):
+    """Why `frame` must not be stitched, as one line starting "frame disagreement", or None when it may be.
+
+    Photometa's two refusals are decided in resolve_frame, at no extra request. The probe arm cannot tell a
+    frame from a crop - it only asks whether zoom 5 or 3 has imagery at (0, 0) - so on that arm the frame is
+    checked here with frame_covers_pano: two more tile requests, spent only when photometa did not answer,
+    and before the fan-out. Without it every photometa failure, fresh block latch or "not found" would
+    stitch and permanently ledger exactly the crop a photometa refusal holds off (#74 review item 1).
+    """
+    served = '%dx%d' % frame.served_dims if frame.served_dims else None
+    if frame.refusal == 'frame':
+        return ("frame disagreement: the app's frame is %dx%d but Google serves this pano at %s, and no "
+                "reported level is that frame's tile grid" % (frame.width, frame.height, served))
+    if frame.refusal == 'tile_size':
+        return ("frame disagreement: photometa reports this pano (served at %s) in tiles that are not %d px, "
+                "so no tile grid this stitcher can request fits it" % (served, TILE_SIZE))
+    if frame.evidence == 'probe' and not frame_covers_pano(pano_id, frame.width, frame.height, frame.zoom):
+        return ("frame disagreement: the app's frame is %dx%d but a tile past its grid at zoom %d has "
+                "imagery, so Google serves this pano larger (zoom from the tile probe; photometa did not "
+                "answer)" % (frame.width, frame.height, frame.zoom))
+    return None
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
 
@@ -691,20 +726,18 @@ def download_single_pano(storage_path, pano_info):
         # No dims, or no imagery at any zoom - both permanent properties of the pano, so the #41 ledger
         # writes downloaded=0 and never re-attempts it.
         return DownloadResult.failure
-    if not frame.consistent:
+    refusal = _frame_refusal(pano_id, frame)
+    if refusal is not None:
         # Google serves this pano in a pyramid the app's frame is not part of. Fetching anyway would stitch
         # the app's grid out of a larger pano - its top-left corner, at the app's exact dimensions, with no
         # black and no undersized tile to give it away (#74, #121). Refused instead, loudly on both channels
-        # (stdout is cron mail tonight, scrape.log is what is still there next week), and RAISED so the run
-        # counts it as a failure without ledgering it: retried next run, at one photometa request.
-        served = '%dx%d' % frame.served_dims
-        logging.error("IMAGEDOWNLOAD: pano %s: Google serves this pano at %s but the app's frame is %dx%d and "
-                      "no reported level admits it; refusing rather than stitching a crop (#74)",
-                      pano_id, served, frame.width, frame.height)
-        print("IMAGEDOWNLOAD: WARNING - pano %s: frame disagreement (app %dx%d, Google %s); not downloaded, "
-              "retried next run" % (pano_id, frame.width, frame.height, served))
-        raise FrameDisagreementError('pano %s: app frame %dx%d is not a level of the pano Google serves at %s'
-                                     % (pano_id, frame.width, frame.height, served))
+        # (stdout is tonight's run narrative, scrape.log is what is still there next week), and RAISED so the
+        # run counts it as a failure without ledgering it: retried next run.
+        #
+        # One line per channel: the print here, and the ERROR DownloadRunner's image loop logs with this
+        # exception's text. Logging an ERROR here as well put two in scrape.log for every refusal.
+        print("IMAGEDOWNLOAD: WARNING - pano %s: %s; not downloaded, retried next run" % (pano_id, refusal))
+        raise FrameDisagreementError('pano %s: %s' % (pano_id, refusal))
 
     # fetch_pano_image always receives the APP's frame: the reported levels only ever choose which zoom (and so
     # which grid) is requested, never what size the saved JPEG is.

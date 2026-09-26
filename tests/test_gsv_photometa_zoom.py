@@ -21,6 +21,7 @@ Network-free: photometa is stubbed at gsv._fetch_image_levels, the probe at gsv.
 gsv._download_tiles.
 """
 
+import io
 import logging
 import time
 
@@ -189,13 +190,14 @@ class TestResolveFrameUsesPhotometaFirst:
 
         assert frame.consistent is False
         assert frame.evidence == 'photometa'
+        assert frame.refusal == 'tile_size'
 
     def test_an_inconsistent_frame_is_reported_not_raised(self, monkeypatch):
         stub_photometa(monkeypatch, SERIES_16384)
         deny_probe(monkeypatch)
 
         assert gsv.resolve_frame(pano_info(13312, 6656)) == \
-            gsv.ResolvedFrame(13312, 6656, 5, False, (16384, 8192), 'photometa')
+            gsv.ResolvedFrame(13312, 6656, 5, False, (16384, 8192), 'photometa', 'frame')
 
 
 class TestTheImagePhaseSharesTheBlockLatch:
@@ -297,16 +299,19 @@ class TestDownloadSinglePanoWithReportedLevels:
         stub_tiles(monkeypatch, lambda tile: pytest.fail('a refused frame must not fan out'))
 
         with caplog.at_level(logging.ERROR):
-            with pytest.raises(gsv.FrameDisagreementError):
+            with pytest.raises(gsv.FrameDisagreementError) as refused:
                 gsv.download_single_pano(str(tmp_path), pano_info(13312, 6656))
 
         shard = tmp_path / PANO[:2]
         assert list(shard.iterdir()) == []
         out = capsys.readouterr().out
-        errors = ' '.join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
-        for text in (out, errors):
+        # scrape.log's line is DownloadRunner's ERROR carrying the exception text (see
+        # TestOneErrorLinePerRefusal), so the exception is what must name the pano and both frames.
+        for text in (out, str(refused.value)):
             assert PANO in text and '13312x6656' in text and '16384x8192' in text
+            assert 'frame disagreement' in text
         assert 'IMAGEDOWNLOAD: WARNING' in out
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
     def test_a_lower_matching_level_downloads_the_whole_pano_natively(self, tmp_path, monkeypatch):
         """On master the probe says zoom 5 and this 16x8 grid is requested AT ZOOM 5 - a quarter of the pano."""
@@ -397,12 +402,105 @@ class TestRequestsPerPano:
     def test_a_retired_pano_costs_one_photometa_and_two_probes(self, tmp_path, monkeypatch):
         assert self.run(tmp_path, monkeypatch, gone=True, pick=-1) == (1, 2, 0)
 
-    def test_a_latched_run_costs_two_probes_and_no_photometa(self, tmp_path, monkeypatch):
+    def test_a_latched_run_costs_four_probes_and_no_photometa(self, tmp_path, monkeypatch):
+        """Two to pick the zoom and two for the probe arm's frame check (frame_covers_pano)."""
         fresh_latch()
-        assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)], pick=5) == (0, 2, 2)
+        assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)], pick=5) == (0, 4, 2)
+
+    def test_a_photometa_failure_costs_one_photometa_and_four_probes(self, tmp_path, monkeypatch):
+        asked = stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
+        probes = count_probes(monkeypatch, 5)
+        tiles = red_tiles(monkeypatch)
+        gsv.download_single_pano(str(tmp_path), pano_info(1024, 512))
+        assert (len(asked), len(probes), len(tiles)) == (1, 4, 2)
 
     def test_a_pano_already_on_disk_costs_nothing(self, tmp_path, monkeypatch):
         shard = tmp_path / PANO[:2]
         shard.mkdir()
         (shard / (PANO + '.jpg')).write_bytes(b'already here')
         assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)]) == (0, 0, 0)
+
+
+# --- the probe arm checks the frame too (review item 1) ------------------------------------------------------
+
+def serve_pyramid(monkeypatch, sizes):
+    """A CBK stand-in for a pano Google serves as `sizes`: a tile is imagery iff it lies inside the level at its
+    zoom, black otherwise - Google's answer for an out-of-range tile. The probe's tiles and frame_covers_pano's
+    both go through _get_response, so this is the whole of CBK the probe arm can see. Returns the URLs asked."""
+    requested = []
+    black, grey = jpeg_bytes((0, 0, 0), (16, 16)), jpeg_bytes((90, 90, 90), (16, 16))
+
+    def fake_get_response(url, session, stream=False):
+        requested.append(url)
+        query = dict(part.split('=', 1) for part in url.split('?', 1)[1].split('&'))
+        zoom, x, y = int(query['zoom']), int(query['x']), int(query['y'])
+        inside = zoom < len(sizes) and x * gsv.TILE_SIZE < sizes[zoom][0] and y * gsv.TILE_SIZE < sizes[zoom][1]
+        return io.BytesIO(grey if inside else black)
+
+    monkeypatch.setattr(gsv, '_get_response', fake_get_response)
+    return requested
+
+
+@pytest.mark.filterwarnings('ignore::PIL.Image.DecompressionBombWarning')
+class TestTheProbeArmChecksTheFrame:
+    """The probe answers "is there imagery at zoom 5 or 3 at (0, 0)?", which a crop passes. Before the review
+    fix an 8192x4096 app frame on a pano Google serves at 16384 was stitched as the top-left quarter and
+    ledgered downloaded=1 on any night photometa did not answer - so a photometa refusal was only a delay."""
+
+    @pytest.mark.parametrize('frame', [(8192, 4096), (13312, 6656)])
+    @pytest.mark.parametrize('why', ['failure', 'latch', 'not_found'])
+    def test_a_frame_smaller_than_google_serves_is_refused_and_saves_nothing(
+            self, tmp_path, monkeypatch, capsys, frame, why):
+        if why == 'latch':
+            fresh_latch()
+        stub_photometa(monkeypatch, SERIES_16384, gone=(why == 'not_found'),
+                       error=gsv.DepthPayloadError('photometa down') if why == 'failure' else None)
+        requested = serve_pyramid(monkeypatch, SERIES_16384)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a refused frame must not fan out'))
+
+        with pytest.raises(gsv.FrameDisagreementError) as refused:
+            gsv.download_single_pano(str(tmp_path), pano_info(*frame))
+
+        assert list((tmp_path / PANO[:2]).iterdir()) == []
+        assert len(requested) == 3, 'two probe tiles, then the first tile past the grid - never the fan-out'
+        assert 'frame disagreement' in str(refused.value) and 'tile probe' in str(refused.value)
+        assert 'frame disagreement' in capsys.readouterr().out
+
+    @pytest.mark.parametrize('frame,sizes,outcome', [((16384, 8192), SERIES_16384, DownloadResult.success),
+                                                      ((3328, 1664), SERIES_3328, DownloadResult.success)])
+    def test_a_frame_that_is_what_google_serves_stitches_as_before(self, tmp_path, monkeypatch, frame, sizes,
+                                                                    outcome):
+        stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
+        requested = serve_pyramid(monkeypatch, sizes)
+        tiles = red_tiles(monkeypatch)
+
+        assert gsv.download_single_pano(str(tmp_path), pano_info(*frame)) == outcome
+        assert len(requested) == 4
+        assert jpeg_dimensions(str(tmp_path / PANO[:2] / (PANO + '.jpg'))) == frame
+        assert tiles, 'the fan-out ran'
+
+    def test_the_check_is_not_spent_when_photometa_answered(self, tmp_path, monkeypatch):
+        stub_photometa(monkeypatch, SERIES_16384)
+        monkeypatch.setattr(gsv, 'frame_covers_pano', lambda *a: pytest.fail('photometa already decided'))
+        deny_probe(monkeypatch)
+        red_tiles(monkeypatch)
+
+        assert gsv.download_single_pano(str(tmp_path), pano_info(16384, 8192)) == DownloadResult.success
+
+
+class TestOneErrorLinePerRefusal:
+    def test_the_runner_logs_one_error_naming_the_disagreement(self, tmp_path, monkeypatch, caplog):
+        """scrape.log carries one ERROR per refused pano - DownloadRunner's, with the exception text - so
+        `grep "frame disagreement" scrape.log` counts refusals."""
+        import DownloadRunner
+        stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a refused frame must not fan out'))
+
+        with caplog.at_level(logging.WARNING):
+            DownloadRunner.download_panorama_images(
+                str(tmp_path), [dict(pano_info(13312, 6656), source='gsv')])
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1
+        assert 'frame disagreement' in errors[0] and PANO in errors[0]

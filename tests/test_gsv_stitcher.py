@@ -440,12 +440,15 @@ def stub_probe(monkeypatch, pick_zoom):
     unavailable, which is what routes a test onto the probe path. That half is not optional:
     tests/test_downscaled_sidecar.py imports this helper and is outside #74's file set, and without it every
     one of its downloads would send a real photometa request (streetlevel is installed in CI). Returns the
-    list of probe URLs requested, in order."""
+    list of probe URLs requested, in order.
+
+    Only the probe's own tile, (0, 0), has imagery: the pano is exactly the app's frame, so the probe arm's
+    frame check (frame_covers_pano, two tiles just past the grid) finds black there and lets it through."""
     requested = []
 
     def fake_get_response(url, session, stream=False):
         requested.append(url)
-        color = RED if ('zoom=%d&' % pick_zoom) in url else (0, 0, 0)
+        color = RED if ('zoom=%d&x=0&y=0&' % pick_zoom) in url else (0, 0, 0)
         return BytesIO(jpeg_bytes(color, (16, 16)))
 
     def photometa_unavailable(pano_id, session):
