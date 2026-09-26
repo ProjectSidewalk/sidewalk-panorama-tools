@@ -1,0 +1,30 @@
+{
+ "drawn_by_arm": {
+  "legacy+mid": 24,
+  "post179": 24
+ },
+ "drawn_by_source": {
+  "corpus": 21,
+  "store": 27
+ },
+ "eligible_by_arm": {
+  "legacy+mid": 19,
+  "post179": 2
+ },
+ "fill_city": "seattle-wa",
+ "fill_eligible_by_arm": {
+  "legacy+mid": 2716,
+  "post179": 258
+ },
+ "from_fill": {
+  "legacy+mid": 5,
+  "post179": 22
+ },
+ "min_abs_T_deg": 4.0,
+ "n_per_arm": 24,
+ "seed": "20260926",
+ "shortfall_in_primary": {
+  "legacy+mid": 5,
+  "post179": 22
+ }
+}
