@@ -68,8 +68,8 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--max-runtime MINUTES` | Stop *starting* new downloads and requests after this much wall time. Sized to the nightly cron slot ([#38](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/38)). |
 | `--min-depth-runtime MINUTES` | Reserve the tail of `--max-runtime` for depth when depth has unresolved work — a *share* of the budget, so size it against the slot, not the night. Default `0`; the production line passes `6` of its 12-minute `--city-max-runtime` (below), and must stay below it or no images are downloaded. |
 | `--max-depth-requests N` | Stop the depth phase after N metadata requests. Useful for throttling the initial backfill. |
-| `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
-| `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back **from Google** or a refusal resets it, a local failure does not, a phase that made no requests writes nothing, and a day-old file is ignored. The phase holds `<PATH>.lock` while it runs, so a second concurrent phase paces itself from scratch. Defaults to a file beside the *default* block latch; `--depth-block-latch` does not move it. |
+| `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. Moves the latch for **both** phases: the GSV image phase reads it before each photometa request and writes it on a refusal ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
+| `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back **from Google** or a refusal (in either phase) resets it, a local failure does not, a phase that made no requests writes nothing, and a day-old file is ignored. The phase holds `<PATH>.lock` while it runs, so a second concurrent phase paces itself from scratch. Defaults to a file beside the *default* block latch; `--depth-block-latch` does not move it. |
 | `--run-summary-file PATH` | Write a small JSON object (`image_stop`, `depth_stop`) naming what stopped each phase. `scrape_queue` passes this and reads it back to decide which cities still have work; nothing else reads it, and without the flag nothing is written. No default, deliberately — a default path would write into whatever CWD cron started in. |
 
 Budgets are measured with `time.monotonic()`, never the wall clock, so an NTP step or a DST transition cannot
@@ -497,20 +497,42 @@ pick them up.
 `cbk?output=tile` endpoint into one equirectangular JPEG. To choose the zoom it asks Google's photometa
 endpoint — the one the depth phase already uses, without the depth payload, a 16 KB answer — which zoom
 levels this pano is served at, and picks the highest level that is exactly the tile grid the app's
-`width`/`height` implies ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). If
-no level is, the pano is **refused** rather than stitched: fetching anyway would save the top-left corner of
-a larger pano at the app's exact dimensions, with nothing in the file to show it. The refusal is a `WARNING`
-on stdout (cron mail) and an `ERROR` in `scrape.log`, is counted among the night's image failures, is not
-written to `pano_id_log.csv`, and is retried next run. If photometa is unavailable, or says the pano is gone,
-the older two-tile probe answers instead (a fully black tile at both zoom 5 and zoom 3 means there is no
-imagery) — and it is still the only evidence a permanent "no imagery" verdict rests on. A refusal *from
-Google* on that photometa request writes the same block latch the depth phase uses (see
-[Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers)): the image phase then
-probes for the rest of the run and the depth phase stands down. A new pano costs one photometa request where
-the probe cost two; a retired one costs one photometa request plus the two probes, once. The tiles are then
-fanned out concurrently with `aiohttp` and `backoff` retries, pasted into a canvas sized from the app's
-width/height, and upscaled with LANCZOS when only a lower level exists. The tile-resolution history is
-written up in [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
+`width`/`height` implies ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)).
+If no level is (or its tiles are not 512 px), the pano is **refused** rather than stitched: fetching anyway
+would save the top-left corner of a larger pano at the app's exact dimensions, with nothing in the file to
+show it.
+
+If photometa is unavailable, or says the pano is gone, the older two-tile probe picks the zoom instead (a
+fully black tile at both zoom 5 and zoom 3 means there is no imagery — still the only evidence a permanent
+"no imagery" verdict rests on). The probe cannot tell a frame from a crop, so on that path two more tiles —
+the ones just past the frame's grid — are checked before the fan-out, and imagery there is the same refusal.
+The first time a run falls back to the probe it says so once on stdout and in `scrape.log`; after three
+photometa failures in a row that run stops asking photometa at all. A refusal *from Google* on that photometa
+request writes the same block latch the depth phase uses (see
+[Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers)): for the next 6 hours
+every city on this host takes its zooms from the probe, the depth phase stands down, and the depth pacer's
+earned standing is forfeited, exactly as a depth-phase refusal forfeits it.
+
+**A refused pano** is a `WARNING` on stdout and one `ERROR` in `scrape.log`, both containing
+`frame disagreement`; it is counted among the night's image failures (`log.csv` field 9, which also carries
+older failures, so the count is not readable from there), is not written to `pano_id_log.csv`, and is
+retried every run. Production mails stdout only on a night that exits nonzero
+([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), so on an ordinary night the `WARNING` is
+not delivered — count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. The remedy is on
+the app side: a SidewalkWebpage `gsv_data` refresh that brings the pano's stored `width`/`height` up to what
+Google serves now. Expected volume is near zero: all 651 live panos sampled by the
+[2026-08-09 photometa census](../reports/2026-08-09-photometa-census.md) served exactly the dimensions the
+app stores.
+
+A new pano costs one photometa request where the probe cost two; a pano the probe has to answer costs the
+two probe tiles plus the two frame-check tiles; a retired one costs one photometa request plus the two probe
+tiles, once. The tiles are then fanned out concurrently with `aiohttp` and `backoff` retries, pasted into a
+canvas sized from the app's width/height, and upscaled with LANCZOS when only a lower level exists. One
+visible consequence: historic **five-level** panos (5376×2688) now download at their native zoom 4 and count
+as plain successes. The probe could only answer zoom 5 or 3, so where it answered 3 they were upscaled and
+counted as fallback successes; a city's `log.csv` field 8 can therefore drop while field 7 rises by the same
+amount. The tile-resolution history is written up in
+[reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
 
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution

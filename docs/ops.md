@@ -449,7 +449,7 @@ deployed has 18 fields, and the analyzer reads them with the last one blank.
 | 5 | metadata total processed | count of image-eligible panos (stub) |
 | 6 | metadata phase duration | effectively `0` (stub) |
 | 7 | image successes | |
-| 8 | image fallback successes | downloaded, but at a fallback resolution — only zoom 3 was available for a frame whose reported dimensions need zoom 5, so the stitch was upscaled to reach them. Real imagery, materially less of it. **Not** simply "downloaded at zoom 3": an old pano whose own max zoom is 3 is at its native resolution and counts in field 7. Was a constant `0` before [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) because nothing ever returned the verdict, so runs before that show every fallback inside field 7 |
+| 8 | image fallback successes | downloaded, but at a fallback resolution — only a lower level was available (zoom 3, or since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) zoom 4) for a frame whose reported dimensions need a higher one, so the stitch was upscaled to reach them. Real imagery, materially less of it. **Not** simply "downloaded at zoom 3": an old pano whose own max zoom is 3 is at its native resolution and counts in field 7. Was a constant `0` before [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) because nothing ever returned the verdict, so runs before that show every fallback inside field 7 |
 | 9 | image failures | includes prior runs' permanent failures, seeded from `pano_id_log.csv`; a transient failure is not ledgered, so it is counted again if it fails again next run |
 | 10 | image skipped | includes panos already downloaded on previous runs, seeded likewise |
 | 11 | image total processed | sum of fields 7–10 |
@@ -526,21 +526,33 @@ Two shapes to read carefully:
   the ledger and made no requests. The row cannot distinguish that from running out of budget, which is why
   the analyzer names both candidates instead of asserting one.
 
+## A GSV pano refused for a frame disagreement
+
+Since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) the image phase refuses a GSV
+pano whose app-reported `width`/`height` is not a frame Google serves, rather than stitching the top-left
+corner of a larger one. Each refusal is one stdout `WARNING` and one `scrape.log` `ERROR`, both containing
+`frame disagreement`; it is counted in `log.csv` field 9, never ledgered, and retried every run. Field 9 is
+seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. The
+remedy is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what
+Google serves now. The stdout line reaches no one on a night that exits 0 (see
+[Hearing about a bad night](#hearing-about-a-bad-night)).
+
 ## When the depth phase stands itself down
 
-Two mechanisms stop depth without stopping the run, and they look identical from `log.csv` (all five depth
-columns are `0`), so read stdout or `scrape.log` rather than the row:
+Two mechanisms stop depth without stopping the run, and the first has two sources. All of them look identical
+from `log.csv` (all five depth columns are `0`), so read stdout or `scrape.log` rather than the row:
 
 | what you see | what happened | what to do |
 |---|---|---|
-| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
+| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. If an `IMAGEDOWNLOAD: WARNING - Google refused a photometa request` line comes before it in the same output, *this* run was refused: that is the third row, not this one. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
 | `WARNING - the depth phase stopped early because Google stopped answering` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
+| `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. | As the row above: check for a rate limit before the next night. |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
 with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
-moves it. To clear one by hand, delete the file; a missing, unparseable or implausibly future-dated latch
-all mean "not blocked", because a latch nobody can read must never be able to stand the whole fleet's depth
-phase down indefinitely.
+moves it, for both phases. To clear one by hand, delete the file; a missing, unparseable or implausibly
+future-dated latch all mean "not blocked", because a latch nobody can read must never be able to stand the
+whole fleet's depth phase down indefinitely.
 
 Beside the **default** latch lives the pacer's **earned standing** (`sidewalk-depth-pace`,
 `--depth-pace-state PATH` moves it — the two paths are independent, so moving the latch alone leaves this
@@ -548,7 +560,9 @@ file in the temp directory): the request interval and clean streak the last run 
 the next run opens at instead of ramping down from `depth_start_interval` again. Deleting it costs one ramp
 (~1,400 requests); an unreadable, `NaN`, or day-old file is ignored the same way, and so is one nothing can
 parse at all. It never holds a value slower than the opening interval, so it cannot be used to slow the
-fleet down, only to keep the speed it has already earned. Only Google's own push-back forfeits it — a
+fleet down, only to keep the speed it has already earned. Only Google's own push-back or refusal forfeits it
+(since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) including a photometa
+refusal met by the image phase) — a
 local network blip or one malformed pano slows the running phase down and leaves the file alone, the same
 rule the latch follows when it declines to blame a full disk on Google — and a phase that made no
 requests writes nothing.
