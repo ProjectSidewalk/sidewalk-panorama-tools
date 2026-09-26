@@ -2324,6 +2324,11 @@ MASTER_V2_WINDOWS = [
         ((1000, 1020, 2048, 1024), (744, 683, 512, 341, True)),
         ((500, 8191, 16384, 8192), (14836, 5461, 4096, 2731, True)),
         ((0, 0, 1024, 1024), (1012, 0, 23, 15, True)),
+        # Two floor-bound rows at production resolution (#157 review item 8): the floor-bound rows above
+        # are 1024/2048 px wide, where 1% of 8 degrees is under a pixel, so a floor retuned by 1% passed
+        # the table. Captured from origin/master c5d2ad7 the same way.
+        ((8192, 100, 16384, 8192), (8010, 0, 364, 243, True)),
+        ((6656, 50, 13312, 6656), (6508, 0, 296, 197, True)),
 ]
 
 
@@ -2610,6 +2615,20 @@ class TestSizingRuleSelection:
             r, g, b = crop.getpixel((int(px), int(py)))
         assert r > 200 and b < 60
 
+    def test_a_v3_window_wider_than_the_storage_cap_is_downscaled(self, crop_runner, tmp_path,
+                                                                  monkeypatch):
+        """No other v3 test cuts a window wider than CROP_MAX_STORED_WIDTH (the fixture is 2048 wide),
+        so skipping downscale_for_storage under v3 passed (#157 review item 7, mutant K11)."""
+        monkeypatch.setattr(crop_runner, 'CROP_MAX_STORED_WIDTH', 64)
+        w, h = PANO_SIZE
+        y = pano_y_at(20.0, h)
+        out = str(tmp_path / 'c.jpg')
+        box = crop_runner.make_single_crop(Image.new('RGB', (w, h), (255, 255, 255)), 1000, y, out,
+                                           sizing_rule='v3')
+        assert box.width > 64
+        with Image.open(out) as crop:
+            assert crop.size[0] == 64
+
     def test_the_mark_follows_the_label_under_v3(self, crop_runner, tmp_path):
         """--mark-label under v3, on a shifted near-bottom window: the dot is where the label is."""
         w, h = PANO_SIZE
@@ -2711,6 +2730,25 @@ class TestTheMarkerNoticesRetunedConstants:
         with caplog.at_level(logging.WARNING):
             crop_runner.write_rule_marker(str(tmp_path))
         assert 'crop_size_scale=3.0 and this run uses 2.5' in caplog.text
+
+    @pytest.mark.parametrize('key, value', [('crop_max_fov_deg', 80.0), ('crop_min_fov_deg', 9.0)])
+    def test_a_retuned_clamp_is_named_under_v3(self, crop_runner, tmp_path, caplog, key, value):
+        """v3 reads the two clamps as well as its own constants; dropping them from
+        RULE_MARKER_CONSTANT_KEYS['v3'] left a store with a retuned 90-degree cap mixing silently
+        (#157 review item 7, mutant K7)."""
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        self._edit_marker(crop_runner, tmp_path, **{key: value})
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert '%s=%r and this run uses' % (key, value) in caplog.text
+
+    def test_the_marker_records_the_constants_at_call_time(self, crop_runner, tmp_path, monkeypatch):
+        """_rule_constants promises call-time reads; a hard-coded or import-time snapshot would record
+        the pre-refit width in a refit store (#157 review item 7, mutant K12)."""
+        monkeypatch.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 6.4)
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            assert json.load(f)['v3_context_width_m'] == 6.4
 
     def test_a_constant_the_rule_does_not_use_is_not_a_warning(self, crop_runner, tmp_path, caplog):
         """A v2 store rerun after v3 is refit: its crops are unaffected, so crying wolf would train

@@ -166,7 +166,7 @@ That is a whole-store change, which is why §7 does not flip the default.
 
 ## 7. The rule, the flag, the marker — and the decision not taken here
 
-`CropRunner.py --sizing-rule v3` cuts with v3; **v2 stays the default**, and a 31-row table captured
+`CropRunner.py --sizing-rule v3` cuts with v3; **v2 stays the default**, and a 33-row table captured
 from the pre-#32 code pins every v2 window byte-for-byte. `crop_rule.json` records the selected rule, a
 `distance_estimator` (`linear-2013` or `lle3-cotangent-blend`) and the four `v3_*` constants, and the
 mixed-store warning compares the rule the run selected.
