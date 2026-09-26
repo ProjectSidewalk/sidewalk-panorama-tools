@@ -532,6 +532,25 @@ class TestReportMatchesTheArtifact:
             assert claim not in report, claim
 
 
+def _json_diffs(a, b, path='', rel=1e-9):
+    """Paths where two JSON trees differ. Floats compare to a relative 1e-9: the artifact is rebuilt on
+    Windows and on CI's Linux, whose BLAS may sum in a different order and move the last bits of a
+    bootstrap percentile. Everything else - keys, strings, integers, list lengths - must be exact."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        if set(a) != set(b):
+            return [path or '/']
+        return [d for k in sorted(a) for d in _json_diffs(a[k], b[k], (path + '/' + k).lstrip('/'), rel)]
+    if isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return [path]
+        return [d for i, (x, y) in enumerate(zip(a, b)) for d in _json_diffs(x, y, '%s/%d' % (path, i), rel)]
+    if isinstance(a, float) or isinstance(b, float):
+        ok = (isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool)
+              and abs(a - b) <= rel * max(abs(a), abs(b), 1e-300))
+        return [] if ok else [path]
+    return [] if a == b else [path]
+
+
 class TestTheArtifactIsTheCode:
     """The one place the quoted numbers meet the code that makes them (#158 review item 6: twelve
     mutants to the analysis changed the committed JSON with every other test green)."""
@@ -545,7 +564,14 @@ class TestTheArtifactIsTheCode:
             regen = json.load(f)
         with open(SUMMARY_JSON, encoding='utf-8') as f:
             committed = json.load(f)
-        assert regen == committed
+        diffs = _json_diffs(regen, committed)
+        assert not diffs, diffs[:20]
+
+    def test_the_comparison_sees_a_real_change(self):
+        a = {'x': [1.0, {'y': 0.3}], 's': 'a'}
+        assert _json_diffs(a, {'x': [1.0, {'y': 0.3 * (1 + 1e-12)}], 's': 'a'}) == []
+        assert _json_diffs(a, {'x': [1.0, {'y': 0.3001}], 's': 'a'}) == ['x/1/y']
+        assert _json_diffs(a, {'x': [1.0, {'y': 0.3}], 's': 'b'}) == ['s']
 
     def test_f1_sign_is_the_modules_rotation_on_committed_facades(self):
         """F1's measured sign, tied to tilt_geometry's actual rotation rather than to a hand-typed pin:
