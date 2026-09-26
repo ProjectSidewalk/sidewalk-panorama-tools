@@ -1,0 +1,948 @@
+{
+ "c_adjudication": {
+  "decision_bearing_judge": "jon",
+  "decision_rule_share_of_all_n": 0.9,
+  "draw": {
+   "drawn_by_arm": {
+    "legacy+mid": 24,
+    "post179": 24
+   },
+   "drawn_by_source": {
+    "corpus": 21,
+    "store": 27
+   },
+   "eligible_by_arm": {
+    "legacy+mid": 19,
+    "post179": 2
+   },
+   "fill_city": "seattle-wa",
+   "fill_eligible_by_arm": {
+    "legacy+mid": 2716,
+    "post179": 258
+   },
+   "from_fill": {
+    "legacy+mid": 5,
+    "post179": 22
+   },
+   "min_abs_T_deg": 4.0,
+   "n_per_arm": 24,
+   "seed": "20260926",
+   "shortfall_in_primary": {
+    "legacy+mid": 5,
+    "post179": 22
+   }
+  },
+  "exposed_in_figure": [
+   "t03d0af5355",
+   "t082917fa83",
+   "t0a328afad9",
+   "t0bc9196f09",
+   "t0f6bdfeae5",
+   "t16ed4a628d",
+   "t29b6860eda",
+   "t2cef14d740"
+  ],
+  "judges": {
+   "claude-opus-5-5": {
+    "arms": {
+     "legacy+mid": {
+      "antileak": 0,
+      "leak": 17,
+      "n": 24,
+      "none": 5,
+      "p_antileak_vs_third": 1.0000000000000013,
+      "p_leak_vs_third": 0.0001928372849334188,
+      "p_stored_vs_third": 0.9992277585031751,
+      "posthoc_decisive_share_leak": 0.8947368421052632,
+      "posthoc_decisive_share_stored": 0.10526315789473684,
+      "share_antileak": 0.0,
+      "share_leak": 0.7083333333333334,
+      "share_stored": 0.08333333333333333,
+      "stored": 2,
+      "verdict": "split"
+     },
+     "post179": {
+      "antileak": 0,
+      "leak": 20,
+      "n": 24,
+      "none": 3,
+      "p_antileak_vs_third": 1.0000000000000013,
+      "p_leak_vs_third": 6.633902471195831e-07,
+      "p_stored_vs_third": 0.9999405968079378,
+      "posthoc_decisive_share_leak": 0.9523809523809523,
+      "posthoc_decisive_share_stored": 0.047619047619047616,
+      "share_antileak": 0.0,
+      "share_leak": 0.8333333333333334,
+      "share_stored": 0.041666666666666664,
+      "stored": 1,
+      "verdict": "split"
+     }
+    },
+    "by_direction": {
+     "leak_above": {
+      "antileak": 0,
+      "leak": 16,
+      "leak_vs_antileak_p": 1.52587890625e-05,
+      "n": 23,
+      "none": 5,
+      "stored": 2
+     },
+     "leak_below": {
+      "antileak": 0,
+      "leak": 21,
+      "leak_vs_antileak_p": 4.76837158203125e-07,
+      "n": 25,
+      "none": 3,
+      "stored": 1
+     }
+    },
+    "decision_bearing": false,
+    "exposed_in_figure": {
+     "antileak": 0,
+     "leak": 6,
+     "n": 8,
+     "none": 2,
+     "stored": 0
+    },
+    "leak_vs_antileak": {
+     "antileak": 0,
+     "leak": 37,
+     "p_one_sided": 7.275957614183426e-12
+    },
+    "n": 48,
+    "not_exposed": {
+     "antileak": 0,
+     "leak": 31,
+     "n": 40,
+     "none": 6,
+     "stored": 3
+    },
+    "post179_without_xml_posed": {
+     "antileak": 0,
+     "leak": 17,
+     "n": 20,
+     "none": 3,
+     "stored": 0
+    }
+   }
+  },
+  "n_sheets": 48,
+  "post179_xml_posed_tokens": [
+   "t654dd89744",
+   "t65fff72a8b",
+   "t6a174348ca",
+   "t9721acf667"
+  ],
+  "rig_pixel_vs_leak_window": {
+   "max_abs_dx_px": 162.78137906674965,
+   "max_dx_fraction_of_width": 0.06804526175269368,
+   "max_dy_error_fraction_of_height": 0.005949310197153462,
+   "median_dx_fraction_of_width": 0.01622084862867728,
+   "n": 48
+  },
+  "status": "awaiting Jon"
+ },
+ "conventions": {
+  "artifact_axes": "x = +left, y = +backward, z = +down (docs/depth.md ray formula)",
+  "bearing": "degrees clockwise from the pano forward (heading) direction, (-180, 180]",
+  "label_bearing": "dbear = (pano_x / pano_width) * 360 - 180, from stored pixels alone",
+  "lean": "vertical-edge lean, CCW-positive as viewed = roll cos b - pitch sin b if rig-aligned",
+  "pose_sign": "streetlevel: pitch = 90 - raw, roll = raw, degrees, wrapped to (-180, 180]",
+  "tilt_term": "T(b) = pitch cos b + roll sin b; rig elevation of the gravity horizon = +T(b) (measured, F1)",
+  "xml_conversion": "pitch = -m cos(tilt_yaw - pano_yaw), roll = -m sin(...), m = tilt_pitch_deg"
+ },
+ "deviations": [
+  "F1 was planned as a sweep of every Seattle depth artifact; it ran on the seeded one-in-four shard sample, with facades read from a seeded subset of each scan process's artifacts. Decided on the scan's run time, before any F1 fit.",
+  "F2's store arms were planned at 300 panos per stratum and ran at 150, on the store decode cost; decided before any lean was measured.",
+  "C's draw was topped up from the Seattle store sample at the same |T| threshold when the corpus gave too few eligible labels; decided after the eligibility count and before any sheet was judged.",
+  "The plan asked S3 for a fitted-beta row beside the ceiling. C yields no beta (a forced choice measures a direction, not a slope), so S3 gives the ceiling and a range assumed from F2's calibrated estimates, labelled as an assumption.",
+  "The plan treated the +2 deg warp as a calibration that recovers the slope. It is kept, but its calibrated values are reported as estimates with the shortfall open, and \"not levelled\" rests on the raw slopes.",
+  "#54 asked for the #4784 signature directly, a sinusoid in bearing with amplitude set by the tilt; the plan replaced it with the forced choice at |T| >= 4 deg (plan section 1.3). The by-direction split is this report's partial evidence for the sign flip with bearing.",
+  "The plan said to commit the adjudication key only after adjudication. It was committed early, and is now sealed with a salted hash in its place."
+ ],
+ "f1_depth_frame": {
+  "corpus": {
+   "decision_rule": {
+    "gravity": [
+     -0.1,
+     0.1
+    ],
+    "rig": [
+     0.9,
+     1.1
+    ]
+   },
+   "fit": {
+    "beta_p": 1.0036988838505438,
+    "beta_r": 0.995702464773062,
+    "ci_p": [
+     0.9994814311689296,
+     1.007916336532158
+    ],
+    "ci_r": [
+     0.9836496040069311,
+     1.007755325539193
+    ],
+    "median_abs_elevation_deg": 0.9697169281748479,
+    "median_abs_resid_deg": 0.00408611668194675,
+    "n": 1582,
+    "n_clusters": 249,
+    "resid_sd": 0.6082090834937428,
+    "se_p": 0.0021518011121025274,
+    "se_r": 0.006149531757319166
+   },
+   "verdict": "rig"
+  },
+  "seattle": {
+   "decision_rule": {
+    "gravity": [
+     -0.1,
+     0.1
+    ],
+    "rig": [
+     0.9,
+     1.1
+    ]
+   },
+   "fit": {
+    "beta_p": 0.9995173086975092,
+    "beta_r": 1.0003216792577765,
+    "ci_p": [
+     0.9945286960858016,
+     1.0045059213092167
+    ],
+    "ci_r": [
+     0.9920893900771318,
+     1.008553968438421
+    ],
+    "median_abs_elevation_deg": 1.2086611355104901,
+    "median_abs_resid_deg": 0.0007286870299670484,
+    "n": 29824,
+    "n_clusters": 5795,
+    "resid_sd": 0.7763483755201702,
+    "se_p": 0.0025452572858772403,
+    "se_r": 0.004200224721260128
+   },
+   "verdict": "rig"
+  }
+ },
+ "f2_tile_frame": {
+  "corpus_modern": {
+   "a_pitch": 0.42308849953512606,
+   "a_pitch_n_panos": 170,
+   "a_roll": 0.36039104510716485,
+   "a_roll_n_panos": 40,
+   "beta_p_calibrated": 0.814458101534148,
+   "beta_r_calibrated": 1.098020932212932,
+   "ci_p_calibrated": [
+    0.6124774287921259,
+    1.01643877427617
+   ],
+   "ci_p_calibrated_boot": [
+    0.6399594070283141,
+    1.0251606330010004
+   ],
+   "ci_r_calibrated": [
+    0.977861417468638,
+    1.218180446957226
+   ],
+   "ci_r_calibrated_boot": [
+    0.9407566757625232,
+    1.336347239557306
+   ],
+   "decision_rule": {
+    "gravity": [
+     -0.3,
+     0.3
+    ],
+    "rig": [
+     0.7,
+     1.3
+    ]
+   },
+   "gravity_band_excluded": true,
+   "n_panos": 170,
+   "pose_tilt_magnitude_range_deg": [
+    0.188638484029638,
+    10.477423217585514
+   ],
+   "raw": {
+    "beta_p": 0.34458785611231,
+    "beta_r": 0.39571691130976194,
+    "ci_p": [
+     0.25913215634679254,
+     0.4300435558778275
+    ],
+    "ci_r": [
+     0.35241249821149606,
+     0.4390213244080278
+    ],
+    "n": 2040,
+    "n_clusters": 170,
+    "resid_sd": 0.6813292985667198,
+    "se_p": 0.04360064799128,
+    "se_r": 0.02209449430695949
+   },
+   "raw_excludes_zero": true,
+   "raw_min_z": 7.90327373531757,
+   "saturated": false,
+   "verdict": "undecided"
+  },
+  "corpus_xml": {
+   "a_pitch": 0.3592245092406911,
+   "a_pitch_n_panos": 271,
+   "a_roll": 0.3423828026276681,
+   "a_roll_n_panos": 67,
+   "beta_p_calibrated": 0.7282494590223035,
+   "beta_r_calibrated": 0.7551128036054633,
+   "ci_p_calibrated": [
+    0.595605055435804,
+    0.8608938626088032
+   ],
+   "ci_p_calibrated_boot": [
+    0.6129320187406875,
+    0.8649454693025987
+   ],
+   "ci_r_calibrated": [
+    0.6160885456295082,
+    0.8941370615814183
+   ],
+   "ci_r_calibrated_boot": [
+    0.6081199275736421,
+    0.912640900223445
+   ],
+   "decision_rule": {
+    "gravity": [
+     -0.3,
+     0.3
+    ],
+    "rig": [
+     0.7,
+     1.3
+    ]
+   },
+   "gravity_band_excluded": true,
+   "n_panos": 271,
+   "pose_tilt_magnitude_range_deg": [
+    0.030000023459392497,
+    13.420042929988115
+   ],
+   "raw": {
+    "beta_p": 0.26160505452208577,
+    "beta_r": 0.25853763799847446,
+    "ci_p": [
+     0.2139559337402013,
+     0.30925417530397026
+    ],
+    "ci_r": [
+     0.21093812291943503,
+     0.3061371530775139
+    ],
+    "n": 3245,
+    "n_clusters": 271,
+    "resid_sd": 0.7718354815722847,
+    "se_p": 0.024311222633545647,
+    "se_r": 0.024285913136413904
+   },
+   "raw_excludes_zero": true,
+   "raw_min_z": 10.645580281304198,
+   "saturated": false,
+   "verdict": "undecided"
+  },
+  "store_random_modern": {
+   "a_pitch": 0.29261622754415534,
+   "a_pitch_n_panos": 150,
+   "a_roll": 0.2899968176840128,
+   "a_roll_n_panos": 36,
+   "beta_p_calibrated": 0.746830122238485,
+   "beta_r_calibrated": 0.895354500907858,
+   "ci_p_calibrated": [
+    0.6246809264678679,
+    0.8689793180091021
+   ],
+   "ci_p_calibrated_boot": [
+    0.6406591647835558,
+    0.8552393891697678
+   ],
+   "ci_r_calibrated": [
+    0.7592060243710568,
+    1.0315029774446591
+   ],
+   "ci_r_calibrated_boot": [
+    0.7398171727493773,
+    1.1069355647172505
+   ],
+   "decision_rule": {
+    "gravity": [
+     -0.3,
+     0.3
+    ],
+    "rig": [
+     0.7,
+     1.3
+    ]
+   },
+   "gravity_band_excluded": true,
+   "n_panos": 150,
+   "pose_tilt_magnitude_range_deg": [
+    0.014499488990995511,
+    9.280636566367633
+   ],
+   "raw": {
+    "beta_p": 0.21853461298576587,
+    "beta_r": 0.25964995596233637,
+    "ci_p": [
+     0.1827917761218154,
+     0.25427744984971634
+    ],
+    "ci_r": [
+     0.22016733103413755,
+     0.2991325808905352
+    ],
+    "n": 1793,
+    "n_clusters": 150,
+    "resid_sd": 0.7054200236801978,
+    "se_p": 0.01823647635665012,
+    "se_r": 0.020144566553075827
+   },
+   "raw_excludes_zero": true,
+   "raw_min_z": 11.983379284018042,
+   "saturated": false,
+   "verdict": "undecided"
+  },
+  "store_random_xml": {
+   "a_pitch": 0.29505011358166955,
+   "a_pitch_n_panos": 150,
+   "a_roll": 0.3063711642034874,
+   "a_roll_n_panos": 36,
+   "beta_p_calibrated": 0.6336803706587844,
+   "beta_r_calibrated": 0.6428366121858932,
+   "ci_p_calibrated": [
+    0.4928298426990752,
+    0.7745308986184936
+   ],
+   "ci_p_calibrated_boot": [
+    0.5204896835042693,
+    0.7714317237664952
+   ],
+   "ci_r_calibrated": [
+    0.47842295243661004,
+    0.8072502719351763
+   ],
+   "ci_r_calibrated_boot": [
+    0.46747692496641974,
+    0.8808827813630691
+   ],
+   "decision_rule": {
+    "gravity": [
+     -0.3,
+     0.3
+    ],
+    "rig": [
+     0.7,
+     1.3
+    ]
+   },
+   "gravity_band_excluded": true,
+   "n_panos": 150,
+   "pose_tilt_magnitude_range_deg": [
+    0.2499997368518615,
+    10.489993894068766
+   ],
+   "raw": {
+    "beta_p": 0.1869674653373488,
+    "beta_r": 0.19694660126801783,
+    "ci_p": [
+     0.14540950106479847,
+     0.2285254296098991
+    ],
+    "ci_r": [
+     0.1465749969196739,
+     0.24731820561636175
+    ],
+    "n": 1797,
+    "n_clusters": 150,
+    "resid_sd": 0.6883375027618337,
+    "se_p": 0.021203432614249163,
+    "se_r": 0.025700270385409486
+   },
+   "raw_excludes_zero": true,
+   "raw_min_z": 7.663211254766721,
+   "saturated": false,
+   "verdict": "undecided"
+  },
+  "store_top_modern": {
+   "a_pitch": 0.07692739874400907,
+   "a_pitch_n_panos": 150,
+   "a_roll": 0.1911997517795484,
+   "a_roll_n_panos": 44,
+   "beta_p_calibrated": 2.3939546772199773,
+   "beta_r_calibrated": 1.071981556347209,
+   "ci_p_calibrated": [
+    2.1515783189008677,
+    2.636331035539087
+   ],
+   "ci_p_calibrated_boot": [
+    1.9820220452189725,
+    3.0920017683194176
+   ],
+   "ci_r_calibrated": [
+    0.8315695107028123,
+    1.312393601991606
+   ],
+   "ci_r_calibrated_boot": [
+    0.7475868922997125,
+    1.4403382660191242
+   ],
+   "decision_rule": {
+    "gravity": [
+     -0.3,
+     0.3
+    ],
+    "rig": [
+     0.7,
+     1.3
+    ]
+   },
+   "gravity_band_excluded": null,
+   "n_panos": 150,
+   "pose_tilt_magnitude_range_deg": [
+    9.66694498294994,
+    14.809521836021581
+   ],
+   "raw": {
+    "beta_p": 0.18416070602958673,
+    "beta_r": 0.20496260748584036,
+    "ci_p": [
+     0.16551532326705176,
+     0.2028060887921217
+    ],
+    "ci_r": [
+     0.15899588403381823,
+     0.2509293309378625
+    ],
+    "n": 1782,
+    "n_clusters": 150,
+    "resid_sd": 1.505545356024039,
+    "se_p": 0.009513125194956326,
+    "se_r": 0.023452840875955776
+   },
+   "raw_excludes_zero": true,
+   "raw_min_z": 8.739350962636312,
+   "saturated": true,
+   "verdict": "undecided"
+  },
+  "store_top_xml": {
+   "a_pitch": 0.001790464807899081,
+   "a_pitch_n_panos": 150,
+   "a_roll": 0.17283176152723245,
+   "a_roll_n_panos": 37,
+   "beta_p_calibrated": 86.98297865415569,
+   "beta_r_calibrated": 0.7242169388341491,
+   "ci_p_calibrated": [
+    77.95354159894512,
+    96.01241570936627
+   ],
+   "ci_p_calibrated_boot": [
+    -295.0565251011989,
+    168.12751935532796
+   ],
+   "ci_r_calibrated": [
+    0.4668626126471625,
+    0.9815712650211356
+   ],
+   "ci_r_calibrated_boot": [
+    0.428007534729309,
+    1.1905058000319717
+   ],
+   "decision_rule": {
+    "gravity": [
+     -0.3,
+     0.3
+    ],
+    "rig": [
+     0.7,
+     1.3
+    ]
+   },
+   "gravity_band_excluded": null,
+   "n_panos": 150,
+   "pose_tilt_magnitude_range_deg": [
+    11.660027754507663,
+    21.150013978718786
+   ],
+   "raw": {
+    "beta_p": 0.15573996216650274,
+    "beta_r": 0.12516768926656593,
+    "ci_p": [
+     0.1395730728840083,
+     0.17190685144899717
+    ],
+    "ci_r": [
+     0.08068868773501509,
+     0.16964669079811678
+    ],
+    "n": 1791,
+    "n_clusters": 150,
+    "resid_sd": 1.5811985169266018,
+    "se_p": 0.008248564468539624,
+    "se_r": 0.02269378513196954
+   },
+   "raw_excludes_zero": true,
+   "raw_min_z": 5.5155051719529045,
+   "saturated": true,
+   "verdict": "undecided"
+  }
+ },
+ "generated_from": {
+  "adjudication/draw.json": {
+   "file": "2026-09-26-tilt-adjudication/draw.json",
+   "md5": "ccd94a7ee4482a713de151af4b7881de"
+  },
+  "adjudication/key.sha256": {
+   "file": "2026-09-26-tilt-adjudication/key.sha256",
+   "md5": "e7670460ee3c0431fb85a60188ab6047"
+  },
+  "adjudication/sealed/key.json": {
+   "file": "2026-09-26-tilt-adjudication/sealed/key.json",
+   "md5": "ca4aa1afcb4a9ecc7dd292de5fc62f40"
+  },
+  "adjudication/sealed/verdicts_claude-opus-5-5.jsonl": {
+   "file": "2026-09-26-tilt-adjudication/sealed/verdicts_claude-opus-5-5.jsonl",
+   "md5": "061b8ef61983a96c8f21eb96d57affd3"
+  },
+  "corpus": {
+   "file": "2026-08-12-crop-corpus-gsv.csv.gz",
+   "md5": "f82cd7c75283620ce2e7cf54aa592f38"
+  },
+  "facades": {
+   "file": "2026-09-26-tilt-facades.csv.gz",
+   "md5": "e336b4fe21f133363a9fb3db1989e012"
+  },
+  "lean-measurements": {
+   "file": "2026-09-26-tilt-lean-measurements.csv.gz",
+   "md5": "401cea8391de1d4c5117ac889d805540"
+  },
+  "photometa-census": {
+   "file": "2026-08-09-photometa-census.json",
+   "md5": "7260eb630dcb31bf7b61b284ce51554a"
+  },
+  "pose-corpus": {
+   "file": "2026-09-26-tilt-pose-corpus.csv.gz",
+   "md5": "3d9536f0423fa5fd9070a871e8eacfa4"
+  },
+  "pose-seattle": {
+   "file": "2026-09-26-tilt-pose-seattle.csv.gz",
+   "md5": "96176163b89ec69035715e8afaba0aa6"
+  },
+  "roll-census": {
+   "file": "2026-09-26-tilt-roll-census.json",
+   "md5": "585670fbd35ed2dfb18e85373b119269"
+  },
+  "s4-extent-gold": {
+   "file": "2026-09-26-tilt-s4-extent-gold.json",
+   "md5": "86010daf6165fad411e80d0b64c9c69b"
+  },
+  "xml-npz-overlap": {
+   "file": "2026-09-26-tilt-xml-npz-overlap.csv.gz",
+   "md5": "7a6033f64d471f40e472c153bb3fab28"
+  }
+ },
+ "populations": {
+  "adjudication_draw": {
+   "frame": "corpus labels, live measurable rule, pose matching the scrape era, |T| threshold per draw",
+   "keys": [
+    "c_adjudication"
+   ]
+  },
+  "corpus_panos": {
+   "frame": "the 661 corpus panos x PS camera_pitch; the roll census is every rawLabels row of one pull",
+   "keys": [
+    "s2_ps_camera_pitch"
+   ],
+   "n_cities": 35,
+   "n_labels": 763,
+   "n_panos": 661
+  },
+  "lean_panos": {
+   "frame": "corpus panos on disk + store-side Seattle sample",
+   "keys": [
+    "f2_tile_frame"
+   ]
+  },
+  "rampnet_gold": {
+   "frame": "RampNet sao_paulo/paterson gold x PS CurbRamp",
+   "keys": [
+    "s4_extent_gold"
+   ]
+  },
+  "seattle_npz_facades": {
+   "frame": "Seattle depth artifacts in a seeded 1/4 shard sample (facades for a seeded subset) + every corpus artifact",
+   "keys": [
+    "f1_depth_frame"
+   ]
+  },
+  "seattle_pose_sample": {
+   "frame": "Seattle, seeded 1/4 shard sample, both scrape eras pooled for S3; S1/S3 T evaluated at corpus-label bearings (S3: per depression band)",
+   "keys": [
+    "s1_tilt_prior",
+    "s2_xml_npz",
+    "s3_miscentering",
+    "s3_assumed_beta_range"
+   ],
+   "sampling": {
+    "facade_artifacts_per_part": 1500,
+    "facade_artifacts_total": 6000,
+    "full_scan_estimate_minutes": 95,
+    "n_parts": 4,
+    "n_shards": 4096,
+    "seed": 20260926,
+    "shard_sample": "1/4"
+   }
+  }
+ },
+ "s1_tilt_prior": {
+  "bearing_mix": "all 763 corpus labels' dbear",
+  "by_scrape_era": {
+   "modern": {
+    "abs_T_p50_deg": 1.3804552683367657,
+    "abs_T_p90_deg": 4.297425474143185,
+    "abs_T_p99_deg": 8.609989304679143,
+    "abs_pitch_p50_deg": 1.703125,
+    "abs_pitch_p90_deg": 5.707435,
+    "abs_pitch_p99_deg": 10.309714999999985,
+    "abs_roll_p50_deg": 1.0545650000000002,
+    "abs_roll_p90_deg": 2.61472,
+    "abs_roll_p99_deg": 4.860733499999993,
+    "mean_pitch_deg": -0.1650692453443049,
+    "mean_roll_deg": 0.33574757438284974,
+    "n_panos": 9236,
+    "pose_source": [
+     "npz"
+    ],
+    "sd_T_deg": 2.6515241500996285
+   },
+   "xml": {
+    "abs_T_p50_deg": 1.3874491754582223,
+    "abs_T_p90_deg": 4.2118263759193955,
+    "abs_T_p99_deg": 9.000326465690971,
+    "abs_pitch_p50_deg": 1.5804,
+    "abs_pitch_p90_deg": 5.437602000000003,
+    "abs_pitch_p99_deg": 11.019279999999998,
+    "abs_roll_p50_deg": 1.15985,
+    "abs_roll_p90_deg": 2.902818,
+    "abs_roll_p99_deg": 5.384395599999999,
+    "mean_pitch_deg": 0.33320526941819634,
+    "mean_roll_deg": 0.568237875616718,
+    "n_panos": 19885,
+    "pose_source": [
+     "xml"
+    ],
+    "sd_T_deg": 2.6703835862498293
+   }
+  },
+  "n_pano_ids_sampled": 43725,
+  "n_posed": 29121,
+  "n_unposed": 14604,
+  "superseded_prior": {
+   "abs_pitch_p50_deg": 0.6345138549804688,
+   "abs_pitch_p90_deg": 2.5951995849609375,
+   "abs_pitch_p99_deg": 6.849338531494141,
+   "abs_roll_p50_deg": 0.9046170115470886,
+   "abs_roll_p90_deg": 2.16279935836792,
+   "abs_roll_p99_deg": 4.262808322906523,
+   "n_panos": 651,
+   "source": "2026-08-09 photometa census, live Google photometa"
+  }
+ },
+ "s2_ps_camera_pitch": {
+  "corpus_labels": 763,
+  "corpus_labels_with_camera_roll": 0,
+  "npz": {
+   "corr": 0.9992877948292386,
+   "median_abs_diff_deg": 0.025872008052825968,
+   "n_panos": 171
+  },
+  "rawlabels_roll_census": {
+   "by_source": {
+    "gsv": {
+     "rows": 1333972,
+     "rows_with_camera_roll": 0
+    },
+    "infra3d": {
+     "rows": 6205,
+     "rows_with_camera_roll": 0
+    },
+    "mapillary": {
+     "rows": 9840,
+     "rows_with_camera_roll": 402
+    }
+   },
+   "fetched": "2026-09-12",
+   "n_deployments": 54,
+   "rows": 1350017,
+   "rows_with_camera_roll": 402
+  },
+  "xml": {
+   "corr": 0.9843265931954345,
+   "median_abs_diff_deg": 0.010058623081207307,
+   "n_panos": 272
+  }
+ },
+ "s2_xml_npz": {
+  "alternatives": {
+   "pitch=-m*cos(dir), roll=-m*sin(dir)": {
+    "median_abs_dpitch_deg": 0.08789361529586626,
+    "median_abs_droll_deg": 0.11033861857627433
+   },
+   "pitch=-m*cos(dir), roll=m*sin(dir)": {
+    "median_abs_dpitch_deg": 0.08789361529586626,
+    "median_abs_droll_deg": 2.1774165303822963
+   },
+   "pitch=-m*sin(dir), roll=-m*cos(dir)": {
+    "median_abs_dpitch_deg": 1.992930192445223,
+    "median_abs_droll_deg": 2.002577875500225
+   },
+   "pitch=-m*sin(dir), roll=m*cos(dir)": {
+    "median_abs_dpitch_deg": 1.992930192445223,
+    "median_abs_droll_deg": 2.186951628551783
+   },
+   "pitch=m*cos(dir), roll=-m*sin(dir)": {
+    "median_abs_dpitch_deg": 3.323998084725218,
+    "median_abs_droll_deg": 0.11033861857627433
+   },
+   "pitch=m*cos(dir), roll=m*sin(dir)": {
+    "median_abs_dpitch_deg": 3.323998084725218,
+    "median_abs_droll_deg": 2.1774165303822963
+   },
+   "pitch=m*sin(dir), roll=-m*cos(dir)": {
+    "median_abs_dpitch_deg": 2.243947915661229,
+    "median_abs_droll_deg": 2.002577875500225
+   },
+   "pitch=m*sin(dir), roll=m*cos(dir)": {
+    "median_abs_dpitch_deg": 2.243947915661229,
+    "median_abs_droll_deg": 2.186951628551783
+   }
+  },
+  "best": "pitch=-m*cos(dir), roll=-m*sin(dir)",
+  "median_abs_dpitch_deg": 0.08789361529586626,
+  "median_abs_droll_deg": 0.11033861857627433,
+  "min_miss_of_other_readings_deg": 2.002577875500225,
+  "n_overlap": 3594,
+  "n_vector_diff_over_1deg": 235,
+  "p90_vector_diff_deg": 0.7714131871261285,
+  "share_vector_diff_over_1deg": 0.06538675570395103
+ },
+ "s3_assumed_beta_range": {
+  "fraction_of_height_by_band": {
+   "15-30": [
+    0.08568090112550902,
+    0.13521154369423463
+   ],
+   "5-15": [
+    0.15966171820244845,
+    0.25195938772170196
+   ],
+   "<5": [
+    0.23973047528478558,
+    0.3783145042595495
+   ],
+   ">30": [
+    0.04028700875410844,
+    0.06357622962539523
+   ]
+  },
+  "range": [
+   0.6336803706587844,
+   1.0
+  ],
+  "status": "ASSUMPTION, not a measurement: C yields no beta (a forced choice measures a direction), so the range is F2's smallest readable calibrated point estimate up to the rig-aligned ceiling; the shift scales linearly in beta"
+ },
+ "s3_miscentering": [
+  {
+   "T_p90_deg": 4.8432671319998555,
+   "band": "<5",
+   "ceiling_fraction_of_height": 0.3783145042595495,
+   "ceiling_shift_deg": 4.8432671319998555,
+   "ceiling_shift_px_8192": 220.42246858523788,
+   "depression_deg": 3.746337890625,
+   "distance_m": 19.82614123799241,
+   "n_labels": 180,
+   "rampnet_sigma_multiple": 9.184269524384911,
+   "tagger_640px_fraction_8192": 0.3444101071644342,
+   "window_height_deg": 12.802224280243415,
+   "window_width_deg": 19.203336420365122
+  },
+  {
+   "T_p90_deg": 4.375441916820636,
+   "band": "5-15",
+   "ceiling_fraction_of_height": 0.25195938772170196,
+   "ceiling_shift_deg": 4.375441916820636,
+   "ceiling_shift_px_8192": 199.13122323663694,
+   "depression_deg": 10.83251953125,
+   "distance_m": 12.218318909295954,
+   "n_labels": 198,
+   "rampnet_sigma_multiple": 8.297134301526539,
+   "tagger_640px_fraction_8192": 0.3111425363072452,
+   "window_height_deg": 17.365663396727516,
+   "window_width_deg": 26.048495095091276
+  },
+  {
+   "T_p90_deg": 3.981300696555321,
+   "band": "15-30",
+   "ceiling_fraction_of_height": 0.13521154369423463,
+   "ceiling_shift_deg": 3.981300696555321,
+   "ceiling_shift_px_8192": 181.19341836767327,
+   "depression_deg": 19.53369140625,
+   "distance_m": 6.599065728989461,
+   "n_labels": 205,
+   "rampnet_sigma_multiple": 7.54972576531972,
+   "tagger_640px_fraction_8192": 0.28311471619948947,
+   "window_height_deg": 29.44497627775462,
+   "window_width_deg": 44.16746441663193
+  },
+  {
+   "T_p90_deg": 3.814573777523714,
+   "band": ">30",
+   "ceiling_fraction_of_height": 0.06357622962539523,
+   "ceiling_shift_deg": 3.814573777523714,
+   "ceiling_shift_px_8192": 173.6054910304126,
+   "depression_deg": 33.99169921875,
+   "distance_m": 3.4720858525696774,
+   "n_labels": 180,
+   "rampnet_sigma_multiple": 7.233562126267191,
+   "tagger_640px_fraction_8192": 0.27125857973501966,
+   "window_height_deg": 60.0,
+   "window_width_deg": 90.0
+  }
+ ],
+ "s4_extent_gold": {
+  "analysed": false,
+  "by_city": {
+   "paterson-nj": {
+    "gold_panos": 30,
+    "n_pairs": 14,
+    "ps_labels_on_gold_panos": 24
+   },
+   "sao-paulo-brazil": {
+    "gold_panos": 42,
+    "n_pairs": 0,
+    "ps_labels_on_gold_panos": 0
+   }
+  },
+  "n_pairs": 14
+ },
+ "wrong_turns": [
+  "The issue assumed per-pano tilt was fetchable only for panos Google still serves; the 2019-22 scrapes left the dead XML endpoint's tilt beside every pano they wrote, alive or not.",
+  "The plan put the depth artifact's z axis up; the documented ray formula puts it down, and the plan's pose sign (pitch > 0 = nose up) was reversed with it. F1 measured slopes of -1.00 against that hypothesis before the module was switched to the measured sign.",
+  "Instrument (b), RampNet extent gold as tilt gold, was void: RampNet points are pixel-frame detections, not Project Sidewalk clicks, so they carry no tilt term by construction.",
+  "The planner's first depth-frame test used the ground plane, which is confounded by road grade (the rig sits on the road); facade planes were the fix.",
+  "The full Seattle store scan would have run about 95 minutes; it was stopped and replaced by a seeded one-in-four shard sample across four niced processes.",
+  "The first corpus lean run used the pre-F1 sign in its calibration warps; it was re-run after the sign was fixed, and only the re-run is committed.",
+  "The first version of this report read the calibrated F2 slopes as lower bounds, arguing that the warp rotates world-leaning clutter that the real tilt does not. The real tilt rotates the whole image, clutter included, and a many-scene synthetic shows noise, not a shortfall (#158 review); the calibrated values are estimates, and why they read below 1 is open.",
+  "The top-tilt store arms saturate the lean estimator (calibration slope near zero) and cannot be calibrated; they are kept in the artifact and flagged, and only their raw slopes are read.",
+  "The corpus alone yielded 21 labels at |T| >= 4 deg, only 2 of them post179; each arm was topped up to 24 from the Seattle store sample at the same threshold instead of widening to 3 deg.",
+  "The first version committed the adjudication key beside the sheets, copied it into a second JSON, and printed it for 8 sheets in a report figure above the judging instructions (#158 review). The key is sealed now and those 8 sheets are scored apart.",
+  "The first version headlined C as \"the labelled feature sits at the rig pixel\". By the pre-set rule both arms are split, and the one contrast a judge who knows the hypothesis cannot steer is leak against antileak (#158 review)."
+ ]
+}

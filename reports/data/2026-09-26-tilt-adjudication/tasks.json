@@ -1,0 +1,194 @@
+{
+ "t03d0af5355": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"cracks\"]"
+ },
+ "t082917fa83": {
+  "label_type": "CurbRamp",
+  "tags": "[missing tactile warning]"
+ },
+ "t0a328afad9": {
+  "label_type": "SurfaceProblem",
+  "tags": "[uneven/slanted]"
+ },
+ "t0bc9196f09": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t0f6bdfeae5": {
+  "label_type": "Obstacle",
+  "tags": "[\"parked car\"]"
+ },
+ "t16ed4a628d": {
+  "label_type": "SurfaceProblem",
+  "tags": "[cracks]"
+ },
+ "t1bbdeb9a29": {
+  "label_type": "SurfaceProblem",
+  "tags": "[]"
+ },
+ "t2464639624": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "t29b6860eda": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"cracks\"]"
+ },
+ "t2cef14d740": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"very broken\"]"
+ },
+ "t2f6fa3d503": {
+  "label_type": "SurfaceProblem",
+  "tags": "[cracks]"
+ },
+ "t308cb6794c": {
+  "label_type": "CurbRamp",
+  "tags": "[\"debris / pooled water\"]"
+ },
+ "t3374e29fd7": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t3f98eb16e6": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "t3fa358f2fa": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t3fe622b4bb": {
+  "label_type": "NoCurbRamp",
+  "tags": "[no alternate route]"
+ },
+ "t40663f6fc0": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t4af21677ed": {
+  "label_type": "Obstacle",
+  "tags": "[]"
+ },
+ "t5a57bb0b42": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "t5e38370af7": {
+  "label_type": "CurbRamp",
+  "tags": "[\"debris / pooled water\",\"narrow\"]"
+ },
+ "t654dd89744": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t65fff72a8b": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t69114cdeb6": {
+  "label_type": "SurfaceProblem",
+  "tags": "[grass,debris]"
+ },
+ "t6a174348ca": {
+  "label_type": "CurbRamp",
+  "tags": "[\"points into traffic\"]"
+ },
+ "t6e2a6f00c7": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\",\"unclear if needed\"]"
+ },
+ "t7bd2ddc379": {
+  "label_type": "CurbRamp",
+  "tags": "[\"missing tactile warning\",\"not enough landing space\"]"
+ },
+ "t7c25dd100a": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t80505e51a4": {
+  "label_type": "CurbRamp",
+  "tags": "[\"missing tactile warning\"]"
+ },
+ "t80fe775626": {
+  "label_type": "NoCurbRamp",
+  "tags": "[unclear if needed]"
+ },
+ "t894670fdeb": {
+  "label_type": "Obstacle",
+  "tags": "[pole]"
+ },
+ "t8fc189a762": {
+  "label_type": "Obstacle",
+  "tags": "[trash/recycling can,vegetation]"
+ },
+ "t90a376e89c": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t9721acf667": {
+  "label_type": "CurbRamp",
+  "tags": "[\"points into traffic\",\"surface problem\",\"missing tactile warning\"]"
+ },
+ "t9dcd7ab6c2": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "ta5fdf89896": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "tafd1ae6ad9": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tb093b5d31a": {
+  "label_type": "SurfaceProblem",
+  "tags": "[uneven/slanted]"
+ },
+ "tb22de54bbc": {
+  "label_type": "Obstacle",
+  "tags": "[tree]"
+ },
+ "tbc05cdd367": {
+  "label_type": "SurfaceProblem",
+  "tags": "[uneven/slanted]"
+ },
+ "tbe169480db": {
+  "label_type": "SurfaceProblem",
+  "tags": "[]"
+ },
+ "tbfae54fe26": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"alternate route present\"]"
+ },
+ "tc2f2995868": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "td0580a7104": {
+  "label_type": "Obstacle",
+  "tags": "[]"
+ },
+ "td4bcd2ca70": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "tde3bd4d699": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tedbaf7bdd9": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tf4d5ed5a0f": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tfe71a192fd": {
+  "label_type": "Obstacle",
+  "tags": "[\"fire hydrant\"]"
+ }
+}
