@@ -482,7 +482,8 @@ def stub_photometa(monkeypatch, sizes=None, tile_size=(512, 512), gone=False, er
 def deny_probe(monkeypatch):
     """Fail the test if the two-tile zoom probe is sent at all."""
     def no_probe(*args, **kwargs):
-        raise AssertionError('the zoom probe must not be sent when photometa answered')
+        # pytest.fail raises a BaseException, which no `except Exception` in the code under test can swallow.
+        pytest.fail('the zoom probe must not be sent when photometa answered')
 
     monkeypatch.setattr(gsv, '_get_response', no_probe)
 

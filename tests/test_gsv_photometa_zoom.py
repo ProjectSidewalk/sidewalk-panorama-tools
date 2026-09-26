@@ -42,6 +42,7 @@ SERIES_16384 = [(512, 256), (1024, 512), (2048, 1024), (4096, 2048), (8192, 4096
 SERIES_13312 = [(416, 208), (832, 416), (1664, 832), (3328, 1664), (6656, 3328), (13312, 6656)]
 SERIES_3328 = [(416, 208), (832, 416), (1664, 832), (3328, 1664)]            # DC-hist 2007, four levels
 SERIES_5376 = [(336, 168), (672, 336), (1344, 672), (2688, 1344), (5376, 2688)]  # Paris-hist, five levels
+TWO_LEVELS = [(512, 256), (1024, 512)]
 
 # One encoded tile shared by every stitch, so a 512-tile grid decodes the same small body 512 times.
 TILE = jpeg_bytes(RED)
@@ -87,6 +88,12 @@ class TestChooseZoomFromReportedLevels:
     def test_a_truncated_series_that_still_agrees_is_a_consistent_fallback(self):
         assert gsv.choose_zoom(SERIES_16384[:4], 16384, 8192) == (3, True)
         assert gsv.choose_zoom(SERIES_16384[:5], 16384, 8192) == (4, True)
+
+    def test_a_height_only_disagreement_is_inconsistent(self):
+        """Every other fixture is 2:1 on both sides, so a width-only comparison passed them all - and would
+        fetch a frame whose width matches a level with the app's y-grid, silently cutting rows (review 5a)."""
+        assert gsv.choose_zoom(SERIES_16384, 16384, 6656) == (5, False)
+        assert gsv.choose_zoom(SERIES_16384, 16384, 8192) == (5, True)
 
     def test_a_frame_from_another_family_is_inconsistent_even_when_smaller_levels_exist(self):
         assert gsv.choose_zoom(SERIES_3328, 16384, 8192) == (3, False)
@@ -177,11 +184,12 @@ class TestResolveFrameUsesPhotometaFirst:
             "only a refusal from Google latches; an ordinary failure says nothing about this host's standing"
 
     def test_missing_dims_still_cost_nothing(self, monkeypatch):
-        stub_photometa(monkeypatch, error=AssertionError('no dims must not ask photometa'))
+        asked = stub_photometa(monkeypatch, TWO_LEVELS)
         deny_probe(monkeypatch)
 
         assert gsv.resolve_frame({'pano_id': PANO, 'width': None, 'height': 512}) is None
         assert gsv.resolve_frame({'pano_id': PANO, 'width': 1024}) is None
+        assert asked == []
 
     def test_a_non_512_tile_size_is_inconsistent(self, monkeypatch):
         stub_photometa(monkeypatch, SERIES_16384, tile_size=(256, 256))
@@ -192,6 +200,7 @@ class TestResolveFrameUsesPhotometaFirst:
         assert frame.consistent is False
         assert frame.evidence == 'photometa'
         assert frame.refusal == 'tile_size'
+        assert frame.zoom == 5, 'the top level, as reported - not a zoom the stitcher would ever request'
 
     def test_an_inconsistent_frame_is_reported_not_raised(self, monkeypatch):
         stub_photometa(monkeypatch, SERIES_16384)
@@ -219,11 +228,14 @@ class TestTheImagePhaseSharesTheBlockLatch:
         assert any(r.levelno == logging.ERROR and 'photometa' in r.getMessage() for r in caplog.records)
 
     def test_a_fresh_latch_means_zero_photometa_requests(self, monkeypatch):
+        """Counted, not raised: a stub raising AssertionError is caught by _photometa_levels' own
+        `except Exception` and read as a photometa failure, so it could never fail this test (review 5d)."""
         fresh_latch()
-        stub_photometa(monkeypatch, error=AssertionError('photometa must not be called under a fresh latch'))
+        asked = stub_photometa(monkeypatch, TWO_LEVELS)
         count_probes(monkeypatch, 5)
 
         assert gsv.resolve_frame(pano_info(1024, 512)) == gsv.ResolvedFrame(1024, 512, 5, True, None, 'probe')
+        assert asked == []
 
     def test_an_expired_latch_is_ignored(self, monkeypatch):
         with open(gsv.default_block_latch_path(), 'w') as f:
@@ -237,10 +249,11 @@ class TestTheImagePhaseSharesTheBlockLatch:
     def test_an_explicit_latch_path_is_honoured(self, monkeypatch, tmp_path):
         latch = str(tmp_path / 'elsewhere')
         gsv._write_block_latch(latch)
-        stub_photometa(monkeypatch, error=AssertionError('the latch passed in must be the one read'))
+        asked = stub_photometa(monkeypatch, TWO_LEVELS)
         count_probes(monkeypatch, 5)
 
         assert gsv.resolve_frame(pano_info(1024, 512), block_latch_path=latch).evidence == 'probe'
+        assert asked == []
 
     def test_the_warning_is_printed_once_per_run_not_once_per_pano(self, tmp_path, monkeypatch, capsys):
         """No module state: the first refusal writes the latch, and the second pano reads it and never asks."""
@@ -544,8 +557,6 @@ def download_all(tmp_path, count, prefix):
         gsv.download_single_pano(str(tmp_path), pano_info(1024, 512, pano_id))
 
 
-TWO_LEVELS = [(512, 256), (1024, 512)]
-
 
 class TestPhotometaFailuresAreRememberedForTheRun:
     """Review item 4: a photometa fault that is not a refusal used to cost every new pano the whole retry
@@ -689,3 +700,77 @@ class TestTheFlagsMoveTheImagePhasesHostStateToo:
 
         assert asked == []
         assert (tmp_path / 'storage' / PANO[:2] / (PANO + '.jpg')).exists()
+
+
+# --- review item 5: the holes the tests lens found ----------------------------------------------------------
+
+class TestTheFallbackSeamsStillRaiseAndStillFallBack:
+    def test_a_probe_network_failure_raises_through_both_seams(self, monkeypatch):
+        """refetch_panos books resolve_zoom_and_dims' None as the PERMANENT 'gone', so a wrapper that swallowed
+        a probe blip into None would ledger a live pano as retired (review 5b)."""
+        stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
+
+        def blip(url, session, stream=False):
+            raise requests.ConnectionError('probe blip')
+
+        monkeypatch.setattr(gsv, '_get_response', blip)
+        with pytest.raises(requests.ConnectionError):
+            gsv.resolve_frame(pano_info(1024, 512))
+        with pytest.raises(requests.ConnectionError):
+            gsv.resolve_zoom_and_dims(pano_info(1024, 512))
+
+    @pytest.mark.parametrize('msg2', [[None, None, None], [None, None, None, [[], [512, 512]]]],
+                             ids=['no-image-sizes', 'empty-image-sizes'])
+    def test_an_ok_envelope_without_levels_is_photometa_trouble(self, monkeypatch, msg2):
+        """Not "gone" (None) and not an IndexError out of resolve_frame: photometa trouble, so the probe
+        answers (review 5c; gsv.py's unreadable-levels lines were uncovered locally and in CI)."""
+        api = pytest.importorskip('streetlevel.streetview.api')
+        monkeypatch.setattr(api, 'find_panorama_by_id', lambda *a, **k: [None, [[[1], [None, PANO], msg2]]])
+
+        with pytest.raises(gsv.DepthPayloadError):
+            gsv._fetch_image_levels(PANO, object())
+
+        count_probes(monkeypatch, 5)
+        monkeypatch.setattr(api, 'find_panorama_by_id', lambda *a, **k: [None, [[[1], [None, PANO], msg2]]])
+        assert gsv.resolve_frame(pano_info(1024, 512)) == gsv.ResolvedFrame(1024, 512, 5, True, None, 'probe')
+
+    def test_response_code_3_is_read_as_levels(self, monkeypatch):
+        """1 and 3 are both OK in the envelope both seams share; nothing fed a code 3 before (review NIT)."""
+        api = pytest.importorskip('streetlevel.streetview.api')
+        monkeypatch.setattr(api, 'find_panorama_by_id', lambda *a, **k: [
+            None, [[[3], [None, PANO], [None, None, None, [[[[256, 512]], [[512, 1024]]], [512, 512]]]]]])
+
+        assert gsv._fetch_image_levels(PANO, object()) == gsv.ImageLevels([(512, 256), (1024, 512)], (512, 512))
+
+
+class TestNoPerPanoWarningOnAFallbackRun:
+    """The once-per-run test counts one exact phrase; any OTHER per-pano WARNING on a fallback path - one
+    cron-mail line per new pano for six hours - passed it (review 5e)."""
+
+    def test_a_latched_run_prints_no_warning_at_all(self, tmp_path, monkeypatch, capsys):
+        fresh_latch()
+        stub_photometa(monkeypatch, TWO_LEVELS)
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 3, 'latchedQuietPano')
+
+        assert 'WARNING' not in capsys.readouterr().out
+
+    def test_a_failing_photometa_run_prints_one_warning_however_many_panos(self, tmp_path, monkeypatch, capsys):
+        stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 5, 'failingQuietPano')
+
+        assert capsys.readouterr().out.count('WARNING') == 1
+
+    def test_a_refused_run_prints_one_warning_however_many_panos(self, tmp_path, monkeypatch, capsys):
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 3, 'refusedQuietPano')
+
+        assert capsys.readouterr().out.count('WARNING') == 1
