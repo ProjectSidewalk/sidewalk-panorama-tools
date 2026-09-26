@@ -159,7 +159,10 @@ V3_DIST_CAP_M = 50.0
 # rules are compared at the same median crop and differ only in how the window tracks depression.
 # Deliberately not CROP_SIZE_SCALE x an object width: two multiplicative constants are one degree of
 # freedom, and 2 atan(W / 2d) is exact where scaling an angle is only its small-angle approximation.
-V3_CONTEXT_WIDTH_M = 5.8  # TODO(#32 study): replaced by the fitted value in the next commit
+# Fit 2026-09-26 (reports/data/2026-09-26-crop-sizing-v3.json -> selection.matched_context_width_m;
+# the planning pilot's 5.8 reproduced exactly). The band-centre criterion (fill p50 nearest 0.36)
+# gives 6.0; the report says why the matched value is the one shipped.
+V3_CONTEXT_WIDTH_M = 5.8
 
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
