@@ -2914,6 +2914,22 @@ class TestTheMarkerKeepsItsHistory:
         kept = list(tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
         assert len(kept) == 1 and kept[0].read_text(encoding='utf-8') == content
 
+    def test_deleting_the_marker_is_the_reset_after_a_whole_recut(self, crop_runner, tmp_path, caplog):
+        """docs/cropper.md and CLAUDE.md name this as the reset: the history only grows, so after a whole
+        store is re-cut under one rule, deleting crop_rule.json (never a crop) is what quiets it."""
+        for rule in ('v2', 'v3', 'v3'):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule=rule)
+        crop = tmp_path / '1' / '7.jpg'
+        crop.parent.mkdir()
+        crop.write_bytes(b'crop')
+        (tmp_path / crop_runner.CROP_RULE_MARKER).unlink()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') is None
+        assert caplog.text == ''
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v3']
+        assert crop.read_bytes() == b'crop'
+
     def test_the_unreadable_run_warns_once_not_twice(self, crop_runner, tmp_path, caplog):
         """On the run that finds the marker unreadable, 'unknown' is this run's own finding and is
         already warned; a second 'cut under sizing rule unknown' line on the same run is noise."""

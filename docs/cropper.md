@@ -97,7 +97,11 @@ marker that exists but cannot be read (bad JSON, a malformed history, or a field
 or null) is warned about, recorded as `unknown` (for good, in `rules_seen`), and
 kept beside the new one as `crop_rule.json.unreadable-<UTC timestamp>`. Getting one geometry throughout means
 re-cutting the store under one rule's constants; there is no re-cut path yet
-([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)).
+([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)). **The reset:** once the whole
+store has been re-cut under one rule, delete `crop_rule.json` — the marker only, never a crop — and the
+history is cleared; the next run writes a fresh marker naming only its own rule. Do it only after a
+*whole* re-cut: over a store that still holds crops from another rule, deleting the marker makes a mixed
+store read as a clean one.
 
 ### Sizing rule v3 (opt-in)
 
@@ -299,7 +303,9 @@ code is what it always was, and the per-outcome summary is still printed in full
 **Re-running does not regenerate existing crops.** A crop already on disk is the resume marker and is never
 re-cut. A store cropped before the seam fix keeps its black-padded crops, and one cropped before crop sizes
 became deterministic holds a mix of (for example) 503- and 504-px crops for the same predicted size. There is
-no `--force`: delete the crops you want re-cut.
+no `--force`: delete the crops you want re-cut. If that re-cuts the whole store under one rule, delete
+`crop_rule.json` too (see [the reset](#crop-geometry) under crop geometry), or the marker keeps warning about the rule the
+deleted crops were cut under.
 
 ## Before you train on these crops
 
