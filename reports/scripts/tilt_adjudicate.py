@@ -329,6 +329,20 @@ def _token(seed, uid):
     return 't' + hashlib.sha256(('sheet:%s:%s' % (seed, uid)).encode()).hexdigest()[:10]
 
 
+def tags_as_json(tags):
+    """One encoding for tasks.json's tags: a compact JSON array of strings. The two intakes disagree -
+    the 2026-08 corpus CSV writes `[a,b]`, current rawLabels `["a","b"]` - and the quoting told a judge
+    which pool a sheet came from. The sheet caption keeps the intake's string: sheets are committed as
+    rendered, so a rebuild must reproduce them."""
+    s = (tags or '').strip()
+    try:
+        parsed = json.loads(s) if s else []
+    except ValueError:
+        inner = s[1:-1] if s.startswith('[') and s.endswith(']') else s
+        parsed = [t.strip() for t in inner.split(',')]
+    return json.dumps([str(t).strip() for t in parsed if str(t).strip()], ensure_ascii=False, separators=(',', ':'))
+
+
 def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
     """Write sheets/<token>.jpg, tasks.json (judge-facing), README.md, key.sha256, and the key itself
     under sealed/ (never shown to a judge).
@@ -361,7 +375,7 @@ def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
         render_sheet([(wins[n][1], (wins[n][0].width, wins[n][0].height), wins[n][2]) for n in order],
                      caption).save(
             os.path.join(out_dir, 'sheets', token + '.jpg'), quality=90)
-        tasks[token] = {'label_type': row['label_type'], 'tags': tags}
+        tasks[token] = {'label_type': row['label_type'], 'tags': tags_as_json(tags)}
         key[token] = {'order': order, 'label_uid': row['label_uid'], 'pano_id': row['pano_id'],
                       'pano_x': float(row['pano_x']), 'pano_y': float(row['pano_y']),
                       'pano_width': float(row['pano_width']), 'pano_height': float(row['pano_height']),
@@ -539,7 +553,10 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    if args.cmd == 'select' and args.fill_rawlabels and not (args.fill_pose and args.fill_city):
+        ap.error('--fill-rawlabels needs --fill-pose and --fill-city')
     if args.cmd == 'select':
         select(args)
     elif args.cmd == 'sheets':

@@ -525,3 +525,49 @@ def test_c_says_which_contrast_jons_verdict_is_read_on():
     how = report[report.index('**How to adjudicate**'):report.index('Preliminary machine pass')]
     assert "Jon's verdict is read on the blind leak-vs-antileak contrast" in how
     assert 'pre-set stored/shifted rule reported alongside' in how
+
+
+# ---- Gemini 3.1 Pro follow-up (#158): the fill's usage error and the tags encoding ----------------
+
+@pytest.mark.parametrize('missing', ['--fill-pose', '--fill-city'])
+def test_a_fill_without_its_pose_or_city_is_a_usage_error(tmp_path, capsys, missing):
+    argv = ['select', '--corpus', 'c.csv', '--pose', 'p.csv', '--out', str(tmp_path / 'o'),
+            '--fill-rawlabels', 'r.csv', '--fill-city', 'seattle-wa', '--fill-pose', 'fp.csv']
+    i = argv.index(missing)
+    del argv[i:i + 2]
+    with pytest.raises(SystemExit) as e:
+        ta.main(argv)
+    assert e.value.code == 2
+    assert '--fill-rawlabels needs --fill-pose and --fill-city' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('raw, expected', [
+    ('[]', '[]'), ('', '[]'), ('[cracks]', '["cracks"]'), ('["cracks"]', '["cracks"]'),
+    ('[grass,debris]', '["grass","debris"]'), ('[trash/recycling can,vegetation]', '["trash/recycling can","vegetation"]'),
+    ('["debris / pooled water","narrow"]', '["debris / pooled water","narrow"]'),
+    ('[missing tactile warning]', '["missing tactile warning"]')])
+def test_tags_are_stored_as_one_json_encoding(raw, expected):
+    assert ta.tags_as_json(raw) == expected
+
+
+def test_sheets_write_json_tags_whatever_the_intake(tmp_path):
+    rng = np.random.default_rng(0)
+    root = tmp_path / 'panos'
+    (root / 'seattle-wa' / 'ab').mkdir(parents=True)
+    labels = []
+    for i, tags in enumerate(['[cracks]', '["cracks"]', float('nan')]):
+        pid = 'ab%04d' % i
+        Image.fromarray(rng.integers(0, 255, (H, W, 3), dtype=np.uint8)).save(root / 'seattle-wa' / 'ab' / (pid + '.jpg'))
+        labels.append(dict(_label('seattle-wa:%d' % (100 + i), pid, 1500 + i, 600 + i, tags=tags), T_deg=5.0, dbear=0.0,
+                           pitch_deg=5.0, roll_deg=0.0, era_arm='post179', pose_source='npz', scrape_era='modern'))
+    tasks = ta.build_sheets(pd.DataFrame(labels), str(root), str(tmp_path / 'adj'), seed='t')
+    assert sorted(t['tags'] for t in tasks.values()) == ['["cracks"]', '["cracks"]', '[]']
+
+
+def test_the_committed_tags_are_all_json_lists_of_strings():
+    with open(os.path.join(ADJ_DIR, 'tasks.json'), encoding='utf-8') as f:
+        tasks = json.load(f)
+    for t in tasks.values():
+        tags = json.loads(t['tags'])
+        assert isinstance(tags, list) and all(isinstance(x, str) and x == x.strip() and x for x in tags)
+        assert t['tags'] == ta.tags_as_json(t['tags'])

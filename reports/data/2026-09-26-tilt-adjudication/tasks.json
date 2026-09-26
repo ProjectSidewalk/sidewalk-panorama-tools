@@ -5,11 +5,11 @@
  },
  "t082917fa83": {
   "label_type": "CurbRamp",
-  "tags": "[missing tactile warning]"
+  "tags": "[\"missing tactile warning\"]"
  },
  "t0a328afad9": {
   "label_type": "SurfaceProblem",
-  "tags": "[uneven/slanted]"
+  "tags": "[\"uneven/slanted\"]"
  },
  "t0bc9196f09": {
   "label_type": "CurbRamp",
@@ -21,7 +21,7 @@
  },
  "t16ed4a628d": {
   "label_type": "SurfaceProblem",
-  "tags": "[cracks]"
+  "tags": "[\"cracks\"]"
  },
  "t1bbdeb9a29": {
   "label_type": "SurfaceProblem",
@@ -41,7 +41,7 @@
  },
  "t2f6fa3d503": {
   "label_type": "SurfaceProblem",
-  "tags": "[cracks]"
+  "tags": "[\"cracks\"]"
  },
  "t308cb6794c": {
   "label_type": "CurbRamp",
@@ -61,7 +61,7 @@
  },
  "t3fe622b4bb": {
   "label_type": "NoCurbRamp",
-  "tags": "[no alternate route]"
+  "tags": "[\"no alternate route\"]"
  },
  "t40663f6fc0": {
   "label_type": "CurbRamp",
@@ -89,7 +89,7 @@
  },
  "t69114cdeb6": {
   "label_type": "SurfaceProblem",
-  "tags": "[grass,debris]"
+  "tags": "[\"grass\",\"debris\"]"
  },
  "t6a174348ca": {
   "label_type": "CurbRamp",
@@ -113,15 +113,15 @@
  },
  "t80fe775626": {
   "label_type": "NoCurbRamp",
-  "tags": "[unclear if needed]"
+  "tags": "[\"unclear if needed\"]"
  },
  "t894670fdeb": {
   "label_type": "Obstacle",
-  "tags": "[pole]"
+  "tags": "[\"pole\"]"
  },
  "t8fc189a762": {
   "label_type": "Obstacle",
-  "tags": "[trash/recycling can,vegetation]"
+  "tags": "[\"trash/recycling can\",\"vegetation\"]"
  },
  "t90a376e89c": {
   "label_type": "CurbRamp",
@@ -145,15 +145,15 @@
  },
  "tb093b5d31a": {
   "label_type": "SurfaceProblem",
-  "tags": "[uneven/slanted]"
+  "tags": "[\"uneven/slanted\"]"
  },
  "tb22de54bbc": {
   "label_type": "Obstacle",
-  "tags": "[tree]"
+  "tags": "[\"tree\"]"
  },
  "tbc05cdd367": {
   "label_type": "SurfaceProblem",
-  "tags": "[uneven/slanted]"
+  "tags": "[\"uneven/slanted\"]"
  },
  "tbe169480db": {
   "label_type": "SurfaceProblem",
