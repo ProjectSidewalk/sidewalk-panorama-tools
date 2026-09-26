@@ -356,3 +356,138 @@ class TestCommittedFindings:
         assert len(meta['rampnet_commit']) == 40
         assert set(meta['bundles']) == CITIES
         assert '--write reports/data/2026-09-26-crop-sizing-v3.json' in meta['generated_by']
+
+
+@pytest.fixture(scope='module')
+def report():
+    """The report with whitespace runs collapsed (so a wrapped phrase still matches) and the typographic
+    minus read as ASCII, so '-1.28' is found where the table prints it as a proper minus sign."""
+    with open(REPORT_MD, encoding='utf-8') as f:
+        return ' '.join(f.read().split()).replace('−', '-')
+
+
+def _has(report, value, spec='.3f'):
+    return format(value, spec) in report
+
+
+class TestReportMatchesTheArtifact:
+    """Every number in the report's prose and tables, transcribed from the committed summary.
+
+    The desk-study convention: a report table is the one place in this repo where a plausible number has
+    no compiler and no test, and two counts in an earlier report were wrong by 2x and 6x unnoticed.
+    """
+
+    def test_the_reproduce_block_names_the_run(self, summary, report):
+        assert summary['meta']['rampnet_commit'] in report
+        assert 'reports/data/2026-09-26-crop-sizing-v3.json' in report
+
+    def test_the_selection(self, summary, report):
+        sel = summary['selection']
+        assert _has(report, sel['target_fill_p50'])
+        assert '%.1f m' % sel['matched_context_width_m'] in report
+        assert '%.1f m' % sel['band_centre_width_m'] in report
+        assert '%.1f to %.1f m' % (sel['grid_min_m'], sel['grid_max_m']) in report
+        assert '%.1f m grid' % sel['grid_step_m'] in report
+
+    def test_the_distance_table(self, summary, report):
+        for row in summary['distance_table']:
+            dep = '%g°' % row['depression_deg']
+            line = '| %s | %.2f m | %.2f m | %.1f° | %.1f° |' % (
+                dep, row['legacy_m'], row['blend_m'], row['v2_window_deg'], row['v3_window_deg'])
+            assert line in report, line
+
+    def test_the_geometry(self, summary, report):
+        g = summary['rule_geometry']
+        for key in ('legacy_zero_crossing_deg', 'v2_cap_onset_deg', 'v3_cap_onset_deg',
+                    'v3_horizon_window_deg'):
+            assert _has(report, g[key], '.2f'), key
+
+    def test_the_exponent_table(self, summary, report):
+        for name, block in dict(summary['cities'], pooled=summary['pooled']).items():
+            legacy, blend = block['exponent']['legacy'], block['exponent']['blend']
+            cells = ['%.2f' % legacy['slope'], '%.3f' % legacy['r2'], str(legacy['n']),
+                     '%.2f' % blend['slope'], '%.3f' % blend['r2'], str(blend['n'])]
+            if name == 'pooled':
+                cells = ['**%s**' % c for c in cells]
+            line = '| %s | %s |' % ('**pooled**' if name == 'pooled' else name, ' | '.join(cells))
+            assert line in report, line
+        excluded = summary['pooled']['exponent']['blend']['n'] - summary['pooled']['exponent']['legacy']['n']
+        assert '(%d pooled)' % excluded in report
+
+    def test_the_finding_2_table(self, summary, report):
+        for name, block in dict(summary['cities'], pooled=summary['pooled']).items():
+            v2, v3, r2 = block['v2'], block['v3'], block['r2']
+            cells = [str(block['n']),
+                     '%.3f / %.3f' % (v2['fill_p50'], v3['fill_p50']),
+                     '%.3f / %.3f' % (v2['fill_log_sd'], v3['fill_log_sd']),
+                     '%.2f / %.2f' % (v2['fill_p90_over_p10'], v3['fill_p90_over_p10']),
+                     '%.3f / %.3f' % (r2['v2'], r2['v3']),
+                     '%.3f' % r2['ceiling']['isotonic_r2'], '%.3f' % r2['ceiling']['parametric_r2']]
+            if name == 'pooled':
+                cells = ['**%s**' % c for c in cells]
+            line = '| %s | %s |' % ('**pooled**' if name == 'pooled' else name, ' | '.join(cells))
+            assert line in report, line
+
+    def test_the_checks(self, summary, report):
+        pooled = summary['pooled']
+        assert ('%.1f%% / %.1f%%' % (100 * pooled['v2']['frac_clearing_too_tight'],
+                                    100 * pooled['v3']['frac_clearing_too_tight'])) in report
+        assert '%.3f / %.3f' % (pooled['v2']['containment'], pooled['v3']['containment']) in report
+        assert '%.1f° / %.1f°' % (pooled['v2']['window_deg_p50'], pooled['v3']['window_deg_p50']) in report
+        assert '%d / %d' % (pooled['v2']['stored_width_p50'], pooled['v3']['stored_width_p50']) in report
+        sp = summary['cities']['sao_paulo']
+        assert '%.3f / %.3f' % (sp['v2']['containment'], sp['v3']['containment']) in report
+
+    def test_option_a(self, summary, report):
+        a = summary['rule_a_blend_powerlaw']
+        m = a['pooled_matched']
+        # In their sentences, not bare: 0.402 is also Richmond's v3 log-sd, so a bare search passes
+        # for a report that got option A's number wrong.
+        assert '(**×%.1f**, fill p50 **%.3f**)' % (a['matched_scale'], m['fill_p50']) in report
+        assert 'log-sd **%.3f** against' % m['fill_log_sd'] in report
+        assert 'p90/p10 **%.2f** against' % m['fill_p90_over_p10'] in report
+        assert 'pooled R² **%.3f** against' % m['r2'] in report
+        for city, label in (('sao_paulo', 'São Paulo'), ('paterson', 'Paterson'),
+                            ('richmond', 'Richmond'), ('annapolis', 'Annapolis')):
+            assert '%s **%.3f**' % (label, a['cities_matched'][city]['r2']) in report, city
+        assert _has(report, a['pooled_at_v2_scale']['fill_p50'])
+
+    def test_what_moves(self, summary, report):
+        wc = summary['window_change']
+        for key in ('ratio_p10', 'ratio_p50', 'ratio_p90'):
+            assert '×%.3f' % wc[key] in report, key
+        assert '**%.1f%%** of ramps move by more than 10%% and **%.1f%%** by more than 20%%' % (
+            100 * wc['frac_over_10pct'], 100 * wc['frac_over_20pct']) in report
+        assert 'moves %.1f%% of windows by more than 10%%' % (100 * wc['frac_over_10pct']) in report
+        names = {'<2': '< 2°', '>=40': '≥ 40°'}
+        for band in wc['bands']:
+            label = names.get(band['band'], band['band'].replace('-', '–') + '°')
+            line = '| %s | %d | ×%.2f |' % (label, band['n'], band['ratio_p50'])
+            assert line in report, line
+
+    def test_the_production_table(self, summary, report):
+        prod = summary['production']
+        assert '{:,}'.format(prod['n']) in report
+        for row in prod['rows']:
+            line = '| %s | %.1f° | %.1f° | %.1f° | ×%.2f |' % (
+                row['percentile'], row['depression_deg'], row['v2_window_deg'], row['v3_window_deg'],
+                row['ratio'])
+            assert line in report, line
+
+    def test_annapolis(self, summary, report):
+        ann = summary['cities']['annapolis']
+        assert '%.1f%% to **%.1f%%**' % (100 * ann['v2']['frac_clearing_too_tight'],
+                                          100 * ann['v3']['frac_clearing_too_tight']) in report
+
+    def test_the_cap_onset_and_camera_height(self, summary, report):
+        assert _has(report, summary['constants']['v3']['camera_height_m'], '.4f')
+        assert '%g°' % summary['constants']['v3']['blend_deg'] in report
+
+    def test_the_byte_identical_table_size_is_the_tests(self, report):
+        with open(os.path.join(REPO_ROOT, 'tests', 'test_crop_runner.py'), encoding='utf-8') as f:
+            source = f.read()
+        block = source[source.index('MASTER_V2_WINDOWS = ['):]
+        block = block[:block.index('\n]')]
+        rows = sum(1 for line in block.splitlines() if line.strip().startswith('(('))
+        assert rows >= 12
+        assert '%d-row table' % rows in report
