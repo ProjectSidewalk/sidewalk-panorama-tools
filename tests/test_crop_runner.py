@@ -2335,3 +2335,343 @@ class TestTheDefaultWindowIsByteIdentical:
         x, y, w, h = args
         box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
         assert tuple(box) == expected
+
+    def test_the_default_rule_is_v2(self, crop_runner):
+        """The flip to v3 is a decision pending a re-cut path (#83), not something this PR takes."""
+        assert crop_runner.CROP_RULE_VERSION == 'v2'
+        assert crop_runner.CROP_RULE_VERSIONS == ('v2', 'v3')
+        args = crop_runner.build_parser().parse_args(['-d', 'x.invalid', '-s', '/panos', '-o', '/out'])
+        assert args.sizing_rule == 'v2'
+        for y, h in ((512, 1024), (5000, 8192), (100, 6656)):
+            assert (crop_runner.crop_window_fov_deg(y, h)
+                    == crop_runner.crop_window_fov_deg(y, h, sizing_rule='v2'))
+
+    def test_v3_constants_do_not_reach_the_default_path(self, crop_runner, monkeypatch):
+        """Discrimination for the table: a v2 branch that consulted any v3 constant would move here."""
+        monkeypatch.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 100.0)
+        monkeypatch.setattr(crop_runner, 'V3_CAMERA_HEIGHT_M', 0.01)
+        for (x, y, w, h), expected in MASTER_V2_WINDOWS:
+            box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
+            assert tuple(box) == expected
+
+
+def pano_y_at(depression_deg, pano_height):
+    """The pano row `depression_deg` below the horizon, written without the 180 literal."""
+    import CropRunner
+    return pano_height / 2 + CropRunner.elevation_deg_to_px(depression_deg, pano_height)
+
+
+@pytest.fixture
+def pov_replay():
+    """The study port the production copy of the lle #3 calibration must agree with."""
+    scripts = os.path.join(REPO_ROOT, 'reports', 'scripts')
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import pov_replay
+    return pov_replay
+
+
+class TestLabelDepression:
+    """The one place a stored pano_y becomes an angle under v3 - and the seam #54's tilt term adds to."""
+
+    @pytest.mark.parametrize('pano_height', [1024, 1664, 6656, 8192])
+    def test_the_horizon_and_the_poles(self, crop_runner, pano_height):
+        assert crop_runner.label_depression_deg(pano_height / 2, pano_height) == 0
+        assert crop_runner.label_depression_deg(pano_height, pano_height) == pytest.approx(90.0)
+        assert crop_runner.label_depression_deg(0, pano_height) == pytest.approx(-90.0)
+
+    def test_positive_is_down(self, crop_runner):
+        """Sign pin: a label below the horizon (larger pano_y) is a positive depression."""
+        assert crop_runner.label_depression_deg(700, 1024) > 0
+        assert crop_runner.label_depression_deg(300, 1024) < 0
+
+    @pytest.mark.parametrize('rel_y', [0.0, 0.1, 0.5, 0.55, 0.62, 0.8, 0.999])
+    @pytest.mark.parametrize('pano_height', [1024, 4000, 8192])
+    def test_it_is_the_study_ports_depression(self, crop_runner, pov_replay, rel_y, pano_height):
+        y = rel_y * pano_height
+        assert crop_runner.label_depression_deg(y, pano_height) == pytest.approx(
+            float(pov_replay.depression_from_pano_y(y, pano_height)), abs=1e-12)
+
+    def test_it_reads_the_height_not_the_width(self, crop_runner):
+        """On a square pano the azimuth conversion would report half the angle; the elevation one is
+        the only one that puts the bottom row at the nadir."""
+        side = 1024
+        assert crop_runner.label_depression_deg(side, side) == pytest.approx(90.0)
+
+
+BLEND_GRID = [-10.0, 0.0, 0.5, 2.0, 5.0, 11.24, 11.25, 11.26, 20.0, 45.0, 60.0, 89.0]
+
+
+class TestBlendDistanceMatchesTheStudyPort:
+    """CropRunner carries a COPY of the lle #3 calibration (production must not import reports/scripts),
+    so the copy is pinned equal to the study port on a grid that straddles the blend point."""
+
+    def test_the_constants_are_the_study_ports(self, crop_runner, pov_replay):
+        assert crop_runner.V3_CAMERA_HEIGHT_M == pov_replay.BLEND_CAMERA_HEIGHT_M
+        assert crop_runner.V3_BLEND_DEG == pov_replay.BLEND_DEG
+        assert crop_runner.V3_DIST_CAP_M == pov_replay.DIST_CAP_M
+
+    @pytest.mark.parametrize('dep', BLEND_GRID)
+    def test_equal_on_the_grid(self, crop_runner, pov_replay, dep):
+        assert crop_runner.blend_distance_m(dep) == pytest.approx(
+            float(pov_replay.predict_blend_distance(dep)), rel=1e-12)
+
+    def test_the_horizon_is_bounded_and_the_45_degree_ray_lands_at_camera_height(self, crop_runner):
+        assert crop_runner.blend_distance_m(0.0) == pytest.approx(23.848261259830384, rel=1e-12)
+        assert crop_runner.blend_distance_m(-30.0) == crop_runner.blend_distance_m(0.0)
+        assert crop_runner.blend_distance_m(45.0) == pytest.approx(crop_runner.V3_CAMERA_HEIGHT_M)
+
+    def test_it_decreases_with_depression(self, crop_runner):
+        distances = [crop_runner.blend_distance_m(d) for d in BLEND_GRID[1:]]
+        assert all(a > b for a, b in zip(distances, distances[1:]))
+
+    def test_the_cap_is_honoured(self, crop_runner):
+        """With the shipped height the cap never binds (the horizon is 23.85 m), so it is exercised with
+        a tall camera - which is how a cap that went missing would show."""
+        assert crop_runner.blend_distance_m(0.0, camera_height_m=10.0) == crop_runner.V3_DIST_CAP_M
+        assert crop_runner.blend_distance_m(2.0, camera_height_m=10.0, cap_m=30.0) == 30.0
+
+    def test_the_floor_is_zero_past_the_nadir(self, crop_runner, pov_replay):
+        """The cotangent turns negative past 90 deg; the lower clip is what keeps a distance a distance."""
+        assert crop_runner.blend_distance_m(100.0) == 0.0
+        assert float(pov_replay.predict_blend_distance(100.0)) == 0.0
+
+
+def v3_fov(crop_runner, distance_m, width_m=None):
+    """The v3 angle by the textbook formula, unclamped: 2 atan(W / 2d)."""
+    width_m = crop_runner.V3_CONTEXT_WIDTH_M if width_m is None else width_m
+    return math.degrees(2 * math.atan(width_m / (2 * distance_m)))
+
+
+class TestGeometricWindow:
+    """v3's window is the angle a fixed frontal span of world subtends at the label's distance."""
+
+    @pytest.mark.parametrize('distance_m, width_m', [(4.0, 5.8), (10.0, 5.8), (23.0, 6.0), (6.4, 4.0)])
+    def test_it_is_the_subtended_angle_inside_the_clamps(self, crop_runner, distance_m, width_m):
+        got = crop_runner.geometric_window_fov_deg(distance_m, context_width_m=width_m)
+        assert crop_runner.CROP_MIN_FOV_DEG < got < crop_runner.CROP_MAX_FOV_DEG
+        assert got == pytest.approx(v3_fov(crop_runner, distance_m, width_m), rel=1e-12)
+
+    def test_the_clamps_apply(self, crop_runner):
+        assert crop_runner.geometric_window_fov_deg(0.5, 5.8) == crop_runner.CROP_MAX_FOV_DEG
+        assert crop_runner.geometric_window_fov_deg(0.0, 5.8) == crop_runner.CROP_MAX_FOV_DEG
+        assert crop_runner.geometric_window_fov_deg(-1.0, 5.8) == crop_runner.CROP_MAX_FOV_DEG
+        assert crop_runner.geometric_window_fov_deg(500.0, 5.8) == crop_runner.CROP_MIN_FOV_DEG
+
+    def test_it_never_grows_with_distance(self, crop_runner):
+        fovs = [crop_runner.geometric_window_fov_deg(d) for d in (0.1, 1, 2, 3, 5, 8, 13, 21, 50, 200)]
+        assert all(a >= b for a, b in zip(fovs, fovs[1:]))
+
+    def test_the_floor_is_unreachable_at_the_shipped_width(self, crop_runner):
+        """The horizon saturates the distance, so the narrowest v3 window is the horizon's - and at the
+        shipped width it sits above the 8 degree floor. Stated so nobody tunes the floor for v3."""
+        horizon = crop_runner.crop_window_fov_deg(512, 1024, sizing_rule='v3')
+        assert horizon > crop_runner.CROP_MIN_FOV_DEG
+        assert crop_runner.crop_window_fov_deg(0, 1024, sizing_rule='v3') == horizon
+
+    @pytest.mark.parametrize('dep', [5.0, 20.0, 30.0, 35.0, 38.0, 39.0, 40.0, 45.0, 60.0])
+    def test_the_cap_binds_exactly_where_the_span_reaches_the_label(self, crop_runner, dep):
+        """90 deg is the angle a span W subtends at d = W/2, so the cap binds iff d <= W/2."""
+        fov = crop_runner.crop_window_fov_deg(pano_y_at(dep, 8192), 8192, sizing_rule='v3')
+        at_cap = crop_runner.blend_distance_m(dep) <= crop_runner.V3_CONTEXT_WIDTH_M / 2
+        assert (fov == crop_runner.CROP_MAX_FOV_DEG) is at_cap
+
+    def test_the_cap_onset_is_deeper_than_v2s(self, crop_runner):
+        """v2 hits 90 deg from 26.75 deg of depression; v3 later, so fewer near-field crops are capped."""
+        dep = 30.0
+        assert crop_runner.crop_window_fov_deg(pano_y_at(dep, 8192), 8192) == crop_runner.CROP_MAX_FOV_DEG
+        assert (crop_runner.crop_window_fov_deg(pano_y_at(dep, 8192), 8192, sizing_rule='v3')
+                < crop_runner.CROP_MAX_FOV_DEG)
+
+    @pytest.mark.parametrize('rel_y', [0.0, 0.3, 0.5, 0.55, 0.6, 0.62, 0.7, 0.9, 0.999])
+    def test_the_composition_is_the_rule(self, crop_runner, rel_y):
+        """The #54 door: depression -> distance -> angle, three named steps. A tilt correction is an
+        addend to label_depression_deg; a measured (depth) distance replaces blend_distance_m. A
+        refactor that fuses the three must fail here."""
+        h = 6656
+        y = rel_y * h
+        assert crop_runner.crop_window_fov_deg(y, h, sizing_rule='v3') == crop_runner.geometric_window_fov_deg(
+            crop_runner.blend_distance_m(crop_runner.label_depression_deg(y, h)))
+
+    @pytest.mark.parametrize('rule', ['v2', 'v3'])
+    @pytest.mark.parametrize('dep', [0.0, 10.0, 20.0])
+    def test_the_window_is_an_angle_independent_of_resolution(self, crop_runner, rule, dep):
+        degs = []
+        for h in (1664, 2048, 4000, 6656, 8192):
+            width = crop_runner.crop_window_width(pano_y_at(dep, h), 2 * h, h, sizing_rule=rule)
+            degs.append(crop_runner.azimuth_px_to_deg(width, 2 * h))
+        assert max(degs) == pytest.approx(min(degs), rel=1e-12)
+
+    @pytest.mark.parametrize('rule', ['v2', 'v3'])
+    def test_the_width_is_converted_on_the_azimuth_axis(self, crop_runner, rule):
+        """The non-2:1 case, for both rules: a square pano has half the azimuth px per degree."""
+        side = 1024
+        y = pano_y_at(12.0, side)
+        fov = crop_runner.crop_window_fov_deg(y, side, sizing_rule=rule)
+        width = crop_runner.crop_window_width(y, side, side, sizing_rule=rule)
+        assert width == crop_runner.azimuth_deg_to_px(fov, side)
+        assert width == crop_runner.elevation_deg_to_px(fov, side) / 2
+
+    def test_v3_differs_from_v2_where_the_estimators_disagree(self, crop_runner):
+        """At 20 deg the blend distance is ~6.4 m and the 2013 line says ~8.5 m, so the rules differ."""
+        y, h = pano_y_at(20.0, 8192), 8192
+        assert (crop_runner.crop_window_fov_deg(y, h, sizing_rule='v3')
+                != pytest.approx(crop_runner.crop_window_fov_deg(y, h), rel=0.01))
+
+
+class TestSizingRuleSelection:
+
+    def test_an_unknown_rule_is_refused_by_the_rule(self, crop_runner):
+        with pytest.raises(ValueError, match='v1'):
+            crop_runner.crop_window_fov_deg(512, 1024, sizing_rule='v1')
+
+    def test_an_unknown_rule_is_refused_before_the_marker_is_written(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        with pytest.raises(ValueError):
+            crop_runner.bulk_extract_crops([label_row()], str(store), str(out), sizing_rule='v4')
+        assert not (out / crop_runner.CROP_RULE_MARKER).exists()
+
+    def test_an_unknown_rule_is_refused_by_the_marker(self, crop_runner, tmp_path):
+        with pytest.raises(ValueError):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v4')
+        assert not (tmp_path / crop_runner.CROP_RULE_MARKER).exists()
+
+    def test_the_parser_accepts_the_two_rules_and_nothing_else(self, crop_runner):
+        base = ['-d', 'x.invalid', '-s', '/panos', '-o', '/out']
+        assert crop_runner.build_parser().parse_args(base + ['--sizing-rule', 'v3']).sizing_rule == 'v3'
+        assert crop_runner.build_parser().parse_args(base + ['--sizing-rule', 'v2']).sizing_rule == 'v2'
+        with pytest.raises(SystemExit) as e:
+            crop_runner.build_parser().parse_args(base + ['--sizing-rule', 'v1'])
+        assert e.value.code == 2
+
+    def test_a_v3_run_cuts_the_v3_window(self, crop_runner, tmp_path):
+        """Twenty degrees below the horizon on the 2048x1024 fixture: the two rules cut different
+        widths, and the bulk loop must cut the one it was asked for."""
+        w, h = PANO_SIZE
+        y = int(round(pano_y_at(20.0, h)))
+        widths = {}
+        for rule in ('v2', 'v3'):
+            store, out = tmp_path / ('store' + rule), tmp_path / ('crops' + rule)
+            put_pano(store, 'testpano0001')
+            counts = crop_runner.bulk_extract_crops([label_row(pano_x=1000, pano_y=y)], str(store),
+                                                    str(out), sizing_rule=rule)
+            assert counts['success'] == 1
+            with Image.open(crop_path(out, 1, 1)) as crop:
+                widths[rule] = crop.size[0]
+            expected = crop_runner.compute_crop_box(
+                1000, y, crop_runner.crop_window_width(y, w, h, sizing_rule=rule), w, h).width
+            assert widths[rule] == min(expected, crop_runner.CROP_MAX_STORED_WIDTH), rule
+        assert widths['v2'] != widths['v3']
+
+    def test_main_threads_the_flag_into_the_store(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row()])
+        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out),
+                                 '--sizing-rule', 'v3']) == 0
+        with open(out / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            marker = json.load(f)
+        assert marker['crop_rule_version'] == 'v3'
+        assert marker['distance_estimator'] == 'lle3-cotangent-blend'
+
+    def test_run_passes_the_rule_through(self, crop_runner, monkeypatch):
+        seen = {}
+
+        def fake_bulk(labels, pano_dir, out_dir, **kwargs):
+            seen.update(kwargs)
+            return {}
+        monkeypatch.setattr(crop_runner, 'bulk_extract_crops', fake_bulk)
+        monkeypatch.setattr(crop_runner, 'load_label_metadata', lambda d, f: [])
+        crop_runner.run(None, 'x.csv', '/panos', '/out', sizing_rule='v3')
+        assert seen['sizing_rule'] == 'v3'
+
+    def test_make_single_crop_cuts_the_rule_it_is_given_and_registration_holds(self, crop_runner,
+                                                                              tmp_path):
+        """The v3 window through make_single_crop, with the label found in the saved file by the one
+        registration function. A landmark block rather than one pixel, because the file is a JPEG."""
+        w, h = PANO_SIZE
+        x, y = 1000, int(round(pano_y_at(20.0, h)))
+        pano = Image.new('RGB', (w, h), (0, 0, 255))
+        for dx in range(-8, 8):
+            for dy in range(-8, 8):
+                pano.putpixel((x + dx, y + dy), (255, 0, 0))
+        out = str(tmp_path / 'v3.jpg')
+        box = crop_runner.make_single_crop(pano, x, y, out, sizing_rule='v3')
+        assert box == crop_runner.compute_crop_box(
+            x, y, crop_runner.crop_window_width(y, w, h, sizing_rule='v3'), w, h)
+        assert box != crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
+        with Image.open(out) as crop:
+            px, py = crop_runner.label_position_in_crop(x, y, box, w, scale=crop.size[0] / box.width)
+            r, g, b = crop.getpixel((int(px), int(py)))
+        assert r > 200 and b < 60
+
+    def test_the_mark_follows_the_label_under_v3(self, crop_runner, tmp_path):
+        """--mark-label under v3, on a shifted near-bottom window: the dot is where the label is."""
+        w, h = PANO_SIZE
+        x, y = 1000, NEAR_BOTTOM_Y
+        pano = Image.new('RGB', (w, h), (255, 255, 255))
+        out = str(tmp_path / 'marked.jpg')
+        box = crop_runner.make_single_crop(pano, x, y, out, draw_mark=True, sizing_rule='v3')
+        assert box.shifted
+        with Image.open(out) as crop:
+            px, py = crop_runner.label_position_in_crop(x, y, box, w, scale=crop.size[0] / box.width)
+            assert sum(crop.getpixel((int(px), int(py)))) < 600
+            assert sum(crop.getpixel((crop.size[0] // 2, crop.size[1] // 2))) > 600
+
+
+class TestTheRuleMarkerUnderTwoRules:
+    """With two rules, the mixed-store check has to compare the rule THIS run selected."""
+
+    def _marker(self, path):
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+
+    @pytest.mark.parametrize('on_disk, selected', [('v2', 'v3'), ('v3', 'v2')])
+    def test_switching_rules_warns_on_both_channels(self, crop_runner, tmp_path, caplog, capsys,
+                                                    on_disk, selected):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule=on_disk)
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            previous = crop_runner.write_rule_marker(str(tmp_path), sizing_rule=selected)
+        assert previous == on_disk
+        printed = capsys.readouterr().out
+        for channel in (caplog.text, printed):
+            assert 'cut under sizing rule %s and this run uses %s' % (on_disk, selected) in channel
+        marker = self._marker(tmp_path / crop_runner.CROP_RULE_MARKER)
+        assert marker['crop_rule_version'] == selected
+        assert marker['previous_crop_rule_version'] == on_disk
+
+    def test_rewriting_a_v3_store_under_v3_is_silent(self, crop_runner, tmp_path, caplog):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'v3'
+        assert 'sizing rule' not in caplog.text
+
+    def test_a_fresh_v3_store_records_its_estimator_and_constants(self, crop_runner, tmp_path):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        marker = self._marker(tmp_path / crop_runner.CROP_RULE_MARKER)
+        assert marker['crop_rule_version'] == 'v3'
+        assert marker['distance_estimator'] == 'lle3-cotangent-blend'
+        assert marker['v3_camera_height_m'] == crop_runner.V3_CAMERA_HEIGHT_M
+        assert marker['v3_blend_deg'] == crop_runner.V3_BLEND_DEG
+        assert marker['v3_dist_cap_m'] == crop_runner.V3_DIST_CAP_M
+        assert marker['v3_context_width_m'] == crop_runner.V3_CONTEXT_WIDTH_M
+        assert marker['crop_min_fov_deg'] == crop_runner.CROP_MIN_FOV_DEG
+
+    def test_a_fresh_v2_store_keeps_every_key_it_had_and_names_its_estimator(self, crop_runner,
+                                                                            tmp_path):
+        crop_runner.write_rule_marker(str(tmp_path))
+        marker = self._marker(tmp_path / crop_runner.CROP_RULE_MARKER)
+        assert {'crop_rule_version', 'crop_size_scale', 'crop_min_fov_deg', 'crop_max_fov_deg',
+                'crop_aspect_w_over_h', 'crop_max_stored_width',
+                'previous_crop_rule_version'} <= set(marker)
+        assert marker['crop_rule_version'] == 'v2'
+        assert marker['distance_estimator'] == 'linear-2013'
+
+    def test_the_summary_line_names_the_selected_rule(self, crop_runner, tmp_path, capsys):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row()], str(store), str(out), sizing_rule='v3')
+        assert 'Crop sizing rule v3 (recorded in' in capsys.readouterr().out
