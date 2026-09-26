@@ -82,7 +82,8 @@ tightest crops. Every v2 constant is one measured number:
 **Which rule cut a store is recorded in `<crop-dir>/crop_rule.json` — check it before training on a
 directory.** `write_rule_marker()` writes the rule the run selected (`crop_rule_version`), its
 `distance_estimator`, and every rule's constants before anything is cut, and *warns* — on stdout and in
-`crop.log` — rather than refusing when the marker disagrees with the rule this run selected. A mixed store is the ordinary
+`crop.log` — rather than refusing when the marker disagrees with the rule this run selected, or, under the
+same rule id, when a constant that rule reads has changed (a refit v3 would still call itself v3). A mixed store is the ordinary
 result of changing the rule: existing crops are the resume marker and are never re-cut, so running v2 over a
 v1 store leaves square v1 crops accreting 3:2 ones beside them. Deleting the store is the only way to get one
 geometry throughout.

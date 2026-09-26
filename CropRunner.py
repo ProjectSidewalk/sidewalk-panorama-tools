@@ -731,13 +731,37 @@ def downscale_for_storage(crop):
     return crop.resize((CROP_MAX_STORED_WIDTH, max(1, int(round(height * scale)))), Image.LANCZOS)
 
 
+# Which recorded constants each rule actually reads, for write_rule_marker's same-id check. v3 does not
+# use CROP_SIZE_SCALE and v2 uses none of the v3_* numbers, so a change to those is not a mixed store.
+RULE_MARKER_CONSTANT_KEYS = {
+    'v2': ('crop_size_scale', 'crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h',
+           'crop_max_stored_width'),
+    'v3': ('crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h', 'crop_max_stored_width',
+           'v3_camera_height_m', 'v3_blend_deg', 'v3_dist_cap_m', 'v3_context_width_m'),
+}
+
+
+def _rule_constants():
+    """Every sizing constant, as crop_rule.json records it. Read at call time, not import time."""
+    return {'crop_size_scale': CROP_SIZE_SCALE,
+            'crop_min_fov_deg': CROP_MIN_FOV_DEG,
+            'crop_max_fov_deg': CROP_MAX_FOV_DEG,
+            'crop_aspect_w_over_h': CROP_ASPECT_W_OVER_H,
+            'crop_max_stored_width': CROP_MAX_STORED_WIDTH,
+            'v3_camera_height_m': V3_CAMERA_HEIGHT_M,
+            'v3_blend_deg': V3_BLEND_DEG,
+            'v3_dist_cap_m': V3_DIST_CAP_M,
+            'v3_context_width_m': V3_CONTEXT_WIDTH_M}
+
+
 def write_rule_marker(destination_dir, sizing_rule=CROP_RULE_VERSION):
     """Record which sizing rule cut this crop store, in the store, and warn if it disagrees.
 
     `sizing_rule` is the rule THIS run cuts with, and it is what the marker records and what the
     disagreement check compares - not the module default, which says nothing about a --sizing-rule v3 run.
     Every rule's constants are written whichever one is selected, so the schema is one superset that
-    older readers keep working on.
+    older readers keep working on. Under the SAME rule id it also compares the constants that rule
+    reads against the recorded ones and warns naming each that moved: a refit v3 still calls itself v3.
 
     A crop directory is derived data with no other provenance: a JPEG does not say what geometry
     produced it, and existing crops are the resume marker so they are never re-cut. That makes a MIXED
@@ -755,12 +779,16 @@ def write_rule_marker(destination_dir, sizing_rule=CROP_RULE_VERSION):
     if sizing_rule not in CROP_RULE_VERSIONS:
         raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
     path = os.path.join(destination_dir, CROP_RULE_MARKER)
-    previous = None
+    recorded = {}
     try:
         with open(path, encoding='utf-8') as f:
-            previous = json.load(f).get('crop_rule_version')
+            recorded = json.load(f)
     except (OSError, ValueError):
         pass
+    if not isinstance(recorded, dict):
+        recorded = {}
+    previous = recorded.get('crop_rule_version')
+    running = _rule_constants()
 
     if previous is not None and previous != sizing_rule:
         message = ("Crop store %s was cut under sizing rule %s and this run uses %s. Existing crops "
@@ -768,21 +796,25 @@ def write_rule_marker(destination_dir, sizing_rule=CROP_RULE_VERSION):
                    "under %s." % (destination_dir, previous, sizing_rule, sizing_rule))
         print(message)
         logging.warning(message)
+    elif previous is not None:
+        # Same rule id, and a rule is only as fixed as its constants: a refit v3 still calls itself
+        # v3. Only the constants THIS rule reads are compared, and only those the marker recorded - a
+        # marker from before the constants were written is silent rather than a false alarm.
+        changed = ['%s=%r and this run uses %r' % (key, recorded[key], running[key])
+                   for key in RULE_MARKER_CONSTANT_KEYS[sizing_rule]
+                   if key in recorded and recorded[key] != running[key]]
+        if changed:
+            message = ("Crop store %s was cut under sizing rule %s with %s. Existing crops are never "
+                       "re-cut, so this store now holds both; delete it to re-cut under one."
+                       % (destination_dir, sizing_rule, '; '.join(changed)))
+            print(message)
+            logging.warning(message)
 
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
-            json.dump({'crop_rule_version': sizing_rule,
-                       'distance_estimator': CROP_RULE_DISTANCE_ESTIMATOR[sizing_rule],
-                       'crop_size_scale': CROP_SIZE_SCALE,
-                       'crop_min_fov_deg': CROP_MIN_FOV_DEG,
-                       'crop_max_fov_deg': CROP_MAX_FOV_DEG,
-                       'crop_aspect_w_over_h': CROP_ASPECT_W_OVER_H,
-                       'crop_max_stored_width': CROP_MAX_STORED_WIDTH,
-                       'v3_camera_height_m': V3_CAMERA_HEIGHT_M,
-                       'v3_blend_deg': V3_BLEND_DEG,
-                       'v3_dist_cap_m': V3_DIST_CAP_M,
-                       'v3_context_width_m': V3_CONTEXT_WIDTH_M,
-                       'previous_crop_rule_version': previous},
+            json.dump(dict(running, crop_rule_version=sizing_rule,
+                           distance_estimator=CROP_RULE_DISTANCE_ESTIMATOR[sizing_rule],
+                           previous_crop_rule_version=previous),
                       f, indent=1, sort_keys=True)
     return previous
 

@@ -2731,8 +2731,9 @@ class TestTheMarkerNoticesRetunedConstants:
     def test_a_rule_change_is_reported_as_that_not_as_constants(self, crop_runner, tmp_path, caplog):
         """Different rules differ in constants by definition; the rule-change message covers it."""
         crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
-        self._edit_marker(crop_runner, tmp_path, crop_size_scale=3.0)
+        # A constant BOTH rules read, so a check that also ran on a rule change would name it.
+        self._edit_marker(crop_runner, tmp_path, crop_max_fov_deg=80.0)
         with caplog.at_level(logging.WARNING):
             crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
         assert 'cut under sizing rule v2 and this run uses v3' in caplog.text
-        assert 'crop_size_scale=' not in caplog.text
+        assert 'crop_max_fov_deg=' not in caplog.text
