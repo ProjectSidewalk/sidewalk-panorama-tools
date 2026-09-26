@@ -2737,3 +2737,12 @@ class TestTheMarkerNoticesRetunedConstants:
             crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
         assert 'cut under sizing rule v2 and this run uses v3' in caplog.text
         assert 'crop_max_fov_deg=' not in caplog.text
+
+    def test_a_marker_that_is_valid_json_but_not_an_object_is_rewritten(self, crop_runner, tmp_path):
+        """Reading the whole marker (rather than .get on it) must not turn a hand-edited `[]` into a crash:
+        it is provenance, not a lock, so it is treated as absent and rewritten."""
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            json.dump(['v2'], f)
+        assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') is None
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+            assert json.load(f)['crop_rule_version'] == 'v3'
