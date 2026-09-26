@@ -80,7 +80,15 @@ CropBox = collections.namedtuple('CropBox', ['left', 'top', 'width', 'height', '
 # Which sizing rule cut a crop store. Stamped into the run summary because crops are derived data with
 # no other provenance on disk: a store cut under one rule and topped up under another is otherwise
 # indistinguishable from a consistent one, and every consumer here trains on whole directories.
+#
+# This is the DEFAULT rule, and it stays v2 until switching is decided deliberately: v3 moves ~40% of
+# windows by more than 10%, so flipping it means re-cutting every store whole, which waits on a re-cut
+# path (#83). --sizing-rule selects between the rules below.
 CROP_RULE_VERSION = 'v2'
+CROP_RULE_VERSIONS = ('v2', 'v3')
+
+# Which distance estimator each rule sizes from; recorded in crop_rule.json beside the version.
+CROP_RULE_DISTANCE_ESTIMATOR = {'v2': 'linear-2013', 'v3': 'lle3-cotangent-blend'}
 
 # ---------------------------------------------------------------------------
 # Sizing rule v2. Measured, not guessed - see reports/2026-08-19-crop-sizing-v2.md for the four-city
@@ -133,6 +141,26 @@ CROP_ASPECT_W_OVER_H = 1.5
 # what will, which is why 1440 is the number and not something arbitrary.
 CROP_MAX_STORED_WIDTH = 1440
 
+# ---------------------------------------------------------------------------
+# Sizing rule v3 (opt-in, #32): the window is the angle a fixed span of world subtends at the label's
+# distance, and the distance comes from the lle #3 cotangent blend instead of the 2013 linear line.
+# See reports/2026-09-26-crop-sizing-v3.md. The clamps, the 3:2 shape and the storage cap are v2's.
+#
+# The lle #3 Stage 4 calibration (label-latlng-estimation data/modern-truth-summary.json ->
+# final_coefficients), transcribed. reports/scripts/pov_replay.py carries the same three numbers and
+# tests/test_crop_runner.py::TestBlendDistanceMatchesTheStudyPort pins the two equal on a grid.
+# Production code must not import reports/scripts, which is why this is a copy and not an import.
+V3_CAMERA_HEIGHT_M = 2.341219672825709
+V3_BLEND_DEG = 11.25
+V3_DIST_CAP_M = 50.0
+
+# Frontal width of world, in metres, the window spans at the label's distance. The one fitted v3
+# constant: the value whose pooled median fill on the 658 gold aprons equals rule v2's, so the two
+# rules are compared at the same median crop and differ only in how the window tracks depression.
+# Deliberately not CROP_SIZE_SCALE x an object width: two multiplicative constants are one degree of
+# freedom, and 2 atan(W / 2d) is exact where scaling an angle is only its small-angle approximation.
+V3_CONTEXT_WIDTH_M = 5.8  # TODO(#32 study): replaced by the fitted value in the next commit
+
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
 
@@ -167,6 +195,11 @@ def build_parser():
     parser.add_argument('-s', required=True, help='pano_storage_directory - path to directory containing panoramas downloaded using DownloadRunner.py')
     parser.add_argument('-o', required=True, help='crop_output_directory - path to location for saving the crops')
     parser.add_argument('--mark-label', action='store_true', help='Draw a dot at the label position in every crop. Debugging aid - deliberately OFF by default, because these crops are ML training data and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.')
+    parser.add_argument('--sizing-rule', choices=CROP_RULE_VERSIONS, default=CROP_RULE_VERSION,
+                        help='Which crop sizing rule to cut with. v2 (default) is the rule every current store was '
+                             'cut under. v3 sizes from the lle #3 cotangent distance instead of the 2013 linear one '
+                             '(#32); it moves ~40%% of windows by more than 10%%, so a store cut under v2 should be '
+                             're-cut whole, not topped up. Recorded in crop_rule.json either way.')
     return parser
 
 
@@ -478,8 +511,72 @@ def predict_crop_size(pano_y, pano_height):
     return _reference_crop_size(ref_offset) * (pano_height / V1_REF_HEIGHT)
 
 
-def crop_window_fov_deg(pano_y, pano_height):
+def label_depression_deg(pano_y, pano_height):
+    """Depression of the labelled pixel below the horizon, in degrees, positive down (0 at the horizon).
+
+    The one place a stored pano_y becomes an angle under rule v3. A #54 tilt correction, once measured,
+    is an addend to this value and nowhere else: blend_distance_m and geometric_window_fov_deg take the
+    corrected angle unchanged. Exact for a gravity-aligned equirectangular pano, and resolution-free
+    because it goes through the elevation primitive.
+
+    >>> label_depression_deg(512, 1024)
+    0.0
+    """
+    return elevation_px_to_deg(pano_y - pano_height / 2.0, pano_height)
+
+
+def blend_distance_m(depression_deg, camera_height_m=V3_CAMERA_HEIGHT_M, blend_deg=V3_BLEND_DEG,
+                     cap_m=V3_DIST_CAP_M):
+    """Camera-to-label ground distance in metres: the lle #3 horizon-saturating cotangent blend.
+
+    At or below `blend_deg` of depression it is plain trigonometry, camera_height / tan(depression). Above
+    that - towards the horizon, where the cotangent diverges and a degree of click noise is metres of
+    distance - it is the straight line matching the cotangent's value AND slope at the blend point, so
+    the curve is smooth there and saturates at the horizon (23.85 m with the shipped calibration) rather
+    than diverging. A label above the horizon gets the horizon's distance. Clipped to [0, cap_m].
+
+    A scalar port of reports/scripts/pov_replay.predict_blend_distance, pinned equal to it by a test. The
+    tail's slope is written with math.radians(1.0) - d(cot)/d(degree) - rather than a literal, because
+    the equirectangular constants are allowed in this module only inside the four unit primitives.
+
+    >>> round(blend_distance_m(45.0), 3)
+    2.341
+    """
+    a_rad = math.radians(blend_deg)
+    if depression_deg >= blend_deg:
+        distance = camera_height_m / math.tan(math.radians(depression_deg))
+    else:
+        value_at_blend = camera_height_m / math.tan(a_rad)
+        slope = -camera_height_m * math.radians(1.0) / math.sin(a_rad) ** 2
+        distance = value_at_blend + slope * (max(depression_deg, 0.0) - blend_deg)
+    return min(max(distance, 0.0), cap_m)
+
+
+def geometric_window_fov_deg(distance_m, context_width_m=V3_CONTEXT_WIDTH_M):
+    """Rule v3's window: the angle a `context_width_m` frontal span of world subtends at `distance_m`.
+
+    2 atan(W / 2d), clamped to [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG]; a distance of zero or less (the label
+    is under the camera) is the ceiling. Takes a DISTANCE, not a pixel, so a measured distance - the depth
+    artifact is the #32 follow-up - plugs in here without touching anything else.
+
+    Two consequences of the shipped constants, pinned by tests: the floor is unreachable (the horizon
+    saturates the distance, so the narrowest window is the horizon's), and the ceiling binds exactly
+    where the distance falls to W / 2.
+    """
+    if distance_m <= 0:
+        return CROP_MAX_FOV_DEG
+    deg = math.degrees(2.0 * math.atan(context_width_m / (2.0 * distance_m)))
+    return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
+
+
+def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION):
     """The sizing rule as what it actually is: an ANGLE. Degrees of the sphere the window spans.
+
+    `sizing_rule` selects between the rules in CROP_RULE_VERSIONS; an unknown one is a ValueError.
+
+    Rule v3 (opt-in, #32) is three named steps - label_depression_deg, blend_distance_m,
+    geometric_window_fov_deg - composed here and nowhere else; a test pins the composition so a refactor
+    that fuses them cannot land silently. Everything below describes rule v2, the default.
 
     Two steps, each one measured number from reports/2026-08-19-crop-sizing-v2.md:
 
@@ -502,12 +599,16 @@ def crop_window_fov_deg(pano_y, pano_height):
 
     :return: the window's angular span in degrees, in [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG].
     """
-    deg = elevation_px_to_deg(predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE, pano_height)
-    return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
+    if sizing_rule == 'v2':
+        deg = elevation_px_to_deg(predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE, pano_height)
+        return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
+    if sizing_rule == 'v3':
+        return geometric_window_fov_deg(blend_distance_m(label_depression_deg(pano_y, pano_height)))
+    raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
 
 
-def crop_window_width(pano_y, pano_width, pano_height):
-    """The window width rule v2 actually cuts, in native pixels: crop_window_fov_deg as an azimuthal span.
+def crop_window_width(pano_y, pano_width, pano_height, sizing_rule=CROP_RULE_VERSION):
+    """The window width the selected rule cuts, in native pixels: crop_window_fov_deg as an azimuthal span.
 
     A width is horizontal, so the conversion is azimuth_deg_to_px against pano_width. The elevation
     form gives the same number on a 2:1 pano and half of it on a square one - the axis slip the unit
@@ -521,7 +622,7 @@ def crop_window_width(pano_y, pano_width, pano_height):
     because that is a property of the image rather than of the rule, and keeping it there means the
     reported window is the one that was cut.
     """
-    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height), pano_width)
+    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height, sizing_rule), pano_width)
 
 
 def compute_crop_box(pano_x, pano_y, crop_width, pano_width, pano_height):
@@ -627,8 +728,13 @@ def downscale_for_storage(crop):
     return crop.resize((CROP_MAX_STORED_WIDTH, max(1, int(round(height * scale)))), Image.LANCZOS)
 
 
-def write_rule_marker(destination_dir):
+def write_rule_marker(destination_dir, sizing_rule=CROP_RULE_VERSION):
     """Record which sizing rule cut this crop store, in the store, and warn if it disagrees.
+
+    `sizing_rule` is the rule THIS run cuts with, and it is what the marker records and what the
+    disagreement check compares - not the module default, which says nothing about a --sizing-rule v3 run.
+    Every rule's constants are written whichever one is selected, so the schema is one superset that
+    older readers keep working on.
 
     A crop directory is derived data with no other provenance: a JPEG does not say what geometry
     produced it, and existing crops are the resume marker so they are never re-cut. That makes a MIXED
@@ -643,6 +749,8 @@ def write_rule_marker(destination_dir):
 
     :return: the rule version already on disk, or None if this is a fresh store.
     """
+    if sizing_rule not in CROP_RULE_VERSIONS:
+        raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
     path = os.path.join(destination_dir, CROP_RULE_MARKER)
     previous = None
     try:
@@ -651,27 +759,32 @@ def write_rule_marker(destination_dir):
     except (OSError, ValueError):
         pass
 
-    if previous is not None and previous != CROP_RULE_VERSION:
+    if previous is not None and previous != sizing_rule:
         message = ("Crop store %s was cut under sizing rule %s and this run uses %s. Existing crops "
                    "are never re-cut, so this store now holds both geometries; delete it to re-cut "
-                   "under %s." % (destination_dir, previous, CROP_RULE_VERSION, CROP_RULE_VERSION))
+                   "under %s." % (destination_dir, previous, sizing_rule, sizing_rule))
         print(message)
         logging.warning(message)
 
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
-            json.dump({'crop_rule_version': CROP_RULE_VERSION,
+            json.dump({'crop_rule_version': sizing_rule,
+                       'distance_estimator': CROP_RULE_DISTANCE_ESTIMATOR[sizing_rule],
                        'crop_size_scale': CROP_SIZE_SCALE,
                        'crop_min_fov_deg': CROP_MIN_FOV_DEG,
                        'crop_max_fov_deg': CROP_MAX_FOV_DEG,
                        'crop_aspect_w_over_h': CROP_ASPECT_W_OVER_H,
                        'crop_max_stored_width': CROP_MAX_STORED_WIDTH,
+                       'v3_camera_height_m': V3_CAMERA_HEIGHT_M,
+                       'v3_blend_deg': V3_BLEND_DEG,
+                       'v3_dist_cap_m': V3_DIST_CAP_M,
+                       'v3_context_width_m': V3_CONTEXT_WIDTH_M,
                        'previous_crop_rule_version': previous},
                       f, indent=1, sort_keys=True)
     return previous
 
 
-def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
+def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=CROP_RULE_VERSION):
     """
     Makes a crop around the object of interest and saves it atomically.
 
@@ -685,6 +798,7 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     :param pano_y: y-pixel of label on the GSV image
     :param output_filename: name of file for saving
     :param draw_mark: if a dot should be drawn at the label position in the crop
+    :param sizing_rule: which rule in CROP_RULE_VERSIONS sizes the window (default v2)
     :return: the CropBox that was cut, so the caller can count a de-centred (shifted) crop without
              recomputing the geometry.
     """
@@ -695,7 +809,8 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     try:
         pano_width, pano_height = pano.size
 
-        box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_width, pano_height),
+        box = compute_crop_box(pano_x, pano_y,
+                               crop_window_width(pano_y, pano_width, pano_height, sizing_rule),
                                pano_width, pano_height)
         cropped = downscale_for_storage(extract_crop(pano, box.left, box.top, box.width, box.height))
 
@@ -833,7 +948,8 @@ def systemic_failure_line(counts):
             % (SYSTEMIC_FAILURE_BANNER, errors, total, 100.0 * errors / total))
 
 
-def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False):
+def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False,
+                       sizing_rule=CROP_RULE_VERSION):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
@@ -860,13 +976,18 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
              That is a second READING of these numbers and adds no bucket of its own - which is what
              keeps the invariant above out of its way.
     """
+    # Once, up front: an unknown rule is the caller's mistake, not a per-label fault, and it must fail
+    # before the marker below records a rule nothing was cut under.
+    if sizing_rule not in CROP_RULE_VERSIONS:
+        raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
+
     counts = {'total': len(labels_to_crop), 'success': 0, 'skipped_existing': 0,
               'missing_pano': 0, 'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
               'errors': 0}
 
     # Before any crop is cut, so a run that dies partway still leaves the store saying what it holds.
     os.makedirs(destination_dir, exist_ok=True)
-    write_rule_marker(destination_dir)
+    write_rule_marker(destination_dir, sizing_rule)
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
@@ -977,7 +1098,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         os.makedirs(destination_folder, exist_ok=True)
                         made_dirs.add(destination_folder)
                     box = make_single_crop(pano, pano_x, pano_y, crop_destination,
-                                           draw_mark=mark_label)
+                                           draw_mark=mark_label, sizing_rule=sizing_rule)
                 except Exception as e:
                     counts['errors'] += 1
                     logging.warning("Failed to crop label %d on pano %s: %s", label_id, pano_id, e)
@@ -1000,7 +1121,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Echoed here as well as written to <crop-dir>/crop_rule.json, because the summary is what an
     # operator reads and the marker is what a consumer reads. The marker is the one that matters: a
     # line of stdout scrolls past on a cron run, and a crop store carries no other provenance.
-    print("Crop sizing rule %s (recorded in %s)." % (CROP_RULE_VERSION, CROP_RULE_MARKER))
+    print("Crop sizing rule %s (recorded in %s)." % (sizing_rule, CROP_RULE_MARKER))
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
           "%d skipped on a metadata/image dimension mismatch, %d skipped for a label position outside "
           "the image, %d errors, of %d labels total."
@@ -1020,7 +1141,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     return counts
 
 
-def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destination_path, mark_label=False):
+def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destination_path, mark_label=False,
+        sizing_rule=CROP_RULE_VERSION):
     """Load the label metadata and extract every crop - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, and logging; this seam takes plain arguments so tests can
@@ -1028,7 +1150,8 @@ def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destinati
     """
     print("Cropping labels")
     label_infos = load_label_metadata(sidewalk_server_fqdn, label_metadata_file)
-    return bulk_extract_crops(label_infos, gsv_pano_path, crop_destination_path, mark_label=mark_label)
+    return bulk_extract_crops(label_infos, gsv_pano_path, crop_destination_path, mark_label=mark_label,
+                              sizing_rule=sizing_rule)
 
 
 def main(argv=None):
@@ -1056,7 +1179,7 @@ def main(argv=None):
     raise_decompression_bomb_ceiling()
 
     counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
-                 crop_destination_path=args.o, mark_label=args.mark_label)
+                 crop_destination_path=args.o, mark_label=args.mark_label, sizing_rule=args.sizing_rule)
     return 1 if counts['errors'] else 0
 
 

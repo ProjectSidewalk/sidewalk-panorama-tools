@@ -2530,7 +2530,9 @@ class TestSizingRuleSelection:
         put_pano(store, 'testpano0001')
         with pytest.raises(ValueError):
             crop_runner.bulk_extract_crops([label_row()], str(store), str(out), sizing_rule='v4')
-        assert not (out / crop_runner.CROP_RULE_MARKER).exists()
+        # Not even the directory: the check is the first thing the loop does, so a typo'd rule leaves
+        # nothing behind that a later run could mistake for a store.
+        assert not out.exists()
 
     def test_an_unknown_rule_is_refused_by_the_marker(self, crop_runner, tmp_path):
         with pytest.raises(ValueError):
