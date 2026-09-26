@@ -169,6 +169,10 @@ class TestStudyLogic:
         assert csv3.v2_fov_at(onset) == CropRunner.CROP_MAX_FOV_DEG
         assert csv3.v2_fov_at(onset - 1e-4) < CropRunner.CROP_MAX_FOV_DEG
 
+    def test_option_a_scale_is_a_multiplier_on_the_angle_below_the_cap(self):
+        dep = 12.0
+        assert csv3.rule_a_fov_at(dep, 2.0) == pytest.approx(csv3.rule_a_fov_at(dep, 1.0) * 2.0)
+
     def test_the_rejected_alternative_is_v2_with_the_blend_distance(self):
         """Option A at a depression where both distances agree must equal v2 there."""
         # The two estimators cross between 5 deg (legacy shorter) and 10 deg (legacy longer).
@@ -329,10 +333,20 @@ class TestCommittedFindings:
         """The honest exception survives the swap: an extent problem, not a distance problem."""
         assert summary['cities']['annapolis']['v3']['frac_clearing_too_tight'] < 0.45
 
-    def test_the_rejected_alternative_is_a_row(self, summary):
+    def test_option_a_is_compared_like_for_like_and_the_trade_is_real(self, summary):
+        """Option A (blend distance into v2's power law) at its own median-matched scale. It tracks
+        the apron less well than v3 (R-squared, every city) but its fill is slightly LESS dispersed
+        pooled - a genuine trade the report states rather than a clean win, pinned so a re-run that
+        changes the sign of either half has to change the prose too."""
         rule_a = summary['rule_a_blend_powerlaw']
-        assert rule_a['n'] == 658
-        assert rule_a['r2'] < summary['pooled']['r2']['v3']
+        matched = rule_a['pooled_matched']
+        assert matched['n'] == 658
+        assert matched['fill_p50'] == pytest.approx(summary['pooled']['v2']['fill_p50'], abs=0.01)
+        assert matched['r2'] < summary['pooled']['r2']['v3']
+        for city, block in rule_a['cities_matched'].items():
+            assert block['r2'] < summary['cities'][city]['r2']['v3'], city
+        assert matched['fill_log_sd'] < summary['pooled']['v3']['fill_log_sd']
+        assert matched['fill_log_sd'] < summary['pooled']['v2']['fill_log_sd']
 
     def test_population_covers_every_top_level_key(self, summary):
         assert set(summary['population']['covers']) == set(summary) - {'meta', 'population'}

@@ -69,6 +69,9 @@ PARAMETRIC_DEP_FLOOR_DEG = 0.3
 BANDS = [(None, 2.0), (2.0, 5.0), (5.0, 10.0), (10.0, 15.0), (15.0, 20.0), (20.0, 30.0),
          (30.0, 40.0), (40.0, None)]
 
+# The scale grid option A is median-matched on, the same way V3_CONTEXT_WIDTH_M is.
+RULE_A_SCALE_GRID = [round(1.5 + 0.05 * i, 2) for i in range(41)]
+
 DISTANCE_TABLE_DEG = [0.5, 5.0, 10.0, 15.0, 20.0, 30.0, 35.0, 45.0]
 
 
@@ -105,17 +108,18 @@ def v2_fov_at(depression_deg, pano_height=CropRunner.V1_REF_HEIGHT):
     return CropRunner.crop_window_fov_deg(y, pano_height, sizing_rule='v2')
 
 
-def rule_a_fov_at(depression_deg):
-    """Option A, rejected: the blend distance fed into v2's own power law and x2.5 scale.
+def rule_a_fov_at(depression_deg, scale=CropRunner.CROP_SIZE_SCALE):
+    """Option A, not shipped: the blend distance fed into v2's own power law, times `scale`.
 
-    Kept as one comparison row because it is the obvious minimal edit - and it keeps the -1.192
-    exponent that was fit to absorb the linear distance's compression.
+    The obvious minimal edit, kept as a comparison - scored at v2's x2.5 and at the scale that matches
+    v2's median fill, so it is compared with v3 like for like. It keeps the -1.192 exponent that was fit
+    with the linear distance inside it.
     """
     distance = CropRunner.blend_distance_m(depression_deg)
     size = (CropRunner.V1_SIZE_COEF * distance ** CropRunner.V1_SIZE_EXP if distance > 0
             else CropRunner.V1_SIZE_MAX)
     size = min(max(size, CropRunner.V1_SIZE_MIN), CropRunner.V1_SIZE_MAX)
-    deg = CropRunner.elevation_px_to_deg(size * CropRunner.CROP_SIZE_SCALE, CropRunner.V1_REF_HEIGHT)
+    deg = CropRunner.elevation_px_to_deg(size * scale, CropRunner.V1_REF_HEIGHT)
     return min(max(deg, CropRunner.CROP_MIN_FOV_DEG), CropRunner.CROP_MAX_FOV_DEG)
 
 
@@ -313,6 +317,22 @@ def window_change(ramps, width_m):
             'bands': bands}
 
 
+def rule_a_block(by_city, pooled, target_fill_p50):
+    """Option A at v2's scale and at its own median-matched scale, pooled and per city."""
+    def scored(ramps, scale):
+        fn = lambda dep: rule_a_fov_at(dep, scale)  # noqa: E731
+        return dict(score_fov_fn(ramps, fn), r2=extent_fit(ramps, fov_fn=fn)['r2'])
+
+    matched = min(RULE_A_SCALE_GRID,
+                  key=lambda k: abs(score_fov_fn(pooled, lambda dep: rule_a_fov_at(dep, k))['fill_p50']
+                                    - target_fill_p50))
+    return {'scale_grid_min': RULE_A_SCALE_GRID[0], 'scale_grid_max': RULE_A_SCALE_GRID[-1],
+            'matched_scale': matched,
+            'pooled_at_v2_scale': scored(pooled, CropRunner.CROP_SIZE_SCALE),
+            'pooled_matched': scored(pooled, matched),
+            'cities_matched': {c: scored(r, matched) for c, r in sorted(by_city.items()) if r}}
+
+
 def cap_onset_deg(fov_fn, lo=0.0, hi=89.0, tol=1e-6):
     """The shallowest depression at which a rule's window reaches CROP_MAX_FOV_DEG (bisection)."""
     if fov_fn(hi) < CropRunner.CROP_MAX_FOV_DEG:
@@ -393,8 +413,7 @@ def build_summary(by_city, bundles, argv):
         'pooled': city_block(pooled, matched),
         'distance_table': distance_table(DISTANCE_TABLE_DEG, matched),
         'window_change': window_change(pooled, matched),
-        'rule_a_blend_powerlaw': dict(score_fov_fn(pooled, rule_a_fov_at),
-                                      r2=extent_fit(pooled, fov_fn=rule_a_fov_at)['r2']),
+        'rule_a_blend_powerlaw': rule_a_block(by_city, pooled, v2_pooled['fill_p50']),
         'rule_geometry': {'legacy_zero_crossing_deg': num(legacy_zero_crossing_deg()),
                           'v2_cap_onset_deg': num(cap_onset_deg(v2_fov_at)),
                           'v3_cap_onset_deg': num(cap_onset_deg(lambda d: v3_fov_at(d, matched))),
