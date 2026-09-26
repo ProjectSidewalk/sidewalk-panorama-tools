@@ -200,7 +200,11 @@ def test_seeded_facade_sample_is_deterministic():
 
 @pytest.mark.parametrize('name', ['tilt_geometry.py', 'tilt_pose_scan.py', 'tilt_frame.py', 'tilt_remote_crop.py'])
 def test_runs_under_python39_syntax(name):
-    """makelab2 runs Python 3.9; a `match` or an `X | None` annotation would fail there after upload."""
+    """makelab2 runs Python 3.9; a `match` or an `X | None` annotation would fail there after upload.
+
+    GRAMMAR ONLY: ast.parse(feature_version=(3, 9)) cannot see a 3.10+ standard-library call
+    (zip(strict=...), itertools.pairwise, int.bit_count) - those would pass here and fail on the host.
+    Keep the remote modules to the 3.9 library by review, or run them under a 3.9 interpreter."""
     path = os.path.join(SCRIPTS, name)
     if not os.path.exists(path):
         pytest.skip('%s not written yet' % name)
@@ -231,3 +235,16 @@ def test_city_mode_honours_the_shard_sample(store, tmp_path):
     scan.main([str(store), '--city', 'seattle-wa', '--shard-sample', '1/2', '--seed', keep_ab,
                '--out', str(out), '--facades-out', str(tmp_path / 'f.csv')])
     assert {r['pano_id'] for r in _read(out)} == {'abNPZ'}
+
+
+def test_inlined_normal_bearing_matches_the_module():
+    """tilt_pose_scan carries its own copy of tilt_geometry.artifact_normal_bearing_elevation so it can
+    run standalone on the store host; the copy must agree, at every octant and both poles."""
+    import tilt_geometry as tg
+    rng = np.random.default_rng(5)
+    for n in list(rng.normal(size=(40, 3))) + [np.array([0, 0, 1.0]), np.array([0, 0, -1.0])]:
+        b1, e1 = scan._normal_bearing_elevation(n)
+        b2, e2 = tg.artifact_normal_bearing_elevation(n)
+        assert e1 == pytest.approx(float(e2), abs=1e-9)
+        if abs(e1) < 89.9:
+            assert tg.wrap_deg(b1 - b2) == pytest.approx(0.0, abs=1e-9)

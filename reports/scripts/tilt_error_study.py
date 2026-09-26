@@ -230,8 +230,9 @@ def tile_frame_fit(lean, pose, n_boot=N_BOOT):
     * `raw_min_z`, `raw_excludes_zero`: the RAW slopes. Gravity-levelled tiles predict a raw slope of
       0 whatever the calibration, so "not levelled" rests on these, in every arm including saturated.
     * `saturated`: the pitch calibration slope is below SATURATED_A, so an added 2 deg barely moves the
-      measurement - the estimator is outside its linear range (leans beyond its +-12 deg window) and no
-      calibrated value from that arm means anything.
+      measurement - the estimator is outside its linear range (suspected: leans beyond its +-12 deg
+      window; clean synthetic poles at 14-18 deg do not reproduce it) and no calibrated value from that
+      arm means anything.
     * the calibrated coefficients b / a: ESTIMATES. Why they fall short of 1 is open: a synthetic scene
       with world-leaning clutter shows noise, not that shortfall (tests/test_tilt_frame.py). Two CIs:
       `ci_*_calibrated` divides the raw CI by a (conditional on a); `ci_*_calibrated_boot` is a

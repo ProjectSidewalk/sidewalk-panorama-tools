@@ -144,8 +144,10 @@ in four for roll). An earlier version of this report called the calibrated value
 argument does not hold (see Wrong turns), and a synthetic scene with world-leaning clutter shows noise,
 not a systematic shortfall (`tests/test_tilt_frame.py`). Partial levelling, a mixture of levelled and
 rig-aligned panos, and an instrument effect the synthetic does not model all remain possible. The
-top-tilt arms (tilt magnitude 11.7-21.2 deg (XML-era) and 9.7-14.8 deg (modern)) lean past the
-estimator's +-12 deg window, so their calibration slopes collapse and only their raw slopes are read.
+top-tilt arms (tilt magnitude 11.7-21.2 deg (XML-era) and 9.7-14.8 deg (modern)) have calibration
+slopes near zero, so only their raw slopes are read. The estimator's +-12 deg edge window is the
+suspected cause, but clean synthetic poles at that tilt still calibrate well, so the mechanism is not
+pinned by a test.
 
 ![two posed corpus panos](figures/2026-09-26-tilt-horizon-examples.jpg)
 

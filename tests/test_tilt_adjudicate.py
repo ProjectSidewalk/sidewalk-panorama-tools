@@ -223,7 +223,7 @@ def test_remote_panels_make_the_same_sheet_as_a_local_cut(tmp_path):
     for name in os.listdir(local / 'sheets'):
         a = np.asarray(Image.open(local / 'sheets' / name), dtype=int)
         b = np.asarray(Image.open(remote / 'sheets' / name), dtype=int)
-        assert np.abs(a - b).max() <= 2        # identical panels; only JPEG re-encode noise
+        assert np.abs(a - b).max() == 0        # lossless panels and a deterministic encode: identical
     strip = lambda key: {t: {k: v for k, v in e.items() if k != 'source'} for t, e in key.items()}  # noqa: E731
     assert strip(ta.read_sealed_key(str(local))) == strip(ta.read_sealed_key(str(remote)))
 
