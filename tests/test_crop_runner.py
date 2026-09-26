@@ -2677,3 +2677,62 @@ class TestTheRuleMarkerUnderTwoRules:
         put_pano(store, 'testpano0001')
         crop_runner.bulk_extract_crops([label_row()], str(store), str(out), sizing_rule='v3')
         assert 'Crop sizing rule v3 (recorded in' in capsys.readouterr().out
+
+
+class TestTheMarkerNoticesRetunedConstants:
+    """Same rule id, different constants: the silent mix once two rules coexist and one is being fit (D5).
+
+    v3's width is a fitted number, so a later refit would still call itself v3; the marker has always
+    recorded the constants, and this is the check that reads them back.
+    """
+
+    def _edit_marker(self, crop_runner, path, **changes):
+        marker_path = path / crop_runner.CROP_RULE_MARKER
+        with open(marker_path, encoding='utf-8') as f:
+            marker = json.load(f)
+        marker.update(changes)
+        with open(marker_path, 'w', encoding='utf-8') as f:
+            json.dump(marker, f)
+
+    def test_a_retuned_v3_width_is_named_on_both_channels(self, crop_runner, tmp_path, caplog, capsys):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        self._edit_marker(crop_runner, tmp_path, v3_context_width_m=6.4)
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        expected = 'v3_context_width_m=6.4 and this run uses %r' % crop_runner.V3_CONTEXT_WIDTH_M
+        assert expected in caplog.text
+        assert expected in capsys.readouterr().out
+
+    def test_a_retuned_v2_scale_is_named_under_v2(self, crop_runner, tmp_path, caplog):
+        crop_runner.write_rule_marker(str(tmp_path))
+        self._edit_marker(crop_runner, tmp_path, crop_size_scale=3.0)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path))
+        assert 'crop_size_scale=3.0 and this run uses 2.5' in caplog.text
+
+    def test_a_constant_the_rule_does_not_use_is_not_a_warning(self, crop_runner, tmp_path, caplog):
+        """A v2 store rerun after v3 is refit: its crops are unaffected, so crying wolf would train
+        operators to ignore the one warning that matters."""
+        crop_runner.write_rule_marker(str(tmp_path))
+        self._edit_marker(crop_runner, tmp_path, v3_context_width_m=6.4)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path))
+        assert 'this run uses' not in caplog.text
+
+    def test_a_marker_from_before_the_constants_were_recorded_is_silent(self, crop_runner, tmp_path,
+                                                                       caplog):
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            json.dump({'crop_rule_version': 'v2'}, f)
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path)) == 'v2'
+        assert caplog.text == ''
+
+    def test_a_rule_change_is_reported_as_that_not_as_constants(self, crop_runner, tmp_path, caplog):
+        """Different rules differ in constants by definition; the rule-change message covers it."""
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        self._edit_marker(crop_runner, tmp_path, crop_size_scale=3.0)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert 'cut under sizing rule v2 and this run uses v3' in caplog.text
+        assert 'crop_size_scale=' not in caplog.text
