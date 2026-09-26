@@ -367,3 +367,26 @@ class TestTheCommittedFolder:
             text = f.read()
         assert 'key:' not in text and 'A=leak' not in text and 'adjudication-sheet.jpg' not in text
         assert text.index('How to adjudicate') < text.index('Preliminary machine pass')
+
+
+# ---- the tests lens's kill-tests (#158 review): XML-era roll, the |T| boundary, the fill ----------
+
+def test_xml_era_roll_comes_from_the_xml():
+    """Roll carries T beside the car, so an XML-era JPEG must not take its roll from a 2026 npz."""
+    pose = pd.DataFrame([_pose('abX', npz=(0.0, -6.0), xml=(0.0, 6.0))])
+    p = ta.attach_pose(pose).iloc[0]
+    assert p['pose_source'] == 'xml' and p['pose_roll_deg'] == pytest.approx(6.0)
+
+
+def test_threshold_excludes_T_just_under_four_and_keeps_four():
+    corpus = _corpus([_label('seattle-wa:1', 'abP', 0.5 * W, 700), _label('seattle-wa:2', 'abQ', 0.5 * W, 700)])
+    pose = pd.DataFrame([_pose('abP', npz=(3.99, 0.0)), _pose('abQ', npz=(4.0, 0.0))])
+    assert list(ta.candidates(corpus, pose)['label_uid']) == ['seattle-wa:2']
+
+
+def test_fill_never_repeats_a_primary_label():
+    prim = pd.DataFrame([dict(label_uid='a:%d' % i, era_arm='legacy+mid') for i in range(3)])
+    fill = pd.DataFrame([dict(label_uid='a:%d' % i, era_arm='legacy+mid') for i in range(3)]
+                        + [dict(label_uid='s:%d' % i, era_arm='legacy+mid') for i in range(3)])
+    sel, _ = ta.draw_with_fill(prim, fill, 6, 's')
+    assert sel['label_uid'].is_unique and len(sel) == 6

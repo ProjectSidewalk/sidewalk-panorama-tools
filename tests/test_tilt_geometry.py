@@ -69,6 +69,28 @@ class TestArtifactFrame:
         np.testing.assert_allclose(tg.wrap_deg(b - b_exp), 0, atol=1e-9)
         np.testing.assert_allclose(el, el_exp, atol=1e-9)
 
+    def test_artifact_axes_match_the_real_depth_raster(self):
+        """The same frame, read off the production code instead of a re-typed formula: for a one-plane
+        payload, downloaders.gsv._compute_depth_raster puts the depth minimum where the ray is parallel
+        to the plane normal, so artifact_normal_bearing_elevation(n) must name that pixel (or its
+        antipode, normals being unoriented) - and not the mirror bearing, which reads far deeper."""
+        from types import SimpleNamespace
+        from downloaders import gsv
+        w, h = 720, 360
+        for n in ([0.3, -0.8, 0.2], [-0.6, 0.1, -0.5], [0.05, 0.9, 0.4]):
+            n = np.asarray(n) / np.linalg.norm(n)
+            planes = SimpleNamespace(indices=np.ones((h, w), dtype=np.uint8), normals=[np.zeros(3), n],
+                                     distances=[0.0, 5.0])
+            raster = gsv._compute_depth_raster(planes)
+            b0, el0 = tg.artifact_normal_bearing_elevation(n)
+            hits = []
+            for b, el in ((b0, el0), (b0 + 180.0, -el0)):
+                x, y = tg.pixel_from_bearing_elevation(b, el, w, h)
+                hits.append(float(raster[int(y), int(x) % w]))
+            assert min(hits) == pytest.approx(raster.min(), abs=0.02) and raster.min() == pytest.approx(5.0, abs=1e-3)
+            xm, ym = tg.pixel_from_bearing_elevation(-b0, el0, w, h)
+            assert raster[int(ym), int(xm) % w] > raster.min() + 0.5 or abs(tg.wrap_deg(2 * b0)) < 30  # a mirror of b near 0/180 is b itself
+
     def test_zero_norm_is_nan(self):
         b, el = tg.artifact_normal_bearing_elevation(np.zeros(3))
         assert np.isnan(b) and np.isnan(el)

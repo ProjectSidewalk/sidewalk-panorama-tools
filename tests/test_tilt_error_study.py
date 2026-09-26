@@ -7,12 +7,14 @@ Two jobs, split as in the other report tests:
 * the committed conclusions pinned against reports/data/2026-09-26-tilt-error-study.json, and every
   number the report quotes found in the report (TestCommittedFindings, TestReportMatchesTheArtifact).
   A committed-artifact test cannot catch a code regression - the artifact was produced by the code -
-  which is why each pin sits beside a synthetic test of the function that produced it.
+  which is why each pin sits beside a synthetic test of the function that produced it, and why
+  TestTheArtifactIsTheCode re-runs `analyze` on the committed data and demands the committed JSON.
 """
 
 import ast
 import json
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -27,11 +29,14 @@ for p in (REPO_ROOT, SCRIPTS):
 
 import CropRunner  # noqa: E402
 import tilt_error_study as tes  # noqa: E402
+import tilt_frame as tf  # noqa: E402
 import tilt_geometry as tg  # noqa: E402
+from PIL import Image  # noqa: E402
 
 SUMMARY_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-09-26-tilt-error-study.json')
 REPORT_MD = os.path.join(REPO_ROOT, 'reports', '2026-09-26-tilt-error-study.md')
 STUDY_PY = os.path.join(SCRIPTS, 'tilt_error_study.py')
+DATA = os.path.join(REPO_ROOT, 'reports', 'data')
 
 
 def _clustered(beta_p, beta_r, n_groups=200, per=12, noise=0.3, group_sd=0.0, seed=0):
@@ -525,3 +530,70 @@ class TestReportMatchesTheArtifact:
         for claim in ('sits at the rig pixel, not the stored', 'slope is a lower bound', 'lower bounds, not estimates',
                       'the ceiling is the likely value'):
             assert claim not in report, claim
+
+
+class TestTheArtifactIsTheCode:
+    """The one place the quoted numbers meet the code that makes them (#158 review item 6: twelve
+    mutants to the analysis changed the committed JSON with every other test green)."""
+
+    def test_the_artifact_regenerates_from_committed_data(self, tmp_path):
+        out = tmp_path / 'regen.json'
+        r = subprocess.run([sys.executable, STUDY_PY, 'analyze', '--write', str(out)], cwd=REPO_ROOT,
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr[-2000:]
+        with open(out, encoding='utf-8') as f:
+            regen = json.load(f)
+        with open(SUMMARY_JSON, encoding='utf-8') as f:
+            committed = json.load(f)
+        assert regen == committed
+
+    def test_f1_sign_is_the_modules_rotation_on_committed_facades(self):
+        """F1's measured sign, tied to tilt_geometry's actual rotation rather than to a hand-typed pin:
+        a plumb facade at rig bearing b sits at rig elevation gravity_to_rig(b, 0, pitch, roll)[1], and
+        the committed Seattle facades must follow that prediction with slope 1."""
+        fac = pd.read_csv(os.path.join(DATA, '2026-09-26-tilt-facades.csv.gz'), dtype={'pano_id': str})
+        pose = pd.read_csv(os.path.join(DATA, '2026-09-26-tilt-pose-seattle.csv.gz'), dtype={'pano_id': str})
+        f = fac[fac['source'] == 'seattle'].merge(pose[pose['npz_present'] == 1][['city', 'pano_id', 'pitch_deg', 'roll_deg']],
+                                                  on=['city', 'pano_id'], how='inner', validate='many_to_one')
+        f = f[np.isfinite(f['pitch_deg']) & np.isfinite(f['roll_deg'])]
+        b, el = tg.artifact_normal_bearing_elevation(f[['n_x', 'n_y', 'n_z']].to_numpy(float))
+        pred = np.asarray(tg.gravity_to_rig(b, np.zeros_like(b), f['pitch_deg'].to_numpy(float),
+                                            f['roll_deg'].to_numpy(float))[1])
+        slope = float(np.dot(el, pred) / np.dot(pred, pred))
+        assert len(f) > 20000
+        assert 0.99 <= slope <= 1.01, slope
+
+
+def _render_poles(w, h, pitch, roll):
+    ys, xs = np.mgrid[0:h, 0:w]
+    b, el = tg.bearing_elevation_from_pixel(xs + 0.5, ys + 0.5, w, h)
+    bg, elg = tg.rig_to_gravity(b, el, pitch, roll)
+    img = np.zeros((h, w))
+    for pb in np.arange(-165, 180, 30.0):
+        d = np.abs(tg.wrap_deg(bg - pb)) * np.cos(np.radians(elg))
+        img = np.maximum(img, np.clip(0.5 + (1.5 - d) / (360.0 / w), 0, 1))
+    img[np.abs(elg) > 40] = 0
+    return (40 + 180 * img).astype(np.uint8)
+
+
+def test_instrument_to_analysis_calibration_end_to_end(tmp_path):
+    """tilt_frame.measure_one's rows, dropped to the columns export() keeps, straight into
+    tile_frame_fit: on clean rig-frame synthetic panos a ~ 1. Nothing else ties the column contract
+    between the instrument and the analysis together."""
+    rng = np.random.default_rng(11)
+    w, h = 1440, 720
+    rows, pose = [], []
+    for i in range(6):
+        p, r = rng.uniform(-4, 4), rng.uniform(-3, 3)
+        pid = 'ab%02d' % i
+        (tmp_path / 'ab').mkdir(exist_ok=True)
+        Image.fromarray(_render_poles(w, h, p, r)).save(tmp_path / 'ab' / (pid + '.jpg'), quality=95)
+        rec = {'city': '', 'pano_id': pid, 'pitch_deg': p, 'roll_deg': r, 'arm': 't'}
+        rows += tf.measure_one((rec, str(tmp_path / 'ab' / (pid + '.jpg')), w, True, 1))
+        pose.append({'city': '', 'pano_id': pid, 'pitch_deg': p, 'roll_deg': r})
+    lean = pd.DataFrame(rows)
+    lean['lean_deg'] = pd.to_numeric(lean['lean_deg'], errors='coerce')
+    lean = lean.drop(columns=['pitch_deg', 'roll_deg', 'predicted_lean_deg'])      # as export() does
+    fit = tes.tile_frame_fit(lean, pd.DataFrame(pose), n_boot=0)
+    assert 0.8 <= fit['a_pitch'] <= 1.25, fit['a_pitch']
+    assert 0.8 <= fit['a_roll'] <= 1.25, fit['a_roll']
