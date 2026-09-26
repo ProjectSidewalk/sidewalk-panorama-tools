@@ -214,6 +214,12 @@ Deleting `0` rows, or the whole file, is the manual force-retry lever; existing 
 re-registered as skipped rather than re-downloaded — with a **blank** `fetched_at`, because the ledger has
 no evidence of when they were fetched (next section).
 
+A [store-mode pull](downloader.md#pulling-from-the-project-sidewalk-pano-store) (`--from-store`) writes only
+`1` rows, each with a blank `fetched_at`. A pano the store does not hold tonight may be scraped tomorrow, so
+its absence is never a verdict: it is counted in field 9 for that run, left unledgered, and retried next run.
+It writes nothing to `depth_log.csv` either — a pulled `.depth.npz` is ledgered `saved` by the next scrape's
+depth phase, which finds it on disk, at zero requests.
+
 ### `fetched_at`, and the two row widths
 
 The third field is when the source answered: for a `1` row written by a download, the moment the file
