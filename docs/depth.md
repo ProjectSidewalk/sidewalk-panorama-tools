@@ -227,6 +227,14 @@ fan-out — and on top of that:
   * **Every ambiguous latch resolves towards scraping.** Missing, unparseable, or dated implausibly far in the
     future all mean "not blocked" — a latch nobody can read must never be able to stand the whole fleet's
     depth phase down indefinitely.
+  * **The image phase shares it ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)).**
+    Since #74 the image phase makes one photometa request per *new* GSV pano, without the depth payload, to
+    read the pano's zoom levels instead of probing two tiles. It reads the latch before each such request and
+    skips photometa while one is fresh (falling back to the tile probe), and a refusal met there writes the
+    latch itself — so the depth phase later in the same run stands down at zero requests. The image phase
+    shares the latch, **not the pacer**: its cadence is already bounded by the 28–512-tile fan-out that
+    follows each request. `--depth-block-latch` does **not** reach the image phase, which always uses the
+    default path.
 * **Sizing, and the thing that actually decided it.** A photometa request measures **0.077 s median** from
   the production box, so the raw request cost of the 1,433,104-pano corpus is nothing like the "inherently
   multi-month job" this page used to claim — and that claim was the stated reason for leaving pacing off.

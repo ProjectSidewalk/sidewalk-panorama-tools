@@ -494,11 +494,23 @@ and are deliberately **not** written to `pano_id_log.csv`, so a later run (or a 
 pick them up.
 
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
-`cbk?output=tile` endpoint into one equirectangular JPEG: it determines a working zoom level (5 preferred,
-falling back to 3 — a fully black tile at both means there is no imagery), fans the tiles out concurrently
-with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the server's width/height, and
-upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
-[reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
+`cbk?output=tile` endpoint into one equirectangular JPEG. To choose the zoom it asks Google's photometa
+endpoint — the one the depth phase already uses, without the depth payload, a 16 KB answer — which zoom
+levels this pano is served at, and picks the highest level that is exactly the tile grid the app's
+`width`/`height` implies ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). If
+no level is, the pano is **refused** rather than stitched: fetching anyway would save the top-left corner of
+a larger pano at the app's exact dimensions, with nothing in the file to show it. The refusal is a `WARNING`
+on stdout (cron mail) and an `ERROR` in `scrape.log`, is counted among the night's image failures, is not
+written to `pano_id_log.csv`, and is retried next run. If photometa is unavailable, or says the pano is gone,
+the older two-tile probe answers instead (a fully black tile at both zoom 5 and zoom 3 means there is no
+imagery) — and it is still the only evidence a permanent "no imagery" verdict rests on. A refusal *from
+Google* on that photometa request writes the same block latch the depth phase uses (see
+[Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers)): the image phase then
+probes for the rest of the run and the depth phase stands down. A new pano costs one photometa request where
+the probe cost two; a retired one costs one photometa request plus the two probes, once. The tiles are then
+fanned out concurrently with `aiohttp` and `backoff` retries, pasted into a canvas sized from the app's
+width/height, and upscaled with LANCZOS when only a lower level exists. The tile-resolution history is
+written up in [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
 
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution
