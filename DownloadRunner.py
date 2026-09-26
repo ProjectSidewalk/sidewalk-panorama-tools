@@ -337,6 +337,65 @@ def filter_supported_sources(pano_infos):
     return [p for p in pano_infos if p.get('source') in supported]
 
 
+class ImageLedger:
+    """<storage>/pano_id_log.csv for one phase; see progress_check for what a row means.
+
+    Constructing it reads the prior rows once (ids, prior_total, prior_success, prior_fail). Entering it opens
+    the append handle, writing the header when this run creates the file; record() appends one row, flushes
+    it and remembers the id. Shared by the image loop and the store pull (#30), so the header, the mode and
+    the line terminator have one definition - a third hand-copied block is the one that forgets a clause.
+
+    One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
+    The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that, when
+    the #46 dtype mismatch made it reachable, rewrote the ENTIRE file per pano with mode='w' - O(n^2) per
+    run, and a crash mid-rewrite truncated the only image ledger in place.
+    """
+
+    def __init__(self, storage_path):
+        self.path = os.path.join(storage_path, "pano_id_log.csv")
+        if exists(self.path):
+            self.ids, self.prior_total, self.prior_success, self.prior_fail = progress_check(self.path)
+        else:
+            self.ids, self.prior_total, self.prior_success, self.prior_fail = set(), 0, 0, 0
+        self._file = None
+        self._writer = None
+
+    def __enter__(self):
+        ledger_existed = exists(self.path)
+        self._file = open(self.path, 'a', newline='')
+        # lineterminator='\n': csv.writer's excel default is '\r\n', but every existing image ledger was
+        # written by pandas to_csv, whose default is os.linesep - '\n' on the Linux scraper boxes. Without
+        # this pin, appending to a years-old ledger would mix line endings in one file and hand ops greps a
+        # trailing '\r' on the downloaded column.
+        self._writer = csv.writer(self._file, lineterminator='\n')
+        if not ledger_existed:
+            # Only a ledger this run CREATES gets the three-column header. An existing store keeps its
+            # two-column one above three-field rows, which looks wrong to a person running `head -1` and is
+            # correct anyway: rewriting a production ledger in place is the O(n^2) truncate-on-crash path
+            # the docstring warns about, over a file that is the only record of what has been scraped.
+            # progress_check reads by position and skips the header by value, so a stale one is inert.
+            self._writer.writerow(['pano_id', 'downloaded', 'fetched_at'])
+            self._file.flush()
+            # Group-writable like depth_log.csv: other lab users' runs append to the same store.
+            try:
+                os.chmod(self.path, 0o664)
+            except OSError:
+                # Lost the exists()/open() race to another user's run: their file, their modes. The ledger is
+                # already open and writable, so this must not take the phase down - the same call in both
+                # downloaders' shard-dir setup swallows it for the same reason.
+                pass
+        return self
+
+    def record(self, pano_id, downloaded, fetched_at):
+        """Append one `pano_id,downloaded,fetched_at` row, flush it, and remember the id."""
+        self._writer.writerow([pano_id, downloaded, fetched_at])
+        self._file.flush()
+        self.ids.add(pano_id)
+
+    def __exit__(self, *exc_info):
+        self._file.close()
+
+
 # Consecutive permanent (downloaded=0) verdicts from ONE source that stop this run ledgering that source
 # (#113). A source absent from this table has no breaker, which is the default and the common case.
 #
@@ -395,12 +454,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
     # The attempted-pano ledger, in 'storage' alongside the pano results (see progress_check for semantics).
-    csv_pano_log_path = os.path.join(storage_path, "pano_id_log.csv")
-    ledger_existed = exists(csv_pano_log_path)
-    if ledger_existed:
-        df_id_set, prior_total, prior_success, prior_fail = progress_check(csv_pano_log_path)
-    else:
-        df_id_set, prior_total, prior_success, prior_fail = set(), 0, 0, 0
+    # Reading it here; the append handle is opened by the `with` below.
+    ledger = ImageLedger(storage_path)
+    df_id_set, prior_total = ledger.ids, ledger.prior_total
+    prior_success, prior_fail = ledger.prior_success, ledger.prior_fail
     # Seed counters from the log so "skipped" in the progress line includes panos already
     # downloaded on previous runs (same semantics as the original code).
     skipped_count = prior_success
@@ -423,33 +480,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     tripped = set() if tripped_sources is None else tripped_sources
     breaker_skipped = 0
 
-    # One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
-    # The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that,
-    # when the #46 dtype mismatch made it reachable, rewrote the ENTIRE file per pano with mode='w' - O(n^2)
-    # per run, and a crash mid-rewrite truncated the only image ledger in place.
-    with open(csv_pano_log_path, 'a', newline='') as ledger_file:
-        # lineterminator='\n': csv.writer's excel default is '\r\n', but every existing image ledger was
-        # written by pandas to_csv, whose default is os.linesep - '\n' on the Linux scraper boxes. Without
-        # this pin, appending to a years-old ledger would mix line endings in one file and hand ops greps a
-        # trailing '\r' on the downloaded column.
-        ledger = csv.writer(ledger_file, lineterminator='\n')
-        if not ledger_existed:
-            # Only a ledger this run CREATES gets the three-column header. An existing store keeps its
-            # two-column one above three-field rows, which looks wrong to a person running `head -1` and is
-            # correct anyway: rewriting a production ledger in place is the O(n^2) truncate-on-crash path
-            # the comment above warns about, over a file that is the only record of what has been scraped.
-            # progress_check reads by position and skips the header by value, so a stale one is inert.
-            ledger.writerow(['pano_id', 'downloaded', 'fetched_at'])
-            ledger_file.flush()
-            # Group-writable like depth_log.csv: other lab users' runs append to the same store.
-            try:
-                os.chmod(csv_pano_log_path, 0o664)
-            except OSError:
-                # Lost the exists()/open() race to another user's run: their file, their modes. The ledger is
-                # already open and writable, so this must not take the phase down - the same call in both
-                # downloaders' shard-dir setup swallows it for the same reason.
-                pass
-
+    with ledger:
         for pano_info in candidates:
             pano_id = pano_info['pano_id']
             # candidates is already filtered against the ledger; this still catches a duplicate id surviving
@@ -552,9 +583,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 # ever - on exactly the question (which rendering is this?) the column exists to answer. Blank
                 # means unknown, the same thing a two-field row from before #114 means.
                 fetched_at = '' if result_code == DownloadResult.skipped else log_timestamp()
-                ledger.writerow([pano_id, downloaded, fetched_at])
-                ledger_file.flush()
-                df_id_set.add(pano_id)
+                ledger.record(pano_id, downloaded, fetched_at)
 
             print("IMAGEDOWNLOAD: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)"
                   % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
