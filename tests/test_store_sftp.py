@@ -47,7 +47,10 @@ import shlex
 import sys
 
 argv = sys.argv[1:]
-batch = sys.stdin.read()
+# Real sftp is byte-transparent and store_sftp sends UTF-8; read it as such whatever this host's locale is.
+batch = sys.stdin.buffer.read().decode('utf-8')
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 record = os.environ.get('FAKE_SFTP_RECORD')
 if record:
     with open(record, 'a') as f:
@@ -337,6 +340,12 @@ class TestBatchText:
     def test_an_unsafe_id_is_refused_by_the_predicate(self, pano_id, ok):
         assert store_sftp.is_batch_safe_id(pano_id) is ok
 
+    @pytest.mark.parametrize('pano_id', ['pa\u00f1oAAAAAAAAAAAAAAAAA', 'abc\u0661\u0662', 'abc\uff21'])
+    def test_a_non_ascii_id_is_not_batch_safe(self, pano_id):
+        """The alphabet is ASCII on purpose: a Unicode \\w would admit these (n-tilde, Arabic-Indic digits,
+        a fullwidth letter), and none is an id any of the three sources issues."""
+        assert not store_sftp.is_batch_safe_id(pano_id)
+
     def test_build_batch_refuses_an_unsafe_id(self, tmp_path):
         with pytest.raises(ValueError):
             store_sftp.build_batch(self.settings(), str(tmp_path), ['a"b'], store_sftp.IMAGE_SUFFIX)
@@ -412,6 +421,28 @@ class TestRedaction:
 
     def test_an_empty_stderr_still_says_something(self):
         assert store_sftp.summarize_stderr('', self.settings())
+
+    def test_a_disconnect_after_absent_panos_is_what_the_summary_reports(self):
+        """Absent panos routinely precede a disconnect in a 100-get batch. Their per-line `not found` is
+        expected noise (the phase counts them from the filesystem), so it is not what a failed session is
+        summarised with; the cause, at the end, is."""
+        text = ''.join('File "/b/seattle-wa/./Ab/Ab%d.jpg" not found.\n' % i for i in range(6))
+        text += 'client_loop: send disconnect: Broken pipe\nConnection closed\n'
+        summary = store_sftp.summarize_stderr(text, self.settings())
+        assert 'Connection closed' in summary and 'Broken pipe' in summary
+        assert 'not found' not in summary
+
+    def test_the_summary_keeps_the_last_lines_not_the_first(self):
+        """ssh's host-key banner runs to twenty lines; the verdict is at the bottom."""
+        text = '\n'.join(['@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@'] * 20
+                         + ['Host key verification failed.', 'Connection closed'])
+        summary = store_sftp.summarize_stderr(text, self.settings())
+        assert summary.endswith('Host key verification failed. | Connection closed')
+
+    def test_only_not_found_lines_are_still_reported(self):
+        """If every line is a `not found`, that is still better than '(no error output)'."""
+        summary = store_sftp.summarize_stderr('File "/x/./Ab/Ab1.jpg" not found.\n', self.settings())
+        assert 'not found' in summary
 
     # --- What ssh prints that the configured strings do not cover (#155 review item 2) ----------------
     # Each case isolates ONE mechanism: its text carries nothing any other rule would catch.
@@ -709,6 +740,27 @@ class TestPullBatch:
         with pytest.raises(SystemExit):
             self.pull(make_settings('/panos', tmp_path), storage, ['abcdef', 'ghijkl'])
         assert not list(storage.rglob('*.part'))
+
+    def test_a_non_ascii_storage_path_is_pulled(self, tmp_path, monkeypatch):
+        """The batch goes to sftp as UTF-8 whatever the locale: under text=True a cp1252 box raised
+        UnicodeEncodeError out of pull_batch - not the OSError it catches, so past the cleanup."""
+        write_fake_sftp(tmp_path, monkeypatch)
+        base = make_remote(tmp_path, {'abcdef.jpg': small_jpeg()})
+        storage = tmp_path / 'store_\u03a9_Jos\u00e9'
+        assert self.pull(make_settings(base, tmp_path), storage, ['abcdef']) == {'abcdef': PullOutcome.pulled}
+        assert (storage / 'ab' / 'abcdef.jpg').exists()
+
+    def test_undecodable_error_output_is_still_a_session_error(self, tmp_path, monkeypatch):
+        """Bytes no codec accepts (0x81 is undefined in cp1252 and invalid UTF-8) must reach the summary as
+        replacement characters, not raise UnicodeDecodeError past the redaction."""
+        script = tmp_path / 'bad_bytes_sftp.py'
+        script.write_text('import sys\nsys.stdin.buffer.read()\n'
+                          'sys.stderr.buffer.write(b"\\x81\\x8d collab@store.example: Permission denied\\n")\n'
+                          'sys.exit(255)\n')
+        monkeypatch.setattr(store_sftp, 'SFTP_COMMAND', [sys.executable, str(script)])
+        with pytest.raises(StoreSessionError) as e:
+            self.pull(make_settings('/panos', tmp_path), tmp_path / 'local', ['abcdef'])
+        assert '<user>@<host>: Permission denied' in str(e.value)
 
     def test_sftp_that_cannot_start_is_a_session_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(store_sftp, 'SFTP_COMMAND', [str(tmp_path / 'no-such-sftp-binary')])

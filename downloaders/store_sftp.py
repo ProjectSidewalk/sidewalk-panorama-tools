@@ -311,19 +311,40 @@ def redact(text, settings, resolved=None):
     return _USER_AT.sub('<user>@', text)
 
 
+# A `-get` of a pano the store does not hold. Expected per-line noise - the phase counts those panos from
+# the filesystem - so it is never what a failed session is summarised with while anything else was said.
+_NOT_FOUND_LINE = re.compile(r'^File ".*" not found\.$')
+
+
 def summarize_stderr(text, settings):
-    """One redacted, capped line for a log or a cron mail: the first STDERR_SUMMARY_LINES non-blank lines,
-    each at most STDERR_SUMMARY_CHARS, joined with ' | '. Asks `ssh -G` what the host resolves to (see
-    ssh_config_values) - once per failed session, which stops the pass, so at most twice a run."""
+    """One redacted, capped line for a log or a cron mail: the LAST STDERR_SUMMARY_LINES non-blank lines,
+    each at most STDERR_SUMMARY_CHARS, joined with ' | '.
+
+    The last, not the first, and without the per-pano `File "..." not found.` lines (unless they are all
+    there is): absent panos routinely precede a disconnect in a 100-get batch, and ssh's host-key banner
+    runs to twenty lines, so in both cases the cause is at the bottom. Asks `ssh -G` what the host resolves
+    to (see ssh_config_values) - once per failed session, which stops the pass, so at most twice a run.
+    """
     redacted = redact(text or '', settings, ssh_config_values(settings))
     lines = [line.strip() for line in redacted.splitlines() if line.strip()]
-    lines = [line[:STDERR_SUMMARY_CHARS] for line in lines[:STDERR_SUMMARY_LINES]]
+    lines = [line for line in lines if not _NOT_FOUND_LINE.match(line)] or lines
+    lines = [line[:STDERR_SUMMARY_CHARS] for line in lines[-STDERR_SUMMARY_LINES:]]
     return ' | '.join(lines) if lines else '(no error output)'
 
 
 def run_sftp_batch(settings, batch_text):
-    """THE one subprocess call in store mode. The batch goes in on stdin, which is what `-b -` reads."""
-    return subprocess.run(sftp_argv(settings), input=batch_text, capture_output=True, text=True)
+    """THE one sftp call in store mode. The batch goes in on stdin, which is what `-b -` reads.
+
+    Bytes in, UTF-8, whatever the locale: text=True encoded with the locale's codec, so a non-ASCII storage
+    path raised UnicodeEncodeError on a cp1252 box - not the OSError pull_batch catches, so past its .part
+    cleanup - and on Windows it also turned every '\\n' into '\\r\\n'. stderr comes back decoded with
+    errors='replace', so no byte sftp or ssh prints can raise past the redaction. Returns a CompletedProcess
+    whose stderr is str.
+    """
+    result = subprocess.run(sftp_argv(settings), input=batch_text.encode('utf-8'), capture_output=True)
+    return subprocess.CompletedProcess(result.args, result.returncode,
+                                       result.stdout.decode('utf-8', errors='replace'),
+                                       result.stderr.decode('utf-8', errors='replace'))
 
 
 def is_complete_jpeg(path):
