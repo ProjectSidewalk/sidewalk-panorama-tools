@@ -12,6 +12,8 @@ Split the way tests/test_crop_sizing_v2.py is:
 import json
 import math
 import os
+import random
+import statistics
 import sys
 
 import pytest
@@ -90,7 +92,9 @@ class TestStudyLogic:
         assert csv3.extent_fit(ramps, rule='v2')['r2'] is None
 
     def test_the_isotonic_ceiling_is_one_on_any_monotone_law(self):
-        ramps = [ramp(depression=d, box_w=40.0 * (1 + d) ** 0.7) for d in (0.5, 2, 4, 8, 13, 19, 27, 40)]
+        # Deliberately NOT in depression order: the gold is unordered, and a fit handed sorted input
+        # cannot show that it returns its answer in the caller's order.
+        ramps = [ramp(depression=d, box_w=40.0 * (1 + d) ** 0.7) for d in (13, 0.5, 40, 4, 27, 2, 19, 8)]
         ceiling = csv3.depression_only_ceiling(ramps)
         assert ceiling['isotonic_r2'] == pytest.approx(1.0, abs=1e-12)
         assert ceiling['n_params'] == 3
@@ -110,8 +114,104 @@ class TestStudyLogic:
             assert csv3.extent_fit(ramps, rule=rule)['r2'] <= ceiling + 1e-12
 
     def test_isotonic_pools_violators_and_ties(self):
-        fit = csv3._isotonic_fit([1, 2, 2, 3], [1.0, 3.0, 1.0, 0.0])
-        assert list(fit) == pytest.approx([1.0, 4.0 / 3, 4.0 / 3, 4.0 / 3])
+        """Fed out of order: (x, y) pairs (2, 3), (1, 1), (3, 0), (2, 1) - the answer comes back per input."""
+        fit = csv3._isotonic_fit([2, 1, 3, 2], [3.0, 1.0, 0.0, 1.0])
+        assert list(fit) == pytest.approx([4.0 / 3, 1.0, 4.0 / 3, 4.0 / 3])
+
+    def test_isotonic_fit_is_returned_in_input_order(self):
+        """#157 review item 3 (kills S4: a PAVA that forgets to un-sort). Every isotonic test used to feed
+        x already sorted, so an implementation returning the sorted-order fit passed all of them."""
+        rng = random.Random(0)
+        x = [rng.uniform(0, 40) for _ in range(30)]
+        y = [math.log(1 + xi) + rng.gauss(0, 0.3) for xi in x]
+        fit = csv3._isotonic_fit(x, y)
+        order = sorted(range(len(x)), key=lambda i: x[i])
+        sorted_fit = csv3._isotonic_fit([x[i] for i in order], [y[i] for i in order])
+        for rank, i in enumerate(order):
+            assert fit[i] == pytest.approx(sorted_fit[rank])
+        assert all(fit[a] <= fit[b] + 1e-12 for a, b in zip(order, order[1:]))
+
+    def test_isotonic_fit_gives_tied_x_one_value(self):
+        """Kills S5 (tie pooling removed): the pools-ties case above gives the same fit either way."""
+        assert list(csv3._isotonic_fit([1, 1], [0.0, 1.0])) == pytest.approx([0.5, 0.5])
+
+    def test_the_dispersion_metrics_are_what_they_say(self):
+        """Kills S10 (p90/p50 for p90/p10) and S14 (pstdev for stdev): fill_log_sd and fill_p90_over_p10
+        are the headline metrics, and only the regenerated artifact pinned them. Fills are planted
+        exactly by fixing the box width."""
+        fills = [0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6, 0.8, 0.9, 1.2]
+        ramps = [ramp(box_w=1000.0 * f) for f in fills]
+        boxes = [CropRunner.CropBox(0, 0, 1000, 667, False) for _ in ramps]
+        scored = csv3._score_boxes(ramps, boxes)
+        assert scored['fill_log_sd'] == pytest.approx(statistics.stdev([math.log(f) for f in fills]),
+                                                      rel=1e-12)
+        assert scored['fill_p90_over_p10'] == pytest.approx(0.9 / 0.2, rel=1e-12)
+
+    def test_window_change_counts_narrower_windows_too(self):
+        """Kills S8 (counting only windows that widen): the other window_change test has every ratio 1."""
+        dep = 12.0
+        v2 = csv3.v2_fov_at(dep)
+        width = 2 * CropRunner.blend_distance_m(dep) * math.tan(math.radians(0.8 * v2) / 2)
+        change = csv3.window_change([ramp(depression=dep) for _ in range(4)], width)
+        assert change['ratio_p50'] == pytest.approx(0.8)
+        assert change['frac_over_10pct'] == 1.0 and change['frac_over_20pct'] == 0.0
+
+    def test_matched_width_takes_the_first_grid_value_on_a_tie(self):
+        """Kills S2 (last on a tie): every width caps a 60-degree ramp at 90 degrees, so every fill ties
+        and the docstring's "first" is the only thing deciding."""
+        ramps = [ramp(depression=60.0)]
+        grid = [4.0, 5.0, 6.0]
+        assert len({row['fill_p50'] for row in csv3.context_width_sweep(ramps, grid)}) == 1
+        assert csv3.matched_context_width(ramps, 0.0, grid) == 4.0
+
+    def test_option_a_is_matched_on_the_nearest_fill(self):
+        """Kills S3 (the matched-scale objective without abs): option A's matched scale anchors D7."""
+        ramps = [ramp(depression=d, box_w=150.0 + 10 * d) for d in (2.0, 6.0, 11.0, 17.0, 24.0)]
+        k0 = 2.2
+        target = csv3.score_fov_fn(ramps, lambda dep: csv3.rule_a_fov_at(dep, k0))['fill_p50']
+        block = csv3.rule_a_block({'c': ramps}, ramps, target)
+        assert block['matched_scale'] == k0
+        assert block['pooled_matched']['fill_p50'] == target
+
+    def test_production_ratio_is_v3_over_v2(self, tmp_path, monkeypatch):
+        """Kills S9 (v2/v3): production_block is the x1.13 / x0.74 headline, with no synthetic test."""
+        census = {'by_label_type': {'CurbRamp': {'n': 7, 'depression_deg': {
+            'p10': 3.0, 'p50': 14.8, 'p90': 28.0, 'p99': 50.0}}}}
+        path = tmp_path / 'census.json'
+        path.write_text(json.dumps(census), encoding='utf-8')
+        monkeypatch.setattr(csv3, 'REPO_ROOT', str(tmp_path))
+        block = csv3.production_block(5.8, path=str(path))
+        for row in block['rows']:
+            assert row['ratio'] == pytest.approx(csv3.v3_fov_at(row['depression_deg'], 5.8)
+                                                 / csv3.v2_fov_at(row['depression_deg']))
+        assert block['n'] == 7
+
+    def test_city_block_scores_v3_at_the_width_it_is_given(self):
+        """Kills S11 (v3 scored at a nudged width): at the shipped width city_block's v3 is the rule."""
+        ramps = [ramp(depression=d, box_w=120 + 9 * d) for d in (1.0, 4.0, 9.0, 15.0, 22.0, 31.0)]
+        block = csv3.city_block(ramps, CropRunner.V3_CONTEXT_WIDTH_M)
+        assert block['v3'] == csv3.score_rule(ramps, 'v3')
+
+    def test_build_summary_wires_the_criteria_and_the_geometry(self, monkeypatch):
+        """Kills S12 (band-centre on the v2 target) and S16 (cap onset at a fixed 6.0 m): both are
+        computed in build_summary, and only the committed JSON - regenerated by this code - pinned them."""
+        monkeypatch.setattr(csv3, 'production_block', lambda w: {})
+        monkeypatch.setattr(csv3, 'rampnet_commit', lambda p: None)
+        ramps = [ramp(depression=d, box_w=100 + 12 * d) for d in (1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0)]
+        s = csv3.build_summary({'c': ramps}, {'c': '/x'}, [])
+        matched = s['selection']['matched_context_width_m']
+        assert s['selection']['band_centre_width_m'] == csv3.matched_context_width(
+            ramps, csv3.BAND_CENTRE_FILL, csv3.GRID_M)
+        assert s['rule_geometry']['v3_cap_onset_deg'] == csv3.cap_onset_deg(
+            lambda d: csv3.v3_fov_at(d, matched))
+
+    def test_distance_exponent_keeps_a_small_positive_legacy_distance(self):
+        """Kills S15 (d > 0.5 for d > 0): only d <= 0 has no log; a ramp just short of the legacy zero
+        crossing still counts."""
+        crossing = csv3.legacy_zero_crossing_deg()
+        ramps = [ramp(depression=d, box_w=100 + d) for d in (5.0, 15.0, crossing - 0.05)]
+        assert 0 < csv3.legacy_distance_m(crossing - 0.05) < 0.5
+        assert csv3.distance_exponent(ramps, 'legacy')['n'] == 3
 
     def test_legacy_distance_is_the_production_line(self):
         """legacy_distance_m re-evaluates _reference_crop_size's first step; it must be that line."""
