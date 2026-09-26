@@ -51,8 +51,11 @@ argv = sys.argv[1:]
 # Real sftp is byte-transparent and store_sftp sends UTF-8 (a POSIX non-UTF-8 name as its original bytes, via
 # surrogateescape); read it back the same way, which is how Python's os functions see such a name.
 batch = sys.stdin.buffer.read().decode('utf-8', 'surrogateescape')
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
+# Echo such a name back out as the same bytes, too: a strict UTF-8 stream raises on a lone surrogate, which
+# killed the echo of the cd line on CI. Local paths need nothing extra - on POSIX Python's os functions
+# already encode a str path with surrogateescape, so the file lands in the non-UTF-8 directory itself.
+sys.stdout.reconfigure(encoding='utf-8', errors='surrogateescape')
+sys.stderr.reconfigure(encoding='utf-8', errors='surrogateescape')
 record = os.environ.get('FAKE_SFTP_RECORD')
 if record:
     with open(record, 'a') as f:
