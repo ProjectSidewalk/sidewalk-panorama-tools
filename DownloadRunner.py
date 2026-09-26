@@ -1,6 +1,7 @@
 # !/usr/bin/python3
 
 import argparse
+import collections
 import csv
 import json
 import logging
@@ -674,6 +675,26 @@ def _pull_in_batches(settings, storage_path, pano_ids, suffix, verifier, run_sta
         yield chunk, outcomes
 
 
+def _report_pull_trouble(prefix, noun, outcome_counts):
+    """The closing lines for outcomes an operator must hear about tonight, on BOTH channels (#155 review
+    item 14): stdout is the night's message, scrape.log is what is still there next week. Per-pano detail
+    stays in scrape.log only. `unplaced` is the one a retry will not fix - it is local storage (a full disk,
+    a dropped mount) - so a run where every pano turned `unplaced` must not read as a quiet "N failed"."""
+    messages = {
+        store_sftp.PullOutcome.truncated:
+            "%s: WARNING - %d %s arrived incomplete or unreadable and were discarded; not ledgered, retried "
+            "next run; see scrape.log",
+        store_sftp.PullOutcome.unplaced:
+            "%s: WARNING - %d %s verified but could not be placed on local storage (disk full? mount "
+            "dropped?); not ledgered, retried next run; see scrape.log",
+    }
+    for outcome, template in messages.items():
+        if outcome_counts.get(outcome):
+            message = template % (prefix, outcome_counts[outcome], noun)
+            logging.warning("%s", message)
+            print(message)
+
+
 def _partition_for_pull(storage_path, pano_ids, suffix, prefix):
     """Split ids into (to_pull, already_local, unsafe) without touching the network.
 
@@ -716,7 +737,7 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
     success_count = 0
     skipped_count = ledger.prior_success
     fail_count = ledger.prior_fail
-    absent_count = 0
+    outcome_counts = collections.Counter()
 
     # dict.fromkeys: order-preserving dedupe, so a duplicate id surviving intake is pulled and ledgered once.
     candidate_ids = [pano_id for pano_id in dict.fromkeys(p['pano_id'] for p in pano_infos)
@@ -745,7 +766,7 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
                     logging.info("STOREPULL: pano %s pulled", pano_id)
                 else:
                     fail_count += 1
-                    absent_count += outcome == store_sftp.PullOutcome.absent
+                    outcome_counts[outcome] += 1
                     logging.warning("STOREPULL: pano %s %s; not ledgered, retried next run", pano_id,
                                     outcome.value)
             print("STOREPULL: Completed %d of %d (%d pulled, %d failed, %d skipped)"
@@ -753,11 +774,12 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
                      skipped_count))
 
     total_completed = success_count + fail_count + skipped_count
-    if absent_count:
+    if outcome_counts[store_sftp.PullOutcome.absent]:
         message = ("STOREPULL: %d pano(s) not on the store tonight; not ledgered, retried next run"
-                   % absent_count)
+                   % outcome_counts[store_sftp.PullOutcome.absent])
         logging.warning("%s", message)
         print(message)
+    _report_pull_trouble('STOREPULL', 'pano(s)', outcome_counts)
     if unsafe:
         message = ("STOREPULL: WARNING - %d pano id(s) cannot be written into an sftp batch and were skipped; "
                    "see scrape.log" % len(unsafe))
@@ -786,6 +808,7 @@ def pull_depth_from_store(storage_path, gsv_pano_infos, settings, run_start_mono
     to_pull, local, unsafe = _partition_for_pull(storage_path, pano_ids, store_sftp.DEPTH_SUFFIX, 'STOREDEPTH')
     random.shuffle(to_pull)
     pulled, failed = 0, len(unsafe)
+    outcome_counts = collections.Counter()
     for chunk, outcomes in _pull_in_batches(settings, storage_path, to_pull, store_sftp.DEPTH_SUFFIX,
                                             store_sftp.is_complete_npz, run_start_monotonic, max_runtime_minutes,
                                             tripped, stop_reasons, 'depth_stop', 'STOREDEPTH'):
@@ -796,9 +819,12 @@ def pull_depth_from_store(storage_path, gsv_pano_infos, settings, run_start_mono
                 logging.info("STOREDEPTH: pano %s depth artifact pulled", pano_id)
             else:
                 failed += 1
+                outcome_counts[outcome] += 1
                 logging.info("STOREDEPTH: pano %s depth artifact %s", pano_id, outcome.value)
         print("STOREDEPTH: Completed %d of %d (%d pulled, %d not pulled, %d skipped)"
               % (pulled + failed + len(local), len(pano_ids), pulled, failed, len(local)))
+    # An absent artifact is expected (Google had no depth), so only the two troubles get a closing line.
+    _report_pull_trouble('STOREDEPTH', 'artifact(s)', outcome_counts)
     return pulled, failed, len(local), pulled + failed + len(local)
 
 
@@ -1063,9 +1089,13 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
                 depth_pace_state, stop_reasons, store_settings=None, with_depth=False):
     """run()'s body, minus the run-summary bookkeeping its finally owns."""
     if store_settings is not None:
-        # The city id, never the host: connection details stay out of stdout (#30).
-        print("Store mode: pulling already-scraped panoramas for %s from the Project Sidewalk pano store "
-              "(no request goes to Google, Mapillary or Panoramax)" % store_settings.remote_city)
+        # The city id, never the host: connection details stay out of stdout and scrape.log (#30). Both
+        # channels, because a store row in log.csv is not distinguishable from a scrape's and this line is the
+        # record of which store city the run pulled - scrape.log is where that is still readable next week.
+        banner = ("Store mode: pulling already-scraped panoramas for %s from the Project Sidewalk pano store "
+                  "(no request goes to Google, Mapillary or Panoramax)" % store_settings.remote_city)
+        logging.info("%s", banner)
+        print(banner)
     # Access Project Sidewalk API to get Pano IDs for city
     print("Fetching pano-ids")
 
@@ -1090,8 +1120,11 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
     # if len(pano_infos) > n:
     #     pano_infos = random.sample(pano_infos, n)
 
-    print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth"
-          % (len(pano_infos), len(image_pano_infos), sum(1 for p in pano_infos if p.get('source') == 'gsv')))
+    # In store mode without --with-depth no depth pass runs at all, so say so rather than read as if one will.
+    depth_note = ' (not pulled: no --with-depth)' if store_settings is not None and not with_depth else ''
+    print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth%s"
+          % (len(pano_infos), len(image_pano_infos), sum(1 for p in pano_infos if p.get('source') == 'gsv'),
+             depth_note))
 
     # Use pano_id list and associated info to gather panos from respective APIs
     print("Fetching Panoramas")

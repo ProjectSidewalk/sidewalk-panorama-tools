@@ -2787,11 +2787,63 @@ class TestStoreMode:
         assert not final.exists()
         assert ledger_verdict_rows(run.storage) == []
         assert run.fields()[6:11] == ['0', '0', '1', '0', '1']
+        # Local storage trouble is the operator's to fix and a retry will not; stdout (the night's message)
+        # and scrape.log both say so in a closing line, not only per pano in the log (#155 review item 14).
+        line = 'STOREPULL: WARNING - 1 pano(s) verified but could not be placed on local storage'
+        assert line in capsys.readouterr().out
+        assert line in (run.storage / 'scrape.log').read_text()
 
         monkeypatch.setattr(downloaders.common.os, 'replace', real_replace)
         run.main(store_csv_rows([pano]))
         assert final.exists()
         assert ledger_verdict_rows(run.storage) == ['%s,1' % pano]
+
+    def test_a_truncated_pull_gets_a_closing_line_on_both_channels(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        monkeypatch.setenv('FAKE_SFTP_TRUNCATE', STORE_IDS[0] + '.jpg')
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        line = 'STOREPULL: WARNING - 1 pano(s) arrived incomplete or unreadable and were discarded'
+        assert line in capsys.readouterr().out
+        assert line in (run.storage / 'scrape.log').read_text()
+
+    def test_a_clean_pull_prints_no_closing_warning(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        assert 'WARNING' not in capsys.readouterr().out
+
+    def test_the_depth_pass_reports_an_unplaced_artifact(self, monkeypatch, tmp_path, capsys):
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        (run.storage / pano[:2]).mkdir(parents=True)
+        (run.storage / pano[:2] / (pano + '.jpg')).write_bytes(store_jpeg())
+        real_replace = os.replace
+
+        def full_disk(src, dst, *a, **k):
+            if str(dst).endswith('.depth.npz'):
+                raise OSError(28, 'No space left on device')
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(downloaders.common.os, 'replace', full_disk)
+        run.main(store_csv_rows([pano]), '--with-depth')
+        assert 'STOREDEPTH: WARNING - 1 artifact(s) verified but could not be placed on local storage' \
+            in capsys.readouterr().out
+
+    def test_the_store_banner_names_the_city_in_scrape_log_too(self, monkeypatch, tmp_path, capsys):
+        """A row is not distinguishable from a scrape's; the banner is the record of which store city a run
+        pulled, and scrape.log is the channel still there next week (#155 review item 15). Never the host."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        log = (run.storage / 'scrape.log').read_text()
+        assert 'Store mode: pulling already-scraped panoramas for %s' % STORE_CITY in log
+        assert STORE_HOST not in log and STORE_USER not in log
+
+    def test_the_panos_line_says_depth_is_not_pulled_without_with_depth(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        out = capsys.readouterr().out
+        assert '3 GSV panos eligible for depth (not pulled: no --with-depth)' in out
+        run.main(store_csv_rows(), '--with-depth')
+        assert 'not pulled: no --with-depth' not in capsys.readouterr().out
 
     def test_a_stop_mid_session_is_143_not_a_session_failure(self, monkeypatch, tmp_path, capsys):
         """SIGTERM's SystemExit(143) must pass through the session-failure handler untouched - reported as a
