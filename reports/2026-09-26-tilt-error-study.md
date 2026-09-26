@@ -165,8 +165,9 @@ steps are in the folder's own [`README.md`](data/2026-09-26-tilt-adjudication/RE
     python reports/scripts/tilt_adjudicate.py record --out reports/data/2026-09-26-tilt-adjudication --judge jon <token> A|B|C|none
     # repeat until `next` prints "all judged"; commit verdicts_jon.jsonl; then re-run tilt_error_study.py analyze
 
-Do not open `sealed/` (the key and the machine's verdicts), the study JSON, or the rest of this report
-until you have committed your verdicts. One sheet, exactly as a judge sees it:
+Do not open `sealed/` (the key and the machine's verdicts), the study JSON, the rest of this report,
+`reports/README.md`, `docs/cropper.md` or CLAUDE.md's tilt subsection (the last three quote the
+machine's result) until you have committed your verdicts. One sheet, exactly as a judge sees it:
 
 ![one adjudication sheet, as the judge sees it](data/2026-09-26-tilt-adjudication/sheets/t082917fa83.jpg)
 
@@ -176,6 +177,10 @@ for 8 sheets in a report figure. The key is now sealed (`sealed/key.json`, with 
 the hash's salt), the figure is gone, and those 8 sheets are listed in the artifact as
 `exposed_in_figure` and scored apart for every judge. The panel order is still derivable by re-running
 `build_sheets` from the public seed; the blind protects a judge who follows the README.
+
+**Which contrast decides.** Jon's verdict is read on the blind leak-vs-antileak contrast, with the
+pre-set stored/shifted rule reported alongside, because the middle window is identifiable by content:
+the stored window always sits between the other two, and Jon knows the hypothesis.
 
 #### Preliminary machine pass: split by the pre-set rule; leak 37, antileak 0
 

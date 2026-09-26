@@ -9,6 +9,7 @@
    root: `python reports/scripts/tilt_error_study.py analyze`. Only then open `sealed/`, the report, or
    the study JSON.
 
-Do not open `sealed/`, the report's results, or `reports/data/2026-09-26-tilt-error-study.json` before
-step 5: they hold the key or another judge's answers. `next` and `record` never read the key, and they
+Do not open `sealed/`, the report's results, `reports/data/2026-09-26-tilt-error-study.json`,
+`reports/README.md`, `docs/cropper.md` or CLAUDE.md's tilt subsection before step 5: they hold the key
+or another judge's answers. `next` and `record` never read the key, and they
 refuse to run while a key file sits in this folder outside `sealed/`.

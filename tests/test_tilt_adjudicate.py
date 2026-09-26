@@ -500,3 +500,25 @@ def test_M11_a_fresh_salt_is_128_bits_and_random(tmp_path):
     ta.write_key(str(tmp_path / 'b'), _KEY1)
     salts = [open(os.path.join(str(tmp_path / x), 'sealed', 'salt.txt')).read().strip() for x in 'ab']
     assert all(len(s) == 32 and int(s, 16) >= 0 for s in salts) and salts[0] != salts[1]
+
+
+# The machine's aggregate result is also quoted outside the report (#158 final review item 7).
+QUOTES_THE_MACHINE_RESULT = ('reports/README.md', 'docs/cropper.md', "CLAUDE.md's tilt subsection")
+
+
+def test_the_do_not_open_lists_name_every_file_that_quotes_the_machine_result():
+    readme = ' '.join(ta.JUDGE_README.split())
+    with open(REPORT_MD, encoding='utf-8') as f:
+        report = ' '.join(f.read().split())
+    how = report[report.index('**How to adjudicate**'):report.index('Preliminary machine pass')]
+    for name in QUOTES_THE_MACHINE_RESULT:
+        assert name in readme
+        assert name in how
+
+
+def test_c_says_which_contrast_jons_verdict_is_read_on():
+    with open(REPORT_MD, encoding='utf-8') as f:
+        report = ' '.join(f.read().split())
+    how = report[report.index('**How to adjudicate**'):report.index('Preliminary machine pass')]
+    assert "Jon's verdict is read on the blind leak-vs-antileak contrast" in how
+    assert 'pre-set stored/shifted rule reported alongside' in how
