@@ -68,6 +68,11 @@ OBSERVED_MAPILLARY_NOT_FOUND_2026_09_06 = {
 GSV_PANO = {'pano_id': 'gsvPanoIdAAAAAAAAAAAAA', 'source': 'gsv', 'width': 512, 'height': 512}
 
 
+def photometa_unavailable(pano_id, session):
+    """gsv._fetch_image_levels stand-in (#74): photometa down, so the zoom comes from the two-tile probe."""
+    raise downloaders.gsv.DepthPayloadError('stubbed: this test drives the probe path')
+
+
 def jpeg_bytes(shade):
     buf = io.BytesIO()
     Image.new('RGB', (512, 512), (shade, shade, shade)).save(buf, 'jpeg')
@@ -752,6 +757,9 @@ class TestGsvAtomicSave:
         tile = jpeg_bytes(120)
         monkeypatch.setattr(downloaders.gsv, '_get_response',
                             lambda url, session, stream=False: io.BytesIO(tile))
+        # Photometa is asked first since #74; making it unavailable routes this onto the probe above, and
+        # keeps a real request (streetlevel is installed in CI) out of the suite.
+        monkeypatch.setattr(downloaders.gsv, '_fetch_image_levels', photometa_unavailable)
 
         # The fan-out hands back (x, y, jpeg_bytes) per tile, one entry per requested grid position
         # (#44/#45 replaced the old ['<x> <y>', bytes] pairs). Stubbing _download_tiles rather than
@@ -926,6 +934,7 @@ class TestALostShardDirRaceDoesNotFailThePano:
         tile = jpeg_bytes(120)
         monkeypatch.setattr(downloaders.gsv, '_get_response',
                             lambda url, session, stream=False: io.BytesIO(tile))
+        monkeypatch.setattr(downloaders.gsv, '_fetch_image_levels', photometa_unavailable)
 
         async def fake_download_tiles(tiles):
             return [(x, y, tile) for x, y, _url in tiles]

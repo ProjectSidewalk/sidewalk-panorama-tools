@@ -434,13 +434,54 @@ class TestRejectMostlyBlackStitch:
 
 def stub_probe(monkeypatch, pick_zoom):
     """Make the zoom probe pick `pick_zoom` without a network: probe requests for that zoom return a
-    non-blank JPEG, every other zoom a black one (Google's no-imagery answer)."""
+    non-blank JPEG, every other zoom a black one (Google's no-imagery answer).
+
+    Since #74 the probe is the FALLBACK - resolve_frame asks photometa first - so this also makes photometa
+    unavailable, which is what routes a test onto the probe path. That half is not optional:
+    tests/test_downscaled_sidecar.py imports this helper and is outside #74's file set, and without it every
+    one of its downloads would send a real photometa request (streetlevel is installed in CI). Returns the
+    list of probe URLs requested, in order."""
+    requested = []
 
     def fake_get_response(url, session, stream=False):
+        requested.append(url)
         color = RED if ('zoom=%d&' % pick_zoom) in url else (0, 0, 0)
         return BytesIO(jpeg_bytes(color, (16, 16)))
 
+    def photometa_unavailable(pano_id, session):
+        raise gsv.DepthPayloadError('stubbed: this test drives the probe path')
+
     monkeypatch.setattr(gsv, '_get_response', fake_get_response)
+    monkeypatch.setattr(gsv, '_fetch_image_levels', photometa_unavailable)
+    return requested
+
+
+def stub_photometa(monkeypatch, sizes=None, tile_size=(512, 512), gone=False, error=None):
+    """Make the image phase's photometa read (#74) answer without a network.
+
+    `sizes` is the per-zoom (width, height) list Google would report, lowest first; `gone` answers code 2
+    (not found); `error` is raised instead of answering. Returns the list of pano ids asked about, so a test
+    can count photometa requests."""
+    asked = []
+
+    def fake_fetch_image_levels(pano_id, session):
+        asked.append(pano_id)
+        if error is not None:
+            raise error
+        if gone:
+            return None
+        return gsv.ImageLevels([tuple(s) for s in sizes], tuple(tile_size))
+
+    monkeypatch.setattr(gsv, '_fetch_image_levels', fake_fetch_image_levels)
+    return asked
+
+
+def deny_probe(monkeypatch):
+    """Fail the test if the two-tile zoom probe is sent at all."""
+    def no_probe(*args, **kwargs):
+        raise AssertionError('the zoom probe must not be sent when photometa answered')
+
+    monkeypatch.setattr(gsv, '_get_response', no_probe)
 
 
 def stub_tiles(monkeypatch, result_for_tile):
@@ -776,6 +817,10 @@ class TestDownloadSinglePanoComposesTheSeams:
     If it is ever re-inlined, refetch_panos.py keeps working against the seams while the nightly run drifts
     away from them - and the drift would be invisible, because both would still produce a plausible JPEG at
     the reported dims. That is the #73 failure mode exactly, one level up.
+
+    Since #74 the nightly side composes resolve_frame (which also says whether Google's levels admit the frame)
+    while refetch_panos.py composes resolve_zoom_and_dims, a wrapper over it; tests/test_gsv_photometa_zoom.py
+    holds the wrapper and the refusal.
     """
 
     def test_it_calls_both_seams_and_saves_what_the_second_returned(self, tmp_path, monkeypatch):
@@ -784,13 +829,13 @@ class TestDownloadSinglePanoComposesTheSeams:
 
         def fake_resolve(pano_info):
             calls['resolve'] = pano_info['pano_id']
-            return 1024, 512, 5
+            return gsv.ResolvedFrame(1024, 512, 5, True, (1024, 512), 'photometa')
 
         def fake_fetch(pano_id, width, height, zoom):
             calls['fetch'] = (pano_id, width, height, zoom)
             return gsv.StitchedPano(frame, 0, False)
 
-        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', fake_resolve)
+        monkeypatch.setattr(gsv, 'resolve_frame', fake_resolve)
         monkeypatch.setattr(gsv, 'fetch_pano_image', fake_fetch)
 
         result = gsv.download_single_pano(str(tmp_path), {'pano_id': 'stitchPanoAAAAAAAAAAAA',
@@ -803,7 +848,7 @@ class TestDownloadSinglePanoComposesTheSeams:
             assert saved.size == (1024, 512)
 
     def test_a_none_from_the_probe_seam_is_the_permanent_failure_verdict(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', lambda pano_info: None)
+        monkeypatch.setattr(gsv, 'resolve_frame', lambda pano_info: None)
 
         def never(*args, **kwargs):
             raise AssertionError('no imagery means no tile fan-out')
@@ -814,7 +859,8 @@ class TestDownloadSinglePanoComposesTheSeams:
                                                         'width': 1024, 'height': 512}) == DownloadResult.failure
 
     def test_upscaled_from_the_fetch_seam_becomes_fallback_success(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', lambda pano_info: (1024, 512, 3))
+        monkeypatch.setattr(gsv, 'resolve_frame',
+                            lambda pano_info: gsv.ResolvedFrame(1024, 512, 3, True, None, 'probe'))
         monkeypatch.setattr(gsv, 'fetch_pano_image',
                             lambda *a: gsv.StitchedPano(Image.new('RGB', (1024, 512), RED), 0, True))
 

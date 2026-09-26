@@ -544,3 +544,30 @@ def test_live_frame_probe_agrees_with_the_real_grid(label, pano_id, width, heigh
     if (width, height) == (16384, 8192):
         assert gsv.frame_covers_pano(pano_id, 13312, 6656, zoom) is False, \
             '%s: a short grid must be caught, or a re-fetch silently crops it' % label
+
+
+# The OBSERVED_PHOTOMETA row each live pano should still match (#74). Sydney 2014 is a different pano from the
+# table's Sydney row, but the same six-level 13312 series.
+LIVE_PHOTOMETA_ROWS = {'Svz6_7CwyijJ6RgjWROnCw': 'Seattle 2022-09', 'cFou_FaIrbvqN0kcS5QuxA': 'Sydney 2014-11',
+                       'TEKYJ5O1xd0OZ_YqF0lFRA': 'DC-hist 2007-11'}
+
+
+@live_only
+@pytest.mark.parametrize('label,pano_id,width,height', LIVE_PANOS)
+def test_live_photometa_levels_match_the_observed_table(label, pano_id, width, height):
+    """The image phase's zoom decision (#74) against Google: one photometa request per pano, without depth.
+
+    Its levels must still be the OBSERVED_PHOTOMETA series the offline tests are written against, top level
+    equal to the app's frame, 512 px tiles - and choose_zoom must land on the top level, consistently. If this
+    fails, the offline table is stale and so is every test driven by it."""
+    pytest.importorskip('streetlevel.streetview.api')
+    from test_gsv_stitcher import OBSERVED_PHOTOMETA    # lazily: that module imports this one
+
+    with gsv._depth_session() as session:
+        levels = gsv._fetch_image_levels(pano_id, session)
+
+    assert levels is not None, '%s: photometa says not found' % label
+    assert tuple(levels.tile_size) == (512, 512)
+    assert [tuple(s) for s in levels.sizes] == dict(OBSERVED_PHOTOMETA)[LIVE_PHOTOMETA_ROWS[pano_id]], label
+    assert tuple(levels.sizes[-1]) == (width, height)
+    assert gsv.choose_zoom(levels.sizes, width, height) == (len(levels.sizes) - 1, True)

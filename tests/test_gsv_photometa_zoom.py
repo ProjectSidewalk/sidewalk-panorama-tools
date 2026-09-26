@@ -1,0 +1,408 @@
+"""The GSV zoom decision from photometa's own image_sizes (#74).
+
+Until #74 the image phase picked a zoom by requesting two tiles (zoom 5 and zoom 3 at x=0, y=0) and asking
+which came back non-black. That answers "is there imagery at this zoom?", never "does the frame the app
+reported agree with what Google serves?" - so an app frame smaller than Google's top level was fetched at the
+top zoom with the app's grid, which is the top-left crop of the pano, saved at the app's exact dimensions with
+no black and no undersized tile to give it away.
+
+What replaced it, and what these tests hold:
+
+* **The rule is a consistency check** (choose_zoom): the highest level k whose grid - _dims_at_zoom of the
+  app's frame at k - IS a level Google reports. On every real photometa shape pinned in OBSERVED_PHOTOMETA that
+  reproduces the probe's answer for a native frame.
+* **A frame no level admits is refused loudly and transiently** by download_single_pano, never cropped - but
+  NOT by resolve_frame / resolve_zoom_and_dims, which refetch_panos.py composes with its own frame gate.
+* **The probe survives verbatim as the fallback** for every photometa failure and for "not found", so a
+  permanent downloaded=0 still rests on the same two black tiles it always did.
+* **The image phase shares the depth phase's block latch file, not its pacer.**
+
+Network-free: photometa is stubbed at gsv._fetch_image_levels, the probe at gsv._get_response, tiles at
+gsv._download_tiles.
+"""
+
+import logging
+import time
+
+import pytest
+import requests
+
+from PIL import Image
+
+from downloaders import gsv
+from downloaders.common import DownloadResult, jpeg_dimensions
+from test_gsv_stitcher import (OBSERVED_PHOTOMETA, RED, deny_probe, jpeg_bytes, stub_photometa, stub_probe,
+                               stub_tiles)
+
+PANO = 'photometaPanoAAAAAAAAA'
+
+SERIES_16384 = [(512, 256), (1024, 512), (2048, 1024), (4096, 2048), (8192, 4096), (16384, 8192)]
+SERIES_13312 = [(416, 208), (832, 416), (1664, 832), (3328, 1664), (6656, 3328), (13312, 6656)]
+SERIES_3328 = [(416, 208), (832, 416), (1664, 832), (3328, 1664)]            # DC-hist 2007, four levels
+SERIES_5376 = [(336, 168), (672, 336), (1344, 672), (2688, 1344), (5376, 2688)]  # Paris-hist, five levels
+
+# One encoded tile shared by every stitch, so a 512-tile grid decodes the same small body 512 times.
+TILE = jpeg_bytes(RED)
+
+
+def pano_info(width, height, pano_id=PANO):
+    return {'pano_id': pano_id, 'width': width, 'height': height}
+
+
+def red_tiles(monkeypatch):
+    return stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], TILE))
+
+
+def count_probes(monkeypatch, pick_zoom):
+    """stub_probe, keeping the photometa stub the test already installed."""
+    fetch = gsv._fetch_image_levels
+    requested = stub_probe(monkeypatch, pick_zoom)
+    monkeypatch.setattr(gsv, '_fetch_image_levels', fetch)
+    return requested
+
+
+def fresh_latch():
+    gsv._write_block_latch(gsv.default_block_latch_path())
+
+
+# --- the pure rule -----------------------------------------------------------------------------------------
+
+class TestChooseZoomFromReportedLevels:
+    @pytest.mark.parametrize('name,sizes', OBSERVED_PHOTOMETA)
+    def test_the_native_frame_picks_the_top_level_for_every_observed_pano(self, name, sizes):
+        """Reproduces the probe's answer on every real shape - and is not "zoom 5 always": DC-hist has four
+        levels and Paris-hist five."""
+        assert gsv.choose_zoom(sizes, *sizes[-1]) == (len(sizes) - 1, True), name
+
+    def test_an_app_frame_equal_to_a_lower_level_picks_that_level_not_the_top(self):
+        """The max-level shortcut would fetch this 16x8 grid at zoom 5: the top-left quarter of the pano."""
+        assert gsv.choose_zoom(SERIES_16384, 8192, 4096) == (4, True)
+
+    def test_a_frame_google_now_serves_larger_is_inconsistent(self):
+        """13312 against the 16384 series: no level is the grid the app's frame implies at that level."""
+        assert gsv.choose_zoom(SERIES_16384, 13312, 6656) == (5, False)
+
+    def test_a_truncated_series_that_still_agrees_is_a_consistent_fallback(self):
+        assert gsv.choose_zoom(SERIES_16384[:4], 16384, 8192) == (3, True)
+        assert gsv.choose_zoom(SERIES_16384[:5], 16384, 8192) == (4, True)
+
+    def test_a_frame_from_another_family_is_inconsistent_even_when_smaller_levels_exist(self):
+        assert gsv.choose_zoom(SERIES_3328, 16384, 8192) == (3, False)
+
+    def test_it_scans_from_the_top_down(self):
+        """Contrived: levels 2 and 4 are both the frame's grid. The higher one is the better image."""
+        sizes = [(1, 1), (2, 2), (1024, 512), (3, 3), (4096, 2048)]
+        assert gsv.choose_zoom(sizes, 4096, 2048) == (4, True)
+
+    def test_the_series_the_app_frame_belongs_to_is_consistent_at_every_prefix(self):
+        """Every level of a real series is itself a consistent fallback for the full frame - the property
+        the truncated-series cases above depend on, checked across the whole observed table."""
+        for name, sizes in OBSERVED_PHOTOMETA:
+            for top in range(len(sizes)):
+                assert gsv.choose_zoom(sizes[:top + 1], *sizes[-1]) == (top, True), (name, top)
+
+
+class TestProbeZoomIsTodaysProbe:
+    @pytest.mark.parametrize('pick,expected', [(5, 5), (3, 3), (-1, None)])
+    def test_it_answers_what_the_two_tiles_say(self, monkeypatch, pick, expected):
+        requested = stub_probe(monkeypatch, pick_zoom=pick)
+
+        assert gsv._probe_zoom(PANO) == expected
+        assert requested == ['%s&zoom=3&x=0&y=0&panoid=%s' % (gsv._CBK_BASE_URL, PANO),
+                             '%s&zoom=5&x=0&y=0&panoid=%s' % (gsv._CBK_BASE_URL, PANO)]
+
+
+# --- resolve_frame -----------------------------------------------------------------------------------------
+
+class TestResolveFrameUsesPhotometaFirst:
+    def test_reported_levels_pick_the_zoom_and_no_probe_is_sent(self, monkeypatch):
+        asked = stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        frame = gsv.resolve_frame(pano_info(16384, 8192))
+
+        assert frame == gsv.ResolvedFrame(16384, 8192, 5, True, (16384, 8192), 'photometa')
+        assert asked == [PANO]
+
+    def test_the_photometa_request_asks_for_no_depth(self, monkeypatch):
+        """Through the real _fetch_image_levels, with the api half stubbed: the request must be the 16 KB one,
+        and it must ride the photometa session - the one carrying the block-detection hook."""
+        captured = {}
+
+        def fake_find(panoid, download_depth=False, locale='en', session=None):
+            captured.update(panoid=panoid, download_depth=download_depth, session=session)
+            return [None, [[[1], [None, panoid], [None, None, None, [[[[256, 512]], [[512, 1024]]], [512, 512]]]]]]
+
+        api = pytest.importorskip('streetlevel.streetview.api')
+        monkeypatch.setattr(api, 'find_panorama_by_id', fake_find)
+        deny_probe(monkeypatch)
+
+        frame = gsv.resolve_frame(pano_info(1024, 512))
+
+        assert frame == gsv.ResolvedFrame(1024, 512, 1, True, (1024, 512), 'photometa')
+        assert captured['download_depth'] is False
+        assert isinstance(captured['session'], requests.Session)
+        assert gsv._raise_if_blocked in captured['session'].hooks['response']
+
+    @pytest.mark.parametrize('pick,expected', [(5, gsv.ResolvedFrame(1024, 512, 5, True, None, 'probe')),
+                                               (-1, None)])
+    def test_not_found_falls_through_to_the_probe_before_a_permanent_verdict(self, monkeypatch, pick, expected):
+        """D5: photometa's code 2 is not allowed to found a permanent downloaded=0 on its own. The verdict
+        rests on the two black tiles, as it always has - GSV has no permanent-verdict breaker, so a photometa
+        fault answering "not found" for live panos would otherwise write off a city's new panos in a night."""
+        stub_photometa(monkeypatch, gone=True)
+        requested = count_probes(monkeypatch, pick)
+
+        assert gsv.resolve_frame(pano_info(1024, 512)) == expected
+        assert len(requested) == 2
+
+    @pytest.mark.parametrize('error', [gsv.DepthPayloadError('unrecognized photometa response'),
+                                       requests.ConnectionError('connection reset'),
+                                       ValueError('Expecting value: line 1 column 1 (char 0)'),
+                                       ImportError('No module named streetlevel'),
+                                       KeyError('anything else at all')])
+    def test_a_photometa_failure_falls_back_to_the_probe_and_logs_it(self, monkeypatch, caplog, error):
+        stub_photometa(monkeypatch, error=error)
+        count_probes(monkeypatch, 5)
+
+        with caplog.at_level(logging.WARNING):
+            frame = gsv.resolve_frame(pano_info(1024, 512))
+
+        assert frame == gsv.ResolvedFrame(1024, 512, 5, True, None, 'probe')
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any('photometa' in r.getMessage() and PANO in r.getMessage() for r in warnings)
+        assert gsv._block_latch_age_hours(gsv.default_block_latch_path()) is None, \
+            "only a refusal from Google latches; an ordinary failure says nothing about this host's standing"
+
+    def test_missing_dims_still_cost_nothing(self, monkeypatch):
+        stub_photometa(monkeypatch, error=AssertionError('no dims must not ask photometa'))
+        deny_probe(monkeypatch)
+
+        assert gsv.resolve_frame({'pano_id': PANO, 'width': None, 'height': 512}) is None
+        assert gsv.resolve_frame({'pano_id': PANO, 'width': 1024}) is None
+
+    def test_a_non_512_tile_size_is_inconsistent(self, monkeypatch):
+        stub_photometa(monkeypatch, SERIES_16384, tile_size=(256, 256))
+        deny_probe(monkeypatch)
+
+        frame = gsv.resolve_frame(pano_info(16384, 8192))
+
+        assert frame.consistent is False
+        assert frame.evidence == 'photometa'
+
+    def test_an_inconsistent_frame_is_reported_not_raised(self, monkeypatch):
+        stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        assert gsv.resolve_frame(pano_info(13312, 6656)) == \
+            gsv.ResolvedFrame(13312, 6656, 5, False, (16384, 8192), 'photometa')
+
+
+class TestTheImagePhaseSharesTheBlockLatch:
+    @pytest.mark.parametrize('error', [gsv.DepthBlockedError('redirected to https://www.google.com/sorry/'),
+                                       requests.exceptions.RetryError('too many 429 error responses')])
+    def test_a_refusal_writes_the_latch_and_warns_on_both_channels(self, monkeypatch, capsys, caplog, error):
+        stub_photometa(monkeypatch, error=error)
+        count_probes(monkeypatch, 5)
+
+        with caplog.at_level(logging.ERROR):
+            frame = gsv.resolve_frame(pano_info(1024, 512))
+
+        assert frame == gsv.ResolvedFrame(1024, 512, 5, True, None, 'probe')
+        age = gsv._block_latch_age_hours(gsv.default_block_latch_path())
+        assert age is not None and age < gsv.DEPTH_BLOCK_LATCH_HOURS
+        out = capsys.readouterr().out
+        assert 'IMAGEDOWNLOAD: WARNING' in out and 'latch' in out
+        assert any(r.levelno == logging.ERROR and 'photometa' in r.getMessage() for r in caplog.records)
+
+    def test_a_fresh_latch_means_zero_photometa_requests(self, monkeypatch):
+        fresh_latch()
+        stub_photometa(monkeypatch, error=AssertionError('photometa must not be called under a fresh latch'))
+        count_probes(monkeypatch, 5)
+
+        assert gsv.resolve_frame(pano_info(1024, 512)) == gsv.ResolvedFrame(1024, 512, 5, True, None, 'probe')
+
+    def test_an_expired_latch_is_ignored(self, monkeypatch):
+        with open(gsv.default_block_latch_path(), 'w') as f:
+            f.write(repr(time.time() - (gsv.DEPTH_BLOCK_LATCH_HOURS + 1) * 3600))
+        asked = stub_photometa(monkeypatch, [(512, 256), (1024, 512)])
+        deny_probe(monkeypatch)
+
+        assert gsv.resolve_frame(pano_info(1024, 512)).evidence == 'photometa'
+        assert asked == [PANO]
+
+    def test_an_explicit_latch_path_is_honoured(self, monkeypatch, tmp_path):
+        latch = str(tmp_path / 'elsewhere')
+        gsv._write_block_latch(latch)
+        stub_photometa(monkeypatch, error=AssertionError('the latch passed in must be the one read'))
+        count_probes(monkeypatch, 5)
+
+        assert gsv.resolve_frame(pano_info(1024, 512), block_latch_path=latch).evidence == 'probe'
+
+    def test_the_warning_is_printed_once_per_run_not_once_per_pano(self, tmp_path, monkeypatch, capsys):
+        """No module state: the first refusal writes the latch, and the second pano reads it and never asks."""
+        asked = stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        for pano_id in ('refusedPanoOneAAAAAAAA', 'refusedPanoTwoAAAAAAAA'):
+            gsv.download_single_pano(str(tmp_path), pano_info(1024, 512, pano_id))
+
+        assert capsys.readouterr().out.count('WARNING - Google refused') == 1
+        assert asked == ['refusedPanoOneAAAAAAAA']
+
+    def test_the_depth_phase_then_stands_down(self, tmp_path, monkeypatch, capsys):
+        """The point of sharing the FILE: a refusal met in the image phase keeps the depth phase, later in the
+        same run, from walking back into the wall."""
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+        pytest.importorskip('streetlevel.streetview')
+
+        gsv.resolve_frame(pano_info(1024, 512))
+        stop_reasons = {}
+        result = gsv._run_depth_phase(str(tmp_path), [{'pano_id': PANO}], stop_reasons=stop_reasons)
+
+        assert result == (0, 0, 0, 0)
+        assert stop_reasons['depth_stop'] == gsv.DEPTH_STOP_BLOCKED
+
+
+class TestResolveZoomAndDimsIsAWrapper:
+    def test_it_returns_the_three_tuple_of_resolve_frame(self, monkeypatch):
+        monkeypatch.setattr(gsv, 'resolve_frame', lambda info: gsv.ResolvedFrame(1, 2, 3, True, None, 'x'))
+        assert gsv.resolve_zoom_and_dims(pano_info(1, 2)) == (1, 2, 3)
+
+        monkeypatch.setattr(gsv, 'resolve_frame', lambda info: None)
+        assert gsv.resolve_zoom_and_dims(pano_info(1, 2)) is None
+
+    def test_a_frame_disagreement_does_not_raise_here(self, monkeypatch):
+        """The refetch_panos.py compatibility pin. refetch asks with the STORED frame, which is often smaller
+        than what Google serves now, and its own frame_covers_pano gate turns that into 'frame_grew'. A raise
+        here would make every such pano a transient failure instead, and exit 1."""
+        stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        assert gsv.resolve_zoom_and_dims(pano_info(13312, 6656)) == (13312, 6656, 5)
+
+
+# --- the nightly composition -------------------------------------------------------------------------------
+
+# A 16384x8192 frame is past PIL's decompression-bomb pixel count; the stitch is ours, not an upload.
+@pytest.mark.filterwarnings('ignore::PIL.Image.DecompressionBombWarning')
+class TestDownloadSinglePanoWithReportedLevels:
+    def test_a_served_larger_frame_is_refused_not_cropped(self, tmp_path, monkeypatch, capsys, caplog):
+        """On master the probe finds zoom 5 and a 26x13 grid is stitched from a 32x16 pano: the top-left 81%,
+        saved at 13312x6656 as success. Now it is refused, loudly, and retried next run."""
+        stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a refused frame must not fan out'))
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(gsv.FrameDisagreementError):
+                gsv.download_single_pano(str(tmp_path), pano_info(13312, 6656))
+
+        shard = tmp_path / PANO[:2]
+        assert list(shard.iterdir()) == []
+        out = capsys.readouterr().out
+        errors = ' '.join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+        for text in (out, errors):
+            assert PANO in text and '13312x6656' in text and '16384x8192' in text
+        assert 'IMAGEDOWNLOAD: WARNING' in out
+
+    def test_a_lower_matching_level_downloads_the_whole_pano_natively(self, tmp_path, monkeypatch):
+        """On master the probe says zoom 5 and this 16x8 grid is requested AT ZOOM 5 - a quarter of the pano."""
+        stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+        requested = red_tiles(monkeypatch)
+
+        assert gsv.download_single_pano(str(tmp_path), pano_info(8192, 4096)) == DownloadResult.success
+        assert all('&zoom=4&' in url for _x, _y, url in requested)
+        assert {(x, y) for x, y, _ in requested} == {(x, y) for x in range(16) for y in range(8)}
+
+    # (app frame, reported levels, zoom every tile URL must carry, tile grid, outcome) - plan §3.6's
+    # consistent rows. The saved frame is always the APP's, never Google's.
+    CONSISTENT_ROWS = [
+        ((16384, 8192), SERIES_16384, 5, (32, 16), DownloadResult.success),
+        ((3328, 1664), SERIES_3328, 3, (7, 4), DownloadResult.success),
+        ((5376, 2688), SERIES_5376, 4, (11, 6), DownloadResult.success),
+        ((16384, 8192), SERIES_16384[:4], 3, (8, 4), DownloadResult.fallback_success),
+        ((16384, 8192), SERIES_16384[:5], 4, (16, 8), DownloadResult.fallback_success),
+        ((8192, 4096), SERIES_16384, 4, (16, 8), DownloadResult.success),
+    ]
+
+    @pytest.mark.parametrize('frame,sizes,zoom,grid,outcome', CONSISTENT_ROWS)
+    def test_every_consistent_case_fetches_that_level_and_saves_the_apps_frame(
+            self, tmp_path, monkeypatch, frame, sizes, zoom, grid, outcome):
+        stub_photometa(monkeypatch, sizes)
+        deny_probe(monkeypatch)
+        requested = red_tiles(monkeypatch)
+
+        assert gsv.download_single_pano(str(tmp_path), pano_info(*frame)) == outcome
+        assert all('&zoom=%d&' % zoom in url for _x, _y, url in requested)
+        assert {(x, y) for x, y, _ in requested} == {(x, y) for x in range(grid[0]) for y in range(grid[1])}
+        # Read from the header: a 16384x8192 decode trips PIL's decompression-bomb warning for nothing.
+        assert jpeg_dimensions(str(tmp_path / PANO[:2] / (PANO + '.jpg'))) == frame
+
+    def test_fallback_success_is_still_the_upscale_not_the_zoom_number(self, tmp_path, monkeypatch):
+        """Zoom 3 is native for a four-level pano and a 4x upscale for a six-level one cut short; zoom 4 is an
+        upscale that no "zoom < 5" or "zoom == 3" rule can see. Only the grid-vs-frame test gets all three.
+
+        The stitch itself is stubbed to a thumbnail (the verdict is fetch_pano_image's grid-vs-frame compare,
+        which still runs for real); the full-size stitches of these rows are the parametrized test above."""
+        red_tiles(monkeypatch)
+        monkeypatch.setattr(gsv, '_stitch_tiles', lambda ok, zoom_dims, final_dims: Image.new('RGB', (8, 4), RED))
+        deny_probe(monkeypatch)
+        outcomes = {}
+        for pano_id, frame, sizes in (('nativeZoom3AAAAAAAAAAA', (3328, 1664), SERIES_3328),
+                                      ('cutAtFourAAAAAAAAAAAAA', (16384, 8192), SERIES_16384[:4]),
+                                      ('cutAtFiveAAAAAAAAAAAAA', (16384, 8192), SERIES_16384[:5])):
+            stub_photometa(monkeypatch, sizes)
+            outcomes[pano_id] = gsv.download_single_pano(str(tmp_path), pano_info(*frame, pano_id=pano_id))
+
+        assert outcomes == {'nativeZoom3AAAAAAAAAAA': DownloadResult.success,
+                            'cutAtFourAAAAAAAAAAAAA': DownloadResult.fallback_success,
+                            'cutAtFiveAAAAAAAAAAAAA': DownloadResult.fallback_success}
+
+    def test_a_gone_pano_is_still_the_permanent_failure_verdict(self, tmp_path, monkeypatch):
+        stub_photometa(monkeypatch, gone=True)
+        count_probes(monkeypatch, -1)
+        requested = red_tiles(monkeypatch)
+
+        assert gsv.download_single_pano(str(tmp_path), pano_info(1024, 512)) == DownloadResult.failure
+        assert requested == []
+
+    def test_a_disagreement_is_transient_not_a_verdict(self, tmp_path, monkeypatch):
+        """Raised, so DownloadRunner counts it in tonight's failures and does NOT ledger it - the app's frame
+        may catch up, and permanence with no GSV breaker is the wrong default for a new evidence source."""
+        stub_photometa(monkeypatch, SERIES_3328)
+        deny_probe(monkeypatch)
+
+        with pytest.raises(gsv.FrameDisagreementError):
+            gsv.download_single_pano(str(tmp_path), pano_info(16384, 8192))
+        assert not issubclass(gsv.FrameDisagreementError, (OSError, ValueError))
+
+
+class TestRequestsPerPano:
+    """Plan §3.5, asserted: (photometa, probe, tile) requests per pano."""
+
+    def run(self, tmp_path, monkeypatch, *, sizes=None, gone=False, pick=5, frame=(1024, 512)):
+        asked = stub_photometa(monkeypatch, sizes, gone=gone)
+        probes = count_probes(monkeypatch, pick)
+        tiles = red_tiles(monkeypatch)
+        gsv.download_single_pano(str(tmp_path), pano_info(*frame))
+        return len(asked), len(probes), len(tiles)
+
+    def test_a_new_live_pano_costs_one_photometa_and_no_probe(self, tmp_path, monkeypatch):
+        assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)]) == (1, 0, 2)
+
+    def test_a_retired_pano_costs_one_photometa_and_two_probes(self, tmp_path, monkeypatch):
+        assert self.run(tmp_path, monkeypatch, gone=True, pick=-1) == (1, 2, 0)
+
+    def test_a_latched_run_costs_two_probes_and_no_photometa(self, tmp_path, monkeypatch):
+        fresh_latch()
+        assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)], pick=5) == (0, 2, 2)
+
+    def test_a_pano_already_on_disk_costs_nothing(self, tmp_path, monkeypatch):
+        shard = tmp_path / PANO[:2]
+        shard.mkdir()
+        (shard / (PANO + '.jpg')).write_bytes(b'already here')
+        assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)]) == (0, 0, 0)
