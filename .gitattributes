@@ -1,5 +1,8 @@
 # Hashed by their bytes (#158 review): tilt_error_study.py md5s its inputs into generated_from, and
 # the adjudication key is checked against a salted sha256. A checkout that rewrote line endings would
-# fail both, so these files are never normalised.
+# fail both, so these files are never normalised. tests/test_tilt_error_study.py checks every
+# generated_from input and the salt against `git check-attr`.
 reports/data/2026-09-26-tilt-* -text
 reports/data/2026-09-26-tilt-adjudication/** -text
+reports/data/2026-08-09-photometa-census.json -text
+reports/data/2026-08-12-crop-corpus-gsv.csv.gz -text

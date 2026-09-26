@@ -700,3 +700,18 @@ def test_M18_raw_excludes_zero_needs_both_axes():
     f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}), n_boot=0)
     assert f['raw']['ci_p'][0] > 0 and f['raw']['ci_r'][0] <= 0
     assert f['raw_excludes_zero'] is False
+
+
+def test_every_hashed_input_is_never_line_ending_normalised(summary):
+    """generated_from md5s each input's bytes and key.sha256 hashes the salt and the key, so a checkout
+    that rewrote line endings (core.autocrlf=true, Git for Windows' default install choice) would fail
+    the regeneration test. Every one must be `-text` (#158 final review: the photometa census was not)."""
+    paths = ['reports/data/' + v['file'] for v in summary['generated_from'].values()]
+    paths += ['reports/data/2026-09-26-tilt-adjudication/sealed/salt.txt']
+    try:
+        r = subprocess.run(['git', 'check-attr', 'text', '--'] + paths, cwd=REPO_ROOT,
+                           capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip('git is not available')
+    attrs = dict(line.rsplit(': text: ', 1) for line in r.stdout.splitlines())
+    assert {p: attrs[p] for p in paths if attrs[p] != 'unset'} == {}
