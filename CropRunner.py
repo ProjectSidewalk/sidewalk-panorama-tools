@@ -531,7 +531,7 @@ def label_depression_deg(pano_y, pano_height):
     return elevation_px_to_deg(pano_y - pano_height / 2.0, pano_height)
 
 
-def blend_distance_m(depression_deg, camera_height_m=V3_CAMERA_HEIGHT_M, blend_deg=V3_BLEND_DEG,
+def blend_distance_m(depression_deg, camera_height_m=None, blend_deg=V3_BLEND_DEG,
                      cap_m=V3_DIST_CAP_M):
     """Camera-to-label ground distance in metres: the lle #3 horizon-saturating cotangent blend.
 
@@ -547,9 +547,13 @@ def blend_distance_m(depression_deg, camera_height_m=V3_CAMERA_HEIGHT_M, blend_d
     tail's slope is written with math.radians(1.0) - d(cot)/d(degree) - rather than a literal, because
     the equirectangular constants are allowed in this module only inside the four unit primitives.
 
+    `camera_height_m=None` means V3_CAMERA_HEIGHT_M, read at call time rather than bound at definition,
+    so a test that patches the module constant reaches this function.
+
     >>> round(blend_distance_m(45.0), 3)
     2.341
     """
+    camera_height_m = V3_CAMERA_HEIGHT_M if camera_height_m is None else camera_height_m
     a_rad = math.radians(blend_deg)
     if depression_deg >= blend_deg:
         distance = camera_height_m / math.tan(math.radians(depression_deg))
@@ -560,7 +564,7 @@ def blend_distance_m(depression_deg, camera_height_m=V3_CAMERA_HEIGHT_M, blend_d
     return min(max(distance, 0.0), cap_m)
 
 
-def geometric_window_fov_deg(distance_m, context_width_m=V3_CONTEXT_WIDTH_M):
+def geometric_window_fov_deg(distance_m, context_width_m=None):
     """Rule v3's window: the angle a `context_width_m` frontal span of world subtends at `distance_m`.
 
     2 atan(W / 2d), clamped to [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG]; a distance of zero or less (the label
@@ -569,8 +573,10 @@ def geometric_window_fov_deg(distance_m, context_width_m=V3_CONTEXT_WIDTH_M):
 
     Two consequences of the shipped constants, pinned by tests: the floor is unreachable (the horizon
     saturates the distance, so the narrowest window is the horizon's), and the ceiling binds exactly
-    where the distance falls to W / 2.
+    where the distance falls to W / 2. `context_width_m=None` means V3_CONTEXT_WIDTH_M, read at call time
+    (as blend_distance_m reads its camera height) so a patched module constant reaches it.
     """
+    context_width_m = V3_CONTEXT_WIDTH_M if context_width_m is None else context_width_m
     if distance_m <= 0:
         return CROP_MAX_FOV_DEG
     deg = math.degrees(2.0 * math.atan(context_width_m / (2.0 * distance_m)))
@@ -876,7 +882,7 @@ def _read_rule_marker(path):
             and all(isinstance(keys, dict) and all(isinstance(values, list) for values in keys.values())
                     for keys in constants_seen.values())):
         return {}, True
-    if not all(value is None or isinstance(value, (str, int, float))
+    if not all(value is None or (isinstance(value, (str, int, float)) and not isinstance(value, bool))
                for key, value in recorded.items() if key not in ('rules_seen', 'constants_seen')):
         return {}, True
     return recorded, False

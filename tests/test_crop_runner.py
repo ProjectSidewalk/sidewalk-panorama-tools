@@ -2360,6 +2360,18 @@ class TestTheDefaultWindowIsByteIdentical:
             box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
             assert tuple(box) == expected
 
+    def test_the_v3_constants_are_read_at_call_time(self, crop_runner, monkeypatch):
+        """What makes the poisoning above effective: a default bound at definition time would ignore
+        the patch, so a v2 branch reaching v3 through the defaults - value-neutral at the shipped
+        constants - would pass the table and the poisoned run alike (#157 Gemini follow-up)."""
+        before = crop_runner.geometric_window_fov_deg(crop_runner.blend_distance_m(10.0))
+        monkeypatch.setattr(crop_runner, 'V3_CAMERA_HEIGHT_M', 0.5)
+        assert crop_runner.blend_distance_m(45.0) == pytest.approx(0.5)
+        monkeypatch.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 1.0)
+        assert crop_runner.geometric_window_fov_deg(4.0) == pytest.approx(
+            v3_fov(crop_runner, 4.0, 1.0), rel=1e-12)
+        assert crop_runner.geometric_window_fov_deg(crop_runner.blend_distance_m(10.0)) != before
+
 
 def pano_y_at(depression_deg, pano_height):
     """The pano row `depression_deg` below the horizon, written without the 180 literal."""
@@ -2898,11 +2910,12 @@ class TestTheMarkerKeepsItsHistory:
 
     @pytest.mark.parametrize('field', ['crop_rule_version', 'previous_crop_rule_version',
                                        'crop_size_scale'])
-    @pytest.mark.parametrize('bad', [[], {}])
+    @pytest.mark.parametrize('bad', [[], {}, True])
     def test_a_field_that_is_not_a_string_or_number_is_unreadable_not_a_crash(
             self, crop_runner, tmp_path, caplog, capsys, field, bad):
         """crop_rule_version [] or {} passed the history checks and then raised TypeError (unhashable)
-        looking up that rule's constant keys, before any crop was cut (#157 final review)."""
+        looking up that rule's constant keys, before any crop was cut (#157 final review). A bool is an
+        int to isinstance, so `true` was read as a rule and returned as one (#157 Gemini follow-up)."""
         content = json.dumps({'crop_rule_version': 'v2', field: bad})
         (tmp_path / crop_runner.CROP_RULE_MARKER).write_text(content, encoding='utf-8')
         with caplog.at_level(logging.WARNING):
