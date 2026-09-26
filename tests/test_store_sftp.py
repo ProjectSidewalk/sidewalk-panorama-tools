@@ -461,6 +461,13 @@ class TestRedaction:
         out = store_sftp.redact("ssh: Bad port '2222' for store.example", self.settings(port='2222'))
         assert out == "ssh: Bad port '<port>' for <host>"
 
+    def test_the_configured_port_is_not_carved_out_of_ids_and_paths(self):
+        """The configured port is replaced as a whole word, like the resolved one: as a substring,
+        PS_SFTP_PORT=22 turned ab22xy into ab<port>xy and D:\\2022 into D:\\20<port> (#155 final review)."""
+        out = store_sftp.redact('Couldn\'t write to local "D:\\data\\2022\\ab\\ab22xy.jpg.part"; port 22',
+                                self.settings(port='22'))
+        assert 'ab22xy' in out and '2022' in out and 'port <port>' in out
+
     def test_the_known_hosts_port_form_is_redacted_even_when_not_configured(self):
         out = store_sftp.redact("Warning: Permanently added '[store.example]:2200' (ED25519)",
                                 self.settings(port=None))

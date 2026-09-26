@@ -294,8 +294,9 @@ def _replace_word(text, value, placeholder):
 def redact(text, settings, resolved=None):
     """Replace connection details in ssh/sftp output with placeholders. Four layers, in this order:
 
-    1. The configured strings, wherever they appear: the key path (<key>) first, because it often contains
-       the user name; then the host (<host>), the user (<user>) and the port (<port>).
+    1. The configured strings: the key path (<key>) first, because it often contains the user name; then
+       the host (<host>) and the user (<user>), wherever they appear; then the port (<port>), as a whole word
+       only - it is a short run of digits, and PS_SFTP_PORT=22 must not turn ab22xy into ab<port>xy.
     2. `resolved` - ssh_config_values()'s hostname, user and port, what an ~/.ssh/config alias expands to -
        replaced only as whole words, since `ssh -G` always reports SOME user and port (on a plain host, the
        local login and 22) and those must not be carved out of pano ids.
@@ -305,10 +306,11 @@ def redact(text, settings, resolved=None):
     (e.g. a ProxyJump hop's), and paths other than the key. Empty values are skipped: ''.replace would put
     the placeholder between every character.
     """
-    for value, placeholder in ((settings.key, '<key>'), (settings.host, '<host>'), (settings.user, '<user>'),
-                               (settings.port, '<port>')):
+    for value, placeholder in ((settings.key, '<key>'), (settings.host, '<host>'), (settings.user, '<user>')):
         if value:
             text = text.replace(value, placeholder)
+    if settings.port:
+        text = _replace_word(text, settings.port, '<port>')
     for name, placeholder in (('hostname', '<host>'), ('user', '<user>'), ('port', '<port>')):
         value = (resolved or {}).get(name)
         if value:

@@ -196,7 +196,8 @@ signal](ops.md#the-depth-failure-count-is-not-an-alert-signal).
   local storage` line says so (`STOREDEPTH:` for depth artifacts); the run still exits 0, so read it.
 * **A changed host key is refused** (`StrictHostKeyChecking=accept-new`: an unknown host is trusted once).
 * `sftp`'s error output is summarised and redacted before it reaches stdout or `scrape.log`; raw error output
-  is never logged. **Redacted:** the host, user, port and key path you configured, wherever they appear; what
+  is never logged. **Redacted:** the host, user and key path you configured, wherever they appear, and the port you
+  configured as a whole word (so `PS_SFTP_PORT=22` leaves a pano id like `ab22xy` alone); what
   `ssh -G <host>` says an `~/.ssh/config` alias resolves to (its `HostName`, `User` and `Port`, as whole
   words), when `ssh` is installed; and, by pattern, `port N`, `[host]:N`, IPv4 and IPv6 literals, and any
   `name@`. **Not redacted:** a host name `ssh` prints that neither your settings nor `ssh -G` name (a
