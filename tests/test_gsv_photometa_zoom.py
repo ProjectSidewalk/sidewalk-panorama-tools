@@ -268,22 +268,34 @@ class TestTheImagePhaseSharesTheBlockLatch:
         assert stop_reasons['depth_stop'] == gsv.DEPTH_STOP_BLOCKED
 
 
-class TestResolveZoomAndDimsIsAWrapper:
-    def test_it_returns_the_three_tuple_of_resolve_frame(self, monkeypatch):
-        monkeypatch.setattr(gsv, 'resolve_frame', lambda info: gsv.ResolvedFrame(1, 2, 3, True, None, 'x'))
-        assert gsv.resolve_zoom_and_dims(pano_info(1, 2)) == (1, 2, 3)
+class TestResolveZoomAndDimsIsTheProbe:
+    """refetch_panos.py's seam keeps its pre-#74 answers (review item 2): the probe alone, no photometa, no
+    latch. tests/test_refetch_panos.py::TestRefetchKeepsItsPre74Decisions pins the outcomes through it."""
 
-        monkeypatch.setattr(gsv, 'resolve_frame', lambda info: None)
+    def test_it_returns_the_three_tuple_of_a_probe_only_resolve_frame(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(gsv, 'resolve_frame', lambda info, **kw: seen.append(kw) or
+                            gsv.ResolvedFrame(1, 2, 3, True, None, 'probe'))
+        assert gsv.resolve_zoom_and_dims(pano_info(1, 2)) == (1, 2, 3)
+        assert seen == [{'photometa': False}]
+
+        monkeypatch.setattr(gsv, 'resolve_frame', lambda info, **kw: None)
         assert gsv.resolve_zoom_and_dims(pano_info(1, 2)) is None
 
-    def test_a_frame_disagreement_does_not_raise_here(self, monkeypatch):
-        """The refetch_panos.py compatibility pin. refetch asks with the STORED frame, which is often smaller
-        than what Google serves now, and its own frame_covers_pano gate turns that into 'frame_grew'. A raise
-        here would make every such pano a transient failure instead, and exit 1."""
-        stub_photometa(monkeypatch, SERIES_16384)
-        deny_probe(monkeypatch)
+    def test_it_never_asks_photometa(self, monkeypatch):
+        """Counted, not raised: _photometa_levels swallows any Exception from the fetch into the fallback,
+        so a stub that raised would pass whether or not photometa was asked."""
+        asked = stub_photometa(monkeypatch, SERIES_16384)
+        count_probes(monkeypatch, 5)
 
-        assert gsv.resolve_zoom_and_dims(pano_info(13312, 6656)) == (13312, 6656, 5)
+        assert gsv.resolve_zoom_and_dims(pano_info(8192, 4096)) == (8192, 4096, 5)
+        assert asked == []
+
+    def test_a_fresh_latch_changes_nothing_here(self, monkeypatch):
+        fresh_latch()
+        count_probes(monkeypatch, 3)
+
+        assert gsv.resolve_zoom_and_dims(pano_info(5376, 2688)) == (5376, 2688, 3)
 
 
 # --- the nightly composition -------------------------------------------------------------------------------

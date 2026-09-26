@@ -492,7 +492,7 @@ def _photometa_levels(pano_id, latch_path):
         return _PHOTOMETA_UNANSWERED
 
 
-def resolve_frame(pano_info, block_latch_path=None):
+def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     """ResolvedFrame for `pano_info`, or None when there is nothing to download.
 
     None is a PERMANENT verdict about the pano, and covers both of its causes: no reported dimensions (there
@@ -518,6 +518,9 @@ def resolve_frame(pano_info, block_latch_path=None):
     @param block_latch_path Where Google's refusals are remembered; None is the host default the depth phase
                             also uses (default_block_latch_path). DownloadRunner's --depth-block-latch does not
                             reach here - the image phase always uses the default (plan decision D3).
+    @param photometa        False skips step 2 entirely: the probe answers, at zero photometa requests and
+                            with no read or write of the block latch. resolve_zoom_and_dims passes it, so
+                            refetch_panos.py keeps the decisions it made before #74 (review item 2).
     """
     pano_id = pano_info['pano_id']
     pano_dims = (pano_info.get('width'), pano_info.get('height'))
@@ -537,8 +540,11 @@ def resolve_frame(pano_info, block_latch_path=None):
     if width is None or height is None:
         return None
 
-    latch_path = default_block_latch_path() if block_latch_path is None else block_latch_path
-    levels = _photometa_levels(pano_id, latch_path)
+    if photometa:
+        latch_path = default_block_latch_path() if block_latch_path is None else block_latch_path
+        levels = _photometa_levels(pano_id, latch_path)
+    else:
+        levels = _PHOTOMETA_UNANSWERED
     if levels is None or levels is _PHOTOMETA_UNANSWERED:
         zoom = _probe_zoom(pano_id)
         return None if zoom is None else ResolvedFrame(width, height, zoom, True, None, 'probe')
@@ -557,15 +563,19 @@ def resolve_frame(pano_info, block_latch_path=None):
 
 def resolve_zoom_and_dims(pano_info):
     """(width, height, zoom) for `pano_info`, or None when there is nothing to download - the seam
-    refetch_panos.py composes, unchanged in contract since #73.
+    refetch_panos.py composes, unchanged in contract AND in answers since #73: the zoom comes from the two-tile
+    probe alone, exactly as it did before #74. Photometa is never asked here, so this never reads or writes the
+    host's block latch.
 
-    A thin wrapper over resolve_frame that discards everything but the three numbers. In particular a frame
-    Google's levels do not admit comes back as (width, height, top zoom) - exactly what the probe used to say -
-    and is NOT raised: refetch fetches at the stored frame, which is often smaller than what Google serves now,
-    and its own frame_covers_pano gate is what turns that into 'frame_grew'. The nightly refusal lives in
-    download_single_pano.
+    Why not photometa (#74 review item 2): refetch replaces imagery that may be irreplaceable, and its
+    refusals are the feature. Photometa's level-matching would turn two of them into swaps - a stored
+    8192x4096 frame on a pano Google now serves at 16384 ('frame_grew' -> a native zoom-4 fetch) and a
+    five-level 5376x2688 pano ('upscaled' -> a native zoom-4 fetch). Both swaps may well be better imagery,
+    but changing what the repair pass does is a separate decision from the nightly zoom, not a side effect
+    of it. The probe's answer goes through refetch's own frame_covers_pano gate, which is what turns a frame
+    smaller than Google's into 'frame_grew'.
     """
-    frame = resolve_frame(pano_info)
+    frame = resolve_frame(pano_info, photometa=False)
     return None if frame is None else (frame.width, frame.height, frame.zoom)
 
 
