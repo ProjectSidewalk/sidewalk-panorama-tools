@@ -619,6 +619,9 @@ class TestVerifiers:
     @pytest.mark.parametrize('data,offset', [
         (b'NOTAJPEG', None),                                          # no SOI
         (b'\xff\xd8\x00\xff\xda', None),                              # a non-marker byte between segments
+        # ... and one a walk that ignored it would resync from onto a later SOS, reporting an early scan
+        # start - the unsafe direction for the thumbnail bound (#155 final review, M35)
+        (b'\xff\xd8\x00\x00\x02\xff\xda\x00\x02scan', None),
         (b'\xff\xd8\xff\xff', None),                                  # fill bytes, then the end of the file
         (b'\xff\xd8\xff\xd9\xff\xda\x00\x02', None),                  # EOI before any scan
         (b'\xff\xd8\xff\xe0\x00\x01\xff\xda\x00\x02', None),          # a segment length below its own 2 bytes
@@ -821,6 +824,15 @@ class TestPullBatch:
         with pytest.raises(SystemExit):
             self.pull(make_settings('/panos', tmp_path), storage, ['abcdef', 'ghijkl'])
         assert not list(storage.rglob('*.part'))
+
+    def test_the_batch_reaches_sftp_with_bare_newlines(self, tmp_path, monkeypatch):
+        """run_sftp_batch's docstring promises '\\n' only on the wire, whatever the platform. Pinned though a
+        '\\r\\n' join is harmless to real OpenSSH (its makeargv treats '\\r' as whitespace)."""
+        record = write_fake_sftp(tmp_path, monkeypatch)
+        base = make_remote(tmp_path, {'abcdef.jpg': small_jpeg()})
+        self.pull(make_settings(base, tmp_path), tmp_path / 'local', ['abcdef', 'ghijkl'])
+        batch = sessions(record)[0]['batch']
+        assert '\r' not in batch and batch.endswith('\n')
 
     def test_a_non_ascii_storage_path_is_pulled(self, tmp_path, monkeypatch):
         """The batch goes to sftp as UTF-8 whatever the locale: under text=True a cp1252 box raised

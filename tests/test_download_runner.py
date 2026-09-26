@@ -387,15 +387,22 @@ def run_selection_only(tmp_path, *extra_args):
     return result.stdout
 
 
+def panos_line(stdout):
+    """The whole `Panos:` line. Matched whole, not by substring: store mode appends
+    ' (not pulled: no --with-depth)' to it, and a substring match passes with that suffix leaking into a
+    plain scrape run with --skip-depth, which this helper's every caller is (#155 final review, M25)."""
+    return next(line for line in stdout.splitlines() if line.startswith('Panos: '))
+
+
 def test_depth_covers_unlabeled_panos_that_the_image_phase_skips(tmp_path):
     """--all-panos gates images only; depth is wanted for the whole corpus (ProjectSidewalk#39)."""
     stdout = run_selection_only(tmp_path)
-    assert 'Panos: 2 supported, 1 eligible for image download, 2 GSV panos eligible for depth' in stdout
+    assert panos_line(stdout) == 'Panos: 2 supported, 1 eligible for image download, 2 GSV panos eligible for depth'
 
 
 def test_all_panos_widens_the_image_phase_only(tmp_path):
     stdout = run_selection_only(tmp_path, '--all-panos')
-    assert 'Panos: 2 supported, 2 eligible for image download, 2 GSV panos eligible for depth' in stdout
+    assert panos_line(stdout) == 'Panos: 2 supported, 2 eligible for image download, 2 GSV panos eligible for depth'
 
 
 # The in-process main() calls below mutate process-wide state - root logger handlers, urllib3's level, the
