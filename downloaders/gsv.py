@@ -473,7 +473,10 @@ class _PhotometaRunMemory:
     Per process, deliberately, and so per city: scrape_queue runs every city as its own DownloadRunner
     process. A fleet-wide photometa fault (a streetlevel change, a parse regression) is then paid for three
     requests per city rather than once per new pano, and each city's stdout still says it happened. Google's
-    REFUSALS are not remembered here - they are a fact about the host, and live in the block latch file.
+    REFUSALS are a fact about the host and live in the block latch file, which is the cross-process record;
+    a refusal also sets given_up here, because _write_block_latch never raises and the file may not exist
+    afterwards (a --depth-block-latch in a missing directory, a full temp dir), and a run that relied on the
+    file alone would ask a host that just refused it once per new pano (#74 round two).
     """
 
     def __init__(self):
@@ -524,8 +527,10 @@ def _photometa_levels(pano_id, latch_path):
     is forfeited. There is no pacer: one request per NEW pano, each followed by a 28-512 tile fan-out, is
     already slower than the depth phase's own opening interval.
 
-    After PHOTOMETA_MAX_CONSECUTIVE_FAILURES failures in a row that are not refusals, photometa is not asked
-    again this run (_PhotometaRunMemory). Every path onto the probe announces itself once per run on stdout.
+    After PHOTOMETA_MAX_CONSECUTIVE_FAILURES failures in a row that are not refusals, or after one refusal
+    (whether or not the latch could be written), photometa is not asked again this run (_PhotometaRunMemory).
+    Every failure, refusal or fresh latch that puts a run on the probe says so once per run on stdout; a
+    "not found" does not, since a retired pano is ordinary and photometa did answer.
     """
     latched_hours = _block_latch_age_hours(latch_path)
     if latched_hours is not None and latched_hours < DEPTH_BLOCK_LATCH_HOURS:
@@ -539,8 +544,8 @@ def _photometa_levels(pano_id, latch_path):
                      "photometa not asked", pano_id, latched_hours, latch_path)
         return _PHOTOMETA_UNANSWERED
     if _photometa_run.given_up:
-        logging.info("IMAGEDOWNLOAD: pano %s: photometa failed %d times in a row earlier this run; zoom from the "
-                     "tile probe, photometa not asked", pano_id, PHOTOMETA_MAX_CONSECUTIVE_FAILURES)
+        logging.info("IMAGEDOWNLOAD: pano %s: photometa refused, or failed %d times in a row, earlier this run; "
+                     "zoom from the tile probe, photometa not asked", pano_id, PHOTOMETA_MAX_CONSECUTIVE_FAILURES)
         return _PHOTOMETA_UNANSWERED
     try:
         # The photometa session (the depth phase's, without a pacer): same retry policy and timeout, and the
@@ -550,6 +555,8 @@ def _photometa_levels(pano_id, latch_path):
     except (DepthBlockedError, requests.exceptions.RetryError) as e:
         _write_block_latch(latch_path)
         _forfeit_depth_standing()
+        # In-process too: the latch write above never raises, so it may have left no file behind.
+        _photometa_run.given_up = True
         _photometa_run.announced = True
         logging.error("IMAGEDOWNLOAD: pano %s: Google refused the photometa request (%s); latching %s and "
                       "taking the zoom from the tile probe for the rest of this run", pano_id, str(e)[:200],

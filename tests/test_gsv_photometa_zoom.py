@@ -617,6 +617,21 @@ class TestPhotometaFailuresAreRememberedForTheRun:
         out = capsys.readouterr().out
         assert out.count('WARNING - Google refused') == 1
 
+    def test_a_refusal_with_an_unwritable_latch_is_still_remembered_for_the_run(self, tmp_path, monkeypatch):
+        """Round two F1: the latch file is the cross-process record of a refusal, but _write_block_latch never
+        raises - a --depth-block-latch in a missing directory, or a full temp dir, leaves no file. The run must
+        still stop asking a host that just refused it, or every new pano pays the refusal's retry back-off."""
+        monkeypatch.setattr(gsv, 'image_block_latch_path', str(tmp_path / 'no-such-dir' / 'latch'))
+        asked = stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 4, 'unlatchablePano')
+
+        assert gsv._block_latch_age_hours(gsv.image_block_latch_path) is None, 'the latch really was unwritable'
+        assert len(asked) == 1, 'a refused host was asked %d times in one run' % len(asked)
+        assert len(list(tmp_path.rglob('*.jpg'))) == 4, 'every pano still downloads, from the probe'
+
     def test_a_refusal_is_the_runs_only_fallback_line(self, tmp_path, monkeypatch, capsys):
         """The refusal WARNING already says the probe answers from here on; the latched panos after it must
         not add the latch line on top."""
