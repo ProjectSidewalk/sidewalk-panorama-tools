@@ -442,6 +442,7 @@ def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measureme
     pano_id = record['pano_id']
     width, height = fetch_dims
 
+    # The zoom from the two-tile probe alone, never photometa (#74 review item 2): see gsv.resolve_zoom_and_dims.
     resolved = gsv.resolve_zoom_and_dims({'pano_id': pano_id, 'width': width, 'height': height})
     if resolved is None:
         # Google answers a black tile at every zoom for an id it has retired. Permanent, and the number the

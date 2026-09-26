@@ -13,6 +13,7 @@ The one place real bytes are used is the recovery measurement, which is pinned a
 
 import csv
 import gzip
+import io
 import json
 import logging
 import os
@@ -432,6 +433,75 @@ class TestRefetchPanoRefusals:
 
         assert outcome == 'upscaled'
         assert after == before
+
+
+class TestRefetchKeepsItsPre74Decisions:
+    """#74 moved the nightly zoom onto photometa's reported levels. refetch_panos must not follow it there by
+    accident (#74 review item 2): through photometa, both cases below turn from a refusal into a swap, on the
+    tool whose refusals are the feature. So resolve_zoom_and_dims stays on the probe, and this runs through
+    the REAL gsv seams - only photometa, CBK and the tile fan-out are faked - which is what the stubbed-seam
+    tests above cannot see. Whether refetch should adopt photometa's decisions is a separate decision."""
+
+    S16 = [(512 * 2 ** k, 256 * 2 ** k) for k in range(6)]
+    S5 = [(336 * 2 ** k, 168 * 2 ** k) for k in range(5)]     # a five-level pano, 5376x2688 at the top
+
+    def run(self, tmp_path, monkeypatch, stored, sizes):
+        path = store_with_pano(tmp_path, dims=stored)
+        before = open(path, 'rb').read()
+        grey, black = _jpeg((90, 90, 90), 512), _jpeg((0, 0, 0), 16)
+        asked = []
+
+        def photometa(pano_id, session):
+            # Answers correctly, so a refetch that asked it would get a consistent native zoom and swap.
+            asked.append(pano_id)
+            return gsv.ImageLevels(list(sizes), (512, 512))
+
+        def cbk(url, session, stream=False):
+            query = dict(part.split('=', 1) for part in url.split('?', 1)[1].split('&'))
+            zoom, x, y = int(query['zoom']), int(query['x']), int(query['y'])
+            inside = zoom < len(sizes) and x * 512 < sizes[zoom][0] and y * 512 < sizes[zoom][1]
+            return io.BytesIO(grey if inside else black)
+
+        async def tiles(requested):
+            return [(x, y, grey) for x, y, _url in requested]
+
+        monkeypatch.setattr(gsv, '_fetch_image_levels', photometa)
+        monkeypatch.setattr(gsv, '_get_response', cbk)
+        monkeypatch.setattr(gsv, '_download_tiles', tiles)
+        outcome = rp.refetch_pano(str(tmp_path), {'pano_id': PANO}, stored, rp.MAX_BLACK_FRACTION, False, [])
+        return outcome, before, open(path, 'rb').read(), asked
+
+    def test_a_stored_frame_smaller_than_google_serves_is_still_frame_grew(self, tmp_path, monkeypatch):
+        """8192x4096 stored, 16384 served: photometa would pick a native zoom 4 and swap."""
+        outcome, before, after, asked = self.run(tmp_path, monkeypatch, (8192, 4096), self.S16)
+
+        assert outcome == 'frame_grew'
+        assert after == before
+        assert asked == []
+
+    def test_a_five_level_pano_is_still_upscaled(self, tmp_path, monkeypatch):
+        """5376x2688, max zoom 4: the probe finds zoom 5 black and zoom 3 live, so the stitch is an upscale."""
+        outcome, before, after, asked = self.run(tmp_path, monkeypatch, (5376, 2688), self.S5)
+
+        assert outcome == 'upscaled'
+        assert after == before
+        assert asked == []
+
+    def test_refetch_never_reads_or_writes_the_block_latch(self, tmp_path, monkeypatch):
+        """A refusal met by refetch would otherwise write the shared latch and stand the nightly depth phase
+        down; and a fresh latch must not change what refetch asks."""
+        monkeypatch.setattr(gsv, '_block_latch_age_hours', lambda path: pytest.fail('refetch read the latch'))
+        monkeypatch.setattr(gsv, '_write_block_latch', lambda path: pytest.fail('refetch wrote the latch'))
+
+        outcome, _before, _after, asked = self.run(tmp_path, monkeypatch, (8192, 4096), self.S16)
+
+        assert outcome == 'frame_grew' and asked == []
+
+
+def _jpeg(color, size):
+    buf = io.BytesIO()
+    Image.new('RGB', (size, size), color).save(buf, 'jpeg')
+    return buf.getvalue()
 
 
 # --- the run loop ---------------------------------------------------------------------------------------
