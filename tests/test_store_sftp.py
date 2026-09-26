@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -759,7 +760,9 @@ class TestPullBatch:
         record = write_fake_sftp(tmp_path, monkeypatch)
         base = make_remote(tmp_path, {'abcdef.jpg': small_jpeg()})
         storage = tmp_path / 'local'
-        with pytest.raises(StoreSessionError, match='canonicalize'):
+        # The exit status, not the wording: the fake says "Couldn't canonicalize", real OpenSSH says
+        # "stat remote: No such file or directory", and the probe's contract is only that the session fails.
+        with pytest.raises(StoreSessionError, match='exited 1'):
             self.pull(make_settings(base, tmp_path, city='seattle'), storage, ['abcdef', 'ghijkl'])
         assert len(sessions(record)) == 1
         # nothing half-done is left behind for the next run to reason about
@@ -885,6 +888,60 @@ class TestPullBatch:
         assert outcomes == {'aaaaaa': PullOutcome.pulled, 'bbbbbb': PullOutcome.truncated}
         assert (storage / 'aa' / 'aaaaaa.depth.npz').exists()
         assert not (storage / 'bb' / 'bbbbbb.depth.npz').exists()
+
+
+# --- The real sftp client, no network (#155 review item 13) ---------------------------------------------------
+#
+# The fake above models the batch semantics the design leans on; this runs them through OpenSSH's own batch
+# parser. `sftp -D <sftp-server>` starts the server as a local subprocess instead of connecting, so the batch,
+# the `-`/unprefixed semantics, the quoting and the exit status are all real and nothing leaves the machine.
+# POSIX-only (on Windows, Git's msys sftp translates the local paths) and skipped wherever the server binary
+# is not installed - on Ubuntu it ships in openssh-sftp-server.
+
+SFTP_SERVER_PATHS = ('/usr/lib/openssh/sftp-server', '/usr/lib/ssh/sftp-server', '/usr/libexec/openssh/sftp-server',
+                     '/usr/libexec/sftp-server', '/usr/lib/sftp-server')
+
+
+def real_sftp_command():
+    """['sftp', '-D', <sftp-server>] when both are installed on a POSIX host, else None."""
+    if os.name != 'posix':
+        return None
+    client = shutil.which('sftp')
+    server = next((path for path in SFTP_SERVER_PATHS if os.access(path, os.X_OK)), None)
+    return [client, '-D', server] if client and server else None
+
+
+real_sftp = pytest.mark.skipif(real_sftp_command() is None,
+                               reason='needs a POSIX host with the sftp client and sftp-server installed')
+
+
+@real_sftp
+class TestAgainstRealOpenSSH:
+    def test_the_batch_is_pulled_by_the_real_client(self, tmp_path, monkeypatch):
+        """A relative base (item 1), an id beginning with '-', an absent pano between two present ones, and
+        a storage path with a space - through OpenSSH's batch parser and exit status."""
+        monkeypatch.setattr(store_sftp, 'SFTP_COMMAND', real_sftp_command())
+        data = small_jpeg()
+        make_remote(tmp_path, {'abcdef.jpg': data, DASH_ID + '.jpg': data})
+        monkeypatch.chdir(tmp_path)
+        storage = tmp_path / 'local store'
+        outcomes = store_sftp.pull_batch(make_settings('remote/panos', tmp_path, key=None), str(storage),
+                                         ['abcdef', 'absentPanoAAAAAAAAAAAA', DASH_ID], store_sftp.IMAGE_SUFFIX,
+                                         store_sftp.is_complete_jpeg)
+        assert outcomes == {'abcdef': PullOutcome.pulled, 'absentPanoAAAAAAAAAAAA': PullOutcome.absent,
+                            DASH_ID: PullOutcome.pulled}
+        assert (storage / 'ab' / 'abcdef.jpg').read_bytes() == data
+        assert (storage / DASH_ID[:2] / (DASH_ID + '.jpg')).read_bytes() == data
+        assert not list(storage.rglob('*.part'))
+
+    def test_a_wrong_city_fails_the_session_on_the_real_probe(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(store_sftp, 'SFTP_COMMAND', real_sftp_command())
+        base = make_remote(tmp_path, {'abcdef.jpg': small_jpeg()})
+        storage = tmp_path / 'local'
+        with pytest.raises(StoreSessionError, match='exited 1'):
+            store_sftp.pull_batch(make_settings(base, tmp_path, city='seattle', key=None), str(storage),
+                                  ['abcdef'], store_sftp.IMAGE_SUFFIX, store_sftp.is_complete_jpeg)
+        assert not list(storage.rglob('abcdef*'))
 
 
 def test_the_module_imports_nothing_that_contacts_a_provider():
