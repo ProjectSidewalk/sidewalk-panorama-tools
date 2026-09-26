@@ -193,7 +193,9 @@ signal](ops.md#the-depth-failure-count-is-not-an-alert-signal).
   `STOREPULL: WARNING - N pano(s) arrived incomplete or unreadable` line says how many.
 * **A file that verified but could not be placed** means *local* storage trouble — a full disk, a dropped
   mount — which a retry will not fix. A `STOREPULL: WARNING - N pano(s) verified but could not be placed on
-  local storage` line says so (`STOREDEPTH:` for depth artifacts); the run still exits 0, so read it.
+  local storage; ... a retry will not fix it: check local disk space and the mount` line says so
+  (`STOREDEPTH:` for depth artifacts); the run still exits 0, so read it. Nothing is ledgered, so once the
+  disk or mount is fixed the next run pulls them.
 * **A changed host key is refused** (`StrictHostKeyChecking=accept-new`: an unknown host is trusted once).
 * `sftp`'s error output is summarised and redacted before it reaches stdout or `scrape.log`; raw error output
   is never logged. **Redacted:** the host, user and key path you configured, wherever they appear, and the port you

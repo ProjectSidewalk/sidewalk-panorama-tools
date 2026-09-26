@@ -124,7 +124,8 @@ class PullOutcome(enum.Enum):
     #: was removed; nothing was placed.
     truncated = 'truncated'
     #: The file verified but could not be renamed into place (a full disk, a dropped mount). The .part was
-    #: removed. Local storage trouble, not the store's: retried next run like the others.
+    #: removed. Local storage trouble, not the store's: unledgered like the others, but a retry will not fix
+    #: it until the local disk or mount is fixed.
     unplaced = 'unplaced'
 
 

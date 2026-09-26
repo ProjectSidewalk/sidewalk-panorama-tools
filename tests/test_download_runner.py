@@ -2796,9 +2796,14 @@ class TestStoreMode:
         assert run.fields()[6:11] == ['0', '0', '1', '0', '1']
         # Local storage trouble is the operator's to fix and a retry will not; stdout (the night's message)
         # and scrape.log both say so in a closing line, not only per pano in the log (#155 review item 14).
-        line = 'STOREPULL: WARNING - 1 pano(s) verified but could not be placed on local storage'
+        line = ('STOREPULL: WARNING - 1 pano(s) verified but could not be placed on local storage; not ledgered, '
+                'and a retry will not fix it: check local disk space and the mount; see scrape.log')
         assert line in capsys.readouterr().out
-        assert line in (run.storage / 'scrape.log').read_text()
+        log = (run.storage / 'scrape.log').read_text()
+        assert line in log
+        # The per-pano line says the same, not the "retried next run" every other outcome gets.
+        assert 'pano %s unplaced; not ledgered, a retry will not fix it' % pano in log
+        assert 'unplaced; not ledgered, retried next run' not in log
 
         monkeypatch.setattr(downloaders.common.os, 'replace', real_replace)
         run.main(store_csv_rows([pano]))
@@ -2832,8 +2837,8 @@ class TestStoreMode:
 
         monkeypatch.setattr(downloaders.common.os, 'replace', full_disk)
         run.main(store_csv_rows([pano]), '--with-depth')
-        assert 'STOREDEPTH: WARNING - 1 artifact(s) verified but could not be placed on local storage' \
-            in capsys.readouterr().out
+        assert ('STOREDEPTH: WARNING - 1 artifact(s) verified but could not be placed on local storage; not '
+                'ledgered, and a retry will not fix it') in capsys.readouterr().out
 
     def test_the_store_banner_names_the_city_in_scrape_log_too(self, monkeypatch, tmp_path, capsys):
         """A row is not distinguishable from a scrape's; the banner is the record of which store city a run

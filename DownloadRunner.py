@@ -675,6 +675,10 @@ def _pull_in_batches(settings, storage_path, pano_ids, suffix, verifier, run_sta
         yield chunk, outcomes
 
 
+# What an `unplaced` pano needs. Not "retried next run": the next run meets the same full disk or dropped mount.
+_UNPLACED_REMEDY = "a retry will not fix it: check local disk space and the mount"
+
+
 def _report_pull_trouble(prefix, noun, outcome_counts):
     """The closing lines for outcomes an operator must hear about tonight, on BOTH channels (#155 review
     item 14): stdout is the night's message, scrape.log is what is still there next week. Per-pano detail
@@ -685,8 +689,8 @@ def _report_pull_trouble(prefix, noun, outcome_counts):
             "%s: WARNING - %d %s arrived incomplete or unreadable and were discarded; not ledgered, retried "
             "next run; see scrape.log",
         store_sftp.PullOutcome.unplaced:
-            "%s: WARNING - %d %s verified but could not be placed on local storage (disk full? mount "
-            "dropped?); not ledgered, retried next run; see scrape.log",
+            "%s: WARNING - %d %s verified but could not be placed on local storage; not ledgered, and "
+            + _UNPLACED_REMEDY + "; see scrape.log",
     }
     for outcome, template in messages.items():
         if outcome_counts.get(outcome):
@@ -767,8 +771,9 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
                 else:
                     fail_count += 1
                     outcome_counts[outcome] += 1
-                    logging.warning("STOREPULL: pano %s %s; not ledgered, retried next run", pano_id,
-                                    outcome.value)
+                    logging.warning("STOREPULL: pano %s %s; not ledgered, %s", pano_id, outcome.value,
+                                    _UNPLACED_REMEDY if outcome == store_sftp.PullOutcome.unplaced
+                                    else "retried next run")
             print("STOREPULL: Completed %d of %d (%d pulled, %d failed, %d skipped)"
                   % (success_count + fail_count + skipped_count, total_panos, success_count, fail_count,
                      skipped_count))
