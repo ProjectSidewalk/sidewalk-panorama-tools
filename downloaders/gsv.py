@@ -461,7 +461,7 @@ _PHOTOMETA_UNANSWERED = object()
 PHOTOMETA_MAX_CONSECUTIVE_FAILURES = 3
 
 # Where the image phase reads and writes this host's standing with Google, when not the host defaults.
-# DownloadRunner.main points them at --depth-block-latch / --depth-pace-state, so an operator who moves the
+# DownloadRunner.run points them at --depth-block-latch / --depth-pace-state, so an operator who moves the
 # depth phase's host state moves the image phase's with it (#74 review item 6). None means the default path.
 image_block_latch_path = None
 image_pace_state_path = None

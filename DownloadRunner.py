@@ -804,6 +804,12 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
     # still leaves the queue a summary saying no phase stopped on a budget - which is true, and is what
     # keeps a webserver outage from reading as "this city has a backlog" on elapsed time alone.
     stop_reasons = {'image_stop': None, 'depth_stop': None}
+    # #74: the GSV image phase reads and writes the same host state as the depth phase (latch; pace forfeit on a
+    # refusal), so these two arguments must move both phases' paths or they would each read a different file.
+    # Set here, not in main(), and with a fresh per-run photometa memory, so an in-process caller of run() -
+    # or a second main() in one interpreter - gets this run's paths and not the last run's given_up.
+    gsv.image_block_latch_path, gsv.image_pace_state_path = depth_block_latch, depth_pace_state
+    gsv._photometa_run = gsv._PhotometaRunMemory()
     try:
         return _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_panos, skip_depth,
                            max_runtime_minutes, min_depth_runtime, max_depth_requests, depth_block_latch,
@@ -910,10 +916,6 @@ def main(argv=None):
     # Translate it into a SystemExit carrying the conventional 128+15 code, so cleanup runs and the exit still
     # reads as a signal death.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-
-    # #74: the GSV image phase reads and writes the same host state as the depth phase (latch; pace forfeit on a
-    # refusal), so the two flags must move both phases' paths or they would each read a different file.
-    gsv.image_block_latch_path, gsv.image_pace_state_path = args.depth_block_latch, args.depth_pace_state
 
     print("Starting run with pano list fetched from %s and destination path %s" % (args.d, args.s))
 

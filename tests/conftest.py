@@ -88,7 +88,7 @@ def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(gsv, 'default_pace_state_path', lambda: str(state))
     # The image phase's per-process photometa memory (#74): three failing photometa stubs in one test would
     # otherwise stop every later test's image phase from asking photometa at all. And the host-state paths
-    # DownloadRunner.main sets from its flags, which an in-process main() test would otherwise leave behind.
+    # DownloadRunner.run sets from its arguments, which an in-process run() test would otherwise leave behind.
     monkeypatch.setattr(gsv, '_photometa_run', gsv._PhotometaRunMemory())
     monkeypatch.setattr(gsv, 'image_block_latch_path', None)
     monkeypatch.setattr(gsv, 'image_pace_state_path', None)

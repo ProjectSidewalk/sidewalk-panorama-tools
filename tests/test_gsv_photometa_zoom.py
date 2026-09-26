@@ -754,6 +754,16 @@ class TestTheFlagsMoveTheImagePhasesHostStateToo:
         assert gsv._block_latch_age_hours(gsv.default_block_latch_path()) is None
         assert pace.exists() and not os.path.exists(gsv.default_pace_state_path())
 
+    def test_a_second_main_in_one_process_asks_photometa_again(self, tmp_path, monkeypatch):
+        gsv._photometa_run.given_up = True          # what a previous in-process city left behind
+        asked = stub_photometa(monkeypatch, TWO_LEVELS)
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        self.call_main(tmp_path, monkeypatch)
+
+        assert asked == [PANO]
+
     def test_a_fresh_flagged_latch_is_what_the_image_phase_reads(self, tmp_path, monkeypatch):
         latch = tmp_path / 'my-latch'
         gsv._write_block_latch(str(latch))
@@ -765,6 +775,54 @@ class TestTheFlagsMoveTheImagePhasesHostStateToo:
 
         assert asked == []
         assert (tmp_path / 'storage' / PANO[:2] / (PANO + '.jpg')).exists()
+
+
+class TestRunOwnsTheImagePhasesPerRunState:
+    """Round two: the per-run photometa memory and the image phase's host-state paths were set in main() only,
+    so run() - the in-process seam tests and any multi-city caller use - inherited the last run's given_up and
+    read the default latch while its depth phase read depth_block_latch."""
+
+    @staticmethod
+    def call_run(tmp_path, **kwargs):
+        import DownloadRunner
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text('pano_id,width,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
+                            '%s,1024,512,47.6,-122.3,180.0,0.0,gsv,True\n' % PANO)
+        os.makedirs(tmp_path / 'storage', exist_ok=True)
+        DownloadRunner.run('sidewalk-test.invalid', str(tmp_path / 'storage'), pano_metadata_csv=str(csv_path),
+                           skip_depth=True, **kwargs)
+
+    def test_each_run_starts_with_a_fresh_photometa_memory(self, tmp_path, monkeypatch):
+        gsv._photometa_run.given_up = True          # what a previous in-process city left behind
+        asked = stub_photometa(monkeypatch, TWO_LEVELS)
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        self.call_run(tmp_path)
+
+        assert asked == [PANO]
+
+    def test_run_hands_its_latch_to_the_image_phase(self, tmp_path, monkeypatch):
+        latch = tmp_path / 'my-latch'
+        gsv._write_block_latch(str(latch))
+        asked = stub_photometa(monkeypatch, TWO_LEVELS)
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        self.call_run(tmp_path, depth_block_latch=str(latch))
+
+        assert asked == []
+        assert (tmp_path / 'storage' / PANO[:2] / (PANO + '.jpg')).exists()
+
+    def test_run_hands_its_pace_state_to_the_image_phase(self, tmp_path, monkeypatch):
+        pace = tmp_path / 'my-pace'
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        self.call_run(tmp_path, depth_block_latch=str(tmp_path / 'my-latch'), depth_pace_state=str(pace))
+
+        assert pace.exists() and not os.path.exists(gsv.default_pace_state_path())
 
 
 # --- review item 5: the holes the tests lens found ----------------------------------------------------------
