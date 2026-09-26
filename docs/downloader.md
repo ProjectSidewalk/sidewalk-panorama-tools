@@ -71,7 +71,7 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
 | `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back **from Google** or a refusal resets it, a local failure does not, a phase that made no requests writes nothing, and a day-old file is ignored. The phase holds `<PATH>.lock` while it runs, so a second concurrent phase paces itself from scratch. Defaults to a file beside the *default* block latch; `--depth-block-latch` does not move it. |
 | `--run-summary-file PATH` | Write a small JSON object (`image_stop`, `depth_stop`) naming what stopped each phase. `scrape_queue` passes this and reads it back to decide which cities still have work; nothing else reads it, and without the flag nothing is written. No default, deliberately — a default path would write into whatever CWD cron started in. |
-| `--from-store CITY_ID` | Pull already-scraped panoramas for `CITY_ID` from the Project Sidewalk pano store over SFTP instead of downloading them. **The default, without it, is to download from the provider yourself**; this is for collaborators the Project Sidewalk team has issued SFTP credentials — see [below](#pulling-from-the-project-sidewalk-pano-store). Implies `--skip-depth`; Google is never contacted. |
+| `--from-store CITY_ID` | Pull already-scraped panoramas for `CITY_ID` from the Project Sidewalk pano store over SFTP instead of downloading them. **The default, without it, is to download from the provider yourself**; this is for collaborators the Project Sidewalk team has issued SFTP credentials — see [below](#pulling-from-the-project-sidewalk-pano-store). Skips the Google depth phase (`--with-depth` pulls stored artifacts instead); Google is never contacted. |
 | `--with-depth` | With `--from-store`: also pull the stored `.depth.npz` for every GSV pano lacking one locally. |
 | `--sftp-host`, `--sftp-base`, `--sftp-user`, `--sftp-port`, `--sftp-key` | With `--from-store`: the store's connection settings. Each falls back to the matching `PS_SFTP_*` variable; host and base are required. |
 
@@ -118,9 +118,13 @@ What it does, and what stays the same:
 * Panos are copied **100 per `sftp` session** (`BATCH_SIZE` in `downloaders/store_sftp.py`; lower it on a slow
   link). `--max-runtime` is checked between sessions, never inside one, so a session in flight can overrun the
   budget by up to one batch.
-* Every file is **verified before it is renamed into place** — a JPEG must have a readable header *and* end
-  with its end-of-image marker, a `.npz` must be a complete zip — because a saved file is the next run's resume
-  marker. A transfer cut short leaves nothing behind.
+* Every file is **verified before it is renamed into place** — a JPEG must have a readable header *and* an
+  end-of-image marker that closes its image data, a `.npz` must be a complete zip — because a saved file is the
+  next run's resume marker. A transfer cut short leaves nothing behind. A JPEG may carry up to 64 KB after its
+  end-of-image marker (a camera trailer on a Mapillary or Panoramax original); more than that is refused, and
+  retried each night, with a `truncated` line in `scrape.log` naming it.
+* **Tested with the OpenSSH `sftp` on Linux and macOS** — the batch's quoting follows OpenSSH's parser, and
+  the suite drives the real client where one is installed. On Windows, run it from WSL.
 
 ### Settings
 
@@ -144,9 +148,12 @@ nothing maps one to the other: `seattle-wa` is served by `sidewalk-sea`.
 export PS_SFTP_HOST=... PS_SFTP_BASE=...
 python3 DownloadRunner.py sidewalk-sea.cs.washington.edu ./seattle --from-store seattle-wa
 
-# Every visited panorama plus the stored depth artifacts, settings as flags, capped at two hours
+# Every visited panorama, not only the labelled ones; settings as flags, capped at two hours
 python3 DownloadRunner.py sidewalk-sea.cs.washington.edu ./seattle --from-store seattle-wa \
-    --all-panos --with-depth --max-runtime 120 --sftp-host ... --sftp-base ... --sftp-key ~/.ssh/ps_store
+    --all-panos --max-runtime 120 --sftp-host ... --sftp-base ... --sftp-key ~/.ssh/ps_store
+
+# The stored depth artifacts too - for every GSV panorama in the list, with or without --all-panos
+python3 DownloadRunner.py sidewalk-sea.cs.washington.edu ./seattle --from-store seattle-wa --with-depth
 ```
 
 ### What the ledger learns
@@ -157,13 +164,20 @@ does not hold *tonight* is counted in `log.csv` field 9 and left **without a row
 tomorrow, so its absence is never a verdict, and the next pull tries again. The run's closing line says how
 many that was.
 
+**What is still missing** after a pull is the pano list (`/adminapi/panos`, or your `-c` CSV) minus the ids
+in `pano_id_log.csv`: absent panoramas have no row, so they are exactly the difference, and they are what the
+next run asks the store for again. For tonight's alone, `grep 'absent; not ledgered' scrape.log` names each one
+(`scrape.log` rotates at 10 MB × 3, so the ledger difference is the durable answer).
+
 Existing `0` rows — from an earlier scrape of your own — are honoured like any other row, so those panoramas
 are not asked of the store. Deleting them is the lever, as it is for a scrape
 ([Resume ledgers](ops.md#resume-ledgers)).
 
 `--with-depth` writes **nothing** to `depth_log.csv`. A later scrape's depth phase finds each pulled artifact
 on disk and ledgers it `saved` without a request. The depth pass covers every GSV panorama in the list that
-lacks a local artifact — not only tonight's images — so it can be run after an image-only pull. An artifact
+lacks a local artifact — not only tonight's images, and **whether or not `--all-panos` is given**, the depth
+phase's own view of the corpus — so it can be run after an image-only pull, and on a labelled-only pull it
+still fetches depth for the unlabelled panoramas too (several times more sessions). An artifact
 the store does not have (Google had no depth for that panorama) is counted in field 14, which is [not an alert
 signal](ops.md#the-depth-failure-count-is-not-an-alert-signal).
 
@@ -175,6 +189,11 @@ signal](ops.md#the-depth-failure-count-is-not-an-alert-signal).
 * **Any other failed session** — a missing key, a passphrase-protected key without an agent, the host
   unreachable — does the same. `sftp` runs with `BatchMode=yes`, so it fails in about a second instead of
   waiting on a prompt nothing can answer. The panoramas it did not reach are not counted and retry next run.
+* **A file that arrives incomplete or unreadable** is discarded, counted as failed, and retried next run; a
+  `STOREPULL: WARNING - N pano(s) arrived incomplete or unreadable` line says how many.
+* **A file that verified but could not be placed** means *local* storage trouble — a full disk, a dropped
+  mount — which a retry will not fix. A `STOREPULL: WARNING - N pano(s) verified but could not be placed on
+  local storage` line says so (`STOREDEPTH:` for depth artifacts); the run still exits 0, so read it.
 * **A changed host key is refused** (`StrictHostKeyChecking=accept-new`: an unknown host is trusted once).
 * `sftp`'s error output is summarised and redacted before it reaches stdout or `scrape.log`; raw error output
   is never logged. **Redacted:** the host, user, port and key path you configured, wherever they appear; what
@@ -184,8 +203,10 @@ signal](ops.md#the-depth-failure-count-is-not-an-alert-signal).
   `ProxyJump` hop, say), and file paths other than the key. Check a summary before pasting it anywhere public.
 * `--skip-depth`, `--min-depth-runtime`, `--max-depth-requests`, `--depth-block-latch` and
   `--depth-pace-state` have no effect in this mode and each prints a warning saying so.
-* A `.part` file is a transfer in progress; one left by a killed run is removed before the next session
-  and is safe to delete by hand.
+* A `.part` file is a transfer in progress; one left by a killed run is removed before that panorama is
+  next requested, and is safe to delete by hand.
+* A pano id outside `[A-Za-z0-9_-]` cannot be written into an `sftp` batch safely; it is skipped, counted as
+  failed and logged. No id any of the three imagery sources issues falls outside it.
 
 It never pulls the store's `log.csv`, its ledgers, `scrape.log`, or `.w8192.jpg`
 [display copies](ops.md#display-copies-of-wide-panoramas), and it never writes to the store.
