@@ -2279,3 +2279,59 @@ class TestTheSystemicFailureAlarm:
         assert '5 errors, of 5 labels total' in printed
         logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read()
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged
+
+
+# ---------------------------------------------------------------------------
+# #32: an opt-in sizing rule v3. The default path must not move by a pixel.
+# ---------------------------------------------------------------------------
+
+# Captured from origin/master (c5d2ad7) BEFORE #32 touched the sizing path, by running master's own
+# compute_crop_box(x, y, crop_window_width(y, w, h), w, h) over these inputs and pasting the result.
+# Literals, compared with ==: "v2 crops are byte-identical under the default" is the claim, and an
+# approx would pass for a rule that had merely drifted a little. The rows cover four pano sizes
+# (including the non-2:1 square), the horizon, 5/15/30/45 degrees below it, 20 degrees above it, both
+# sides of the seam, and all four pole-clamped shapes.
+MASTER_V2_WINDOWS = [
+        ((8192.0, 4096.0, 16384, 8192), (7810, 3842, 764, 509, False)),
+        ((8192.0, 4323.555555555556, 16384, 8192), (7734, 4018, 917, 611, False)),
+        ((8192.0, 4778.666666666667, 16384, 8192), (7450, 4284, 1483, 989, False)),
+        ((8192.0, 5461.333333333333, 16384, 8192), (6144, 4096, 4096, 2731, False)),
+        ((8192.0, 6144.0, 16384, 8192), (6144, 4778, 4096, 2731, False)),
+        ((8192.0, 3185.777777777778, 16384, 8192), (7968, 3037, 447, 298, False)),
+        ((6656.0, 3328.0, 13312, 6656), (6346, 3121, 621, 414, False)),
+        ((6656.0, 3512.8888888888887, 13312, 6656), (6284, 3264, 745, 497, False)),
+        ((6656.0, 3882.6666666666665, 13312, 6656), (6054, 3481, 1205, 803, False)),
+        ((6656.0, 4437.333333333333, 13312, 6656), (4992, 3328, 3328, 2219, False)),
+        ((6656.0, 4992.0, 13312, 6656), (4992, 3882, 3328, 2219, False)),
+        ((6656.0, 2588.4444444444443, 13312, 6656), (6474, 2467, 363, 242, False)),
+        ((1024.0, 512.0, 2048, 1024), (976, 480, 96, 64, False)),
+        ((1024.0, 540.4444444444445, 2048, 1024), (966, 502, 115, 77, False)),
+        ((1024.0, 597.3333333333334, 2048, 1024), (932, 536, 185, 123, False)),
+        ((1024.0, 682.6666666666666, 2048, 1024), (768, 512, 512, 341, False)),
+        ((1024.0, 768.0, 2048, 1024), (768, 598, 512, 341, False)),
+        ((1024.0, 398.22222222222223, 2048, 1024), (996, 380, 56, 37, False)),
+        ((512.0, 512.0, 1024, 1024), (488, 496, 48, 32, False)),
+        ((512.0, 540.4444444444445, 1024, 1024), (484, 521, 57, 38, False)),
+        ((512.0, 597.3333333333334, 1024, 1024), (466, 566, 93, 62, False)),
+        ((512.0, 682.6666666666666, 1024, 1024), (384, 597, 256, 171, False)),
+        ((512.0, 768.0, 1024, 1024), (384, 682, 256, 171, False)),
+        ((512.0, 398.22222222222223, 1024, 1024), (498, 389, 28, 19, False)),
+        ((10, 4778.666666666667, 16384, 8192), (15652, 4284, 1483, 989, False)),
+        ((16380, 3512.8888888888887, 13312, 6656), (2696, 3264, 745, 497, False)),
+        ((13300, 3512.8888888888887, 13312, 6656), (12928, 3264, 745, 497, False)),
+        ((1000, 8, 2048, 1024), (977, 0, 46, 31, True)),
+        ((1000, 1020, 2048, 1024), (744, 683, 512, 341, True)),
+        ((500, 8191, 16384, 8192), (14836, 5461, 4096, 2731, True)),
+        ((0, 0, 1024, 1024), (1012, 0, 23, 15, True)),
+]
+
+
+class TestTheDefaultWindowIsByteIdentical:
+    """The contract of the #32 PR: adding rule v3 moves no v2 window. A default flipped to v3, or v3
+    code reached from the v2 branch, changes rows of this table."""
+
+    @pytest.mark.parametrize('args, expected', MASTER_V2_WINDOWS)
+    def test_compute_crop_box_under_the_default_matches_master(self, crop_runner, args, expected):
+        x, y, w, h = args
+        box = crop_runner.compute_crop_box(x, y, crop_runner.crop_window_width(y, w, h), w, h)
+        assert tuple(box) == expected
