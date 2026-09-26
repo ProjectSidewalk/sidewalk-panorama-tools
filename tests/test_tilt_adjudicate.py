@@ -324,6 +324,11 @@ def test_seal_migrates_an_old_folder(tmp_path):
     ta.next_unjudged(str(out), 'jon')
 
 
+def _unsealed_machine_verdicts(folder):
+    """Machine-judge verdict files (verdicts_claude-*) outside sealed/: they would anchor a human judge."""
+    return sorted(n for n in os.listdir(folder) if n.startswith('verdicts_claude-'))
+
+
 class TestTheCommittedFolder:
     """The folder Jon judges in, as committed."""
 
@@ -352,8 +357,25 @@ class TestTheCommittedFolder:
             assert f.readline().strip() == 'Do not open until you have recorded all 48 verdicts.'
 
     def test_the_machine_verdicts_are_sealed(self):
-        assert not [n for n in os.listdir(ADJ_DIR) if n.startswith('verdicts_')]
+        """Only machine verdicts are banned from the working folder: a human judge's
+        verdicts_<name>.jsonl is exactly what the README tells them to commit there (#158 final review)."""
+        assert _unsealed_machine_verdicts(ADJ_DIR) == []
         assert len(ta.load_verdicts(os.path.join(ADJ_DIR, 'sealed'), 'claude-opus-5-5')) == 48
+
+    def test_a_human_judges_committed_verdicts_break_no_committed_folder_test(self, tmp_path):
+        """Following the README (record as jon, commit) must leave the folder invariants green."""
+        d = tmp_path / 'adj'
+        d.mkdir()
+        (d / 'verdicts_jon.jsonl').write_text('{"token": "t", "choice": "A", "judge": "jon"}\n')
+        assert _unsealed_machine_verdicts(str(d)) == []
+        (d / 'verdicts_claude-opus-5-5.jsonl').write_text('')
+        assert _unsealed_machine_verdicts(str(d)) == ['verdicts_claude-opus-5-5.jsonl']
+
+    def test_step_5_commits_the_verdicts_and_reruns_analyze(self):
+        text = ta.JUDGE_README
+        step5 = ' '.join(text[text.index('\n5. '):].split('\n\n')[0].split())
+        assert 'verdicts_<you>.jsonl' in step5
+        assert 'python reports/scripts/tilt_error_study.py analyze' in step5
 
     def test_tasks_json_is_a_whitelist(self):
         with open(os.path.join(ADJ_DIR, 'tasks.json'), encoding='utf-8') as f:
