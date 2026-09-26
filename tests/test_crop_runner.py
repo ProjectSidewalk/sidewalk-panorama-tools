@@ -498,10 +498,11 @@ class TestTheRuleMarker:
         assert 'sizing rule' not in caplog.text
 
     def test_an_unreadable_marker_does_not_stop_the_run(self, crop_runner, tmp_path):
-        """It is provenance, not a lock. A truncated or hand-edited marker is rewritten."""
+        """It is provenance, not a lock. A truncated or hand-edited marker is rewritten (and kept aside,
+        and warned about - TestTheMarkerKeepsItsHistory)."""
         with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
             f.write('{not json')
-        assert crop_runner.write_rule_marker(str(tmp_path)) is None
+        assert crop_runner.write_rule_marker(str(tmp_path)) == 'unknown'
         with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
             assert json.load(f)['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
 
@@ -2740,9 +2741,122 @@ class TestTheMarkerNoticesRetunedConstants:
 
     def test_a_marker_that_is_valid_json_but_not_an_object_is_rewritten(self, crop_runner, tmp_path):
         """Reading the whole marker (rather than .get on it) must not turn a hand-edited `[]` into a crash:
-        it is provenance, not a lock, so it is treated as absent and rewritten."""
+        it is provenance, not a lock, so the run goes on - but the prior rule is now unknown, and says so."""
         with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
             json.dump(['v2'], f)
-        assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') is None
+        assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'unknown'
         with open(tmp_path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
             assert json.load(f)['crop_rule_version'] == 'v3'
+
+
+def _read_marker(crop_runner, path):
+    with open(path / crop_runner.CROP_RULE_MARKER, encoding='utf-8') as f:
+        return json.load(f)
+
+
+class TestTheMarkerKeepsItsHistory:
+    """#157 review item 1: one warned run used to be enough to lose a mixed store's provenance.
+
+    Cut a v2 store, run v3 over it (0 crops cut, one warning, marker v3/previous v2), run v3 again: the
+    second run was silent and left `v3`/`previous v3` over a store of v2 crops. A v2/v3 mix is 3:2 on
+    both sides, so the marker is the only evidence there is. `rules_seen` is append-only, and the
+    warning fires on every run whose rule is not the only one the store has seen.
+    """
+
+    def test_the_two_run_transcript_keeps_both_rules_and_warns_both_times(self, crop_runner, tmp_path,
+                                                                          caplog, capsys):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        for run in (1, 2):
+            capsys.readouterr()
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+            printed = capsys.readouterr().out
+            for channel in (caplog.text, printed):
+                assert 'cut under sizing rule v2 and this run uses v3' in channel, run
+            assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v2', 'v3'], run
+
+    def test_the_warning_does_not_claim_this_run_cut_anything(self, crop_runner, tmp_path, caplog):
+        """It is written before a crop is cut, so it cannot know; the old text said 'now holds both
+        geometries' on a run that added nothing."""
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert 'now holds both' not in caplog.text
+        assert 'any crop this run cuts' in caplog.text
+
+    def test_the_remedy_is_a_recut_not_a_deletion(self, crop_runner, tmp_path, caplog):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert "re-cut under this run's constants" in caplog.text
+        assert 'delete' not in caplog.text
+
+    def test_rules_seen_is_ordered_by_first_use_and_deduplicated(self, crop_runner, tmp_path):
+        for rule in ('v3', 'v2', 'v3', 'v2', 'v2'):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule=rule)
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v3', 'v2']
+
+    def test_a_fresh_store_has_seen_one_rule(self, crop_runner, tmp_path):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v3']
+
+    def test_a_marker_from_before_rules_seen_is_seeded_from_what_it_names(self, crop_runner, tmp_path,
+                                                                         caplog):
+        """The lossy shape this PR's head wrote: current and previous are all it can say."""
+        with open(tmp_path / crop_runner.CROP_RULE_MARKER, 'w', encoding='utf-8') as f:
+            json.dump({'crop_rule_version': 'v3', 'previous_crop_rule_version': 'v2'}, f)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v2', 'v3']
+        assert 'cut under sizing rule v2 and this run uses v3' in caplog.text
+
+    def test_a_retuned_constant_is_remembered_after_the_warned_run(self, crop_runner, tmp_path, caplog,
+                                                                   monkeypatch):
+        """Item 6: the same-id warning was one-shot too - the rewrite recorded the new constants and the
+        old value survived only as a log line. The store is first cut under a 6.4 m v3, then refit."""
+        with monkeypatch.context() as m:
+            m.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 6.4)
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        expected = 'v3_context_width_m=6.4 and this run uses %r' % crop_runner.V3_CONTEXT_WIDTH_M
+        for run in (1, 2):
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+            assert expected in caplog.text, run
+            assert "re-cut under this run's constants" in caplog.text and 'delete' not in caplog.text
+        seen = _read_marker(crop_runner, tmp_path)['constants_seen']['v3']['v3_context_width_m']
+        assert seen == [6.4, crop_runner.V3_CONTEXT_WIDTH_M]
+
+    @pytest.mark.parametrize('content', ['{not json', '[]', '"v2"', '{"rules_seen": "v2"}',
+                                         '{"constants_seen": []}'])
+    def test_an_unreadable_marker_warns_and_is_kept(self, crop_runner, tmp_path, caplog, capsys, content):
+        """Provenance destroyed must not read as a clean store: warn on both channels, record the prior
+        rule as unknown for good, and keep the bytes rather than overwrite them."""
+        marker_path = tmp_path / crop_runner.CROP_RULE_MARKER
+        marker_path.write_text(content, encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'unknown'
+        printed = capsys.readouterr().out
+        for channel in (caplog.text, printed):
+            assert 'could not be read' in channel
+        marker = _read_marker(crop_runner, tmp_path)
+        assert marker['previous_crop_rule_version'] == 'unknown'
+        assert marker['rules_seen'] == ['unknown', 'v3']
+        kept = list(tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
+        assert len(kept) == 1 and kept[0].read_text(encoding='utf-8') == content
+        # And it stays marked: the next run is not a clean one either.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert 'cut under sizing rule unknown and this run uses v3' in caplog.text
+
+    def test_two_unreadable_markers_are_both_kept(self, crop_runner, tmp_path):
+        marker_path = tmp_path / crop_runner.CROP_RULE_MARKER
+        for content in ('{one', '{two'):
+            marker_path.write_text(content, encoding='utf-8')
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        kept = sorted(p.read_text(encoding='utf-8')
+                      for p in tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
+        assert kept == ['{one', '{two']

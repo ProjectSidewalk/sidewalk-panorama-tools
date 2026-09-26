@@ -85,8 +85,18 @@ directory.** `write_rule_marker()` writes the rule the run selected (`crop_rule_
 `crop.log` — rather than refusing when the marker disagrees with the rule this run selected, or, under the
 same rule id, when a constant that rule reads has changed (a refit v3 would still call itself v3). A mixed store is the ordinary
 result of changing the rule: existing crops are the resume marker and are never re-cut, so running v2 over a
-v1 store leaves square v1 crops accreting 3:2 ones beside them. Deleting the store is the only way to get one
-geometry throughout.
+v1 store leaves square v1 crops accreting 3:2 ones beside them.
+
+The marker's history is **sticky**: `rules_seen` lists every rule the store has been run under, in order of
+first use, and `constants_seen` every value each rule's constants have had. Both are only ever appended to,
+and the warnings fire on *every* run whose rule or constants are not the only ones the store has seen — not
+just the first. That matters for v2 and v3 in particular, because both cut 3:2 crops, so a mixed store is
+indistinguishable on disk and the marker is the only evidence. The warning is written before any crop is cut,
+so it says what the store holds and what any crop this run cuts will be, not that this run added anything. A
+marker that exists but cannot be read is warned about, recorded as `unknown` (for good, in `rules_seen`), and
+kept beside the new one as `crop_rule.json.unreadable-<UTC timestamp>`. Getting one geometry throughout means
+re-cutting the store under one rule's constants; there is no re-cut path yet
+([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)).
 
 ### Sizing rule v3 (opt-in)
 
@@ -113,7 +123,7 @@ median crop, v3's fill is less dispersed and its window tracks the apron better 
 moves about 40% of windows by more than 10%. **The default stays v2**: since existing crops are never
 re-cut, flipping it on a store cut under v2 would mix the geometries, so the flip waits for a re-cut path
 ([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)). Until then, run v3 into a
-fresh `-o`, not over a v2 store; `crop_rule.json` warns if you do.
+fresh `-o`, not over a v2 store; `crop_rule.json` warns if you do, and on every run after.
 
 The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top, width, height, shifted)`:
 

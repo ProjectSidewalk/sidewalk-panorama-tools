@@ -16,6 +16,7 @@ are the seams, and `python3 CropRunner.py ...` behaviour lives under the __main_
 import argparse
 import collections
 import csv
+import datetime
 import json
 import logging
 import logging.handlers
@@ -774,49 +775,141 @@ def write_rule_marker(destination_dir, sizing_rule=CROP_RULE_VERSION):
     an operator may be deliberately topping up, and refusing to run would strand it. What must not
     happen is that it goes unrecorded.
 
-    :return: the rule version already on disk, or None if this is a fresh store.
+    The history is STICKY (#157 review item 1). `rules_seen` lists every rule the store has been run
+    under, in order of first use, and `constants_seen` every value each rule's constants have had; both
+    are only ever appended to. A v2/v3 mix is 3:2 on both sides, so nothing on disk but this file can
+    tell it apart from a clean store - and before these two keys, one warned run was enough to lose it:
+    the rewrite named the new rule, and the next run compared against that and said nothing. So the
+    warnings fire on every run whose rule or constants are not the only ones the store has seen.
+
+    A marker that exists but cannot be read is provenance destroyed, not a fresh store: it is warned
+    about on both channels, recorded as `unknown` (for good, in `rules_seen`), and its bytes are kept
+    beside it as `crop_rule.json.unreadable-<UTC timestamp>` rather than overwritten.
+
+    :return: the rule version already on disk; 'unknown' if a marker exists but cannot be read; None
+             if this is a fresh store.
     """
     if sizing_rule not in CROP_RULE_VERSIONS:
         raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
     path = os.path.join(destination_dir, CROP_RULE_MARKER)
-    recorded = {}
-    try:
-        with open(path, encoding='utf-8') as f:
-            recorded = json.load(f)
-    except (OSError, ValueError):
-        pass
-    if not isinstance(recorded, dict):
-        recorded = {}
-    previous = recorded.get('crop_rule_version')
     running = _rule_constants()
-
-    if previous is not None and previous != sizing_rule:
-        message = ("Crop store %s was cut under sizing rule %s and this run uses %s. Existing crops "
-                   "are never re-cut, so this store now holds both geometries; delete it to re-cut "
-                   "under %s." % (destination_dir, previous, sizing_rule, sizing_rule))
+    recorded, unreadable = _read_rule_marker(path)
+    if unreadable:
+        kept = _keep_unreadable_marker(path)
+        message = ("Crop store %s has a %s that could not be read, so the rule its existing crops were "
+                   "cut under is unknown; it is recorded as 'unknown'%s. Check the store before "
+                   "training on it." % (destination_dir, CROP_RULE_MARKER,
+                                        ' and the unreadable file kept as %s' % kept if kept else ''))
         print(message)
         logging.warning(message)
-    elif previous is not None:
-        # Same rule id, and a rule is only as fixed as its constants: a refit v3 still calls itself
-        # v3. Only the constants THIS rule reads are compared, and only those the marker recorded - a
-        # marker from before the constants were written is silent rather than a false alarm.
-        changed = ['%s=%r and this run uses %r' % (key, recorded[key], running[key])
-                   for key in RULE_MARKER_CONSTANT_KEYS[sizing_rule]
-                   if key in recorded and recorded[key] != running[key]]
-        if changed:
-            message = ("Crop store %s was cut under sizing rule %s with %s. Existing crops are never "
-                       "re-cut, so this store now holds both; delete it to re-cut under one."
-                       % (destination_dir, sizing_rule, '; '.join(changed)))
-            print(message)
-            logging.warning(message)
+        previous, rules_seen, constants_seen = 'unknown', ['unknown'], {}
+    else:
+        previous = recorded.get('crop_rule_version')
+        rules_seen, constants_seen = _marker_history(recorded)
+
+    others = [rule for rule in rules_seen if rule != sizing_rule]
+    if others and not unreadable:
+        message = ("Crop store %s was cut under sizing rule %s and this run uses %s (%s rules_seen: %s). "
+                   "Existing crops are never re-cut, so the ones cut under %s keep that geometry and any "
+                   "crop this run cuts is %s beside them. To make the store one rule it has to be "
+                   "re-cut under this run's constants."
+                   % (destination_dir, ' and '.join(others), sizing_rule, CROP_RULE_MARKER,
+                      ', '.join(rules_seen), ' and '.join(others), sizing_rule))
+        print(message)
+        logging.warning(message)
+
+    # Same rule id, and a rule is only as fixed as its constants: a refit v3 still calls itself v3.
+    # Only the constants THIS rule reads are compared, and only values the store has recorded - a marker
+    # from before the constants were written is silent rather than a false alarm.
+    seen_for_rule = constants_seen.get(sizing_rule, {})
+    changed = ['%s=%r and this run uses %r' % (key, value, running[key])
+               for key in RULE_MARKER_CONSTANT_KEYS[sizing_rule]
+               for value in seen_for_rule.get(key, [])
+               if value != running[key]]
+    if changed:
+        message = ("Crop store %s was cut under sizing rule %s with %s. Existing crops are never "
+                   "re-cut, so the ones cut under the other value keep it and any crop this run cuts "
+                   "uses this run's. To make the store one rule it has to be re-cut under this run's constants."
+                   % (destination_dir, sizing_rule, '; '.join(changed)))
+        print(message)
+        logging.warning(message)
+
+    if sizing_rule not in rules_seen:
+        rules_seen.append(sizing_rule)
+    for key in RULE_MARKER_CONSTANT_KEYS[sizing_rule]:
+        values = constants_seen.setdefault(sizing_rule, {}).setdefault(key, [])
+        if running[key] not in values:
+            values.append(running[key])
 
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(dict(running, crop_rule_version=sizing_rule,
                            distance_estimator=CROP_RULE_DISTANCE_ESTIMATOR[sizing_rule],
-                           previous_crop_rule_version=previous),
+                           previous_crop_rule_version=previous,
+                           rules_seen=rules_seen, constants_seen=constants_seen),
                       f, indent=1, sort_keys=True)
     return previous
+
+
+def _read_rule_marker(path):
+    """(marker dict, unreadable?) for crop_rule.json. Absent is ({}, False); present but not a marker
+    this code can read - bad JSON, not an object, a malformed history - is ({}, True)."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            recorded = json.load(f)
+    except FileNotFoundError:
+        return {}, False
+    except (OSError, ValueError):
+        return {}, True
+    if not isinstance(recorded, dict):
+        return {}, True
+    rules_seen = recorded.get('rules_seen', [])
+    constants_seen = recorded.get('constants_seen', {})
+    if not (isinstance(rules_seen, list) and all(isinstance(rule, str) for rule in rules_seen)
+            and isinstance(constants_seen, dict)
+            and all(isinstance(keys, dict) and all(isinstance(values, list) for values in keys.values())
+                    for keys in constants_seen.values())):
+        return {}, True
+    return recorded, False
+
+
+def _marker_history(recorded):
+    """The store's (rules_seen, constants_seen), seeded from what the marker names at top level.
+
+    The top-level keys are the LAST run's rule and constants, so they belong to the history whatever it
+    says: that seeds a marker written before the history existed (whose crop_rule_version and
+    previous_crop_rule_version are all it can say), and it means a hand-edited constant is compared.
+    """
+    rules_seen = list(recorded.get('rules_seen', []))
+    constants_seen = {rule: {key: list(values) for key, values in keys.items()}
+                      for rule, keys in recorded.get('constants_seen', {}).items()}
+    for rule in (recorded.get('previous_crop_rule_version'), recorded.get('crop_rule_version')):
+        if isinstance(rule, str) and rule not in rules_seen:
+            rules_seen.append(rule)
+    last = recorded.get('crop_rule_version')
+    for key in RULE_MARKER_CONSTANT_KEYS.get(last, ()):
+        if key in recorded:
+            values = constants_seen.setdefault(last, {}).setdefault(key, [])
+            if recorded[key] not in values:
+                values.append(recorded[key])
+    return rules_seen, constants_seen
+
+
+def _keep_unreadable_marker(path):
+    """Move an unreadable marker aside as `<path>.unreadable-<UTC timestamp>`; return the new name, or
+    None if it could not be moved (the rewrite that follows then replaces it, as it always did)."""
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    kept = '%s.unreadable-%s' % (path, stamp)
+    suffix = 0
+    while os.path.exists(kept):
+        suffix += 1
+        kept = '%s.unreadable-%s-%d' % (path, stamp, suffix)
+    try:
+        os.replace(path, kept)
+    except OSError as e:
+        logging.warning("Could not keep unreadable %s aside: %s", path, e)
+        return None
+    return os.path.basename(kept)
 
 
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=CROP_RULE_VERSION):
