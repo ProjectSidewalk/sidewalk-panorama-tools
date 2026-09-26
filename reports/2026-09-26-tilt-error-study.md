@@ -39,7 +39,7 @@ and this study measures each one separately:
   `roll = -m sin(dir)`, `m = tilt_pitch_deg`, `dir = tilt_yaw_deg - pano_yaw_deg`. The median residuals
   against the npz pose are 0.088 deg (pitch) and 0.110 deg (roll). Every one of the seven other sign/axis
   readings misses by at least 2.00 deg on one axis. 6.5% of the overlap (235 panos) differs by more than
-  1 deg as a vector: panos whose stitch changed between the two scrapes. This is not the same count as the
+  1 deg as a vector, which a restitch between the two scrapes would produce. This is not the same count as the
   2026-09-05 fover pilot's re-renders (a different population, and a restitch can keep its pose), and it
   bounds nothing about it.
 * **Project Sidewalk's `camera_pitch` is the same number.** Across the corpus panos the stored
