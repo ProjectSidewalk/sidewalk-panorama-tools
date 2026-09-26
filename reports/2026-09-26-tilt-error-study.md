@@ -4,8 +4,9 @@
 diagnosis: [SidewalkWebpage#4784](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4784).
 Scripts: `reports/scripts/tilt_geometry.py`, `tilt_pose_scan.py`, `tilt_frame.py`, `tilt_adjudicate.py`,
 `tilt_remote_crop.py`, `tilt_error_study.py`, `tilt_figures.py`. Artifact:
-[`data/2026-09-26-tilt-error-study.json`](data/2026-09-26-tilt-error-study.json). Every measured number
-below is transcribed from it, and `tests/test_tilt_error_study.py` fails if one is not, matching each in
+[`data/2026-09-26-tilt-error-study.json`](data/2026-09-26-tilt-error-study.json). Every number this study
+measured is transcribed from it (figures cited from other reports and issues are citations, not
+measurements), and `tests/test_tilt_error_study.py` fails if one is not, matching each in
 the words or table row it is quoted in. `tilt_error_study.py analyze` rebuilds the artifact from
 committed data alone, and a test re-runs it.
 
@@ -144,8 +145,9 @@ in four for roll). An earlier version of this report called the calibrated value
 argument does not hold (see Wrong turns), and a synthetic scene with world-leaning clutter shows noise,
 not a systematic shortfall (`tests/test_tilt_frame.py`). Partial levelling, a mixture of levelled and
 rig-aligned panos, and an instrument effect the synthetic does not model all remain possible. The
-top-tilt arms (tilt magnitude 11.7-21.2 deg (XML-era) and 9.7-14.8 deg (modern)) have calibration
-slopes near zero, so only their raw slopes are read. The estimator's +-12 deg edge window is the
+top-tilt arms (tilt magnitude 11.7-21.2 deg (XML-era) and 9.7-14.8 deg (modern)) have pitch
+calibration slopes near zero (pitch only; their roll slopes are low but not zero), so only their raw
+slopes are read. The estimator's +-12 deg edge window is the
 suspected cause, but clean synthetic poles at that tilt still calibrate well, so the mechanism is not
 pinned by a test.
 

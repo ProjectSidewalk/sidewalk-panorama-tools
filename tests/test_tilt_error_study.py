@@ -715,3 +715,10 @@ def test_every_hashed_input_is_never_line_ending_normalised(summary):
         pytest.skip('git is not available')
     attrs = dict(line.rsplit(': text: ', 1) for line in r.stdout.splitlines())
     assert {p: attrs[p] for p in paths if attrs[p] != 'unset'} == {}
+
+
+def test_the_artifact_records_how_its_bootstrap_was_drawn(summary):
+    """The calibrated CIs are a seeded pano bootstrap; the artifact says so (#158 final review nit)."""
+    b = summary['populations']['lean_panos']['bootstrap']
+    assert b['n_boot'] == tes.N_BOOT == 1000 and b['seed'] == tes.BOOT_SEED == 20260926
+    assert b['resampling_unit'].startswith('pano')

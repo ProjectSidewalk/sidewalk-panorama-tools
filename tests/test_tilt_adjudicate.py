@@ -346,7 +346,9 @@ class TestTheCommittedFolder:
             key_bytes = f.read()
         assert len(expected) == 64 and len(salt) == 32
         assert hashlib.sha256(salt.encode('ascii') + b':' + key_bytes).hexdigest() == expected
-        assert len(ta.read_sealed_key(ADJ_DIR)) == 48    # and the module's own check agrees
+        # Bind the count, not the dict: a failing `len({...}) == 48` would print the key (#158 final review).
+        n_key = len(ta.read_sealed_key(ADJ_DIR))       # and the module's own check agrees
+        assert n_key == 48, n_key
 
     def test_the_readmes(self):
         with open(os.path.join(ADJ_DIR, 'README.md'), encoding='utf-8') as f:
@@ -360,7 +362,8 @@ class TestTheCommittedFolder:
         """Only machine verdicts are banned from the working folder: a human judge's
         verdicts_<name>.jsonl is exactly what the README tells them to commit there (#158 final review)."""
         assert _unsealed_machine_verdicts(ADJ_DIR) == []
-        assert len(ta.load_verdicts(os.path.join(ADJ_DIR, 'sealed'), 'claude-opus-5-5')) == 48
+        n_verdicts = len(ta.load_verdicts(os.path.join(ADJ_DIR, 'sealed'), 'claude-opus-5-5'))
+        assert n_verdicts == 48, n_verdicts             # a count, never the verdicts themselves
 
     def test_a_human_judges_committed_verdicts_break_no_committed_folder_test(self, tmp_path):
         """Following the README (record as jon, commit) must leave the folder invariants green."""

@@ -291,7 +291,7 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
   the sign backwards; don't re-derive either, call the module.
 - **Whether `pano_y` is pixel-true for a tilted pano is under test, pending Jon's adjudication.** The stored
   tiles are not gravity-levelled in either scrape era (F2: every arm's raw lean slope excludes 0; the calibrated
-  slopes are estimates below 1, cause open). Endpoint C, preliminary and machine-judged: **split by the pre-set
+  slopes are estimates, 0.634-1.098, and why most read below 1 is open). Endpoint C, preliminary and machine-judged: **split by the pre-set
   rule; leak 37, antileak 0**. That machine judge knew the hypothesis, and the stored window is identifiable by
   content (it always sits between the other two), so only leak-vs-antileak is blind. Jon's decision-bearing
   adjudication (`tilt_adjudicate.py`) is pending, and no correction has landed in CropRunner. Don't write one

@@ -665,6 +665,12 @@
    "n_panos": 661
   },
   "lean_panos": {
+   "bootstrap": {
+    "keys": "ci_*_calibrated_boot",
+    "n_boot": 1000,
+    "resampling_unit": "pano (the raw fit and the calibration slopes resampled together)",
+    "seed": 20260926
+   },
    "frame": "corpus panos on disk + store-side Seattle sample",
    "keys": [
     "f2_tile_frame"

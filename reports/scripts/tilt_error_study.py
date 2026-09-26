@@ -936,7 +936,11 @@ def analyze(args):
     s['populations'] = {
         'seattle_npz_facades': {'keys': ['f1_depth_frame'], 'frame': 'Seattle depth artifacts in a seeded 1/4 '
                                 'shard sample (facades for a seeded subset) + every corpus artifact'},
-        'lean_panos': {'keys': ['f2_tile_frame'], 'frame': 'corpus panos on disk + store-side Seattle sample'},
+        'lean_panos': {'keys': ['f2_tile_frame'], 'frame': 'corpus panos on disk + store-side Seattle sample',
+                       'bootstrap': {'n_boot': N_BOOT, 'seed': BOOT_SEED,
+                                     'resampling_unit': 'pano (the raw fit and the calibration slopes '
+                                                        'resampled together)',
+                                     'keys': 'ci_*_calibrated_boot'}},
         'adjudication_draw': {'keys': ['c_adjudication'], 'frame': 'corpus labels, live measurable rule, '
                               'pose matching the scrape era, |T| threshold per draw'},
         'seattle_pose_sample': {'keys': ['s1_tilt_prior', 's2_xml_npz', 's3_miscentering', 's3_assumed_beta_range'],
