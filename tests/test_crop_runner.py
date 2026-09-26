@@ -2890,6 +2890,39 @@ class TestTheMarkerKeepsItsHistory:
             crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
         assert 'cut under sizing rule unknown and this run uses v3' in caplog.text
 
+    def test_a_kept_name_already_taken_is_not_overwritten(self, crop_runner, tmp_path, monkeypatch):
+        """Two unreadable markers inside one clock tick must not overwrite each other's kept copy."""
+        import datetime as real_datetime
+
+        class Frozen(real_datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real_datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=tz)
+        monkeypatch.setattr(crop_runner.datetime, 'datetime', Frozen)
+        marker_path = tmp_path / crop_runner.CROP_RULE_MARKER
+        for content in ('{one', '{two', '{three'):
+            marker_path.write_text(content, encoding='utf-8')
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        kept = sorted(p.read_text(encoding='utf-8')
+                      for p in tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
+        assert kept == ['{one', '{three', '{two']
+
+    def test_a_marker_that_cannot_be_moved_aside_is_still_replaced(self, crop_runner, tmp_path, caplog,
+                                                                  monkeypatch):
+        """Keeping the bytes is best effort: if the move fails the run says so and goes on, as before."""
+        real_replace = crop_runner.os.replace
+
+        def refuse_the_keep(src, dst):
+            if '.unreadable-' in str(dst):
+                raise PermissionError('locked')
+            return real_replace(src, dst)
+        monkeypatch.setattr(crop_runner.os, 'replace', refuse_the_keep)
+        (tmp_path / crop_runner.CROP_RULE_MARKER).write_text('{bad', encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'unknown'
+        assert 'Could not keep unreadable' in caplog.text and 'could not be read' in caplog.text
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['unknown', 'v3']
+
     def test_two_unreadable_markers_are_both_kept(self, crop_runner, tmp_path):
         marker_path = tmp_path / crop_runner.CROP_RULE_MARKER
         for content in ('{one', '{two'):
