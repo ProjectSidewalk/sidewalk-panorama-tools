@@ -8,7 +8,7 @@ Two subcommands, so the analysis runs from committed data alone:
         --pose .cache/tilt/pose_seattle-wa.p0.csv ... --corpus-pose .cache/tilt/pose_corpus.csv \\
         --facades .cache/tilt/facades_seattle-wa.p0.csv ... --corpus-facades .cache/tilt/facades_corpus.csv \\
         --lean .cache/tilt/lean_corpus.csv --lean .cache/tilt/lean_store.csv \\
-        --adjudication .cache/tilt/adjudication
+        --adjudication .cache/tilt/adjudication     # copied, sealed/ and all, to reports/data/
     # 2. analyze: committed data -> reports/data/2026-09-26-tilt-error-study.json + figures
     python reports/scripts/tilt_error_study.py analyze [--figure-dir reports/figures]
 
@@ -32,6 +32,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -54,11 +55,20 @@ FIGURES = os.path.join(REPO_ROOT, 'reports', 'figures')
 PREFIX = '2026-09-26-tilt-'
 CORPUS_CSV = os.path.join(DATA, '2026-08-12-crop-corpus-gsv.csv.gz')
 ARTIFACT = os.path.join(DATA, PREFIX + 'error-study.json')
+ADJ_DIR = os.path.join(DATA, PREFIX + 'adjudication')
+ADJ_PUBLIC = ('draw.json', 'tasks.json', tilt_adjudicate.KEY_HASH, 'README.md')
+ADJ_SEALED = ('key.json', 'salt.txt', 'README.md')
+
+# The sheets whose key and machine verdict the first version of this PR printed in a report figure
+# (reports/figures/2026-09-26-tilt-adjudication-sheet.jpg at 3f2e404, since removed). Their verdicts
+# are scored apart from the rest, for every judge, so an exposure can be read off the result.
+EXPOSED_IN_FIGURE = ('t03d0af5355', 't082917fa83', 't0a328afad9', 't0bc9196f09', 't0f6bdfeae5',
+                     't16ed4a628d', 't29b6860eda', 't2cef14d740')
 
 BANDS = ('<5', '5-15', '15-30', '>30')
 F1_RIG, F1_GRAVITY = (0.9, 1.1), (-0.1, 0.1)
 F2_RIG, F2_GRAVITY = (0.7, 1.3), (-0.3, 0.3)
-C_DECISIVE_SHARE = 0.9
+C_RULE_SHARE = 0.9        # plan section 1.2: >= 90% of ALL n (none included) for one window, else 'split'
 RAMPNET_SIGMA_PX = 12.0      # RampNet's stage-one click sigma on a 4096-high pano (issue #54 comment)
 RAMPNET_HEIGHT_PX = 4096.0
 Z95 = 1.959963984540054
@@ -227,8 +237,9 @@ def tile_frame_fit(lean, pose):
 
 # ---- C ---------------------------------------------------------------------------------------
 
-def decisive_share(arm, name):
-    """Share of the non-`none` verdicts that chose `name`; None when every verdict was `none`."""
+def posthoc_decisive_share(arm, name):
+    """Share of the non-`none` verdicts that chose `name`; None when every verdict was `none`.
+    A POST-HOC summary, not a rule: the pre-set rule (c_verdict) keeps `none` in the denominator."""
     decisive = arm['n'] - arm['none']
     return arm[name] / decisive if decisive else None
 
@@ -249,7 +260,7 @@ def c_verdict(arm):
     if not arm['n']:
         return 'no data'
     for name in tilt_adjudicate.WINDOW_NAMES:
-        if arm[name] / arm['n'] >= C_DECISIVE_SHARE:
+        if arm[name] / arm['n'] >= C_RULE_SHARE:
             return name
     return 'split'
 
@@ -453,7 +464,7 @@ def report_numbers(s):
     for judge, j in c['judges'].items():
         for arm, a in j['arms'].items():
             out['c.%s.%s' % (judge, arm)] = '%d / %d / %d / %d' % (a['stored'], a['leak'], a['antileak'], a['none'])
-            out['c.%s.%s.decisive' % (judge, arm)] = fmt(100 * a['decisive_share_leak'], '.0f') + '%'
+            out['c.%s.%s.decisive' % (judge, arm)] = fmt(100 * a['posthoc_decisive_share_leak'], '.0f') + '%'
         for d, v in j['by_direction'].items():
             out['c.%s.%s' % (judge, d)] = '%d of %d' % (v['leak'], v['n'])
     out['s4'] = str(s['s4_extent_gold']['n_pairs'])
@@ -492,17 +503,8 @@ def export(args):
     _to_gz(both[['city', 'pano_id', 'pitch_deg', 'roll_deg', 'xml_pano_yaw_deg', 'xml_tilt_yaw_deg',
                  'xml_tilt_pitch_deg', 'xml_image_date', 'jpg_mtime_iso']].sort_values('pano_id'),
            os.path.join(DATA, PREFIX + 'xml-npz-overlap.csv.gz'))
-    adj = {'draw': {}, 'key': {}, 'verdicts': {}}
-    for d in args.adjudication:
-        with open(os.path.join(d, 'key.json'), encoding='utf-8') as f:
-            key = json.load(f)
-        with open(os.path.join(d, 'draw.json'), encoding='utf-8') as f:
-            adj['draw'][os.path.basename(d.rstrip('/\\'))] = json.load(f)
-        adj['key'].update(key)
-        for vp in sorted(glob.glob(os.path.join(d, 'verdicts_*.jsonl'))):
-            judge = os.path.basename(vp)[len('verdicts_'):-len('.jsonl')]
-            adj['verdicts'].setdefault(judge, {}).update(tilt_adjudicate.load_verdicts(d, judge))
-    write_json(adj, os.path.join(DATA, PREFIX + 'adjudication.json'))
+    assert len(args.adjudication) == 1, 'one adjudication folder expected'
+    export_adjudication(args.adjudication[0], ADJ_DIR)
     s4 = {'cities': {}, 'min_pairs_to_analyse': S4_MIN_PAIRS}
     for spec in args.rampnet or []:
         city, boxes_path, labels_path = spec.split('=', 1)[0], *spec.split('=', 1)[1].split(',')
@@ -516,7 +518,69 @@ def export(args):
     s4['n_pairs'] = sum(c['n_pairs'] for c in s4['cities'].values())
     write_json(s4, os.path.join(DATA, PREFIX + 's4-extent-gold.json'))
     print('exported %d pose rows, %d corpus pose rows, %d facades, %d lean rows, %d overlap, %d sheets'
-          % (len(pose), len(cpose), len(fac), len(lean), len(both), len(adj['key'])))
+          % (len(pose), len(cpose), len(fac), len(lean), len(both),
+             len(glob.glob(os.path.join(ADJ_DIR, 'sheets', '*.jpg')))))
+
+
+def export_adjudication(src, dst):
+    """Copy the judge-facing files, the sheets and sealed/ (key, salt, finished judges' verdicts).
+    Never a key outside sealed/: the committed folder is the one a judge works in."""
+    tilt_adjudicate.assert_blind(src)
+    for sub in ('sheets', tilt_adjudicate.SEALED):
+        os.makedirs(os.path.join(dst, sub), exist_ok=True)
+    names = list(ADJ_PUBLIC) + [os.path.basename(p) for p in glob.glob(os.path.join(src, 'verdicts_*.jsonl'))]
+    names += [os.path.join('sheets', os.path.basename(p)) for p in glob.glob(os.path.join(src, 'sheets', '*.jpg'))]
+    names += [os.path.join(tilt_adjudicate.SEALED, n) for n in ADJ_SEALED]
+    names += [os.path.join(tilt_adjudicate.SEALED, os.path.basename(p))
+              for p in glob.glob(os.path.join(src, tilt_adjudicate.SEALED, 'verdicts_*.jsonl'))]
+    for n in names:
+        shutil.copyfile(os.path.join(src, n), os.path.join(dst, n))
+    tilt_adjudicate.read_sealed_key(dst)       # the copy still matches its hash
+
+
+def read_adjudication(adj_dir):
+    """-> {'draw', 'key', 'verdicts': {judge: {token: choice}}, 'files': [paths read]}. The key is
+    checked against the committed salted hash; verdicts come from sealed/ (judges who finished before
+    the key was sealed) and from the working folder (judges since)."""
+    sealed = os.path.join(adj_dir, tilt_adjudicate.SEALED)
+    with open(os.path.join(adj_dir, 'draw.json'), encoding='utf-8') as f:
+        draw = json.load(f)
+    key = tilt_adjudicate.read_sealed_key(adj_dir)
+    files = [os.path.join(adj_dir, 'draw.json'), os.path.join(adj_dir, tilt_adjudicate.KEY_HASH),
+             os.path.join(sealed, 'key.json')]
+    verdicts = {}
+    for d in (sealed, adj_dir):
+        for vp in sorted(glob.glob(os.path.join(d, 'verdicts_*.jsonl'))):
+            judge = os.path.basename(vp)[len('verdicts_'):-len('.jsonl')]
+            assert judge not in verdicts, 'judge %s has verdicts both sealed and unsealed' % judge
+            verdicts[judge] = tilt_adjudicate.load_verdicts(d, judge)
+            files.append(vp)
+    return {'draw': draw, 'key': key, 'verdicts': verdicts, 'files': files}
+
+
+def score_judge(verdicts, key, exposed=EXPOSED_IN_FIGURE):
+    """tilt_adjudicate.score plus the by-direction split, the pre-set verdict per arm, the post-hoc
+    decisive shares, and the same counts restricted to the exposed and the unexposed sheets. The
+    per-token `none` list stays in the sealed verdict file, not in the artifact."""
+    j = tilt_adjudicate.score(verdicts, key)
+    j['by_direction'] = c_by_direction(verdicts, key)
+    for a in j['arms'].values():
+        a.pop('none_tokens', None)
+        a['verdict'] = c_verdict(a)
+        for name in ('leak', 'stored'):
+            v = posthoc_decisive_share(a, name)
+            a['posthoc_decisive_share_' + name] = num(v) if v is not None else None
+        for k in list(a):
+            if isinstance(a[k], float):
+                a[k] = num(a[k])
+    for part, keep in (('exposed_in_figure', True), ('not_exposed', False)):
+        sub = {t: c for t, c in verdicts.items() if (t in exposed) == keep}
+        counts = {'n': 0, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 0}
+        for t, c in sub.items():
+            counts['n'] += 1
+            counts['none' if c == 'none' else key[t]['order']['ABC'.index(c)]] += 1
+        j[part] = counts
+    return j
 
 
 def analyze(args):
@@ -525,16 +589,18 @@ def analyze(args):
     corpus['dbear'] = corpus['pano_x'] / corpus['pano_width'] * 360.0 - 180.0
     files = {k: os.path.join(DATA, PREFIX + k + ext) for k, ext in
              (('pose-seattle', '.csv.gz'), ('pose-corpus', '.csv.gz'), ('facades', '.csv.gz'),
-              ('lean-measurements', '.csv.gz'), ('xml-npz-overlap', '.csv.gz'), ('adjudication', '.json'))}
+              ('lean-measurements', '.csv.gz'), ('xml-npz-overlap', '.csv.gz'))}
     pose = read_csv(files['pose-seattle'])
     cpose = read_csv(files['pose-corpus'])
     fac = read_csv(files['facades'])
     lean = read_csv(files['lean-measurements'])
     overlap = read_csv(files['xml-npz-overlap'])
-    with open(files['adjudication'], encoding='utf-8') as f:
-        adj = json.load(f)
+    adj = read_adjudication(ADJ_DIR)
+    for path in adj['files']:
+        files['adjudication/' + os.path.relpath(path, ADJ_DIR).replace(os.sep, '/')] = path
 
-    s = {'generated_from': {k: {'file': os.path.basename(v), 'md5': md5(v)} for k, v in files.items()}}
+    s = {'generated_from': {k: {'file': os.path.relpath(v, DATA).replace(os.sep, '/'), 'md5': md5(v)}
+                            for k, v in files.items()}}
     s['generated_from']['corpus'] = {'file': os.path.basename(CORPUS_CSV), 'md5': md5(CORPUS_CSV)}
     s['conventions'] = {
         'bearing': 'degrees clockwise from the pano forward (heading) direction, (-180, 180]',
@@ -579,22 +645,13 @@ def analyze(args):
     s['f2_tile_frame'] = f2
 
     # C
-    judges = {j: tilt_adjudicate.score(v, adj['key']) for j, v in sorted(adj['verdicts'].items())}
-    for name, j in judges.items():
-        j['by_direction'] = c_by_direction(adj['verdicts'][name], adj['key'])
-        j['decision_bearing'] = name == 'jon'
-        for a in j['arms'].values():
-            a['verdict'] = c_verdict(a)
-            a['decisive_share_leak'] = num(decisive_share(a, 'leak')) if decisive_share(a, 'leak') is not None else None
-            a['decisive_share_stored'] = (num(decisive_share(a, 'stored'))
-                                          if decisive_share(a, 'stored') is not None else None)
-            for k in list(a):
-                if isinstance(a[k], float):
-                    a[k] = num(a[k])
-    assert len(adj['draw']) == 1, 'one adjudication draw expected'
-    draw = next(iter(adj['draw'].values()))
-    s['c_adjudication'] = {'judges': judges, 'draw': draw, 'n_sheets': len(adj['key']),
-                           'decisive_share': C_DECISIVE_SHARE,
+    judges = {}
+    for name, v in sorted(adj['verdicts'].items()):
+        judges[name] = score_judge(v, adj['key'])
+        judges[name]['decision_bearing'] = name == 'jon'
+    s['c_adjudication'] = {'judges': judges, 'draw': adj['draw'], 'n_sheets': len(adj['key']),
+                           'decision_rule_share_of_all_n': C_RULE_SHARE,
+                           'exposed_in_figure': list(EXPOSED_IN_FIGURE),
                            'decision_bearing_judge': 'jon',
                            'status': 'awaiting Jon' if 'jon' not in judges else 'adjudicated'}
 
@@ -644,8 +701,7 @@ def analyze(args):
         import tilt_figures
         seattle_fac = facade_table(fac[fac['source'] == 'seattle'], pose[pose['npz_present'] == 1])
         tilt_figures.make_all(s, seattle_fac, panels, args.figure_dir,
-                              horizon_examples=_horizon_examples(cpose, args.pano_root),
-                              sheets=_sheet_examples(adj, args.sheets_dir, 'claude-opus-5-5'))
+                              horizon_examples=_horizon_examples(cpose, args.pano_root))
     return s
 
 
@@ -677,25 +733,6 @@ def _horizon_examples(cpose, pano_root):
                                 row.pano_id, era, row.pose_source, row.pose_pitch_deg, row.pose_roll_deg)))
                 break
     return out
-
-
-def _sheet_examples(adj, sheets_dir, judge, n=8):
-    """n adjudication sheets, alternating era arms, captioned with the (unblinded) verdict."""
-    if not sheets_dir or judge not in adj['verdicts']:
-        return None
-    paths, caps = [], []
-    tokens = sorted(adj['key'])
-    for arm in ('legacy+mid', 'post179') * (n // 2):
-        for t in tokens:
-            k = adj['key'][t]
-            if k['era_arm'] == arm and t not in [os.path.basename(p)[:-4] for p in paths]:
-                ch = adj['verdicts'][judge][t]
-                chosen = 'none' if ch == 'none' else k['order']['ABC'.index(ch)]
-                paths.append(os.path.join(sheets_dir, t + '.jpg'))
-                caps.append('%s | %s | T = %+.1f deg | key: A=%s B=%s C=%s | preliminary machine verdict: %s (%s)'
-                            % (t, arm, k['T_deg'], k['order'][0], k['order'][1], k['order'][2], ch, chosen))
-                break
-    return paths, caps
 
 
 WRONG_TURNS = [
@@ -739,7 +776,6 @@ def build_parser():
     a.add_argument('--write', default=ARTIFACT)
     a.add_argument('--figure-dir')
     a.add_argument('--pano-root', help='the gitignored corpus pano cache, for the horizon figure')
-    a.add_argument('--sheets-dir', help='the adjudication sheets, for the example-sheet figure')
     return ap
 
 

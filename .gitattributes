@@ -1,0 +1,5 @@
+# Hashed by their bytes (#158 review): tilt_error_study.py md5s its inputs into generated_from, and
+# the adjudication key is checked against a salted sha256. A checkout that rewrote line endings would
+# fail both, so these files are never normalised.
+reports/data/2026-09-26-tilt-* -text
+reports/data/2026-09-26-tilt-adjudication/** -text

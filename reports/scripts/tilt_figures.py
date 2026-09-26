@@ -1,8 +1,10 @@
 """Figures for reports/2026-09-26-tilt-error-study.md (called from tilt_error_study.py analyze).
 
-Two plots from committed data (the facade frame, the lean profiles) and two image figures that need
-the gitignored pano / sheet caches (the rig-frame horizon, example adjudication sheets); the image
-figures are skipped when their cache is absent, so `analyze` still runs from a fresh clone.
+Two plots from committed data (the facade frame, the lean profiles) and one image figure that needs
+the gitignored pano cache (the rig-frame horizon); it is skipped when the cache is absent, so
+`analyze` still runs from a fresh clone. There is deliberately no adjudication-sheet figure: the
+first one printed the key above the judge's instructions (#158 review); the report links one
+committed sheet, exactly as a judge sees it, instead.
 Palette: the dataviz skill's validated reference slots (blue #2a78d6, orange #eb6834) on its light
 surface; one series per panel, so no legend boxes.
 """
@@ -115,24 +117,8 @@ def horizon_figure(examples, path, width=2048):
     out.save(path, quality=85)
 
 
-def sheet_figure(sheet_paths, captions, path):
-    ims = [Image.open(p).convert('RGB') for p in sheet_paths]
-    w = max(i.size[0] for i in ims)
-    out = Image.new('RGB', (w, sum(i.size[1] + 24 for i in ims)), (24, 24, 24))
-    d = ImageDraw.Draw(out)
-    y = 0
-    for im, cap in zip(ims, captions):
-        d.text((12, y + 6), cap, fill=(255, 230, 0))
-        out.paste(im, (0, y + 24))
-        y += im.size[1] + 24
-    out.thumbnail((1500, 10000))
-    out.save(path, quality=80)
-
-
-def make_all(summary, fac_table, lean_panels, figure_dir, horizon_examples=None, sheets=None):
+def make_all(summary, fac_table, lean_panels, figure_dir, horizon_examples=None):
     facade_figure(fac_table, summary['f1_depth_frame']['seattle']['fit'], os.path.join(figure_dir, PREFIX + 'facade-frame.png'))
     lean_figure(lean_panels, os.path.join(figure_dir, PREFIX + 'lean-profiles.png'))
     if horizon_examples:
         horizon_figure(horizon_examples, os.path.join(figure_dir, PREFIX + 'horizon-examples.jpg'))
-    if sheets:
-        sheet_figure(sheets[0], sheets[1], os.path.join(figure_dir, PREFIX + 'adjudication-sheet.jpg'))

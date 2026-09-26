@@ -19,8 +19,17 @@ the same shift the other way, so a sign error anywhere upstream cannot turn a re
 null - it would show as "antileak".
 
 The blind is structural, as in annotate_server.py: sheets are named by an opaque token, `tasks.json`
-(what a judge may read) carries only the token, the label type and the tags, and the order lives in
-`key.json`, which neither `--next` nor `--record` ever reads.
+(what a judge may read) carries exactly the label type and the tags, and the order lives in
+`sealed/key.json`, which neither `next` nor `record` ever reads. The working folder carries only a
+salted hash of the key (`key.sha256`; the salt is sealed with the key), so the study stays
+reproducible and the key cannot be swapped after the verdicts are in. `next` and `record` refuse to
+run while any key file is readable in the working folder outside `sealed/` (`assert_blind`): a key
+left beside the sheets is the one failure a judge cannot undo. The sealed folder also holds any
+earlier judge's verdicts, which would anchor the next judge.
+
+Known limit: the panel order is drawn from a generator seeded by the public seed, so a determined
+reader could rebuild it by re-running `build_sheets` on the selection. The blind protects a judge
+who follows the working folder's README, not one who sets out to break it.
 
     python tilt_adjudicate.py select --corpus reports/data/2026-08-12-crop-corpus-gsv.csv.gz \\
         --pose .cache/tilt/pose_corpus.csv [--fill-rawlabels seattle-wa.csv --fill-city seattle-wa \\
@@ -31,6 +40,8 @@ The blind is structural, as in annotate_server.py: sheets are named by an opaque
     python tilt_adjudicate.py next   --out .cache/tilt/adjudication --judge jon
     python tilt_adjudicate.py record --out .cache/tilt/adjudication --judge jon <token> A|B|C|none
     python tilt_adjudicate.py score  --out .cache/tilt/adjudication --judge jon
+    # a folder written before sealing existed: move key.json (and a judge's verdicts) into sealed/
+    python tilt_adjudicate.py seal   --out <dir> [--move-verdicts claude-opus-5-5]
 """
 
 import argparse
@@ -38,6 +49,8 @@ import hashlib
 import json
 import math
 import os
+import secrets
+import shutil
 import sys
 
 import numpy as np
@@ -61,6 +74,115 @@ SEED = '20260926'
 PANEL_W, PANEL_H = 480, 320
 CHOICES = ('A', 'B', 'C', 'none')
 WINDOW_NAMES = ('stored', 'leak', 'antileak')
+SEALED = 'sealed'
+KEY_HASH = 'key.sha256'
+SEALED_README_FIRST_LINE = 'Do not open until you have recorded all 48 verdicts.'
+SEALED_README = SEALED_README_FIRST_LINE + '''
+
+This folder holds the answer key of the #54 endpoint-C adjudication (`key.json`: which of A/B/C is the
+stored, leak and antileak window on every sheet), the salt of the hash in `../key.sha256`, and the
+verdicts of any judge who has already finished (the implementing model's preliminary pass is one).
+Reading any of it before judging breaks the blind, and nothing can repair that afterwards.
+
+The study plan (section 3.3) said to commit the key only after adjudication. It was
+committed early by mistake and is sealed here instead, so the study stays reproducible from the tree.
+'''
+JUDGE_README = '''# Adjudication sheets - read this, and nothing else in this folder, first
+
+1. From the repository root: `python reports/scripts/tilt_adjudicate.py next --out {out} --judge <you>`
+2. Open the sheet it prints. Which yellow ring sits on the labelled feature? Answer A, B, C or none.
+3. `python reports/scripts/tilt_adjudicate.py record --out {out} --judge <you> <token> A|B|C|none`
+4. Repeat until `next` prints "all judged". A second `record` for a token replaces the first.
+5. Commit `verdicts_<you>.jsonl`; only then open `sealed/`, the report, or the study JSON.
+
+Do not open `sealed/`, the report's results, or `reports/data/2026-09-26-tilt-error-study.json` before
+step 5: they hold the key or another judge's answers. `next` and `record` never read the key, and they
+refuse to run while a key file sits in this folder outside `sealed/`.
+'''
+
+
+class BlindBroken(RuntimeError):
+    """A key file is readable in the working folder, so a judge could see the answers."""
+
+
+def key_hash(key_bytes, salt):
+    """sha256 over the salt and the key's exact bytes: committed in place of the key before judging."""
+    return hashlib.sha256(salt.encode('ascii') + b':' + key_bytes).hexdigest()
+
+
+def unsealed_key_files(out_dir):
+    """Every readable file in `out_dir` outside `sealed/` whose name says it is a key (key*.json and
+    the like); `key.sha256` is the hash, not the key."""
+    found = []
+    for root, dirs, files in os.walk(out_dir):
+        dirs[:] = [d for d in dirs if not (root == out_dir and d == SEALED)]
+        for name in files:
+            low = name.lower()
+            if 'key' in low and low != KEY_HASH and os.access(os.path.join(root, name), os.R_OK):
+                found.append(os.path.join(root, name))
+    return sorted(found)
+
+
+def assert_blind(out_dir):
+    bad = unsealed_key_files(out_dir)
+    if bad:
+        raise BlindBroken('refusing to run: key file(s) readable outside %s/: %s. Move them into %s '
+                          '(tilt_adjudicate.py seal) before judging.' % (SEALED, ', '.join(bad),
+                                                                         os.path.join(out_dir, SEALED)))
+
+
+def write_key(out_dir, key, salt=None):
+    """Write the key to sealed/key.json, the salt beside it, the sealed README, and the salted hash to
+    the working folder. -> the hash."""
+    sealed = os.path.join(out_dir, SEALED)
+    os.makedirs(sealed, exist_ok=True)
+    key_bytes = json.dumps(key, indent=1, sort_keys=True, allow_nan=False).encode('utf-8')
+    salt = salt or secrets.token_hex(16)
+    with open(os.path.join(sealed, 'key.json'), 'wb') as f:
+        f.write(key_bytes)
+    with open(os.path.join(sealed, 'salt.txt'), 'w', encoding='ascii', newline='\n') as f:
+        f.write(salt + '\n')
+    with open(os.path.join(sealed, 'README.md'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write(SEALED_README)
+    digest = key_hash(key_bytes, salt)
+    with open(os.path.join(out_dir, KEY_HASH), 'w', encoding='ascii', newline='\n') as f:
+        f.write(digest + '\n')
+    return digest
+
+
+def read_sealed_key(out_dir):
+    """The key, after checking it against the committed salted hash (only `score` and the study
+    script call this - never `next` or `record`)."""
+    sealed = os.path.join(out_dir, SEALED)
+    with open(os.path.join(sealed, 'key.json'), 'rb') as f:
+        key_bytes = f.read()
+    with open(os.path.join(sealed, 'salt.txt'), encoding='ascii') as f:
+        salt = f.read().strip()
+    with open(os.path.join(out_dir, KEY_HASH), encoding='ascii') as f:
+        expected = f.read().strip()
+    if key_hash(key_bytes, salt) != expected:
+        raise ValueError('sealed key does not match %s' % KEY_HASH)
+    return json.loads(key_bytes.decode('utf-8'))
+
+
+def seal(out_dir, move_verdicts=()):
+    """Migrate a folder written with key.json beside the sheets: seal the key (same content), move the
+    named judges' verdict files into sealed/, write the judge README."""
+    path = os.path.join(out_dir, 'key.json')
+    with open(path, encoding='utf-8') as f:
+        key = json.load(f)
+    write_key(out_dir, key)
+    os.remove(path)
+    for judge in move_verdicts:
+        src = _verdict_path(out_dir, judge)
+        if os.path.exists(src):
+            shutil.move(src, _verdict_path(os.path.join(out_dir, SEALED), judge))
+    write_judge_readme(out_dir)
+
+
+def write_judge_readme(out_dir, shown_out=None):
+    with open(os.path.join(out_dir, 'README.md'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write(JUDGE_README.format(out=shown_out or out_dir.replace(os.sep, '/')))
 
 
 def era_arm(era):
@@ -203,7 +325,8 @@ def _token(seed, uid):
 
 
 def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
-    """Write sheets/<token>.jpg, tasks.json (judge-facing) and key.json (never shown).
+    """Write sheets/<token>.jpg, tasks.json (judge-facing), README.md, key.sha256, and the key itself
+    under sealed/ (never shown to a judge).
 
     A row whose `source` is 'store' takes its three panels from `panel_dir` (cut on the store host by
     tilt_remote_crop.py from crop_jobs' boxes); every other row is cut here from `pano_root`."""
@@ -243,9 +366,10 @@ def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
                       'scrape_era': row['scrape_era'], 'label_type': row['label_type'],
                       'source': row.get('source', 'corpus'),
                       'shifted_any': bool(any(wins[n][0].shifted for n in WINDOW_NAMES))}
-    for name, obj in (('tasks.json', tasks), ('key.json', key)):
-        with open(os.path.join(out_dir, name), 'w', encoding='utf-8', newline='\n') as f:
-            json.dump(obj, f, indent=1, sort_keys=True, allow_nan=False)
+    with open(os.path.join(out_dir, 'tasks.json'), 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(tasks, f, indent=1, sort_keys=True, allow_nan=False)
+    write_key(out_dir, key)
+    write_judge_readme(out_dir)
     return tasks
 
 
@@ -272,6 +396,7 @@ def _tasks(out_dir):
 
 
 def next_unjudged(out_dir, judge):
+    assert_blind(out_dir)
     done = load_verdicts(out_dir, judge)
     for token in sorted(_tasks(out_dir)):
         if token not in done:
@@ -280,6 +405,7 @@ def next_unjudged(out_dir, judge):
 
 
 def record(out_dir, token, choice, judge):
+    assert_blind(out_dir)
     if choice not in CHOICES:
         raise ValueError('choice must be one of %s' % (CHOICES,))
     if token not in _tasks(out_dir):
@@ -342,7 +468,7 @@ def select(args):
                  'fill_city': args.fill_city if args.fill_rawlabels else None}
     draw_info.update(info)
     with open(os.path.join(args.out, 'draw.json'), 'w', encoding='utf-8', newline='\n') as f:
-        json.dump(draw_info, f, indent=1, sort_keys=True)
+        json.dump(draw_info, f, indent=1, sort_keys=True, allow_nan=False)
     print(json.dumps(draw_info, sort_keys=True))
 
 
@@ -373,6 +499,9 @@ def build_parser():
     r.add_argument('--judge', required=True)
     r.add_argument('token')
     r.add_argument('choice', choices=CHOICES)
+    se = sub.add_parser('seal')
+    se.add_argument('--out', required=True)
+    se.add_argument('--move-verdicts', action='append', help='a judge whose verdicts must be sealed too')
     return ap
 
 
@@ -390,9 +519,11 @@ def main(argv=None):
     elif args.cmd == 'record':
         record(args.out, args.token, args.choice, args.judge)
     elif args.cmd == 'score':
-        with open(os.path.join(args.out, 'key.json'), encoding='utf-8') as f:
-            key = json.load(f)
+        key = read_sealed_key(args.out)
         print(json.dumps(score(load_verdicts(args.out, args.judge), key), indent=1, sort_keys=True))
+    elif args.cmd == 'seal':
+        seal(args.out, args.move_verdicts or ())
+        print('sealed %s' % os.path.join(args.out, SEALED))
     return 0
 
 

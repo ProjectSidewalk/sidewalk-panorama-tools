@@ -72,8 +72,9 @@ pose matching the scrape era, stored dims equal to the JPEG's, and |T| >= 4 deg.
 window (`crop_window_width` + `compute_crop_box` + `extract_crop`) three times: at the stored `pano_y`, at
 the rig pixel `pano_y - T h/180` ("leak"), and at `pano_y + T h/180` ("antileak"). All three are the same
 size, and each carries a ring where the label would sit. They are shown side by side as A/B/C in a random
-order. A judge answers which ring sits on the labelled feature, or `none`. The order lives only in `key.json`,
-which the `next`/`record` commands never read. The corpus gave 19 eligible legacy+mid labels and 2 post179
+order. A judge answers which ring sits on the labelled feature, or `none`. The order lives only in
+`sealed/key.json`, which the `next`/`record` commands never read and which they refuse to run beside
+(any key file outside `sealed/` stops them); the working folder carries a salted hash of it instead. The corpus gave 19 eligible legacy+mid labels and 2 post179
 ones, so each arm was topped up to 24 from Seattle's store sample (2,716 and 258 eligible there; 5 and 22
 taken), cut on the store host by `tilt_remote_crop.py` from boxes computed here, and pinned
 pixel-identical to a local cut by a test.
@@ -119,11 +120,36 @@ leak is possible in both eras.
 
 ![two posed corpus panos](figures/2026-09-26-tilt-horizon-examples.jpg)
 
-### C: the labelled feature sits at the rig pixel, not the stored `pano_y` (preliminary)
+### C: the crop endpoint (Jon's adjudication pending)
 
-**The decision-bearing adjudication is Jon's and has not happened yet.** The verdicts below are a
-first pass by the implementing model (claude-opus-5-5), judged blind through the same CLI. They are
-committed as `verdicts_claude-opus-5-5.jsonl` and are **not decision-bearing**.
+**The decision-bearing adjudication is Jon's and has not happened yet.** Jon: read the "How to
+adjudicate" block and stop there; everything after it in this report is results you should not see
+before judging.
+
+**How to adjudicate** (about 30 minutes, from the repo root; nothing prints the key). The same five
+steps are in the folder's own [`README.md`](data/2026-09-26-tilt-adjudication/README.md):
+
+    python reports/scripts/tilt_adjudicate.py next   --out reports/data/2026-09-26-tilt-adjudication --judge jon
+    # open the printed sheet; which ring sits on the labelled feature? then
+    python reports/scripts/tilt_adjudicate.py record --out reports/data/2026-09-26-tilt-adjudication --judge jon <token> A|B|C|none
+    # repeat until `next` prints "all judged"; commit verdicts_jon.jsonl; then re-run tilt_error_study.py analyze
+
+Do not open `sealed/` (the key and the machine's verdicts), the study JSON, or the rest of this report
+until you have committed your verdicts. One sheet, exactly as a judge sees it:
+
+![one adjudication sheet, as the judge sees it](data/2026-09-26-tilt-adjudication/sheets/t082917fa83.jpg)
+
+**On the blind.** The plan said to commit the key only after adjudication. The first version of this PR
+committed it beside the sheets, copied it into a second JSON, and printed the key and the machine verdict
+for 8 sheets in a report figure. The key is now sealed (`sealed/key.json`, with the machine verdicts and
+the hash's salt), the figure is gone, and those 8 sheets are listed in the artifact as
+`exposed_in_figure` and scored apart for every judge. The panel order is still derivable by re-running
+`build_sheets` from the public seed; the blind protects a judge who follows the README.
+
+#### Preliminary machine pass (not decision-bearing)
+
+The verdicts below are a first pass by the implementing model (claude-opus-5-5), recorded through the
+same CLI. They are sealed as `sealed/verdicts_claude-opus-5-5.jsonl` and are **not decision-bearing**.
 
 | arm | n | stored / leak / antileak / none | leak share of decisive answers |
 |---|---|---|---|
@@ -138,16 +164,7 @@ least 90% of *all* n for one window) both arms read `split`, because `none` stay
 curb), where a vertical shift of a few degrees cannot be seen. The forced choice measures a direction and a
 rate, not a slope: any b between roughly 0.5 and 1.5 would pick the leak window.
 
-![example sheets](figures/2026-09-26-tilt-adjudication-sheet.jpg)
 
-**For Jon - how to adjudicate** (about 30 minutes; from the repo root; nothing prints the key):
-
-    python reports/scripts/tilt_adjudicate.py next   --out reports/data/2026-09-26-tilt-adjudication --judge jon
-    # open the printed sheet; then
-    python reports/scripts/tilt_adjudicate.py record --out reports/data/2026-09-26-tilt-adjudication --judge jon <token> A|B|C|none
-    # repeat until `next` prints "all judged"; then re-run tilt_error_study.py analyze and commit verdicts_jon.jsonl
-
-Do not open `key.json` before finishing.
 
 ### S1: the tilt prior, by scrape era (Seattle sample)
 

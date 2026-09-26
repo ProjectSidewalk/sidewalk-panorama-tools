@@ -179,8 +179,8 @@ class TestVerdicts:
 
     def test_c_decisive_share_excludes_none(self):
         a = {'n': 24, 'stored': 2, 'leak': 17, 'antileak': 0, 'none': 5}
-        assert tes.decisive_share(a, 'leak') == pytest.approx(17 / 19)
-        assert tes.decisive_share({'n': 1, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 1}, 'leak') is None
+        assert tes.posthoc_decisive_share(a, 'leak') == pytest.approx(17 / 19)
+        assert tes.posthoc_decisive_share({'n': 1, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 1}, 'leak') is None
 
     def test_c_verdict_rules(self):
         assert tes.c_verdict({'n': 20, 'stored': 18, 'leak': 1, 'antileak': 0, 'none': 1}) == 'stored'

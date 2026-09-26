@@ -1,7 +1,7 @@
 {
  "c_adjudication": {
   "decision_bearing_judge": "jon",
-  "decisive_share": 0.9,
+  "decision_rule_share_of_all_n": 0.9,
   "draw": {
    "drawn_by_arm": {
     "legacy+mid": 24,
@@ -32,26 +32,29 @@
     "post179": 22
    }
   },
+  "exposed_in_figure": [
+   "t03d0af5355",
+   "t082917fa83",
+   "t0a328afad9",
+   "t0bc9196f09",
+   "t0f6bdfeae5",
+   "t16ed4a628d",
+   "t29b6860eda",
+   "t2cef14d740"
+  ],
   "judges": {
    "claude-opus-5-5": {
     "arms": {
      "legacy+mid": {
       "antileak": 0,
-      "decisive_share_leak": 0.8947368421052632,
-      "decisive_share_stored": 0.10526315789473684,
       "leak": 17,
       "n": 24,
       "none": 5,
-      "none_tokens": [
-       "t0f6bdfeae5",
-       "t16ed4a628d",
-       "t894670fdeb",
-       "tb22de54bbc",
-       "td0580a7104"
-      ],
       "p_antileak_vs_third": 1.0000000000000013,
       "p_leak_vs_third": 0.0001928372849334188,
       "p_stored_vs_third": 0.9992277585031751,
+      "posthoc_decisive_share_leak": 0.8947368421052632,
+      "posthoc_decisive_share_stored": 0.10526315789473684,
       "share_antileak": 0.0,
       "share_leak": 0.7083333333333334,
       "share_stored": 0.08333333333333333,
@@ -60,19 +63,14 @@
      },
      "post179": {
       "antileak": 0,
-      "decisive_share_leak": 0.9523809523809523,
-      "decisive_share_stored": 0.047619047619047616,
       "leak": 20,
       "n": 24,
       "none": 3,
-      "none_tokens": [
-       "t3374e29fd7",
-       "t6e2a6f00c7",
-       "t9dcd7ab6c2"
-      ],
       "p_antileak_vs_third": 1.0000000000000013,
       "p_leak_vs_third": 6.633902471195831e-07,
       "p_stored_vs_third": 0.9999405968079378,
+      "posthoc_decisive_share_leak": 0.9523809523809523,
+      "posthoc_decisive_share_stored": 0.047619047619047616,
       "share_antileak": 0.0,
       "share_leak": 0.8333333333333334,
       "share_stored": 0.041666666666666664,
@@ -97,7 +95,21 @@
      }
     },
     "decision_bearing": false,
-    "n": 48
+    "exposed_in_figure": {
+     "antileak": 0,
+     "leak": 6,
+     "n": 8,
+     "none": 2,
+     "stored": 0
+    },
+    "n": 48,
+    "not_exposed": {
+     "antileak": 0,
+     "leak": 31,
+     "n": 40,
+     "none": 6,
+     "stored": 3
+    }
    }
   },
   "n_sheets": 48,
@@ -463,9 +475,21 @@
   }
  },
  "generated_from": {
-  "adjudication": {
-   "file": "2026-09-26-tilt-adjudication.json",
-   "md5": "42ab0e5b6a7515a1999f7a958906a5b2"
+  "adjudication/draw.json": {
+   "file": "2026-09-26-tilt-adjudication/draw.json",
+   "md5": "ccd94a7ee4482a713de151af4b7881de"
+  },
+  "adjudication/key.sha256": {
+   "file": "2026-09-26-tilt-adjudication/key.sha256",
+   "md5": "e7670460ee3c0431fb85a60188ab6047"
+  },
+  "adjudication/sealed/key.json": {
+   "file": "2026-09-26-tilt-adjudication/sealed/key.json",
+   "md5": "ca4aa1afcb4a9ecc7dd292de5fc62f40"
+  },
+  "adjudication/sealed/verdicts_claude-opus-5-5.jsonl": {
+   "file": "2026-09-26-tilt-adjudication/sealed/verdicts_claude-opus-5-5.jsonl",
+   "md5": "061b8ef61983a96c8f21eb96d57affd3"
   },
   "corpus": {
    "file": "2026-08-12-crop-corpus-gsv.csv.gz",

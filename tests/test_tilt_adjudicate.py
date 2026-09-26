@@ -3,8 +3,11 @@ three-way forced choice between the production crop window centred at the stored
 window where the #4784 leak would put the feature (the rig pixel, y - T(b)*h/180 in F1's measured
 sign), and its mirror (y + T(b)*h/180)."""
 
+import builtins
+import hashlib
 import json
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -23,6 +26,8 @@ import tilt_adjudicate as ta  # noqa: E402
 import tilt_geometry as tg  # noqa: E402
 
 W, H = 2048, 1024
+ADJ_DIR = os.path.join(REPO_ROOT, 'reports', 'data', '2026-09-26-tilt-adjudication')
+REPORT_MD = os.path.join(REPO_ROOT, 'reports', '2026-09-26-tilt-error-study.md')
 
 
 def _label(uid, pano_id, pano_x, pano_y, label_type='CurbRamp', era='post179', measurable=True, tags='[]'):
@@ -82,10 +87,10 @@ def test_order_is_random_per_label_and_kept_only_in_the_key(tmp_path):
         for lab in labels:
             assert str(lab['label_id']) not in name and lab['pano_id'] not in name
     tasks = json.load(open(out / 'tasks.json', encoding='utf-8'))
-    blob = json.dumps(tasks)
-    for forbidden in ('order', 'pano_y', 'T_deg', 'pitch', 'roll', 'label_uid', 'stored', 'leak'):
-        assert forbidden not in blob
-    key = json.load(open(out / 'key.json', encoding='utf-8'))
+    for t in tasks.values():
+        assert set(t) == {'label_type', 'tags'}          # a whitelist: an order leaked as indices fails
+    assert not (out / 'key.json').exists()
+    key = json.load(open(out / 'sealed' / 'key.json', encoding='utf-8'))
     orders = {tuple(v['order']) for v in key.values()}
     assert len(orders) >= 3
     for v in key.values():
@@ -220,7 +225,7 @@ def test_remote_panels_make_the_same_sheet_as_a_local_cut(tmp_path):
         b = np.asarray(Image.open(remote / 'sheets' / name), dtype=int)
         assert np.abs(a - b).max() <= 2        # identical panels; only JPEG re-encode noise
     strip = lambda key: {t: {k: v for k, v in e.items() if k != 'source'} for t, e in key.items()}  # noqa: E731
-    assert strip(json.load(open(local / 'key.json'))) == strip(json.load(open(remote / 'key.json')))
+    assert strip(ta.read_sealed_key(str(local))) == strip(ta.read_sealed_key(str(remote)))
 
 
 def test_draw_with_fill_tops_up_each_arm_from_the_fill_pool():
@@ -233,3 +238,132 @@ def test_draw_with_fill_tops_up_each_arm_from_the_fill_pool():
     assert sel['label_uid'].is_unique
     assert (sel['source'] == 'corpus').sum() == 22
     assert info['from_fill'] == {'legacy+mid': 4, 'post179': 22}
+
+
+# ---- the blind (#158 review item 1) -------------------------------------------------------------
+
+def test_next_and_record_never_open_the_key(tmp_path, monkeypatch):
+    """Walks the whole queue with open() guarded: the judge path must never read a key file, and must
+    serve tokens in sorted order (a `next` that read the key could serve leak-first sheets first)."""
+    _, out = _synthetic_run(tmp_path, n=3)
+    real_open = builtins.open
+
+    def guarded(path, *a, **k):
+        assert 'key' not in os.path.basename(str(path)).replace('key.sha256', ''), \
+            'the judge path opened %s' % path
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(builtins, 'open', guarded)
+    seen = []
+    while True:
+        t = ta.next_unjudged(str(out), 'j')
+        if t is None:
+            break
+        seen.append(t)
+        ta.record(str(out), t, 'A', 'j')
+    monkeypatch.setattr(builtins, 'open', real_open)
+    assert seen == sorted(json.load(open(out / 'tasks.json', encoding='utf-8')))
+
+
+@pytest.mark.parametrize('where', ['key.json', 'old/key.json', 'KEY-backup.json', 'sheets/key.json'])
+def test_next_and_record_refuse_while_a_key_is_readable(tmp_path, where):
+    _, out = _synthetic_run(tmp_path, n=2)
+    token = ta.next_unjudged(str(out), 'j')                 # sealed: runs
+    stray = out / where
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(out / 'sealed' / 'key.json', stray)
+    with pytest.raises(ta.BlindBroken):
+        ta.next_unjudged(str(out), 'j')
+    with pytest.raises(ta.BlindBroken):
+        ta.record(str(out), token, 'A', 'j')
+    assert ta.load_verdicts(str(out), 'j') == {}             # nothing was recorded
+    stray.unlink()
+    assert ta.next_unjudged(str(out), 'j') == token
+
+
+def test_the_cli_refuses_too(tmp_path, capsys):
+    _, out = _synthetic_run(tmp_path, n=2)
+    shutil.copyfile(out / 'sealed' / 'key.json', out / 'key.json')
+    with pytest.raises(ta.BlindBroken):
+        ta.main(['next', '--out', str(out), '--judge', 'j'])
+
+
+def test_a_later_record_supersedes(tmp_path):
+    _, out = _synthetic_run(tmp_path, n=2)
+    t = ta.next_unjudged(str(out), 'j')
+    ta.record(str(out), t, 'A', 'j')
+    ta.record(str(out), t, 'none', 'j')
+    assert ta.load_verdicts(str(out), 'j') == {t: 'none'}
+
+
+def test_the_sealed_key_is_checked_against_its_hash(tmp_path):
+    _, out = _synthetic_run(tmp_path, n=2)
+    key = ta.read_sealed_key(str(out))
+    token = sorted(key)[0]
+    key[token]['order'] = key[token]['order'][::-1]
+    with open(out / 'sealed' / 'key.json', 'w', encoding='utf-8') as f:
+        json.dump(key, f, indent=1, sort_keys=True)
+    with pytest.raises(ValueError):
+        ta.read_sealed_key(str(out))
+
+
+def test_seal_migrates_an_old_folder(tmp_path):
+    """A folder written before sealing (key.json and a judge's verdicts beside the sheets)."""
+    _, out = _synthetic_run(tmp_path, n=2)
+    key = ta.read_sealed_key(str(out))
+    shutil.rmtree(out / 'sealed')
+    (out / ta.KEY_HASH).unlink()
+    with open(out / 'key.json', 'w', encoding='utf-8') as f:
+        json.dump(key, f)
+    with open(out / 'verdicts_m.jsonl', 'w', encoding='utf-8') as f:
+        f.write(json.dumps({'token': sorted(key)[0], 'choice': 'A', 'judge': 'm'}) + '\n')
+    ta.main(['seal', '--out', str(out), '--move-verdicts', 'm'])
+    assert not (out / 'key.json').exists() and not (out / 'verdicts_m.jsonl').exists()
+    assert ta.read_sealed_key(str(out)) == key
+    assert ta.load_verdicts(str(out / 'sealed'), 'm') == {sorted(key)[0]: 'A'}
+    ta.next_unjudged(str(out), 'jon')
+
+
+class TestTheCommittedFolder:
+    """The folder Jon judges in, as committed."""
+
+    def test_no_key_outside_sealed(self):
+        assert ta.unsealed_key_files(ADJ_DIR) == []
+        assert not os.path.exists(os.path.join(REPO_ROOT, 'reports', 'data', '2026-09-26-tilt-adjudication.json'))
+
+    def test_the_hash_matches_the_sealed_key(self):
+        """Reads only the committed hash, the sealed salt and the sealed key's bytes."""
+        with open(os.path.join(ADJ_DIR, ta.KEY_HASH), encoding='ascii') as f:
+            expected = f.read().strip()
+        with open(os.path.join(ADJ_DIR, 'sealed', 'salt.txt'), encoding='ascii') as f:
+            salt = f.read().strip()
+        with open(os.path.join(ADJ_DIR, 'sealed', 'key.json'), 'rb') as f:
+            key_bytes = f.read()
+        assert len(expected) == 64 and len(salt) == 32
+        assert hashlib.sha256(salt.encode('ascii') + b':' + key_bytes).hexdigest() == expected
+        assert len(ta.read_sealed_key(ADJ_DIR)) == 48    # and the module's own check agrees
+
+    def test_the_readmes(self):
+        with open(os.path.join(ADJ_DIR, 'README.md'), encoding='utf-8') as f:
+            judge = f.read()
+        assert judge == ta.JUDGE_README.format(out='reports/data/2026-09-26-tilt-adjudication')
+        assert 'nothing else in this folder' in judge.splitlines()[0]
+        with open(os.path.join(ADJ_DIR, 'sealed', 'README.md'), encoding='utf-8') as f:
+            assert f.readline().strip() == 'Do not open until you have recorded all 48 verdicts.'
+
+    def test_the_machine_verdicts_are_sealed(self):
+        assert not [n for n in os.listdir(ADJ_DIR) if n.startswith('verdicts_')]
+        assert len(ta.load_verdicts(os.path.join(ADJ_DIR, 'sealed'), 'claude-opus-5-5')) == 48
+
+    def test_tasks_json_is_a_whitelist(self):
+        with open(os.path.join(ADJ_DIR, 'tasks.json'), encoding='utf-8') as f:
+            tasks = json.load(f)
+        assert len(tasks) == 48 == len(os.listdir(os.path.join(ADJ_DIR, 'sheets')))
+        for t in tasks.values():
+            assert set(t) == {'label_type', 'tags'}
+
+    def test_the_report_prints_no_key_and_its_results_follow_the_instructions(self):
+        with open(REPORT_MD, encoding='utf-8') as f:
+            text = f.read()
+        assert 'key:' not in text and 'A=leak' not in text and 'adjudication-sheet.jpg' not in text
+        assert text.index('How to adjudicate') < text.index('Preliminary machine pass')
