@@ -377,6 +377,50 @@ class TestStudyLogic:
         crop_sizing_v2.render_examples([example], str(tmp_path / 'g.jpg'))
         assert 'v1: 200 px square' in captions[-1] and 'v2: 180x120 px' in captions[-1]
 
+    def test_the_generic_caption_takes_the_angle_on_the_azimuth_axis(self, tmp_path, monkeypatch):
+        """A window width is horizontal, so its angle is azimuthal. The test above uses a 2:1 pano,
+        where the two axes agree; a square one tells them apart (#157 final review)."""
+        from PIL import Image, ImageDraw
+        import crop_sizing_v2
+        pano = tmp_path / 'p.jpg'
+        Image.new('RGB', (2048, 2048), (90, 90, 90)).save(pano)
+        example = dict(ramp(depression=12.0, pano_h=2048), pano_w=2048, city='c',
+                       pano_id='abcdefghijklmnop', pano_path=str(pano), v2=(900, 900, 180, 120),
+                       v3=(880, 900, 240, 160))
+        captions = []
+        real_text = ImageDraw.ImageDraw.text
+        monkeypatch.setattr(ImageDraw.ImageDraw, 'text',
+                            lambda self, xy, text, *a, **k: (captions.append(text),
+                                                             real_text(self, xy, text, *a, **k)))
+        crop_sizing_v2.render_examples([example], str(tmp_path / 'f.jpg'), rules=('v2', 'v3'))
+        assert '%.1f deg' % CropRunner.azimuth_px_to_deg(240, 2048) in captions[-1]
+
+    def test_figure_examples_put_the_v3_window_beside_the_v2_one(self, monkeypatch):
+        """Without this only the RAMPNET_ROOT-gated reproduction could see a v3 slot filled with the v2
+        window, and CI does not set RAMPNET_ROOT."""
+        example = dict(ramp(depression=4.0, box_w=300.0), city='c')
+        monkeypatch.setattr(csv3, 'pick_examples', lambda by_city, bundles: [dict(example)])
+        out = csv3.figure_examples({}, {})
+        assert out[0]['v3'] == tuple(csv3.window_for(example, rule='v3'))[:4]
+        assert out[0]['v3'] != out[0]['v2']
+
+    def test_the_figure_examples_key_is_claimed(self, monkeypatch):
+        """populations() was otherwise checked only against the committed JSON it produced, and the
+        synthetic main() run above writes no figure, so has no figure_examples key to claim."""
+        monkeypatch.setattr(csv3, 'production_block', lambda w: {})
+        monkeypatch.setattr(csv3, 'rampnet_commit', lambda p: None)
+        ramps = [dict(ramp(depression=d, box_w=100 + 12 * d), city='c')
+                 for d in (1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0)]
+        summary = csv3.build_summary({'c': ramps}, {'c': '/x'}, [], examples=[
+            dict(ramps[0], v2=(0, 0, 200, 133), v3=(0, 0, 220, 147))])
+        assert 'figure_examples' in summary['populations']['gold']['covers']
+        assert_every_key_is_claimed_once(summary)
+
+    def test_canonical_command_relativises_the_figure_too(self):
+        command = csv3.canonical_command(
+            ['--figure', os.path.join(csv3.REPO_ROOT, 'reports', 'figures', 'f.jpg')], {})
+        assert command.endswith('--figure reports/figures/f.jpg')
+
 
 def assert_every_key_is_claimed_once(summary):
     """Every top-level key is computed on exactly one named population, or declared to be on none."""

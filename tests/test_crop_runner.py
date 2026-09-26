@@ -2801,10 +2801,13 @@ class TestTheMarkerKeepsItsHistory:
     warning fires on every run whose rule is not the only one the store has seen.
     """
 
-    def test_the_two_run_transcript_keeps_both_rules_and_warns_both_times(self, crop_runner, tmp_path,
-                                                                          caplog, capsys):
+    def test_the_transcript_keeps_both_rules_and_warns_on_every_run(self, crop_runner, tmp_path,
+                                                                     caplog, capsys):
+        """Three v3 runs, not two: on the second, previous_crop_rule_version still names v2, so a
+        history seeded from the top-level keys alone - ignoring the stored rules_seen - passes. By the
+        third, previous is v3 and only rules_seen remembers the v2 crops (#157 final review)."""
         crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
-        for run in (1, 2):
+        for run in (1, 2, 3):
             capsys.readouterr()
             caplog.clear()
             with caplog.at_level(logging.WARNING):
@@ -2868,7 +2871,10 @@ class TestTheMarkerKeepsItsHistory:
         assert seen == [6.4, crop_runner.V3_CONTEXT_WIDTH_M]
 
     @pytest.mark.parametrize('content', ['{not json', '[]', '"v2"', '{"rules_seen": "v2"}',
-                                         '{"constants_seen": []}'])
+                                         '{"constants_seen": []}',
+                                         '{"constants_seen": {"v2": {"crop_size_scale": 2.5}}}',
+                                         '{"constants_seen": {"v2": []}}',
+                                         '{"rules_seen": ["v2", 3]}'])
     def test_an_unreadable_marker_warns_and_is_kept(self, crop_runner, tmp_path, caplog, capsys, content):
         """Provenance destroyed must not read as a clean store: warn on both channels, record the prior
         rule as unknown for good, and keep the bytes rather than overwrite them."""
@@ -2889,6 +2895,15 @@ class TestTheMarkerKeepsItsHistory:
         with caplog.at_level(logging.WARNING):
             crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
         assert 'cut under sizing rule unknown and this run uses v3' in caplog.text
+
+    def test_the_unreadable_run_warns_once_not_twice(self, crop_runner, tmp_path, caplog):
+        """On the run that finds the marker unreadable, 'unknown' is this run's own finding and is
+        already warned; a second 'cut under sizing rule unknown' line on the same run is noise."""
+        (tmp_path / crop_runner.CROP_RULE_MARKER).write_text('{bad', encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        assert 'could not be read' in caplog.text
+        assert 'cut under sizing rule unknown' not in caplog.text
 
     def test_a_kept_name_already_taken_is_not_overwritten(self, crop_runner, tmp_path, monkeypatch):
         """Two unreadable markers inside one clock tick must not overwrite each other's kept copy."""
