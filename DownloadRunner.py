@@ -1204,6 +1204,8 @@ def _resolve_store_mode(parser, args):
     try:
         settings = store_sftp.resolve_settings(args.from_store, host=args.sftp_host, base=args.sftp_base,
                                                user=args.sftp_user, port=args.sftp_port, key=args.sftp_key)
+        # Here, not first inside the phase: there it is a traceback after the storage dir and scrape.log exist.
+        store_sftp.check_storage_path(args.s)
     except ValueError as e:
         parser.error(str(e))
     for attr, flag, default in _DEPTH_ONLY_FLAGS:

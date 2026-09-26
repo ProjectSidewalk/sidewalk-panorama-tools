@@ -206,14 +206,23 @@ def local_final_path(storage_path, pano_id, suffix):
     return os.path.join(os.path.abspath(storage_path), pano_id[:2], pano_id + suffix)
 
 
+def check_storage_path(storage_path):
+    """Raise ValueError if the local storage path cannot be written into a double-quoted batch argument.
+
+    DownloadRunner calls this while parsing arguments, so the refusal is a usage error before the storage dir
+    or scrape.log exists; build_batch calls it again as the backstop for any other caller.
+    """
+    if any(c in str(storage_path) for c in _UNQUOTABLE):
+        raise ValueError("the storage path contains a quote or a line break, which the sftp batch cannot "
+                         "express")
+
+
 def build_batch(settings, storage_path, pano_ids, suffix):
     """The batch text for one session: an unprefixed `cd` probe, then one `-get` per id. See the module
     docstring for why each prefix is what it is. Every path is double-quoted; each remote path is relative to
     the probed directory (see remote_path) and each local one is absolute, the `<final>.part` that
     atomic_output_path(<final>) yields. No user, host, port or key appears."""
-    if any(c in str(storage_path) for c in _UNQUOTABLE):
-        raise ValueError("the storage path contains a quote or a line break, which the sftp batch cannot "
-                         "express")
+    check_storage_path(storage_path)
     # posixpath, not '%s/%s' and not os.path: the remote is POSIX whatever this host is, and a chroot base
     # of '/' must probe "/<city>", not "//<city>".
     lines = ['cd "%s"' % posixpath.join(settings.base, settings.remote_city)]

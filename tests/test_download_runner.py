@@ -2926,6 +2926,19 @@ class TestStoreModeCli:
         assert '--from-store' in err and 'not a store city id' in err
         assert not (tmp_path / 'storage').exists()
 
+    def test_a_storage_path_the_batch_cannot_quote_is_a_usage_error(self, monkeypatch, tmp_path, capsys):
+        """Refused at parse time, before the storage dir or scrape.log exists - not as a traceback from inside
+        the phase, which is where build_batch would otherwise raise (#155 review item 20)."""
+        monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
+        monkeypatch.setenv('PS_SFTP_BASE', '/panos')
+        storage = str(tmp_path / 'bad') + '"store'
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', storage, '-c', self.csv(tmp_path),
+                                 '--from-store', STORE_CITY])
+        assert e.value.code == 2
+        assert 'storage path' in capsys.readouterr().err
+        assert not os.path.exists(storage) and not (tmp_path / 'bad').exists()
+
     def test_a_bad_port_is_a_usage_error(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
         monkeypatch.setenv('PS_SFTP_BASE', '/panos')
