@@ -133,14 +133,20 @@ def _ci(ci):
 def fit_two_coefficient(y, x_p, x_r, cluster):
     """OLS y = b_p x_p + b_r x_r (no intercept: every quantity here flips sign with the plane
     normal's arbitrary orientation, so an intercept would not be invariant), CR1 cluster-robust
-    standard errors by `cluster`, normal-approximation 95% CIs (clusters number in the hundreds)."""
+    standard errors by `cluster`, normal-approximation 95% CIs (clusters number in the hundreds).
+    None when there are no more usable rows than coefficients, or X'X is singular: no fit exists."""
     y = np.asarray(y, float)
     X = np.column_stack([np.asarray(x_p, float), np.asarray(x_r, float)])
     cl = np.asarray(cluster)
     ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1)
     y, X, cl = y[ok], X[ok], cl[ok]
     n, k = X.shape
-    xtx_inv = np.linalg.inv(X.T @ X)
+    if n <= k:
+        return None
+    try:
+        xtx_inv = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        return None
     beta = xtx_inv @ X.T @ y
     u = y - X @ beta
     groups, inv = np.unique(cl, return_inverse=True)
@@ -250,6 +256,8 @@ def tile_frame_fit(lean, pose, n_boot=N_BOOT):
     xp = _demean(-m['pitch_deg'].to_numpy(float) * np.sin(c), key)
     xr = _demean(m['roll_deg'].to_numpy(float) * np.cos(c), key)
     raw = fit_two_coefficient(y, xp, xr, key)
+    if raw is None:                                  # no posed rows (or too few): the caller skips the arm
+        return {'raw': None, 'n_panos': int(key.nunique())}
     a_p, n_ap = calibration_slope(lean, 'cal_pitch')
     a_r, n_ar = calibration_slope(lean, 'cal_roll')
     out = {'raw': raw, 'n_panos': int(key.nunique()), 'a_pitch': a_p, 'a_pitch_n_panos': n_ap,
@@ -403,7 +411,9 @@ def _alt_name(sp, sr, swap):
 
 
 def xml_npz_convention(overlap):
-    """Score the eight sign/axis readings of the xml triple against the npz pose on panos with both."""
+    """Score the eight sign/axis readings of the xml triple against the npz pose on panos with both.
+    A NaN anywhere makes every median NaN, and min() over NaNs returns whichever reading came first, so
+    then `best` is None with `best_undecided_reason` rather than an arbitrary reading."""
     m = overlap['xml_tilt_pitch_deg'].to_numpy(float)
     d = np.radians(overlap['xml_tilt_yaw_deg'].to_numpy(float) - overlap['xml_pano_yaw_deg'].to_numpy(float))
     P, R = overlap['pitch_deg'].to_numpy(float), overlap['roll_deg'].to_numpy(float)
@@ -412,19 +422,24 @@ def xml_npz_convention(overlap):
         cs, sn = (np.sin(d), np.cos(d)) if swap else (np.cos(d), np.sin(d))
         alts[_alt_name(sp, sr, swap)] = (float(np.median(np.abs(sp * m * cs - P))),
                                          float(np.median(np.abs(sr * m * sn - R))))
-    best = min(alts, key=lambda k: sum(alts[k]))
+    finite = all(np.isfinite(v).all() for v in alts.values())
+    best = min(alts, key=lambda k: sum(alts[k])) if finite else None
     xp, xr = tg.xml_tilt_to_pitch_roll(overlap['xml_pano_yaw_deg'], overlap['xml_tilt_yaw_deg'],
                                        overlap['xml_tilt_pitch_deg'])
     vec = np.hypot(np.asarray(xp) - P, np.asarray(xr) - R)
     others = [max(v) for k, v in alts.items() if k != best]
-    return {'n_overlap': int(len(overlap)), 'best': best, 'min_miss_of_other_readings_deg': num(min(others)),
-            'alternatives': {k: {'median_abs_dpitch_deg': num(v[0]), 'median_abs_droll_deg': num(v[1])}
-                             for k, v in alts.items()},
-            'median_abs_dpitch_deg': num(np.median(np.abs(np.asarray(xp) - P))),
-            'median_abs_droll_deg': num(np.median(np.abs(np.asarray(xr) - R))),
-            'p90_vector_diff_deg': num(np.percentile(vec, 90)),
-            'share_vector_diff_over_1deg': num(np.mean(vec > 1.0)),
-            'n_vector_diff_over_1deg': int(np.sum(vec > 1.0))}
+    out = {'n_overlap': int(len(overlap)), 'best': best,
+           'min_miss_of_other_readings_deg': num(min(others)) if finite else None}
+    out.update({'alternatives': {k: {'median_abs_dpitch_deg': num(v[0]), 'median_abs_droll_deg': num(v[1])}
+                                 for k, v in alts.items()},
+                'median_abs_dpitch_deg': num(np.median(np.abs(np.asarray(xp) - P))),
+                'median_abs_droll_deg': num(np.median(np.abs(np.asarray(xr) - R))),
+                'p90_vector_diff_deg': num(np.percentile(vec, 90)),
+                'share_vector_diff_over_1deg': num(np.mean(vec > 1.0)),
+                'n_vector_diff_over_1deg': int(np.sum(vec > 1.0))})
+    if not finite:
+        out['best_undecided_reason'] = 'a NaN pose or xml value makes a median NaN, so no reading can be ranked'
+    return out
 
 
 def ps_camera_pitch_check(corpus, pose_att):
@@ -648,12 +663,15 @@ def report_numbers(s):
         for arm, a in j['arms'].items():
             out['c.%s.%s' % (judge, arm)] = '| %s | %d | %d / %d / %d / %d | %s | %s |' % (
                 arm, a['n'], a['stored'], a['leak'], a['antileak'], a['none'], a['verdict'],
-                fmt(100 * a['posthoc_decisive_share_leak'], '.0f') + '%')
+                'n/a' if a['posthoc_decisive_share_leak'] is None     # every verdict in the arm was `none`
+                else fmt(100 * a['posthoc_decisive_share_leak'], '.0f') + '%')
         e, u = j['exposed_in_figure'], j['not_exposed']
         out['c.%s.exposed' % judge] = 'the %d exposed sheets: %d / %d / %d / %d; the other %d: %d / %d / %d / %d' % (
             e['n'], e['stored'], e['leak'], e['antileak'], e['none'], u['n'], u['stored'], u['leak'], u['antileak'],
             u['none'])
         w = j['post179_without_xml_posed']
+        if w is None:                                    # an artifact written before score_judge zero-filled it
+            continue
         out['c.%s.post179_noxml' % judge] = 'without them the post179 arm reads %d / %d / %d / %d of %d' % (
             w['stored'], w['leak'], w['antileak'], w['none'], w['n'])
     s4 = s['s4_extent_gold']
@@ -788,10 +806,8 @@ def score_judge(verdicts, key, exposed=EXPOSED_IN_FIGURE):
         d['leak_vs_antileak_p'] = sign_test(d['leak'], d['antileak'])['p_one_sided']
     xml_post = sorted(t for t, k in key.items() if k['era_arm'] == 'post179' and k['scrape_era'] == 'xml')
     post = {t: c for t, c in verdicts.items() if key[t]['era_arm'] == 'post179' and t not in xml_post}
-    j['post179_without_xml_posed'] = tilt_adjudicate.score(post, key)['arms'].get('post179')
-    if j['post179_without_xml_posed']:
-        j['post179_without_xml_posed'] = {k: v for k, v in j['post179_without_xml_posed'].items()
-                                          if k in ('n', 'stored', 'leak', 'antileak', 'none')}
+    p179 = tilt_adjudicate.score(post, key)['arms'].get('post179') or {}
+    j['post179_without_xml_posed'] = {k: p179.get(k, 0) for k in ('n', 'stored', 'leak', 'antileak', 'none')}
     for part, keep in (('exposed_in_figure', True), ('not_exposed', False)):
         sub = {t: c for t, c in verdicts.items() if (t in exposed) == keep}
         counts = {'n': 0, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 0}
@@ -868,7 +884,7 @@ def analyze(args):
             if src == 'store':
                 sub_pose = sub_pose[sub_pose['pano_id'].isin(g['pano_id'])]
             fit = tile_frame_fit(g, sub_pose)
-            if fit['n_panos'] == 0:
+            if fit['n_panos'] == 0 or fit['raw'] is None:
                 continue
             name = '%s_%s' % (arm_name, era)
             mag = np.hypot(sub_pose['pitch_deg'].to_numpy(float), sub_pose['roll_deg'].to_numpy(float))

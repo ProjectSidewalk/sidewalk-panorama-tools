@@ -545,7 +545,8 @@ def _json_diffs(a, b, path='', rel=1e-9):
             return [path]
         return [d for i, (x, y) in enumerate(zip(a, b)) for d in _json_diffs(x, y, '%s/%d' % (path, i), rel)]
     if isinstance(a, float) or isinstance(b, float):
-        ok = (isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool)
+        ok = (isinstance(a, (int, float)) and isinstance(b, (int, float))
+              and not isinstance(a, bool) and not isinstance(b, bool)
               and abs(a - b) <= rel * max(abs(a), abs(b), 1e-300))
         return [] if ok else [path]
     return [] if a == b else [path]
@@ -722,3 +723,53 @@ def test_the_artifact_records_how_its_bootstrap_was_drawn(summary):
     b = summary['populations']['lean_panos']['bootstrap']
     assert b['n_boot'] == tes.N_BOOT == 1000 and b['seed'] == tes.BOOT_SEED == 20260926
     assert b['resampling_unit'].startswith('pano')
+
+
+# ---- Gemini 3.1 Pro follow-up (#158): degenerate inputs yield None, not a crash --------------------
+
+class TestDegenerateInputs:
+    def test_the_fit_is_none_without_more_rows_than_coefficients(self):
+        assert tes.fit_two_coefficient([], [], [], []) is None
+        assert tes.fit_two_coefficient([1.0], [1.0], [2.0], ['a']) is None
+        assert tes.fit_two_coefficient([1.0, 2.0, 3.0], [0.0] * 3, [0.0] * 3, ['a', 'b', 'c']) is None   # singular
+
+    def test_an_arm_with_no_posed_panos_reaches_the_n_panos_guard(self):
+        lean, pose = _synthetic_lean(1.0)
+        pose = pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'})
+        fit = tes.tile_frame_fit(lean, pose.iloc[0:0], n_boot=0)
+        assert fit['n_panos'] == 0 and fit['raw'] is None
+
+    def test_a_nan_pose_leaves_the_convention_undecided(self):
+        rng = np.random.default_rng(4)
+        yaw, tyaw, m = rng.uniform(0, 360, 50), rng.uniform(0, 360, 50), rng.uniform(0.5, 6, 50)
+        p, r = tg.xml_tilt_to_pitch_roll(yaw, tyaw, m)
+        overlap = pd.DataFrame({'xml_pano_yaw_deg': yaw, 'xml_tilt_yaw_deg': tyaw, 'xml_tilt_pitch_deg': m,
+                                'pitch_deg': p, 'roll_deg': r})
+        overlap.loc[3, 'pitch_deg'] = np.nan
+        s2 = tes.xml_npz_convention(overlap)
+        assert s2['best'] is None and 'NaN' in s2['best_undecided_reason']
+        assert 'best_undecided_reason' not in tes.xml_npz_convention(overlap.dropna())
+
+    def test_no_post179_non_xml_verdict_is_a_zero_row(self):
+        order = ['leak', 'stored', 'antileak']
+        key = {'t1': dict(order=order, era_arm='legacy+mid', T_deg=5.0, scrape_era='modern')}
+        j = tes.score_judge({'t1': 'A'}, key, exposed=())
+        assert j['post179_without_xml_posed'] == {'n': 0, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 0}
+
+    def test_report_numbers_survive_an_all_none_arm_and_a_missing_row(self, summary):
+        s = json.loads(json.dumps(summary))
+        j = next(iter(s['c_adjudication']['judges'].values()))
+        arm = next(iter(j['arms']))
+        j['arms'][arm]['posthoc_decisive_share_leak'] = None
+        j['post179_without_xml_posed'] = None
+        judge = next(iter(s['c_adjudication']['judges']))
+        out = tes.report_numbers(s)
+        assert out['c.%s.%s' % (judge, arm)].endswith('| n/a |')
+        assert 'c.%s.post179_noxml' % judge not in out
+
+
+def test_the_comparison_does_not_take_a_bool_for_a_float():
+    assert _json_diffs({'x': 1.0}, {'x': True}) == ['x']
+    assert _json_diffs({'x': 0.0}, {'x': False}) == ['x']
+    assert _json_diffs({'x': True}, {'x': 1.0}) == ['x']
+    assert _json_diffs({'x': 1}, {'x': 1.0}) == []
