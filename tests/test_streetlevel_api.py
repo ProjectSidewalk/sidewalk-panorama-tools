@@ -237,6 +237,111 @@ def test_fetch_seam_raises_on_an_unrecognized_envelope(monkeypatch):
         gsv._fetch_pano_with_depth_planes('testPanoIdAbCdEfGhIj_-', object())
 
 
+# --- the image phase's photometa read (#74) ------------------------------------------------------------------
+#
+# Since #74 the image phase asks photometa, WITHOUT the depth payload, which zoom levels a pano is served at
+# (gsv._fetch_image_levels), instead of probing two tiles. The levels are read in-repo, like everything else the
+# depth seam reads, so what is pinned here is that our reading and streetlevel's parse agree on the same msg -
+# a moved path or a flipped [h, w] order must fail both readings together, not drift one away from the other.
+
+def _levels_msg(image_sizes_wire, tile_size_wire=(512, 512)):
+    """A photometa msg carrying only what parse_panorama_message needs to get through, plus msg[2][3]."""
+    return [
+        [1],
+        [None, 'testPanoIdAbCdEfGhIj_-'],
+        [None, None, None, [image_sizes_wire, list(tile_size_wire)]],
+        [], [],
+        [[None, [[None, None, 37.774, -122.419], [12.5], [180.0, 90.0, 0.0]], None, [], None, None]],
+        [],
+    ]
+
+
+def test_panorama_still_exposes_image_sizes_and_tile_size():
+    """What _image_levels_from_msg mirrors. Held on 0.12.10 (this box) and the >=0.12.11 requirements pin
+    alike: the two fields and Size's x/y names are identical across both."""
+    from streetlevel.dataclasses import Size
+
+    fields = {f.name for f in dataclasses.fields(panorama.StreetViewPanorama)}
+    assert {'image_sizes', 'tile_size'} <= fields, "streetlevel changed StreetViewPanorama's fields"
+    assert {f.name for f in dataclasses.fields(Size)} >= {'x', 'y'}
+
+
+def test_our_levels_reading_agrees_with_streetlevels_parser():
+    """The wire stores each level as [[height, width]]. A non-square level is what makes a swapped reading
+    visible - on a 1:1 level the two orders agree and nothing would fail."""
+    from streetlevel.dataclasses import Size
+    from streetlevel.streetview import parse
+
+    msg = _levels_msg([[[256, 512]], [[512, 1024]]])
+
+    theirs = parse.parse_panorama_message(msg)
+    ours = gsv._image_levels_from_msg(msg)
+
+    assert theirs.image_sizes == [Size(512, 256), Size(1024, 512)]
+    assert theirs.tile_size == Size(512, 512)
+    assert ours == gsv.ImageLevels([(512, 256), (1024, 512)], (512, 512))
+    assert [(s.x, s.y) for s in theirs.image_sizes] == list(ours.sizes)
+    assert (theirs.tile_size.x, theirs.tile_size.y) == tuple(ours.tile_size)
+
+
+def test_image_levels_seam_calls_the_api_without_depth(monkeypatch):
+    """download_depth=False is a 16 KB answer where True is 370 KB (measured 2026-09-26) carrying the same
+    msg[2][3]; the image phase has no use for the depth payload."""
+    captured = {}
+
+    def fake_api_find(panoid, download_depth=False, locale='en', session=None):
+        captured.update(panoid=panoid, download_depth=download_depth, locale=locale, session=session)
+        return [None, [_levels_msg([[[208, 416]], [[416, 832]]])]]
+
+    monkeypatch.setattr(api, 'find_panorama_by_id', fake_api_find)
+    sentinel_session = object()
+
+    levels = gsv._fetch_image_levels('testPanoIdAbCdEfGhIj_-', sentinel_session)
+
+    assert captured == {'panoid': 'testPanoIdAbCdEfGhIj_-', 'download_depth': False, 'locale': 'en',
+                        'session': sentinel_session}
+    assert levels == gsv.ImageLevels([(416, 208), (832, 416)], (512, 512))
+
+
+def test_image_levels_seam_returns_none_when_the_pano_is_gone(monkeypatch):
+    """Response code 2 with no msg[2] - the measured answer for a retired pano (2026-09-26, 74 bytes)."""
+    monkeypatch.setattr(api, 'find_panorama_by_id', lambda *args, **kwargs: [None, [[[2]]]])
+
+    assert gsv._fetch_image_levels('testPanoIdAbCdEfGhIj_-', object()) is None
+
+
+def test_image_levels_seam_raises_on_an_unrecognized_envelope(monkeypatch):
+    """A quota page that parsed must be neither "gone" (which the caller turns into the probe's permanent
+    verdict path) nor levels."""
+    monkeypatch.setattr(api, 'find_panorama_by_id', lambda *args, **kwargs: {'error': 'quota exceeded'})
+
+    with pytest.raises(gsv.DepthPayloadError):
+        gsv._fetch_image_levels('testPanoIdAbCdEfGhIj_-', object())
+
+
+def test_the_depth_and_image_seams_share_one_envelope_check(monkeypatch):
+    """Both photometa callers must refuse the same shapes; one extracted check is how that stays true."""
+    seen = []
+
+    def recorder(response, pano_id):
+        seen.append(pano_id)
+        return None
+
+    monkeypatch.setattr(gsv, '_photometa_msg', recorder)
+    monkeypatch.setattr(api, 'find_panorama_by_id', lambda *args, **kwargs: [None, [[[2]]]])
+
+    gsv._fetch_pano_with_depth_planes('depthSeamPanoAAAAAAAAA', object())
+    gsv._fetch_image_levels('imageSeamPanoAAAAAAAAA', object())
+
+    assert seen == ['depthSeamPanoAAAAAAAAA', 'imageSeamPanoAAAAAAAAA']
+
+
+def test_download_depth_false_changes_the_request_url():
+    """If streetlevel ever starts ignoring the flag the 23x body would come back quietly; this notices."""
+    assert (api.build_find_panorama_by_id_request_url('testPanoIdAbCdEfGhIj_-', False, 'en')
+            != api.build_find_panorama_by_id_request_url('testPanoIdAbCdEfGhIj_-', True, 'en'))
+
+
 def test_depth_map_still_exposes_data():
     # _write_depth_artifact reads pano.depth.data. Tolerate DepthMap becoming a plain class so this catches a
     # rename rather than a refactor.
