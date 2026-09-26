@@ -367,6 +367,11 @@ def _remove_quietly(path):
         pass
 
 
+def _remove_parts(finals):
+    for final in finals.values():
+        _remove_quietly(final + '.part')
+
+
 def pull_batch(settings, storage_path, pano_ids, suffix, verifier):
     """Pull one chunk in one session and return {pano_id: PullOutcome}.
 
@@ -374,8 +379,9 @@ def pull_batch(settings, storage_path, pano_ids, suffix, verifier):
     removed - otherwise a complete-looking stale file from last week would be "verified" and placed tonight
     although tonight's get failed.
 
-    A nonzero exit raises StoreSessionError (redacted, capped) after removing whatever .part files the
-    session left, so no half-done state survives it. Otherwise each id is decided from the local filesystem:
+    A nonzero exit (a negative one included: death by signal) raises StoreSessionError (redacted, capped)
+    after removing whatever .part files the session left, so no half-done state survives it; a stop raised
+    while the session runs removes them too, then propagates unchanged. Otherwise each id is decided from the local filesystem:
     no .part -> absent; .part failing `verifier` -> truncated (removed); else renamed into place through
     atomic_output_path -> pulled, or unplaced if the chmod/rename itself failed (the .part is removed).
     """
@@ -392,9 +398,14 @@ def pull_batch(settings, storage_path, pano_ids, suffix, verifier):
     except OSError as e:
         # sftp not installed, or not executable. strerror only: the exception's own text can carry argv.
         raise StoreSessionError("could not start %s: %s" % (os.path.basename(SFTP_COMMAND[0]), e.strerror))
+    except BaseException:
+        # A stop mid-session (SIGTERM's SystemExit, Ctrl-C): subprocess.run has killed sftp and re-raised.
+        # Leave nothing half-done behind, and let the stop reach the runner as itself.
+        _remove_parts(finals)
+        raise
+    # Nonzero, not > 0: subprocess reports a death by signal as a negative returncode.
     if result.returncode != 0:
-        for final in finals.values():
-            _remove_quietly(final + '.part')
+        _remove_parts(finals)
         raise StoreSessionError("sftp exited %d: %s"
                                 % (result.returncode, summarize_stderr(result.stderr, settings)))
 

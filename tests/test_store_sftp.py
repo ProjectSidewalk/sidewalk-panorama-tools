@@ -24,6 +24,7 @@ import os
 import re
 import shlex
 import stat
+import subprocess
 import sys
 import time
 
@@ -679,6 +680,35 @@ class TestPullBatch:
             self.pull(make_settings(base, tmp_path), storage, ['abcdef'])
         assert not (storage / 'ab' / 'abcdef.jpg.part').exists()
         assert not (storage / 'ab' / 'abcdef.jpg').exists()
+
+    def test_a_session_killed_by_a_signal_is_a_session_error(self, tmp_path, monkeypatch):
+        """subprocess reports a signal death (the OOM killer, an operator's kill) as a NEGATIVE returncode;
+        it is still a failed session, and its .part files are still removed."""
+        storage = tmp_path / 'local'
+
+        def killed(settings, batch_text):
+            (storage / 'ab' / 'abcdef.jpg.part').write_bytes(small_jpeg())
+            return subprocess.CompletedProcess([], -9, '', '')
+
+        monkeypatch.setattr(store_sftp, 'run_sftp_batch', killed)
+        with pytest.raises(StoreSessionError, match='-9'):
+            self.pull(make_settings('/panos', tmp_path), storage, ['abcdef'])
+        assert not list(storage.rglob('abcdef*'))
+
+    def test_a_stop_mid_session_removes_this_batchs_part_files_and_propagates(self, tmp_path, monkeypatch):
+        """SIGTERM arrives as SystemExit while subprocess.run waits; run() kills the child and re-raises. The
+        killed session's .part files must not be left for a later run to reason about, and the stop must
+        reach the runner as itself, not as a StoreSessionError."""
+        storage = tmp_path / 'local'
+
+        def stopped(settings, batch_text):
+            (storage / 'ab' / 'abcdef.jpg.part').write_bytes(small_jpeg()[:100])
+            raise SystemExit(143)
+
+        monkeypatch.setattr(store_sftp, 'run_sftp_batch', stopped)
+        with pytest.raises(SystemExit):
+            self.pull(make_settings('/panos', tmp_path), storage, ['abcdef', 'ghijkl'])
+        assert not list(storage.rglob('*.part'))
 
     def test_sftp_that_cannot_start_is_a_session_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(store_sftp, 'SFTP_COMMAND', [str(tmp_path / 'no-such-sftp-binary')])
