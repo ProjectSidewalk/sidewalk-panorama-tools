@@ -743,11 +743,25 @@ def read_adjudication(adj_dir):
     verdicts = {}
     for d in (sealed, adj_dir):
         for vp in sorted(glob.glob(os.path.join(d, 'verdicts_*.jsonl'))):
-            judge = os.path.basename(vp)[len('verdicts_'):-len('.jsonl')]
-            assert judge not in verdicts, 'judge %s has verdicts both sealed and unsealed' % judge
-            verdicts[judge] = tilt_adjudicate.load_verdicts(d, judge)
+            judge = tilt_adjudicate.normalise_judge(os.path.basename(vp)[len('verdicts_'):-len('.jsonl')])
+            assert judge not in verdicts, 'judge %s has more than one verdict file' % judge
+            verdicts[judge] = tilt_adjudicate.load_verdict_file(vp)
             files.append(vp)
     return {'draw': draw, 'key': key, 'verdicts': verdicts, 'files': files}
+
+
+def c_status(verdicts, key, decision_judge='jon'):
+    """-> {'status', 'decision_bearing': {judge: bool}}. Adjudicated only once the decision-bearing
+    judge has a verdict for every sheet: a mid-session commit must not read as a decision."""
+    complete = decision_judge in verdicts and set(verdicts[decision_judge]) == set(key)
+    if decision_judge not in verdicts:
+        status = 'awaiting Jon'
+    elif complete:
+        status = 'adjudicated'
+    else:
+        status = 'in progress (%d/%d)' % (len(set(verdicts[decision_judge]) & set(key)), len(key))
+    return {'status': status,
+            'decision_bearing': {name: complete and name == decision_judge for name in verdicts}}
 
 
 def score_judge(verdicts, key, exposed=EXPOSED_IN_FIGURE):
@@ -868,9 +882,10 @@ def analyze(args):
 
     # C
     judges = {}
+    status = c_status(adj['verdicts'], adj['key'])
     for name, v in sorted(adj['verdicts'].items()):
         judges[name] = score_judge(v, adj['key'])
-        judges[name]['decision_bearing'] = name == 'jon'
+        judges[name]['decision_bearing'] = status['decision_bearing'][name]
     s['c_adjudication'] = {'judges': judges, 'draw': adj['draw'], 'n_sheets': len(adj['key']),
                            'decision_rule_share_of_all_n': C_RULE_SHARE,
                            'exposed_in_figure': list(EXPOSED_IN_FIGURE),
@@ -878,7 +893,7 @@ def analyze(args):
                                                               if k['era_arm'] == 'post179' and k['scrape_era'] == 'xml'),
                            'rig_pixel_vs_leak_window': rig_pixel_shift_stats(adj['key']),
                            'decision_bearing_judge': 'jon',
-                           'status': 'awaiting Jon' if 'jon' not in judges else 'adjudicated'}
+                           'status': status['status']}
 
     # S1-S3
     pose_att = pose[pose['pose_source'] != 'none']

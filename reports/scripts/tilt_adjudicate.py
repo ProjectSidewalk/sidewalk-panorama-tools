@@ -49,6 +49,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import shutil
 import sys
@@ -90,6 +91,7 @@ committed early by mistake and is sealed here instead, so the study stays reprod
 JUDGE_README = '''# Adjudication sheets - read this, and nothing else in this folder, first
 
 1. From the repository root: `python reports/scripts/tilt_adjudicate.py next --out {out} --judge <you>`
+   (`<you>` is lowercase letters, digits, `-` or `_`; the decision-bearing judge is `jon`)
 2. Open the sheet it prints. Which yellow ring sits on the labelled feature? Answer A, B, C or none.
 3. `python reports/scripts/tilt_adjudicate.py record --out {out} --judge <you> <token> A|B|C|none`
 4. Repeat until `next` prints "all judged". A second `record` for a token replaces the first.
@@ -375,13 +377,30 @@ def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
     return tasks
 
 
+JUDGE_NAME = re.compile(r'[a-z0-9_-]+')
+MACHINE_JUDGE_PREFIX = 'claude-'     # a model judge; its verdicts belong in sealed/, never beside the sheets
+
+
+def normalise_judge(judge):
+    """Lowercase, then refuse anything outside [a-z0-9_-]: the name becomes a file name, so a separator
+    or `..` would let `record` write outside the working folder (into sealed/, on Windows)."""
+    name = str(judge).lower()
+    if not JUDGE_NAME.fullmatch(name):
+        raise ValueError('judge name %r: use lowercase letters, digits, - or _ only' % (judge,))
+    return name
+
+
 def _verdict_path(out_dir, judge):
-    return os.path.join(out_dir, 'verdicts_%s.jsonl' % judge)
+    return os.path.join(out_dir, 'verdicts_%s.jsonl' % normalise_judge(judge))
 
 
 def load_verdicts(out_dir, judge):
     """{token: choice}; a later record for a token supersedes an earlier one."""
-    path = _verdict_path(out_dir, judge)
+    return load_verdict_file(_verdict_path(out_dir, judge))
+
+
+def load_verdict_file(path):
+    """{token: choice} from one verdicts_*.jsonl; {} if it does not exist."""
     out = {}
     if os.path.exists(path):
         with open(path, encoding='utf-8') as f:
@@ -390,6 +409,16 @@ def load_verdicts(out_dir, judge):
                     r = json.loads(line)
                     out[r['token']] = r['choice']
     return out
+
+
+def verdicts_for_score(out_dir, judge):
+    """A judge's verdicts from the working folder; a machine judge's from sealed/ as well. A human
+    judge is never scored from sealed/. `score` prints only counts per arm, never the key."""
+    judge = normalise_judge(judge)
+    verdicts = load_verdicts(out_dir, judge)
+    if not verdicts and judge.startswith(MACHINE_JUDGE_PREFIX):
+        verdicts = load_verdicts(os.path.join(out_dir, SEALED), judge)
+    return verdicts
 
 
 def _tasks(out_dir):
@@ -407,6 +436,7 @@ def next_unjudged(out_dir, judge):
 
 
 def record(out_dir, token, choice, judge):
+    judge = normalise_judge(judge)
     assert_blind(out_dir)
     if choice not in CHOICES:
         raise ValueError('choice must be one of %s' % (CHOICES,))
@@ -495,15 +525,15 @@ def build_parser():
     for name in ('next', 'score'):
         s = sub.add_parser(name)
         s.add_argument('--out', required=True)
-        s.add_argument('--judge', required=True)
+        s.add_argument('--judge', required=True, type=normalise_judge)
     r = sub.add_parser('record')
     r.add_argument('--out', required=True)
-    r.add_argument('--judge', required=True)
+    r.add_argument('--judge', required=True, type=normalise_judge)
     r.add_argument('token')
     r.add_argument('choice', choices=CHOICES)
     se = sub.add_parser('seal')
     se.add_argument('--out', required=True)
-    se.add_argument('--move-verdicts', action='append', help='a judge whose verdicts must be sealed too')
+    se.add_argument('--move-verdicts', action='append', type=normalise_judge, help='a judge whose verdicts must be sealed too')
     return ap
 
 
@@ -522,7 +552,7 @@ def main(argv=None):
         record(args.out, args.token, args.choice, args.judge)
     elif args.cmd == 'score':
         key = read_sealed_key(args.out)
-        print(json.dumps(score(load_verdicts(args.out, args.judge), key), indent=1, sort_keys=True))
+        print(json.dumps(score(verdicts_for_score(args.out, args.judge), key), indent=1, sort_keys=True))
     elif args.cmd == 'seal':
         seal(args.out, args.move_verdicts or ())
         print('sealed %s' % os.path.join(args.out, SEALED))

@@ -623,3 +623,80 @@ def test_instrument_to_analysis_calibration_end_to_end(tmp_path):
     fit = tes.tile_frame_fit(lean, pd.DataFrame(pose), n_boot=0)
     assert 0.8 <= fit['a_pitch'] <= 1.25, fit['a_pitch']
     assert 0.8 <= fit['a_roll'] <= 1.25, fit['a_roll']
+
+
+# ---- #158 final review: Jon's recording path, and the surviving mutants M18, M24, M25 --------------
+
+import tilt_adjudicate as ta  # noqa: E402
+
+_KEY2 = {'tok1': {'era_arm': 'post179', 'order': ['stored', 'leak', 'antileak'], 'T_deg': 5.0},
+         'tok2': {'era_arm': 'post179', 'order': ['leak', 'stored', 'antileak'], 'T_deg': -5.0}}
+
+
+def _adj_folder(root, key=_KEY2):
+    os.makedirs(os.path.join(root, 'sheets'))
+    with open(os.path.join(root, 'draw.json'), 'w') as f:
+        json.dump({'x': 1}, f)
+    with open(os.path.join(root, 'tasks.json'), 'w') as f:
+        json.dump({t: {'label_type': 'CurbRamp', 'tags': []} for t in key}, f)
+    for t in key:
+        open(os.path.join(root, 'sheets', t + '.jpg'), 'wb').close()
+    ta.write_key(root, key)
+    ta.write_judge_readme(root)
+    return root
+
+
+def _seal_machine(d, verdicts, judge='machine'):
+    with open(os.path.join(d, 'sealed', 'verdicts_%s.jsonl' % judge), 'w') as f:
+        for t, c in verdicts.items():
+            f.write(json.dumps({'token': t, 'choice': c}) + '\n')
+
+
+class TestJonsRecordingPath:
+    def test_M25_analysis_reads_a_new_judges_verdicts_from_the_working_folder(self, tmp_path):
+        """Jon records into the working folder, commits, re-runs analyze: his file must count."""
+        d = _adj_folder(str(tmp_path / 'adj'))
+        _seal_machine(d, {'tok1': 'B'})
+        ta.record(d, 'tok1', 'A', 'jon')
+        adj = tes.read_adjudication(d)
+        assert adj['verdicts'] == {'machine': {'tok1': 'B'}, 'jon': {'tok1': 'A'}}
+
+    def test_M24_export_carries_the_sealed_verdicts(self, tmp_path):
+        src = _adj_folder(str(tmp_path / 'src'))
+        _seal_machine(src, {'tok1': 'B'})
+        dst = str(tmp_path / 'dst')
+        tes.export_adjudication(src, dst)
+        assert ta.load_verdicts(os.path.join(dst, 'sealed'), 'machine') == {'tok1': 'B'}
+
+    def test_a_hand_named_file_is_read_under_its_normalised_name(self, tmp_path):
+        d = _adj_folder(str(tmp_path / 'adj'))
+        with open(os.path.join(d, 'verdicts_Jon.jsonl'), 'w') as f:
+            f.write(json.dumps({'token': 'tok1', 'choice': 'A'}) + '\n')
+        assert tes.read_adjudication(d)['verdicts'] == {'jon': {'tok1': 'A'}}
+
+    def test_a_badly_named_verdict_file_is_refused(self, tmp_path):
+        d = _adj_folder(str(tmp_path / 'adj'))
+        open(os.path.join(d, 'verdicts_jon.bak.jsonl'), 'w').close()
+        with pytest.raises(ValueError):
+            tes.read_adjudication(d)
+
+    def test_one_partial_verdict_does_not_adjudicate(self):
+        st = tes.c_status({'jon': {'tok1': 'A'}, 'machine': {'tok1': 'B', 'tok2': 'A'}}, _KEY2)
+        assert st['status'] == 'in progress (1/2)'
+        assert st['decision_bearing'] == {'jon': False, 'machine': False}
+
+    def test_all_verdicts_adjudicate_and_only_jon_bears_the_decision(self):
+        st = tes.c_status({'jon': {'tok1': 'A', 'tok2': 'none'}, 'machine': {'tok1': 'B', 'tok2': 'A'}}, _KEY2)
+        assert st['status'] == 'adjudicated'
+        assert st['decision_bearing'] == {'jon': True, 'machine': False}
+
+    def test_no_jon_is_awaiting_jon(self):
+        st = tes.c_status({'machine': {'tok1': 'B', 'tok2': 'A'}}, _KEY2)
+        assert st == {'status': 'awaiting Jon', 'decision_bearing': {'machine': False}}
+
+
+def test_M18_raw_excludes_zero_needs_both_axes():
+    lean, pose = _synthetic_lean(1.0, beta_r=0.0, attenuation=0.6)
+    f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}), n_boot=0)
+    assert f['raw']['ci_p'][0] > 0 and f['raw']['ci_r'][0] <= 0
+    assert f['raw_excludes_zero'] is False

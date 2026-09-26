@@ -1,6 +1,7 @@
 # Adjudication sheets - read this, and nothing else in this folder, first
 
 1. From the repository root: `python reports/scripts/tilt_adjudicate.py next --out reports/data/2026-09-26-tilt-adjudication --judge <you>`
+   (`<you>` is lowercase letters, digits, `-` or `_`; the decision-bearing judge is `jon`)
 2. Open the sheet it prints. Which yellow ring sits on the labelled feature? Answer A, B, C or none.
 3. `python reports/scripts/tilt_adjudicate.py record --out reports/data/2026-09-26-tilt-adjudication --judge <you> <token> A|B|C|none`
 4. Repeat until `next` prints "all judged". A second `record` for a token replaces the first.

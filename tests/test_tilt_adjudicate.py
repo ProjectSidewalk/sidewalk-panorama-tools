@@ -412,3 +412,91 @@ def test_fill_never_repeats_a_primary_label():
                         + [dict(label_uid='s:%d' % i, era_arm='legacy+mid') for i in range(3)])
     sel, _ = ta.draw_with_fill(prim, fill, 6, 's')
     assert sel['label_uid'].is_unique and len(sel) == 6
+
+
+# ---- #158 final review: the judge's own recording path --------------------------------------------
+
+_KEY1 = {'tok1': {'era_arm': 'post179', 'order': ['stored', 'leak', 'antileak'], 'T_deg': 5.0}}
+
+
+def _one_sheet_folder(root):
+    os.makedirs(os.path.join(root, 'sheets'))
+    with open(os.path.join(root, 'draw.json'), 'w') as f:
+        json.dump({'x': 1}, f)
+    with open(os.path.join(root, 'tasks.json'), 'w') as f:
+        json.dump({'tok1': {'label_type': 'CurbRamp', 'tags': []}}, f)
+    open(os.path.join(root, 'sheets', 'tok1.jpg'), 'wb').close()
+    ta.write_key(root, _KEY1)
+    ta.write_judge_readme(root)
+    return root
+
+
+class TestJudgeNames:
+    def test_a_judge_name_is_normalised_to_lowercase(self, tmp_path):
+        d = _one_sheet_folder(str(tmp_path / 'adj'))
+        ta.record(d, 'tok1', 'A', 'Jon')
+        assert os.listdir(d).count('verdicts_jon.jsonl') == 1
+        assert ta.load_verdicts(d, 'JON') == {'tok1': 'A'} == ta.load_verdicts(d, 'jon')
+        assert ta.next_unjudged(d, 'Jon') is None
+
+    @pytest.mark.parametrize('bad', ['/../sealed/verdicts_machine', '../sealed/verdicts_machine',
+                                     'sealed/x', 'a' + chr(92) + 'b', '..', '', 'jon.bak', 'jon f', 'jón'])
+    def test_a_judge_name_outside_the_alphabet_is_refused(self, tmp_path, bad):
+        d = _one_sheet_folder(str(tmp_path / 'adj'))
+        with pytest.raises(ValueError):
+            ta.record(d, 'tok1', 'A', bad)
+        with pytest.raises(ValueError):
+            ta.next_unjudged(d, bad)
+        assert sorted(os.listdir(os.path.join(d, 'sealed'))) == ['README.md', 'key.json', 'salt.txt']
+        assert not [n for n in os.listdir(d) if n.startswith('verdicts_')]
+
+    def test_judge_name_cannot_escape_the_working_folder(self, tmp_path):
+        """The reproduced Windows escape: '/../sealed/verdicts_x' resolved lexically into sealed/."""
+        d = _one_sheet_folder(str(tmp_path / 'adj'))
+        with pytest.raises((ValueError, SystemExit)):
+            ta.record(d, 'tok1', 'A', '/../sealed/verdicts_machine')
+        assert not os.path.exists(os.path.join(d, 'sealed', 'verdicts_machine.jsonl'))
+        with pytest.raises(SystemExit):
+            ta.main(['record', '--out', d, '--judge', '/../sealed/verdicts_machine', 'tok1', 'A'])
+        assert not os.path.exists(os.path.join(d, 'sealed', 'verdicts_machine.jsonl'))
+
+
+class TestScoreCli:
+    def test_score_reads_a_human_judge_from_the_working_folder(self, tmp_path, capsys):
+        d = _one_sheet_folder(str(tmp_path / 'adj'))
+        ta.record(d, 'tok1', 'B', 'jon')
+        ta.main(['score', '--out', d, '--judge', 'jon'])
+        out = json.loads(capsys.readouterr().out)
+        assert out['n'] == 1 and out['arms']['post179']['leak'] == 1
+
+    def test_score_reads_sealed_only_for_the_machine_and_never_prints_the_key(self, tmp_path, capsys):
+        d = _one_sheet_folder(str(tmp_path / 'adj'))
+        for judge in ('claude-opus-5-5', 'jon'):
+            with open(os.path.join(d, 'sealed', 'verdicts_%s.jsonl' % judge), 'w') as f:
+                f.write(json.dumps({'token': 'tok1', 'choice': 'B'}) + '\n')
+        ta.main(['score', '--out', d, '--judge', 'claude-opus-5-5'])
+        text = capsys.readouterr().out
+        assert json.loads(text)['n'] == 1
+        for leak in ('order', 'T_deg', 'antileak"]', '5.0'):
+            assert leak not in text
+        ta.main(['score', '--out', d, '--judge', 'jon'])          # a human judge never reads sealed/
+        assert json.loads(capsys.readouterr().out)['n'] == 0
+
+
+# ---- #158 final review's surviving mutants M09 and M11 ---------------------------------------------
+
+def test_M09_a_nested_sealed_dir_is_not_a_hiding_place(tmp_path):
+    """Only the top-level sealed/ is exempt; a key under sheets/sealed/ is still readable."""
+    d = _one_sheet_folder(str(tmp_path / 'adj'))
+    os.makedirs(os.path.join(d, 'sheets', 'sealed'))
+    with open(os.path.join(d, 'sheets', 'sealed', 'key.json'), 'w') as f:
+        f.write('{}')
+    with pytest.raises(ta.BlindBroken):
+        ta.next_unjudged(d, 'jon')
+
+
+def test_M11_a_fresh_salt_is_128_bits_and_random(tmp_path):
+    ta.write_key(str(tmp_path / 'a'), _KEY1)
+    ta.write_key(str(tmp_path / 'b'), _KEY1)
+    salts = [open(os.path.join(str(tmp_path / x), 'sealed', 'salt.txt')).read().strip() for x in 'ab']
+    assert all(len(s) == 32 and int(s, 16) >= 0 for s in salts) and salts[0] != salts[1]
