@@ -23,6 +23,7 @@ gsv._download_tiles.
 
 import io
 import logging
+import os
 import time
 
 import pytest
@@ -516,3 +517,175 @@ class TestOneErrorLinePerRefusal:
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
         assert len(errors) == 1
         assert 'frame disagreement' in errors[0] and PANO in errors[0]
+
+
+# --- per-run memory, the once-per-run line, and the host state (review items 4, 6, 7, 10) --------------------
+
+def stub_photometa_answers(monkeypatch, answers):
+    """_fetch_image_levels answering from a script, one entry per call: an Exception is raised, anything else
+    is a sizes list answered as 512 px levels. Returns the pano ids asked, in order."""
+    asked = []
+    script = list(answers)
+
+    def fake_fetch_image_levels(pano_id, session):
+        asked.append(pano_id)
+        answer = script.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return gsv.ImageLevels([tuple(size) for size in answer], (512, 512))
+
+    monkeypatch.setattr(gsv, '_fetch_image_levels', fake_fetch_image_levels)
+    return asked
+
+
+def download_all(tmp_path, count, prefix):
+    for i in range(count):
+        pano_id = ('%s%02d' % (prefix, i)).ljust(22, 'A')
+        gsv.download_single_pano(str(tmp_path), pano_info(1024, 512, pano_id))
+
+
+TWO_LEVELS = [(512, 256), (1024, 512)]
+
+
+class TestPhotometaFailuresAreRememberedForTheRun:
+    """Review item 4: a photometa fault that is not a refusal used to cost every new pano the whole retry
+    policy (~3.5 minutes at the production timeout) with nothing on stdout."""
+
+    def test_five_panos_against_a_failing_photometa_make_three_photometa_calls(self, tmp_path, monkeypatch,
+                                                                              capsys, caplog):
+        asked = stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        with caplog.at_level(logging.WARNING):
+            download_all(tmp_path, 5, 'failingPano')
+
+        assert len(asked) == gsv.PHOTOMETA_MAX_CONSECUTIVE_FAILURES == 3
+        out = capsys.readouterr().out
+        assert out.count('photometa did not answer') == 1, 'named once per run, not once per pano'
+        assert sum('photometa did not answer' in r.getMessage() for r in caplog.records) == 1
+        assert len(list(tmp_path.rglob('*.jpg'))) == 5, 'every pano still downloads, from the probe'
+        assert gsv._block_latch_age_hours(gsv.default_block_latch_path()) is None
+
+    def test_only_consecutive_failures_count(self, tmp_path, monkeypatch):
+        down = gsv.DepthPayloadError('photometa down')
+        asked = stub_photometa_answers(monkeypatch, [down, down, TWO_LEVELS, down, down, TWO_LEVELS])
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 6, 'flakyPano')
+
+        assert len(asked) == 6
+
+    def test_a_refusal_after_failures_still_latches_and_warns(self, tmp_path, monkeypatch, capsys):
+        down = gsv.DepthPayloadError('photometa down')
+        asked = stub_photometa_answers(monkeypatch, [down, down, gsv.DepthBlockedError('HTTP 403')])
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 4, 'refusedLatePano')
+
+        assert len(asked) == 3
+        age = gsv._block_latch_age_hours(gsv.default_block_latch_path())
+        assert age is not None and age < gsv.DEPTH_BLOCK_LATCH_HOURS
+        out = capsys.readouterr().out
+        assert out.count('WARNING - Google refused') == 1
+
+    def test_a_refusal_is_the_runs_only_fallback_line(self, tmp_path, monkeypatch, capsys):
+        """The refusal WARNING already says the probe answers from here on; the latched panos after it must
+        not add the latch line on top."""
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 3, 'refusedFirstPano')
+
+        narrative = [line for line in capsys.readouterr().out.splitlines()
+                     if line.startswith('IMAGEDOWNLOAD: ')]
+        assert len(narrative) == 1 and 'Google refused' in narrative[0]
+
+
+class TestAFreshLatchSaysSoOnStdout:
+    """Review item 10: under a fresh latch the image phase ran on the probe with nothing on stdout."""
+
+    def test_one_line_per_run_naming_the_latch_and_its_reach(self, tmp_path, monkeypatch, capsys, caplog):
+        fresh_latch()
+        stub_photometa(monkeypatch, TWO_LEVELS)
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        with caplog.at_level(logging.WARNING):
+            download_all(tmp_path, 3, 'latchedPano')
+
+        lines = [line for line in capsys.readouterr().out.splitlines() if 'block latch' in line]
+        assert len(lines) == 1
+        assert 'hours' in lines[0] and 'every city' in lines[0]
+        assert sum('block latch' in r.getMessage() for r in caplog.records) == 1
+
+
+class TestARefusalForfeitsTheEarnedDepthPace:
+    """Review item 7, shipped default D6: an image-phase refusal forfeits the depth pacer's earned standing,
+    exactly as a depth-phase refusal does - the latch expires after 6 hours, the earned pace after 24."""
+
+    @pytest.fixture
+    def earned(self, monkeypatch):
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        gsv._write_pace_state(gsv.default_pace_state_path(), 0.25, 150)
+        assert gsv._load_pace_state(gsv.default_pace_state_path()) == (0.25, 150)
+
+    def test_a_refusal_resets_it_to_the_opening_interval(self, monkeypatch, earned):
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+
+        gsv.resolve_frame(pano_info(1024, 512))
+
+        assert gsv._load_pace_state(gsv.default_pace_state_path()) == (1.0, 0)
+        assert gsv.DepthPacer(state_path=gsv.default_pace_state_path()).interval == 1.0
+
+    def test_an_ordinary_failure_leaves_it_alone(self, monkeypatch, earned):
+        stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
+        count_probes(monkeypatch, 5)
+
+        gsv.resolve_frame(pano_info(1024, 512))
+
+        assert gsv._load_pace_state(gsv.default_pace_state_path()) == (0.25, 150)
+
+
+class TestTheFlagsMoveTheImagePhasesHostStateToo:
+    """Review item 6: with --depth-block-latch set, the image phase used to read and write the DEFAULT latch
+    while the depth phase read the flagged one - so an image-phase refusal promised a stand-down on stdout
+    and the depth phase then sent its requests anyway."""
+
+    def call_main(self, tmp_path, monkeypatch, *flags):
+        import DownloadRunner
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text('pano_id,width,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
+                            '%s,1024,512,47.6,-122.3,180.0,0.0,gsv,True\n' % PANO)
+        monkeypatch.chdir(tmp_path)
+        DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+                             '--skip-depth', *flags])
+
+    def test_a_refusal_writes_the_flagged_latch_and_pace_state(self, tmp_path, monkeypatch):
+        latch, pace = tmp_path / 'my-latch', tmp_path / 'my-pace'
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        self.call_main(tmp_path, monkeypatch, '--depth-block-latch', str(latch), '--depth-pace-state', str(pace))
+
+        assert gsv._block_latch_age_hours(str(latch)) is not None
+        assert gsv._block_latch_age_hours(gsv.default_block_latch_path()) is None
+        assert pace.exists() and not os.path.exists(gsv.default_pace_state_path())
+
+    def test_a_fresh_flagged_latch_is_what_the_image_phase_reads(self, tmp_path, monkeypatch):
+        latch = tmp_path / 'my-latch'
+        gsv._write_block_latch(str(latch))
+        asked = stub_photometa(monkeypatch, TWO_LEVELS)
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        self.call_main(tmp_path, monkeypatch, '--depth-block-latch', str(latch))
+
+        assert asked == []
+        assert (tmp_path / 'storage' / PANO[:2] / (PANO + '.jpg')).exists()
