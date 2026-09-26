@@ -18,6 +18,9 @@
     4000
    ],
    "provider": "mapillary",
+   "provider_counts": {
+    "mapillary": 131
+   },
    "r2": {
     "ceiling": {
      "isotonic_r2": 0.5854544981978422,
@@ -82,6 +85,9 @@
     8192
    ],
    "provider": "gsv",
+   "provider_counts": {
+    "gsv": 109
+   },
    "r2": {
     "ceiling": {
      "isotonic_r2": 0.8413543043992273,
@@ -147,6 +153,9 @@
     6144
    ],
    "provider": "mapillary",
+   "provider_counts": {
+    "mapillary": 299
+   },
    "r2": {
     "ceiling": {
      "isotonic_r2": 0.6534901205912773,
@@ -210,6 +219,9 @@
     8192
    ],
    "provider": "gsv",
+   "provider_counts": {
+    "gsv": 119
+   },
    "r2": {
     "ceiling": {
      "isotonic_r2": 0.838150477339018,
@@ -328,14 +340,176 @@
    "v3_window_deg": 90.0
   }
  ],
+ "figure_examples": [
+  {
+   "city": "annapolis",
+   "depression_deg": 6.83,
+   "key": "missed:1",
+   "pano_h": 4000,
+   "pano_id": "869773754548856",
+   "pano_w": 8000,
+   "v2_fill": 0.411,
+   "v2_window_deg": 21.7,
+   "v2_window_px": [
+    483,
+    322
+   ],
+   "v3_fill": 0.448,
+   "v3_window_deg": 19.9,
+   "v3_window_px": [
+    443,
+    295
+   ]
+  },
+  {
+   "city": "annapolis",
+   "depression_deg": 20.74,
+   "key": "det:4",
+   "pano_h": 4000,
+   "pano_id": "1424988461692696",
+   "pano_w": 8000,
+   "v2_fill": 0.279,
+   "v2_window_deg": 48.6,
+   "v2_window_px": [
+    1080,
+    720
+   ],
+   "v3_fill": 0.27,
+   "v3_window_deg": 50.3,
+   "v3_window_px": [
+    1117,
+    745
+   ]
+  },
+  {
+   "city": "paterson",
+   "depression_deg": 5.05,
+   "key": "missed:1",
+   "pano_h": 6656,
+   "pano_id": "ycJKMD6I5D8glf_jMPqkDQ",
+   "pano_w": 13312,
+   "v2_fill": 0.176,
+   "v2_window_deg": 20.2,
+   "v2_window_px": [
+    747,
+    498
+   ],
+   "v3_fill": 0.199,
+   "v3_window_deg": 17.9,
+   "v3_window_px": [
+    661,
+    441
+   ]
+  },
+  {
+   "city": "paterson",
+   "depression_deg": 20.74,
+   "key": "det:0",
+   "pano_h": 8192,
+   "pano_id": "Xs3lDDc1o50wJmW9eGx_WA",
+   "pano_w": 16384,
+   "v2_fill": 0.394,
+   "v2_window_deg": 48.6,
+   "v2_window_px": [
+    2213,
+    1475
+   ],
+   "v3_fill": 0.381,
+   "v3_window_deg": 50.3,
+   "v3_window_px": [
+    2287,
+    1525
+   ]
+  },
+  {
+   "city": "richmond",
+   "depression_deg": 5.63,
+   "key": "missed:1",
+   "pano_h": 5500,
+   "pano_id": "1991876994661275",
+   "pano_w": 11000,
+   "v2_fill": 0.254,
+   "v2_window_deg": 20.7,
+   "v2_window_px": [
+    632,
+    421
+   ],
+   "v3_fill": 0.284,
+   "v3_window_deg": 18.5,
+   "v3_window_px": [
+    565,
+    377
+   ]
+  },
+  {
+   "city": "richmond",
+   "depression_deg": 18.28,
+   "key": "det:1",
+   "pano_h": 5500,
+   "pano_id": "1050503583329955",
+   "pano_w": 11000,
+   "v2_fill": 0.435,
+   "v2_window_deg": 40.3,
+   "v2_window_px": [
+    1231,
+    821
+   ],
+   "v3_fill": 0.394,
+   "v3_window_deg": 44.5,
+   "v3_window_px": [
+    1360,
+    907
+   ]
+  },
+  {
+   "city": "sao_paulo",
+   "depression_deg": 7.03,
+   "key": "det:0",
+   "pano_h": 8192,
+   "pano_id": "oubzmEZebW0xt9hWWIgN3Q",
+   "pano_w": 16384,
+   "v2_fill": 0.301,
+   "v2_window_deg": 21.9,
+   "v2_window_px": [
+    997,
+    665
+   ],
+   "v3_fill": 0.327,
+   "v3_window_deg": 20.2,
+   "v3_window_px": [
+    918,
+    612
+   ]
+  },
+  {
+   "city": "sao_paulo",
+   "depression_deg": 23.55,
+   "key": "det:0",
+   "pano_h": 8192,
+   "pano_id": "I0LGgFwBsGIYNbIsIaLgpQ",
+   "pano_w": 16384,
+   "v2_fill": 0.197,
+   "v2_window_deg": 63.0,
+   "v2_window_px": [
+    2867,
+    1911
+   ],
+   "v3_fill": 0.219,
+   "v3_window_deg": 56.7,
+   "v3_window_px": [
+    2582,
+    1721
+   ]
+  }
+ ],
  "meta": {
   "bundles": {
-   "annapolis": "D:/Git/RampNet/benchmark/annapolis",
-   "paterson": "D:/Git/RampNet/benchmark/paterson",
-   "richmond": "D:/Git/RampNet/benchmark/richmond",
-   "sao_paulo": "D:/Git/RampNet/benchmark/sao_paulo"
+   "annapolis": "benchmark/annapolis",
+   "paterson": "benchmark/paterson",
+   "richmond": "benchmark/richmond",
+   "sao_paulo": "benchmark/sao_paulo"
   },
-  "generated_by": "python reports/scripts/crop_sizing_v3.py --bundle richmond=D:/Git/RampNet/benchmark/richmond --bundle sao_paulo=D:/Git/RampNet/benchmark/sao_paulo --bundle paterson=D:/Git/RampNet/benchmark/paterson --bundle annapolis=D:/Git/RampNet/benchmark/annapolis --write reports/data/2026-09-26-crop-sizing-v3.json",
+  "generated_by": "python reports/scripts/crop_sizing_v3.py --bundle richmond=<RampNet>/benchmark/richmond --bundle sao_paulo=<RampNet>/benchmark/sao_paulo --bundle paterson=<RampNet>/benchmark/paterson --bundle annapolis=<RampNet>/benchmark/annapolis --write reports/data/2026-09-26-crop-sizing-v3.json --figure reports/figures/2026-09-26-crop-sizing-v3-examples.jpg",
   "rampnet_commit": "780f25f95cb66ca8fab9039df762e76598966e4b"
  },
  "pooled": {
@@ -362,7 +536,11 @@
    6656,
    8192
   ],
-  "provider": "gsv",
+  "provider": "mixed",
+  "provider_counts": {
+   "gsv": 228,
+   "mapillary": 430
+  },
   "r2": {
    "ceiling": {
     "isotonic_r2": 0.6467114460444257,
@@ -407,20 +585,35 @@
    "window_deg_p90": 51.075
   }
  },
- "population": {
-  "covers": [
-   "cities",
+ "populations": {
+  "clamp_census": {
+   "covers": [
+    "production"
+   ],
+   "n": 149837,
+   "name": "CurbRamp labels in the 2026-08-09 clamp census",
+   "source": "reports/data/2026-08-09-clamp-census.json"
+  },
+  "gold": {
+   "covers": [
+    "cities",
+    "pooled",
+    "selection",
+    "window_change",
+    "rule_a_blend_powerlaw",
+    "figure_examples"
+   ],
+   "n": 658,
+   "name": "boxed gold ramps in the RampNet benchmark bundles",
+   "subsets": {
+    "exponent.legacy": "excludes ramps past the 2013 line zero crossing (no log of 0 m); its own n says how many remain"
+   }
+  },
+  "no_population": [
    "constants",
    "distance_table",
-   "pooled",
-   "production",
-   "rule_a_blend_powerlaw",
-   "rule_geometry",
-   "selection",
-   "window_change"
-  ],
-  "n": 658,
-  "name": "all boxed gold ramps in the four bundles"
+   "rule_geometry"
+  ]
  },
  "production": {
   "label_type": "CurbRamp",

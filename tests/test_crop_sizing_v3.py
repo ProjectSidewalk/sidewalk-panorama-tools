@@ -14,6 +14,7 @@ import math
 import os
 import random
 import statistics
+import subprocess
 import sys
 
 import pytest
@@ -30,6 +31,7 @@ import crop_sizing_v3 as csv3  # noqa: E402
 SUMMARY_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-09-26-crop-sizing-v3.json')
 V2_SUMMARY_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-19-crop-sizing-v2.json')
 REPORT_MD = os.path.join(REPO_ROOT, 'reports', '2026-09-26-crop-sizing-v3.md')
+FIGURE = os.path.join(REPO_ROOT, 'reports', 'figures', '2026-09-26-crop-sizing-v3-examples.jpg')
 
 
 def ramp(depression=10.0, box_w=200.0, box_h=60.0, pano_h=6656, x=None):
@@ -302,8 +304,86 @@ class TestStudyLogic:
         assert csv3.main(['--bundle', 'city=%s' % bundle, '--write', str(out)]) == 0
         with open(out, encoding='utf-8') as f:
             summary = json.load(f)
-        assert set(summary['population']['covers']) == set(summary) - {'meta', 'population'}
-        assert summary['population']['n'] == 5
+        assert_every_key_is_claimed_once(summary)
+        assert summary['populations']['gold']['n'] == 5
+        assert summary['populations']['clamp_census']['covers'] == ['production']
+
+    def test_a_mixed_block_is_not_named_for_one_provider(self):
+        """#157 review item 10: the pooled block said 'gsv' with 430 of its 658 ramps Mapillary."""
+        ramps = [ramp(), ramp(), dict(ramp(), pano_id='1234567890')]
+        block = csv3.city_block(ramps, 5.8)
+        assert block['provider'] == 'mixed'
+        assert block['provider_counts'] == {'gsv': 2, 'mapillary': 1}
+        assert csv3.city_block(ramps[:2], 5.8)['provider'] == 'gsv'
+        assert csv3.city_block(ramps[2:], 5.8)['provider'] == 'mapillary'
+
+    def test_meta_records_bundles_relative_to_their_checkout(self, tmp_path):
+        """#157 review item 11: the artifact baked in D:/Git/RampNet, so it reproduced on one machine."""
+        root = tmp_path / 'RampNet'
+        bundle = root / 'benchmark' / 'richmond'
+        bundle.mkdir(parents=True)
+        subprocess.run(['git', 'init', '-q', str(root)], check=True)
+        assert csv3.bundle_spec(str(bundle)) == 'benchmark/richmond'
+        command = csv3.canonical_command(
+            ['--bundle', 'richmond=%s' % bundle, '--write',
+             os.path.join(REPO_ROOT, 'reports', 'data', 'x.json')], {'richmond': str(bundle)})
+        assert command == ('python reports/scripts/crop_sizing_v3.py --bundle '
+                           'richmond=<RampNet>/benchmark/richmond --write reports/data/x.json')
+        assert str(tmp_path) not in command
+
+    def test_a_bundle_outside_a_checkout_is_recorded_as_given(self, tmp_path):
+        bundle = tmp_path / 'loose'
+        bundle.mkdir()
+        assert csv3.bundle_spec(str(bundle)) == str(bundle).replace('\\', '/')
+
+    def test_the_option_a_table_is_computed_from_the_artifact(self):
+        """#157 review item 2: the report's A-vs-v3 table is generated, so it is asserted, not typed."""
+        def scored(fill, sd, spread, clear, cont, r2=None):
+            out = {'n': 10, 'fill_p50': fill, 'fill_log_sd': sd, 'fill_p90_over_p10': spread,
+                   'frac_clearing_too_tight': clear, 'containment': cont}
+            return out if r2 is None else dict(out, r2=r2)
+        fake = {'rule_a_blend_powerlaw': {
+                    'cities_matched': {'annapolis': scored(0.5, 0.43, 2.95, 0.4885, 0.84, r2=0.522)},
+                    'pooled_matched': scored(0.368, 0.402, 2.73, 0.7736, 0.944, r2=0.604)},
+                'cities': {'annapolis': {'v3': scored(0.513, 0.427, 2.81, 0.4427, 0.855),
+                                         'r2': {'v3': 0.530}}},
+                'pooled': {'v3': scored(0.370, 0.406, 2.78, 0.7523, 0.944), 'r2': {'v3': 0.612}}}
+        lines = csv3.rule_a_table(fake)
+        assert lines[2] == ('| annapolis | 10 | 0.500 / 0.513 | 0.430 / 0.427 | 2.95 / 2.81 | 0.522 / 0.530 '
+                            '| 48.9% / 44.3% | 0.840 / 0.855 |')
+        assert lines[3].startswith('| **pooled** | **10** | **0.368 / 0.370** |')
+        assert len(lines) == 4
+
+    def test_the_figure_is_labelled_with_the_rules_it_shows(self, tmp_path, monkeypatch):
+        """#157 review item 13: render_examples hard-coded a v1/v2 caption. With rules=('v2','v3') the
+        panels are the v2 and v3 windows and the caption names those; the default stays v1/v2."""
+        from PIL import Image, ImageDraw
+        import crop_sizing_v2
+        pano = tmp_path / 'p.jpg'
+        Image.new('RGB', (2048, 1024), (90, 90, 90)).save(pano)
+        example = dict(ramp(depression=12.0, pano_h=1024), city='c', pano_id='abcdefghijklmnop',
+                       pano_path=str(pano), v1=(900, 500, 200, 200), v2=(900, 520, 180, 120),
+                       v3=(880, 510, 240, 160))
+        captions = []
+        real_text = ImageDraw.ImageDraw.text
+        monkeypatch.setattr(ImageDraw.ImageDraw, 'text',
+                            lambda self, xy, text, *a, **k: (captions.append(text),
+                                                             real_text(self, xy, text, *a, **k)))
+        size = crop_sizing_v2.render_examples([example], str(tmp_path / 'f.jpg'), rules=('v2', 'v3'))
+        assert size[0] > 0 and (tmp_path / 'f.jpg').is_file()
+        assert 'v2: 180x120 px' in captions[-1] and 'v3: 240x160 px' in captions[-1]
+        assert 'v1' not in captions[-1]
+        assert 'fill %.2f' % (example['box_w'] / 240) in captions[-1]
+        crop_sizing_v2.render_examples([example], str(tmp_path / 'g.jpg'))
+        assert 'v1: 200 px square' in captions[-1] and 'v2: 180x120 px' in captions[-1]
+
+
+def assert_every_key_is_claimed_once(summary):
+    """Every top-level key is computed on exactly one named population, or declared to be on none."""
+    pops = summary['populations']
+    claimed = pops['gold']['covers'] + pops['clamp_census']['covers'] + pops['no_population']
+    assert len(claimed) == len(set(claimed)), claimed
+    assert set(claimed) == set(summary) - {'meta', 'populations'}
 
 
 @pytest.fixture(scope='module')
@@ -349,17 +429,22 @@ class TestCommittedFindings:
     """The report's conclusions, pinned. Offline - the gold itself is not in this repo."""
 
     def test_same_gold_as_the_v2_study(self, summary, v2_summary):
-        assert summary['population']['n'] == summary['pooled']['n'] == 658
+        assert summary['populations']['gold']['n'] == summary['pooled']['n'] == 658
         assert set(summary['cities']) == CITIES
         for city in CITIES:
             assert summary['cities'][city]['n'] == v2_summary['cities'][city]['n'], city
 
     def test_v2_replicates_exactly(self, summary, v2_summary):
-        """The v2 rows here are recomputed, not copied - and equal the v2 artifact's to the bit."""
+        """The v2 rows here are recomputed, not copied - and equal the v2 artifact's to the bit, on EVERY
+        key the two artifacts share (the v2 artifact has no log-sd or p90/p10). The window_deg_* keys
+        agree only because every gold pano is 2:1: the v2 study takes the angle on the elevation axis
+        (w / pano_h), this one on the azimuth axis, as a width must be."""
         for name, block in _blocks(summary).items():
             ref = v2_summary['pooled'] if name == 'pooled' else v2_summary['cities'][name]
-            for key in ('fill_p50', 'containment', 'frac_clearing_too_tight', 'fits_by_size',
-                        'stored_width_p50', 'stored_width_p90'):
+            shared = set(block['v2']) & set(ref['v2'])
+            assert {'fill_p10', 'fill_p50', 'fill_p90', 'containment', 'frac_clearing_too_tight',
+                    'fits_by_size', 'window_deg_p50', 'stored_width_p50', 'stored_width_p90'} <= shared
+            for key in sorted(shared):
                 assert block['v2'][key] == ref['v2'][key], (name, key)
 
     def test_v3_is_compared_at_v2s_median_fill(self, summary):
@@ -410,6 +495,13 @@ class TestCommittedFindings:
         assert at[45.0]['legacy_m'] == 0.0
         assert at[45.0]['blend_m'] == pytest.approx(CropRunner.V3_CAMERA_HEIGHT_M)
 
+    def test_v2s_cap_binds_before_the_legacy_line_reaches_zero(self, summary):
+        """#157 review item 5: past 26.55 deg the 90-degree cap sizes every v2 window, so the 2013 line's
+        zero at 35.15 deg (and the 1500-px clamp behind it) is a v1 fact, not a v2 one."""
+        geometry = summary['rule_geometry']
+        assert geometry['v2_cap_onset_deg'] < geometry['legacy_zero_crossing_deg']
+        assert csv3.v2_fov_at(geometry['v2_cap_onset_deg'] + 1.0) == CropRunner.CROP_MAX_FOV_DEG
+
     def test_the_clamps_under_v3(self, summary):
         geometry = summary['rule_geometry']
         assert geometry['v3_cap_onset_deg'] > geometry['v2_cap_onset_deg']
@@ -448,14 +540,62 @@ class TestCommittedFindings:
         assert matched['fill_log_sd'] < summary['pooled']['v3']['fill_log_sd']
         assert matched['fill_log_sd'] < summary['pooled']['v2']['fill_log_sd']
 
-    def test_population_covers_every_top_level_key(self, summary):
-        assert set(summary['population']['covers']) == set(summary) - {'meta', 'population'}
+    def test_every_key_names_its_population(self, summary):
+        assert_every_key_is_claimed_once(summary)
+        assert summary['populations']['clamp_census']['n'] == summary['production']['n']
+        assert summary['production']['n'] != summary['populations']['gold']['n']
 
-    def test_the_run_is_recorded(self, summary):
+    def test_the_pooled_block_is_mixed_provider(self, summary):
+        pooled = summary['pooled']
+        assert pooled['provider'] == 'mixed'
+        assert sum(pooled['provider_counts'].values()) == 658
+        by_city = {}
+        for block in summary['cities'].values():
+            by_city[block['provider']] = by_city.get(block['provider'], 0) + block['n']
+        assert pooled['provider_counts'] == by_city
+
+    def test_the_run_is_recorded_without_a_machines_paths(self, summary):
         meta = summary['meta']
         assert len(meta['rampnet_commit']) == 40
-        assert set(meta['bundles']) == CITIES
+        assert meta['bundles'] == {c: 'benchmark/%s' % c for c in CITIES}
         assert '--write reports/data/2026-09-26-crop-sizing-v3.json' in meta['generated_by']
+        assert '--figure reports/figures/2026-09-26-crop-sizing-v3-examples.jpg' in meta['generated_by']
+        for city in CITIES:
+            assert '%s=<RampNet>/benchmark/%s' % (city, city) in meta['generated_by']
+        assert ':/' not in json.dumps(meta) and ':\\\\' not in json.dumps(meta)
+
+    def test_the_figure_is_committed_and_small(self, summary):
+        """#157 review item 13: the v2/v3 twin of the v2 examples sheet, on the v2 sheet's own picks."""
+        assert os.path.getsize(FIGURE) < 1.5e6
+        examples = summary['figure_examples']
+        assert len(examples) == 8
+        assert {e['city'] for e in examples} == CITIES
+        with open(V2_SUMMARY_JSON, encoding='utf-8') as f:
+            v2_examples = json.load(f)['figure_examples']
+        assert [(e['pano_id'], e['key']) for e in examples] == [(e['pano_id'], e['key']) for e in v2_examples]
+        for mine, theirs in zip(examples, v2_examples):
+            assert mine['v2_window_px'] == theirs['v2_window_px']
+
+
+@pytest.mark.skipif(not os.environ.get('RAMPNET_ROOT'),
+                    reason='set RAMPNET_ROOT to a RampNet checkout to re-run the study from source')
+def test_the_committed_artifact_reproduces_from_source(tmp_path, summary):
+    """The documented command, run against a RampNet checkout at meta.rampnet_commit, reproduces the
+    committed JSON - everything but generated_by, which names this run's output paths."""
+    root = os.environ['RAMPNET_ROOT']
+    if csv3.rampnet_commit(root) != summary['meta']['rampnet_commit']:
+        pytest.skip('RAMPNET_ROOT is not at the committed rampnet_commit')
+    out = tmp_path / 'v3.json'
+    argv = []
+    for city in ('richmond', 'sao_paulo', 'paterson', 'annapolis'):
+        argv += ['--bundle', '%s=%s' % (city, os.path.join(root, 'benchmark', city))]
+    assert csv3.main(argv + ['--write', str(out), '--figure', str(tmp_path / 'f.jpg')]) == 0
+    with open(out, encoding='utf-8') as f:
+        fresh = json.load(f)
+    committed = json.loads(json.dumps(summary))
+    for artifact in (fresh, committed):
+        del artifact['meta']['generated_by']
+    assert fresh == committed
 
 
 @pytest.fixture(scope='module')

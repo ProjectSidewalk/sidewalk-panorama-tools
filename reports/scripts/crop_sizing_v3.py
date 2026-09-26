@@ -7,11 +7,16 @@ cap are v2's. The gold is the RampNet benchmark's (four bundles, 658 boxed apron
 takes the bundle roots as arguments and commits its summary, which the tests pin:
 
     python reports/scripts/crop_sizing_v3.py \
-        --bundle richmond=D:/Git/RampNet/benchmark/richmond \
-        --bundle sao_paulo=D:/Git/RampNet/benchmark/sao_paulo \
-        --bundle paterson=D:/Git/RampNet/benchmark/paterson \
-        --bundle annapolis=D:/Git/RampNet/benchmark/annapolis \
-        --write reports/data/2026-09-26-crop-sizing-v3.json
+        --bundle richmond=<RampNet>/benchmark/richmond \
+        --bundle sao_paulo=<RampNet>/benchmark/sao_paulo \
+        --bundle paterson=<RampNet>/benchmark/paterson \
+        --bundle annapolis=<RampNet>/benchmark/annapolis \
+        --write reports/data/2026-09-26-crop-sizing-v3.json \
+        --figure reports/figures/2026-09-26-crop-sizing-v3-examples.jpg
+
+`meta` records the RampNet commit and each bundle's path RELATIVE to its RampNet checkout, and
+`generated_by` is written with `<RampNet>/` in place of the checkout, so the artifact carries no one
+machine's absolute paths and the command above reproduces it byte for byte from any checkout.
 
 **The selection criterion for the one fitted constant**, stated here because it is the method lesson
 from v2: `V3_CONTEXT_WIDTH_M` is the grid value (0.1 m steps, 4.0-8.0 m) whose pooled fill p50 is
@@ -33,6 +38,7 @@ does not arise here: nothing in this study carries a Project Sidewalk `label_id`
 it never monkeypatches the module constant.
 """
 import argparse
+import collections
 import json
 import math
 import os
@@ -49,7 +55,8 @@ for _p in (REPO_ROOT, SCRIPTS):
         sys.path.insert(0, _p)
 
 import CropRunner  # noqa: E402
-from crop_sizing_v2 import TOO_TIGHT_FILL, box_inside_window, load_bundle, pct  # noqa: E402
+from crop_sizing_v2 import (TOO_TIGHT_FILL, box_inside_window, load_bundle, pct, pick_examples,  # noqa: E402
+                             render_examples)
 from studyfmt import fmt, num  # noqa: E402
 
 CLAMP_CENSUS_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-09-clamp-census.json')
@@ -74,6 +81,12 @@ RULE_A_SCALE_GRID = [round(1.5 + 0.05 * i, 2) for i in range(41)]
 
 DISTANCE_TABLE_DEG = [0.5, 5.0, 10.0, 15.0, 20.0, 30.0, 35.0, 45.0]
 
+# The row order of the report's per-city tables.
+REPORT_CITY_ORDER = ('richmond', 'sao_paulo', 'annapolis', 'paterson')
+
+# Written into generated_by in place of the RampNet checkout, so no machine's absolute path is recorded.
+RAMPNET_PLACEHOLDER = '<RampNet>'
+
 
 # ---------------------------------------------------------------------------
 # Geometry, all of it through CropRunner.
@@ -93,7 +106,12 @@ def legacy_distance_m(depression_deg):
 
 
 def legacy_zero_crossing_deg():
-    """The depression at which the 2013 line reaches 0 m, after which the 1500-px clamp sizes the crop."""
+    """The depression at which the 2013 line reaches 0 m (35.15 deg).
+
+    Under v1 the 1500-px clamp sized every crop past it. Under v2 it is moot: the 90-degree cap already
+    binds from 26.55 deg (`rule_geometry.v2_cap_onset_deg`), so past that no v2 window depends on the
+    distance at all.
+    """
     return CropRunner.elevation_px_to_deg(CropRunner.V1_DIST_INTERCEPT / CropRunner.V1_DIST_SLOPE,
                                           CropRunner.V1_REF_HEIGHT)
 
@@ -244,8 +262,11 @@ def depression_only_ceiling(ramps):
 
     * `isotonic_r2`: the best non-decreasing function of depression, fitted to log(apron_deg). v2 and v3
       are both monotone in depression and extent_fit's R-squared is the best affine map of the log
-      window, which is itself monotone - so this is a true in-sample upper bound on both. It is the
-      ceiling the tests hold the rules under.
+      window, which is itself monotone - so this is an in-sample upper bound on both, given a positive
+      slope and up to integer-pixel rounding (a cut window is a function of depression only up to the
+      rounding of its width at each pano height, about 0.1%). It is the ceiling the tests hold the rules
+      under. Being in-sample with a step per distinct depression it is also optimistic, so the share of
+      the gap a rule closes against it is a lower bound.
     * `parametric_r2`: log(apron_deg) ~ [log(max(dep, 0.3)), dep, 1], three parameters. The smooth fit
       the plan proposed; it is NOT a bound on the rules (a 2 atan(W/2d) window is outside its span),
       and it is reported to show that.
@@ -361,10 +382,18 @@ def production_block(width_m, path=CLAMP_CENSUS_JSON):
             'label_type': 'CurbRamp', 'n': census['by_label_type']['CurbRamp']['n'], 'rows': rows}
 
 
+def provider_of(ramp):
+    """Mapillary image ids are all digits; GSV pano ids never are."""
+    return 'mapillary' if ramp['pano_id'].isdigit() else 'gsv'
+
+
 def city_block(ramps, width_m):
+    providers = collections.Counter(provider_of(r) for r in ramps)
     return {
         'n': len(ramps),
-        'provider': 'mapillary' if all(r['pano_id'].isdigit() for r in ramps) else 'gsv',
+        # 'mixed' for the pooled block: 430 of its 658 ramps are Mapillary, so one word would misname it.
+        'provider': next(iter(providers)) if len(providers) == 1 else 'mixed',
+        'provider_counts': dict(sorted(providers.items())),
         'pano_heights': sorted({r['pano_h'] for r in ramps}),
         'ramp_width_deg_p50': num(pct([apron_deg(r) for r in ramps], 50)),
         'v2': score_rule(ramps, 'v2'),
@@ -377,23 +406,127 @@ def city_block(ramps, width_m):
     }
 
 
-def rampnet_commit(path):
+def _git(path, *args):
     try:
-        return subprocess.run(['git', '-C', path, 'rev-parse', 'HEAD'], capture_output=True, text=True,
+        return subprocess.run(['git', '-C', path] + list(args), capture_output=True, text=True,
                               check=True).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 
 
-def build_summary(by_city, bundles, argv):
+def rampnet_commit(path):
+    return _git(path, 'rev-parse', 'HEAD')
+
+
+def bundle_spec(path):
+    """A bundle's path relative to the root of the git checkout holding it, '/'-separated - or the path
+    as given when it is not in a checkout. What `meta.bundles` records instead of an absolute path."""
+    root = _git(path, 'rev-parse', '--show-toplevel')
+    if not root:
+        return path.replace('\\', '/')
+    return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace(os.sep, '/')
+
+
+def canonical_command(argv, bundles):
+    """The command line as `generated_by` records it: bundle paths under `<RampNet>/`, output paths
+    relative to this repo when they are inside it. Nothing machine-specific survives."""
+    out, flag = ['python reports/scripts/crop_sizing_v3.py'], None
+    for token in argv:
+        if flag == '--bundle' and '=' in token:
+            city, path = token.split('=', 1)
+            spec = bundle_spec(path)
+            token = '%s=%s/%s' % (city, RAMPNET_PLACEHOLDER, spec) if spec != path.replace('\\', '/') \
+                else token
+        elif flag in ('--write', '--figure'):
+            absolute = os.path.abspath(token)
+            if os.path.commonpath([absolute, REPO_ROOT]) == REPO_ROOT:
+                token = os.path.relpath(absolute, REPO_ROOT).replace(os.sep, '/')
+        out.append(token)
+        flag = token if token.startswith('--') else None
+    return ' '.join(out)
+
+
+def figure_examples(by_city, bundles):
+    """The v2 figure's own picks (crop_sizing_v2.pick_examples - two gold ramps per city, spanning the
+    depression range, on panos present on disk), with the v3 window beside the v2 one."""
+    examples = pick_examples(by_city, bundles)
+    for example in examples:
+        example['v2'] = tuple(window_for(example, rule='v2'))[:4]
+        example['v3'] = tuple(window_for(example, rule='v3'))[:4]
+    return examples
+
+
+def _example_record(example):
+    record = {'city': example['city'], 'pano_id': example['pano_id'], 'key': example['key'],
+              'pano_w': example['pano_w'], 'pano_h': example['pano_h'],
+              'depression_deg': num(round(example['depression_deg'], 2))}
+    for rule in ('v2', 'v3'):
+        width, height = example[rule][2], example[rule][3]
+        record['%s_window_px' % rule] = [width, height]
+        record['%s_fill' % rule] = num(round(example['box_w'] / width, 3))
+        record['%s_window_deg' % rule] = num(round(CropRunner.azimuth_px_to_deg(width, example['pano_w']), 1))
+    return record
+
+
+# Which population every top-level key of the summary is computed on (the CLAUDE.md convention: two
+# figures in one artifact each name their frame). A key added to the summary without being claimed
+# here fails a test.
+GOLD_KEYS = ('cities', 'pooled', 'selection', 'window_change', 'rule_a_blend_powerlaw', 'figure_examples')
+CENSUS_KEYS = ('production',)
+NO_POPULATION_KEYS = ('constants', 'distance_table', 'rule_geometry')
+
+
+def populations(summary, n_gold):
+    production = summary.get('production') or {}
+    return {
+        'gold': {'name': 'boxed gold ramps in the RampNet benchmark bundles', 'n': n_gold,
+                 'covers': [k for k in GOLD_KEYS if k in summary],
+                 'subsets': {'exponent.legacy': 'excludes ramps past the 2013 line zero crossing '
+                                                '(no log of 0 m); its own n says how many remain'}},
+        'clamp_census': {'name': 'CurbRamp labels in the 2026-08-09 clamp census', 'n': production.get('n'),
+                         'source': production.get('source'),
+                         'covers': [k for k in CENSUS_KEYS if k in summary]},
+        'no_population': [k for k in NO_POPULATION_KEYS if k in summary],
+    }
+
+
+def rule_a_table(summary):
+    """The report's option A vs v3 table, one line per city and pooled, from the artifact alone.
+
+    Option A at its median-matched scale against v3 at the shipped width, `A / v3` in each cell. Printed
+    by main() and asserted line by line against the report, so the table is computed, not transcribed.
+    """
+    a = summary['rule_a_blend_powerlaw']
+    lines = ['| city | n | fill p50 | fill log-sd | fill p90/p10 | R² log window ~ log apron | '
+             'clearing "too tight" | containment |',
+             '|---|---:|---:|---:|---:|---:|---:|---:|']
+    names = [c for c in REPORT_CITY_ORDER if c in a['cities_matched']] + ['pooled']
+    for name in names:
+        ra = a['pooled_matched'] if name == 'pooled' else a['cities_matched'][name]
+        block = summary['pooled'] if name == 'pooled' else summary['cities'][name]
+        v3 = block['v3']
+        cells = [str(ra['n']),
+                 '%.3f / %.3f' % (ra['fill_p50'], v3['fill_p50']),
+                 '%.3f / %.3f' % (ra['fill_log_sd'], v3['fill_log_sd']),
+                 '%.2f / %.2f' % (ra['fill_p90_over_p10'], v3['fill_p90_over_p10']),
+                 '%.3f / %.3f' % (ra['r2'], block['r2']['v3']),
+                 '%.1f%% / %.1f%%' % (100 * ra['frac_clearing_too_tight'], 100 * v3['frac_clearing_too_tight']),
+                 '%.3f / %.3f' % (ra['containment'], v3['containment'])]
+        if name == 'pooled':
+            cells = ['**%s**' % c for c in cells]
+        lines.append('| %s | %s |' % ('**pooled**' if name == 'pooled' else name, ' | '.join(cells)))
+    return lines
+
+
+def build_summary(by_city, bundles, argv, examples=None):
     pooled = [r for ramps in by_city.values() for r in ramps]
     v2_pooled = score_rule(pooled, 'v2')
     matched = matched_context_width(pooled, v2_pooled['fill_p50'], GRID_M)
     band = matched_context_width(pooled, BAND_CENTRE_FILL, GRID_M)
     summary = {
         'meta': {'rampnet_commit': rampnet_commit(next(iter(bundles.values()))),
-                 'bundles': {c: p.replace('\\', '/') for c, p in sorted(bundles.items())},
-                 'generated_by': 'python reports/scripts/crop_sizing_v3.py ' + ' '.join(argv)},
+                 'bundles': {c: bundle_spec(p) for c, p in sorted(bundles.items())},
+                 'generated_by': canonical_command(argv, bundles)},
         'constants': {
             'v2': {'scale': CropRunner.CROP_SIZE_SCALE, 'min_fov_deg': CropRunner.CROP_MIN_FOV_DEG,
                    'max_fov_deg': CropRunner.CROP_MAX_FOV_DEG,
@@ -422,8 +555,9 @@ def build_summary(by_city, bundles, argv):
                           'min_fov_deg': CropRunner.CROP_MIN_FOV_DEG},
         'production': production_block(matched),
     }
-    summary['population'] = {'name': 'all boxed gold ramps in the four bundles', 'n': len(pooled),
-                             'covers': sorted(k for k in summary if k not in ('meta', 'population'))}
+    if examples:
+        summary['figure_examples'] = [_example_record(e) for e in examples]
+    summary['populations'] = populations(summary, len(pooled))
     return summary
 
 
@@ -433,6 +567,8 @@ def main(argv=None):
     parser.add_argument('--bundle', action='append', required=True, metavar='CITY=PATH',
                         help='benchmark bundle with boxes.json + records.jsonl (repeatable)')
     parser.add_argument('--write', help='where to write the summary JSON')
+    parser.add_argument('--figure', help='where to write the v2/v3 example contact sheet (needs the '
+                                         "bundles' panos/ on disk)")
     args = parser.parse_args(argv)
 
     bad = [spec for spec in args.bundle if '=' not in spec]
@@ -443,7 +579,13 @@ def main(argv=None):
     if not any(by_city.values()):
         parser.error('no boxed gold ramps found in the given bundles')
 
-    summary = build_summary(by_city, bundles, argv)
+    examples = figure_examples(by_city, bundles) if args.figure else []
+    if args.figure and not examples:
+        print("no panos on disk in the given bundles; skipping the figure")
+    summary = build_summary(by_city, bundles, argv, examples)
+    if examples:
+        size = render_examples(examples, args.figure, rules=('v2', 'v3'))
+        print("wrote %s %sx%s" % (args.figure, size[0], size[1]))
     sel = summary['selection']
     print("v2 pooled fill p50 %s -> matched V3_CONTEXT_WIDTH_M %s m (band-centre criterion: %s m)"
           % (fmt(sel['target_fill_p50'], '.3f'), fmt(sel['matched_context_width_m'], '.1f'),
@@ -463,6 +605,8 @@ def main(argv=None):
     print("v3/v2 window ratio p10 %s p50 %s p90 %s; %s move >10%%, %s >20%%"
           % (fmt(wc['ratio_p10'], '.3f'), fmt(wc['ratio_p50'], '.3f'), fmt(wc['ratio_p90'], '.3f'),
              fmt(wc['frac_over_10pct'], '.3f'), fmt(wc['frac_over_20pct'], '.3f')))
+    print("\nOption A (x%s) / v3, for the report's section 4:" % summary['rule_a_blend_powerlaw']['matched_scale'])
+    print('\n'.join(rule_a_table(summary)))
 
     if args.write:
         with open(args.write, 'w', encoding='utf-8', newline='\n') as f:
