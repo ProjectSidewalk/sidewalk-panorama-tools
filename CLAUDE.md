@@ -281,7 +281,7 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 - **`pano_x` is never bounds-checked and must not be.** Column 0 and column `pano_width` are the same place in the world, so the seam modulo reads any finite x correctly; production rows storing `pano_x == pano_width` exist and crop fine. `pano_y` *is* checked, because the poles are not adjacent and a clamp yields clean imagery of the wrong place.
 - **`bulk_extract_crops`' counts have one non-disjoint key.** `success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total`; `shifted_vertically` annotates a success instead of being its own bucket. Adding a bucket without adding it to that sum is how the invariant went stale before — a test asserts the sum from the dict, not from the docstring.
 
-### The depth planes are in the rig frame, and so are the tiles (#54, measured 2026-09-26)
+### The depth planes are in the rig frame, and the tiles are not levelled (#54, measured 2026-09-26)
 
 - **One frame, one sign, in `reports/scripts/tilt_geometry.py`.** The depth artifact's axes are x = left,
   y = back, **z = down** (the ray formula in `docs/depth.md`, not "z up"). Its facade normals follow the stored
@@ -289,11 +289,16 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
   points below the horizon, `roll > 0` = left side up**, so a gravity-horizontal direction sits at rig elevation
   `+T(b)`, `T(b) = pitch cos b + roll sin b`, `b = (pano_x / w) * 360 - 180`. The #54 plan had both the axis and
   the sign backwards; don't re-derive either, call the module.
-- **`pano_y` is not pixel-true for a tilted pano (preliminary).** The stored tiles lean with the rig in both scrape
-  eras (F2: gravity-levelled rejected in every readable arm). In a blind first pass the labelled feature sat at the
-  rig pixel `pano_y - T h/180` in 37 of 48 sheets, and at the stored `pano_y` in 3. Jon's decision-bearing
+- **Whether `pano_y` is pixel-true for a tilted pano is under test, pending Jon's adjudication.** The stored
+  tiles are not gravity-levelled in either scrape era (F2: every arm's raw lean slope excludes 0; the calibrated
+  slopes are estimates below 1, cause open). Endpoint C, preliminary and machine-judged: **split by the pre-set
+  rule; leak 37, antileak 0**. That machine judge knew the hypothesis, and the stored window is identifiable by
+  content (it always sits between the other two), so only leak-vs-antileak is blind. Jon's decision-bearing
   adjudication (`tilt_adjudicate.py`) is pending, and no correction has landed in CropRunner. Don't write one
   before it does.
+- **The adjudication key is sealed.** `reports/data/2026-09-26-tilt-adjudication/sealed/` holds the key and the
+  machine verdicts; the working folder holds only `key.sha256`. `next`/`record` refuse to run while a key file sits
+  outside `sealed/`. Never move the key back beside the sheets, and never caption a figure with it.
 - **The `.xml` files beside 2019-22 scrapes carry legacy tilt**, for dead panos too.
   `tilt_geometry.xml_tilt_to_pitch_roll` is the one conversion (fitted on 3,594 panos with both files, median
   residual about 0.1 deg). Pose a JPEG by the file of its own scrape era: an `.xml` JPEG is a 2019-22 stitch, and a 2026

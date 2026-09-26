@@ -21,11 +21,17 @@ The estimator, per pano:
   4. per bearing bin, the magnitude-weighted mean lean; None when fewer than min_pixels qualify
      (undefined is not zero).
 
-Known biases, both toward zero: the +-12 deg window truncates, and real scenes carry near-vertical
-edges that are not world-vertical. So **calibration is part of the instrument**: every pano is also
+Why the raw slope reads below 1: the +-12 deg window truncates, and the estimator is a weighted mean
+over every strong near-vertical edge. So **calibration is part of the instrument**: every pano is also
 measured after `warp_with_extra_tilt` adds a known +2 deg of pitch (and, for one pano in
 `--calibrate-roll-every`, +2 deg of roll) by exact resampling, and the per-arm slope of
-(after - before) on the predicted change is the attenuation `a` the study divides out.
+(after - before) on the predicted change is the attenuation `a` the study divides out. The added tilt is
+written into every row (`extra_pitch`, `extra_roll`), and the analysis reads it from there.
+
+Edges that are not world-vertical (trees, off-plumb poles) are NOT a bias of the calibrated value: the
+real tilt rotates the whole image, clutter included, exactly as the warp does, so clutter adds noise to
+b / a, not a shortfall (tests/test_tilt_frame.py, over many scenes). An earlier version of this
+docstring said the opposite; the #158 review showed its one-seed test passed by chance.
 
     python tilt_frame.py --panos sel.csv (--store <root> | --pano-root <dir>) --out lean.csv \\
         [--calibrate] [--workers 4] [--resume]

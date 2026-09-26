@@ -9,6 +9,10 @@ Two subcommands, so the analysis runs from committed data alone:
         --facades .cache/tilt/facades_seattle-wa.p0.csv ... --corpus-facades .cache/tilt/facades_corpus.csv \\
         --lean .cache/tilt/lean_corpus.csv --lean .cache/tilt/lean_store.csv \\
         --adjudication .cache/tilt/adjudication     # copied, sealed/ and all, to reports/data/
+    # 1b. roll-census: how many rawLabels rows carry camera_roll (a gitignored rawLabels pull in,
+    #     reports/data/2026-09-26-tilt-roll-census.json out)
+    python reports/scripts/tilt_error_study.py roll-census --rawlabels-dir .cache/rawlabels-all-2026-09-12 \\
+        --fetched 2026-09-12
     # 2. analyze: committed data -> reports/data/2026-09-26-tilt-error-study.json + figures
     python reports/scripts/tilt_error_study.py analyze [--figure-dir reports/figures]
 
@@ -54,6 +58,8 @@ DATA = os.path.join(REPO_ROOT, 'reports', 'data')
 FIGURES = os.path.join(REPO_ROOT, 'reports', 'figures')
 PREFIX = '2026-09-26-tilt-'
 CORPUS_CSV = os.path.join(DATA, '2026-08-12-crop-corpus-gsv.csv.gz')
+CENSUS_JSON = os.path.join(DATA, '2026-08-09-photometa-census.json')
+ROLL_CENSUS = os.path.join(DATA, '2026-09-26-tilt-roll-census.json')
 ARTIFACT = os.path.join(DATA, PREFIX + 'error-study.json')
 ADJ_DIR = os.path.join(DATA, PREFIX + 'adjudication')
 ADJ_PUBLIC = ('draw.json', 'tasks.json', tilt_adjudicate.KEY_HASH, 'README.md')
@@ -71,7 +77,17 @@ F2_RIG, F2_GRAVITY = (0.7, 1.3), (-0.3, 0.3)
 C_RULE_SHARE = 0.9        # plan section 1.2: >= 90% of ALL n (none included) for one window, else 'split'
 RAMPNET_SIGMA_PX = 12.0      # RampNet's stage-one click sigma on a 4096-high pano (issue #54 comment)
 RAMPNET_HEIGHT_PX = 4096.0
+TAGGER_WINDOW_PX = 640.0     # sidewalk-tagger-ai: a fixed 640 x 640 pixel crop (2026-08-09 consumer-requirements report)
 Z95 = 1.959963984540054
+N_BOOT = 1000               # pano-cluster bootstrap of the calibrated F2 ratios (b and a resampled together)
+BOOT_SEED = 20260926
+
+# How the Seattle store sample was drawn (tilt_pose_scan.py; the scan ran as four parts over a seeded
+# one-in-four shard sample, each part reading facades from a seeded subset of its artifacts). Recorded
+# here because the scan's own arguments are not in any committed file.
+SEATTLE_SAMPLING = {'seed': 20260926, 'n_shards': 4096, 'shard_sample': '1/4', 'n_parts': 4,
+                    'facade_artifacts_per_part': 1500, 'facade_artifacts_total': 6000,
+                    'full_scan_estimate_minutes': 95}
 
 
 # ---- small helpers ----------------------------------------------------------------------------
@@ -182,33 +198,45 @@ def _demean(values, groups):
     return (s - s.groupby(np.asarray(groups)).transform('mean')).to_numpy()
 
 
-def calibration_slope(lean, variant, extra):
-    """Attenuation: slope of (lean after a known added tilt - lean before) on the predicted change."""
+def _calibration_pairs(lean, variant):
+    """(base, calibrated) lean pairs per (pano, bin), with the predicted change computed from the
+    tilt the instrument says it ADDED (its extra_pitch / extra_roll columns), never an assumed +2."""
     base = lean[lean['variant'] == 'base'][['city', 'pano_id', 'bin', 'bin_centre_deg', 'lean_deg']]
-    cal = lean[lean['variant'] == variant][['city', 'pano_id', 'bin', 'lean_deg']]
+    cal = lean[lean['variant'] == variant][['city', 'pano_id', 'bin', 'lean_deg', 'extra_pitch', 'extra_roll']]
     m = base.merge(cal, on=['city', 'pano_id', 'bin'], suffixes=('_b', '_c'), validate='one_to_one')
     m = m[np.isfinite(m['lean_deg_b']) & np.isfinite(m['lean_deg_c'])]
+    pred = tg.vertical_lean_deg(m['bin_centre_deg'].to_numpy(float), m['extra_pitch'].to_numpy(float),
+                                m['extra_roll'].to_numpy(float))
+    return m.assign(pred=pred, d=(m['lean_deg_c'] - m['lean_deg_b']).to_numpy(float))
+
+
+def calibration_slope(lean, variant):
+    """Attenuation: slope of (lean after a known added tilt - lean before) on the predicted change."""
+    m = _calibration_pairs(lean, variant)
     if m.empty:
         return None, 0
-    pred = tg.vertical_lean_deg(m['bin_centre_deg'].to_numpy(float), extra[0], extra[1])
-    d = (m['lean_deg_c'] - m['lean_deg_b']).to_numpy(float)
-    return num(np.dot(d, pred) / np.dot(pred, pred)), int(m['pano_id'].nunique())
+    return num(np.dot(m['d'], m['pred']) / np.dot(m['pred'], m['pred'])), int(m['pano_id'].nunique())
 
 
 SATURATED_A = 0.1
 
 
-def tile_frame_fit(lean, pose):
+def tile_frame_fit(lean, pose, n_boot=N_BOOT):
     """F2 on one arm: pano fixed effects (demean within pano), the two-coefficient fit, and the
     calibrated coefficients b / a with a from the +2 deg pitch (and roll) warps - on this arm's own
     panos only.
 
-    Two flags, both read by the report. `gravity_band_excluded`: both calibrated CIs sit above the
-    gravity band's upper edge, i.e. the tiles are not gravity-levelled. `saturated`: the pitch
-    calibration slope is below SATURATED_A, meaning an added 2 deg barely moves the measurement - the
-    estimator is outside its linear range (leans beyond its +-12 deg window), and no calibrated value
-    from that arm means anything. The calibrated values themselves are lower bounds: the warp rotates
-    world-leaning clutter along with world-vertical edges (tests/test_tilt_frame.py pins this)."""
+    What the report reads, in order of robustness:
+    * `raw_min_z`, `raw_excludes_zero`: the RAW slopes. Gravity-levelled tiles predict a raw slope of
+      0 whatever the calibration, so "not levelled" rests on these, in every arm including saturated.
+    * `saturated`: the pitch calibration slope is below SATURATED_A, so an added 2 deg barely moves the
+      measurement - the estimator is outside its linear range (leans beyond its +-12 deg window) and no
+      calibrated value from that arm means anything.
+    * the calibrated coefficients b / a: ESTIMATES. Why they fall short of 1 is open: a synthetic scene
+      with world-leaning clutter shows noise, not that shortfall (tests/test_tilt_frame.py). Two CIs:
+      `ci_*_calibrated` divides the raw CI by a (conditional on a); `ci_*_calibrated_boot` is a
+      pano-cluster bootstrap that resamples b and a together, and is the one the report quotes.
+    * `gravity_band_excluded`: both calibrated CIs above the gravity band; None when saturated."""
     keep = pose[['city', 'pano_id']].drop_duplicates()
     lean = lean.merge(keep, on=['city', 'pano_id'], how='inner', validate='many_to_one')
     base = lean[lean['variant'] == 'base'].drop(columns=[c for c in ('pitch_deg', 'roll_deg') if c in lean.columns])
@@ -221,21 +249,81 @@ def tile_frame_fit(lean, pose):
     xp = _demean(-m['pitch_deg'].to_numpy(float) * np.sin(c), key)
     xr = _demean(m['roll_deg'].to_numpy(float) * np.cos(c), key)
     raw = fit_two_coefficient(y, xp, xr, key)
-    a_p, n_ap = calibration_slope(lean, 'cal_pitch', (2.0, 0.0))
-    a_r, n_ar = calibration_slope(lean, 'cal_roll', (0.0, 2.0))
+    a_p, n_ap = calibration_slope(lean, 'cal_pitch')
+    a_r, n_ar = calibration_slope(lean, 'cal_roll')
     out = {'raw': raw, 'n_panos': int(key.nunique()), 'a_pitch': a_p, 'a_pitch_n_panos': n_ap,
            'a_roll': a_r, 'a_roll_n_panos': n_ar}
+    z = [raw['beta_%s' % ax] / raw['se_%s' % ax] for ax in ('p', 'r') if raw['se_%s' % ax]]
+    out['raw_min_z'] = num(min(z)) if len(z) == 2 else None
+    out['raw_excludes_zero'] = bool(raw['ci_p'][0] > 0 and raw['ci_r'][0] > 0)
     for axis, a in (('p', a_p), ('r', a_r)):
         ok = a is not None and raw['beta_' + axis] is not None
         out['beta_%s_calibrated' % axis] = num(raw['beta_' + axis] / a) if ok else None
         out['ci_%s_calibrated' % axis] = [num(v / a) for v in raw['ci_' + axis]] if ok else [None, None]
-    lows = [out['ci_p_calibrated'][0], out['ci_r_calibrated'][0]]
-    out['gravity_band_excluded'] = bool(all(v is not None and v > F2_GRAVITY[1] for v in lows))
     out['saturated'] = bool(a_p is None or a_p < SATURATED_A)
+    boot = calibrated_bootstrap(y, xp, xr, key, lean, n_boot=n_boot) if n_boot else None
+    for axis in ('p', 'r'):
+        out['ci_%s_calibrated_boot' % axis] = boot[axis] if boot else [None, None]
+    lows = [out['ci_p_calibrated'][0], out['ci_r_calibrated'][0]]
+    out['gravity_band_excluded'] = (None if out['saturated'] else
+                                    bool(all(v is not None and v > F2_GRAVITY[1] for v in lows)))
+    return out
+
+
+def _per_cluster_sums(values, clusters, order):
+    """Sum `values` (n, ...) within each cluster, rows aligned to `order` (missing clusters -> 0)."""
+    idx = pd.Index(order).get_indexer(np.asarray(clusters))
+    keep = idx >= 0
+    out = np.zeros((len(order),) + np.asarray(values).shape[1:])
+    np.add.at(out, idx[keep], np.asarray(values)[keep])
+    return out
+
+
+def calibrated_bootstrap(y, xp, xr, key, lean, n_boot=N_BOOT, seed=BOOT_SEED, weights=None):
+    """95% percentile CIs of b_p / a_pitch and b_r / a_roll under a pano-cluster bootstrap that
+    resamples the raw fit and both calibration slopes together (the calibration panos are a subset,
+    one in four for roll, so their sampling error is part of the ratio's). Exact per-pano sufficient
+    statistics, so a replicate is a weighted sum, not a refit: with every weight 1 it reproduces
+    tile_frame_fit's point values exactly (tests pin this). -> {'p': [lo, hi], 'r': [lo, hi]}."""
+    key = np.asarray(key)
+    pairs = {axis: _calibration_pairs(lean, variant) for axis, variant in (('p', 'cal_pitch'), ('r', 'cal_roll'))}
+    cal_keys = {axis: (m['city'].astype(str) + '/' + m['pano_id']).to_numpy() for axis, m in pairs.items()}
+    panos = np.unique(np.concatenate([key] + list(cal_keys.values())))
+    X = np.column_stack([xp, xr])
+    ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1)
+    XtX = _per_cluster_sums(X[ok][:, :, None] * X[ok][:, None, :], key[ok], panos)
+    Xty = _per_cluster_sums(X[ok] * np.asarray(y)[ok][:, None], key[ok], panos)
+    cal = {}
+    for axis, m in pairs.items():
+        k = cal_keys[axis]
+        cal[axis] = (_per_cluster_sums((m['d'] * m['pred']).to_numpy(float), k, panos),
+                     _per_cluster_sums((m['pred'] * m['pred']).to_numpy(float), k, panos))
+    if weights is None:
+        rng = np.random.default_rng(seed)
+        w = rng.multinomial(len(panos), np.full(len(panos), 1.0 / len(panos)), size=n_boot).astype(float)
+    else:
+        w = np.asarray(weights, float)                  # (replicates, panos in np.unique order): a test seam
+    beta = np.linalg.solve(np.einsum('bk,kij->bij', w, XtX), np.einsum('bk,ki->bi', w, Xty)[..., None])[..., 0]
+    out = {}
+    for i, axis in enumerate(('p', 'r')):
+        num_, den = cal[axis]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ratio = beta[:, i] / ((w @ num_) / (w @ den))
+        ratio = ratio[np.isfinite(ratio)]
+        out[axis] = [num(np.percentile(ratio, 2.5)), num(np.percentile(ratio, 97.5))] if len(ratio) else [None, None]
     return out
 
 
 # ---- C ---------------------------------------------------------------------------------------
+
+def sign_test(leak, antileak):
+    """The blind-robust contrast: the stored window always sits between the other two, so a judge can
+    tell it apart by content, but nothing on a sheet says which outer window is which without T's
+    sign. Under no leak, leak and antileak are exchangeable: one-sided exact sign test."""
+    n = leak + antileak
+    return {'leak': int(leak), 'antileak': int(antileak),
+            'p_one_sided': num(tilt_adjudicate.binom_sf(leak, n, 0.5)) if n else None}
+
 
 def posthoc_decisive_share(arm, name):
     """Share of the non-`none` verdicts that chose `name`; None when every verdict was `none`.
@@ -254,6 +342,24 @@ def c_by_direction(verdicts, key):
         d['n'] += 1
         d['none' if choice == 'none' else k['order']['ABC'.index(choice)]] += 1
     return out
+
+
+def rig_pixel_shift_stats(key):
+    """How far the exact rig pixel (tilt_geometry.rig_pixel_from_gravity_pixel, both axes) sits from the
+    leak window's centre, which shifts y only (y - T h/180, first order). The x term is first order in
+    the tilt away from the horizon, so a crop-time correction must move both coordinates."""
+    rows = []
+    for k in key.values():
+        w, h = k['pano_width'], k['pano_height']
+        xr, yr = tg.rig_pixel_from_gravity_pixel(k['pano_x'], k['pano_y'], w, h, k['pitch_deg'], k['roll_deg'])
+        dx = (float(xr) - k['pano_x'] + w / 2) % w - w / 2
+        width = CropRunner.crop_window_width(k['pano_y'], w, h)
+        dy = float(yr) - tilt_adjudicate.window_centres(k['pano_y'], k['T_deg'], h)['leak']
+        rows.append((abs(dx), abs(dx) / width, abs(dy) / (width / CropRunner.CROP_ASPECT_W_OVER_H)))
+    a = np.array(rows)
+    return {'n': int(len(a)), 'max_abs_dx_px': num(a[:, 0].max()), 'max_dx_fraction_of_width': num(a[:, 1].max()),
+            'median_dx_fraction_of_width': num(np.median(a[:, 1])),
+            'max_dy_error_fraction_of_height': num(a[:, 2].max())}
 
 
 def c_verdict(arm):
@@ -309,7 +415,8 @@ def xml_npz_convention(overlap):
     xp, xr = tg.xml_tilt_to_pitch_roll(overlap['xml_pano_yaw_deg'], overlap['xml_tilt_yaw_deg'],
                                        overlap['xml_tilt_pitch_deg'])
     vec = np.hypot(np.asarray(xp) - P, np.asarray(xr) - R)
-    return {'n_overlap': int(len(overlap)), 'best': best,
+    others = [max(v) for k, v in alts.items() if k != best]
+    return {'n_overlap': int(len(overlap)), 'best': best, 'min_miss_of_other_readings_deg': num(min(others)),
             'alternatives': {k: {'median_abs_dpitch_deg': num(v[0]), 'median_abs_droll_deg': num(v[1])}
                              for k, v in alts.items()},
             'median_abs_dpitch_deg': num(np.median(np.abs(np.asarray(xp) - P))),
@@ -345,7 +452,8 @@ def miscentering_row(band, depression_deg, t_p90_deg, pano_height=8192):
             'window_width_deg': num(fov), 'window_height_deg': num(height), 'T_p90_deg': num(t_p90_deg),
             'ceiling_shift_deg': num(t_p90_deg), 'ceiling_shift_px_8192': num(t_p90_deg * 8192 / 180.0),
             'ceiling_fraction_of_height': num(t_p90_deg / height),
-            'rampnet_sigma_multiple': num(t_p90_deg * RAMPNET_HEIGHT_PX / 180.0 / RAMPNET_SIGMA_PX)}
+            'rampnet_sigma_multiple': num(t_p90_deg * RAMPNET_HEIGHT_PX / 180.0 / RAMPNET_SIGMA_PX),
+            'tagger_640px_fraction_8192': num(t_p90_deg * 8192 / 180.0 / TAGGER_WINDOW_PX)}
 
 
 def miscentering_table(corpus, pose_att):
@@ -397,7 +505,7 @@ def extent_gold_pairs(city, boxes, labels):
 
 # ---- populations and the report contract ------------------------------------------------------
 
-TOP_LEVEL_META = {'generated_from', 'conventions', 'populations', 'wrong_turns', 'verdicts'}
+TOP_LEVEL_META = {'generated_from', 'conventions', 'populations', 'wrong_turns', 'deviations', 'verdicts'}
 
 
 def check_populations(summary):
@@ -412,62 +520,145 @@ def check_populations(summary):
         sorted(figures - set(claimed)), sorted(set(claimed) - figures))
 
 
+F2_ARM_NAMES = {'corpus_xml': 'corpus, XML-era', 'corpus_modern': 'corpus, modern',
+                'store_random_xml': 'store random, XML-era', 'store_random_modern': 'store random, modern',
+                'store_top_xml': 'store top-tilt, XML-era', 'store_top_modern': 'store top-tilt, modern'}
+S1_ERA_NAMES = {'xml': 'XML-era (xml)', 'modern': 'modern (npz)'}
+
+
+def _c(n):
+    return '{:,}'.format(n)
+
+
+def _ci3(ci):
+    return '[%s, %s]' % (fmt(ci[0], '.3f'), fmt(ci[1], '.3f'))
+
+
+def _pct(x, spec='.1f'):
+    return fmt(100 * x, spec) + '%'
+
+
 def report_numbers(s):
-    """Every number the markdown quotes, formatted exactly as quoted."""
+    """Every number the markdown quotes, each IN THE CONTEXT it is quoted in - a whole table row, or
+    the words around a number in prose - so a value that merely occurs somewhere else in the report
+    (a bare '2', '14', '0.001') cannot satisfy it. Matched against the whitespace-collapsed markdown."""
     out = {}
-    for arm, v in s['f1_depth_frame'].items():
-        f = v['fit']
-        out['f1.%s.n' % arm] = '{:,}'.format(f['n'])
-        out['f1.%s.panos' % arm] = '{:,}'.format(f['n_clusters'])
-        out['f1.%s.bp' % arm] = fmt(f['beta_p'], '.4f')
-        out['f1.%s.br' % arm] = fmt(f['beta_r'], '.4f')
-        out['f1.%s.cip' % arm] = '[%s, %s]' % (fmt(f['ci_p'][0], '.4f'), fmt(f['ci_p'][1], '.4f'))
-        out['f1.%s.cir' % arm] = '[%s, %s]' % (fmt(f['ci_r'][0], '.4f'), fmt(f['ci_r'][1], '.4f'))
-        out['f1.%s.resid' % arm] = fmt(f['median_abs_resid_deg'], '.3f')
-    for arm, v in s['f2_tile_frame'].items():
-        out['f2.%s.panos' % arm] = '{:,}'.format(v['n_panos'])
-        out['f2.%s.bp' % arm] = fmt(v['raw']['beta_p'], '.3f')
-        out['f2.%s.br' % arm] = fmt(v['raw']['beta_r'], '.3f')
-        out['f2.%s.ap' % arm] = fmt(v['a_pitch'], '.3f')
+    pops = s['populations']
+    corpus = pops['corpus_panos']
+    samp = pops['seattle_pose_sample']['sampling']
+    s1 = s['s1_tilt_prior']
+    out['method.sample'] = '%s two-character shards (%s pano ids)' % (_c(samp['n_shards']), _c(s1['n_pano_ids_sampled']))
+    out['method.facades'] = 'a seeded %s artifacts per scan process (%s total)' % (
+        _c(samp['facade_artifacts_per_part']), _c(samp['facade_artifacts_total']))
+    out['method.seed'] = 'seed %d' % samp['seed']
+    out['method.corpus'] = 'the %s panos of the 2026-08-12 study corpus in %d cities' % (_c(corpus['n_panos']),
+                                                                                       corpus['n_cities'])
+    out['wrong_turn.minutes'] = 'about %d minutes' % samp['full_scan_estimate_minutes']
+    for arm, label in (('seattle', 'Seattle sample'), ('corpus', 'corpus, %d cities' % corpus['n_cities'])):
+        f = s['f1_depth_frame'][arm]['fit']
+        out['f1.%s' % arm] = '| %s | %s | %s | %s [%s, %s] | %s [%s, %s] | %s |' % (
+            label, _c(f['n']), _c(f['n_clusters']), fmt(f['beta_p'], '.4f'), fmt(f['ci_p'][0], '.4f'),
+            fmt(f['ci_p'][1], '.4f'), fmt(f['beta_r'], '.4f'), fmt(f['ci_r'][0], '.4f'), fmt(f['ci_r'][1], '.4f'),
+            fmt(f['median_abs_resid_deg'], '.3f'))
+    f2 = s['f2_tile_frame']
+    for arm, v in f2.items():
+        head = '| %s | %s | %s / %s (%s SE) | %s / %s |' % (
+            F2_ARM_NAMES[arm], _c(v['n_panos']), fmt(v['raw']['beta_p'], '.3f'), fmt(v['raw']['beta_r'], '.3f'),
+            fmt(v['raw_min_z'], '.1f'), fmt(v['a_pitch'], '.3f'), fmt(v['a_roll'], '.3f'))
         if v['saturated']:
-            continue            # its calibrated values mean nothing; the report does not quote them
-        out['f2.%s.bpc' % arm] = fmt(v['beta_p_calibrated'], '.3f')
-        out['f2.%s.brc' % arm] = fmt(v['beta_r_calibrated'], '.3f')
-        out['f2.%s.cipc' % arm] = '[%s, %s]' % tuple(fmt(x, '.3f') for x in v['ci_p_calibrated'])
-        out['f2.%s.circ' % arm] = '[%s, %s]' % tuple(fmt(x, '.3f') for x in v['ci_r_calibrated'])
+            out['f2.%s' % arm] = head + ' saturated | saturated |'
+        else:
+            out['f2.%s' % arm] = head + ' %s %s | %s %s |' % (
+                fmt(v['beta_p_calibrated'], '.3f'), _ci3(v['ci_p_calibrated_boot']),
+                fmt(v['beta_r_calibrated'], '.3f'), _ci3(v['ci_r_calibrated_boot']))
+    readable = [v for v in f2.values() if not v['saturated']]
+    points = [x for v in readable for x in (v['beta_p_calibrated'], v['beta_r_calibrated'])]
+    out['f2.minz'] = 'at least %s standard errors' % fmt(min(v['raw_min_z'] for v in f2.values()), '.1f')
+    out['f2.range'] = 'from %s to %s' % (fmt(min(points), '.3f'), fmt(max(points), '.3f'))
+    for era, name in (('xml', 'XML-era'), ('modern', 'modern')):
+        r = f2['store_top_%s' % era]['pose_tilt_magnitude_range_deg']
+        out['f2.top.%s' % era] = '%s-%s deg (%s)' % (fmt(r[0], '.1f'), fmt(r[1], '.1f'), name)
     s2 = s['s2_xml_npz']
-    out['s2.n'] = '{:,}'.format(s2['n_overlap'])
-    out['s2.dp'] = fmt(s2['median_abs_dpitch_deg'], '.3f')
-    out['s2.dr'] = fmt(s2['median_abs_droll_deg'], '.3f')
-    out['s2.share1'] = fmt(100 * s2['share_vector_diff_over_1deg'], '.1f') + '%'
+    out['s2.n'] = 'fitted on %s Seattle panos carrying both files' % _c(s2['n_overlap'])
+    out['s2.resid'] = 'median residuals against the npz pose are %s deg (pitch) and %s deg (roll)' % (
+        fmt(s2['median_abs_dpitch_deg'], '.3f'), fmt(s2['median_abs_droll_deg'], '.3f'))
+    out['s2.miss'] = 'misses by at least %s deg' % fmt(s2['min_miss_of_other_readings_deg'], '.2f')
+    out['s2.share1'] = '%s of the overlap (%s panos)' % (_pct(s2['share_vector_diff_over_1deg']),
+                                                         _c(s2['n_vector_diff_over_1deg']))
     ps = s['s2_ps_camera_pitch']
-    out['ps.npz'] = fmt(ps['npz']['median_abs_diff_deg'], '.3f')
-    out['ps.xml'] = fmt(ps['xml']['median_abs_diff_deg'], '.3f')
-    out['ps.roll'] = '{:,}'.format(ps['corpus_labels_with_camera_roll'])
-    for era, v in s['s1_tilt_prior']['by_scrape_era'].items():
-        out['s1.%s.n' % era] = '{:,}'.format(v['n_panos'])
-        for k in ('abs_pitch_p50_deg', 'abs_pitch_p90_deg', 'abs_roll_p50_deg', 'abs_roll_p90_deg',
-                  'abs_T_p50_deg', 'abs_T_p90_deg', 'abs_T_p99_deg'):
-            out['s1.%s.%s' % (era, k)] = fmt(v[k], '.2f')
+    out['ps.pitch'] = 'npz pitch to a median %s deg and the XML-derived pitch to %s deg' % (
+        fmt(ps['npz']['median_abs_diff_deg'], '.3f'), fmt(ps['xml']['median_abs_diff_deg'], '.3f'))
+    out['ps.roll'] = '%s of the %s corpus labels carry `camera_roll`' % (_c(ps['corpus_labels_with_camera_roll']),
+                                                                         _c(ps['corpus_labels']))
+    rc = ps['rawlabels_roll_census']
+    out['ps.census'] = '%s of %s rawLabels rows across %d deployments (%s pull)' % (
+        _c(rc['rows_with_camera_roll']), _c(rc['rows']), rc['n_deployments'], rc['fetched'])
+    out['ps.census.src'] = 'all of them Mapillary (%s of %s Mapillary rows; %s of %s GSV rows)' % (
+        _c(rc['by_source']['mapillary']['rows_with_camera_roll']), _c(rc['by_source']['mapillary']['rows']),
+        _c(rc['by_source']['gsv']['rows_with_camera_roll']), _c(rc['by_source']['gsv']['rows']))
+    out['s1.xmlposed'] = '%s posed panos are XML-era scrapes' % _c(s1['by_scrape_era']['xml']['n_panos'])
+    out['s1.population'] = '%s posed of the %s sampled pano ids (%s have no pose' % (
+        _c(s1['n_posed']), _c(s1['n_pano_ids_sampled']), _c(s1['n_unposed']))
+    for era, v in s1['by_scrape_era'].items():
+        out['s1.%s' % era] = '| %s | %s | %s / %s | %s / %s | %s / %s / %s |' % (
+            S1_ERA_NAMES[era], _c(v['n_panos']), fmt(v['abs_pitch_p50_deg'], '.2f'), fmt(v['abs_pitch_p90_deg'], '.2f'),
+            fmt(v['abs_roll_p50_deg'], '.2f'), fmt(v['abs_roll_p90_deg'], '.2f'), fmt(v['abs_T_p50_deg'], '.2f'),
+            fmt(v['abs_T_p90_deg'], '.2f'), fmt(v['abs_T_p99_deg'], '.2f'))
+    old = s1['superseded_prior']
+    out['s1.old'] = '| photometa census, 2026-08-09 (live, all eras) | %s | %s / %s | %s / %s | not computed |' % (
+        _c(old['n_panos']), fmt(old['abs_pitch_p50_deg'], '.2f'), fmt(old['abs_pitch_p90_deg'], '.2f'),
+        fmt(old['abs_roll_p50_deg'], '.2f'), fmt(old['abs_roll_p90_deg'], '.2f'))
+    out['s1.labels'] = 'bearings of all %s corpus labels' % _c(corpus['n_labels'])
+    beta = s['s3_assumed_beta_range']
+    out['s3.beta'] = 'b = %s' % fmt(beta['range'][0], '.3f')
     for row in s['s3_miscentering']:
-        for k, spec in (('T_p90_deg', '.2f'), ('window_height_deg', '.1f'), ('ceiling_shift_px_8192', '.0f'),
-                        ('rampnet_sigma_multiple', '.1f')):
-            out['s3.%s.%s' % (row['band'], k)] = fmt(row[k], spec)
-        out['s3.%s.frac' % row['band']] = fmt(100 * row['ceiling_fraction_of_height'], '.1f') + '%'
+        out['s3.%s' % row['band']] = '| %s | %s | %s | %s | %s | %s | %s | %s |' % (
+            row['band'], fmt(row['T_p90_deg'], '.2f'), fmt(row['window_height_deg'], '.1f'),
+            fmt(row['ceiling_shift_px_8192'], '.0f'), _pct(row['ceiling_fraction_of_height']),
+            _pct(beta['fraction_of_height_by_band'][row['band']][0]), _pct(row['tagger_640px_fraction_8192'], '.0f'),
+            fmt(row['rampnet_sigma_multiple'], '.1f'))
+    rows = s['s3_miscentering']
+    t = [r['T_p90_deg'] for r in rows]
+    tag = [r['tagger_640px_fraction_8192'] for r in rows]
+    sig = [r['rampnet_sigma_multiple'] for r in rows]
+    out['s3.range.T'] = 'S3 p90 shifts (%s-%s deg at b = 1)' % (fmt(min(t), '.1f'), fmt(max(t), '.1f'))
+    out['s3.range.tagger'] = '%s-%s of that side' % (fmt(100 * min(tag), '.0f'), _pct(max(tag), '.0f'))
+    out['s3.range.sigma'] = '%s-%s of its click sigmas' % (fmt(min(sig), '.0f'), fmt(max(sig), '.0f'))
     c = s['c_adjudication']
-    for arm, n in c['draw']['eligible_by_arm'].items():
-        out['c.eligible.%s' % arm] = str(n)
-    for arm, n in c['draw']['fill_eligible_by_arm'].items():
-        out['c.fill_eligible.%s' % arm] = '{:,}'.format(n)
-    for arm, n in c['draw']['from_fill'].items():
-        out['c.from_fill.%s' % arm] = str(n)
+    d = c['draw']
+    out['c.draw'] = 'The corpus gave %d eligible legacy+mid labels and %d post179 ones' % (
+        d['eligible_by_arm'].get('legacy+mid', 0), d['eligible_by_arm'].get('post179', 0))
+    out['c.fill'] = '(%s and %s eligible there; %d and %d taken)' % (
+        _c(d['fill_eligible_by_arm']['legacy+mid']), _c(d['fill_eligible_by_arm']['post179']),
+        d['from_fill']['legacy+mid'], d['from_fill']['post179'])
+    rp = c['rig_pixel_vs_leak_window']
+    out['c.xshift'] = 'up to %s px (%s of the window width; median %s)' % (
+        fmt(rp['max_abs_dx_px'], '.0f'), _pct(rp['max_dx_fraction_of_width']), _pct(rp['median_dx_fraction_of_width']))
+    out['c.yerr'] = 'at most %s of the window height' % _pct(rp['max_dy_error_fraction_of_height'])
+    out['c.nxml'] = '%d post179 labels' % len(c['post179_xml_posed_tokens'])
     for judge, j in c['judges'].items():
+        lva = j['leak_vs_antileak']
+        out['c.%s.lva' % judge] = 'leak %d, antileak %d' % (lva['leak'], lva['antileak'])
+        out['c.%s.lva_p' % judge] = 'one-sided sign test p = %s' % fmt(lva['p_one_sided'], '.1e')
+        for dname, words in (('leak_above', 'above the stored one'), ('leak_below', 'below it')):
+            v = j['by_direction'][dname]
+            out['c.%s.%s' % (judge, dname)] = '%s: leak %d, antileak %d of %d sheets' % (
+                words, v['leak'], v['antileak'], v['n'])
         for arm, a in j['arms'].items():
-            out['c.%s.%s' % (judge, arm)] = '%d / %d / %d / %d' % (a['stored'], a['leak'], a['antileak'], a['none'])
-            out['c.%s.%s.decisive' % (judge, arm)] = fmt(100 * a['posthoc_decisive_share_leak'], '.0f') + '%'
-        for d, v in j['by_direction'].items():
-            out['c.%s.%s' % (judge, d)] = '%d of %d' % (v['leak'], v['n'])
-    out['s4'] = str(s['s4_extent_gold']['n_pairs'])
+            out['c.%s.%s' % (judge, arm)] = '| %s | %d | %d / %d / %d / %d | %s | %s |' % (
+                arm, a['n'], a['stored'], a['leak'], a['antileak'], a['none'], a['verdict'],
+                fmt(100 * a['posthoc_decisive_share_leak'], '.0f') + '%')
+        e, u = j['exposed_in_figure'], j['not_exposed']
+        out['c.%s.exposed' % judge] = 'the %d exposed sheets: %d / %d / %d / %d; the other %d: %d / %d / %d / %d' % (
+            e['n'], e['stored'], e['leak'], e['antileak'], e['none'], u['n'], u['stored'], u['leak'], u['antileak'],
+            u['none'])
+        w = j['post179_without_xml_posed']
+        out['c.%s.post179_noxml' % judge] = 'without them the post179 arm reads %d / %d / %d / %d of %d' % (
+            w['stored'], w['leak'], w['antileak'], w['none'], w['n'])
+    s4 = s['s4_extent_gold']
+    out['s4'] = '%d pairs of a PS CurbRamp label and a RampNet gold box' % s4['n_pairs']
+    sp = [v for k, v in s4['by_city'].items() if k.startswith('sao-paulo')]
+    out['s4.sp'] = 'whose %d gold panos carry no PS labels' % sp[0]['gold_panos']
     return out
 
 
@@ -573,6 +764,19 @@ def score_judge(verdicts, key, exposed=EXPOSED_IN_FIGURE):
         for k in list(a):
             if isinstance(a[k], float):
                 a[k] = num(a[k])
+    lva = {'leak': 0, 'antileak': 0}
+    for a in j['arms'].values():
+        lva['leak'] += a['leak']
+        lva['antileak'] += a['antileak']
+    j['leak_vs_antileak'] = sign_test(lva['leak'], lva['antileak'])
+    for d in j['by_direction'].values():
+        d['leak_vs_antileak_p'] = sign_test(d['leak'], d['antileak'])['p_one_sided']
+    xml_post = sorted(t for t, k in key.items() if k['era_arm'] == 'post179' and k['scrape_era'] == 'xml')
+    post = {t: c for t, c in verdicts.items() if key[t]['era_arm'] == 'post179' and t not in xml_post}
+    j['post179_without_xml_posed'] = tilt_adjudicate.score(post, key)['arms'].get('post179')
+    if j['post179_without_xml_posed']:
+        j['post179_without_xml_posed'] = {k: v for k, v in j['post179_without_xml_posed'].items()
+                                          if k in ('n', 'stored', 'leak', 'antileak', 'none')}
     for part, keep in (('exposed_in_figure', True), ('not_exposed', False)):
         sub = {t: c for t, c in verdicts.items() if (t in exposed) == keep}
         counts = {'n': 0, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 0}
@@ -581,6 +785,21 @@ def score_judge(verdicts, key, exposed=EXPOSED_IN_FIGURE):
             counts['none' if c == 'none' else key[t]['order']['ABC'.index(c)]] += 1
         j[part] = counts
     return j
+
+
+def roll_census(rawlabels_dir, fetched):
+    """How many rawLabels rows carry camera_roll, per imagery source, over every deployment's CSV."""
+    by_source, n_files = {}, 0
+    for path in sorted(glob.glob(os.path.join(rawlabels_dir, '*.csv'))):
+        n_files += 1
+        df = pd.read_csv(path, usecols=['pano_source', 'camera_roll'], dtype={'pano_source': str})
+        for src, g in df.groupby(df['pano_source'].fillna('unknown')):
+            b = by_source.setdefault(src, {'rows': 0, 'rows_with_camera_roll': 0})
+            b['rows'] += int(len(g))
+            b['rows_with_camera_roll'] += int(g['camera_roll'].notna().sum())
+    return {'fetched': fetched, 'n_deployments': n_files, 'by_source': by_source,
+            'rows': sum(b['rows'] for b in by_source.values()),
+            'rows_with_camera_roll': sum(b['rows_with_camera_roll'] for b in by_source.values())}
 
 
 def analyze(args):
@@ -637,6 +856,8 @@ def analyze(args):
             if fit['n_panos'] == 0:
                 continue
             name = '%s_%s' % (arm_name, era)
+            mag = np.hypot(sub_pose['pitch_deg'].to_numpy(float), sub_pose['roll_deg'].to_numpy(float))
+            fit['pose_tilt_magnitude_range_deg'] = [num(mag.min()), num(mag.max())] if len(mag) else None
             fit['verdict'] = frame_verdict(fit['ci_p_calibrated'], fit['ci_r_calibrated'], rig2, F2_GRAVITY)
             fit['decision_rule'] = {'rig': list(rig2), 'gravity': list(F2_GRAVITY)}
             f2[name] = fit
@@ -652,16 +873,40 @@ def analyze(args):
     s['c_adjudication'] = {'judges': judges, 'draw': adj['draw'], 'n_sheets': len(adj['key']),
                            'decision_rule_share_of_all_n': C_RULE_SHARE,
                            'exposed_in_figure': list(EXPOSED_IN_FIGURE),
+                           'post179_xml_posed_tokens': sorted(t for t, k in adj['key'].items()
+                                                              if k['era_arm'] == 'post179' and k['scrape_era'] == 'xml'),
+                           'rig_pixel_vs_leak_window': rig_pixel_shift_stats(adj['key']),
                            'decision_bearing_judge': 'jon',
                            'status': 'awaiting Jon' if 'jon' not in judges else 'adjudicated'}
 
     # S1-S3
     pose_att = pose[pose['pose_source'] != 'none']
+    with open(CENSUS_JSON, encoding='utf-8') as f:
+        census = json.load(f)['summary']['tilt']
+    s['generated_from']['photometa-census'] = {'file': os.path.basename(CENSUS_JSON), 'md5': md5(CENSUS_JSON)}
     s['s1_tilt_prior'] = {'by_scrape_era': tilt_prior(pose, corpus['dbear']),
-                          'bearing_mix': 'all %d corpus labels\' dbear' % len(corpus)}
+                          'bearing_mix': 'all %d corpus labels\' dbear' % len(corpus),
+                          'n_pano_ids_sampled': int(len(pose)),
+                          'n_posed': int((pose['pose_source'] != 'none').sum()),
+                          'n_unposed': int((pose['pose_source'] == 'none').sum()),
+                          'superseded_prior': {'source': '2026-08-09 photometa census, live Google photometa',
+                                               'n_panos': census['n'],
+                                               **{k: num(v) for k, v in census.items() if k != 'n'}}}
     s['s2_xml_npz'] = xml_npz_convention(overlap)
     s['s2_ps_camera_pitch'] = ps_camera_pitch_check(corpus, cpose)
+    with open(ROLL_CENSUS, encoding='utf-8') as f:
+        s['s2_ps_camera_pitch']['rawlabels_roll_census'] = json.load(f)
+    s['generated_from']['roll-census'] = {'file': os.path.basename(ROLL_CENSUS), 'md5': md5(ROLL_CENSUS)}
     s['s3_miscentering'] = miscentering_table(corpus, pose_att)
+    readable = [v for v in f2.values() if not v['saturated']]
+    beta_lo = min(min(v['beta_p_calibrated'], v['beta_r_calibrated']) for v in readable)
+    s['s3_assumed_beta_range'] = {
+        'range': [num(beta_lo), 1.0],
+        'status': 'ASSUMPTION, not a measurement: C yields no beta (a forced choice measures a direction), '
+                  'so the range is F2\'s smallest readable calibrated point estimate up to the rig-aligned '
+                  'ceiling; the shift scales linearly in beta',
+        'fraction_of_height_by_band': {r['band']: [num(beta_lo * r['ceiling_fraction_of_height']),
+                                                   r['ceiling_fraction_of_height']] for r in s['s3_miscentering']}}
 
     # S4
     with open(os.path.join(DATA, PREFIX + 's4-extent-gold.json'), encoding='utf-8') as f:
@@ -678,12 +923,18 @@ def analyze(args):
         'lean_panos': {'keys': ['f2_tile_frame'], 'frame': 'corpus panos on disk + store-side Seattle sample'},
         'adjudication_draw': {'keys': ['c_adjudication'], 'frame': 'corpus labels, live measurable rule, '
                               'pose matching the scrape era, |T| threshold per draw'},
-        'seattle_pose_sample': {'keys': ['s1_tilt_prior', 's2_xml_npz', 's3_miscentering'],
-                                'frame': 'Seattle, seeded 1/4 shard sample; S3 bearings from the corpus'},
-        'corpus_panos': {'keys': ['s2_ps_camera_pitch'], 'frame': 'the 661 corpus panos x PS camera_pitch'},
+        'seattle_pose_sample': {'keys': ['s1_tilt_prior', 's2_xml_npz', 's3_miscentering', 's3_assumed_beta_range'],
+                                'frame': 'Seattle, seeded 1/4 shard sample, both scrape eras pooled for S3; '
+                                         'S1/S3 T evaluated at corpus-label bearings (S3: per depression band)',
+                                'sampling': SEATTLE_SAMPLING},
+        'corpus_panos': {'keys': ['s2_ps_camera_pitch'], 'frame': 'the %d corpus panos x PS camera_pitch; '
+                         'the roll census is every rawLabels row of one pull' % corpus['pano_id'].nunique(),
+                         'n_panos': int(corpus[['city', 'pano_id']].drop_duplicates().shape[0]),
+                         'n_cities': int(corpus['city'].nunique()), 'n_labels': int(len(corpus))},
         'rampnet_gold': {'keys': ['s4_extent_gold'], 'frame': 'RampNet sao_paulo/paterson gold x PS CurbRamp'},
     }
     s['wrong_turns'] = WRONG_TURNS
+    s['deviations'] = DEVIATIONS
     check_populations(s)
     write_json(s, args.write)
     print('F1 seattle b_p %s b_r %s (%s)' % (fmt(f1['seattle']['fit']['beta_p'], '.4f'),
@@ -745,18 +996,45 @@ WRONG_TURNS = [
     'detections, not Project Sidewalk clicks, so they carry no tilt term by construction.',
     'The planner\'s first depth-frame test used the ground plane, which is confounded by road grade '
     '(the rig sits on the road); facade planes were the fix.',
-    'SidewalkWebpage 5174 shifted labels by the full camera_pitch, but the tilt at a label is '
-    'T(b) = pitch cos b + roll sin b, near zero for labels beside the car, and PS stores no roll.',
     'The full Seattle store scan would have run about 95 minutes; it was stopped and replaced by a '
     'seeded one-in-four shard sample across four niced processes.',
     'The first corpus lean run used the pre-F1 sign in its calibration warps; it was re-run after the '
     'sign was fixed, and only the re-run is committed.',
-    'The warp calibration the plan specified does not divide out world-leaning clutter, so the '
-    'calibrated F2 slopes are lower bounds, not estimates (tests/test_tilt_frame.py pins this).',
-    'The top-tilt store arm (10-21 deg) saturates the lean estimator, calibration slope near zero, and '
-    'cannot be read; it is kept in the artifact and flagged, not used.',
+    'The first version of this report read the calibrated F2 slopes as lower bounds, arguing that the '
+    'warp rotates world-leaning clutter that the real tilt does not. The real tilt rotates the whole '
+    'image, clutter included, and a many-scene synthetic shows noise, not a shortfall (#158 review); '
+    'the calibrated values are estimates, and why they read below 1 is open.',
+    'The top-tilt store arms saturate the lean estimator (calibration slope near zero) and cannot be '
+    'calibrated; they are kept in the artifact and flagged, and only their raw slopes are read.',
     'The corpus alone yielded 21 labels at |T| >= 4 deg, only 2 of them post179; each arm was topped '
     'up to 24 from the Seattle store sample at the same threshold instead of widening to 3 deg.',
+    'The first version committed the adjudication key beside the sheets, copied it into a second JSON, '
+    'and printed it for 8 sheets in a report figure above the judging instructions (#158 review). The '
+    'key is sealed now and those 8 sheets are scored apart.',
+    'The first version headlined C as "the labelled feature sits at the rig pixel". By the pre-set rule '
+    'both arms are split, and the one contrast a judge who knows the hypothesis cannot steer is leak '
+    'against antileak (#158 review).',
+]
+
+DEVIATIONS = [
+    'F1 was planned as a sweep of every Seattle depth artifact; it ran on the seeded one-in-four shard '
+    'sample, with facades read from a seeded subset of each scan process\'s artifacts. Decided on the '
+    'scan\'s run time, before any F1 fit.',
+    'F2\'s store arms were planned at 300 panos per stratum and ran at 150, on the store decode cost; '
+    'decided before any lean was measured.',
+    'C\'s draw was topped up from the Seattle store sample at the same |T| threshold when the corpus '
+    'gave too few eligible labels; decided after the eligibility count and before any sheet was judged.',
+    'The plan asked S3 for a fitted-beta row beside the ceiling. C yields no beta (a forced choice '
+    'measures a direction, not a slope), so S3 gives the ceiling and a range assumed from F2\'s '
+    'calibrated estimates, labelled as an assumption.',
+    'The plan treated the +2 deg warp as a calibration that recovers the slope. It is kept, but its '
+    'calibrated values are reported as estimates with the shortfall open, and "not levelled" rests on '
+    'the raw slopes.',
+    '#54 asked for the #4784 signature directly, a sinusoid in bearing with amplitude set by the tilt; '
+    'the plan replaced it with the forced choice at |T| >= 4 deg (plan section 1.3). The by-direction '
+    'split is this report\'s partial evidence for the sign flip with bearing.',
+    'The plan said to commit the adjudication key only after adjudication. It was committed early, '
+    'and is now sealed with a salted hash in its place.',
 ]
 
 
@@ -772,6 +1050,9 @@ def build_parser():
     e.add_argument('--adjudication', action='append', required=True)
     e.add_argument('--rampnet', action='append',
                    help='city=<RampNet boxes.json>,<rawLabels csv>, e.g. paterson-nj=...boxes.json,...paterson-nj.csv')
+    rc = sub.add_parser('roll-census')
+    rc.add_argument('--rawlabels-dir', required=True)
+    rc.add_argument('--fetched', required=True)
     a = sub.add_parser('analyze')
     a.add_argument('--write', default=ARTIFACT)
     a.add_argument('--figure-dir')
@@ -784,6 +1065,10 @@ def main(argv=None):
     CropRunner.raise_decompression_bomb_ceiling()
     if args.cmd == 'export':
         export(args)
+    elif args.cmd == 'roll-census':
+        census = roll_census(args.rawlabels_dir, args.fetched)
+        write_json(census, ROLL_CENSUS)
+        print(json.dumps({k: v for k, v in census.items() if k != 'by_source'}))
     else:
         analyze(args)
     return 0

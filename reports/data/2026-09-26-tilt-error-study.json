@@ -82,6 +82,7 @@
      "leak_above": {
       "antileak": 0,
       "leak": 16,
+      "leak_vs_antileak_p": 1.52587890625e-05,
       "n": 23,
       "none": 5,
       "stored": 2
@@ -89,6 +90,7 @@
      "leak_below": {
       "antileak": 0,
       "leak": 21,
+      "leak_vs_antileak_p": 4.76837158203125e-07,
       "n": 25,
       "none": 3,
       "stored": 1
@@ -102,6 +104,11 @@
      "none": 2,
      "stored": 0
     },
+    "leak_vs_antileak": {
+     "antileak": 0,
+     "leak": 37,
+     "p_one_sided": 7.275957614183426e-12
+    },
     "n": 48,
     "not_exposed": {
      "antileak": 0,
@@ -109,10 +116,30 @@
      "n": 40,
      "none": 6,
      "stored": 3
+    },
+    "post179_without_xml_posed": {
+     "antileak": 0,
+     "leak": 17,
+     "n": 20,
+     "none": 3,
+     "stored": 0
     }
    }
   },
   "n_sheets": 48,
+  "post179_xml_posed_tokens": [
+   "t654dd89744",
+   "t65fff72a8b",
+   "t6a174348ca",
+   "t9721acf667"
+  ],
+  "rig_pixel_vs_leak_window": {
+   "max_abs_dx_px": 162.78137906674965,
+   "max_dx_fraction_of_width": 0.06804526175269368,
+   "max_dy_error_fraction_of_height": 0.005949310197153462,
+   "median_dx_fraction_of_width": 0.01622084862867728,
+   "n": 48
+  },
   "status": "awaiting Jon"
  },
  "conventions": {
@@ -124,6 +151,15 @@
   "tilt_term": "T(b) = pitch cos b + roll sin b; rig elevation of the gravity horizon = +T(b) (measured, F1)",
   "xml_conversion": "pitch = -m cos(tilt_yaw - pano_yaw), roll = -m sin(...), m = tilt_pitch_deg"
  },
+ "deviations": [
+  "F1 was planned as a sweep of every Seattle depth artifact; it ran on the seeded one-in-four shard sample, with facades read from a seeded subset of each scan process's artifacts. Decided on the scan's run time, before any F1 fit.",
+  "F2's store arms were planned at 300 panos per stratum and ran at 150, on the store decode cost; decided before any lean was measured.",
+  "C's draw was topped up from the Seattle store sample at the same |T| threshold when the corpus gave too few eligible labels; decided after the eligibility count and before any sheet was judged.",
+  "The plan asked S3 for a fitted-beta row beside the ceiling. C yields no beta (a forced choice measures a direction, not a slope), so S3 gives the ceiling and a range assumed from F2's calibrated estimates, labelled as an assumption.",
+  "The plan treated the +2 deg warp as a calibration that recovers the slope. It is kept, but its calibrated values are reported as estimates with the shortfall open, and \"not levelled\" rests on the raw slopes.",
+  "#54 asked for the #4784 signature directly, a sinusoid in bearing with amplitude set by the tilt; the plan replaced it with the forced choice at |T| >= 4 deg (plan section 1.3). The by-direction split is this report's partial evidence for the sign flip with bearing.",
+  "The plan said to commit the adjudication key only after adjudication. It was committed early, and is now sealed with a salted hash in its place."
+ ],
  "f1_depth_frame": {
   "corpus": {
    "decision_rule": {
@@ -202,9 +238,17 @@
     0.6124774287921259,
     1.01643877427617
    ],
+   "ci_p_calibrated_boot": [
+    0.6399594070283141,
+    1.0251606330010004
+   ],
    "ci_r_calibrated": [
     0.977861417468638,
     1.218180446957226
+   ],
+   "ci_r_calibrated_boot": [
+    0.9407566757625232,
+    1.336347239557306
    ],
    "decision_rule": {
     "gravity": [
@@ -218,6 +262,10 @@
    },
    "gravity_band_excluded": true,
    "n_panos": 170,
+   "pose_tilt_magnitude_range_deg": [
+    0.188638484029638,
+    10.477423217585514
+   ],
    "raw": {
     "beta_p": 0.34458785611231,
     "beta_r": 0.39571691130976194,
@@ -235,6 +283,8 @@
     "se_p": 0.04360064799128,
     "se_r": 0.02209449430695949
    },
+   "raw_excludes_zero": true,
+   "raw_min_z": 7.90327373531757,
    "saturated": false,
    "verdict": "undecided"
   },
@@ -249,9 +299,17 @@
     0.595605055435804,
     0.8608938626088032
    ],
+   "ci_p_calibrated_boot": [
+    0.6129320187406875,
+    0.8649454693025987
+   ],
    "ci_r_calibrated": [
     0.6160885456295082,
     0.8941370615814183
+   ],
+   "ci_r_calibrated_boot": [
+    0.6081199275736421,
+    0.912640900223445
    ],
    "decision_rule": {
     "gravity": [
@@ -265,6 +323,10 @@
    },
    "gravity_band_excluded": true,
    "n_panos": 271,
+   "pose_tilt_magnitude_range_deg": [
+    0.030000023459392497,
+    13.420042929988115
+   ],
    "raw": {
     "beta_p": 0.26160505452208577,
     "beta_r": 0.25853763799847446,
@@ -282,6 +344,8 @@
     "se_p": 0.024311222633545647,
     "se_r": 0.024285913136413904
    },
+   "raw_excludes_zero": true,
+   "raw_min_z": 10.645580281304198,
    "saturated": false,
    "verdict": "undecided"
   },
@@ -296,9 +360,17 @@
     0.6246809264678679,
     0.8689793180091021
    ],
+   "ci_p_calibrated_boot": [
+    0.6406591647835558,
+    0.8552393891697678
+   ],
    "ci_r_calibrated": [
     0.7592060243710568,
     1.0315029774446591
+   ],
+   "ci_r_calibrated_boot": [
+    0.7398171727493773,
+    1.1069355647172505
    ],
    "decision_rule": {
     "gravity": [
@@ -312,6 +384,10 @@
    },
    "gravity_band_excluded": true,
    "n_panos": 150,
+   "pose_tilt_magnitude_range_deg": [
+    0.014499488990995511,
+    9.280636566367633
+   ],
    "raw": {
     "beta_p": 0.21853461298576587,
     "beta_r": 0.25964995596233637,
@@ -329,6 +405,8 @@
     "se_p": 0.01823647635665012,
     "se_r": 0.020144566553075827
    },
+   "raw_excludes_zero": true,
+   "raw_min_z": 11.983379284018042,
    "saturated": false,
    "verdict": "undecided"
   },
@@ -343,9 +421,17 @@
     0.4928298426990752,
     0.7745308986184936
    ],
+   "ci_p_calibrated_boot": [
+    0.5204896835042693,
+    0.7714317237664952
+   ],
    "ci_r_calibrated": [
     0.47842295243661004,
     0.8072502719351763
+   ],
+   "ci_r_calibrated_boot": [
+    0.46747692496641974,
+    0.8808827813630691
    ],
    "decision_rule": {
     "gravity": [
@@ -359,6 +445,10 @@
    },
    "gravity_band_excluded": true,
    "n_panos": 150,
+   "pose_tilt_magnitude_range_deg": [
+    0.2499997368518615,
+    10.489993894068766
+   ],
    "raw": {
     "beta_p": 0.1869674653373488,
     "beta_r": 0.19694660126801783,
@@ -376,6 +466,8 @@
     "se_p": 0.021203432614249163,
     "se_r": 0.025700270385409486
    },
+   "raw_excludes_zero": true,
+   "raw_min_z": 7.663211254766721,
    "saturated": false,
    "verdict": "undecided"
   },
@@ -390,9 +482,17 @@
     2.1515783189008677,
     2.636331035539087
    ],
+   "ci_p_calibrated_boot": [
+    1.9820220452189725,
+    3.0920017683194176
+   ],
    "ci_r_calibrated": [
     0.8315695107028123,
     1.312393601991606
+   ],
+   "ci_r_calibrated_boot": [
+    0.7475868922997125,
+    1.4403382660191242
    ],
    "decision_rule": {
     "gravity": [
@@ -404,8 +504,12 @@
      1.3
     ]
    },
-   "gravity_band_excluded": true,
+   "gravity_band_excluded": null,
    "n_panos": 150,
+   "pose_tilt_magnitude_range_deg": [
+    9.66694498294994,
+    14.809521836021581
+   ],
    "raw": {
     "beta_p": 0.18416070602958673,
     "beta_r": 0.20496260748584036,
@@ -423,6 +527,8 @@
     "se_p": 0.009513125194956326,
     "se_r": 0.023452840875955776
    },
+   "raw_excludes_zero": true,
+   "raw_min_z": 8.739350962636312,
    "saturated": true,
    "verdict": "undecided"
   },
@@ -437,9 +543,17 @@
     77.95354159894512,
     96.01241570936627
    ],
+   "ci_p_calibrated_boot": [
+    -295.0565251011989,
+    168.12751935532796
+   ],
    "ci_r_calibrated": [
     0.4668626126471625,
     0.9815712650211356
+   ],
+   "ci_r_calibrated_boot": [
+    0.428007534729309,
+    1.1905058000319717
    ],
    "decision_rule": {
     "gravity": [
@@ -451,8 +565,12 @@
      1.3
     ]
    },
-   "gravity_band_excluded": true,
+   "gravity_band_excluded": null,
    "n_panos": 150,
+   "pose_tilt_magnitude_range_deg": [
+    11.660027754507663,
+    21.150013978718786
+   ],
    "raw": {
     "beta_p": 0.15573996216650274,
     "beta_r": 0.12516768926656593,
@@ -470,6 +588,8 @@
     "se_p": 0.008248564468539624,
     "se_r": 0.02269378513196954
    },
+   "raw_excludes_zero": true,
+   "raw_min_z": 5.5155051719529045,
    "saturated": true,
    "verdict": "undecided"
   }
@@ -503,6 +623,10 @@
    "file": "2026-09-26-tilt-lean-measurements.csv.gz",
    "md5": "401cea8391de1d4c5117ac889d805540"
   },
+  "photometa-census": {
+   "file": "2026-08-09-photometa-census.json",
+   "md5": "7260eb630dcb31bf7b61b284ce51554a"
+  },
   "pose-corpus": {
    "file": "2026-09-26-tilt-pose-corpus.csv.gz",
    "md5": "3d9536f0423fa5fd9070a871e8eacfa4"
@@ -510,6 +634,10 @@
   "pose-seattle": {
    "file": "2026-09-26-tilt-pose-seattle.csv.gz",
    "md5": "96176163b89ec69035715e8afaba0aa6"
+  },
+  "roll-census": {
+   "file": "2026-09-26-tilt-roll-census.json",
+   "md5": "585670fbd35ed2dfb18e85373b119269"
   },
   "s4-extent-gold": {
    "file": "2026-09-26-tilt-s4-extent-gold.json",
@@ -528,10 +656,13 @@
    ]
   },
   "corpus_panos": {
-   "frame": "the 661 corpus panos x PS camera_pitch",
+   "frame": "the 661 corpus panos x PS camera_pitch; the roll census is every rawLabels row of one pull",
    "keys": [
     "s2_ps_camera_pitch"
-   ]
+   ],
+   "n_cities": 35,
+   "n_labels": 763,
+   "n_panos": 661
   },
   "lean_panos": {
    "frame": "corpus panos on disk + store-side Seattle sample",
@@ -552,12 +683,22 @@
    ]
   },
   "seattle_pose_sample": {
-   "frame": "Seattle, seeded 1/4 shard sample; S3 bearings from the corpus",
+   "frame": "Seattle, seeded 1/4 shard sample, both scrape eras pooled for S3; S1/S3 T evaluated at corpus-label bearings (S3: per depression band)",
    "keys": [
     "s1_tilt_prior",
     "s2_xml_npz",
-    "s3_miscentering"
-   ]
+    "s3_miscentering",
+    "s3_assumed_beta_range"
+   ],
+   "sampling": {
+    "facade_artifacts_per_part": 1500,
+    "facade_artifacts_total": 6000,
+    "full_scan_estimate_minutes": 95,
+    "n_parts": 4,
+    "n_shards": 4096,
+    "seed": 20260926,
+    "shard_sample": "1/4"
+   }
   }
  },
  "s1_tilt_prior": {
@@ -599,6 +740,19 @@
     ],
     "sd_T_deg": 2.6703835862498293
    }
+  },
+  "n_pano_ids_sampled": 43725,
+  "n_posed": 29121,
+  "n_unposed": 14604,
+  "superseded_prior": {
+   "abs_pitch_p50_deg": 0.6345138549804688,
+   "abs_pitch_p90_deg": 2.5951995849609375,
+   "abs_pitch_p99_deg": 6.849338531494141,
+   "abs_roll_p50_deg": 0.9046170115470886,
+   "abs_roll_p90_deg": 2.16279935836792,
+   "abs_roll_p99_deg": 4.262808322906523,
+   "n_panos": 651,
+   "source": "2026-08-09 photometa census, live Google photometa"
   }
  },
  "s2_ps_camera_pitch": {
@@ -608,6 +762,26 @@
    "corr": 0.9992877948292386,
    "median_abs_diff_deg": 0.025872008052825968,
    "n_panos": 171
+  },
+  "rawlabels_roll_census": {
+   "by_source": {
+    "gsv": {
+     "rows": 1333972,
+     "rows_with_camera_roll": 0
+    },
+    "infra3d": {
+     "rows": 6205,
+     "rows_with_camera_roll": 0
+    },
+    "mapillary": {
+     "rows": 9840,
+     "rows_with_camera_roll": 402
+    }
+   },
+   "fetched": "2026-09-12",
+   "n_deployments": 54,
+   "rows": 1350017,
+   "rows_with_camera_roll": 402
   },
   "xml": {
    "corr": 0.9843265931954345,
@@ -653,10 +827,36 @@
   "best": "pitch=-m*cos(dir), roll=-m*sin(dir)",
   "median_abs_dpitch_deg": 0.08789361529586626,
   "median_abs_droll_deg": 0.11033861857627433,
+  "min_miss_of_other_readings_deg": 2.002577875500225,
   "n_overlap": 3594,
   "n_vector_diff_over_1deg": 235,
   "p90_vector_diff_deg": 0.7714131871261285,
   "share_vector_diff_over_1deg": 0.06538675570395103
+ },
+ "s3_assumed_beta_range": {
+  "fraction_of_height_by_band": {
+   "15-30": [
+    0.08568090112550902,
+    0.13521154369423463
+   ],
+   "5-15": [
+    0.15966171820244845,
+    0.25195938772170196
+   ],
+   "<5": [
+    0.23973047528478558,
+    0.3783145042595495
+   ],
+   ">30": [
+    0.04028700875410844,
+    0.06357622962539523
+   ]
+  },
+  "range": [
+   0.6336803706587844,
+   1.0
+  ],
+  "status": "ASSUMPTION, not a measurement: C yields no beta (a forced choice measures a direction), so the range is F2's smallest readable calibrated point estimate up to the rig-aligned ceiling; the shift scales linearly in beta"
  },
  "s3_miscentering": [
   {
@@ -669,6 +869,7 @@
    "distance_m": 19.82614123799241,
    "n_labels": 180,
    "rampnet_sigma_multiple": 9.184269524384911,
+   "tagger_640px_fraction_8192": 0.3444101071644342,
    "window_height_deg": 12.802224280243415,
    "window_width_deg": 19.203336420365122
   },
@@ -682,6 +883,7 @@
    "distance_m": 12.218318909295954,
    "n_labels": 198,
    "rampnet_sigma_multiple": 8.297134301526539,
+   "tagger_640px_fraction_8192": 0.3111425363072452,
    "window_height_deg": 17.365663396727516,
    "window_width_deg": 26.048495095091276
   },
@@ -695,6 +897,7 @@
    "distance_m": 6.599065728989461,
    "n_labels": 205,
    "rampnet_sigma_multiple": 7.54972576531972,
+   "tagger_640px_fraction_8192": 0.28311471619948947,
    "window_height_deg": 29.44497627775462,
    "window_width_deg": 44.16746441663193
   },
@@ -708,6 +911,7 @@
    "distance_m": 3.4720858525696774,
    "n_labels": 180,
    "rampnet_sigma_multiple": 7.233562126267191,
+   "tagger_640px_fraction_8192": 0.27125857973501966,
    "window_height_deg": 60.0,
    "window_width_deg": 90.0
   }
@@ -733,11 +937,12 @@
   "The plan put the depth artifact's z axis up; the documented ray formula puts it down, and the plan's pose sign (pitch > 0 = nose up) was reversed with it. F1 measured slopes of -1.00 against that hypothesis before the module was switched to the measured sign.",
   "Instrument (b), RampNet extent gold as tilt gold, was void: RampNet points are pixel-frame detections, not Project Sidewalk clicks, so they carry no tilt term by construction.",
   "The planner's first depth-frame test used the ground plane, which is confounded by road grade (the rig sits on the road); facade planes were the fix.",
-  "SidewalkWebpage 5174 shifted labels by the full camera_pitch, but the tilt at a label is T(b) = pitch cos b + roll sin b, near zero for labels beside the car, and PS stores no roll.",
   "The full Seattle store scan would have run about 95 minutes; it was stopped and replaced by a seeded one-in-four shard sample across four niced processes.",
   "The first corpus lean run used the pre-F1 sign in its calibration warps; it was re-run after the sign was fixed, and only the re-run is committed.",
-  "The warp calibration the plan specified does not divide out world-leaning clutter, so the calibrated F2 slopes are lower bounds, not estimates (tests/test_tilt_frame.py pins this).",
-  "The top-tilt store arm (10-21 deg) saturates the lean estimator, calibration slope near zero, and cannot be read; it is kept in the artifact and flagged, not used.",
-  "The corpus alone yielded 21 labels at |T| >= 4 deg, only 2 of them post179; each arm was topped up to 24 from the Seattle store sample at the same threshold instead of widening to 3 deg."
+  "The first version of this report read the calibrated F2 slopes as lower bounds, arguing that the warp rotates world-leaning clutter that the real tilt does not. The real tilt rotates the whole image, clutter included, and a many-scene synthetic shows noise, not a shortfall (#158 review); the calibrated values are estimates, and why they read below 1 is open.",
+  "The top-tilt store arms saturate the lean estimator (calibration slope near zero) and cannot be calibrated; they are kept in the artifact and flagged, and only their raw slopes are read.",
+  "The corpus alone yielded 21 labels at |T| >= 4 deg, only 2 of them post179; each arm was topped up to 24 from the Seattle store sample at the same threshold instead of widening to 3 deg.",
+  "The first version committed the adjudication key beside the sheets, copied it into a second JSON, and printed it for 8 sheets in a report figure above the judging instructions (#158 review). The key is sealed now and those 8 sheets are scored apart.",
+  "The first version headlined C as \"the labelled feature sits at the rig pixel\". By the pre-set rule both arms are split, and the one contrast a judge who knows the hypothesis cannot steer is leak against antileak (#158 review)."
  ]
 }

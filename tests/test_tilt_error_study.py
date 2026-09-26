@@ -91,7 +91,7 @@ class TestFacadeFrame:
         assert abs(f['beta_p']) < 0.01 and abs(f['beta_r']) < 0.01
 
 
-def _synthetic_lean(beta, attenuation=0.7, offset_sd=1.0, n=120, seed=3):
+def _synthetic_lean(beta, attenuation=0.7, offset_sd=1.0, n=120, seed=3, beta_r=None, noise=0.2, cal_deg=2.0):
     rng = np.random.default_rng(seed)
     rows, pose = [], []
     centres = (np.arange(12) + 0.5) / 12 * 360 - 180
@@ -100,11 +100,12 @@ def _synthetic_lean(beta, attenuation=0.7, offset_sd=1.0, n=120, seed=3):
         off = rng.normal(0, offset_sd)
         pid = 'q%04d' % i
         pose.append(dict(city='x', pano_id=pid, pitch=p, roll=r))
-        for variant, ep, er in (('base', 0, 0), ('cal_pitch', 2, 0), ('cal_roll', 0, 2)):
+        for variant, ep, er in (('base', 0, 0), ('cal_pitch', cal_deg, 0), ('cal_roll', 0, cal_deg)):
             for k, c in enumerate(centres):
-                true = beta * tg.vertical_lean_deg(c, p, r) + tg.vertical_lean_deg(c, ep, er)
+                br = beta if beta_r is None else beta_r
+                true = tg.vertical_lean_deg(c, beta * p, br * r) + tg.vertical_lean_deg(c, ep, er)
                 rows.append(dict(arm='a', city='x', pano_id=pid, variant=variant, bin=k, bin_centre_deg=c,
-                                 lean_deg=attenuation * true + off + rng.normal(0, 0.2)))
+                                 extra_pitch=ep, extra_roll=er, lean_deg=attenuation * true + off + rng.normal(0, noise)))
     return pd.DataFrame(rows), pd.DataFrame(pose)
 
 
@@ -147,13 +148,81 @@ class TestTileFrame:
     def test_flags(self):
         lean, pose = _synthetic_lean(1.0, attenuation=0.6)
         f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}))
-        assert f['gravity_band_excluded'] and not f['saturated']
+        assert f['gravity_band_excluded'] and not f['saturated'] and f['raw_excludes_zero']
         lean, pose = _synthetic_lean(0.0, attenuation=0.6)
         f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}))
-        assert not f['gravity_band_excluded']
+        assert f['gravity_band_excluded'] is False and not f['raw_excludes_zero']
         lean, pose = _synthetic_lean(1.0, attenuation=0.05)
         f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}))
         assert f['saturated']
+        assert f['gravity_band_excluded'] is None      # calibrated CIs mean nothing when saturated
+        assert f['raw_excludes_zero']                  # the raw rejection still reads
+
+    def test_gravity_exclusion_needs_both_axes(self):
+        """Pitch rig-aligned, roll levelled: one calibrated CI above the band is not enough."""
+        lean, pose = _synthetic_lean(1.0, attenuation=0.6, beta_r=0.0)
+        f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}))
+        assert f['ci_p_calibrated'][0] > 0.3 and f['ci_r_calibrated'][0] < 0.3
+        assert f['gravity_band_excluded'] is False
+
+    def test_gravity_exclusion_reads_the_lower_bounds(self):
+        """A calibrated CI straddling the band edge (0.3) does not exclude it."""
+        lean, pose = _synthetic_lean(0.3, attenuation=0.6, noise=1.5, seed=12, n=40)
+        f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}), n_boot=0)
+        for ax in ('p', 'r'):                      # both upper bounds above the edge, both lower below it
+            assert f['ci_%s_calibrated' % ax][0] < 0.3 < f['ci_%s_calibrated' % ax][1]
+        assert f['gravity_band_excluded'] is False
+
+    def test_the_calibration_tilt_is_read_from_the_rows(self):
+        """The instrument writes the tilt it added; if it added 3 deg, a is measured against 3, not an
+        assumed 2 (a 2-deg constant would read a 1.5x too high here)."""
+        lean, pose = _synthetic_lean(1.0, attenuation=0.6, cal_deg=3.0)
+        f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}))
+        assert f['a_pitch'] == pytest.approx(0.6, abs=0.05) and f['a_roll'] == pytest.approx(0.6, abs=0.05)
+
+    def test_bootstrap_with_unit_weights_is_the_point_estimate(self):
+        """The bootstrap's sufficient statistics reproduce tile_frame_fit exactly at weight 1, so a
+        replicate is the same estimator, resampled."""
+        lean, pose = _synthetic_lean(0.8, attenuation=0.5)
+        pose = pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'})
+        f = tes.tile_frame_fit(lean, pose, n_boot=0)
+        base = lean[lean['variant'] == 'base']
+        c = np.radians(base['bin_centre_deg'].to_numpy(float))
+        pm = base['pano_id'].map(pose.set_index('pano_id')['pitch_deg']).to_numpy(float)
+        rm = base['pano_id'].map(pose.set_index('pano_id')['roll_deg']).to_numpy(float)
+        key = ('x/' + base['pano_id']).to_numpy()
+        y, xp, xr = (tes._demean(v, key) for v in (base['lean_deg'], -pm * np.sin(c), rm * np.cos(c)))
+        b = tes.calibrated_bootstrap(y, xp, xr, key, lean, weights=np.ones((1, len(np.unique(key)))))
+        assert b['p'][0] == pytest.approx(f['beta_p_calibrated'], rel=1e-9)
+        assert b['r'][0] == pytest.approx(f['beta_r_calibrated'], rel=1e-9)
+
+    def test_a_bootstrap_replicate_is_the_fit_on_the_resampled_panos(self):
+        """Weight 1 on half the panos and 0 on the rest must equal tile_frame_fit on that half, the
+        calibration slopes included - a bootstrap that held `a` fixed at the full sample would not."""
+        lean, pose = _synthetic_lean(0.8, attenuation=0.5, n=60, seed=21)
+        cal = lean['variant'] != 'base'                          # the two halves calibrate differently
+        lean.loc[cal, 'lean_deg'] += (np.where(lean.loc[cal, 'pano_id'] < 'q0030', 0.3, -0.3)
+                                      * np.sin(np.radians(lean.loc[cal, 'bin_centre_deg'])))
+        pose = pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'})
+        half = sorted(pose['pano_id'])[:30]
+        want = tes.tile_frame_fit(lean[lean['pano_id'].isin(half)], pose[pose['pano_id'].isin(half)], n_boot=0)
+        base = lean[lean['variant'] == 'base']
+        c = np.radians(base['bin_centre_deg'].to_numpy(float))
+        pm = base['pano_id'].map(pose.set_index('pano_id')['pitch_deg']).to_numpy(float)
+        rm = base['pano_id'].map(pose.set_index('pano_id')['roll_deg']).to_numpy(float)
+        key = ('x/' + base['pano_id']).to_numpy()
+        y, xp, xr = (tes._demean(v, key) for v in (base['lean_deg'], -pm * np.sin(c), rm * np.cos(c)))
+        w = np.array([[1.0 if k[2:] in half else 0.0 for k in np.unique(key)]])
+        b = tes.calibrated_bootstrap(y, xp, xr, key, lean, weights=w)
+        assert b['p'][0] == pytest.approx(want['beta_p_calibrated'], rel=1e-9)
+        assert b['r'][0] == pytest.approx(want['beta_r_calibrated'], rel=1e-9)
+
+    def test_bootstrap_ci_covers_and_widens_with_a_noisy_calibration(self):
+        lean, pose = _synthetic_lean(1.0, attenuation=0.6)
+        f = tes.tile_frame_fit(lean, pose.rename(columns={'pitch': 'pitch_deg', 'roll': 'roll_deg'}), n_boot=300)
+        for ax in ('p', 'r'):
+            lo, hi = f['ci_%s_calibrated_boot' % ax]
+            assert lo < f['beta_%s_calibrated' % ax] < hi and lo < 1.0 < hi
 
     def test_gravity_tiles_give_zero(self):
         lean, pose = _synthetic_lean(0.0, attenuation=0.6)
@@ -177,6 +246,35 @@ class TestVerdicts:
         assert d['leak_above'] == {'n': 1, 'leak': 1, 'stored': 0, 'antileak': 0, 'none': 0}
         assert d['leak_below'] == {'n': 2, 'leak': 1, 'stored': 1, 'antileak': 0, 'none': 0}
 
+    def test_sign_test_is_exact(self):
+        assert tes.sign_test(37, 0)['p_one_sided'] == pytest.approx(0.5 ** 37)
+        assert tes.sign_test(5, 5)['p_one_sided'] > 0.5
+        assert tes.sign_test(0, 0)['p_one_sided'] is None
+
+    def test_score_judge_splits_exposure_direction_and_xml_posed_post179(self):
+        order = ['leak', 'stored', 'antileak']
+        key = {'t1': dict(order=order, era_arm='post179', T_deg=5.0, scrape_era='xml'),
+               't2': dict(order=order, era_arm='post179', T_deg=-5.0, scrape_era='modern'),
+               't3': dict(order=order, era_arm='legacy+mid', T_deg=5.0, scrape_era='modern'),
+               't4': dict(order=order, era_arm='legacy+mid', T_deg=-5.0, scrape_era='xml')}
+        j = tes.score_judge({'t1': 'A', 't2': 'B', 't3': 'C', 't4': 'none'}, key, exposed=('t1', 't3'))
+        assert j['exposed_in_figure'] == {'n': 2, 'stored': 0, 'leak': 1, 'antileak': 1, 'none': 0}
+        assert j['not_exposed'] == {'n': 2, 'stored': 1, 'leak': 0, 'antileak': 0, 'none': 1}
+        assert j['leak_vs_antileak'] == {'leak': 1, 'antileak': 1, 'p_one_sided': pytest.approx(0.75)}
+        assert j['post179_without_xml_posed'] == {'n': 1, 'stored': 1, 'leak': 0, 'antileak': 0, 'none': 0}
+        assert j['arms']['legacy+mid']['verdict'] == 'split'
+        assert 'none_tokens' not in j['arms']['legacy+mid']          # per-token verdicts stay sealed
+        assert j['arms']['post179']['posthoc_decisive_share_leak'] == pytest.approx(0.5)
+
+    def test_rig_pixel_moves_in_x_off_the_horizon_only(self):
+        base = dict(pano_width=2048.0, pano_height=1024.0, pitch_deg=0.0, roll_deg=5.0)
+        on = dict(base, pano_x=1536.0, pano_y=512.0)
+        on['T_deg'] = float(tg.tilt_term_deg(on['pano_x'] / 2048 * 360 - 180, 0.0, 5.0))
+        low = dict(base, pano_x=1024.0, pano_y=700.0)
+        low['T_deg'] = float(tg.tilt_term_deg(0.0, 0.0, 5.0))
+        assert tes.rig_pixel_shift_stats({'a': on})['max_abs_dx_px'] < 0.5
+        assert tes.rig_pixel_shift_stats({'b': low})['max_abs_dx_px'] > 3
+
     def test_c_decisive_share_excludes_none(self):
         a = {'n': 24, 'stored': 2, 'leak': 17, 'antileak': 0, 'none': 5}
         assert tes.posthoc_decisive_share(a, 'leak') == pytest.approx(17 / 19)
@@ -187,6 +285,54 @@ class TestVerdicts:
         assert tes.c_verdict({'n': 20, 'stored': 1, 'leak': 19, 'antileak': 0, 'none': 0}) == 'leak'
         assert tes.c_verdict({'n': 20, 'stored': 17, 'leak': 1, 'antileak': 0, 'none': 2}) == 'split'
         assert tes.c_verdict({'n': 0, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 0}) == 'no data'
+
+
+class TestPriorAndMiscentering:
+    """S1 and S3 on poses whose answer is known, so the tables are not pinned by the artifact alone."""
+
+    @staticmethod
+    def _pose(pitch, roll, era='modern'):
+        return pd.DataFrame({'pose_source': 'npz', 'scrape_era': era, 'pose_pitch_deg': pitch,
+                             'pose_roll_deg': roll})
+
+    def test_pure_roll_at_the_side_gives_T_equal_to_roll(self):
+        rolls = np.linspace(-6, 6, 101)
+        pose = self._pose(np.full(101, 9.0), rolls)
+        corpus = pd.DataFrame({'dbear': [90.0] * 10 + [-90.0] * 10 + [90.0] * 3,
+                               'depression': [2.0] * 20 + [10.0, 20.0, 40.0]})     # every band populated
+        row = tes.miscentering_table(corpus, pose)[0]
+        assert row['band'] == '<5' and row['n_labels'] == 20
+        assert row['T_p90_deg'] == pytest.approx(np.percentile(np.abs(rolls), 90), abs=1e-9)
+        prior = tes.tilt_prior(pose, corpus['dbear'][:20])['modern']
+        assert prior['abs_T_p90_deg'] == pytest.approx(np.percentile(np.abs(rolls), 90), abs=1e-9)
+        assert prior['abs_pitch_p90_deg'] == pytest.approx(9.0)
+
+    def test_pitch_ahead_and_the_p90_not_the_median(self):
+        pitches = np.linspace(0, 10, 101)
+        pose = self._pose(pitches, np.zeros(101))
+        corpus = pd.DataFrame({'dbear': [0.0] * 5 + [90.0] * 3, 'depression': [20.0] * 5 + [2.0, 10.0, 40.0]})
+        row = [r for r in tes.miscentering_table(corpus, pose) if r['band'] == '15-30'][0]
+        assert row['T_p90_deg'] == pytest.approx(9.0)
+
+    def test_prior_is_per_scrape_era(self):
+        pose = pd.concat([self._pose(np.full(10, 1.0), np.zeros(10), 'xml'),
+                          self._pose(np.full(10, 3.0), np.zeros(10), 'modern')], ignore_index=True)
+        prior = tes.tilt_prior(pose, [0.0])
+        assert prior['xml']['abs_pitch_p50_deg'] == pytest.approx(1.0)
+        assert prior['modern']['abs_pitch_p50_deg'] == pytest.approx(3.0)
+
+    def test_xml_convention_picks_the_committed_reading(self):
+        rng = np.random.default_rng(4)
+        yaw, tyaw, m = rng.uniform(0, 360, 200), rng.uniform(0, 360, 200), rng.uniform(0.5, 6, 200)
+        p, r = tg.xml_tilt_to_pitch_roll(yaw, tyaw, m)
+        overlap = pd.DataFrame({'xml_pano_yaw_deg': yaw, 'xml_tilt_yaw_deg': tyaw, 'xml_tilt_pitch_deg': m,
+                                'pitch_deg': p, 'roll_deg': r})
+        overlap.loc[:9, 'roll_deg'] += 3.0                       # ten re-renders
+        overlap.loc[10:19, 'roll_deg'] += 0.7                    # ten small differences, under 1 deg
+        s2 = tes.xml_npz_convention(overlap)
+        assert s2['best'] == 'pitch=-m*cos(dir), roll=-m*sin(dir)'
+        assert s2['n_vector_diff_over_1deg'] == 10 and s2['share_vector_diff_over_1deg'] == pytest.approx(0.05)
+        assert s2['min_miss_of_other_readings_deg'] > 1.0
 
 
 class TestMiscentering:
@@ -308,16 +454,23 @@ class TestCommittedFindings:
             assert not arm['saturated'] and 0.2 < arm['a_pitch'] < 1.0, name
 
     def test_f2_tiles_are_not_gravity_levelled(self, summary):
+        """Read on the RAW slopes, in every arm: levelled tiles predict 0 whatever the calibration."""
         for name, arm in summary['f2_tile_frame'].items():
-            if not arm['saturated']:
+            assert arm['raw_excludes_zero'] and arm['raw_min_z'] > 5, name
+            if arm['saturated']:
+                assert arm['gravity_band_excluded'] is None, name
+            else:
                 assert arm['gravity_band_excluded'], name
-                assert arm['raw']['ci_p'][0] > 0.1 and arm['raw']['ci_r'][0] > 0.1, name
 
     def test_c_preliminary_verdicts_favour_the_leak_window(self, summary):
-        """The machine pass only (not decision-bearing): leak wins both arms and both directions,
-        and the antileak window is never chosen."""
+        """The machine pass only (not decision-bearing): split by the pre-set rule in both arms, leak
+        against antileak 37:0, and leak wins both directions."""
         judge = summary['c_adjudication']['judges']['claude-opus-5-5']
         assert not judge['decision_bearing']
+        assert {a['verdict'] for a in judge['arms'].values()} == {'split'}
+        assert judge['leak_vs_antileak']['antileak'] == 0 and judge['leak_vs_antileak']['p_one_sided'] < 1e-10
+        assert summary['c_adjudication']['status'] == 'awaiting Jon'
+        assert len(summary['c_adjudication']['exposed_in_figure']) == 8
         for arm in judge['arms'].values():
             assert arm['leak'] > 2 * (arm['stored'] + arm['antileak'])
             assert arm['antileak'] == 0
@@ -348,3 +501,27 @@ class TestReportMatchesTheArtifact:
         for turn in summary['wrong_turns']:
             head = ' '.join(turn.split()[:8])
             assert head in report, head
+
+    def test_deviations_are_listed(self, summary, report):
+        for dev in summary['deviations']:
+            assert ' '.join(dev.split()) in report, dev[:60]
+
+    def test_a_value_off_by_one_is_not_found(self, summary, report):
+        """The context is what makes the check bite: bump the last digit of every quoted value and the
+        fragment must no longer be in the report (a bare-substring check let 8 of 110 through)."""
+        import re
+        survivors = []
+        for k, frag in tes.report_numbers(summary).items():
+            m = list(re.finditer(r'\d', frag))
+            if not m:
+                continue
+            i = m[-1].start()
+            bumped = frag[:i] + str((int(frag[i]) + 1) % 10) + frag[i + 1:]
+            if bumped in report:
+                survivors.append((k, bumped))
+        assert not survivors, survivors
+
+    def test_c_is_not_headlined_past_its_rule(self, report):
+        for claim in ('sits at the rig pixel, not the stored', 'slope is a lower bound', 'lower bounds, not estimates',
+                      'the ceiling is the likely value'):
+            assert claim not in report, claim

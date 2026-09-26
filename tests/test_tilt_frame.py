@@ -164,14 +164,16 @@ def _render_leaning(w, h, pitch, roll, poles, width_deg=3.0):
     return (40 + 180 * img).astype(np.float32)
 
 
-def test_warp_calibration_does_not_divide_out_world_leaning_clutter():
-    """The known bias of the instrument, pinned: near-vertical edges that are NOT world-vertical
-    (trees, off-plumb poles) carry no tilt signal in the unwarped image but rotate with the warp, so
-    the calibration slope stays ~1 while the raw response drops and the calibrated slope reads LOW.
-    reports/2026-09-26-tilt-error-study.md uses this to read F2's calibrated values as lower bounds."""
-    rng = np.random.default_rng(7)
-    ratios = []
-    for _ in range(4):
+def test_world_leaning_clutter_adds_noise_not_a_shortfall():
+    """What is true of clutter, pooled over 12 scenes: the real tilt rotates world-leaning edges along
+    with plumb ones, just as the calibration warp does, so the calibrated slope (raw / a) stays near 1.
+    The first version of this test asserted a shortfall on four scenes of one seed and passed only on
+    that seed (#158 review). A probe over six seeds of 12 scenes gave pooled ratios 0.87-1.18 (mean
+    1.01); the bounds below would fail on the 20-37% shortfall the report used to attribute to clutter.
+    Pooled sums, not a mean of per-scene ratios: a scene with little tilt has a tiny denominator."""
+    rng = np.random.default_rng(3)
+    sums = np.zeros(4)
+    for _ in range(12):
         p, r = rng.normal(0, 2.5), rng.normal(0, 1.5)
         poles = [(b, 0.0) for b in np.arange(-165, 180, 30)]
         poles += [(b, rng.normal(0, 5)) for b in rng.uniform(-180, 180, 12)]
@@ -181,9 +183,8 @@ def test_warp_calibration_does_not_divide_out_world_leaning_clutter():
         m = np.array([x[1] for x in prof])
         pred = tf.predicted_lean(c, p, r)
         m, pred = m - m.mean(), pred - pred.mean()
-        raw = float(m @ pred / (pred @ pred))
         before, after, pd_ = tf.calibrate(img, extra=(2.0, 0.0))
         d = np.array([a[1] - b[1] for a, b in zip(after, before)])
-        a = float(d @ pd_ / (pd_ @ pd_))
-        ratios.append(raw / a)
-    assert np.mean(ratios) < 0.95
+        sums += (m @ pred, pred @ pred, d @ pd_, pd_ @ pd_)
+    raw, a = sums[0] / sums[1], sums[2] / sums[3]
+    assert 0.8 <= raw / a <= 1.25, (raw, a)
