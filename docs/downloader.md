@@ -506,8 +506,14 @@ If photometa is unavailable, or says the pano is gone, the older two-tile probe 
 fully black tile at both zoom 5 and zoom 3 means there is no imagery — still the only evidence a permanent
 "no imagery" verdict rests on). The probe cannot tell a frame from a crop, so on that path two more tiles —
 the ones just past the frame's grid — are checked before the fan-out, and imagery there is the same refusal.
-The first time a run falls back to the probe it says so once on stdout and in `scrape.log`; after three
-photometa failures in a row that run stops asking photometa at all. A refusal *from Google* on that photometa
+That check guards only a frame **smaller** than Google serves. A frame **larger** than Google serves (an app
+frame of 16384×8192 on a pano served at 13312×6656) has nothing past its grid, so it passes; about a third of
+its grid then comes back black, which is under the stitcher's 50% limit, and it is stitched and ledgered as a
+success. The photometa path refuses that case (no level admits the frame); on the probe path it is a known
+residual, older than #74 and expected to be rare. The first photometa failure, refusal or fresh latch in a
+run is announced once on stdout and in `scrape.log` (photometa saying a pano is gone is not: a retired pano
+is ordinary, and photometa did answer); after three photometa failures in a row that run stops asking
+photometa at all, and after one refusal it stops at once. A refusal *from Google* on that photometa
 request writes the same block latch the depth phase uses (see
 [Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers)): for the next 6 hours
 every city on this host takes its zooms from the probe, the depth phase stands down, and the depth pacer's
@@ -525,7 +531,8 @@ Google serves now. Expected volume is near zero: all 651 live panos sampled by t
 app stores.
 
 A new pano costs one photometa request where the probe cost two; a pano the probe has to answer costs the
-two probe tiles plus the two frame-check tiles; a retired one costs one photometa request plus the two probe
+two probe tiles plus the two frame-check tiles (plus the photometa request that failed, if one was sent); a
+retired one costs one photometa request plus the two probe
 tiles, once. The tiles are then fanned out concurrently with `aiohttp` and `backoff` retries, pasted into a
 canvas sized from the app's width/height, and upscaled with LANCZOS when only a lower level exists. One
 visible consequence: historic **five-level** panos (5376×2688) now download at their native zoom 4 and count

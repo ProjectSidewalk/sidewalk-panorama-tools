@@ -559,8 +559,8 @@ def _photometa_levels(pano_id, latch_path):
         _photometa_run.given_up = True
         _photometa_run.announced = True
         logging.error("IMAGEDOWNLOAD: pano %s: Google refused the photometa request (%s); latching %s and "
-                      "taking the zoom from the tile probe for the rest of this run", pano_id, str(e)[:200],
-                      latch_path)
+                      "taking the zoom from the tile probe for the next %g hours, on every city this host runs",
+                      pano_id, str(e)[:200], latch_path, DEPTH_BLOCK_LATCH_HOURS)
         print("IMAGEDOWNLOAD: WARNING - Google refused a photometa request (%s). The zoom probe is used for the "
               "next %g hours, on every city this host runs, and the depth phase will stand down (latch %s)."
               % (str(e)[:200], DEPTH_BLOCK_LATCH_HOURS, latch_path))
@@ -1303,8 +1303,14 @@ def _write_pace_state(path, interval, clean_streak):
     the breaker - one unwritable temp directory would then trip it after 25 panos on every city, every night -
     and from the second it would take the log.csv evidence row with it.
 
-    Written to a per-process temporary name and renamed into place, so a run that reads while another writes
-    sees the old file or the new one, never a torn one (and a torn one would only mean "open careful").
+    Written to a temporary name and renamed into place, so a run that reads while another writes sees the old
+    file or the new one, never a torn one (and a torn one would only mean "open careful"). The temporary name
+    is FIXED, `<path>.tmp`, not per process: the queue SIGKILLs cities, and a per-pid orphan left between the
+    write and the rename would never be swept, while a fixed one is replaced by the next write
+    (TestTheTemporaryFileCannotAccumulate, #125.7). That is safe for the depth phase, which writes under
+    `<pace>.lock`. The image phase's refusal forfeit (#74) writes WITHOUT the lock, so a manual run beside the
+    queue can share the temporary file with it; the worst case is an OSError (logged) or a torn file, which
+    reads as "open careful" - the direction a refusal forfeit wants anyway.
     """
     tmp = path + '.tmp'
     try:

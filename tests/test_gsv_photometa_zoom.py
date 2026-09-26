@@ -9,10 +9,14 @@ no black and no undersized tile to give it away.
 What replaced it, and what these tests hold:
 
 * **The rule is a consistency check** (choose_zoom): the highest level k whose grid - _dims_at_zoom of the
-  app's frame at k - IS a level Google reports. On every real photometa shape pinned in OBSERVED_PHOTOMETA that
-  reproduces the probe's answer for a native frame.
+  app's frame at k - IS a level Google reports. For a native frame it is the probe's answer for every six-level
+  shape in OBSERVED_PHOTOMETA, and the native top level for the four- and five-level ones (the probe could only
+  say 5 or 3, so a five-level 5376 pano moves from its zoom 3 to zoom 4).
 * **A frame no level admits is refused loudly and transiently** by download_single_pano, never cropped - but
-  NOT by resolve_frame / resolve_zoom_and_dims, which refetch_panos.py composes with its own frame gate.
+  NOT by resolve_frame, which only reports it. resolve_zoom_and_dims, which refetch_panos.py composes with its
+  own frame gate, is the probe alone: it never asks photometa and never reads or writes the block latch.
+* **On the probe arm, download_single_pano checks the frame too** (frame_covers_pano) - which guards a frame
+  SMALLER than Google serves, not a larger one.
 * **The probe survives verbatim as the fallback** for every photometa failure and for "not found", so a
   permanent downloaded=0 still rests on the same two black tiles it always did.
 * **The image phase shares the depth phase's block latch file, not its pacer.**
@@ -666,6 +670,19 @@ class TestPhotometaFailuresAreRememberedForTheRun:
         assert gsv._block_latch_age_hours(gsv.image_block_latch_path) is None, 'the latch really was unwritable'
         assert len(asked) == 1, 'a refused host was asked %d times in one run' % len(asked)
         assert len(list(tmp_path.rglob('*.jpg'))) == 4, 'every pano still downloads, from the probe'
+
+    def test_both_channels_give_the_latch_the_same_reach(self, tmp_path, monkeypatch, capsys, caplog):
+        """Round two: stdout said "next 6 hours, on every city" while scrape.log said "the rest of this run"."""
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+
+        with caplog.at_level(logging.WARNING):
+            gsv.resolve_frame(pano_info(1024, 512))
+
+        logged = [r.getMessage() for r in caplog.records if 'Google refused' in r.getMessage()]
+        reach = 'next %g hours, on every city this host runs' % gsv.DEPTH_BLOCK_LATCH_HOURS
+        assert len(logged) == 1 and reach in logged[0] and 'rest of this run' not in logged[0]
+        assert reach in capsys.readouterr().out
 
     def test_a_refusal_is_the_runs_only_fallback_line(self, tmp_path, monkeypatch, capsys):
         """The refusal WARNING already says the probe answers from here on; the latched panos after it must
