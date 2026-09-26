@@ -2769,6 +2769,75 @@ class TestStoreMode:
         assert run.fields()[12:16] == ['0', '2', '0', '2']
         assert not any(bad in line for line in run.get_lines())
 
+    def test_an_unplaced_pull_is_counted_failed_not_ledgered_and_retried(self, monkeypatch, tmp_path, capsys):
+        """`unplaced` (verified, but the rename failed - a full disk, a dropped mount) must never become a
+        downloaded=1 row: that row is a permanent resume marker, and there is no file behind it."""
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, jpgs([pano]))
+        real_replace = os.replace
+
+        def full_disk(src, dst, *a, **k):
+            if str(dst).endswith(pano + '.jpg'):
+                raise OSError(28, 'No space left on device')
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(downloaders.common.os, 'replace', full_disk)
+        assert run.main(store_csv_rows([pano])) == 0
+        final = run.storage / pano[:2] / (pano + '.jpg')
+        assert not final.exists()
+        assert ledger_verdict_rows(run.storage) == []
+        assert run.fields()[6:11] == ['0', '0', '1', '0', '1']
+
+        monkeypatch.setattr(downloaders.common.os, 'replace', real_replace)
+        run.main(store_csv_rows([pano]))
+        assert final.exists()
+        assert ledger_verdict_rows(run.storage) == ['%s,1' % pano]
+
+    def test_a_stop_mid_session_is_143_not_a_session_failure(self, monkeypatch, tmp_path, capsys):
+        """SIGTERM's SystemExit(143) must pass through the session-failure handler untouched - reported as a
+        stop, not as "check your PS_SFTP_* settings" with exit 1 - and the finally must still write the row."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+
+        def sigterm(settings, batch_text):
+            raise SystemExit(143)
+
+        monkeypatch.setattr(store_sftp, 'run_sftp_batch', sigterm)
+        with pytest.raises(SystemExit) as e:
+            run.main(store_csv_rows())
+        assert e.value.code == 143
+        assert len(run.fields()) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert ledger_verdict_rows(run.storage) == []
+        assert 'session failed' not in capsys.readouterr().out
+
+    def test_prior_failures_are_seeded_into_field_9_like_the_image_loop(self, monkeypatch, tmp_path):
+        """log.csv field 9 carries the ledger's prior downloaded=0 rows in every mode; a store once scraped
+        from Google carries such rows, and the log analyzer's failure-growth rule reads field 9 across runs."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.storage.mkdir()
+        (run.storage / 'pano_id_log.csv').write_text(
+            'pano_id,downloaded,fetched_at\nretiredPanoAAAAAAAAAAAA,0,2026-01-01T00:00:00+00:00\n')
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        assert run.fields()[6:11] == ['1', '0', '1', '0', '2']
+
+    def test_a_local_pano_row_carries_a_blank_fetched_at(self, monkeypatch, tmp_path):
+        """ledger_verdict_rows strips fetched_at, so only a raw read can see a stamp on a file merely FOUND on
+        disk - the #114 false-provenance case."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        (run.storage / STORE_IDS[0][:2]).mkdir(parents=True)
+        (run.storage / STORE_IDS[0][:2] / (STORE_IDS[0] + '.jpg')).write_bytes(store_jpeg())
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        assert (run.storage / 'pano_id_log.csv').read_text().splitlines() == \
+            ['pano_id,downloaded,fetched_at', '%s,1,' % STORE_IDS[0]]
+
+    def test_no_depth_reservation_is_carved_in_store_mode(self, monkeypatch, tmp_path):
+        """--min-depth-runtime with --max-runtime must neither reach count_unresolved_depth (StoreRun's stand-in
+        raises) nor shrink the image budget: store mode has no Google depth phase to reserve for. Two guards
+        make this so (the reservation's own `store_settings is None`, and _resolve_store_mode setting
+        skip_depth); this pins the behaviour both exist for."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        assert run.main(store_csv_rows(), '--max-runtime', '60', '--min-depth-runtime', '20') == 0
+        assert run.fields()[6] == '3'
+
     def test_store_mode_is_not_in_the_breaker_table(self):
         assert store_sftp.STORE_SOURCE_NAME not in DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES
         assert DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES == {'mapillary': 3, 'panoramax': 3}
