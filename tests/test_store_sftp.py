@@ -791,6 +791,20 @@ class TestPullBatch:
         assert self.pull(make_settings(base, tmp_path), storage, ['abcdef']) == {'abcdef': PullOutcome.unplaced}
         assert not list(storage.rglob('abcdef*'))
 
+    def test_a_part_that_cannot_be_read_is_a_verification_failure_not_unplaced(self, tmp_path, monkeypatch):
+        """`unplaced` means the rename failed (local storage trouble). An OSError while READING the .part to
+        verify it is a verification failure: it is reported `truncated`, and the .part is removed."""
+        write_fake_sftp(tmp_path, monkeypatch)
+        base = make_remote(tmp_path, {'abcdef.jpg': small_jpeg()})
+        storage = tmp_path / 'local'
+
+        def unreadable(path):
+            raise PermissionError(13, 'Permission denied')
+
+        assert self.pull(make_settings(base, tmp_path), storage, ['abcdef'], verifier=unreadable) \
+            == {'abcdef': PullOutcome.truncated}
+        assert not list(storage.rglob('abcdef*'))
+
     def test_a_depth_artifact_is_pulled_and_a_half_one_is_not(self, tmp_path, monkeypatch):
         write_fake_sftp(tmp_path, monkeypatch)
         monkeypatch.setenv('FAKE_SFTP_TRUNCATE', 'bbbbbb.depth.npz')

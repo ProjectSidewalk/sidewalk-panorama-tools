@@ -438,7 +438,7 @@ def pull_batch(settings, storage_path, pano_ids, suffix, verifier):
             continue
         try:
             with atomic_output_path(final) as tmp:
-                if not verifier(tmp):
+                if not _verifies(verifier, tmp):
                     raise _Incomplete()
         except _Incomplete:
             outcomes[pano_id] = PullOutcome.truncated
@@ -448,6 +448,16 @@ def pull_batch(settings, storage_path, pano_ids, suffix, verifier):
             continue
         outcomes[pano_id] = PullOutcome.pulled
     return outcomes
+
+
+def _verifies(verifier, path):
+    """verifier(path), with an OSError while READING the file counted as a failed verification. Left to
+    propagate it would reach pull_batch's `except OSError` and be reported `unplaced` - which means the
+    rename failed, i.e. local storage trouble - and the word would send the operator to the wrong place."""
+    try:
+        return verifier(path)
+    except OSError:
+        return False
 
 
 class _Incomplete(Exception):
