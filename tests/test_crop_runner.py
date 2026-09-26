@@ -2896,6 +2896,24 @@ class TestTheMarkerKeepsItsHistory:
             crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
         assert 'cut under sizing rule unknown and this run uses v3' in caplog.text
 
+    @pytest.mark.parametrize('field', ['crop_rule_version', 'previous_crop_rule_version',
+                                       'crop_size_scale'])
+    @pytest.mark.parametrize('bad', [[], {}])
+    def test_a_field_that_is_not_a_string_or_number_is_unreadable_not_a_crash(
+            self, crop_runner, tmp_path, caplog, capsys, field, bad):
+        """crop_rule_version [] or {} passed the history checks and then raised TypeError (unhashable)
+        looking up that rule's constant keys, before any crop was cut (#157 final review)."""
+        content = json.dumps({'crop_rule_version': 'v2', field: bad})
+        (tmp_path / crop_runner.CROP_RULE_MARKER).write_text(content, encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2') == 'unknown'
+        printed = capsys.readouterr().out
+        for channel in (caplog.text, printed):
+            assert 'could not be read' in channel
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['unknown', 'v2']
+        kept = list(tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
+        assert len(kept) == 1 and kept[0].read_text(encoding='utf-8') == content
+
     def test_the_unreadable_run_warns_once_not_twice(self, crop_runner, tmp_path, caplog):
         """On the run that finds the marker unreadable, 'unknown' is this run's own finding and is
         already warned; a second 'cut under sizing rule unknown' line on the same run is noise."""

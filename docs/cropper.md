@@ -93,7 +93,8 @@ and the warnings fire on *every* run whose rule or constants are not the only on
 just the first. That matters for v2 and v3 in particular, because both cut 3:2 crops, so a mixed store is
 indistinguishable on disk and the marker is the only evidence. The warning is written before any crop is cut,
 so it says what the store holds and what any crop this run cuts will be, not that this run added anything. A
-marker that exists but cannot be read is warned about, recorded as `unknown` (for good, in `rules_seen`), and
+marker that exists but cannot be read (bad JSON, a malformed history, or a field that is not a string, a number
+or null) is warned about, recorded as `unknown` (for good, in `rules_seen`), and
 kept beside the new one as `crop_rule.json.unreadable-<UTC timestamp>`. Getting one geometry throughout means
 re-cutting the store under one rule's constants; there is no re-cut path yet
 ([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)).

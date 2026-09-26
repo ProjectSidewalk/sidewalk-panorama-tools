@@ -857,7 +857,9 @@ def write_rule_marker(destination_dir, sizing_rule=CROP_RULE_VERSION):
 
 def _read_rule_marker(path):
     """(marker dict, unreadable?) for crop_rule.json. Absent is ({}, False); present but not a marker
-    this code can read - bad JSON, not an object, a malformed history - is ({}, True)."""
+    this code can read - bad JSON, not an object, a malformed history, or any other field that is not a
+    string, a number or null (a rule id of [] would otherwise raise TypeError looking up its
+    constants) - is ({}, True)."""
     try:
         with open(path, encoding='utf-8') as f:
             recorded = json.load(f)
@@ -873,6 +875,9 @@ def _read_rule_marker(path):
             and isinstance(constants_seen, dict)
             and all(isinstance(keys, dict) and all(isinstance(values, list) for values in keys.values())
                     for keys in constants_seen.values())):
+        return {}, True
+    if not all(value is None or isinstance(value, (str, int, float))
+               for key, value in recorded.items() if key not in ('rules_seen', 'constants_seen')):
         return {}, True
     return recorded, False
 
