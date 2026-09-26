@@ -406,6 +406,9 @@ class ImageLedger:
 
     def __exit__(self, *exc_info):
         self._file.close()
+        # Explicitly falsy: a truthy return would swallow SIGTERM's SystemExit(143) mid-phase, and the run would
+        # carry on into the next phase and exit 0 (#49). The inline `with open(...)` this replaced could not.
+        return False
 
 
 # Consecutive permanent (downloaded=0) verdicts from ONE source that stop this run ledgering that source

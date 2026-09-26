@@ -2774,6 +2774,43 @@ class TestStoreMode:
         assert DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES == {'mapillary': 3, 'panoramax': 3}
 
 
+class TestTheImageLedgerHoldsWhatTheInlineCodeHeld:
+    """ImageLedger replaced a `with open(...)` block in the Google image loop (#30), and now wraps both loops.
+    `with open` could neither swallow an exception nor defer a row; a hand-written context manager can do
+    both, so each property is pinned here, through the Google loop, where the refactor could regress it."""
+
+    def gsv_main(self, monkeypatch, tmp_path, download_pano):
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + GSV_CSV_ROWS)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', download_pano)
+        monkeypatch.chdir(tmp_path)
+        return DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+                                    '--skip-depth'])
+
+    def test_a_stop_inside_the_image_loop_is_not_swallowed(self, monkeypatch, tmp_path):
+        """A truthy __exit__ would turn SIGTERM's SystemExit(143) into a run that carries on to the depth phase
+        and exits 0 - #49's contract and the queue's kill path, both broken silently."""
+        def stopped(storage_path, pano_info):
+            raise SystemExit(143)
+
+        with pytest.raises(SystemExit) as e:
+            self.gsv_main(monkeypatch, tmp_path, stopped)
+        assert e.value.code == 143
+
+    def test_each_row_is_on_disk_before_the_next_pano_is_attempted(self, monkeypatch, tmp_path):
+        """record() flushes per row (#55): a hard kill between panos loses at most the pano in flight."""
+        seen = []
+
+        def peeking(storage_path, pano_info):
+            with open(os.path.join(storage_path, 'pano_id_log.csv')) as f:
+                seen.append(len(f.read().splitlines()))
+            return downloaders.DownloadResult.success
+
+        assert self.gsv_main(monkeypatch, tmp_path, peeking) == 0
+        assert len(seen) == len(GSV_PANO_IDS)
+        assert seen == [1 + i for i in range(len(seen))]
+
+
 STORE_PROCESS_DRIVER = '''\
 """Test-only driver: run the real DownloadRunner.py as a script with store_sftp pointed at the fake sftp."""
 import runpy
