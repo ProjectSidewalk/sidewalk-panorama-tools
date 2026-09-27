@@ -62,14 +62,23 @@ be regenerated from anything this repo holds, and a deleted one is gone. This to
 `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`, cut from the pano store and reproducible at will
 ([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)).
 
-Before it writes anything — before it creates `-o`, opens `crop.log` or writes `crop_rule.json` — the run
-checks the destination and exits with status **3** — a message on stdout, and the same at `ERROR` on stderr,
-since `crop.log` would be a write into the store being refused — if it finds either:
+Before it writes anything — before it creates the city store, opens `crop.log` or writes `crop_rule.json` —
+the run checks **both `-o` and the city store `<-o>/<city>/`**, and exits with status **3** — a message on
+stdout, and the same at `ERROR` on stderr, since `crop.log` would be a write into the store being refused — if
+either holds:
 
 * an immediate subdirectory named for a label type (`CurbRamp`, `NoCurbRamp`, … any name in
   `LABEL_TYPE_IDS_BY_NAME`, ignoring case) — this tool names them by numeric id; or
-* a `crop_*.png` file in `-o` or up to two directories below it — so `-o` at the production root, at one city
+* a `crop_*.png` file in it or up to two directories below it — so `-o` at the production root, at one city
   or at one label type directory is caught.
+
+**Why both** ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)): the two layouts
+are now both city-first, so depth no longer separates them — the names do. Ours is all-digit type directories
+holding `<label_id>.jpg`; theirs is `LabelType`-named directories holding `crop_<labelId>.png`. Scanned from
+`-o`, a formula root's city directories sit one level down and their numeric shards are skipped, so it passes;
+a production root is caught by its captures two levels down. The one shape that scan misses is a production
+city directory whose type directories are still **empty**, because the name signal is read only at the top of
+the scan — so the city store is scanned too, where those directories are the top.
 
 A directory named for a label type refuses even when it is **empty**, deliberately: a city directory holds its
 type directories before it holds a single capture. The cost is that an ordinary folder that happens to be

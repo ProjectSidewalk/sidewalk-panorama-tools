@@ -138,10 +138,12 @@ CROP_MAX_STORED_WIDTH = 1440
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
 
-# How far below -o refuse_production_crop_store looks. Two, because the production store's root keeps
-# its captures two directories down (<city-id>/<LabelType>/crop_<id>.png) - so pointing -o at the root,
-# at one city, or at one label type directory are all within reach - and no further, because each level
-# is a directory listing and the store is a network mount.
+# How far below the directory it is given refuse_production_crop_store looks. Two, because the production
+# store's root keeps its captures two directories down (<city-id>/<LabelType>/crop_<id>.png) - so pointing
+# -o at the root, at one city, or at one label type directory are all within reach - and no further,
+# because each level is a directory listing and the store is a network mount. main() calls it on -o AND
+# on the city store <-o>/<city>/ (#159): from -o a production city directory sits at depth 1, where the
+# LabelType-name signal is not read, so one whose type directories are still empty is caught only there.
 PRODUCTION_STORE_SCAN_DEPTH = 2
 
 # main()'s exit status when it refuses the destination. Not 1, which means "some labels errored, and the
@@ -856,8 +858,16 @@ def refuse_production_crop_store(destination_dir):
     the label cards and the social preview from `<root>/<city-id>/<LabelType>/crop_<labelId>.png`: a
     canvas capture the BROWSER took at label time - the annotator's own viewport, zoom and the imagery
     Google served that day. It is not a function of anything we still hold, so none of it can be
-    regenerated and a deleted one is gone. This tool writes `<crop-dir>/<label_type_id>/<label_id>.jpg`,
-    cut from the pano store and reproducible at will. #83's scope comment has the full comparison.
+    regenerated and a deleted one is gone. This tool writes `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`
+    (#159), cut from the pano store and reproducible at will. #83's scope comment has the full comparison.
+
+    Since #159 both layouts are city-first, so depth no longer separates them; the names do. Ours has
+    all-digit type directories and <label_id>.jpg files, theirs LabelType-named directories and
+    crop_<labelId>.png files. Scanned from -o, our city directories sit at depth 1 and their numeric
+    shards are skipped, so a formula root passes; a production root is caught by its captures at depth 2.
+    The one shape the root-level scan misses is a production city directory whose LabelType directories
+    are still EMPTY - the name signal is read at depth 0 only - which is why main() scans the city store
+    as well.
 
     The two layouts happen to be disjoint on every name component - a type NAME against a numeric id,
     a `crop_` prefix, .png against .jpg - so CropRunner pointed at the production store could not
@@ -895,7 +905,8 @@ def refuse_production_crop_store(destination_dir):
     yet has nothing in it to protect and passes.
 
     Called before ANYTHING is written: by bulk_extract_crops before it creates the destination or
-    writes the rule marker, and by main() before it creates -o or opens crop.log inside it.
+    writes the rule marker, and by main() - on -o and again on <-o>/<city>/ - before it creates the store
+    or opens crop.log inside it.
     """
     pending = [(destination_dir, 0)]
     while pending:
@@ -931,8 +942,8 @@ def refuse_production_crop_store(destination_dir):
                 "Refusing to write crops into %s: it holds %s, the layout of the production crop "
                 "store SidewalkWebpage serves (<city-id>/<LabelType>/crop_<labelId>.png). Those "
                 "are canvas captures taken at label time and cannot be regenerated. CropRunner "
-                "writes <label_type_id>/<label_id>.jpg - point -o at a formula crop store, or at a "
-                "new directory." % (destination_dir, found))
+                "writes <crop-dir>/<city>/<label_type_id>/<label_id>.jpg - point -o at a root of "
+                "formula crop stores, or at a new directory." % (destination_dir, found))
 
 def _store_holds_crops(destination_dir):
     """True if any label-type shard (<destination_dir>/<digits>/) holds a crop (a *.jpg).
@@ -1917,6 +1928,16 @@ def main(argv=None):
     # file name is unique only inside its city's directory. Everything below - the marker, the manifest,
     # crop.log and the crops - is this city's store, never the root.
     store = os.path.join(args.o, args.city)
+
+    # Again at the store (#159). Both layouts are city-first, so from -o the scan reaches a production city
+    # directory only at depth 1, where the LabelType-name signal is not read: one whose type directories
+    # are still empty passes the root-level scan, and crop.log would be the first file written into it.
+    try:
+        refuse_production_crop_store(store)
+    except ProductionCropStoreError as e:
+        print("CropRunner: %s" % e)
+        logging.error('%s', e)
+        return EXIT_REFUSED_DESTINATION
 
     # Same place, same rule: a store recorded as another city's (renamed or copied into this name) is
     # refused before anything - crop.log included - is written into it.
