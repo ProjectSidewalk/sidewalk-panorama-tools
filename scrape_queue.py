@@ -1062,6 +1062,45 @@ def manifest_report(check, advisory=False):
     return gap, status
 
 
+def conditions_report(results):
+    """The summary's lines about run conditions (#161): one per condition KIND, as [(line, logging.ERROR)].
+
+    One line per kind, never per city, because the night sends one message and a refusal followed by 40
+    stood-down cities is two facts: the line names the first city (with its pass, when not pass 1, and its
+    detail) and then lists the rest. A city is listed once per kind however many passes reported it, first
+    occurrence winning. Kinds come in CONDITION_LABELS order, then codes this queue does not know in order
+    of first appearance - kept, so a runner newer than the queue can still be heard.
+
+    ERROR, every one: these lines are why the night exits 1, and `grep ERROR scrape_queue.log` should agree.
+
+    Example::
+
+        >>> r = CityResult('bravo-bb', 'ok', 0, 1.0, conditions=(Condition('depth-refused', 'HTTP 429'),))
+        >>> conditions_report([r])[0][0]
+        '[queue] depth-refused: Google refused the depth phase; latch written - 1 city, first bravo-bb: HTTP 429'
+    """
+    by_code = OrderedDict()
+    for r in results:
+        for condition in r.conditions:
+            cities = by_code.setdefault(condition.code, OrderedDict())
+            if r.city_id not in cities:
+                cities[r.city_id] = (r.pass_number, condition.detail)
+    ordered = [code for code in CONDITION_LABELS if code in by_code]
+    ordered += [code for code in by_code if code not in CONDITION_LABELS]
+    lines = []
+    for code in ordered:
+        cities = list(by_code[code].items())
+        first_city, (first_pass, detail) = cities[0]
+        line = "[queue] %s: %s - %d %s, first %s%s: %s" % (
+            code, CONDITION_LABELS.get(code, 'a condition this queue does not know'), len(cities),
+            'city' if len(cities) == 1 else 'cities', first_city,
+            '' if first_pass == 1 else ' in pass %d' % first_pass, detail)
+        if len(cities) > 1:
+            line += '; also %s' % ', '.join(city for city, _ in cities[1:])
+        lines.append((line, logging.ERROR))
+    return lines
+
+
 # The order the non-ok lines are printed in. stdout is what cron mails, so the two or three real crashes
 # have to appear before the twenty skipped_deadline lines rather than interleaved with them. Run order is
 # kept WITHIN an outcome, so "which city crashed first" is still readable off the list.
@@ -1081,6 +1120,9 @@ def summarise(results, elapsed_minutes, manifest_check=None):
     city that was hard-killed: counting only pass 1 there printed "0 failed, 0 timed out" on a night that
     exited 1, contradicting both the exit code and the per-run lines immediately above it.
 
+    Run conditions (#161) follow the failures, one line per kind (conditions_report), and the totals line
+    names their kinds, since an ok city with a condition still fails the night.
+
     The cross-check follows the same two rules. Its gap lines - a missing city, or a roster nobody served -
     go ABOVE the totals with the other things that went wrong, and the totals line carries the count or says
     the check did not run, so "54/54 cities ok, 0 failed, 0 timed out, 0 not reached" is never printed above
@@ -1099,6 +1141,8 @@ def summarise(results, elapsed_minutes, manifest_check=None):
             code = '' if r.exit_code is None else ' (exit %d)' % r.exit_code
             which = '' if r.pass_number == 1 else ' in pass %d' % r.pass_number
             lines.append("[queue] %-24s %s%s%s%s" % (r.city_id, outcome.upper(), code, when, which))
+    condition_lines = conditions_report(results)
+    lines += [line for line, _ in condition_lines]
     lines += [line for line, _ in gap]
     n_missing = 0 if manifest_check is None else len(manifest_check.unlisted)
     if manifest_check is not None and manifest_check.roster_host is None:
@@ -1106,11 +1150,15 @@ def summarise(results, elapsed_minutes, manifest_check=None):
     else:
         missing = ('' if not n_missing else ', %d %s missing from the manifest'
                    % (n_missing, 'city' if n_missing == 1 else 'cities'))
-    lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s; %.1f min total"
+    # The kinds, not the cities: the lines above name those, and "54/54 cities ok" must not read clean above
+    # an exit 1 that the conditions earned (#161).
+    kinds = [line.split()[1].rstrip(':') for line, _ in condition_lines]
+    conditions = '' if not kinds else ', conditions: %s' % ', '.join(kinds)
+    lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s%s; %.1f min total"
                  % (sum(1 for r in first if r.outcome == 'ok'), len(first),
                     len(by_outcome.get('failed', [])),
                     len(by_outcome.get('timed_out', [])), len(by_outcome.get('skipped_deadline', [])),
-                    missing, elapsed_minutes))
+                    missing, conditions, elapsed_minutes))
     passes = sorted({r.pass_number for r in results if r.pass_number > 1})
     for n in passes:
         runs = [r for r in results if r.pass_number == n]
@@ -1270,13 +1318,14 @@ def main(argv=None):
 def _report(results, started_monotonic, manifest_check=None):
     """Print and log the summary, and return the exit code it implies.
 
-    Every line is logged at INFO except the cross-check's, which carry their own levels: a gap and an
-    unserved roster are the night's failure and are logged as one, so `grep ERROR scrape_queue.log` finds
-    them next week the way the mail finds them tonight.
+    Every line is logged at INFO except the cross-check's and the conditions', which carry their own levels:
+    a gap, an unserved roster and a run condition are the night's failure and are logged as one, so
+    `grep ERROR scrape_queue.log` finds them next week the way the mail finds them tonight.
     """
     summary = summarise(results, (time.monotonic() - started_monotonic) / 60.0, manifest_check)
     print(summary)
     levels = {} if manifest_check is None else dict(sum(manifest_report(manifest_check), []))
+    levels.update(conditions_report(results))
     for line in summary.splitlines():
         if line.strip():
             logging.log(levels.get(line, logging.INFO), line.replace('[queue] ', ''))

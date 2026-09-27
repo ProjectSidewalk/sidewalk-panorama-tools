@@ -1996,6 +1996,90 @@ class TestAnyConditionFailsTheNight:
                                                       | {'no-run-summary', 'conditions-unreadable'})
 
 
+class TestTheSummaryReportsOneLinePerConditionKind:
+    """The message is the alarm, and a refusal followed by 40 stood-down cities is two facts, not 41: one line
+    per condition KIND, naming the first city (with its pass and detail) and then listing the rest."""
+
+    def lines(self, results):
+        return [line for line, _ in scrape_queue.conditions_report(results)]
+
+    def test_a_refusal_then_forty_stand_downs_is_two_lines(self):
+        results = [conditioned('refuser', 'depth-refused')]
+        results += [conditioned('city-%02d' % n, 'depth-stood-down') for n in range(40)]
+
+        lines = self.lines(results)
+
+        assert len(lines) == 2, lines
+        assert lines[0].startswith('[queue] depth-refused:') and 'first refuser' in lines[0]
+        assert lines[1].startswith('[queue] depth-stood-down:') and '40 cities, first city-00' in lines[1]
+        assert all(('city-%02d' % n) in lines[1] for n in range(40))
+
+    def test_the_first_city_is_named_with_its_detail(self):
+        results = [conditioned('alpha', 'depth-breaker'), conditioned('bravo', 'depth-breaker')]
+
+        line = self.lines(results)[0]
+
+        assert 'first alpha: detail of depth-breaker; also bravo' in line
+
+    def test_a_city_in_two_passes_is_listed_once_with_its_first_pass(self):
+        results = [result('alpha'), conditioned('bravo', 'depth-breaker'),
+                   conditioned('alpha', 'depth-breaker', pass_number=2),
+                   conditioned('bravo', 'depth-breaker', pass_number=2)]
+
+        line = self.lines(results)[0]
+
+        assert '2 cities' in line
+        assert line.count('bravo') == 1 and line.count('alpha') == 1
+        assert 'first bravo: ' in line, 'pass 1 is the default and is not named'
+
+    def test_a_first_occurrence_in_a_later_pass_says_so(self):
+        results = [result('alpha'), conditioned('alpha', 'depth-breaker', pass_number=3)]
+
+        assert 'first alpha in pass 3:' in self.lines(results)[0]
+
+    def test_kinds_are_in_label_order_then_unknown_codes_by_first_appearance(self):
+        results = [conditioned('a', 'zzz-new'), conditioned('b', 'depth-stood-down'),
+                   conditioned('c', 'aaa-new'), conditioned('d', 'pano-schema-drift')]
+
+        codes = [line.split()[1].rstrip(':') for line in self.lines(results)]
+
+        assert codes == ['pano-schema-drift', 'depth-stood-down', 'zzz-new', 'aaa-new']
+
+    def test_every_line_is_an_error(self):
+        report = scrape_queue.conditions_report([conditioned('a', 'depth-refused')])
+        assert [level for _, level in report] == [logging.ERROR]
+
+    def test_no_conditions_no_lines(self):
+        assert scrape_queue.conditions_report([result('a'), result('b')]) == []
+
+    def test_condition_lines_come_before_the_totals(self):
+        text = scrape_queue.summarise([result('a'), conditioned('b', 'depth-refused')], 1.0)
+        lines = text.splitlines()
+
+        condition = next(i for i, l in enumerate(lines) if l.startswith('[queue] depth-refused:'))
+        totals = next(i for i, l in enumerate(lines) if 'cities ok' in l)
+        assert condition < totals
+
+    def test_a_conditions_only_night_says_so_on_the_totals_line(self):
+        """The totals line must never read clean above an exit 1."""
+        results = [result('a'), conditioned('b', 'depth-refused', 'depth-breaker')]
+        totals = [ln for ln in scrape_queue.summarise(results, 1.0).splitlines() if 'cities ok' in ln][0]
+
+        assert scrape_queue.exit_code_for(results) == 1
+        assert '2/2 cities ok' in totals
+        assert 'conditions: depth-refused, depth-breaker' in totals
+
+    def test_the_queue_log_carries_them_at_error(self, tmp_path, fake_runner, journal, monkeypatch,
+                                                 fleet_in_step):
+        """`grep ERROR scrape_queue.log` has to agree with the exit code."""
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS_BRAVO_BB', 'depth-refused=HTTP 429')
+
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        log = (tmp_path / 'store' / 'scrape_queue.log').read_text()
+        assert re.search(r' ERROR depth-refused: .*first bravo-bb', log), log
+
+
 # --- The manifest is cross-checked against the fleet (#130) -------------------------------------------------
 #
 # laurens-ia and bayonne-fr launched on 2026-09-11 with no manifest row, and the queue ran green for six nights:

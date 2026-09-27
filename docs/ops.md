@@ -733,7 +733,19 @@ cron_notify.py --name scrape-queue --only-on-failure --log /home/ubuntu/cron_not
   (decided 2026-09-18): **a message on a bad night, silence on a good one**. The subject is
   `scrape-queue: exit N on <host>`, the body is the queue's output, and a failure that printed nothing is
   still delivered with a body saying so. The cost is that a `WARNING` on a night that exited 0 is not mailed;
-  it is still in that city's `scrape.log`. The sink gets the body on stdin and in the file `$NOTIFY_BODY_FILE`
+  it is still in that city's `scrape.log`. That cost is why every shape the runner itself calls a failure —
+  a refused or stood-down depth phase, a missing Mapillary token, an empty pano list — is now a
+  [condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) that makes the night exit 1
+  (#161). The summary carries **one line per condition kind**, naming the first city and listing the rest, so
+  a refusal followed by 40 stood-down cities is two lines:
+
+  ```
+  [queue] depth-refused: Google refused the depth phase; latch written - 1 city, first chicago-il: HTTP 429 ...
+  [queue] depth-stood-down: depth stood down on the block latch - 40 cities, first columbus-oh: latch set 0.2h ago (...); also ...
+  [queue] 53/53 cities ok, 0 failed, 0 timed out, 0 not reached, conditions: depth-refused, depth-stood-down; 610.2 min total
+  ```
+
+  The first night after this lands may surface a long-standing silent condition; that is intended. The sink gets the body on stdin and in the file `$NOTIFY_BODY_FILE`
   names (`aws` reads it with `file://`, which sidesteps the 128 KB single-argument limit a `"$(cat)"` would
   hit), plus `$NOTIFY_SUBJECT` and `$NOTIFY_EXIT`.
 - **Delivery is SNS, published with the instance role** — no credential on the box, no mail-service
@@ -787,7 +799,8 @@ because of.
   `grep ERROR scrape_queue.log` prints nothing — a `cities missing from the manifest` or
   `manifest not cross-checked` line is the night's failure
   ([the cross-check](downloader.md#the-manifest-is-cross-checked-against-the-fleet)), whether or not the mail
-  arrived.
+  arrived. So is a line naming a condition code (`depth-refused: …`, `mapillary-token-missing: …`) —
+  [the codes table](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) says what each means.
 - `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
 - `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —
   a push-back from Google would be the first sign the pacer's persisted standing is too aggressive. The reason
