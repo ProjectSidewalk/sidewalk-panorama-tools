@@ -126,15 +126,16 @@ python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them i
 
 There is **no offline migration from v2 to v3**: the plane fields v3 adds were never stored by the v2 writer,
 so they can only come from a re-fetch. A v2 artifact reaches v3 by deleting the artifact *and* its
-`depth_log.csv` row, which makes the next run re-request it. (Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)
-dev and test runs ever produced a v2 artifact. Production's first depth requests were a 500-pano
-`west-chester-pa` canary on 2026-09-06, the day the depth phase went live fleet-wide
-([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)). Before it the store held
-**zero** `depth_log.csv` files and **zero** `.depth.npz` artifacts, the box had just been pulled to `master`,
-and the canary's artifacts read back as `format_version` 3, so every artifact the production store holds is
-v3. That rests on the store, not on the v3 writer's 2026-08-07 merge date: as late as 2026-08-29 the box was
-still running a build older than that merge.) The plane fields cost
-roughly 10–30 KB per pano on top of v2's 50–200 KB.
+`depth_log.csv` row, which makes the next run re-request it. The plane fields cost roughly 10–30 KB per pano
+on top of v2's 50–200 KB.
+
+Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56) dev and test runs ever
+produced a v2 artifact. The depth phase's first production run was a 500-pano `west-chester-pa` canary on
+2026-09-06, the day it went live fleet-wide ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)).
+Before it the store held **zero** `depth_log.csv` files and **zero** `.depth.npz` artifacts, the scraper host
+had just been pulled to `master`, and the canary's artifacts read back as `format_version` 3, so every artifact
+the production store holds is v3. That rests on the store, not on the v3 writer's 2026-08-07 merge date: as
+late as 2026-08-29 production was still running a build older than that merge.
 
 ## Runtime budget
 
