@@ -1167,6 +1167,118 @@ class TestTheTileFanOutContract:
         assert failed == [((1, 0), boom)]
 
 
+class TestARefusedTileAbandonsThePano:
+    """#162: one refused tile ends the pano's fan-out, and the pano leaves no log line of its own.
+
+    Driven through the REAL fan-out (_download_tiles, the backoff wrapper, _fetch_tile) with only aiohttp's
+    session and connector replaced, because what is under test is how many requests leave the box: at
+    thread_count 8, a 512-tile pano whose every tile answers 429 must stop at the 8 already in flight.
+    """
+
+    @pytest.fixture
+    def fake_aiohttp(self, monkeypatch):
+        """Install a session factory; the test sets `holder['session']` to the _StatusSession it wants."""
+        holder = {}
+
+        class FakeConnector:
+            def __init__(self, limit=None):
+                holder['limit'] = limit
+
+        class FakeClientSession:
+            def __init__(self, raise_for_status=None, connector=None):
+                pass
+
+            async def __aenter__(self):
+                return holder['session']
+
+            async def __aexit__(self, *args):
+                return False
+
+        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', FakeConnector)
+        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
+        monkeypatch.setattr(gsv, 'thread_count', 8)
+        return holder
+
+    def test_a_429_abandons_the_rest_of_the_fan_out(self, fake_aiohttp):
+        session = fake_aiohttp['session'] = _StatusSession(429, await_first=True)
+
+        with pytest.raises(gsv.TilePushbackError) as excinfo:
+            gsv.fetch_pano_image('refusedPanoAAAAAAAAAAA', 16384, 8192, 5)
+
+        assert session.requests == 8, 'only the requests already in flight may leave the box'
+        message = str(excinfo.value)
+        assert 'HTTP 429' in message and 'tile (' in message and '8 of 512' in message
+
+    def test_the_refused_pano_logs_nothing_itself(self, fake_aiohttp, caplog):
+        """The image loop writes the one line a refused pano gets; this layer adding one more is how 5,120
+        became 5,121 rather than 1. (asyncio's own loop-construction DEBUG line is not ours.)"""
+        fake_aiohttp['session'] = _StatusSession(429, await_first=True)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(gsv.TilePushbackError):
+                gsv.fetch_pano_image('refusedPanoAAAAAAAAAAA', 16384, 8192, 5)
+
+        assert [r.getMessage() for r in caplog.records if r.name != 'asyncio'] == []
+
+    def test_a_healthy_fan_out_makes_every_request_and_stitches(self, fake_aiohttp):
+        """The discrimination for the abandonment: nothing refused, nothing abandoned."""
+        body = jpeg_bytes(RED)
+        session = fake_aiohttp['session'] = _StatusSession(
+            await_first=True, answer=lambda url, attempt: _FakeResponse({'Content-Type': 'image/jpeg'}, body))
+
+        stitched = gsv.fetch_pano_image('healthyPanoAAAAAAAAAAA', 1024, 512, 1)
+
+        assert session.requests == 2
+        assert stitched.image.size == (1024, 512)
+
+    def test_a_tile_that_needed_a_retry_is_one_info_line(self, monkeypatch, fake_aiohttp, caplog):
+        """backoff no longer logs, so a pano that succeeded only after retries says so once - the earliest
+        sign of trouble that is not yet a failure."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        body = jpeg_bytes(RED)
+
+        def answer(url, attempt):
+            if '&x=0&' in url and attempt == 1:
+                return 503
+            return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
+
+        session = fake_aiohttp['session'] = _StatusSession(await_first=True, answer=answer)
+
+        with caplog.at_level(logging.DEBUG):
+            gsv.fetch_pano_image('retriedPanoAAAAAAAAAAA', 1024, 512, 1)
+
+        assert session.requests == 3
+        lines = [r.getMessage() for r in caplog.records if r.name != 'asyncio']
+        assert lines == ['IMAGEDOWNLOAD: pano retriedPanoAAAAAAAAAAA: stitched after 1 tile retries']
+        assert caplog.records[-1].levelno == logging.INFO
+
+    def test_a_failed_pano_line_carries_the_retry_count(self, monkeypatch, fake_aiohttp, caplog):
+        """An ordinary failure keeps its one ERROR line, now saying how much retrying it cost."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        fake_aiohttp['session'] = _StatusSession(503)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(aiohttp.ClientResponseError):
+                gsv.fetch_pano_image('failingPanoAAAAAAAAAAA', 1024, 512, 1)
+
+        lines = [r.getMessage() for r in caplog.records if r.name != 'asyncio']
+        assert len(lines) == 1
+        assert '2/2 tiles failed' in lines[0]
+        assert 'after %d tile retries' % (2 * (gsv.TILE_MAX_TRIES - 1)) in lines[0]
+
+    def test_the_fan_out_state_does_not_outlive_the_pano(self, fake_aiohttp):
+        fake_aiohttp['session'] = _StatusSession(429, await_first=True)
+        with pytest.raises(gsv.TilePushbackError):
+            gsv.fetch_pano_image('refusedPanoAAAAAAAAAAA', 16384, 8192, 5)
+        assert gsv._TILE_FANOUT.get() is None
+
+        body = jpeg_bytes(RED)
+        fake_aiohttp['session'] = _StatusSession(
+            answer=lambda url, attempt: _FakeResponse({'Content-Type': 'image/jpeg'}, body))
+        gsv.fetch_pano_image('healthyPanoAAAAAAAAAAA', 1024, 512, 1)
+        assert gsv._TILE_FANOUT.get() is None
+
+
 class TestAnEmptyFanOutStillHasACellSize:
 
     def test_no_tiles_yields_the_nominal_tile_size(self):
