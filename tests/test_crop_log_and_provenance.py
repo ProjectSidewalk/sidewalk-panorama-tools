@@ -28,7 +28,7 @@ if REPO_ROOT not in sys.path:
 # is what makes pytest apply them here.
 from test_crop_runner import (  # noqa: F401
     PANO_SIZE, _isolate_logging_state, block_scandir, crop_path, crop_runner, label_row, put_pano,
-    reconciles, tree_snapshot, write_labels_csv)
+    city_store, reconciles, tree_snapshot, write_labels_csv)
 
 
 MALFORMED_PREFIX = 'Skipping malformed label row'
@@ -248,7 +248,7 @@ class TestThePerLabelWarningsAreCappedPerRun:
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, bad_rows(crop_runner.LOG_WARNINGS_PER_KIND + 5))
         assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
-        logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read().splitlines()
+        logged = io.open(os.path.join(str(city_store(out)), 'crop.log'), encoding='utf-8').read().splitlines()
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged[-1]
         # ...and the suppression total is in the log, ahead of it.
         assert any(line.split(':', 2)[-1].startswith('Suppressed 5 ') for line in logged[:-1])
@@ -1640,10 +1640,13 @@ class TestAPreCityManifestIsSetAsideNotAppendedTo:
 
     def test_main_refuses_on_both_channels_with_exit_3(self, crop_runner, tmp_path, capsys, caplog):
         store, out = self.old_store(crop_runner, tmp_path, content=b'pano_id,label_id\n1,2\n')
+        root = tmp_path / 'root'
+        root.mkdir()
+        os.rename(str(out), str(city_store(root)))
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row(label_id=1)])
         code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store),
-                                 '-o', str(out)])
+                                 '-o', str(root)])
         assert code == crop_runner.EXIT_REFUSED_DESTINATION
         assert crop_runner.PROVENANCE_MANIFEST in capsys.readouterr().out
         assert any(r.levelno == logging.ERROR and crop_runner.PROVENANCE_MANIFEST in r.getMessage()

@@ -99,6 +99,12 @@ def crop_path(out_dir, label_type_id, label_id):
     return os.path.join(str(out_dir), str(label_type_id), str(label_id) + '.jpg')
 
 
+def city_store(out_dir, city='seattle-wa'):
+    """The one city's store main() writes under -o (#159): <crop-dir>/<city>/. bulk_extract_crops and run()
+    are handed a store directly, so only main()-level tests need this."""
+    return out_dir / city
+
+
 # The disjoint outcome buckets, in one place so a newly added one cannot quietly fall out of the
 # invariant — which is exactly how it went stale when dims_mismatch arrived. shifted_vertically is
 # deliberately absent: it annotates a success (the crop was written, just de-centred), so counting it
@@ -249,7 +255,7 @@ class TestMetadataIntake:
         csv_file = tmp_path / 'labels.CSV'
         write_labels_csv(csv_file, [label_row()])
         assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
-        assert os.path.exists(crop_path(out, 1, 1))
+        assert os.path.exists(crop_path(city_store(out), 1, 1))
 
     def test_csv_pano_ids_stay_strings(self, crop_runner, tmp_path):
         """The #46 intake bug, in its discriminating form: an all-numeric pano_id column with one blank
@@ -293,7 +299,7 @@ class TestMetadataIntake:
         json_file = tmp_path / 'labels.json'
         json_file.write_text(json.dumps([label_row()]))
         assert crop_runner.main(['--city', 'seattle-wa', '-f', str(json_file), '-s', str(store), '-o', str(out)]) == 0
-        assert os.path.exists(crop_path(out, 1, 1))
+        assert os.path.exists(crop_path(city_store(out), 1, 1))
 
     def test_json_dedupes_on_label_id(self, crop_runner):
         labels = crop_runner.json_to_list([label_row(label_id=3), label_row(label_id=3)])
@@ -925,10 +931,10 @@ class TestMain:
 
         assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
 
-        assert os.path.exists(crop_path(out, 1, 1))
+        assert os.path.exists(crop_path(city_store(out), 1, 1))
         # crop.log lives with the crops, not in whatever CWD the process happened to have (the
         # DownloadRunner #49 lesson: a cron CWD is nowhere anyone looks).
-        assert os.path.exists(os.path.join(str(out), 'crop.log'))
+        assert os.path.exists(os.path.join(str(city_store(out)), 'crop.log'))
         assert not os.path.exists(os.path.join(str(cwd), 'crop.log'))
 
     def test_mark_label_flag_reaches_the_crop(self, crop_runner, tmp_path):
@@ -937,7 +943,7 @@ class TestMain:
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
         crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out), '--mark-label'])
-        with Image.open(crop_path(out, 1, 1)) as crop:
+        with Image.open(crop_path(city_store(out), 1, 1)) as crop:
             w, h = crop.size
             assert sum(crop.getpixel((w // 2, h // 2))) < 600
 
@@ -992,7 +998,7 @@ class TestMain:
         proc = subprocess.run([sys.executable, RUNNER, '--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store),
                                '-o', str(out)], capture_output=True, text=True, timeout=300)
         assert proc.returncode == 0, proc.stdout + proc.stderr
-        assert os.path.exists(crop_path(out, 1, 1))
+        assert os.path.exists(crop_path(city_store(out), 1, 1))
 
 
 # ---------------------------------------------------------------------------
@@ -2341,7 +2347,7 @@ class TestTheSystemicFailureAlarm:
         printed = capsys.readouterr().out
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed
         assert '5 errors, of 5 labels total' in printed
-        logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read()
+        logged = io.open(os.path.join(str(city_store(out)), 'crop.log'), encoding='utf-8').read()
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged
 
 
@@ -2600,11 +2606,11 @@ class TestForceRecut:
         stale crop in place with exit 0."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        stale = plant_stale_crop(out)
+        stale = plant_stale_crop(city_store(out))
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
         assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out), '--force']) == 0
-        with open(crop_path(out, 1, 1), 'rb') as f:
+        with open(crop_path(city_store(out), 1, 1), 'rb') as f:
             assert f.read() != stale
 
 
@@ -2755,22 +2761,22 @@ class TestAnUnlistableDirectoryIsNamedNotCrashedOn:
         store, it could not be read. crop.log is configured by then, so the reason has to be in it."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
-        (out / '1').mkdir(parents=True)
+        (city_store(out) / '1').mkdir(parents=True)
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
-        block_scandir(crop_runner, monkeypatch, out / '1')
+        block_scandir(crop_runner, monkeypatch, city_store(out) / '1')
         code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)])
         assert code == 1
-        shard = os.path.join(str(out), '1')
+        shard = os.path.join(str(city_store(out)), '1')
         printed = capsys.readouterr().out
         assert shard in printed and 'already holds crops' in printed
         for handler in logging.getLogger().handlers:
             handler.flush()
-        with io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8') as f:
+        with io.open(os.path.join(str(city_store(out)), 'crop.log'), encoding='utf-8') as f:
             logged = f.read()
         assert 'ERROR' in logged and shard in logged and 'already holds crops' in logged
         assert os.listdir(shard) == []
-        assert not (out / crop_runner.PROVENANCE_MANIFEST).exists()
+        assert not (city_store(out) / crop_runner.PROVENANCE_MANIFEST).exists()
 
 
 class TestTheProductionCropStoreGuard:
@@ -2858,9 +2864,10 @@ class TestTheProductionCropStoreGuard:
         write_labels_csv(csv_file, [label_row(label_id=1, label_type_id=1),
                                     label_row(label_id=2, label_type_id=2, pano_x=260)])
         assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
-        assert (out / crop_runner.CROP_RULE_MARKER).is_file() and (out / 'crop.log').is_file()
+        assert (city_store(out) / crop_runner.CROP_RULE_MARKER).is_file() and (city_store(out) / 'crop.log').is_file()
 
         crop_runner.refuse_production_crop_store(str(out))
+        crop_runner.refuse_production_crop_store(str(city_store(out)))
         assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out), '--force']) == 0
 
     def test_the_scan_never_lists_a_numeric_shard(self, crop_runner, tmp_path, monkeypatch):

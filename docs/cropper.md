@@ -1,7 +1,9 @@
 # Cropper — `CropRunner.py`
 
 Cuts one image per Project Sidewalk label out of the downloaded panoramas: **3:2**, centered on the label,
-sized by an estimated camera-to-label distance, written to `<crop-dir>/<label_type_id>/<label_id>.jpg`.
+sized by an estimated camera-to-label distance, written to `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`
+— one self-contained store per city under `-o`
+([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)).
 
 `CropRunner.py` still works but is being replaced, so bugs may linger longer here than in the downloader.
 Consumer requirements and the open geometry questions are tracked in
@@ -19,8 +21,8 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `-d <fqdn>` | Fetch label metadata from a Project Sidewalk server's `/adminapi/labels/cvMetadata`. Mutually exclusive with `-f`; one is required. |
 | `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. |
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
-| `-o <dir>` | **Required.** Where crops are written. `crop.log`, `crop_rule.json` and `crop_provenance.csv` go here too — see [What a crop store holds](#what-a-crop-store-holds). |
-| `--city <city_id>` | **Required.** The city the labels belong to: an active (not `#`-commented) `city_id` row of `log_analyzer/cities.csv` (`seattle-wa`, `cdmx`), read when the flag is parsed. Anything else — a misspelling, a retired city, an unreadable roster — is exit 2, since the city names a directory and a typo would start a new store; add a missing city to the roster first ([Adding a city](ops.md#adding-a-city), step 3). Recorded in `crop_rule.json` and on every provenance row; a store recorded as another city's is refused — see [One store, one city](#one-store-one-city). |
+| `-o <dir>` | **Required.** The root that holds one crop store per city. This run writes only into `<dir>/<city>/`: its crops, and its own `crop.log`, `crop_rule.json` and `crop_provenance.csv` — see [One store, one city](#one-store-one-city) and [What a crop store holds](#what-a-crop-store-holds). |
+| `--city <city_id>` | **Required.** The city the labels belong to: an active (not `#`-commented) `city_id` row of `log_analyzer/cities.csv` (`seattle-wa`, `cdmx`), read when the flag is parsed. Anything else — a misspelling, a retired city, an unreadable roster — is exit 2, since the city names a directory and a typo would start a new store; add a missing city to the roster first ([Adding a city](ops.md#adding-a-city), step 3). Names the store, `<crop-dir>/<city>/`; recorded in its `crop_rule.json` and on every provenance row — see [One store, one city](#one-store-one-city). |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
 | `--force` | Re-cut a label whose crop already exists instead of skipping it — the repair for a store cut under an older rule. Off by default. See [Re-cutting a store](#re-cutting-a-store-with---force). |
 
@@ -28,30 +30,36 @@ Example:
 
 ```bash
 python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu --city columbus-oh \
-  -s /sidewalk/columbus/panos/ -o /sidewalk/columbus/crops/
+  -s /sidewalk/columbus/panos/ -o /sidewalk/crops/
 ```
+
+writes `/sidewalk/crops/columbus-oh/<label_type_id>/<label_id>.jpg`, and the next city pointed at the same
+`-o` gets `/sidewalk/crops/<its city_id>/` beside it.
 
 ### One store, one city
 
-**Give every city its own `-o`.** `label_id` restarts at 1 in every deployment, and crops are named
-`<label_type_id>/<label_id>.jpg`, so two cities in one store collide on file names: without `--force` the
-second city's label finds the first city's crop and counts it `skipped_existing` — another city's imagery,
-reported as success — and with `--force` it **replaces** the first city's crop.
+**Every city gets its own store, `<crop-dir>/<city>/`**
+([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)). `label_id` restarts at 1 in
+every deployment, so inside one directory two cities collide on file names: without `--force` the second
+city's label would find the first city's crop and count it `skipped_existing` — another city's imagery,
+reported as success — and with `--force` it would **replace** the first city's crop. With the city in the
+path, Seattle's label 1 and Chicago's label 1 are two files, and any number of cities can share one `-o`.
+Each store is self-contained — its own `crop_rule.json`, `crop_provenance.csv` and `crop.log` — so two cities
+cut under different rule versions stay representable.
 
-So the store remembers its city. The first run records `--city` in `crop_rule.json`; a store cut before the
-city was recorded adopts the first `--city` it is given. A later run naming a **different** city is refused
-with exit **3** before anything is created, cut or overwritten, `crop.log` included, and so is a run over a
-`crop_rule.json` that cannot be read or holds a city that is not a string — "unreadable" is not "no city
-recorded", and adopting there would hand the store to whichever city came next. Both messages name the
-file. This is a stopgap: [#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)
-moves crops under `<crop-dir>/<city>/…` so that the collision cannot happen in the first place.
+The store also remembers its city. The first run records `--city` in the store's `crop_rule.json`; a store
+cut before the city was recorded adopts the `--city` it is given. A store recorded as a **different** city's
+— one renamed or copied into this city's directory by hand — is refused with exit **3** before anything is
+created, cut or overwritten, `crop.log` included, and so is a store whose `crop_rule.json` cannot be read or
+holds a city that is not a string — "unreadable" is not "no city recorded", and adopting there would hand
+the store to whichever city came next. Both messages name the file.
 
 **`-o` must never be the production crop store, and a destination that looks like one is refused.**
 SidewalkWebpage serves the Gallery, the label cards and the social preview from a different crop store,
 `<root>/<city-id>/<LabelType>/crop_<labelId>.png`. Those are **canvas captures the browser took at label
 time** — the annotator's own viewport and zoom, over the imagery Google served that day — so none of them can
 be regenerated from anything this repo holds, and a deleted one is gone. This tool's store is
-`<crop-dir>/<label_type_id>/<label_id>.jpg`, cut from the pano store and reproducible at will
+`<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`, cut from the pano store and reproducible at will
 ([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)).
 
 Before it writes anything — before it creates `-o`, opens `crop.log` or writes `crop_rule.json` — the run
@@ -100,7 +108,7 @@ label_type lookup table with a Postgres enum (released v11.11.0, 2026-09-02); ev
 `label_type_id` — every archived export carries one, and a store is re-cut from whatever export produced
 it — and otherwise maps the name through `LABEL_TYPE_IDS_BY_NAME`.
 
-**The output directory is the numeric id either way.** `<crop-dir>/<label_type_id>/` is what every consumer
+**The output directory is the numeric id either way.** `<crop-dir>/<city>/<label_type_id>/` is what every consumer
 reads and what an existing store is sharded by, so the name is resolved at intake rather than carried
 through. A name this map has never heard of means the enum moved upstream again: that row becomes one
 counted error naming the value, rather than a guessed id filing a crop into a real training directory with
@@ -109,7 +117,7 @@ nothing on disk to say it was a guess.
 **An id is checked against the same enum as a name, and the symmetry is deliberate.** An id arriving in an
 old export is validated against `LABEL_TYPE_NAMES_BY_ID` before it is believed. Until the 2026-09-18 review
 the id path was a bare `int()`, so `label_type_id=99`, `0` and `-3` were all accepted and written to
-`<crop-dir>/99/` as a `success` with exit 0 — an arbitrary shard directory that an ML consumer globbing
+`<crop-dir>/<city>/99/` as a `success` with exit 0 — an arbitrary shard directory that an ML consumer globbing
 `crops/*/` reads as a new label type. That is the same poisoning the name path refuses, so a guarantee that
 held on only one half of the input space was worse than none: the docstring claimed both.
 
@@ -127,7 +135,7 @@ Under v1 the formula was fed native pixels and clamped in pixels, so the same ra
 tightest crops. Every v2 constant is one measured number:
 [reports/2026-08-19-crop-sizing-v2.md](../reports/2026-08-19-crop-sizing-v2.md).
 
-**Which rule cut a store is recorded in `<crop-dir>/crop_rule.json` — check it before training on a
+**Which rule cut a store is recorded in `<crop-dir>/<city>/crop_rule.json` — check it before training on a
 directory.** `write_rule_marker()` writes `CROP_RULE_VERSION` plus every constant before anything is cut, and
 *warns* rather than refusing when the marker disagrees with the running rule. A mixed store is the ordinary
 result of changing the rule: existing crops are the resume marker and are not re-cut by default, so running
@@ -228,7 +236,7 @@ success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + error
 (`shifted_vertically` and `recut` annotate a success, and `stale_kept` annotates a label `--force` never
 reached the write for — see below — so they are deliberately not in that sum.)
 
-The run writes a rotating `crop.log` into the crop directory, prints a per-outcome summary, and **exits 1 if
+The run writes a rotating `crop.log` into the city's store, prints a per-outcome summary, and **exits 1 if
 any label errored** — a corrupt pano, a malformed metadata row, a failed write — so a cron wrapper can alert.
 Errors are retried on the next run. The exit statuses, all of them:
 
@@ -380,6 +388,8 @@ guard refuses with or without `--force`.
 
 ## What a crop store holds
 
+`-o` holds one directory per city, and nothing else is written at that level. Inside `<crop-dir>/<city>/`:
+
 | Path | What |
 |---|---|
 | `<label_type_id>/<label_id>.jpg` | One crop per label. Its existence is the resume marker: it is not re-cut unless `--force` is passed. |
@@ -425,10 +435,11 @@ below `main()` that passes none.
   intakes.
 * **`crop_rule_version` is per row**, because a store can hold more than one geometry (see
   [Crop geometry](#crop-geometry)).
-* **`(pano_id, label_id)` is the key when manifests from more than one city are combined.** The manifest
-  has no `city` column, and `label_id` restarts at 1 in every city's database; `pano_id` does not collide
-  across cities, so the pair is unique where `label_id` alone is not. Within one store, `label_id` is
-  what matches a row to its crop file, `<label_type_id>/<label_id>.jpg`.
+* **`(city, label_id)` is the key when manifests from more than one city are combined.** `label_id`
+  restarts at 1 in every city's database, so it alone collides across stores; `city` is on every row, so
+  the pair does not. Within one store, `label_id` is what matches a row to its crop file,
+  `<label_type_id>/<label_id>.jpg`. There is no runtime uniqueness check on the pair: the manifest is
+  append-only and a re-cut appends a second row for its label by design.
 * **A failed append does not lose the crop, and is not counted as an error.** The crop is already on disk
   and is the resume marker, so a plain re-run skips it and could never write the row: counting it in
   `errors` would break the promise that errors retry, and would put one label in two buckets. Each one is
@@ -507,8 +518,12 @@ measured in
 (An earlier note here referred to an "alternative cropper" in development; that effort was abandoned and #54
 supersedes it.)
 
-**`label_id` is unique per city, not globally.** Project Sidewalk runs one database schema per city, so crops
-from two cities can collide on filename. Key on `(city, label_id)` when you combine them.
+**`label_id` is unique per city, not globally.** Project Sidewalk runs one database schema per city, so two
+cities' crops share file names; that is why each city has its own store. Read one city's crops from
+`<crop-dir>/<city>/<label_type_id>/`, or glob `<crop-dir>/*/<label_type_id>/` across cities and key on
+`(city, label_id)` — the city is the directory name, and the first column of every manifest row. A consumer
+still pointed at the old flat root (`<crop-dir>/<label_type_id>/`) finds nothing there and may report zero
+crops rather than fail.
 
 ## Related
 

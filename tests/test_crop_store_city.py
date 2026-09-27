@@ -1,30 +1,30 @@
-"""Tests for the crop store's city guard (#153 stopgap for #159).
+"""Tests for the crop store's recorded city (#153's stopgap, kept under #159's layout).
 
-CropRunner writes `<crop-dir>/<label_type_id>/<label_id>.jpg`, and `label_id` restarts at 1 in every
-deployment. Two cities pointed at one `-o` therefore collide on file names: without `--force` city B's label
-finds city A's crop and counts it `skipped_existing` (wrong data, reported as success), and with `--force` it
-REPLACES city A's crop (lost data, reported as a re-cut). The layout fix is #159. Until then:
+`label_id` restarts at 1 in every deployment, so a crop's file name is unique only within one city. #159 puts
+each city in its own store, `<crop-dir>/<city>/`, and this is the guard that stays on top of that layout:
 
-* `--city` is required, and must look like a city_id (`seattle-wa`, `cdmx`);
-* `crop_rule.json` records the city the store belongs to - a fresh store, or one cut before this existed,
-  adopts the first `--city` it is given;
-* a run naming a DIFFERENT city is refused before anything is created, cut or overwritten - asserted on the
-  bytes of the whole tree, not on the return value - and so is a run over a marker that cannot be read,
-  since then the store's city cannot be confirmed;
+* `--city` is required, and must look like a city_id (`seattle-wa`, `cdmx`) - and, since #159, be an active
+  row of `log_analyzer/cities.csv` (`tests/test_crop_store_layout.py`);
+* the store's `crop_rule.json` records the city it belongs to - a fresh store, or one cut before this existed,
+  adopts the `--city` it is given;
+* a store recorded as a DIFFERENT city's - one renamed or copied under this city's name - is refused before
+  anything is created, cut or overwritten, asserted on the bytes of the whole tree, and so is a store whose
+  marker cannot be read, since then its city cannot be confirmed;
 * the provenance manifest carries the city on every row, so manifests concatenated across cities keep
   `(city, label_id)` as the key.
 """
 
 import json
 import logging
+import os
 
 import pytest
 
 # crop_runner and the autouse logging isolation are fixtures: importing them into this module's namespace is
 # what makes pytest see them here.
 from test_crop_runner import (  # noqa: F401
-    _isolate_logging_state, crop_path, crop_runner, label_row, plant_stale_crop, put_pano, tree_snapshot,
-    write_labels_csv)
+    _isolate_logging_state, city_store, crop_path, crop_runner, label_row, plant_stale_crop, put_pano,
+    tree_snapshot, write_labels_csv)
 
 
 def a_store(tmp_path):
@@ -47,9 +47,24 @@ def crop(crop_runner, csv_file, store, out, city, *extra):
     return crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out), '--city', city, *extra])
 
 
-def marker(crop_runner, out):
-    with open(str(out / crop_runner.CROP_RULE_MARKER), encoding='utf-8') as f:
+def marker(crop_runner, out, city='seattle-wa'):
+    with open(str(city_store(out, city) / crop_runner.CROP_RULE_MARKER), encoding='utf-8') as f:
         return json.load(f)
+
+
+def seattle_store_renamed_to_chicago(crop_runner, tmp_path):
+    """Seattle's store, moved under Chicago's name: the one way a store recorded as another city's can still
+    turn up at <crop-dir>/<city>/ now that every city has its own directory."""
+    store, csv_file = a_store(tmp_path)
+    out = tmp_path / 'crops'
+    assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
+    # The run's crop.log handler is still open, and Windows will not rename a directory holding an open file.
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if isinstance(h, logging.FileHandler)]:
+        root.removeHandler(handler)
+        handler.close()
+    os.rename(str(city_store(out, 'seattle-wa')), str(city_store(out, 'chicago-il')))
+    return store, csv_file, out
 
 
 class TestTheFlag:
@@ -67,8 +82,7 @@ class TestTheFlag:
     @pytest.mark.parametrize('city', ['', 'Seattle', 'seattle wa', 'seattle_wa', '-seattle', 'seattle-',
                                       '../seattle', 'sidewalk-sea.cs.washington.edu'])
     def test_anything_else_is_refused(self, crop_runner, city):
-        """Not a path component yet, but it will be under #159, and it is compared as a string: a city
-        spelled two ways would be two cities."""
+        """A path component (#159), and compared as a string: a city spelled two ways would be two cities."""
         with pytest.raises(SystemExit) as e:
             crop_runner.build_parser().parse_args(['-f', 'x.csv', '-s', 's', '-o', 'o', '--city', city])
         assert e.value.code == 2
@@ -81,16 +95,17 @@ class TestTheStoreRemembersItsCity:
         assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
         assert marker(crop_runner, out)['city'] == 'seattle-wa'
 
-    def test_a_store_cut_before_the_guard_adopts_the_first_city_it_is_given(self, crop_runner, tmp_path):
-        """No migration: every existing store has a marker with no city, and must keep working."""
+    def test_a_store_cut_before_the_guard_adopts_the_city_it_is_given(self, crop_runner, tmp_path):
+        """No migration for a store already named for its city: its marker has no city, and it must keep
+        working."""
         store, csv_file = a_store(tmp_path)
         out = tmp_path / 'crops'
         assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
         m = marker(crop_runner, out)
         del m['city']
-        (out / crop_runner.CROP_RULE_MARKER).write_text(json.dumps(m), encoding='utf-8')
-        assert crop(crop_runner, csv_file, store, out, 'chicago-il') == 0
-        assert marker(crop_runner, out)['city'] == 'chicago-il'
+        (city_store(out) / crop_runner.CROP_RULE_MARKER).write_text(json.dumps(m), encoding='utf-8')
+        assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
+        assert marker(crop_runner, out)['city'] == 'seattle-wa'
 
     def test_the_same_city_runs_as_before(self, crop_runner, tmp_path):
         store, csv_file = a_store(tmp_path)
@@ -105,48 +120,45 @@ class TestTheStoreRemembersItsCity:
         store, csv_file = a_store(tmp_path)
         out = tmp_path / 'crops'
         assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
-        crop_runner.bulk_extract_crops(crop_runner.load_label_metadata(None, str(csv_file)), str(store), str(out))
+        crop_runner.bulk_extract_crops(crop_runner.load_label_metadata(None, str(csv_file)), str(store),
+                                       str(city_store(out)))
         assert marker(crop_runner, out)['city'] == 'seattle-wa'
 
 
-class TestAnotherCitysStoreIsRefused:
+class TestAStoreRecordedAsAnotherCitysIsRefused:
+    """#159 lifts the stopgap's premise - one -o, one city: Chicago beside Seattle under one -o is now just
+    two stores (tests/test_crop_store_layout.py). What the recorded city still catches is a store under the
+    wrong name, renamed or copied there by hand."""
+
     @pytest.mark.parametrize('extra', [(), ('--force',)], ids=['plain', 'force'])
     def test_nothing_in_the_store_changes(self, crop_runner, tmp_path, extra):
-        """The whole point: under --force the other city's crop would be REPLACED, and without it the other
-        city's crop would be counted as this city's. Either way, nothing may be touched - crop.log
-        included, since the refusal must not itself write into a store it refuses."""
-        store, csv_file = a_store(tmp_path)
-        out = tmp_path / 'crops'
-        assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
+        """Under --force Seattle's crop would be REPLACED, and without it Seattle's crop would be counted as
+        Chicago's. Either way nothing may be touched - crop.log included, since the refusal must not itself
+        write into a store it refuses."""
+        store, csv_file, out = seattle_store_renamed_to_chicago(crop_runner, tmp_path)
         before = tree_snapshot(out)
         assert crop(crop_runner, csv_file, store, out, 'chicago-il', *extra) == crop_runner.EXIT_REFUSED_DESTINATION
         assert tree_snapshot(out) == before
 
     def test_a_planted_crop_survives_a_forced_run_byte_for_byte(self, crop_runner, tmp_path):
-        store, csv_file = a_store(tmp_path)
-        out = tmp_path / 'crops'
-        assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
-        original = plant_stale_crop(out, label_type_id=1, label_id=1)
+        store, csv_file, out = seattle_store_renamed_to_chicago(crop_runner, tmp_path)
+        original = plant_stale_crop(city_store(out, 'chicago-il'), label_type_id=1, label_id=1)
         crop(crop_runner, csv_file, store, out, 'chicago-il', '--force')
-        with open(crop_path(out, 1, 1), 'rb') as f:
+        with open(crop_path(city_store(out, 'chicago-il'), 1, 1), 'rb') as f:
             assert f.read() == original
 
     def test_the_crop_loop_refuses_too(self, crop_runner, tmp_path):
         """bulk_extract_crops is a public seam (the studies call it), and it guards itself the way it guards
         against the production store, rather than trusting that main() ran first."""
-        store, csv_file = a_store(tmp_path)
-        out = tmp_path / 'crops'
-        assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
+        store, csv_file, out = seattle_store_renamed_to_chicago(crop_runner, tmp_path)
         before = tree_snapshot(out)
         with pytest.raises(crop_runner.CropStoreCityError):
             crop_runner.bulk_extract_crops(crop_runner.load_label_metadata(None, str(csv_file)), str(store),
-                                           str(out), force=True, city='chicago-il')
+                                           str(city_store(out, 'chicago-il')), force=True, city='chicago-il')
         assert tree_snapshot(out) == before
 
     def test_it_says_which_city_the_store_belongs_to(self, crop_runner, tmp_path, capsys):
-        store, csv_file = a_store(tmp_path)
-        out = tmp_path / 'crops'
-        crop(crop_runner, csv_file, store, out, 'seattle-wa')
+        store, csv_file, out = seattle_store_renamed_to_chicago(crop_runner, tmp_path)
         capsys.readouterr()
         crop(crop_runner, csv_file, store, out, 'chicago-il')
         said = capsys.readouterr()
@@ -160,7 +172,7 @@ class TestAnotherCitysStoreIsRefused:
         store, csv_file = a_store(tmp_path)
         out = tmp_path / 'crops'
         crop(crop_runner, csv_file, store, out, 'seattle-wa')
-        (out / crop_runner.CROP_RULE_MARKER).write_text(content, encoding='utf-8')
+        (city_store(out) / crop_runner.CROP_RULE_MARKER).write_text(content, encoding='utf-8')
         before = tree_snapshot(out)
         assert crop(crop_runner, csv_file, store, out, 'seattle-wa', '--force') == crop_runner.EXIT_REFUSED_DESTINATION
         assert tree_snapshot(out) == before
@@ -175,6 +187,6 @@ class TestTheManifestNamesTheCity:
         store, csv_file = a_store(tmp_path)
         out = tmp_path / 'crops'
         assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
-        with open(str(out / crop_runner.PROVENANCE_MANIFEST), newline='', encoding='utf-8') as f:
+        with open(str(city_store(out) / crop_runner.PROVENANCE_MANIFEST), newline='', encoding='utf-8') as f:
             rows = list(csv.DictReader(f))
         assert rows and all(row['city'] == 'seattle-wa' for row in rows)

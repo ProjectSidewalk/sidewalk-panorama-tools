@@ -769,13 +769,15 @@ class CropStoreCityError(Exception):
 def check_store_city(destination_dir, city):
     """Refuse a crop store recorded as another city's, before anything in it is touched (#153, for #159).
 
-    Crops are <label_type_id>/<label_id>.jpg and label_id restarts at 1 in every deployment, so two cities
-    sharing one -o collide on file names. Without --force the second city's label finds the first city's crop
-    and counts it skipped_existing - wrong data reported as a success. With --force it REPLACES the first
-    city's crop, and nothing records that it happened. #159 moves crops under <crop-dir>/<city>/; until then
-    this is what keeps one city out of another's store.
+    Crops are <label_type_id>/<label_id>.jpg inside a store and label_id restarts at 1 in every deployment,
+    so two cities in one store collide on file names. Without --force the second city's label finds the
+    first city's crop and counts it skipped_existing - wrong data reported as a success. With --force it
+    REPLACES the first city's crop, and nothing records that it happened. #159 gives every city its own
+    store, <crop-dir>/<city>/, which main() composes from --city; this is what still catches a store under
+    the wrong name - one renamed or copied into another city's directory - and a caller below main() that
+    hands bulk_extract_crops another city's store.
 
-    Passes when there is nothing to disagree with: no -o yet, no crop_rule.json yet, or a marker written
+    Passes when there is nothing to disagree with: no store yet, no crop_rule.json yet, or a marker written
     before the city was recorded (the run then adopts `city` - write_rule_marker records it). Refuses when
     the recorded city differs, and when a marker exists but cannot be read or holds a city that is not a
     string: "unreadable" is not "no city", and adopting there would hand the store to whichever city ran
@@ -1554,6 +1556,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                        city=None):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
+    destination_dir is ONE city's store - main() passes <crop-dir>/<city>/ (#159) - and `city` is that
+    city, recorded in its marker and on every manifest row. A caller below main() hands a store directly.
+
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
     pano, malformed row, or failed write is counted as an error and logged; both leave the remaining labels
     running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). That includes the
@@ -1871,7 +1876,8 @@ def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destinati
     """Load the label metadata and extract every crop - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, and logging; this seam takes plain arguments so tests can
-    drive the real intake -> crop loop in-process (the #52.1 shape).
+    drive the real intake -> crop loop in-process (the #52.1 shape). crop_destination_path is one city's
+    store, <crop-dir>/<city>/, which main() composes from -o and --city (#159).
     """
     print("Cropping labels")
     label_infos = load_label_metadata(sidewalk_server_fqdn, label_metadata_file)
@@ -1907,29 +1913,34 @@ def main(argv=None):
         print("CropRunner: %s" % e)
         logging.error('%s', e)
         return EXIT_REFUSED_DESTINATION
-    # Same place, same rule: another city's store is refused before anything - crop.log included - is
-    # written into it (#159).
+    # -o is a root holding one store per city (#159): label_id restarts in every deployment, so a crop's
+    # file name is unique only inside its city's directory. Everything below - the marker, the manifest,
+    # crop.log and the crops - is this city's store, never the root.
+    store = os.path.join(args.o, args.city)
+
+    # Same place, same rule: a store recorded as another city's (renamed or copied into this name) is
+    # refused before anything - crop.log included - is written into it.
     try:
-        check_store_city(args.o, args.city)
+        check_store_city(store, args.city)
     except CropStoreCityError as e:
         print("CropRunner: %s" % e)
         logging.error('%s', e)
         return EXIT_REFUSED_DESTINATION
 
     # exist_ok: a re-run, or an operator pre-creating the dir, races on the exists check. Note this is not
-    # a claim that two CropRunners may share an output dir: crops are written through a fixed
+    # a claim that two CropRunners may share a store: crops are written through a fixed
     # <label_id>.jpg.part, so concurrent runs over the same labels would fight over that temp path.
-    os.makedirs(args.o, exist_ok=True)
+    os.makedirs(store, exist_ok=True)
 
     # crop.log lives next to the crops it describes, NOT the CWD (which under cron is wherever the process
-    # happened to start - the DownloadRunner #49 lesson).
-    configure_logging(os.path.join(args.o, 'crop.log'))
+    # happened to start - the DownloadRunner #49 lesson), and in the city's store, not the root.
+    configure_logging(os.path.join(store, 'crop.log'))
 
     raise_decompression_bomb_ceiling()
 
     try:
         counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
-                     crop_destination_path=args.o, mark_label=args.mark_label, force=args.force,
+                     crop_destination_path=store, mark_label=args.mark_label, force=args.force,
                      city=args.city)
     except CropStoreUnlistableError as e:
         # Both channels, and into crop.log, which is configured by now: as a traceback it reached stderr
