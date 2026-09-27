@@ -2608,6 +2608,14 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
 
         assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT in summary_codes(tmp_path)
 
+    def test_a_renamed_source_is_drift_and_nothing_else(self, monkeypatch, tmp_path, capsys):
+        """Read before the filter: a list that lost `source` must not also be reported pano by pano as an
+        unsupported source - one fact, one condition."""
+        self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20, drop='source'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        assert 'unsupported source' not in capsys.readouterr().out
+
     def test_the_threshold_is_inclusive(self, monkeypatch, tmp_path):
         lacking = int(round(DownloadRunner.INTAKE_SCHEMA_MIN_FRACTION * 20))
         storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=lacking))
