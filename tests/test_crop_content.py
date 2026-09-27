@@ -357,3 +357,139 @@ class TestAMostlyBlackWindowIsWithheld:
         copies that can drift."""
         from downloaders import gsv
         assert crop_runner.black_fraction is common.black_fraction is gsv._black_fraction
+
+
+# ---------------------------------------------------------------------------
+# B. An undecodable pano is decoded once, not once per label
+# ---------------------------------------------------------------------------
+
+CUT = 'cutpano00001'
+GOOD = 'goodpano0001'
+
+
+@pytest.fixture
+def decode_attempts(monkeypatch):
+    """Count real decode attempts per pano file: calls to ImageFile.load while the image still has tiles
+    to decode. Pillow keeps `tile` after a failed load, so every crop() of a truncated pano re-decodes
+    the whole file - that repetition is what this counts. A Counter keyed by file basename."""
+    import collections
+    attempts = collections.Counter()
+    real_load = ImageFile.ImageFile.load
+
+    def load(self):
+        if getattr(self, 'tile', None):
+            attempts[os.path.basename(getattr(self, 'filename', '') or '')] += 1
+        return real_load(self)
+
+    monkeypatch.setattr(ImageFile.ImageFile, 'load', load)
+    return attempts
+
+
+def decode_lines(caplog):
+    return [m for m in caplog.messages if 'cannot decode' in m]
+
+
+class TestAnUndecodablePanoIsDecodedOnce:
+    """Image.open is lazy, so a truncated pano gets past the cannot_open branch and used to fail inside
+    make_single_crop for every label - re-decoding the whole file each time (Pillow keeps im.tile after
+    the failure) and spending the crop_failed budget, which then hid real write failures."""
+
+    def test_a_truncated_pano_is_decoded_once_not_per_label(self, crop_runner, tmp_path, decode_attempts):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        truncate_pano(store, CUT)
+        put_pano(store, GOOD)
+        labels = ([label_row(pano_id=CUT, label_id=i, pano_x=100 * i) for i in range(1, 6)]
+                  + [label_row(pano_id=GOOD, label_id=6)])
+
+        counts = run(crop_runner, labels, store, out)
+
+        assert counts['errors'] == 5 and counts['success'] == 1 and reconciles(counts)
+        assert decode_attempts[CUT + '.jpg'] == 1
+
+    def test_one_line_per_pano_and_a_real_write_failure_still_shows(self, crop_runner, tmp_path,
+                                                                    monkeypatch, caplog):
+        """The decode failure is one cannot_open line for the pano, not a crop_failed line per label, so
+        a real write failure elsewhere in the run still gets its crop_failed line under a tight cap."""
+        monkeypatch.setattr(crop_runner, 'LOG_WARNINGS_PER_KIND', 2)
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        truncate_pano(store, CUT)
+        put_pano(store, GOOD)
+        real = crop_runner.make_single_crop
+
+        def full_store_for_the_good_pano(pano, *args, **kwargs):
+            if os.path.basename(getattr(pano, 'filename', '') or '') == GOOD + '.jpg':
+                raise OSError('No space left on device')
+            return real(pano, *args, **kwargs)
+
+        monkeypatch.setattr(crop_runner, 'make_single_crop', full_store_for_the_good_pano)
+        labels = ([label_row(pano_id=CUT, label_id=i, pano_x=100 * i) for i in range(1, 4)]
+                  + [label_row(pano_id=GOOD, label_id=4)])
+        with caplog.at_level(logging.WARNING):
+            counts = run(crop_runner, labels, store, out)
+
+        assert counts['errors'] == 4 and reconciles(counts)
+        lines = decode_lines(caplog)
+        assert len(lines) == 1 and '3 labels' in lines[0] and CUT in lines[0]
+        assert not [m for m in caplog.messages if 'Failed to crop label' in m and CUT in m]
+        assert 'No space left on device' in caplog.text
+
+    def test_the_decode_line_is_the_cannot_open_kind(self, crop_runner, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(crop_runner, 'LOG_WARNINGS_PER_KIND', 1)
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        truncate_pano(store, CUT)
+        truncate_pano(store, 'cutpano00002')
+        labels = [label_row(pano_id=CUT, label_id=1), label_row(pano_id='cutpano00002', label_id=2)]
+        with caplog.at_level(logging.WARNING):
+            run(crop_runner, labels, store, out)
+        suppressed = [m for m in caplog.messages if m.startswith('Suppressed')]
+        assert suppressed and 'cannot_open: 1' in suppressed[-1]
+
+    def test_a_resumed_pano_is_never_decoded(self, crop_runner, tmp_path, decode_attempts):
+        """Preflights and skipped_existing read only the header, so a finished store never decodes a
+        pano - including one that has since been truncated. Kills an eager load() at open."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, CUT)
+        labels = [label_row(pano_id=CUT, label_id=1), label_row(pano_id=CUT, label_id=2, pano_x=600)]
+        run(crop_runner, labels, store, out)
+        truncate_pano(store, CUT)
+        decode_attempts.clear()
+
+        labels.append(dict(label_row(pano_id=CUT, label_id=3), pano_width=4096, pano_height=2048))
+        counts = run(crop_runner, labels, store, out)
+
+        assert counts['skipped_existing'] == 2 and counts['dims_mismatch'] == 1 and counts['errors'] == 0
+        assert decode_attempts[CUT + '.jpg'] == 0
+
+    def test_the_buckets_do_not_depend_on_label_order(self, crop_runner, tmp_path):
+        """A label's bucket is decided by the label, not by whether an earlier label on the same pano hit
+        the decode failure first. Kills routing every later label to errors after the first failure."""
+        store = tmp_path / 'store'
+        put_pano(store, CUT)
+        write = label_row(pano_id=CUT, label_id=1)
+        existing = label_row(pano_id=CUT, label_id=2, pano_x=600)
+        dims = dict(label_row(pano_id=CUT, label_id=3, pano_x=1000), pano_width=4096, pano_height=2048)
+        forward, backward = tmp_path / 'forward', tmp_path / 'backward'
+        for out in (forward, backward):
+            run(crop_runner, [existing], store, out)
+        truncate_pano(store, CUT)
+
+        a = run(crop_runner, [write, existing, dims], store, forward)
+        b = run(crop_runner, [dims, existing, write], store, backward)
+
+        assert a == b
+        assert a['errors'] == 1 and a['skipped_existing'] == 1 and a['dims_mismatch'] == 1
+
+    def test_under_force_an_undecodable_pano_keeps_the_old_crop(self, crop_runner, tmp_path, capsys):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, CUT)
+        run(crop_runner, [label_row(pano_id=CUT, label_id=1)], store, out)
+        before = read_bytes(find_crop(out, 1))
+        truncate_pano(store, CUT)
+        capsys.readouterr()
+
+        counts = run(crop_runner, [label_row(pano_id=CUT, label_id=1),
+                                   label_row(pano_id=CUT, label_id=2, pano_x=600)], store, out, force=True)
+
+        assert counts['errors'] == 2 and counts['stale_kept'] == 1 and counts['success'] == 0
+        assert read_bytes(find_crop(out, 1)) == before
+        assert STALE_KEPT_SUMMARY % 1 in capsys.readouterr().out

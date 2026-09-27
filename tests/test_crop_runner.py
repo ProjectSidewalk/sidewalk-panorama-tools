@@ -761,7 +761,9 @@ class TestBulkExtractCrops:
         assert counts == {'total': 3, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
                           'recut': 0, 'stale_kept': 0, 'black_content': 0, 'errors': 2}
-        assert 'Failed to crop label' in caplog.text
+        # One decode attempt and one line for the pano (#164), not a crop_failed line per label.
+        assert 'cannot decode' in caplog.text
+        assert 'Failed to crop label' not in caplog.text
         # A failed crop must leave nothing behind: the crop file is the resume marker, so a stub here
         # would be read as done on the next run.
         assert not os.path.exists(crop_path(out, 1, 1))
