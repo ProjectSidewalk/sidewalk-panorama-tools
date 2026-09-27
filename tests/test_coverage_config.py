@@ -31,6 +31,7 @@ PRODUCTION_MODULES = {
     'downscale_panos.py',
     'log_analyzer/analyze.py',
     'log_analyzer/roster.py',
+    'migrate_crop_store.py',
     'migrate_depth_artifacts.py',
     'refetch_panos.py',
     'scrape_queue.py',
