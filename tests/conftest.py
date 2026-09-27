@@ -92,6 +92,12 @@ def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(gsv, '_photometa_run', gsv._PhotometaRunMemory())
     monkeypatch.setattr(gsv, 'image_block_latch_path', None)
     monkeypatch.setattr(gsv, 'image_pace_state_path', None)
+    # The width-alarm latch (#121) is the same shape of host state, and one test driving main() over a wide frame
+    # without passing --width-alarm-latch would arm the real one, making every later first-sighting test see
+    # "already alarmed".
+    from downloaders import common
+    width_latch = tmp_path_factory.mktemp('width-alarm') / common.WIDTH_ALARM_LATCH_FILENAME
+    monkeypatch.setattr(common, 'default_width_alarm_latch_path', lambda: str(width_latch))
 
 
 def pytest_configure(config):

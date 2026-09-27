@@ -635,6 +635,12 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     if width is None or height is None:
         return None
 
+    # The reported width is Google's own number and is in hand before any request, so the #121 tripwire runs
+    # here: a photometa request or probe that then fails transiently must not swallow the warning. It sits in
+    # resolve_frame rather than resolve_zoom_and_dims so the nightly path (download_single_pano) and refetch
+    # (through the wrapper) both reach it. An observation, never a gate.
+    common.warn_if_wider_than_viewer_ceiling(pano_id, width, 'gsv')
+
     if photometa:
         latch_path = block_latch_path if block_latch_path is not None else (
             image_block_latch_path if image_block_latch_path is not None else default_block_latch_path())

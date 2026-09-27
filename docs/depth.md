@@ -115,7 +115,9 @@ Any store scraped before the [#58](https://github.com/ProjectSidewalk/sidewalk-p
 holds x-mirrored artifacts, and the scraper will never correct them on its own — existing artifacts are never
 re-fetched or rewritten. `migrate_depth_artifacts.py` fixes them offline: it scans a storage root, flips every
 artifact whose `format_version` is missing or below 2, and stamps it, leaving v2 artifacts byte-for-byte
-untouched. It is idempotent, so re-running on a healthy store is a no-op.
+untouched. It is idempotent, so re-running on a healthy store is a no-op. The production store has never
+needed it, since it held no depth artifacts at all before the v3 writer's first run (below). The script stays
+as a safety net for dev and test stores.
 
 ```bash
 python3 migrate_depth_artifacts.py /path/to/storage --dry-run   # count pre-v2 artifacts, change nothing
@@ -124,9 +126,16 @@ python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them i
 
 There is **no offline migration from v2 to v3**: the plane fields v3 adds were never stored by the v2 writer,
 so they can only come from a re-fetch. A v2 artifact reaches v3 by deleting the artifact *and* its
-`depth_log.csv` row, which makes the next run re-request it. (Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)
-dev and test runs ever produced a v2 artifact — no production store has run the depth phase.) The plane fields
-cost roughly 10–30 KB per pano on top of v2's 50–200 KB.
+`depth_log.csv` row, which makes the next run re-request it. The plane fields cost roughly 10–30 KB per pano
+on top of v2's 50–200 KB.
+
+Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56) dev and test runs ever
+produced a v2 artifact. The depth phase's first production run was a 500-pano `west-chester-pa` canary on
+2026-09-06, the day it went live fleet-wide ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)).
+Before it the store held **zero** `depth_log.csv` files and **zero** `.depth.npz` artifacts, the scraper host
+had just been pulled to `master`, and the canary's artifacts read back as `format_version` 3, so every artifact
+the production store holds is v3. That rests on the store, not on the v3 writer's 2026-08-07 merge date: as
+late as 2026-08-29 production was still running a build older than that merge.
 
 ## Runtime budget
 
