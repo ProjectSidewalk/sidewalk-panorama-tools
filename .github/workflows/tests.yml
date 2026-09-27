@@ -21,7 +21,12 @@ jobs:
       # Bare --cov takes its source and omissions from .coveragerc, so there is one place to change them.
       # skip-covered keeps the (already -v, 1400-test) log readable; the step summary below is not skipped,
       # so the PR view still shows every file including the ones at 100%.
+      # SIDEWALK_REQUIRE_STREETLEVEL turns tests/test_streetlevel_api.py's importorskip into a hard import
+      # (#165): requirements.txt installs streetlevel here, so a missing transitive dependency must fail the
+      # run rather than skip every contract test behind a green check.
       - run: python -m pytest tests -v --cov --cov-report=term-missing:skip-covered
+        env:
+          SIDEWALK_REQUIRE_STREETLEVEL: '1'
       # always(), so a run that trips the fail_under gate still shows WHERE it lost coverage rather than
       # just failing. --fail-under=0 because the pytest step above is the gate; this step only reports.
       - name: Coverage summary
