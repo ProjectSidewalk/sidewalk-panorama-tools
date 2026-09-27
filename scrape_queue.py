@@ -538,6 +538,13 @@ def stop_process(proc, city_id):
 
     But asking has to have a deadline, or a wedged process holds every city behind it for the rest of the
     night exactly as if nothing had been sent - so SIGKILL follows TERM_TO_KILL_SECONDS later.
+
+    And a stop of the QUEUE landing during that wait kills the city at once (#161). Both callers run this
+    inside an `except` handler, so a SystemExit from a SIGTERM here propagates straight out of the handler
+    where no sibling `except` can catch it: before this arm, SIGKILL was never sent, the queue exited and
+    released its lock, and tomorrow's queue ran alongside an orphaned runner. The cost is that city's
+    log.csv row, which the SIGTERM it was already sent would have written - an acceptable trade against a
+    process nothing supervises. Nothing waits after the kill, so a third signal cannot interrupt the fix.
     """
     proc.terminate()
     try:
@@ -547,6 +554,14 @@ def stop_process(proc, city_id):
         print("[queue] %s: did not stop; killing" % (city_id,))
         proc.kill()
         return proc.wait()
+    except BaseException:
+        logging.error("%s: the queue was stopped while waiting for the city to exit; killing it", city_id)
+        print("[queue] %s: queue stopping; killing the city" % (city_id,))
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        raise
 
 
 def run_city(city, store_root, python_exe, runner_path, city_budget_minutes, kill_grace_minutes, runner_args,
@@ -604,7 +619,9 @@ def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budge
         # than this city misbehaving. Take the city with it. An orphaned DownloadRunner keeps scraping into
         # the store with nothing supervising it, and the queue lock it was running under is released the
         # instant we die, so tomorrow's queue starts alongside it: the exact overlap the lock exists to
-        # prevent, arrived at through the one door the lock cannot watch.
+        # prevent, arrived at through the one door the lock cannot watch. A second stop landing while this
+        # waits is handled inside stop_process, which kills the city rather than orphaning it (#161) - the
+        # guarantee lives there because both of its call sites are inside an `except` handler.
         logging.error("%s: the queue is stopping; stopping the city too", city.city_id)
         print("[queue] %s: queue stopping; stopping the city too" % (city.city_id,))
         stop_process(proc, city.city_id)

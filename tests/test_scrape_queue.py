@@ -1001,6 +1001,92 @@ class TestAStoppedQueueDoesNotOrphanTheCityItIsRunning:
         assert exc.value.code == 143
 
 
+class _StopDuringTheGraceProc(_FakeProc):
+    """A city whose wait() is interrupted by the queue's own stop - the SIGTERM a cron wrapper or an operator
+    sends, which main() translates into SystemExit(143) - on the waits listed in `interrupted_waits`
+    (1-based), and times out on the ones listed in `timeouts_on`. Counts every call, so a test can see what
+    happened after the kill as well as whether the kill happened.
+    """
+
+    def __init__(self, error, interrupted_waits, timeouts_on=()):
+        super().__init__(timeouts=0)
+        self._error = error
+        self._interrupted = set(interrupted_waits)
+        self._timeouts_on = set(timeouts_on)
+        self.waits = 0
+        self.waits_after_kill = 0
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        if self.killed:
+            self.waits_after_kill += 1
+        if self.waits in self._timeouts_on:
+            raise subprocess.TimeoutExpired('cmd', timeout)
+        if self.waits in self._interrupted:
+            raise self._error
+        return 143
+
+
+class TestAStopDuringTheGraceStillKillsTheCity:
+    """#161 (i): a stop signal landing inside stop_process's SIGTERM wait used to orphan the city.
+
+    stop_process runs inside an `except` handler at both of its call sites - the hard timeout's
+    `except subprocess.TimeoutExpired` and the queue stop's `except BaseException` - so a SystemExit raised
+    by a SIGTERM during its 30-second wait propagates straight out of the handler, which no sibling `except`
+    can catch. SIGKILL was never sent, the queue exited and released its lock, and tomorrow's queue ran
+    alongside a DownloadRunner nothing supervised. Fake procs, no signals, so it runs on Windows too.
+    """
+
+    @pytest.mark.parametrize('error', [SystemExit(143), KeyboardInterrupt()])
+    def test_a_stop_during_the_wait_kills_the_city_and_is_not_swallowed(self, monkeypatch, error):
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        proc = _StopDuringTheGraceProc(error, interrupted_waits=[1])
+
+        with pytest.raises(type(error)):
+            scrape_queue.stop_process(proc, 'alpha-aa')
+
+        assert proc.terminated and proc.killed, 'the city was left running after its stop was interrupted'
+
+    def test_the_kill_is_not_followed_by_another_wait(self, monkeypatch):
+        """A third signal must not be able to interrupt the fix: after the kill nothing waits."""
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1])
+
+        with pytest.raises(SystemExit):
+            scrape_queue.stop_process(proc, 'alpha-aa')
+
+        assert proc.waits_after_kill == 0
+
+    def run_city_with(self, monkeypatch, tmp_path, proc, budget):
+        monkeypatch.setattr(scrape_queue.subprocess, 'Popen', lambda *a, **k: proc)
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        return scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                     'py', 'runner.py', budget, 1.0, [])
+
+    def test_a_stop_during_a_timed_out_citys_grace_kills_it(self, monkeypatch, tmp_path):
+        """The timeout handler's call site: the city overran, was sent SIGTERM, and the queue itself was
+        stopped during the 30 s it was giving the city to write its log.csv row."""
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[2], timeouts_on=[1])
+
+        with pytest.raises(SystemExit) as exc:
+            self.run_city_with(monkeypatch, tmp_path, proc, budget=1.0)
+
+        assert proc.terminated and proc.killed
+        assert exc.value.code == 143, 'the queue must still exit with its own stop code'
+
+    def test_a_second_stop_during_the_queues_own_stop_kills_the_city(self, monkeypatch, tmp_path):
+        """The queue-stop handler's call site: the first SIGTERM made the queue stop the city, and a second
+        one landed while it waited - the shape cron_notify's forward-once rule exists to avoid, and the one
+        a bare `pkill -f scrape_queue.py` still produces."""
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1, 2])
+
+        with pytest.raises(SystemExit) as exc:
+            self.run_city_with(monkeypatch, tmp_path, proc, budget=None)
+
+        assert proc.terminated and proc.killed
+        assert exc.value.code == 143
+
+
 # --- Extra passes: the window is spent on the cities that still have work (#43) ----------------------------
 #
 # Measured on the production store after the depth backfill's first three nights: the queue used 477 of its

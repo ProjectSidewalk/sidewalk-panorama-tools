@@ -688,8 +688,9 @@ previous deploy's changes again.
    supervising, which in turn writes its `log.csv` row, and releases the lock. The pattern is anchored so it
    matches the queue process and **not** the [`cron_notify.py`](#hearing-about-a-bad-night) wrapper around it,
    whose own argv also contains `scrape_queue.py`: the wrapper forwards a SIGTERM it receives to the queue, so a
-   bare `pkill -f scrape_queue.py` would deliver two, and the second lands while the queue is stopping its city
-   and interrupts that stop. The store is untouched by any of this.
+   bare `pkill -f scrape_queue.py` would deliver two, and the second lands while the queue is stopping its city.
+   The queue then kills the city outright rather than orphaning it (#161), but the kill costs that city's
+   `log.csv` row, which the first SIGTERM would have written. The store is untouched by any of this.
 
 ### Adding a city
 
