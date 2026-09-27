@@ -981,6 +981,73 @@ def _store_holds_crops(destination_dir):
     return False
 
 
+class LegacyCropStoreError(Exception):
+    """-o is a crop store in the pre-#159 flat layout, not a root of per-city stores. See
+    refuse_legacy_crop_root."""
+
+
+# The store-level files a pre-#159 store keeps directly in -o. Any one of them there means -o IS a store.
+# crop.log alone is not a signal: it is what any directory a run was pointed at could hold, and a root
+# never writes one of its own - but the migrator moves it with the rest.
+LEGACY_ROOT_FILES = (CROP_RULE_MARKER, PROVENANCE_MANIFEST, PROVENANCE_MANIFEST_PRE_CITY)
+
+
+def legacy_layout_signal(crop_dir):
+    """What marks crop_dir as a pre-#159 flat store, or None.
+
+    One listing of crop_dir, stopping at the first hit: an all-digit directory (a label-type shard - a
+    root under the new layout holds only city directories, and no city_id is all digits, which
+    tests/test_crop_store_layout.py pins against log_analyzer/cities.csv) or a LEGACY_ROOT_FILES file.
+    A crop_dir that does not exist yet holds nothing and gives no signal.
+    """
+    try:
+        with os.scandir(crop_dir) as listing:
+            for entry in listing:
+                if entry.is_dir():
+                    if _is_numeric_name(entry.name):
+                        return "a label-type directory, %s" % entry.path
+                elif entry.name in LEGACY_ROOT_FILES:
+                    return "a crop store's own file, %s" % entry.path
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return None
+
+
+def refuse_legacy_crop_root(crop_dir, city):
+    """Raise LegacyCropStoreError if crop_dir is a pre-#159 flat store rather than a root of city stores.
+
+    Before #159, -o WAS the store: <crop-dir>/<label_type_id>/<label_id>.jpg, with crop_rule.json and
+    crop_provenance.csv beside the shards. Taking such a directory as a root would start <crop-dir>/<city>/
+    beside the old shards and cut every crop again - two copies of one city's store, with nothing to say
+    which is current, and whatever other city's crops the flat store mixed in left where they were. So it
+    is refused, --force included, and the message says what to run: migrate_crop_store.py, which moves
+    the store under <city>/ without replacing anything, or - when -o is already named for the city, the
+    README's form - nothing at all, since pointing -o at the parent makes it <crop-dir>/<city>/ as it is.
+
+    A half-migrated root (some shards moved, some not) is refused too, correctly: a person decides each
+    collision the migrator left, and cropping into the half that moved would hide the rest.
+
+    Called by main() before the city store is created or crop.log opened, so the refusal writes nothing.
+    """
+    found = legacy_layout_signal(crop_dir)
+    if found is None:
+        return
+    command = "python3 migrate_crop_store.py %s --city %s --dry-run" % (crop_dir, city)
+    normalized = os.path.normpath(os.path.abspath(crop_dir))
+    if os.path.basename(normalized) == city:
+        raise LegacyCropStoreError(
+            "%s looks like %s's crop store already - it is named for the city and holds %s. Since #159, -o is "
+            "the directory that HOLDS one store per city, so point -o at its parent, %s, and nothing moves. "
+            "(If it holds more than one city's crops, `%s` sorts that out instead.) Nothing has been written."
+            % (crop_dir, city, found, os.path.dirname(normalized), command))
+    raise LegacyCropStoreError(
+        "%s holds %s: it is a crop store in the layout before #159, when -o was the store, not a root that "
+        "holds one store per city (<crop-dir>/<city>/<label_type_id>/<label_id>.jpg). Cropping here would "
+        "start a second copy of the store beside it. Move it into place first - it moves files, never "
+        "replaces one, and lists anything it cannot move: `%s`, then the same without --dry-run. Nothing has "
+        "been written." % (crop_dir, found, command))
+
+
 class ProvenanceManifestHeaderError(Exception):
     """The provenance manifest on disk carries a header this run must not append under. See
     set_aside_pre_city_manifest."""
@@ -1906,7 +1973,8 @@ def main(argv=None):
              both channels, nothing cut); EXIT_REFUSED_DESTINATION if -o looks like the production
              crop store, or holds a directory the guard cannot list, or is recorded as another
              city's store or has a crop_rule.json that cannot say whose (nothing is created or written,
-             crop.log included); EXIT_REFUSED_DESTINATION too for a crop_provenance.csv whose header
+             crop.log included), or is a pre-#159 flat store rather than a root of per-city stores
+             (refuse_legacy_crop_root); EXIT_REFUSED_DESTINATION too for a crop_provenance.csv whose header
              this run cannot append under (after crop.log opens, before any crop). 1 is deliberately not keyed
              on "did every label produce a crop": missing panos are the normal state of a city whose
              scrape is still catching up, while `errors` only ever counts things that should not have
@@ -1927,6 +1995,14 @@ def main(argv=None):
     # -o is a root holding one store per city (#159): label_id restarts in every deployment, so a crop's
     # file name is unique only inside its city's directory. Everything below - the marker, the manifest,
     # crop.log and the crops - is this city's store, never the root.
+    # A pre-#159 flat store at -o is not a root: refused before the city store is created inside it.
+    try:
+        refuse_legacy_crop_root(args.o, args.city)
+    except LegacyCropStoreError as e:
+        print("CropRunner: %s" % e)
+        logging.error('%s', e)
+        return EXIT_REFUSED_DESTINATION
+
     store = os.path.join(args.o, args.city)
 
     # Again at the store (#159). Both layouts are city-first, so from -o the scan reaches a production city

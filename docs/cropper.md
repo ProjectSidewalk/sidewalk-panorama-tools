@@ -54,6 +54,22 @@ created, cut or overwritten, `crop.log` included, and so is a store whose `crop_
 holds a city that is not a string — "unreadable" is not "no city recorded", and adopting there would hand
 the store to whichever city came next. Both messages name the file.
 
+**A `-o` in the old flat layout is refused, not cropped into.** Before #159, `-o` *was* the store:
+`<crop-dir>/<label_type_id>/<label_id>.jpg`, with `crop_rule.json` and `crop_provenance.csv` beside the
+shards. If `-o` directly holds an all-digit directory, a `crop_rule.json`, a `crop_provenance.csv` or a
+`crop_provenance.pre-city.csv`, the run exits **3** before it writes anything (`--force` included), naming
+what it found and the command to run next — cropping there would start a second copy of the city's store
+beside the old shards and cut every crop again. A root that holds city stores, notes, figures or a stray
+`crop.log` passes. A half-migrated root is refused too, until every collision the migrator listed is
+settled by hand. There are two ways out:
+
+* **The store is already named for its city** (`-o /srv/crops/columbus-oh --city columbus-oh`, the form the
+  README always showed): nothing moves. The message says so first — point `-o` at the parent,
+  `/srv/crops`, and the store is `<crop-dir>/<city>/` as it stands; it adopts the city on its next run and
+  nothing is re-cut.
+* **Anything else** — a flat store not named for its city, or one `-o` several cities were cut into:
+  move it with `migrate_crop_store.py` first.
+
 **`-o` must never be the production crop store, and a destination that looks like one is refused.**
 SidewalkWebpage serves the Gallery, the label cards and the social preview from a different crop store,
 `<root>/<city-id>/<LabelType>/crop_<labelId>.png`. Those are **canvas captures the browser took at label
@@ -254,7 +270,7 @@ Errors are retried on the next run. The exit statuses, all of them:
 | `0` | Every label landed in a non-error bucket (a crop, or a skip the run chose). |
 | `1` | At least one label errored; re-running retries them. Also: a `-d` fetch of cvMetadata that fails (`Cannot fetch metadata from webserver`, the reason in `crop.log`); an `-f` file whose extension is neither `.csv` nor `.json` (the message on stderr); a label-type shard of `-o` (`<crop-dir>/<digits>/`) that cannot be listed, which stops the run before any crop with the shard named on stdout and in `crop.log` (not `3`: nothing judged `-o` to be the production store — the provenance record needs to know whether the store already holds crops, and could not find out); and what an uncaught exception exits with — a manifest that cannot be opened stops the run before any crop, with a traceback. |
 | `2` | argparse's usage error: a missing `-s`/`-o`/`--city`, a `--city` that is not a city_id or not an active row of `log_analyzer/cities.csv` (or that file cannot be read, named in the message), both or neither of `-d`/`-f`. |
-| `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list, or is [another city's store](#one-store-one-city), or has a `crop_rule.json` that cannot say whose it is. Also: a `crop_provenance.csv` whose header the run cannot append under ([the manifest](#the-provenance-manifest-crop_provenancecsv)), checked after `crop.log` is opened (so the message is in it too) but before `crop_rule.json` is rewritten or any crop is cut. Otherwise nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
+| `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list, or is [another city's store](#one-store-one-city), or has a `crop_rule.json` that cannot say whose it is, or is a [pre-#159 flat store](#one-store-one-city) rather than a root of city stores (either `-o` or `<-o>/<city>/` is scanned for the production layout). Also: a `crop_provenance.csv` whose header the run cannot append under ([the manifest](#the-provenance-manifest-crop_provenancecsv)), checked after `crop.log` is opened (so the message is in it too) but before `crop_rule.json` is rewritten or any crop is cut. Otherwise nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
 
 `check_cvmetadata_schema.py` also exits `3`, for a different reason (the deployment could not be read). The
 two tools are never chained, so the codes do not meet, but a wrapper that runs both should not read a `3` as
