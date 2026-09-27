@@ -11,6 +11,11 @@ jobs:
     # Matches the production baseline: Ubuntu 22.04 / Python 3.10. Installing requirements.txt here also verifies that
     # streetlevel's dependency tree still pip-installs cleanly on that baseline.
     runs-on: ubuntu-22.04
+    # GitHub's default is 6 hours, so a hung subprocess or a test waiting on a lock would hold the check (and
+    # a runner) that long before failing. Measured 2026-09-27: the job takes 5.5-6.5 minutes end to end
+    # (runs 36270192977 and 36337717048), most of it the pip install; pytest itself ~2m45s. 20 is ~3x that -
+    # room for a slow runner or a cold pip resolve - while still failing a hang in minutes, not hours (#165).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

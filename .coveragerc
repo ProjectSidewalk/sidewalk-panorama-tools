@@ -59,12 +59,14 @@ exclude_also =
 
 # A ratchet, not a target. It exists to catch a deleted test file or a new unmeasured module, not to turn
 # every PR into a coverage negotiation. Set from the measured number, never lowered, raised only by the PR
-# that earns it. 98 against a measured 99.5% on a Windows dev box - and 99.5% on CI too: five posix_only
+# that earns it. 98 against a measured 99.5% on a Windows dev box - and 99.5% on CI too: the posix_only
 # tests skip here and run there, so CI's figure is never the lower of the two, but none of them reaches a
-# line the rest of the suite does not, so it is not higher either. Three assert file modes on files other
-# tests already wrote; the two in test_scrape_queue.py cover POSIX signal behaviour whose logic is also
-# driven, platform-independently, through a Popen-shaped stand-in.
-# (The eight SIDEWALK_LIVE_TILE_TESTS skips are opt-in everywhere, CI included.)
+# line the rest of the suite does not, so it is not higher either. There are seven (counted 2026-09-27,
+# #165): test_cron_notify.py 2, test_depth_helpers.py 1, test_download_runner.py 1,
+# test_image_downloaders.py 1, test_scrape_queue.py 2. The two in test_scrape_queue.py cover POSIX signal
+# behaviour whose logic is also driven, platform-independently, through a Popen-shaped stand-in.
+# (The eleven SIDEWALK_LIVE_TILE_TESTS skips - seven functions in test_gsv_tile_contract.py, two of them
+# parametrized three ways - are opt-in everywhere, CI included.)
 #
 # The remainder is enumerable rather than unknown, and nothing here carries a `# pragma: no cover`, because
 # a pragma is a claim:
