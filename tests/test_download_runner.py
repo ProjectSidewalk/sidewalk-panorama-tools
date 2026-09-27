@@ -2257,16 +2257,8 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
                                     '-c', str(csv_path), '--skip-depth'])
 
 
-class TestGoogleRefusingGsvImagesStopsThePhase:
-    """#162: the image phase's push-back breaker - a DIFFERENT breaker from #113's, on purpose.
-
-    #113 counts permanent verdicts and must stay off GSV, where 8.4% of a mature ledger is a retired pano.
-    This one counts only Google's own refusal (gsv.pushback_reason: a tile 429/403, an interstitial, or a
-    zoom-probe RetryError carrying 429/403), resets only on a GSV success, and costs no ledger rows at all -
-    a push-back is never a verdict, so there is nothing to withhold. On a trip it stops GSV for the run,
-    books the city failed (tripped_sources), reports 'blocked' to the queue, and writes the block latch and
-    forfeits the depth pace, because tiles and photometa leave the same IP.
-    """
+class _PushbackHarness:
+    """Shared paths and drive() for the two #162 classes below; not collected (no Test prefix)."""
 
     @pytest.fixture(autouse=True)
     def _paths(self, tmp_path):
@@ -2294,6 +2286,18 @@ class TestGoogleRefusingGsvImagesStopsThePhase:
 
     def ledger(self):
         return ledger_verdict_rows(self.storage, sort=False)
+
+
+class TestGoogleRefusingGsvImagesStopsThePhase(_PushbackHarness):
+    """#162: the image phase's push-back breaker - a DIFFERENT breaker from #113's, on purpose.
+
+    #113 counts permanent verdicts and must stay off GSV, where 8.4% of a mature ledger is a retired pano.
+    This one counts only Google's own refusal (gsv.pushback_reason: a tile 429/403, an interstitial, or a
+    zoom-probe RetryError carrying 429/403), resets only on a GSV success, and costs no ledger rows at all -
+    a push-back is never a verdict, so there is nothing to withhold. On a trip it stops GSV for the run,
+    books the city failed (tripped_sources), reports 'blocked' to the queue, and writes the block latch and
+    forfeits the depth pace, because tiles and photometa leave the same IP.
+    """
 
     def test_three_refused_panos_in_a_row_stop_gsv_and_latch_the_host(self, monkeypatch):
         gsv = self.gsv
@@ -2487,6 +2491,79 @@ class TestGoogleRefusingGsvImagesStopsThePhase:
     def test_the_blocked_stop_string_is_the_depth_phases(self):
         """scrape_queue reads 'blocked' as "do not re-run"; one spelling across both phases."""
         assert DownloadRunner.STOP_BLOCKED == self.gsv.DEPTH_STOP_BLOCKED
+
+
+class TestAFreshLatchPutsGsvImagesOnProbation(_PushbackHarness):
+    """#162 D5: a fresh block latch drops the push-back threshold to 1 - it does NOT stand the image phase down.
+
+    The depth phase latches after a SINGLE photometa refusal, from a different endpoint. A full stand-down
+    on read would let one interstitial stop fifty cities' images for six hours; ignoring the latch would let
+    each city spend three refused panos rediscovering it. Probation is the middle: images run, and the first
+    refusal is believed.
+    """
+
+    def write_latch(self, hours_ago):
+        self.latch.write_text(repr(time.time() - hours_ago * 3600.0))
+
+    def test_under_a_fresh_latch_one_refusal_trips(self, monkeypatch, capsys):
+        self.write_latch(0.5)
+        panos = self.gsv_panos(4)
+        verdicts = {p['pano_id']: downloaders.DownloadResult.success for p in panos}
+        verdicts['gsv-0'] = self.P
+
+        _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0']
+        assert tripped == {'gsv'} and stop_reasons['image_stop'] == 'blocked'
+        assert 'WARNING' not in capsys.readouterr().out.split('IMAGEDOWNLOAD: Processing')[0], \
+            "the probation notice is information, not the night's alarm"
+
+    def test_a_stale_latch_is_ignored(self, monkeypatch):
+        self.write_latch(7)
+        panos = self.gsv_panos(3)
+        verdicts = {'gsv-0': self.P, 'gsv-1': self.P, 'gsv-2': downloaders.DownloadResult.success}
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2'] and tripped == set()
+
+    def test_a_fresh_latch_alone_stops_nothing(self, monkeypatch, capsys, caplog):
+        """The discrimination against reading the latch as a stand-down: nothing refuses, every pano runs."""
+        self.write_latch(0.5)
+        panos = self.gsv_panos(4)
+
+        with caplog.at_level(logging.INFO):
+            _, calls, tripped, stop_reasons = self.drive(
+                monkeypatch, panos, {p['pano_id']: downloaders.DownloadResult.success for p in panos})
+
+        assert calls == [p['pano_id'] for p in panos]
+        assert tripped == set() and stop_reasons['image_stop'] is None
+        notice = [r.getMessage() for r in caplog.records if 'probation' in r.getMessage()]
+        assert len(notice) == 1 and str(self.latch) in notice[0]
+        assert 'probation' in capsys.readouterr().out
+
+    def test_main_end_to_end_exits_1_and_both_phases_report_blocked(self, monkeypatch, tmp_path,
+                                                                   fake_streetview):
+        """The whole contract in one process: the image phase's trip writes the latch, the SAME run's depth
+        phase reads it and stands down at zero requests (the stub would raise on any), main() exits 1, and
+        the queue's summary says 'blocked' for both phases."""
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + ''.join(
+            'gsv-%d,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % n for n in range(4)))
+        summary = tmp_path / 'summary.json'
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano',
+                            scripted_download_pano({'gsv-%d' % n: self.P for n in range(4)}))
+        monkeypatch.chdir(tmp_path)
+
+        code = DownloadRunner.main(['sidewalk-test.invalid', str(self.storage), '-c', str(csv_path),
+                                    '--depth-block-latch', str(self.latch),
+                                    '--depth-pace-state', str(self.pace),
+                                    '--run-summary-file', str(summary)])
+
+        assert code == 1
+        with open(summary) as f:
+            assert json.load(f) == {'image_stop': 'blocked', 'depth_stop': 'blocked'}
 
 
 class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
