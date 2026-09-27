@@ -2284,7 +2284,7 @@ class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
                                    '--run-summary-file', str(tmp_path / 'summary.json'))
 
         assert sorted(calls) == sorted(GSV_PANO_IDS), 'every pano must have been downloaded'
-        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None}
+        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None, 'conditions': []}
 
     def test_a_budget_that_was_not_reached_reports_no_stop(self, monkeypatch, tmp_path):
         """Discrimination against reporting 'max-runtime' whenever --max-runtime is merely PRESENT."""
@@ -2343,7 +2343,7 @@ class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
                                pano_metadata_csv=str(csv_path), skip_depth=True,
                                run_summary_path=str(summary_path))
 
-        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None}
+        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None, 'conditions': []}
 
     def test_an_unwritable_summary_path_does_not_fail_the_run(self, monkeypatch, tmp_path):
         """The summary is evidence, not cargo - the same rule configure_logging follows. Losing a night's
@@ -2352,6 +2352,68 @@ class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
                                    '--run-summary-file', str(tmp_path / 'no-such-dir' / 'summary.json'))
 
         assert sorted(calls) == sorted(GSV_PANO_IDS), 'the scrape must have completed normally'
+
+
+# --- Conditions: a city can finish ok and still fail the night (#161) ---------------------------------------
+#
+# The run summary carries a `conditions` list - {code, detail} - for every shape the runner itself calls a
+# failure but that does not change its exit code: a refused or stood-down depth phase, a missing Mapillary
+# token, an image phase in which nothing succeeded, an empty or schema-drifted pano list. scrape_queue books
+# each one against the night, so the only unattended alarm (cron_notify --only-on-failure) actually fires.
+
+class TestNoteCondition:
+    """The one helper every condition goes through, so the dedupe and the length cap live in one place."""
+
+    def test_a_condition_is_recorded_with_its_detail(self):
+        sink = {}
+        downloaders.common.note_condition(sink, 'depth-refused', 'HTTP 429')
+        assert sink == {'conditions': [{'code': 'depth-refused', 'detail': 'HTTP 429'}]}
+
+    def test_no_sink_is_a_no_op(self):
+        """Callers that pass no stop_reasons (every direct test of a phase) must not need a dict."""
+        downloaders.common.note_condition(None, 'depth-refused', 'x')
+
+    def test_a_code_is_recorded_once_and_the_first_detail_wins(self):
+        """The summary's line names the FIRST occurrence; a phase that trips twice is still one condition."""
+        sink = {}
+        downloaders.common.note_condition(sink, 'depth-breaker', 'first')
+        downloaders.common.note_condition(sink, 'depth-breaker', 'second')
+        downloaders.common.note_condition(sink, 'depth-refused', 'other')
+        assert sink['conditions'] == [{'code': 'depth-breaker', 'detail': 'first'},
+                                      {'code': 'depth-refused', 'detail': 'other'}]
+
+    def test_a_long_detail_is_cut(self):
+        """The detail rides into a cron message once per condition kind; an exception's str can be a page."""
+        sink = {}
+        downloaders.common.note_condition(sink, 'depth-refused', 'x' * 5000)
+        detail = sink['conditions'][0]['detail']
+        assert len(detail) <= downloaders.common.CONDITION_DETAIL_MAX
+        assert detail.startswith('xxx')
+
+    def test_it_adds_to_a_summary_that_already_carries_stop_reasons(self):
+        sink = {'image_stop': None, 'depth_stop': 'blocked'}
+        downloaders.common.note_condition(sink, 'depth-stood-down', 'latch')
+        assert sink['depth_stop'] == 'blocked' and len(sink['conditions']) == 1
+
+
+class TestTheRunSummaryAlwaysCarriesConditions:
+
+    def test_a_clean_run_writes_an_empty_list(self, monkeypatch, tmp_path):
+        """Present and empty, not absent: the queue reads an absent key as "no conditions" too, but only a
+        present one proves the runner was new enough to have checked."""
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--run-summary-file', str(tmp_path / 'summary.json'))
+        with open(tmp_path / 'summary.json') as f:
+            assert json.load(f)['conditions'] == []
+
+    def test_a_noted_condition_reaches_the_file(self, tmp_path):
+        path = tmp_path / 'summary.json'
+        stop_reasons = {'image_stop': None, 'depth_stop': None}
+        downloaders.common.note_condition(stop_reasons, 'pano-list-empty', 'nothing served')
+
+        DownloadRunner._write_run_summary(str(path), stop_reasons)
+
+        with open(path) as f:
+            assert json.load(f)['conditions'] == [{'code': 'pano-list-empty', 'detail': 'nothing served'}]
 
 
 # --- log.csv field 19: the depth corpus size (#43) ---------------------------------------------------------

@@ -297,6 +297,19 @@ lock. A city the window did not reach counts as a failure deliberately — a fle
 cities a night is the silent failure this design exists to surface. If a night's truncation is expected and
 accepted, the window is the wrong size.
 
+#### A city can finish ok and still fail the night
+
+Some nights the runner itself would call a failure end in an ordinary exit 0: Google refused the depth phase,
+the depth ledger could not be read, every Mapillary pano was dropped for want of a token. Production delivers
+only nonzero exits ([`cron_notify.py --only-on-failure`](ops.md#hearing-about-a-bad-night)), so until
+[#161](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/161) those nights reached nobody.
+
+Each such shape is now a **condition**: the runner records it in the run summary the queue already reads
+(`--run-summary-file`, [below](#extra-passes)), as `{"code": ..., "detail": ...}` in a `conditions` list that
+is always present, empty on a clean run. A condition does **not** change the city's outcome — it stays `ok`,
+keeps its place in the `N/M cities ok` count and its eligibility for an extra pass — but **any condition fails
+the night**. The runner's own exit code is unchanged.
+
 ### Extra passes
 
 Pass 1 gives every city its guaranteed slot, `--city-max-runtime`, in the night's rotated order: that is the
@@ -316,7 +329,9 @@ Three rules that are load-bearing:
 
 * **Who has work is read from what the runner reported, not from how long the queue watched it.** The queue
   passes each city a `--run-summary-file`; `DownloadRunner` writes what stopped each phase, and a phase that
-  stopped on `max-runtime` — either phase — is one that would have kept going. Only an `ok` run qualifies: a
+  stopped on `max-runtime` — either phase — is one that would have kept going. (The same file carries the
+  run's [conditions](#a-city-can-finish-ok-and-still-fail-the-night), which decide the exit code, not who is
+  re-run.) Only an `ok` run qualifies: a
   crash says nothing about work left and re-running it is a crash loop; a timed-out city was killed past its
   budget and would be killed again. Nothing crosses nights and nothing reads the store.
 

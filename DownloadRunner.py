@@ -20,6 +20,7 @@ from urllib3.util.retry import Retry
 
 from downloaders import DownloadResult, download_pano, gsv, mapillary
 from downloaders.common import raise_decompression_bomb_ceiling
+from downloaders.common import note_condition
 
 
 def _reservation_minutes(value):
@@ -779,10 +780,16 @@ def _write_run_summary(path, stop_reasons):
     Evidence, not cargo - the same trade configure_logging makes. scrape_queue falls back to its old
     elapsed-time heuristic when no summary arrives, so a temp file that could not be written costs one
     imprecise re-run decision; raising here would cost the whole night's scrape.
+
+    `conditions` is always present, empty or not (#161): what the queue books against the night is read
+    from here, and an empty list written by a runner that checked is a different fact from an older runner
+    that never wrote the key. Copied rather than set on the caller's dict, which is the run's own record.
     """
+    payload = dict(stop_reasons)
+    payload.setdefault('conditions', [])
     try:
         with open(path, 'w') as f:
-            json.dump(stop_reasons, f, allow_nan=False)
+            json.dump(payload, f, allow_nan=False)
     except OSError as e:
         logging.warning("Could not write the run summary to %s (%s)", path, e)
         print("WARNING: could not write the run summary to %s (%s)" % (path, e))
