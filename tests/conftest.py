@@ -25,6 +25,81 @@ if REPO_ROOT not in sys.path:
 # assertions about POSIX file modes are skipped rather than failed there.
 posix_only = pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes are unavailable on Windows')
 
+# The desk studies' gitignored download cache. Gitignored is exactly what makes a write into it dangerous:
+# `git status` cannot see it, the fetcher skips any file already there (fetch_rawlabels.py), and every study
+# globs `*.csv` over it - so one fake file written by a test becomes a sticky, invisible change to the corpus
+# behind committed numbers (#165). It is watched by content stamp, not through git.
+STUDY_CACHE = os.path.join(REPO_ROOT, 'reports', 'scripts', '.cache')
+
+
+def snapshot_tree_state(repo_root=REPO_ROOT):
+    """Record what a test run could leave behind in the repo: the study cache's files and `git status`.
+
+    Returns `(cache, porcelain)`. `cache` maps each file under `<repo_root>/reports/scripts/.cache` to
+    `(size, mtime_ns)`; `porcelain` is `git status --porcelain --untracked-files=all` as text, or None where
+    git is unavailable or `repo_root` is not a checkout (a tarball, a test's tmp_path). Porcelain reports a
+    path's state rather than its content, so a test that rewrites a file already dirty before the run goes
+    unseen; the cache half, the one that motivated this, is stamped per file and does not have that gap.
+    """
+    import subprocess
+
+    cache = {}
+    for dirpath, _, filenames in os.walk(os.path.join(repo_root, 'reports', 'scripts', '.cache')):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            cache[os.path.relpath(path, repo_root)] = (st.st_size, st.st_mtime_ns)
+    try:
+        status = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], cwd=repo_root,
+                                capture_output=True, text=True, timeout=60)
+        porcelain = status.stdout if status.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        porcelain = None
+    return cache, porcelain
+
+
+def tree_changes(before, after):
+    """Describe every difference between two snapshot_tree_state() results, as a list of lines.
+
+    Empty means the run left the tree as it found it.
+    """
+    changes = []
+    cache_before, porcelain_before = before
+    cache_after, porcelain_after = after
+    for path in sorted(set(cache_before) | set(cache_after)):
+        if path not in cache_before:
+            changes.append(f'created: {path}')
+        elif path not in cache_after:
+            changes.append(f'deleted: {path}')
+        elif cache_before[path] != cache_after[path]:
+            changes.append(f'modified: {path}')
+    if porcelain_before is not None and porcelain_after is not None:
+        lines_before = set(porcelain_before.splitlines())
+        for line in sorted(set(porcelain_after.splitlines()) - lines_before):
+            changes.append(f'git status gained: {line}')
+        for line in sorted(lines_before - set(porcelain_after.splitlines())):
+            changes.append(f'git status lost: {line}')
+    return changes
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _the_suite_leaves_the_repo_as_it_found_it():
+    """Fail the run if any test created, modified or deleted a file in the repo (#165).
+
+    A session-scoped teardown, so a violation is reported as an error at the teardown of whichever test ran
+    last - read the message, not that test's name, for the culprit's trail. Found by audit rather than by a
+    failure: tests/test_fetch_rawlabels.py wrote an 11-byte richmond.csv into the real Mapillary study cache
+    on every run, and nothing in the suite could see it.
+    """
+    before = snapshot_tree_state()
+    yield
+    changes = tree_changes(before, snapshot_tree_state())
+    assert not changes, ('the test run changed the repo it was run from; a test is writing outside its '
+                         'tmp_path:\n  ' + '\n  '.join(changes))
+
 
 @pytest.fixture(autouse=True)
 def _isolate_process_state():
