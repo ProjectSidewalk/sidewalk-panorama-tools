@@ -38,8 +38,10 @@ from downloaders.common import atomic_output_path, black_fraction, raise_decompr
 # for the Mapillary display copy and CropRunner stopped being the only entry point that opens a 134 MP file.
 
 # What the crop loop actually reads off every label row. Only the CSV intake enforces them up front (a
-# header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake keeps
-# whatever the payload had, and bulk_extract_crops counts a row missing any of them as one bad label.
+# header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake passes
+# every element of the array through as it came - json_to_list indexes nothing (#164) - and
+# bulk_extract_crops counts a row missing any of them, or an element that is not an object at all, as one
+# bad label.
 REQUIRED_LABEL_COLUMNS = ('pano_id', 'pano_x', 'pano_y', 'label_id')
 
 # The label's type arrives under one of two names, and a row needs exactly one of them (#123).
@@ -352,13 +354,40 @@ def fetch_label_ids_csv(metadata_csv_path):
     return labels
 
 
-def json_to_list(jsondata):
+def _label_id_key(raw):
+    """The dedupe key for a JSON row's label_id: the int the crop loop will file its crop under, or None.
+
+    The loop names a crop int(row['label_id']), so the key is that same int(): 1, "1", 1.0 and " 1" are one
+    label, as are "07" and 7. Deduping on the raw value let 1 and "1" both through, and under --force both
+    re-cut the same file (#164). None means "no usable id" - absent, null, blank, or something int() refuses
+    - and such rows are never deduped against each other: each is its own bad label, counted once by the
+    loop, and collapsing two would hide one.
+    """
+    if _absent(raw):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def json_to_list(jsondata, source=None):
     """
     Transforms json like object to a list of dict to be read in bulk_extract_crops() to crop panos with label metadata
     :param jsondata: json object containing label ids and their associated properties
+    :param source: the file path or URL it came from, named in the refusal below
     :return: A list of dicts containing the following metadata: label_id, pano_id, label_type, agree_count,
     disagree_count, unsure_count, pano_width, pano_height, pano_x, pano_y, canvas_width, canvas_height, canvas_x,
     canvas_y, zoom, heading, pitch, camera_heading, camera_pitch, camera_roll
+    :raises ValueError: the top level is not an array. A 200 carrying an error object would otherwise be
+        iterated as its keys; one error naming the source, like the CSV intake's header check, is the
+        honest answer.
+
+    Nothing here indexes a row (#164): every element is passed through, and the crop loop counts one that
+    is not an object, or lacks a field it needs, as one malformed row - the CSV intake's behaviour. Rows are
+    deduped on _label_id_key, the int the loop files under. Two ways this differs from the CSV intake, left
+    alone on purpose: that one dedupes on the raw cell ('7' and '07' stay distinct and both file as 7.jpg),
+    and it collapses repeated blank or unparseable label_id cells into one.
 
     Measured against sidewalk-sea 2026-09-18 (#123): `label_type` is a name and replaced the older
     `label_type_id`; `unsure_count` was documented here as `notsure_count`; `camera_roll` is served and
@@ -366,13 +395,19 @@ def json_to_list(jsondata):
     a column by that name. Nor does it send `copyright` or `license`; the provenance manifest (#111)
     copies all three when a row carries them and writes them empty otherwise.
     """
+    if not isinstance(jsondata, list):
+        raise ValueError("%s: expected a JSON array of label rows, got %s: %s"
+                         % (source or 'label metadata', type(jsondata).__name__,
+                            _clip(repr(jsondata), LOG_ROW_REPR_MAX_CHARS)))
     unique_label_ids = set()
     label_info = []
 
     for value in jsondata:
-        label_id = value["label_id"]
-        if label_id not in unique_label_ids:
-            unique_label_ids.add(label_id)
+        key = _label_id_key(value.get('label_id') if isinstance(value, dict) else None)
+        if key is None:
+            label_info.append(value)
+        elif key not in unique_label_ids:
+            unique_label_ids.add(key)
             label_info.append(value)
         else:
             print("Duplicate label ID")
@@ -387,7 +422,7 @@ def fetch_cvMetadata_from_file(metadata_json_path):
     """
     with open(metadata_json_path) as json_file:
         json_meta = json.load(json_file)
-    return json_to_list(json_meta)
+    return json_to_list(json_meta, source=metadata_json_path)
 
 
 def fetch_cvMetadata_from_server(server_fqdn):
@@ -407,12 +442,17 @@ def fetch_cvMetadata_from_server(server_fqdn):
             response = session.get(url, timeout=(30, 600))
             response.raise_for_status()
             jsondata = response.json()
+        # Inside the try (#164): a 200 whose body is not an array - an error object, say - is a failed
+        # fetch like any other, not a traceback.
+        return json_to_list(jsondata, source=url)
     except requests.exceptions.RequestException as e:
         logging.error('Fetching cvMetadata from %s failed: %s', url, e)
         print("Cannot fetch metadata from webserver. Check log file.")
         sys.exit(1)
-
-    return json_to_list(jsondata)
+    except ValueError as e:
+        logging.error('cvMetadata from %s is not usable: %s', url, e)
+        print("The webserver's metadata is not a list of labels. Check log file.")
+        sys.exit(1)
 
 
 def _absent(value):
