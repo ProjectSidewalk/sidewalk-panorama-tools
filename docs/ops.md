@@ -838,10 +838,25 @@ cron_notify.py --name scrape-queue --only-on-failure --log /home/ubuntu/cron_not
   [rollback lever 5](#rolling-back-smallest-blast-radius-first) — because the wrapper forwards a SIGTERM it
   receives to the queue exactly once, so signalling both delivers two.
 
-**Verify any change to this the way `BASH_ENV` was:** a throwaway cron line one minute out,
-`cron_notify.py --sink '<the same sink>' -- false`, a message with `exit 1` in the subject arrives, delete the
-line. Record the date it was proven in the private runbook; a channel nobody has seen deliver is the one this
-section exists because of.
+**Verify any change to this the way `BASH_ENV` was:** a throwaway line in the same crontab (so it inherits
+`SHELL` and `BASH_ENV`), one minute out, with the sink copied from the nightly line:
+
+```cron
+<M> <H> * * *  /srv/sidewalk-panorama-tools/.venv/bin/python /srv/sidewalk-panorama-tools/cron_notify.py --name probe --only-on-failure --log /home/ubuntu/cron_notify_probe.log --sink '<the same sink>' -- false
+```
+
+A message with `probe: exit 1` in the subject arrives and `tail -1 ~/cron_notify_probe.log` says
+`published`; delete the line. **`--only-on-failure` is not optional in the probe.** Without it the wrapper
+is under cron's rule — deliver when the command *printed* something — and `false` prints nothing, so the sink
+is never called and no message can arrive *whether or not the channel works*: the probe fails every time and
+points at the delivery, while the log says `nothing to publish`. The first recipe here omitted it, and on
+2026-09-19 the probe was run that way twice and the channel suspected before anyone read the decision in
+`main()`. `--log` is there so a probe whose publish fails still leaves `sink failed` (or `sink could not
+start`) somewhere; stderr under cron goes to the same nowhere this section is about. It is a file of its own
+because the log line carries no job name: in `~/cron_notify.log` a probe's `exit 1 published` would read as
+a failed night, and would be the `tail -1` [the morning check](#the-morning-after-a-deploy) reads. Record the
+date it was proven in the private runbook; a channel nobody has seen deliver is the one this section exists
+because of.
 
 ### The morning after a deploy
 
