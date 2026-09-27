@@ -1336,6 +1336,15 @@ class TestADepthPhaseThatSavesNothingIsFlagged:
         assert len(issues) == 1, issues
         assert 'Depth backfill stalled' in issues[0]['msg']
 
+    def test_a_city_with_nothing_left_is_never_barren(self, tmp_path):
+        """Three failing nights, then the corpus shrinks to what the ledger already holds: nothing is left to
+        save, so there is nothing to report. The newest REQUESTING row still stopped short of its list, so
+        the walked-list guard does not cover this - `unresolved > 0` is what does."""
+        rows = saving_nothing(3, newest=1) + [make_row(days_ago(0), depth_skip=590, depth_total=590,
+                                                       depth_eligible=590)]
+
+        assert self.barren(tmp_path, rows) == []
+
     def test_nothing_fires_before_the_column_exists(self, tmp_path):
         rows = [old_row(days_ago(n), depth_fail=25, depth_skip=590, depth_total=615) for n in (3, 2, 1, 0)]
 
