@@ -1733,6 +1733,66 @@ class TestARowThatIsNotARun:
         assert 'no readable run' in issues[0]['msg'] and '2 row(s)' in issues[0]['msg']
 
 
+def torn(start_time):
+    """A torn write: the stamp (written first) survived, the tail did not. Three fields, not 18 or 19."""
+    return f'{start_time},1,2'
+
+
+class TestOnlyARecentTornRowIsNews:
+    """Rule 9 (#163). It counted torn rows over the whole file with no date, so every city carrying a torn
+    write from years ago warned every morning: 20 of the 26 warnings on 2026-09-19 were rows dated 2022 to
+    2026-05, and nothing on the current build wrote one. A warning that fires every day on history teaches
+    the reader to skip the WARNING tier. Now only a row from the last MALFORMED_RECENT_DAYS warns; older ones
+    are one INFO line carrying the total."""
+
+    def rule_9(self, tmp_path, rows):
+        issues = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+        return [i for i in issues if 'field count' in i['msg']]
+
+    def test_an_old_torn_row_is_info_not_a_warning(self, tmp_path):
+        """The measured production shape: one 1-field row from 2024, the rest well formed."""
+        found = self.rule_9(tmp_path, ['2024-04-27 06:00:05.587071'] + recent_rows(3))
+
+        assert [i['level'] for i in found] == ['INFO'], found
+        assert 'newest dated 2024-04-27' in found[0]['msg']
+
+    @pytest.mark.parametrize('age_hours, level', [(7 * 24 + 12, 'INFO'), (6 * 24 + 12, 'WARNING')])
+    def test_the_window_is_seven_days(self, tmp_path, age_hours, level):
+        assert analyze.MALFORMED_RECENT_DAYS == 7
+        stamp = days_ago(0) - timedelta(hours=age_hours)
+
+        found = self.rule_9(tmp_path, [torn(stamp)] + recent_rows(3))
+
+        assert [i['level'] for i in found] == [level], found
+
+    def test_an_undatable_torn_row_counts_as_recent(self, tmp_path):
+        """A tear can cut the stamp itself - and that is exactly tonight's row. Reading it as old would let a
+        crashed run look quiet."""
+        found = self.rule_9(tmp_path, ['garbage,1,2'] + recent_rows(3))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'no readable timestamp' in found[0]['msg']
+
+    def test_one_recent_among_old_is_one_warning(self, tmp_path):
+        rows = [torn(days_ago(400)), torn(days_ago(200))] + recent_rows(3) + [torn(days_ago(0))]
+
+        found = self.rule_9(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert '1 of 3' in found[0]['msg']
+
+    def test_a_city_with_only_history_is_blue_and_ok(self, tmp_path, monkeypatch, capsys):
+        rows = [torn(days_ago(400))] + recent_rows(3)
+
+        status = run_main(tmp_path, monkeypatch, '--no-download', logs=[('seattle-wa', rows)])
+        out = squash(capsys.readouterr().out)
+
+        assert status == 0
+        assert '🔵 Seattle' in out
+        assert 'OK : 1' in out
+        assert 'Warning : 0' in out
+
+
 class TestRules2And3CountNightsNotRows:
     """Rule 6 was rewritten because the queue's extra passes put more than one row on a night. These two were
     left counting rows as days, and both are named in days."""
