@@ -685,9 +685,16 @@ is never re-requested); removing a true one costs one request. So err towards re
 2. **Copy the ledger first**: `cp -p depth_log.csv depth_log.csv.bak-$(date +%F)` in the city's store
    directory.
 3. **Find the last save.** Nothing was saved during the barren span, so its rows are the file's tail:
-   `grep -n ',saved$' depth_log.csv | tail -1` gives the line number of the last `saved` row, and everything
-   after it is the span's `unavailable` rows — the false ones, plus at most a few genuine verdicts from the
-   night the drift began.
+
+   `awk -F, '{ sub(/\r$/, "") } $2 == "saved" { n = NR } END { print (n ? n : 1) }' depth_log.csv`
+
+   prints the line number of the last `saved` row (or `1`, the header, if the city never saved), and
+   everything after it is the span's `unavailable` rows — the false ones, plus at most a few genuine verdicts
+   from the night the drift began. **`depth_log.csv` has CRLF line endings** (`csv.writer`'s default; unlike
+   the image ledger, the depth ledger does not override it, and production files are all CRLF, so it stays
+   that way). That is why this is not a `grep ',saved$'`: on Linux `$` does not match before the `\r`, so the
+   grep finds nothing on the box — while Git Bash on Windows strips the CR and matches, so a dry run on a
+   desktop passes. `tests/test_depth_phase.py` runs this exact line against a ledger the depth phase wrote.
 4. **Truncate after that line**: `head -n <line> depth_log.csv > depth_log.csv.new && mv depth_log.csv.new
    depth_log.csv`. Before the `mv`, check the line count it drops: about the CRITICAL's written-off figure
    plus the newest run's field 14, whose verdicts the report could not see yet.
