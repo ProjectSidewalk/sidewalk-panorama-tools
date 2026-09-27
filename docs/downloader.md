@@ -286,15 +286,17 @@ with several rows on one host does not spend the whole cap on it.
 | `--only CITY_ID` | Re-run one city through the same machinery — the lock, the budgets, the summary — rather than by hand. Repeatable. |
 | `--no-rotate` | Keep manifest order. By default the starting point rotates daily, so a night that truncates does not always drop the same tail cities. |
 | `--single-pass` | Run every city once and leave the rest of the window unused — today's behaviour before [extra passes](#extra-passes). `--only` implies it. |
-| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. |
+| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. Warns (without changing its exit code) when the [store marker](ops.md#the-store-marker) is missing. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
 **Exit codes**, since the exit is the alert: it is the subject line of the night's message
 ([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), and it is the code cron sees: `0` every city ran and succeeded and the
 manifest names every city, `1` something failed, timed out, **was never reached**, **a city has no manifest
 row** (private or public), no host would serve the roster to check that, or **a city reported a
-[condition](#a-city-can-finish-ok-and-still-fail-the-night)**, `2` usage, `3` another queue run holds the
-lock. A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
+[condition](#a-city-can-finish-ok-and-still-fail-the-night)** or was not started because the store marker
+had gone (`store_missing`, a mount that dropped mid-night), `2` usage, `3` another queue run holds the lock,
+`5` **the store marker `<store-root>/.pano-store` is missing at startup** — nothing ran and nothing was
+written ([ops: the store marker](ops.md#the-store-marker)). A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
 cities a night is the silent failure this design exists to surface. If a night's truncation is expected and
 accepted, the window is the wrong size.
 
@@ -474,6 +476,12 @@ Two things deliberately absent. `allow_other` needs `user_allow_other` in `/etc/
 **non-root** user mounts; `fusermount` skips that check for root, so a systemd unit does not need it. And
 `_netdev` is an fstab-generator directive — a native unit derives no ordering from `Options=`, so the explicit
 `After=`/`Wants=` is what actually does the work.
+
+**The queue's guard is the store marker.** `scrape_queue.py` refuses a `--store-root` without a
+`.pano-store` file in it — exit 5 at startup, `store_missing` for each city due after a mid-night drop — and the
+file lives on the remote store, so an unmounted mount point never has it
+([ops: the store marker](ops.md#the-store-marker), #161). The hardening below stays as defence in depth, and
+still matters for a hand run of `DownloadRunner.py`, which does not check the marker.
 
 **Harden the mount point itself.** This is the one failure the unit makes *more* likely rather than less:
 

@@ -88,6 +88,12 @@ FAKE_RUNNER = textwrap.dedent('''
         with open(target, 'w') as f:
             json.dump(summary, f)
 
+    # A stand-in for the store's mount dropping mid-night (#161): this city removes the store marker.
+    if os.environ.get('QUEUE_TEST_UNMOUNT_%s' % city.replace('-', '_').upper()):
+        marker = os.path.join(os.path.dirname(sys.argv[2]), '.pano-store')
+        if os.path.exists(marker):
+            os.remove(marker)
+
     note('END')
     sys.exit(int(os.environ.get('QUEUE_TEST_EXIT', '0')))
 ''')
@@ -693,8 +699,18 @@ class TestOnlyOneQueueRunsAtATime:
 
 # --- main() ------------------------------------------------------------------------------------------------
 
-def run_main(tmp_path, manifest, fake_runner, *extra, store=None):
-    """Drive main() with a lock private to this test.
+def mark_store(store):
+    """Create the store root and the operator's marker in it, as the deployment does once (#161)."""
+    os.makedirs(store, exist_ok=True)
+    with open(os.path.join(store, scrape_queue.STORE_MARKER), 'w') as f:
+        f.write('test store\n')
+
+
+def run_main(tmp_path, manifest, fake_runner, *extra, store=None, mark=True):
+    """Drive main() with a lock private to this test, over a store that carries its marker.
+
+    `mark` is the store marker (#161): a real store has one, created once by the operator, and a queue
+    without it refuses to start - so every test that is not about the marker gets one.
 
     The production default is one lock per HOST, which is right for production and wrong here: without this
     two pytest processes on one machine - a second run in another terminal, pytest-xdist, a CI matrix sharing
@@ -703,6 +719,8 @@ def run_main(tmp_path, manifest, fake_runner, *extra, store=None):
     it by passing its own --lock in `extra`.
     """
     store = store or str(tmp_path / 'store')
+    if mark:
+        mark_store(store)
     return scrape_queue.main(['--lock', str(tmp_path / 'test.lock'),
                               '--cities', manifest, '--store-root', store,
                               '--runner', fake_runner, '--python', sys.executable, *extra])
@@ -819,7 +837,8 @@ class TestDryRun:
         """A dry run is for reading, including while tonight's queue is running."""
         lock = str(tmp_path / 'q.lock')
         with scrape_queue.exclusive_lock(lock):
-            code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--lock', lock)
+            code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--lock', lock,
+                            mark=False)
         assert code == 0
         assert not (tmp_path / 'store').exists()
 
@@ -1727,6 +1746,7 @@ class TestAStoppedQueueStillReportsWhatItDid:
             return scrape_queue.CityResult(city.city_id, 'ok', 0, 30.0)
 
         monkeypatch.setattr(scrape_queue, 'run_city', run_one)
+        mark_store(str(tmp_path / 'store'))
         with pytest.raises(KeyboardInterrupt):
             scrape_queue.main(['--lock', str(tmp_path / 'test.lock'), '--no-rotate',
                                '--cities', write_manifest(tmp_path, ['alpha-aa,h1', 'bravo-bb,h2']),
@@ -2078,6 +2098,148 @@ class TestTheSummaryReportsOneLinePerConditionKind:
 
         log = (tmp_path / 'store' / 'scrape_queue.log').read_text()
         assert re.search(r' ERROR depth-refused: .*first bravo-bb', log), log
+
+
+# --- The store marker (#161) ----------------------------------------------------------------------------------
+#
+# An unmounted or wrongly mounted store used to be scraped into: main() ran os.makedirs(store_root) and every
+# city found no ledgers, re-downloaded its corpus onto the 30 GiB root disk and exited 0, hidden once the mount
+# returned. The operator creates <store-root>/.pano-store once, ON the remote store, so it is present exactly
+# when the store is mounted - positive evidence, where os.path.ismount is neither necessary nor sufficient.
+
+class TestTheQueueRefusesAStoreWithoutItsMarker:
+
+    def test_an_unmarked_store_exits_five_having_run_and_written_nothing(self, tmp_path, fake_runner, journal,
+                                                                         capsys):
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, mark=False)
+
+        assert code == scrape_queue.EXIT_STORE_NOT_MARKED == 5
+        assert journal.read() == [], 'no city may start'
+        assert not (tmp_path / 'store').exists(), 'the absent store root must not be created'
+        assert not list(tmp_path.rglob('scrape_queue.log')), 'nothing may be written, not even the log'
+        err = capsys.readouterr().err
+        assert os.path.join(str(tmp_path / 'store'), '.pano-store') in err
+        assert 'docs/ops.md#the-store-marker' in err
+
+    def test_an_existing_but_unmarked_directory_is_refused_too(self, tmp_path, fake_runner, journal):
+        """The shape an unmounted sshfs mount point actually has: an empty directory."""
+        (tmp_path / 'store').mkdir()
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, mark=False)
+
+        assert code == 5
+        assert journal.read() == []
+        assert list((tmp_path / 'store').iterdir()) == []
+
+    def test_the_refusal_comes_before_the_lock(self, tmp_path, fake_runner, journal):
+        """A queue that refuses must not also report a lock problem, nor hold the lock while it refuses."""
+        lock = str(tmp_path / 'q.lock')
+        with scrape_queue.exclusive_lock(lock):
+            code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--lock', lock, mark=False)
+
+        assert code == 5
+
+    def test_a_directory_named_like_the_marker_is_not_a_marker(self, tmp_path):
+        (tmp_path / scrape_queue.STORE_MARKER).mkdir()
+
+        assert not scrape_queue.store_is_marked(str(tmp_path))
+
+    def test_a_marked_store_runs(self, tmp_path, fake_runner, journal, fleet_in_step):
+        assert run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate') == 0
+        assert len([line for line in journal.read() if line.startswith('START')]) == 3
+
+
+class TestAStoreThatGoesAwayMidNight:
+    """sshfs can drop at 02:00. The check repeats before every city, so the cities after the drop are not
+    scraped onto the root disk, and later ones still run if the mount comes back."""
+
+    def test_the_cities_after_the_drop_are_booked_store_missing(self, tmp_path, fake_runner, journal,
+                                                                  monkeypatch, fleet_in_step, capsys):
+        monkeypatch.setenv('QUEUE_TEST_UNMOUNT_ALPHA_AA', '1')
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        starts = [line.split()[1] for line in journal.read() if line.startswith('START')]
+        assert starts == ['alpha-aa'], 'no city may start once the marker is gone'
+        assert code == 1
+        grouped = [line for line in out.splitlines() if line.startswith('[queue] STORE_MISSING')]
+        assert len(grouped) == 1 and 'bravo-bb' in grouped[0] and 'charlie-cc' in grouped[0], out
+        assert '2 not started (store not mounted)' in out
+
+    def test_a_city_after_the_mount_returns_still_runs(self, tmp_path):
+        """The check is per city, not a latch: a mount that comes back is used."""
+        cities = [scrape_queue.City(c, 'h') for c in ('alpha', 'bravo', 'charlie')]
+        mounted = iter([True, False, True])
+        ran = []
+
+        def run_one(city, *a, **k):
+            ran.append(city.city_id)
+            return scrape_queue.CityResult(city.city_id, 'ok', 0, 1.0)
+
+        results = scrape_queue.run_queue(cities, 'store', 'py', 'runner', [], run_one=run_one,
+                                         store_check=lambda: next(mounted))
+
+        assert ran == ['alpha', 'charlie']
+        assert [(r.city_id, r.outcome) for r in results] == [
+            ('alpha', 'ok'), ('bravo', 'store_missing'), ('charlie', 'ok')]
+
+    def test_the_extra_passes_check_it_too_and_never_re_run_a_missing_city(self, tmp_path):
+        cities = [scrape_queue.City(c, 'h') for c in ('alpha', 'bravo')]
+        ran = []
+        mounted = [True]
+
+        def run_one(city, store_root, python_exe, runner_path, budget, *a, **k):
+            ran.append(city.city_id)
+            if len(ran) == 2:
+                mounted[0] = False  # the drop happens during bravo's pass-1 run
+            return scrape_queue.CityResult(city.city_id, 'ok', 0, budget * 60.0,
+                                           stop_reasons={'image_stop': 'max-runtime', 'depth_stop': None})
+
+        results = scrape_queue.run_queue(cities, 'store', 'py', 'runner', [], max_runtime_minutes=600,
+                                         city_max_runtime=12, run_one=run_one,
+                                         store_check=lambda: mounted[0])
+
+        assert ran == ['alpha', 'bravo'], 'no extra pass may start a city on an unmounted store'
+        assert [(r.city_id, r.outcome, r.pass_number) for r in results][2:] == [
+            ('alpha', 'store_missing', 2), ('bravo', 'store_missing', 2)]
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_a_store_missing_city_is_never_re_run(self):
+        assert not scrape_queue.stopped_on_budget(scrape_queue.CityResult('a', 'store_missing', None, None, 12.0))
+
+    def test_store_missing_leads_the_summary(self):
+        results = [scrape_queue.CityResult('zulu', 'failed', 1, 60.0),
+                   scrape_queue.CityResult('alpha', 'store_missing', None, None),
+                   scrape_queue.CityResult('bravo', 'store_missing', None, None)]
+
+        lines = [l for l in scrape_queue.summarise(results, 1.0).splitlines() if l.startswith('[queue] ')]
+
+        assert lines[1].startswith('[queue] STORE_MISSING') and 'alpha, bravo' in lines[1]
+        assert lines[2].startswith('[queue] zulu')
+
+    def test_the_queue_log_carries_it_at_error(self, tmp_path, fake_runner, journal, monkeypatch):
+        monkeypatch.setenv('QUEUE_TEST_UNMOUNT_ALPHA_AA', '1')
+
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        log = (tmp_path / 'store' / 'scrape_queue.log').read_text()
+        assert re.search(r' ERROR STORE_MISSING', log), log
+
+
+class TestADryRunWarnsAboutAnUnmarkedStore:
+
+    def test_it_warns_and_keeps_its_exit_code(self, tmp_path, fake_runner, journal, capsys):
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', mark=False)
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert '[queue] WARNING:' in out and '.pano-store' in out and 'exit 5' in out
+
+    def test_a_marked_store_gets_no_warning(self, tmp_path, fake_runner, journal, capsys):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run')
+
+        assert '.pano-store' not in capsys.readouterr().out
 
 
 # --- The manifest is cross-checked against the fleet (#130) -------------------------------------------------
@@ -2821,7 +2983,7 @@ class TestDryRunCrossChecksToo:
         lock = str(tmp_path / 'q.lock')
         with scrape_queue.exclusive_lock(lock):
             code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--no-rotate',
-                            '--lock', lock)
+                            '--lock', lock, mark=False)
 
         out = capsys.readouterr().out
         assert code == 1

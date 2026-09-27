@@ -80,13 +80,25 @@ REQUIRED_CITY_COLUMNS = ('city_id', 'fqdn')
 # Lock file name, in the system temp directory. See --lock for why it is local disk and not the store.
 _DEFAULT_LOCK_NAME = 'sidewalk-scrape-queue.lock'
 
+# The store marker (#161): a file the operator creates ONCE at the root of the pano store, on the remote
+# store itself, so it is present exactly when the store is mounted - and absent from the empty directory
+# under the mount point that an unmounted sshfs leaves behind. Without it the queue used to makedirs the
+# store root and scrape every city onto the root disk, exiting 0; the files were hidden once the mount
+# returned. os.path.ismount was rejected: it passes a wrongly mounted filesystem and fails a store that is
+# a subdirectory of a mount, so it is not positive evidence of anything. See docs/ops.md, "The store marker".
+STORE_MARKER = '.pano-store'
+# The queue's exit code when the marker is missing at startup: nothing ran and nothing was written. Not 4,
+# which cron_notify owns (queue exited 0 and the sink failed); cron_notify passes 5 through.
+EXIT_STORE_NOT_MARKED = 5
+
 City = namedtuple('City', 'city_id fqdn')
 
 # One run condition (#161): a shape the runner calls a failure of the night without changing its exit code.
 # code is the runner's vocabulary (CONDITION_LABELS); detail is display-only.
 Condition = namedtuple('Condition', 'code detail')
 
-# outcome is one of: 'ok', 'failed', 'timed_out', 'skipped_deadline'. exit_code and seconds are None for a
+# outcome is one of: 'ok', 'failed', 'timed_out', 'skipped_deadline', 'store_missing' (#161: the store
+# marker was gone when the city was due, so it was never started). exit_code and seconds are None for a
 # city that never started. budget_minutes is what the city was given (None when there was no budget),
 # pass_number which pass of the night ran it (#43), stop_reasons the run summary the runner wrote (None when
 # it wrote none), and conditions the run conditions it reported (#161) - a separate axis from the outcome: an
@@ -195,7 +207,10 @@ def build_parser():
                              'fleet. A row whose city_id starts with # is skipped, so a city can be taken '
                              'out for a night the way a crontab line used to be commented out.')
     parser.add_argument('--store-root', required=True, metavar='DIR',
-                        help='Root of the pano store. Each city is scraped into <DIR>/<city_id>.')
+                        help='Root of the pano store. Each city is scraped into <DIR>/<city_id>. Must carry '
+                             'the store marker <DIR>/%s, created once by the operator on the mounted '
+                             'store; without it the queue exits %d and runs nothing (docs/ops.md, "The store '
+                             'marker").' % (STORE_MARKER, EXIT_STORE_NOT_MARKED))
     parser.add_argument('--max-runtime', type=_positive_minutes, default=None, metavar='MINUTES',
                         help='Stop STARTING new cities once this many minutes have elapsed. The queue window '
                              '- size it to the night, not to the work. Cities not reached are reported and '
@@ -241,6 +256,20 @@ def build_parser():
 
 def default_lock_path():
     return os.path.join(tempfile.gettempdir(), _DEFAULT_LOCK_NAME)
+
+
+def store_marker_path(store_root):
+    return os.path.join(store_root, STORE_MARKER)
+
+
+def store_is_marked(store_root):
+    """Whether the pano store is mounted, judged by its marker file (#161).
+
+    isfile, not exists: a directory by that name is not the operator's marker. And isfile returns False on
+    any OSError, which is what a dead FUSE mount answers (ENOTCONN) - so a mount that has dropped reads as
+    unmarked rather than raising.
+    """
+    return os.path.isfile(store_marker_path(store_root))
 
 
 def read_city_list(path, disabled=None):
@@ -711,9 +740,16 @@ def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budge
     return CityResult(city.city_id, outcome, exit_code, elapsed, stop_reasons=stop_reasons, conditions=conditions)
 
 
+def _store_missing(city, budget, pass_number, results):
+    """Book a city the queue did not start because the store marker was gone (#161)."""
+    logging.error("%s: store marker missing; not started (the store is not mounted)", city.city_id)
+    print("[queue] %s: NOT STARTED - the store is not mounted (no %s)" % (city.city_id, STORE_MARKER))
+    results.append(CityResult(city.city_id, 'store_missing', None, None, budget, pass_number))
+
+
 def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runtime_minutes=None,
               city_max_runtime=None, kill_grace_minutes=DEFAULT_KILL_GRACE_MINUTES, env=None,
-              run_one=None, extra_passes=True, results=None):
+              run_one=None, extra_passes=True, results=None, store_check=None):
     """Run every city in order, then the ones that ran out of budget again while the window lasts.
 
     Returns the CityResults in the order they ran: one per city for pass 1, then one per re-run, each
@@ -730,6 +766,11 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
     spend, and without a slot there is no unit to hand out and no floor under the shares. A later pass never
     reports a city as not reached - running out of window there is the design working, not a fleet failing
     to complete - but a crash in one still fails the night, because a crash is a crash.
+
+    `store_check`, when given, is asked before EVERY city start, in every pass (#161): a store whose mount
+    drops at 02:00 must not have the cities after it scraped onto the root disk. A city due while it answers
+    False is booked 'store_missing' and never started; the check is per city, not a latch, so a mount that
+    comes back is used. 'store_missing' is not 'ok', so such a city is never re-run and fails the night.
     """
     # Resolved at CALL time, not bound as a default at definition time, so that replacing the module
     # attribute (which is how main() is driven in tests) actually takes effect.
@@ -755,6 +796,9 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
                             for c in cities[index:]]
                 break
         budget = _city_budget(city_max_runtime, remaining)
+        if store_check is not None and not store_check():
+            _store_missing(city, budget, 1, results)
+            continue
         result = run_one(city, store_root, python_exe, runner_path, budget, kill_grace_minutes, runner_args,
                          env=env)
         results.append(result._replace(budget_minutes=budget, pass_number=1))
@@ -783,6 +827,10 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
                              pass_number, remaining, len(working) - index)
                 break
             budget = _extra_pass_budget(city_max_runtime, remaining, len(working) - index)
+            if store_check is not None and not store_check():
+                _store_missing(city, budget, pass_number, results)
+                latest[city.city_id] = results[-1]
+                continue
             # The reservation is a SHARE of the budget, so it moves with it - otherwise an endgame pass's
             # enlarged slot goes almost entirely to the image phase (#43).
             pass_args = scale_depth_reservation(runner_args, budget, city_max_runtime)
@@ -1104,7 +1152,16 @@ def conditions_report(results):
 # The order the non-ok lines are printed in. stdout is what cron mails, so the two or three real crashes
 # have to appear before the twenty skipped_deadline lines rather than interleaved with them. Run order is
 # kept WITHIN an outcome, so "which city crashed first" is still readable off the list.
-_OUTCOME_ORDER = ('failed', 'timed_out', 'skipped_deadline')
+#
+# store_missing (#161) leads, as ONE grouped line: an unmounted store is one fact about the night, and every
+# city after the drop would otherwise get a line of its own.
+_OUTCOME_ORDER = ('store_missing', 'failed', 'timed_out', 'skipped_deadline')
+
+
+def _store_missing_line(runs):
+    """The one summary line for every city not started because the store was not mounted."""
+    return "[queue] STORE_MISSING (store not mounted; not started): %s" % ', '.join(
+        r.city_id if r.pass_number == 1 else '%s in pass %d' % (r.city_id, r.pass_number) for r in runs)
 
 
 def summarise(results, elapsed_minutes, manifest_check=None):
@@ -1136,6 +1193,10 @@ def summarise(results, elapsed_minutes, manifest_check=None):
         by_outcome.setdefault(r.outcome, []).append(r)
     lines = ["", "[queue] ==== summary ===="]
     for outcome in _OUTCOME_ORDER:
+        if outcome == 'store_missing':
+            if by_outcome.get(outcome):
+                lines.append(_store_missing_line(by_outcome[outcome]))
+            continue
         for r in by_outcome.get(outcome, []):
             when = '' if r.seconds is None else ' after %.1f min' % (r.seconds / 60.0)
             code = '' if r.exit_code is None else ' (exit %d)' % r.exit_code
@@ -1154,11 +1215,13 @@ def summarise(results, elapsed_minutes, manifest_check=None):
     # an exit 1 that the conditions earned (#161).
     kinds = [line.split()[1].rstrip(':') for line, _ in condition_lines]
     conditions = '' if not kinds else ', conditions: %s' % ', '.join(kinds)
-    lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s%s; %.1f min total"
+    n_unmounted = len(by_outcome.get('store_missing', []))
+    unmounted = '' if not n_unmounted else ', %d not started (store not mounted)' % n_unmounted
+    lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s%s%s; %.1f min total"
                  % (sum(1 for r in first if r.outcome == 'ok'), len(first),
                     len(by_outcome.get('failed', [])),
                     len(by_outcome.get('timed_out', [])), len(by_outcome.get('skipped_deadline', [])),
-                    missing, conditions, elapsed_minutes))
+                    unmounted, missing, conditions, elapsed_minutes))
     passes = sorted({r.pass_number for r in results if r.pass_number > 1})
     for n in passes:
         runs = [r for r in results if r.pass_number == n]
@@ -1207,7 +1270,8 @@ def main(argv=None):
 
     Returns rather than calling sys.exit so the whole flow can be driven in-process by a test, the shape
     analyze.py and CropRunner already use. Exit codes: 0 all cities ok, 1 something did not run or failed or
-    reported a run condition (#161), 2 usage (argparse), 3 another queue run holds the lock.
+    reported a run condition (#161), 2 usage (argparse), 3 another queue run holds the lock, 5 the store
+    marker is missing at startup (#161) - nothing ran and nothing was written.
     """
     args = build_parser().parse_args(argv)
 
@@ -1253,6 +1317,10 @@ def main(argv=None):
         # simply waits up to ROSTER_MAX_HOSTS x ROSTER_TIMEOUT_SECONDS for the WARNING line. A gap exits 1
         # exactly as the night would; a roster nobody served is advisory here - this is someone at a
         # keyboard, possibly offline, reading the plan - where the night treats it as a failed check.
+        # Advisory, like the roster: a dry run is someone at a keyboard, and the exit code stays the plan's.
+        if not store_is_marked(args.store_root):
+            print("[queue] WARNING: %s not found - a real run would refuse to start (exit %d). See "
+                  "docs/ops.md#the-store-marker." % (store_marker_path(args.store_root), EXIT_STORE_NOT_MARKED))
         check = check_manifest(cities, disabled)
         gap, status = manifest_report(check, advisory=True)
         print('\n'.join(line for line, _ in gap + status))
@@ -1265,7 +1333,15 @@ def main(argv=None):
         print("WARNING: --max-runtime without --city-max-runtime; one slow city can hold the queue open "
               "past the window, because the window only gates STARTING a city.")
 
-    os.makedirs(args.store_root, exist_ok=True)
+    # The store marker, BEFORE configure_logging and before the lock (#161): logging would create
+    # scrape_queue.log on whatever is at the store root - the root disk, when the mount is down - and the
+    # makedirs this replaced created the store root itself. So nothing is written here, not even a log line:
+    # stderr is the one channel, and cron_notify delivers the nonzero exit.
+    if not store_is_marked(args.store_root):
+        print("ERROR: %s not found, so the pano store is not mounted (or this is not its root). Nothing was "
+              "run. If this IS the store, create the marker once - see docs/ops.md#the-store-marker."
+              % (store_marker_path(args.store_root),), file=sys.stderr)
+        return EXIT_STORE_NOT_MARKED
     configure_logging(os.path.join(args.store_root, 'scrape_queue.log'))
     # CPython dies from SIGTERM without running finally blocks. Translating it into SystemExit means the
     # stop unwinds properly: run_city stops the city it is supervising instead of orphaning it, and the lock
@@ -1288,7 +1364,7 @@ def main(argv=None):
             run_queue(ordered, args.store_root, python_exe, runner_path, runner_args,
                       max_runtime_minutes=args.max_runtime, city_max_runtime=args.city_max_runtime,
                       kill_grace_minutes=args.kill_grace, extra_passes=extra_passes,
-                      results=results)
+                      results=results, store_check=lambda: store_is_marked(args.store_root))
         # After the fleet and outside the lock (a GET needs none), against the whole manifest rather than
         # tonight's --only selection: Laurens and Bayonne launched together, and an operator re-running one
         # by hand is the moment to hear about the other. Inside the try, so a stop landing mid-fetch still
@@ -1318,7 +1394,8 @@ def main(argv=None):
 def _report(results, started_monotonic, manifest_check=None):
     """Print and log the summary, and return the exit code it implies.
 
-    Every line is logged at INFO except the cross-check's and the conditions', which carry their own levels:
+    Every line is logged at INFO except the cross-check's, the conditions' and the store_missing line, which
+    carry their own levels:
     a gap, an unserved roster and a run condition are the night's failure and are logged as one, so
     `grep ERROR scrape_queue.log` finds them next week the way the mail finds them tonight.
     """
@@ -1326,6 +1403,9 @@ def _report(results, started_monotonic, manifest_check=None):
     print(summary)
     levels = {} if manifest_check is None else dict(sum(manifest_report(manifest_check), []))
     levels.update(conditions_report(results))
+    missing_store = [r for r in results if r.outcome == 'store_missing']
+    if missing_store:
+        levels[_store_missing_line(missing_store)] = logging.ERROR
     for line in summary.splitlines():
         if line.strip():
             logging.log(levels.get(line, logging.INFO), line.replace('[queue] ', ''))

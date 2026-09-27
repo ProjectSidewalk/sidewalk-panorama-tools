@@ -677,10 +677,54 @@ previous deploy's changes again.
   A half-written package that raises `ImportError` now says so on stdout and fails the night as
   `depth-unavailable` (#161) rather than skipping depth silently; one that raises something else still crashes
   the city and books it `failed`.
+- **Create the [store marker](#the-store-marker) BEFORE pulling #161.** From that deploy on, a queue that
+  finds no `<store-root>/.pano-store` exits 5 having run nothing, so the first night after a deploy without
+  it scrapes nothing (loudly).
 - **Roll forward, never back, past 2026-09-17.** [`fetched_at`](#fetched_at-and-the-two-row-widths) widened
   `pano_id_log.csv` to three fields, and a pre-#129 reader skips every three-field row — so every permanent
   verdict recorded since that deploy is re-requested nightly, and a store that has only ever seen the new
   build parses as *empty*. Behaviour rolls back by flag (below), not by checkout.
+
+### The store marker
+
+The queue refuses to scrape a store root that does not carry the file **`<store-root>/.pano-store`** (#161).
+Before it, an sshfs mount that had dropped left an ordinary local directory at `/mnt/panostore`, and the
+queue created the store root there, every city found no ledgers, re-downloaded its corpus onto the 30 GiB
+root disk and exited 0 — the files hidden again once the mount came back. The marker lives **on the remote
+store**, so it survives remounts and is absent from the empty directory under the mount point.
+
+- **Missing at startup:** the queue prints one line on stderr naming the path and exits **5** having run
+  nothing and written nothing — not the store root, not `scrape_queue.log`, not the lock. `cron_notify`
+  passes 5 through, so the night's message says `exit 5`.
+- **Missing before a city starts** (the check repeats before every city, in every pass — sshfs can drop at
+  02:00): that city is booked `store_missing` and never started. The summary gathers them into one
+  `STORE_MISSING (store not mounted; not started): …` line, the totals line says `N not started (store not
+  mounted)`, and the night exits 1. The check is per city, so if the mount returns, later cities run.
+- `--dry-run` prints a `WARNING` when the marker is missing and keeps its exit code.
+- `DownloadRunner` does not check the marker: a hand run into an arbitrary directory is a documented use.
+
+`chown root:root` + `chmod 555` on the underlying mount point
+([downloader.md](downloader.md#if-the-pano-store-is-on-another-host)) stays as defence in depth.
+
+**Creating it** (once per store root, and once for any new store root or host):
+
+1. With the store mounted — `findmnt /mnt/panostore` shows `fuse.sshfs` — and as the cron user:
+   `printf 'Project Sidewalk pano store; see docs/ops.md#the-store-marker\n' > /mnt/panostore/.pano-store`
+2. Prove the directory *under* the mount is unmarked, without unmounting:
+   `sudo mkdir -p /tmp/under && sudo mount --bind / /tmp/under && ls -la /tmp/under/mnt/panostore` must be
+   empty (remove a stray `.pano-store` there). While it is bound,
+   `sudo chown root:root /tmp/under/mnt/panostore && sudo chmod 555 /tmp/under/mnt/panostore`; then
+   `sudo umount /tmp/under`. Record the date in the private runbook.
+3. `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --dry-run`
+   prints no marker `WARNING`.
+4. Optional proof of the alarm: a throwaway crontab line (same crontab, so it inherits `SHELL`/`BASH_ENV`)
+   running the queue under `cron_notify` with `--store-root /tmp/no-marker --only <city>` exits 5 before
+   running anything, a `…: exit 5 on <host>` message arrives, and `cron_notify_probe.log` says `published`.
+   Delete the line.
+
+**The morning after:** `exit 5` in `~/cron_notify.log` means the store was not mounted at 19:00
+(`systemctl status mnt-panostore.mount`, restart it, check the marker); a `STORE_MISSING` line means the mount
+dropped mid-night.
 
 ### Rolling back, smallest blast radius first
 
