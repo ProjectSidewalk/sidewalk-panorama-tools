@@ -3,6 +3,7 @@ and the atomic image save. Network-free throughout - tile downloads and the zoom
 gsv module boundary."""
 
 import asyncio
+import collections
 import logging
 import os
 from io import BytesIO
@@ -131,13 +132,16 @@ class TestGridArithmeticAgainstRealPhotometa:
 
 
 class _FakeResponse:
-    def __init__(self, headers, body=b''):
+    def __init__(self, headers, body=b'', url='https://tile.invalid/cbk?output=tile'):
         self.headers = headers
         self._body = body
         # str(ClientResponseError) reads request_info.real_url, so the fake needs one.
         self.request_info = SimpleNamespace(real_url='https://tile.invalid')
         self.history = ()
         self.status = 200
+        # The landing URL after redirects - aiohttp's ClientResponse.url. _fetch_tile reads it for Google's
+        # interstitial markers (#162).
+        self.url = url
         self.content = self
 
     async def read(self):
@@ -245,6 +249,149 @@ class TestTileRetryErrors:
         """Backoff on a KeyError or a TypeError would turn a bug into ten slow bugs."""
         for exc in (KeyError, TypeError, ValueError, AttributeError):
             assert not issubclass(exc, gsv._TILE_RETRY_ERRORS), exc
+
+
+class _StatusSession:
+    """A ClientSession stand-in whose every tile answers `status`, or whatever `answer(url, attempt)` says.
+
+    An int answer is raised as the ClientResponseError that aiohttp's `raise_for_status=True` raises on
+    entering the request context - which is where the real one comes from, and the contract test pins that
+    the fan-out opens its session with that flag. Anything else is returned as the response. `requests`
+    counts every request made, which is the number this whole issue (#162) is about.
+
+    `await_first` yields to the loop before answering, so a fan-out's concurrent requests are genuinely in
+    flight together - without it every request completes inside its own task's first step and nothing that
+    depends on concurrency (the abandonment's slot check) is exercised at all.
+    """
+
+    def __init__(self, status=None, await_first=False, answer=None):
+        self.requests = 0
+        self.attempts = collections.Counter()
+        self._answer = answer if answer is not None else (lambda url, attempt: status)
+        self._await_first = await_first
+
+    def get(self, url, **kwargs):
+        self.requests += 1
+        self.attempts[url] += 1
+        outcome = self._answer(url, self.attempts[url])
+        await_first = self._await_first
+
+        class _Ctx:
+            async def __aenter__(self):
+                if await_first:
+                    await asyncio.sleep(0)
+                if isinstance(outcome, int):
+                    raise aiohttp.ClientResponseError(SimpleNamespace(real_url='https://tile.invalid'), (),
+                                                      status=outcome, message='x')
+                return outcome
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+
+TILE = (3, 1, 'https://tile.invalid/cbk?output=tile&x=3&y=1')
+
+
+class TestATileRefusalIsNotRetried:
+    """#162: a tile Google refuses is push-back, and retrying it ten times is how a soft refusal escalates.
+
+    Measured on master against a local 429 server: 10 requests per tile, 5,120 per 16384-wide pano, ~248 s
+    of backoff sleep per tile, and one `backoff` log line per retry - about 1 MB of scrape.log per pano. The
+    tile path now answers each HTTP class differently: 429/403 is push-back and never retried, any other 4xx
+    is this pano's problem and not retried either, and only 5xx/408/network trouble is weather worth waiting
+    out - bounded per wait and in total.
+    """
+
+    @pytest.mark.parametrize('status', [429, 403])
+    def test_a_refusal_status_raises_the_pushback_error_backoff_cannot_catch(self, status):
+        with pytest.raises(gsv.TilePushbackError) as excinfo:
+            asyncio.run(gsv._fetch_tile(_StatusSession(status), TILE))
+
+        assert excinfo.value.status == status
+        assert (excinfo.value.x, excinfo.value.y) == (3, 1)
+        # The whole mechanism: backoff retries only what is in this tuple, so the refusal must not be in it.
+        assert not isinstance(excinfo.value, gsv._TILE_RETRY_ERRORS)
+
+    def test_the_retrying_variant_makes_exactly_one_request_on_a_429(self):
+        session = _StatusSession(429)
+
+        with pytest.raises(gsv.TilePushbackError):
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+
+    def test_a_404_is_not_retried_either_but_stays_an_ordinary_failure(self):
+        """A 404 is not push-back - it says nothing about this host - but ten more asks will not make the
+        tile exist. Every retired pano measured answers 200 with a black body, not a 4xx, so nothing that
+        used to succeed on a retry is lost."""
+        session = _StatusSession(404)
+
+        with pytest.raises(aiohttp.ClientResponseError) as excinfo:
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+        assert excinfo.value.status == 404
+        assert not isinstance(excinfo.value, gsv.TilePushbackError)
+
+    def test_a_503_is_still_retried_to_the_try_budget_and_logs_nothing(self, monkeypatch, caplog):
+        """Weather keeps its retries. What it loses is backoff's own log line per retry: 512 tiles x 9
+        INFO 'Backing off' + 512 ERROR 'Giving up' was the flood, and capping the logger at WARNING would
+        still have left the 512 ERROR lines - so the decorator logs nothing and the pano owns its one line."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        session = _StatusSession(503)
+
+        with caplog.at_level(logging.DEBUG, logger='backoff'):
+            with pytest.raises(aiohttp.ClientResponseError):
+                asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == gsv.TILE_MAX_TRIES
+        assert [r for r in caplog.records if r.name == 'backoff'] == []
+
+    def test_the_total_retry_time_is_bounded(self, monkeypatch):
+        """max_time is wired: with no seconds left, the first 503 is the last request. Without it, one bad
+        tile could sleep ~4 minutes (expo to 256 s, uncapped) while the rest of the fan-out waits."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0)
+        session = _StatusSession(503)
+
+        with pytest.raises(aiohttp.ClientResponseError):
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+
+    @pytest.mark.parametrize('landing', ['https://www.google.com/sorry/index?continue=x',
+                                         'https://consent.google.com/ml?continue=x'])
+    def test_a_200_that_landed_on_an_interstitial_is_pushback(self, landing):
+        """The depth phase's _raise_if_blocked rule, carried over by analogy - NOT measured on CBK. A
+        captcha page would also fail the Content-Type check, but as a retried ClientResponseError."""
+        response = _FakeResponse(headers={'Content-Type': 'text/html'}, url=landing)
+        session = _StatusSession(answer=lambda url, attempt: response)
+
+        with pytest.raises(gsv.TilePushbackError) as excinfo:
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+        assert excinfo.value.landing_url == landing
+
+    @pytest.mark.parametrize('error, final', [
+        (aiohttp.ClientResponseError(None, (), status=404), True),
+        (aiohttp.ClientResponseError(None, (), status=400), True),
+        (aiohttp.ClientResponseError(None, (), status=408), False),   # request timeout: weather
+        (aiohttp.ClientResponseError(None, (), status=500), False),
+        (aiohttp.ClientResponseError(None, (), status=503), False),
+        (aiohttp.ClientResponseError(None, (), status=200), False),   # the Content-Type check's shape
+        (asyncio.TimeoutError(), False),
+        (aiohttp.ClientConnectionError(), False),
+    ])
+    def test_the_give_up_rule(self, error, final):
+        """The retry policy as a table, so a change to it is a change to this test rather than a surprise."""
+        assert gsv._tile_error_is_final(error) is final
+
+    def test_the_retrying_variant_still_wraps_the_bare_fetch(self):
+        """Every stub in this file and in test_image_downloaders.py patches one of these two names; a
+        wrapper that stopped wrapping _fetch_tile would leave those stubs testing something else."""
+        assert gsv._download_tile.__wrapped__ is gsv._fetch_tile
 
 
 class TestStitchTiles:
