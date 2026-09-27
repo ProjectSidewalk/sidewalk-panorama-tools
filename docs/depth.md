@@ -232,7 +232,10 @@ fan-out — and on top of that:
     circuit breaker counts storage failures too, and a full disk says nothing about Google. The image phase
     writes the same latch (and forfeits the earned pace) when three GSV panos in a row are refused with a
     429/403 ([#162](ops.md#when-google-pushes-back-on-the-image-phase)): tiles and photometa leave the same IP,
-    so the same run's depth phase stands down at zero requests rather than walk into the refusal again.
+    so the same run's depth phase stands down at zero requests rather than walk into the refusal again. The
+    image phase also *reads* it, but only as probation: while it is fresh, one refused GSV pano (not three)
+    stops images. It never stands images down on read, because the depth phase latches after a single
+    photometa refusal and one interstitial must not stop fifty cities' images for six hours.
   * **It lives on local disk** (`--depth-block-latch` overrides), *not* the pano store: the storage directory
     a run is given belongs to a single city, so a latch there could not be cross-city even in principle, and
     what is being remembered is this host's standing with Google. Same reasoning as `scrape_queue`'s lock.

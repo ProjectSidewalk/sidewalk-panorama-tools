@@ -659,6 +659,10 @@ What that means, and how it differs from [the #113 breaker](#when-the-image-phas
 - **Depth stands down too.** The trip writes the block latch and forfeits the depth pace this host had
   earned, because tiles and photometa leave the same IP: the same run's depth phase, and every city after it
   for 6 hours, skips depth at zero requests ([above](#when-the-depth-phase-stands-itself-down)).
+- **A fresh latch means probation, not a stand-down.** Any image phase starting while the latch is fresh
+  (whoever wrote it) prints `GSV images run on probation - one refused pano stops them` and runs normally; the
+  first refused GSV pano trips the breaker instead of the third. Images are never skipped on the latch alone —
+  the depth phase writes it after a single photometa refusal, and that must not stop every city's images.
 - **Only a GSV success resets the count.** A timeout, a 404, a skip, a permanent verdict and any other
   source's outcome neither count nor reset. Other sources keep downloading after a GSV trip.
 

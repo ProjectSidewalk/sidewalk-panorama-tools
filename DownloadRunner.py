@@ -56,7 +56,7 @@ def build_parser():
     parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
     parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); it is a share of --max-runtime, and the production queue passes 6 of a 12-minute slot. Ignored without --max-runtime or with --skip-depth.')
     parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
-    parser.add_argument('--depth-block-latch', default=None, metavar='PATH', help='Where to remember that Google refused this host, so the next city in the queue stands down instead of rediscovering the block with fresh requests. Defaults to a file in the system temp directory - LOCAL disk, not the pano store, because it is a fact about this host and because the storage dir given to a run belongs to a single city. A latch younger than 6 hours skips the depth phase entirely; images are unaffected.')
+    parser.add_argument('--depth-block-latch', default=None, metavar='PATH', help='Where to remember that Google refused this host, so the next city in the queue stands down instead of rediscovering the block with fresh requests. Defaults to a file in the system temp directory - LOCAL disk, not the pano store, because it is a fact about this host and because the storage dir given to a run belongs to a single city. A latch younger than 6 hours skips the depth phase entirely. A GSV image phase that meets 3 consecutive refused panos writes it too, and a fresh latch drops that threshold to 1.')
     parser.add_argument('--depth-pace-state', default=None, metavar='PATH', help='Where the depth pacer remembers the request interval this host has EARNED, so the next city in the queue opens there instead of ramping down from depth_start_interval again. Only earned speed is remembered - a back-off or a refusal resets it - and a file older than a day is ignored. Defaults to a file in the system temp directory beside the block latch, for the same reasons.')
     parser.add_argument('--run-summary-file', default=None, metavar='PATH', help='Write a small JSON object naming what stopped each phase (image_stop, depth_stop) to PATH. This is how scrape_queue decides which cities still have work and so get an extra pass over the leftover window (#43); nothing else reads it, and without the flag nothing is written. Deliberately has no default: a default path would write into whatever CWD cron happened to start in.')
     # Deprecated no-op, kept for one release so existing invocations don't crash argparse.
@@ -391,6 +391,8 @@ MAX_CONSECUTIVE_PERMANENT_FAILURES = {'mapillary': 3, 'panoramax': 3}
 # the same IP. Three for MAX_CONSECUTIVE_UNDERSIZED's reason (refetch_panos.py): one refusal can be a blip,
 # three in a row in a shuffled list is the host being refused.
 GSV_MAX_CONSECUTIVE_PUSHBACK = 3
+# The threshold while the block latch is fresh: probation, not a stand-down (see download_panorama_images).
+GSV_PUSHBACK_PROBATION = 1
 
 # The stop reason a push-back trip records under 'image_stop'. The depth phase's DEPTH_STOP_BLOCKED spelling,
 # pinned equal by a test: scrape_queue reads 'blocked' as "do not spend an extra pass on this city".
@@ -450,10 +452,24 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # The push-back breaker (#162): GSV only, its own count, and `refused` - the sources tripped by Google's
     # refusal rather than by permanent verdicts - keeps #113's repair advice out of its summary.
     consecutive_pushback = 0
-    pushback_limit = GSV_MAX_CONSECUTIVE_PUSHBACK
     refused = set()
     latch_path = gsv.default_block_latch_path() if block_latch_path is None else block_latch_path
     last_pushback = None
+    # Probation, not a stand-down (#162 D5). A fresh latch means Google refused this host recently - maybe the
+    # depth phase, after a SINGLE photometa refusal from another endpoint - so the first refusal of our own is
+    # believed. Standing images down on read would let one interstitial stop the whole fleet's images for six
+    # hours. Read once, at zero requests; information, not the night's alarm, so no WARNING token.
+    latched_hours = gsv.fresh_block_latch_hours(latch_path)
+    if not any(p.get('source') == 'gsv' for p in candidates):
+        latched_hours = None    # nothing of Google's to put on probation, so nothing to announce
+    if latched_hours is None:
+        pushback_limit = GSV_MAX_CONSECUTIVE_PUSHBACK
+    else:
+        pushback_limit = GSV_PUSHBACK_PROBATION
+        logging.info("IMAGEDOWNLOAD: block latch %s set %.1fh ago; GSV images on probation (one refused pano "
+                     "stops them)", latch_path, latched_hours)
+        print("IMAGEDOWNLOAD: Google refused this host %.1f hours ago (latch %s); GSV images run on "
+              "probation - one refused pano stops them." % (latched_hours, latch_path))
 
     # One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
     # The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that,

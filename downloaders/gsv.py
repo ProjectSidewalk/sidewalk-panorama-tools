@@ -1128,6 +1128,16 @@ def _block_latch_age_hours(path):
     return max(0.0, age_hours)
 
 
+def fresh_block_latch_hours(path):
+    """The latch's age in hours if it is still within DEPTH_BLOCK_LATCH_HOURS, else None - read at zero requests.
+
+    The image phase's question (#162): has Google refused this host recently enough that ONE refusal of our
+    own should be believed? Same reading rules as the depth phase's, so an ambiguous latch is "not fresh".
+    """
+    age = _block_latch_age_hours(path)
+    return age if age is not None and age < DEPTH_BLOCK_LATCH_HOURS else None
+
+
 def _write_block_latch(path):
     """Record that Google refused this host, for the next city in the queue to find.
 
