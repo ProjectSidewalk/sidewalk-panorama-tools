@@ -54,7 +54,10 @@ than from memory, because the four this table used to carry were each wrong in a
 | `zoom` | The zoom level in the GSV interface when the user placed the label |
 
 **This endpoint does not send `source`.** `/adminapi/panos` does, and some older CSV exports have a
-column by that name, but `LabelCVMetadata` has no such field. Nothing in the cropper ever read it.
+column by that name, but `LabelCVMetadata` has no such field. Nor does it send `copyright` or
+`license`. The cropper copies all three into its per-crop provenance manifest when a row carries them
+and writes them empty when it does not, so a `-d` run today records none of them — see
+[Cropper → The provenance manifest](cropper.md#the-provenance-manifest-crop_provenancecsv).
 
 **`label_type` replaced `label_type_id`, and the cropper still needs the id.** Until
 [SidewalkWebpage#4103](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4103) (released
