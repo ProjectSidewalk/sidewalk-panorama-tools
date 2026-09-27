@@ -417,3 +417,26 @@ class TestTheCommandLine:
                               timeout=120, cwd=str(tmp_path))
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert (root / CITY / '1' / '1.jpg').is_file()
+
+    def test_a_whole_shard_rename_that_fails_is_counted_and_the_next_shard_still_moves(self, tmp_path,
+                                                                                       monkeypatch, capsys):
+        root = flat_store(tmp_path / 'crops')
+        real_rename = os.rename
+
+        def fail_shard_1(src, dst):
+            if os.path.basename(src) == '1':
+                raise PermissionError(13, 'Permission denied', src)
+            return real_rename(src, dst)
+
+        monkeypatch.setattr(migrate_crop_store.os, 'rename', fail_shard_1)
+        assert run_main(root) == 1
+        assert (root / '1' / '1.jpg').is_file() and (root / CITY / '2' / '3.jpg').is_file()
+        printed = capsys.readouterr().out
+        assert 'FAILED %s' % os.path.join(str(root), '1') in printed and '1 failed' in printed
+
+    def test_a_clean_dry_run_names_no_next_command(self, tmp_path, capsys):
+        """The next CropRunner command is for after the move; a dry run has not moved anything."""
+        root = flat_store(tmp_path / 'crops')
+        assert run_main(root, '--dry-run') == 0
+        printed = capsys.readouterr().out
+        assert 'Next:' not in printed and '2 type directories would be moved whole' in printed
