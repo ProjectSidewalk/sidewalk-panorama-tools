@@ -140,3 +140,129 @@ class TestTheCommittedRosterIsSafeAsDirectoryNames:
 
     def test_commented_rows_are_not_active(self, crop_runner, active_ids):
         assert 'crowdstudy' not in active_ids and not any(city.startswith('#') for city in active_ids)
+
+
+# ---------------------------------------------------------------------------
+# The layout: <crop-dir>/<city>/<label_type_id>/<label_id>.jpg
+# ---------------------------------------------------------------------------
+
+SEATTLE, CHICAGO = 'seattle-wa', 'chicago-il'
+
+
+def city_run(crop_runner, tmp_path, out, city, *extra, pano_id=None, color=(255, 255, 255), put=True):
+    """One CropRunner invocation for `city`: its own pano store and label file, one label (id 1, type 1).
+
+    pano_id defaults per city, since pano ids do not collide across cities while label ids do. Each real run
+    is its own process, so the previous in-process run's crop.log handler is detached first."""
+    import logging
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if isinstance(h, logging.FileHandler)]:
+        root.removeHandler(handler)
+        handler.close()
+    pano_id = pano_id or (city[:2] + 'pano0001')
+    store = tmp_path / ('panos-' + city)
+    if put:
+        put_pano(store, pano_id, color=color)
+    csv_file = tmp_path / ('labels-' + city + '.csv')
+    write_labels_csv(csv_file, [label_row(pano_id=pano_id, label_id=1, label_type_id=1)])
+    return crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out), '--city', city, *extra])
+
+
+def read_bytes(path):
+    with open(str(path), 'rb') as f:
+        return f.read()
+
+
+def manifest(out, city, crop_runner):
+    with open(os.path.join(str(out), city, crop_runner.PROVENANCE_MANIFEST), newline='', encoding='utf-8') as f:
+        return list(csv.DictReader(f))
+
+
+class TestOneStorePerCity:
+    def test_the_crop_lands_under_the_city(self, crop_runner, tmp_path):
+        out = tmp_path / 'crops'
+        assert city_run(crop_runner, tmp_path, out, SEATTLE) == 0
+        assert os.listdir(str(out)) == [SEATTLE]
+        assert os.path.isfile(os.path.join(str(out), SEATTLE, '1', '1.jpg'))
+
+    def test_the_store_files_live_in_the_city_store(self, crop_runner, tmp_path):
+        """Each city's store is self-contained: its own rule marker, manifest and log, so two cities cut
+        under different rule versions stay representable."""
+        out = tmp_path / 'crops'
+        city_run(crop_runner, tmp_path, out, SEATTLE)
+        store = os.path.join(str(out), SEATTLE)
+        for name in (crop_runner.CROP_RULE_MARKER, crop_runner.PROVENANCE_MANIFEST, 'crop.log'):
+            assert os.path.isfile(os.path.join(store, name)), name
+            assert not os.path.exists(os.path.join(str(out), name)), name
+
+    def test_a_rerun_skips_the_existing_crop(self, crop_runner, tmp_path, monkeypatch):
+        out = tmp_path / 'crops'
+        assert city_run(crop_runner, tmp_path, out, SEATTLE) == 0
+        seen = {}
+        real = crop_runner.bulk_extract_crops
+
+        def spy(*args, **kwargs):
+            seen['counts'] = real(*args, **kwargs)
+            return seen['counts']
+
+        monkeypatch.setattr(crop_runner, 'bulk_extract_crops', spy)
+        assert city_run(crop_runner, tmp_path, out, SEATTLE) == 0
+        assert seen['counts']['skipped_existing'] == 1 and seen['counts']['success'] == 0
+
+
+class TestTwoCitiesShareOneRoot:
+    """The failure #159 exists for: Seattle's label 1 and Chicago's label 1 are different labels on
+    different panos, and used to be the same file."""
+
+    @pytest.mark.parametrize('extra', [(), ('--force',)], ids=['plain', 'force'])
+    def test_neither_city_touches_the_others_crop(self, crop_runner, tmp_path, monkeypatch, extra):
+        out = tmp_path / 'crops'
+        assert city_run(crop_runner, tmp_path, out, SEATTLE) == 0
+        seattle_crop = os.path.join(str(out), SEATTLE, '1', '1.jpg')
+        before = read_bytes(seattle_crop)
+        seen = {}
+        real = crop_runner.bulk_extract_crops
+
+        def spy(*args, **kwargs):
+            seen['counts'] = real(*args, **kwargs)
+            return seen['counts']
+
+        monkeypatch.setattr(crop_runner, 'bulk_extract_crops', spy)
+        assert city_run(crop_runner, tmp_path, out, CHICAGO, *extra, color=(200, 30, 30)) == 0
+        assert read_bytes(seattle_crop) == before
+        assert seen['counts']['success'] == 1 and seen['counts']['skipped_existing'] == 0
+        chicago_crop = os.path.join(str(out), CHICAGO, '1', '1.jpg')
+        assert read_bytes(chicago_crop) != before
+
+    def test_each_manifest_carries_only_its_own_city(self, crop_runner, tmp_path):
+        out = tmp_path / 'crops'
+        city_run(crop_runner, tmp_path, out, SEATTLE)
+        city_run(crop_runner, tmp_path, out, CHICAGO)
+        seattle, chicago = manifest(out, SEATTLE, crop_runner), manifest(out, CHICAGO, crop_runner)
+        assert {row['city'] for row in seattle} == {SEATTLE}
+        assert {row['city'] for row in chicago} == {CHICAGO}
+
+    def test_combined_manifests_are_keyed_on_city_and_label_id(self, crop_runner, tmp_path):
+        """label_id alone collides - both cities' label is 1 - and the composite does not."""
+        out = tmp_path / 'crops'
+        city_run(crop_runner, tmp_path, out, SEATTLE)
+        city_run(crop_runner, tmp_path, out, CHICAGO)
+        rows = manifest(out, SEATTLE, crop_runner) + manifest(out, CHICAGO, crop_runner)
+        assert len({(row['city'], row['label_id']) for row in rows}) == len(rows) == 2
+        assert len({row['label_id'] for row in rows}) == 1
+
+    def test_a_forced_run_counts_only_its_own_stale_crops(self, crop_runner, tmp_path, monkeypatch):
+        """stale_kept stats the crop path; with Seattle's label 1 on disk, a Chicago --force run whose pano
+        is missing must not count Seattle's crop as one Chicago kept."""
+        out = tmp_path / 'crops'
+        city_run(crop_runner, tmp_path, out, SEATTLE)
+        seen = {}
+        real = crop_runner.bulk_extract_crops
+
+        def spy(*args, **kwargs):
+            seen['counts'] = real(*args, **kwargs)
+            return seen['counts']
+
+        monkeypatch.setattr(crop_runner, 'bulk_extract_crops', spy)
+        assert city_run(crop_runner, tmp_path, out, CHICAGO, '--force', put=False) == 0
+        assert seen['counts']['missing_pano'] == 1 and seen['counts']['stale_kept'] == 0
