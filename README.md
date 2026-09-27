@@ -43,7 +43,7 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 Then cut a crop for every label in that city:
 
 ```bash
-python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu \
+python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu --city columbus-oh \
   -s /srv/panos/columbus-oh -o /srv/crops/columbus-oh
 ```
 

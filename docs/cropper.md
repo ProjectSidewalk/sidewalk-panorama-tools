@@ -11,7 +11,7 @@ Consumer requirements and the open geometry questions are tracked in
 ## Usage
 
 ```bash
-python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> [--mark-label] [--force]
+python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force]
 ```
 
 | Flag | What it does |
@@ -20,15 +20,31 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. |
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
 | `-o <dir>` | **Required.** Where crops are written. `crop.log`, `crop_rule.json` and `crop_provenance.csv` go here too — see [What a crop store holds](#what-a-crop-store-holds). |
+| `--city <city_id>` | **Required.** The city the labels belong to, spelled as in `log_analyzer/cities.csv` (`seattle-wa`, `cdmx`). Recorded in `crop_rule.json` and on every provenance row; a store recorded as another city's is refused — see [One store, one city](#one-store-one-city). |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
 | `--force` | Re-cut a label whose crop already exists instead of skipping it — the repair for a store cut under an older rule. Off by default. See [Re-cutting a store](#re-cutting-a-store-with---force). |
 
 Example:
 
 ```bash
-python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu \
+python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu --city columbus-oh \
   -s /sidewalk/columbus/panos/ -o /sidewalk/columbus/crops/
 ```
+
+### One store, one city
+
+**Give every city its own `-o`.** `label_id` restarts at 1 in every deployment, and crops are named
+`<label_type_id>/<label_id>.jpg`, so two cities in one store collide on file names: without `--force` the
+second city's label finds the first city's crop and counts it `skipped_existing` — another city's imagery,
+reported as success — and with `--force` it **replaces** the first city's crop.
+
+So the store remembers its city. The first run records `--city` in `crop_rule.json`; a store cut before the
+city was recorded adopts the first `--city` it is given. A later run naming a **different** city is refused
+with exit **3** before anything is created, cut or overwritten, `crop.log` included, and so is a run over a
+`crop_rule.json` that cannot be read or holds a city that is not a string — "unreadable" is not "no city
+recorded", and adopting there would hand the store to whichever city came next. Both messages name the
+file. This is a stopgap: [#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)
+moves crops under `<crop-dir>/<city>/…` so that the collision cannot happen in the first place.
 
 **`-o` must never be the production crop store, and a destination that looks like one is refused.**
 SidewalkWebpage serves the Gallery, the label cards and the social preview from a different crop store,
@@ -220,8 +236,8 @@ Errors are retried on the next run. The exit statuses, all of them:
 |---|---|
 | `0` | Every label landed in a non-error bucket (a crop, or a skip the run chose). |
 | `1` | At least one label errored; re-running retries them. Also: a `-d` fetch of cvMetadata that fails (`Cannot fetch metadata from webserver`, the reason in `crop.log`); an `-f` file whose extension is neither `.csv` nor `.json` (the message on stderr); a label-type shard of `-o` (`<crop-dir>/<digits>/`) that cannot be listed, which stops the run before any crop with the shard named on stdout and in `crop.log` (not `3`: nothing judged `-o` to be the production store — the provenance record needs to know whether the store already holds crops, and could not find out); and what an uncaught exception exits with — a manifest that cannot be opened stops the run before any crop, with a traceback. |
-| `2` | argparse's usage error: a missing `-s`/`-o`, both or neither of `-d`/`-f`. |
-| `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list. Nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
+| `2` | argparse's usage error: a missing `-s`/`-o`/`--city`, a `--city` that is not a city_id, both or neither of `-d`/`-f`. |
+| `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list, or is [another city's store](#one-store-one-city), or has a `crop_rule.json` that cannot say whose it is. Nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
 
 `check_cvmetadata_schema.py` also exits `3`, for a different reason (the deployment could not be read). The
 two tools are never chained, so the codes do not meet, but a wrapper that runs both should not read a `3` as
@@ -367,7 +383,7 @@ guard refuses with or without `--force`.
 | Path | What |
 |---|---|
 | `<label_type_id>/<label_id>.jpg` | One crop per label. Its existence is the resume marker: it is not re-cut unless `--force` is passed. |
-| `crop_rule.json` | Which sizing rule cut the store, plus whether the provenance manifest has a known gap (below). |
+| `crop_rule.json` | Which city the store belongs to ([One store, one city](#one-store-one-city)), which sizing rule cut it, plus whether the provenance manifest has a known gap (below). |
 | `crop_provenance.csv` | One row per crop cut (a re-cut appends one; the last row for a label describes the file): where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)). |
 | `crop.log` | The rotating run log (10 MB × 3). |
 
@@ -377,8 +393,12 @@ A crop is a bare JPEG and every consumer of this store is an ML dataset, so the 
 pixels came from has to travel with the crop rather than stay with the app. The manifest is that record:
 
 ```
-label_id,pano_id,source,copyright,license,crop_rule_version
+city,label_id,pano_id,source,copyright,license,crop_rule_version
 ```
+
+`city` is `--city`, on every row, so manifests concatenated across cities keep `(city, label_id)` as the
+key — `label_id` alone restarts in every deployment. It is empty only for a caller of `bulk_extract_crops`
+below `main()` that passes none.
 
 * **One row per crop, appended as it lands** — after the JPEG is on disk, through one handle held for the
   run. That is the two nightly ledgers' contract (`pano_id_log.csv`, `depth_log.csv`), so a run killed at

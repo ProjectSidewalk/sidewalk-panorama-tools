@@ -16,6 +16,7 @@ REPLACES city A's crop (lost data, reported as a re-cut). The layout fix is #159
 """
 
 import json
+import logging
 
 import pytest
 
@@ -36,6 +37,13 @@ def a_store(tmp_path):
 
 
 def crop(crop_runner, csv_file, store, out, city, *extra):
+    """One CropRunner invocation. Each real one is its own process, so the previous in-process run's crop.log
+    handler is detached first - otherwise a refusal's message would land in the log of the store it refuses,
+    through a handler the refused run never opened."""
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if isinstance(h, logging.FileHandler)]:
+        root.removeHandler(handler)
+        handler.close()
     return crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out), '--city', city, *extra])
 
 
@@ -122,6 +130,18 @@ class TestAnotherCitysStoreIsRefused:
         crop(crop_runner, csv_file, store, out, 'chicago-il', '--force')
         with open(crop_path(out, 1, 1), 'rb') as f:
             assert f.read() == original
+
+    def test_the_crop_loop_refuses_too(self, crop_runner, tmp_path):
+        """bulk_extract_crops is a public seam (the studies call it), and it guards itself the way it guards
+        against the production store, rather than trusting that main() ran first."""
+        store, csv_file = a_store(tmp_path)
+        out = tmp_path / 'crops'
+        assert crop(crop_runner, csv_file, store, out, 'seattle-wa') == 0
+        before = tree_snapshot(out)
+        with pytest.raises(crop_runner.CropStoreCityError):
+            crop_runner.bulk_extract_crops(crop_runner.load_label_metadata(None, str(csv_file)), str(store),
+                                           str(out), force=True, city='chicago-il')
+        assert tree_snapshot(out) == before
 
     def test_it_says_which_city_the_store_belongs_to(self, crop_runner, tmp_path, capsys):
         store, csv_file = a_store(tmp_path)

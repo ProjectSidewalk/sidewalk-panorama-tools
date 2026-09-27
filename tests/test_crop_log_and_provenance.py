@@ -247,7 +247,7 @@ class TestThePerLabelWarningsAreCappedPerRun:
         put_pano(store, 'testpano0001')
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, bad_rows(crop_runner.LOG_WARNINGS_PER_KIND + 5))
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
         logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read().splitlines()
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged[-1]
         # ...and the suppression total is in the log, ahead of it.
@@ -335,7 +335,7 @@ def manifest_rows(out_dir, crop_runner):
 def manifest_by_label(out_dir, crop_runner):
     header, *rows = manifest_rows(out_dir, crop_runner)
     assert header == list(crop_runner.PROVENANCE_COLUMNS)
-    return {row[0]: dict(zip(header, row)) for row in rows}
+    return {row[header.index('label_id')]: dict(zip(header, row)) for row in rows}
 
 
 def read_marker(out_dir, crop_runner):
@@ -366,7 +366,7 @@ class TestTheProvenanceManifest:
         that arrives under it flows through with no renaming in between."""
         assert crop_runner.PROVENANCE_MANIFEST == 'crop_provenance.csv'
         assert crop_runner.PROVENANCE_COLUMNS == (
-            'label_id', 'pano_id', 'source', 'copyright', 'license', 'crop_rule_version')
+            'city', 'label_id', 'pano_id', 'source', 'copyright', 'license', 'crop_rule_version')
 
     def test_one_row_per_crop_carrying_what_the_metadata_says(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
@@ -377,10 +377,10 @@ class TestTheProvenanceManifest:
         assert counts['success'] == 2
         rows = manifest_by_label(out, crop_runner)
         assert rows == {
-            '1': {'label_id': '1', 'pano_id': 'testpano0001', 'source': 'panoramax',
+            '1': {'city': '', 'label_id': '1', 'pano_id': 'testpano0001', 'source': 'panoramax',
                   'copyright': 'Jane Doe, Bayonne', 'license': 'etalab-2.0',
                   'crop_rule_version': crop_runner.CROP_RULE_VERSION},
-            '2': {'label_id': '2', 'pano_id': 'testpano0001', 'source': 'mapillary',
+            '2': {'city': '', 'label_id': '2', 'pano_id': 'testpano0001', 'source': 'mapillary',
                   'copyright': 'someone', 'license': 'CC-BY-SA-4.0',
                   'crop_rule_version': crop_runner.CROP_RULE_VERSION}}
 
@@ -441,7 +441,7 @@ class TestTheProvenanceManifest:
         counts = crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out),
                                                 force=True)
         assert counts['recut'] == 1
-        rows = [row for row in manifest_rows(out, crop_runner)[1:] if row[0] == '1']
+        rows = [row for row in manifest_rows(out, crop_runner)[1:] if row[1] == '1']
         assert [row[-1] for row in rows] == ['v2', 'v3-test']
 
     def test_a_manifest_that_cannot_be_opened_raises_before_any_crop(self, crop_runner, tmp_path,
@@ -482,7 +482,7 @@ class TestTheProvenanceManifest:
                                        str(store), str(out))
         [during] = seen
         assert during[0] == list(crop_runner.PROVENANCE_COLUMNS)
-        assert [row[0] for row in during[1:]] == ['1']
+        assert [row[1] for row in during[1:]] == ['1']
 
     def test_a_crashed_run_leaves_a_truthful_partial_file_and_a_rerun_completes_it(
             self, crop_runner, tmp_path, monkeypatch):
@@ -504,15 +504,15 @@ class TestTheProvenanceManifest:
             crop_runner.bulk_extract_crops(labels, str(store), str(out))
         partial = manifest_rows(out, crop_runner)
         assert partial[0] == list(crop_runner.PROVENANCE_COLUMNS)
-        assert [row[0] for row in partial[1:]] == ['1', '2']
-        assert all(os.path.exists(crop_path(out, 1, row[0])) for row in partial[1:])
+        assert [row[1] for row in partial[1:]] == ['1', '2']
+        assert all(os.path.exists(crop_path(out, 1, row[1])) for row in partial[1:])
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', real)
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts['skipped_existing'] == 2 and counts['success'] == 2
         final = manifest_rows(out, crop_runner)
         assert final.count(list(crop_runner.PROVENANCE_COLUMNS)) == 1
-        assert [row[0] for row in final[1:]] == ['1', '2', '3', '4']
+        assert [row[1] for row in final[1:]] == ['1', '2', '3', '4']
 
     def test_a_torn_last_line_does_not_swallow_the_next_row(self, crop_runner, tmp_path):
         """A crash mid-append can leave a line with no newline. Appending straight after it would glue the
@@ -526,7 +526,7 @@ class TestTheProvenanceManifest:
             f.write(','.join(crop_runner.PROVENANCE_COLUMNS) + '\n' + '99,torn')
         crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out))
         rows = manifest_rows(out, crop_runner)
-        assert rows[1:] == [['1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]]
+        assert rows[1:] == [['', '1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]]
 
     def test_an_empty_manifest_file_still_gets_its_header(self, crop_runner, tmp_path):
         """A crash between creating the file and writing the header leaves it zero bytes. 'The file
@@ -608,7 +608,7 @@ class TestAFailedAppendDoesNotLoseTheCrop:
         put_pano(store, 'testpano0001')
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
 
     def test_the_unrecorded_warnings_are_capped_like_the_rest(self, crop_runner, tmp_path,
                                                               failing_record, caplog, monkeypatch):
@@ -806,7 +806,7 @@ def row_ids(out_dir, crop_runner):
     header, *rows = manifest_rows(out_dir, crop_runner)
     assert header == list(crop_runner.PROVENANCE_COLUMNS)
     assert all(len(row) == len(header) for row in rows), rows
-    return [row[0] for row in rows]
+    return [row[1] for row in rows]
 
 
 class TestAFailedAppendLeavesNoRowBehind:
@@ -993,9 +993,9 @@ class TestTheOpenTimeRepairCutsBackToTheLastWholeLine:
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         header = ','.join(crop_runner.PROVENANCE_COLUMNS)
-        good = '98,testpano0001,mapillary,"Doe, J",CC-BY-SA-4.0,v2'
+        good = 'seattle-wa,98,testpano0001,mapillary,"Doe, J",CC-BY-SA-4.0,v2'
         self.write_manifest(crop_runner, out,
-                            header + '\n' + good + '\n' + '99,testpano0001,mapillary,"Roe, R')
+                            header + '\n' + good + '\n' + 'seattle-wa,99,testpano0001,mapillary,"Roe, R')
         crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
         assert row_ids(out, crop_runner) == ['98', '1', '2']
         assert manifest_by_label(out, crop_runner)['98']['copyright'] == 'Doe, J'

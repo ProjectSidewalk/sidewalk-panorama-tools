@@ -202,7 +202,7 @@ class TestParser:
 
     def test_defaults(self, crop_runner):
         args = crop_runner.build_parser().parse_args(
-            ['-d', 'sidewalk-test.invalid', '-s', '/panos', '-o', '/out'])
+            ['--city', 'seattle-wa', '-d', 'sidewalk-test.invalid', '-s', '/panos', '-o', '/out'])
         assert args.mark_label is False
 
     def test_the_pano_and_crop_directories_are_required(self, crop_runner):
@@ -210,9 +210,9 @@ class TestParser:
         on Windows) and -s to /tmp/download_dest/, a path that only means anything inside the Docker
         container - which runs DownloadRunner, not this script. A forgotten flag should name itself rather
         than quietly write an ML training corpus somewhere nobody will look for it."""
-        for argv in (['-d', 'x.invalid'],
-                     ['-d', 'x.invalid', '-s', '/panos'],
-                     ['-d', 'x.invalid', '-o', '/out']):
+        for argv in (['--city', 'seattle-wa', '-d', 'x.invalid'],
+                     ['--city', 'seattle-wa', '-d', 'x.invalid', '-s', '/panos'],
+                     ['--city', 'seattle-wa', '-d', 'x.invalid', '-o', '/out']):
             with pytest.raises(SystemExit) as e:
                 crop_runner.build_parser().parse_args(argv)
             assert e.value.code == 2
@@ -221,7 +221,7 @@ class TestParser:
         """The old MARK_LABEL=True module constant burned a dot into every crop ever produced (#48);
         marking must be an explicit opt-in."""
         args = crop_runner.build_parser().parse_args(
-            ['-d', 'x.invalid', '-s', '/panos', '-o', '/out', '--mark-label'])
+            ['--city', 'seattle-wa', '-d', 'x.invalid', '-s', '/panos', '-o', '/out', '--mark-label'])
         assert args.mark_label is True
 
 
@@ -237,7 +237,7 @@ class TestMetadataIntake:
         bad = tmp_path / 'labels.txt'
         bad.write_text('not metadata')
         with pytest.raises(SystemExit) as e:
-            crop_runner.main(['-f', str(bad), '-s', str(tmp_path), '-o', str(tmp_path / 'crops')])
+            crop_runner.main(['--city', 'seattle-wa', '-f', str(bad), '-s', str(tmp_path), '-o', str(tmp_path / 'crops')])
         assert e.value.code not in (0, None)
         printed = capsys.readouterr()
         assert '.txt' in (printed.err + printed.out + str(e.value.code))
@@ -248,7 +248,7 @@ class TestMetadataIntake:
         put_pano(store, 'testpano0001')
         csv_file = tmp_path / 'labels.CSV'
         write_labels_csv(csv_file, [label_row()])
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
         assert os.path.exists(crop_path(out, 1, 1))
 
     def test_csv_pano_ids_stay_strings(self, crop_runner, tmp_path):
@@ -277,7 +277,7 @@ class TestMetadataIntake:
             writer.writerow(['panorama', 'pano_x', 'pano_y', 'label_type_id', 'label_id'])
             writer.writerow(['abc', 1, 2, 1, 1])
         with pytest.raises((SystemExit, ValueError)) as e:
-            crop_runner.main(['-f', str(csv_file), '-s', str(tmp_path), '-o', str(tmp_path / 'crops')])
+            crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(tmp_path), '-o', str(tmp_path / 'crops')])
         assert 'pano_id' in str(e.value)
 
     def test_csv_dedupes_on_label_id(self, crop_runner, tmp_path):
@@ -292,7 +292,7 @@ class TestMetadataIntake:
         put_pano(store, 'testpano0001')
         json_file = tmp_path / 'labels.json'
         json_file.write_text(json.dumps([label_row()]))
-        assert crop_runner.main(['-f', str(json_file), '-s', str(store), '-o', str(out)]) == 0
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(json_file), '-s', str(store), '-o', str(out)]) == 0
         assert os.path.exists(crop_path(out, 1, 1))
 
     def test_json_dedupes_on_label_id(self, crop_runner):
@@ -923,7 +923,7 @@ class TestMain:
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
 
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
 
         assert os.path.exists(crop_path(out, 1, 1))
         # crop.log lives with the crops, not in whatever CWD the process happened to have (the
@@ -936,7 +936,7 @@ class TestMain:
         put_pano(store, 'testpano0001')
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
-        crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out), '--mark-label'])
+        crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out), '--mark-label'])
         with Image.open(crop_path(out, 1, 1)) as crop:
             w, h = crop.size
             assert sum(crop.getpixel((w // 2, h // 2))) < 600
@@ -956,7 +956,7 @@ class TestMain:
         put_pano(store, 'testpano0001')
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
-        crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)])
+        crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)])
         assert Image.MAX_IMAGE_PIXELS is None or Image.MAX_IMAGE_PIXELS >= 16384 * 8192
 
     def test_errored_labels_make_the_exit_code_nonzero(self, crop_runner, tmp_path):
@@ -966,7 +966,7 @@ class TestMain:
         truncate_pano(store, 'cutpano00001')
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row(pano_id='cutpano00001')])
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
 
     def test_missing_panos_alone_still_exit_zero(self, crop_runner, tmp_path):
         """Discrimination for the test above, and the reason the exit code keys on `errors` rather than
@@ -978,7 +978,7 @@ class TestMain:
         store.mkdir(parents=True)
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row(pano_id='gonepano0001')])
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
 
     def test_running_as_a_script_crops(self, crop_runner, tmp_path):
         """`python3 CropRunner.py ...` end to end, in a real subprocess. Every other test here calls
@@ -989,7 +989,7 @@ class TestMain:
         put_pano(store, 'testpano0001')
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
-        proc = subprocess.run([sys.executable, RUNNER, '-f', str(csv_file), '-s', str(store),
+        proc = subprocess.run([sys.executable, RUNNER, '--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store),
                                '-o', str(out)], capture_output=True, text=True, timeout=300)
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert os.path.exists(crop_path(out, 1, 1))
@@ -2336,7 +2336,7 @@ class TestTheSystemicFailureAlarm:
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, unparseable_rows(5))
 
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
 
         printed = capsys.readouterr().out
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in printed
@@ -2376,12 +2376,12 @@ class TestForceRecut:
     that says "re-cut" over an untouched file is the silent version of this feature failing."""
 
     def test_force_is_off_by_default(self, crop_runner):
-        args = crop_runner.build_parser().parse_args(['-d', 'x.invalid', '-s', '/panos', '-o', '/out'])
+        args = crop_runner.build_parser().parse_args(['--city', 'seattle-wa', '-d', 'x.invalid', '-s', '/panos', '-o', '/out'])
         assert args.force is False
 
     def test_force_is_a_flag(self, crop_runner):
         args = crop_runner.build_parser().parse_args(
-            ['-d', 'x.invalid', '-s', '/panos', '-o', '/out', '--force'])
+            ['--city', 'seattle-wa', '-d', 'x.invalid', '-s', '/panos', '-o', '/out', '--force'])
         assert args.force is True
 
     def test_without_force_a_stale_crop_is_left_alone(self, crop_runner, tmp_path):
@@ -2603,7 +2603,7 @@ class TestForceRecut:
         stale = plant_stale_crop(out)
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out), '--force']) == 0
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out), '--force']) == 0
         with open(crop_path(out, 1, 1), 'rb') as f:
             assert f.read() != stale
 
@@ -2759,7 +2759,7 @@ class TestAnUnlistableDirectoryIsNamedNotCrashedOn:
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row()])
         block_scandir(crop_runner, monkeypatch, out / '1')
-        code = crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)])
+        code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)])
         assert code == 1
         shard = os.path.join(str(out), '1')
         printed = capsys.readouterr().out
@@ -2857,11 +2857,11 @@ class TestTheProductionCropStoreGuard:
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row(label_id=1, label_type_id=1),
                                     label_row(label_id=2, label_type_id=2, pano_x=260)])
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 0
         assert (out / crop_runner.CROP_RULE_MARKER).is_file() and (out / 'crop.log').is_file()
 
         crop_runner.refuse_production_crop_store(str(out))
-        assert crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out), '--force']) == 0
+        assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out), '--force']) == 0
 
     def test_the_scan_never_lists_a_numeric_shard(self, crop_runner, tmp_path, monkeypatch):
         """A formula store holds ~400k crops in its numeric type directories, over sshfs. Listing them
@@ -2928,7 +2928,7 @@ class TestTheProductionCropStoreGuard:
         write_labels_csv(csv_file, [label_row()])
         block_scandir(crop_runner, monkeypatch, out / 'lost+found')
         with caplog.at_level(logging.ERROR):
-            code = crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', str(out)])
+            code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)])
         assert code == crop_runner.EXIT_REFUSED_DESTINATION
         assert 'lost+found' in capsys.readouterr().out
         assert any(r.levelno == logging.ERROR and 'lost+found' in r.getMessage() for r in caplog.records)
@@ -2967,7 +2967,7 @@ class TestTheProductionCropStoreGuard:
         target = os.path.join(str(prod), PRODUCTION_CITY)
 
         with caplog.at_level(logging.ERROR):
-            code = crop_runner.main(['-f', str(csv_file), '-s', str(store), '-o', target, '--force'])
+            code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', target, '--force'])
 
         assert code != 0 and code == crop_runner.EXIT_REFUSED_DESTINATION
         assert code != 1   # 1 means "some labels errored"; this run never looked at a label

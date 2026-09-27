@@ -22,6 +22,7 @@ import logging
 import logging.handlers
 import math
 import os
+import re
 import sys
 
 import requests
@@ -160,7 +161,7 @@ PROVENANCE_MANIFEST = 'crop_provenance.csv'
 # pano_data.license, SidewalkWebpage#5202), so a value that arrives under it needs no renaming here.
 PROVENANCE_FIELDS = ('source', 'copyright', 'license')
 
-PROVENANCE_COLUMNS = ('label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
 
 # crop_rule.json's answer to "may the manifest be read as covering every crop here?" (#153 M3). Named for
 # what it records - that no run has KNOWN of a crop without a row - because that is all a marker can
@@ -223,6 +224,19 @@ LOG_ROW_REPR_MAX_CHARS = 200
 LOG_ID_MAX_CHARS = 60
 
 
+# A city_id as the app and log_analyzer/cities.csv spell it: lowercase ASCII words joined by single hyphens.
+_CITY_ID = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*')
+
+
+def city_id(value):
+    """argparse type for --city. Strict, because the city is compared as a string - a city spelled two ways
+    would be two cities - and because #159 makes it a path component."""
+    if not _CITY_ID.fullmatch(value):
+        raise argparse.ArgumentTypeError("%r is not a city_id: lowercase letters and digits joined by single "
+                                         "hyphens, as in log_analyzer/cities.csv (seattle-wa, cdmx)" % value)
+    return value
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     group_parser = parser.add_mutually_exclusive_group(required=True)
@@ -234,6 +248,7 @@ def build_parser():
     parser.add_argument('-s', required=True, help='pano_storage_directory - path to directory containing panoramas downloaded using DownloadRunner.py')
     parser.add_argument('-o', required=True, help='crop_output_directory - path to location for saving the crops')
     parser.add_argument('--mark-label', action='store_true', help='Draw a dot at the label position in every crop. Debugging aid - deliberately OFF by default, because these crops are ML training data and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.')
+    parser.add_argument('--city', required=True, type=city_id, help="The city_id these labels belong to (seattle-wa, cdmx - log_analyzer/cities.csv). Required: label_id restarts at 1 in every deployment, so crops are only unique per city. The first run records it in crop_rule.json, and a run naming a different city is refused before anything is cut, so no city can overwrite another city's crops (#159). Recorded on every provenance row.")
     parser.add_argument('--force', action='store_true', help='Re-cut a label whose crop already exists instead of skipping it (#83) - the repair for a store cut under an older sizing rule. Each crop is replaced atomically, so a failed write leaves the old one in place. For the ML crop store this tool writes ONLY; a destination that looks like the production canvas-capture store is refused either way.')
     return parser
 
@@ -702,6 +717,52 @@ class ProductionCropStoreError(Exception):
     See refuse_production_crop_store."""
 
 
+class CropStoreCityError(Exception):
+    """The crop destination belongs to another city, or its marker cannot say which. See check_store_city."""
+
+
+def check_store_city(destination_dir, city):
+    """Refuse a crop store recorded as another city's, before anything in it is touched (#153, for #159).
+
+    Crops are <label_type_id>/<label_id>.jpg and label_id restarts at 1 in every deployment, so two cities
+    sharing one -o collide on file names. Without --force the second city's label finds the first city's crop
+    and counts it skipped_existing - wrong data reported as a success. With --force it REPLACES the first
+    city's crop, and nothing records that it happened. #159 moves crops under <crop-dir>/<city>/; until then
+    this is what keeps one city out of another's store.
+
+    Passes when there is nothing to disagree with: no -o yet, no crop_rule.json yet, or a marker written
+    before the city was recorded (the run then adopts `city` - write_rule_marker records it). Refuses when
+    the recorded city differs, and when a marker exists but cannot be read or holds a city that is not a
+    string: "unreadable" is not "no city", and adopting there would hand the store to whichever city ran
+    next. The file is left for a person to look at.
+
+    :raises CropStoreCityError: with a message naming both cities, or the unreadable marker.
+    """
+    path = os.path.join(destination_dir, CROP_RULE_MARKER)
+    try:
+        with open(path, encoding='utf-8') as f:
+            marker = json.load(f)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        raise CropStoreCityError(
+            "Cannot read %s (%s), so cannot confirm which city the crop store %s belongs to; refusing to cut "
+            "into it as %s. Nothing has been written. Repair or restore the file - if the store is %s's, its "
+            "'city' key should say so - then re-run." % (path, e, destination_dir, city, city)) from e
+    recorded = marker.get('city') if isinstance(marker, dict) else None
+    if not isinstance(marker, dict) or ('city' in marker and recorded is not None and not isinstance(recorded, str)):
+        raise CropStoreCityError(
+            "%s does not hold a readable city (%r), so cannot confirm which city the crop store %s belongs "
+            "to; refusing to cut into it as %s. Nothing has been written. Repair the file, then re-run."
+            % (path, marker, destination_dir, city))
+    if recorded is not None and recorded != city:
+        raise CropStoreCityError(
+            "The crop store %s holds %s's crops (per %s) and this run is for %s. label_id restarts in every "
+            "city, so cutting here would mix the two cities' crops under the same file names, and --force "
+            "would overwrite %s's. Nothing has been written. Point -o at %s's own store (#159)."
+            % (destination_dir, recorded, CROP_RULE_MARKER, city, recorded, city))
+
+
 class CropStoreUnlistableError(OSError):
     """_store_holds_crops could not list the crop store or one of its shards (#153 m1, final F6).
 
@@ -901,7 +962,10 @@ class ProvenanceManifest:
     of the loop - bulk_extract_crops counts it - because by then the crop is already on disk.
     """
 
-    def __init__(self, destination_dir):
+    def __init__(self, destination_dir, city=None):
+        # The city goes on every row, so manifests concatenated across cities keep (city, label_id) as the key:
+        # label_id alone restarts in every deployment. Empty only for a caller below main() that has none.
+        self.city = '' if city is None else city
         self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
         self._file = None
         self.torn_rows_cut = int(self._open(first=True))
@@ -948,7 +1012,7 @@ class ProvenanceManifest:
         tear left by the run's LAST append used to be cut by the next run's first open and reported as a
         previous run killed mid-append, about a row this run had already reported as unrecorded. The
         reopen is best-effort: if it fails, the handle stays dropped and the next call reopens instead."""
-        line = _csv_line((label_id, pano_id) + tuple(provenance) + (CROP_RULE_VERSION,))
+        line = _csv_line((self.city, label_id, pano_id) + tuple(provenance) + (CROP_RULE_VERSION,))
         if self._file is None:
             self._open()
         try:
@@ -1025,7 +1089,7 @@ def _provenance_value(value):
     return str(value)
 
 
-def write_rule_marker(destination_dir, force=False):
+def write_rule_marker(destination_dir, force=False, city=None):
     """Record which sizing rule cut this crop store, in the store, and warn if it disagrees.
 
     A crop directory is derived data with no other provenance: a JPEG does not say what geometry
@@ -1060,6 +1124,10 @@ def write_rule_marker(destination_dir, force=False):
     re-derivation that could would be a walk of the whole store. So the flag is a record of what runs
     reported, never a coverage check - a run killed between a crop's rename and its row reports nothing.
 
+    It records the city the store belongs to (check_store_city, which runs before this and refuses a
+    different one). `city` None - a caller below main() that has none to give - carries the recorded city
+    forward rather than erasing it, since erasing it would re-open the store to the next city.
+
     :return: the rule version already on disk, or None if this is a fresh store.
     """
     path = os.path.join(destination_dir, CROP_RULE_MARKER)
@@ -1072,6 +1140,8 @@ def write_rule_marker(destination_dir, force=False):
     if not isinstance(marker, dict):
         marker = {}
     previous = marker.get('crop_rule_version')
+    if city is None and isinstance(marker.get('city'), str):
+        city = marker['city']
 
     if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST)):
         manifest_started_under = marker.get('provenance_manifest_started_under')
@@ -1100,6 +1170,7 @@ def write_rule_marker(destination_dir, force=False):
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
             json.dump({'crop_rule_version': CROP_RULE_VERSION,
+                       'city': city,
                        'crop_size_scale': CROP_SIZE_SCALE,
                        'crop_min_fov_deg': CROP_MIN_FOV_DEG,
                        'crop_max_fov_deg': CROP_MAX_FOV_DEG,
@@ -1364,7 +1435,8 @@ class WarningBudget:
                 "counted in the run summary." % (total, by_kind))
 
 
-def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False, force=False):
+def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False, force=False,
+                       city=None):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
@@ -1407,10 +1479,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Before the first write of any kind - the makedirs included - because what it protects cannot be
     # regenerated.
     refuse_production_crop_store(destination_dir)
+    # Likewise, and for the same reason: another city's crops share these file names (#159).
+    if city is not None:
+        check_store_city(destination_dir, city)
 
     # Before any crop is cut, so a run that dies partway still leaves the store saying what it holds.
     os.makedirs(destination_dir, exist_ok=True)
-    write_rule_marker(destination_dir, force=force)
+    write_rule_marker(destination_dir, force=force, city=city)
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
@@ -1425,7 +1500,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Every per-label warning below goes through this, so a systemic fault cannot flood crop.log (#139).
     budget = WarningBudget()
     # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
-    manifest = ProvenanceManifest(destination_dir)
+    manifest = ProvenanceManifest(destination_dir, city)
     unrecorded = 0
     close_failure = None
     try:
@@ -1674,7 +1749,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
 
 def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destination_path, mark_label=False,
-        force=False):
+        force=False, city=None):
     """Load the label metadata and extract every crop - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, and logging; this seam takes plain arguments so tests can
@@ -1683,7 +1758,7 @@ def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destinati
     print("Cropping labels")
     label_infos = load_label_metadata(sidewalk_server_fqdn, label_metadata_file)
     return bulk_extract_crops(label_infos, gsv_pano_path, crop_destination_path, mark_label=mark_label,
-                              force=force)
+                              force=force, city=city)
 
 
 def main(argv=None):
@@ -1694,7 +1769,8 @@ def main(argv=None):
 
     :return: 0; 1 if any label errored, or if a label-type shard of -o cannot be listed (said on
              both channels, nothing cut); EXIT_REFUSED_DESTINATION if -o looks like the production
-             crop store, or holds a directory the guard cannot list (nothing is created or written,
+             crop store, or holds a directory the guard cannot list, or is recorded as another
+             city's store or has a crop_rule.json that cannot say whose (nothing is created or written,
              crop.log included). 1 is deliberately not keyed
              on "did every label produce a crop": missing panos are the normal state of a city whose
              scrape is still catching up, while `errors` only ever counts things that should not have
@@ -1712,6 +1788,14 @@ def main(argv=None):
         print("CropRunner: %s" % e)
         logging.error('%s', e)
         return EXIT_REFUSED_DESTINATION
+    # Same place, same rule: another city's store is refused before anything - crop.log included - is
+    # written into it (#159).
+    try:
+        check_store_city(args.o, args.city)
+    except CropStoreCityError as e:
+        print("CropRunner: %s" % e)
+        logging.error('%s', e)
+        return EXIT_REFUSED_DESTINATION
 
     # exist_ok: a re-run, or an operator pre-creating the dir, races on the exists check. Note this is not
     # a claim that two CropRunners may share an output dir: crops are written through a fixed
@@ -1726,7 +1810,8 @@ def main(argv=None):
 
     try:
         counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
-                     crop_destination_path=args.o, mark_label=args.mark_label, force=args.force)
+                     crop_destination_path=args.o, mark_label=args.mark_label, force=args.force,
+                     city=args.city)
     except CropStoreUnlistableError as e:
         # Both channels, and into crop.log, which is configured by now: as a traceback it reached stderr
         # only (#153 final F6). Exit 1, not EXIT_REFUSED_DESTINATION - nothing judged -o to be the
