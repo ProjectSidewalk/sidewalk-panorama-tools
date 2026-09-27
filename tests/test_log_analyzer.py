@@ -350,15 +350,27 @@ def daily_rows(count, offset=0, **overrides):
     return [make_row(days_ago(count + offset - 1 - i), **overrides) for i in range(count)]
 
 
-def zero_progress_rows(total=130, quiet_tail=30, success=5):
+def zero_progress_rows(total=130, quiet_tail=30, success=5, new_panos=3, not_attempted=0, step_days_ago=None,
+                       corpus_known=True):
     """A history that downloaded `success` images a day and then stopped `quiet_tail` days ago.
 
     `total` must exceed ZERO_PROGRESS_DAYS + ZERO_PROGRESS_LOOKBACK for check 3 to look at all - the rule
     deliberately says nothing about a city whose history is too short to know what normal was.
+
+    Rule 3 also asks whether there was anything to fetch (#163), so the image-eligible corpus (field 5,
+    `xml_total`) is 1000 and grows by `new_panos` on the night `step_days_ago` - by default halfway into the
+    quiet tail. The default 3 is ZERO_PROGRESS_MIN_NEW_WORK, written as a literal so this helper still loads
+    against a module that predates the constant. `not_attempted` holds field 11 (`image_total`, what the image
+    phase has attempted) that far below field 5. `corpus_known=False` leaves field 5 blank on every row.
     """
-    return [make_row(days_ago(total - 1 - i),
-                     image_success=(0 if i >= total - quiet_tail else success))
-            for i in range(total)]
+    step_days_ago = quiet_tail // 2 if step_days_ago is None else step_days_ago
+    rows = []
+    for i in range(total):
+        age = total - 1 - i
+        corpus = 1000 + (new_panos if age <= step_days_ago else 0)
+        rows.append(make_row(days_ago(age), image_success=(0 if i >= total - quiet_tail else success),
+                             xml_total=corpus if corpus_known else '', image_total=corpus - not_attempted))
+    return rows
 
 
 class TestExtendedZeroProgressIsFlaggedAsARegression:
@@ -381,6 +393,8 @@ class TestExtendedZeroProgressIsFlaggedAsARegression:
         # Naming the last good day is the point of the alert: it tells the operator where to look in
         # scrape.log without having to open the log at all.
         assert days_ago(analyze.ZERO_PROGRESS_DAYS).strftime('%Y-%m-%d') in warnings[0]['msg']
+        # And naming the work that went undone is what separates it from a mature city with nothing new.
+        assert '3 new image-eligible panos' in warnings[0]['msg']
 
     def test_a_city_that_never_downloaded_anything_is_not_flagged(self, tmp_path):
         # Same shape, same length, no prior successes anywhere - so there is no regression to report.
@@ -395,6 +409,52 @@ class TestExtendedZeroProgressIsFlaggedAsARegression:
         log = write_log(tmp_path / 'log.csv', zero_progress_rows(total=short))
 
         assert analyze.analyze_city('somewhere', log, stale_days=3) == []
+
+
+class TestRule3AsksWhetherThereWasWork:
+    """Rule 3 (#163) fired on mature cities with no new panos: three of the 26 warnings on 2026-09-19
+    (west-chester-pa, tainan-tw, new-taipei-tw) were cities with nothing to fetch. It now needs evidence of
+    work - field 5 (the image-eligible corpus) growing across the window, or field 5 minus field 11 on the
+    newest row (eligible panos the image phase never attempted) - or an unknown corpus, which keeps the old
+    behaviour. Field 11 alone is not evidence: it counts attempts, so a starved image phase does not grow it."""
+
+    def rule_3(self, tmp_path, rows):
+        issues = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+        return [i for i in issues if 'No new images downloaded' in i['msg']]
+
+    def test_a_mature_city_with_nothing_new_is_not_flagged(self, tmp_path):
+        assert self.rule_3(tmp_path, zero_progress_rows(new_panos=0)) == []
+
+    def test_growth_below_the_minimum_is_not_flagged(self, tmp_path):
+        rows = zero_progress_rows(new_panos=analyze.ZERO_PROGRESS_MIN_NEW_WORK - 1)
+
+        assert self.rule_3(tmp_path, rows) == []
+
+    def test_panos_never_attempted_are_work(self, tmp_path):
+        found = self.rule_3(tmp_path, zero_progress_rows(new_panos=0, not_attempted=3))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'never attempted' in found[0]['msg']
+
+    def test_two_unattempted_are_not(self, tmp_path):
+        assert self.rule_3(tmp_path, zero_progress_rows(new_panos=0, not_attempted=2)) == []
+
+    def test_growth_before_the_window_is_not_counted(self, tmp_path):
+        """The corpus grew forty nights ago and the city downloaded it; nothing has arrived since."""
+        assert self.rule_3(tmp_path, zero_progress_rows(step_days_ago=40)) == []
+
+    def test_growth_on_the_first_quiet_night_counts(self, tmp_path):
+        """The baseline is the last night BEFORE the window, so a step on its first night is growth."""
+        found = self.rule_3(tmp_path, zero_progress_rows(step_days_ago=analyze.ZERO_PROGRESS_DAYS - 1))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+
+    def test_an_unknown_corpus_keeps_the_old_behaviour(self, tmp_path):
+        """Blank is not 0: a field 5 nobody wrote says nothing about the work, so the rule fires as before."""
+        found = self.rule_3(tmp_path, zero_progress_rows(new_panos=0, corpus_known=False))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'unknown' in found[0]['msg']
 
 
 class TestAnAbnormallyLongRunIsFlagged:
