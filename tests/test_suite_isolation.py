@@ -172,3 +172,26 @@ class TestStreetlevelMustImportWhenRequired:
         assert root is not None, output
         assert int(root.get('tests')) >= 10, output
         assert int(root.get('skipped')) == 0, output
+
+
+class TestTheWorkflowRequiresIt:
+    """The variable does nothing unless CI sets it, and dropping it from the workflow fails no test above -
+    they each set it themselves. So the workflow's pytest step is pinned here, by text: PyYAML is not a
+    dependency, and a line-level check is all this needs."""
+
+    WORKFLOW = os.path.join(REPO_ROOT, '.github', 'workflows', 'tests.yml')
+
+    def _text(self):
+        with open(self.WORKFLOW, encoding='utf-8') as f:
+            return f.read()
+
+    def test_the_pytest_step_sets_the_variable(self):
+        lines = self._text().splitlines()
+        step = next(i for i, line in enumerate(lines) if 'python -m pytest tests' in line)
+        following = '\n'.join(lines[step + 1:step + 4])
+        assert "SIDEWALK_REQUIRE_STREETLEVEL: '1'" in following, \
+            'the CI pytest step must set SIDEWALK_REQUIRE_STREETLEVEL (#165)'
+
+    def test_the_job_has_a_timeout(self):
+        """GitHub's default is six hours of a held runner for one hung test."""
+        assert any(line.strip().startswith('timeout-minutes:') for line in self._text().splitlines())
