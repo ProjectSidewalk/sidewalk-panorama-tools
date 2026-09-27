@@ -501,8 +501,9 @@ class TestTheSweep:
 
         summary = downscale_panos.downscale_store(store, max_width=CAP)
 
+        # No --min-width is the unfiltered sweep, so the #160 bucket is present and empty.
         assert summary == downscale_panos.Summary(scanned=5, written=2, narrow=1, current=1, failed=1,
-                                                  unreached=0)
+                                                  unreached=0, under_min=0)
         assert_two_tone(os.path.join(store, 'aa', 'aaMissingCopyAAAAAAA.w1024.jpg'), (CAP, 512))
         assert_two_tone(os.path.join(store, 'cc', 'ccStaleCopyAAAAAAAAA.w1024.jpg'), (CAP, 512))
         # The current copy is left byte-for-byte alone: nothing decoded it.
@@ -565,7 +566,8 @@ class TestTheSweep:
         assert downscale_panos.main([store, '--max-width', str(CAP)]) == 1
 
         out = capsys.readouterr().out
-        assert 'Examined 5 panorama(s): 2 written, 1 under the cap, 1 already had a copy, 1 failed, 0 unreached.' in out
+        assert ('Examined 5 panorama(s): 2 written, 1 under the cap, 1 already had a copy, 1 failed, 0 unreached, '
+                '0 under --min-width.') in out
         # The process-level policy every entry point that opens a stored panorama sets; see
         # TestTheDecompressionBombCeiling for why it is a ceiling and not None.
         assert Image.MAX_IMAGE_PIXELS == common.MAX_PANO_PIXELS
@@ -578,6 +580,184 @@ class TestTheSweep:
 
         assert '1 would be written' in capsys.readouterr().out
         assert os.listdir(tmp_path / 'aa') == ['aaMissingCopyAAAAAAA.jpg']
+
+
+FLOOR = 2 * CAP
+
+
+def assert_reconciles(summary):
+    """Every scanned pano lands in exactly one bucket; unreached ones were never scanned, so sit outside."""
+    assert summary.scanned == (summary.written + summary.narrow + summary.current + summary.failed
+                               + summary.under_min)
+
+
+class TestTheMinWidthFilter:
+    """--min-width (#160): the width tripwire's remedy should touch only the frames over the viewer ceiling,
+    not every pano over the display-copy cap - which is nearly the whole store, the fleet-wide +63%.
+
+    The floor here is 2 x CAP, the ratio production's 16384 ceiling bears to its 8192 cap. The store has a pano
+    under the cap, three between the cap and the floor (one with no copy, one with a CURRENT copy, one with a
+    stale copy), one exactly AT the floor, two over it (one with no copy, one with a current copy), and a file
+    that is not a JPEG.
+    """
+
+    BETWEEN = ('bb/bbBetweenNoCopyAAAA.jpg', 'cc/ccBetweenCurrentAAA.jpg', 'dd/ddBetweenStaleAAAAA.jpg',
+               'hh/hhAtTheFloorAAAAAA.jpg')
+
+    def seed(self, tmp_path):
+        store = str(tmp_path)
+
+        def pano(rel, w, h):
+            return two_tone_jpeg(os.path.join(store, *rel.split('/')), w, h)
+
+        pano('aa/aaNarrowAAAAAAAAAAAA.jpg', CAP, CAP // 2)
+        pano('bb/bbBetweenNoCopyAAAA.jpg', 1536, 768)
+        pano('cc/ccBetweenCurrentAAA.jpg', 1536, 768)
+        pano('cc/ccBetweenCurrentAAA.w1024.jpg', CAP, 512)
+        pano('dd/ddBetweenStaleAAAAA.jpg', 1536, 768)
+        pano('dd/ddBetweenStaleAAAAA.w1024.jpg', 512, 256)
+        pano('ee/eeOverNoCopyAAAAAAAA.jpg', 3072, 1536)
+        pano('ff/ffOverCurrentAAAAAAA.jpg', 4096, 2048)
+        pano('ff/ffOverCurrentAAAAAAA.w1024.jpg', CAP, 512)
+        os.makedirs(os.path.join(store, 'gg'))
+        with open(os.path.join(store, 'gg', 'ggNotAJpegAAAAAAAAAA.jpg'), 'wb') as f:
+            f.write(b'<html>not an image</html>')
+        pano('hh/hhAtTheFloorAAAAAA.jpg', FLOOR, FLOOR // 2)
+        return store
+
+    def sidecar(self, store, rel):
+        return downscale_panos.downscaled_sidecar_path(os.path.join(store, *rel.split('/')), CAP)
+
+    def test_only_the_frames_over_the_floor_are_written(self, tmp_path):
+        store = self.seed(tmp_path)
+        before = {rel: os.path.getmtime(self.sidecar(store, rel)) for rel in self.BETWEEN
+                  if os.path.exists(self.sidecar(store, rel))}
+
+        summary = downscale_panos.downscale_store(store, max_width=CAP, min_width=FLOOR)
+
+        assert summary == downscale_panos.Summary(scanned=8, written=1, narrow=1, current=1, failed=1,
+                                                  unreached=0, under_min=4)
+        assert_reconciles(summary)
+        assert_two_tone(self.sidecar(store, 'ee/eeOverNoCopyAAAAAAAA.jpg'), (CAP, 512))
+        # Under the floor nothing was written, created or refreshed - the stale copy is still stale.
+        assert not os.path.exists(self.sidecar(store, 'bb/bbBetweenNoCopyAAAA.jpg'))
+        assert not os.path.exists(self.sidecar(store, 'hh/hhAtTheFloorAAAAAA.jpg'))
+        assert {rel: os.path.getmtime(self.sidecar(store, rel)) for rel in before} == before
+        with Image.open(self.sidecar(store, 'dd/ddBetweenStaleAAAAA.jpg')) as image:
+            assert image.size == (512, 256)
+
+    def test_a_frame_exactly_at_the_floor_is_under_it(self, tmp_path):
+        """The option is "at or below this, leave it": 16384 is the fleet's normal and renders natively."""
+        store = str(tmp_path)
+        two_tone_jpeg(os.path.join(store, 'hh', 'hhAtTheFloorAAAAAA.jpg'), FLOOR, FLOOR // 2)
+        two_tone_jpeg(os.path.join(store, 'ii', 'iiOnePastAAAAAAAAAA.jpg'), FLOOR + 16, FLOOR // 2)
+
+        summary = downscale_panos.downscale_store(store, max_width=CAP, min_width=FLOOR)
+
+        assert (summary.written, summary.under_min) == (1, 1)
+        assert not os.path.exists(downscale_panos.downscaled_sidecar_path(
+            os.path.join(store, 'hh', 'hhAtTheFloorAAAAAA.jpg'), CAP))
+        assert os.path.exists(downscale_panos.downscaled_sidecar_path(
+            os.path.join(store, 'ii', 'iiOnePastAAAAAAAAAA.jpg'), CAP))
+
+    def test_the_default_is_the_unfiltered_sweep(self, tmp_path):
+        store = self.seed(tmp_path)
+
+        summary = downscale_panos.downscale_store(store, max_width=CAP)
+
+        # Everything over the cap is judged as before #160: the three copy-less or stale ones written, the
+        # two current ones left alone, and nothing in the new bucket.
+        assert summary == downscale_panos.Summary(scanned=8, written=4, narrow=1, current=2, failed=1,
+                                                  unreached=0, under_min=0)
+        assert_reconciles(summary)
+
+    def test_a_filtered_panos_copy_is_never_looked_at(self, tmp_path, monkeypatch):
+        """The gate sits BEFORE sidecar_is_current: one header read per filtered pano, and a copy under the
+        floor is never reported as current - whether it is or not."""
+        store = self.seed(tmp_path)
+        real = downscale_panos.sidecar_is_current
+        looked_at = []
+
+        def spy(pano_path, pano_dims, max_width):
+            looked_at.append(os.path.relpath(pano_path, store).replace(os.sep, '/'))
+            return real(pano_path, pano_dims, max_width)
+
+        monkeypatch.setattr(downscale_panos, 'sidecar_is_current', spy)
+        summary = downscale_panos.downscale_store(store, max_width=CAP, min_width=FLOOR)
+
+        assert sorted(looked_at) == ['ee/eeOverNoCopyAAAAAAAA.jpg', 'ff/ffOverCurrentAAAAAAA.jpg']
+        # ccBetweenCurrent has a copy at exactly the expected size, and still is not counted as current.
+        assert summary.current == 1
+
+    def test_a_dry_run_reports_the_bucket_without_decoding_or_writing(self, tmp_path, monkeypatch, capsys):
+        store = self.seed(tmp_path)
+        monkeypatch.setattr(Image, 'open', lambda *a, **k: pytest.fail('a dry run must not decode'))
+
+        summary = downscale_panos.downscale_store(store, dry_run=True, max_width=CAP, min_width=FLOOR)
+
+        assert (summary.written, summary.under_min) == (1, 4)
+        assert_reconciles(summary)
+        assert not os.path.exists(self.sidecar(store, 'ee/eeOverNoCopyAAAAAAAA.jpg'))
+        out = capsys.readouterr().out
+        assert 'Would write %s' % self.sidecar(store, 'ee/eeOverNoCopyAAAAAAAA.jpg') in out
+        assert 'bbBetweenNoCopy' not in out
+
+    def test_a_second_run_with_the_same_floor_changes_nothing(self, tmp_path):
+        store = self.seed(tmp_path)
+        downscale_panos.downscale_store(store, max_width=CAP, min_width=FLOOR)
+        written = self.sidecar(store, 'ee/eeOverNoCopyAAAAAAAA.jpg')
+        before = os.path.getmtime(written)
+
+        summary = downscale_panos.downscale_store(store, max_width=CAP, min_width=FLOOR)
+
+        assert (summary.written, summary.current, summary.under_min) == (0, 2, 4)
+        assert_reconciles(summary)
+        assert os.path.getmtime(written) == before
+
+    def test_the_sum_holds_when_writes_fail_and_when_the_budget_runs_out(self, tmp_path, monkeypatch):
+        store = self.seed(tmp_path)
+
+        def refuse(pano_path, max_width=None, quality=None):
+            raise OSError(28, 'No space left on device')
+
+        monkeypatch.setattr(downscale_panos, 'write_downscaled_sidecar_from_file', refuse)
+        failing = downscale_panos.downscale_store(store, max_width=CAP, min_width=FLOOR)
+        assert (failing.written, failing.failed, failing.under_min) == (0, 2, 4)
+        assert_reconciles(failing)
+
+        readings = [0.0] * 5
+        monkeypatch.setattr(downscale_panos.time, 'monotonic', lambda: readings.pop(0) if readings else 61.0)
+        cut_short = downscale_panos.downscale_store(store, max_width=CAP, min_width=FLOOR, max_runtime_minutes=1)
+        assert (cut_short.scanned, cut_short.unreached) == (4, 4)
+        assert_reconciles(cut_short)
+
+    @pytest.mark.parametrize('min_width', [CAP, CAP // 2, 0])
+    def test_a_floor_at_or_under_the_cap_is_refused(self, tmp_path, capsys, min_width):
+        """A pano can never be both under the cap and over the floor, so such a value is the unfiltered sweep
+        spelled confusingly or a misreading of which bound the option is - and either way would silently do
+        the fleet-wide +63% the option exists to avoid."""
+        store = self.seed(tmp_path)
+
+        with pytest.raises(SystemExit) as exit_info:
+            downscale_panos.main([store, '--max-width', str(CAP), '--min-width', str(min_width), '--dry-run'])
+
+        assert exit_info.value.code == 2
+        # Naming both values: the usage line argparse prints for ANY error already carries both flag names.
+        assert '--min-width %d is at or below --max-width %d' % (min_width, CAP) in capsys.readouterr().err
+
+    def test_a_floor_over_the_cap_is_accepted_and_main_reports_the_bucket(self, tmp_path, monkeypatch, capsys):
+        store = self.seed(tmp_path)
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
+
+        # The not-a-JPEG still fails the run: the filter changes which panos are written, not the exit rule.
+        assert downscale_panos.main([store, '--max-width', str(CAP), '--min-width', str(CAP + 1),
+                                     '--dry-run']) == 1
+        assert '0 under --min-width.' in capsys.readouterr().out
+
+        assert downscale_panos.main([store, '--max-width', str(CAP), '--min-width', str(FLOOR),
+                                     '--dry-run']) == 1
+        assert ('Examined 8 panorama(s): 1 would be written, 1 under the cap, 1 already had a copy, 1 failed, '
+                '0 unreached, 4 under --min-width.') in capsys.readouterr().out
 
 
 class TestTheSwitch:
