@@ -214,6 +214,8 @@ class TestTheStoreFilesMoveWithIt:
         to leave the root: a run that dies partway leaves the root still marked as a flat store."""
         root = flat_store(tmp_path / 'crops')
         plant(root, 'crop_rule.json', data=b'{}')
+        plant(root, 'crop_provenance.csv')
+        plant(root, 'crop.log')
         order = []
         real_rename = os.rename
 
@@ -377,6 +379,8 @@ class TestTheCommandLine:
                                       ['X', '--city', 'atlantis-ga']],
                              ids=['nothing', 'no-dir', 'malformed-city', 'unknown-city'])
     def test_usage_errors_exit_2(self, tmp_path, argv):
+        # The directory exists, so a bad --city is what is refused, not a missing crop dir.
+        flat_store(tmp_path / 'crops')
         argv = [str(tmp_path / 'crops') if a == 'X' else a for a in argv]
         with pytest.raises(SystemExit) as e:
             migrate_crop_store.main(argv)
