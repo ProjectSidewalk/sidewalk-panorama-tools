@@ -302,6 +302,17 @@ Errors are retried on the next run. The exit statuses, all of them:
 two tools are never chained, so the codes do not meet, but a wrapper that runs both should not read a `3` as
 the same failure.
 
+**A pano that opens but cannot be decoded is decoded once.** `Image.open` reads only the header, so a
+truncated file gets past the "cannot open" check. Decoding stays lazy — the preflights and
+`skipped_existing` read only the header, so a finished store never decodes a pano — and the first label
+that reaches the write decodes it. If that fails, the pano is not decoded again: that label and every later
+one on the pano that reaches the write is one counted error (and `stale_kept` under `--force` when its crop
+is on disk), and `crop.log` gets one `cannot decode` line for the pano under the `cannot_open` kind. Before
+[#164](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/164) each label re-decoded the
+whole file (Pillow keeps the pending decode after a failure, 0.25 s per label on a 13312-wide pano) and
+logged its own `Failed to crop label` line, spending the `crop_failed` budget that a real write failure
+needs. A label's bucket does not depend on where it sits in the list.
+
 The skip outcomes are **not** errors and do not affect the exit code: `missing_pano` (the pano store is
 scraped independently and legitimately lags the label list), the two preflight rejections, and
 `black_content` ([the content check](#the-content-check-black_content)). Those are metadata or imagery the
@@ -325,7 +336,8 @@ flood's own lines with it. Two bounds now apply, and both are needed:
   logs one total — `Suppressed N per-label warnings this run (malformed_row: …, crop_failed: …)` — ahead of
   the `SYSTEMIC FAILURE` line, which stays the last thing written. The kinds are `malformed_row`,
   `crop_failed` (a failed write: a full or read-only store), `cannot_open` (a pano that exists but will not
-  open: a dead mount that still answers a stat), `dims_mismatch` (a city re-served wider than the store),
+  open: a dead mount that still answers a stat; or whose body cannot be decoded — a truncated file behind a
+  good header — one line per pano), `dims_mismatch` (a city re-served wider than the store),
   `out_of_frame`, `black_content` (a window withheld by the content check), and `provenance_unrecorded` (a crop whose manifest row could not be written). Each has its
   own budget, so a flood of one cannot hide the first lines of another, which may be the actual cause.
 
@@ -360,7 +372,7 @@ inside the range an ordinary bad night can reach, since a corrupt slice of the s
 per-row fault and the loop is built to survive it.
 
 **A corrupt pano contributes one error per label on it, not one error.** The loop decodes each pano once
-for all its labels, so a failure there does `errors += len(labels)`. Corpus-wide that barely matters
+for all its labels, so a failure there is an error for every label that needed it. Corpus-wide that barely matters
 (~2.5 labels per pano), but the `-f` route over a study subset is exactly the few-panos-many-labels shape:
 a 40-label run where one truncated file carries 22 labels prints `22 of 40 ... (55.0%)` for a single bad
 file. A one-label run that errors likewise reads 100%. Neither is wrong, and neither is harmful, but both

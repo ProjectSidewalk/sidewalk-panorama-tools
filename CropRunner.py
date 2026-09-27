@@ -191,8 +191,8 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 # those sum to total on every path; a COUNT_ANNOTATIONS entry qualifies a label already in one of them and
 # is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a label
 # under --force that left an old crop in place because the run never reached its write: a dims_mismatch or
-# out_of_frame skip (#153 m2), a missing_pano, or the errors of a pano that cannot be opened (#153 final
-# F3), or a black_content withhold (#164). A new key goes in exactly one of the two, and
+# out_of_frame skip (#153 m2), a missing_pano, the errors of a pano that cannot be opened (#153 final
+# F3) or decoded, or a black_content withhold (#164). A new key goes in exactly one of the two, and
 # tests/test_crop_runner.py asserts the dict holds nothing else. black_content is disjoint, not an
 # annotation: a withheld label is not a success, and like dims_mismatch it is something the run refused
 # to trust rather than an error it made.
@@ -1485,7 +1485,11 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
     pano, malformed row, or failed write is counted as an error and logged; both leave the remaining labels
-    running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). That includes the
+    running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). A pano whose header
+    opens but whose body cannot be decoded is decoded once, lazily, by the first label that reaches the
+    write; that label and every later one that reaches the write is an error, with one crop.log line for
+    the pano (#164). Labels a preflight or skipped_existing decides never need the body, so their buckets
+    do not depend on where they sit in the list. That includes the
     output side: a full store or a read-only mount is one counted error per label, not an exception out of
     this function with the counts lost. Crops on disk are the resume marker: existing ones are counted as
     skipped_existing and everything failed here is simply re-attempted on the next run.
@@ -1510,7 +1514,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
              the crop exists but the label is off-centre in it; recut annotates a success that replaced a
              crop already on disk (force=True only); stale_kept annotates a label, under force=True,
              that the run did not write - a dims_mismatch or out_of_frame skip, a missing_pano, a
-             black_content withhold, or an error because its pano could not be opened - and whose crop
+             black_content withhold, or an error because its pano could not be opened or decoded - and whose crop
              was already on disk, which therefore stays as whatever rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
              went stale before; tests/test_crop_runner.py asserts the sum, and the key set, from the dict
              rather than from this docstring.
@@ -1616,6 +1620,15 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             # stopped closing anything while requirements.txt still allows the older Pillow where it did.
             # close() is what actually releases the decoded buffer, which is the whole cost decode-once
             # accepts (~250 MB for a 13312x6656 pano, 384 MB for a 16384x8192 one).
+            #
+            # Decoding stays lazy (#164): the preflights and skipped_existing read only the header, so a
+            # finished store never decodes a pano. The first label that reaches the write decodes it; if
+            # that fails - a truncated body behind a good header - the failure is remembered and the pano
+            # is never decoded again. Pillow keeps im.tile after a failed load, so every crop() used to
+            # re-decode the whole file and log a crop_failed line per label.
+            decoded = False
+            decode_error = None
+            undecodable = 0
             try:
                 for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                     processed += 1
@@ -1665,6 +1678,21 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     existed = os.path.exists(crop_destination)
                     if existed and not force:
                         counts['skipped_existing'] += 1
+                        continue
+                    if not decoded and decode_error is None:
+                        try:
+                            pano.load()
+                            decoded = True
+                        except Exception as e:
+                            decode_error = e
+                    if decode_error is not None:
+                        # One counted error per label, like a pano that cannot be opened, but one crop.log
+                        # line for the pano (after this loop), not one per label - so a truncated pano
+                        # with many labels cannot spend the crop_failed budget real write failures need.
+                        counts['errors'] += 1
+                        undecodable += 1
+                        if force and existed:
+                            counts['stale_kept'] += 1
                         continue
                     try:
                         # Once per label type, not per label: exist_ok still costs a stat, and over sshfs
@@ -1719,6 +1747,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                                      label_id, pano_id, box.top,
                                      abs(int(pano_y - box.top - box.height / 2)))
                     logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
+                if undecodable:
+                    # The cannot_open kind, since it is the same fault one step later: the header opened,
+                    # the body did not. "decode", not "open", in the text, so the two stay tellable apart.
+                    budget.warning('cannot_open', "Skipped %d labels on pano %s: cannot decode %s (%s); "
+                                   "counted as errors without decoding it again per label",
+                                   undecodable, pano_id, pano_img_path, decode_error)
             finally:
                 pano.close()
     finally:
