@@ -1047,6 +1047,22 @@ def depth_rows(n_days_ago, eligible, resolved_before, requests, ran=True, unavai
                     total_minutes=12, depth_eligible=eligible, **overrides)
 
 
+def saving_nothing(nights, eligible=5000, resolved=590, requests=25, unavailable=0, newest=0):
+    """`nights` consecutive nights on which every depth request failed, the newest `newest` days ago.
+
+    `unavailable` of each night's failures are permanent verdicts, so they come back as skips the next night -
+    the ledger grows by exactly that much, which is the only trace the row leaves of them. The rest are
+    transient and never ledgered, so `depth_skip` stays flat. 25 is DEPTH_MAX_CONSECUTIVE_FAILURES, the
+    breaker's trip point, and so the size of a night on which every request fails transiently.
+    """
+    rows = []
+    for i in range(nights):
+        rows.append(depth_rows(newest + nights - 1 - i, eligible, resolved, requests,
+                               unavailable=unavailable, transient=requests - unavailable))
+        resolved += unavailable
+    return rows
+
+
 class TestDepthProgress:
     """depth_progress is the one place the backfill's figures are defined; every rule and every line of the
     report reads them from here. So each definition is pinned against the row shape that would break it."""
@@ -1142,6 +1158,21 @@ class TestDepthProgress:
 
         assert analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))['unresolved'] == 0
 
+    def test_the_barren_figures_for_the_measured_transient_outage(self, tmp_path):
+        """Ten nights of the breaker tripping: 250 requests, nothing saved, nothing ledgered. The share is 0.0,
+        not None - nine earlier nights failed and none of it came back as a skip."""
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', saving_nothing(10))))
+
+        assert (progress['unsaved_nights'], progress['unsaved_requests'], progress['written_off'],
+                progress['unavailable_share'], progress['barren']) == (10, 250, 0, 0.0, True)
+
+    def test_stragglers_that_the_phase_walks_every_night_are_not_barren(self, tmp_path):
+        """The ordinary end state of a backfill: the last 100 panos fail transiently every night. The phase
+        walked its whole list (depth_total == depth_eligible), so it did not stop early - nothing is broken."""
+        rows = [depth_rows(n, 1000, 900, 100, transient=100) for n in (4, 3, 2, 1, 0)]
+
+        assert analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))['barren'] is False
+
 
 class TestADepthPhaseThatStoppedMakingProgressIsFlagged:
     """Check 7. Five zeros in the depth columns is what --skip-depth writes, what the block latch writes when
@@ -1196,6 +1227,132 @@ class TestADepthPhaseThatStoppedMakingProgressIsFlagged:
         rows = [old_row(days_ago(n)) for n in (3, 2, 1, 0)]
 
         assert self.issues(tmp_path, rows) == []
+
+
+class TestADepthPhaseThatSavesNothingIsFlagged:
+    """Rule 10 (#163). Rule 7 counts REQUESTS, so a phase whose every request fails resets it nightly and the
+    city reads as healthy. Measured against master: 10 nights of 25 transient failures returned no issue and
+    the stats line said `no rate, no ETA`; 10 nights of 1,889 requests all written off as `unavailable`
+    returned no issue and a confident `~39 nights left`.
+
+    The two shapes can only be told apart across two rows: an `unavailable` verdict is ledgered at once and
+    comes back as next night's skip, while a transient failure never does. So the ledgering arm - permanent,
+    needs a ledger scrub - is CRITICAL, and the transient arm (or one that cannot be classified yet) is a
+    WARNING, rule 7's tier."""
+
+    def issues(self, tmp_path, rows):
+        return analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+
+    def barren(self, tmp_path, rows):
+        return [i for i in self.issues(tmp_path, rows) if 'saved nothing' in i['msg']]
+
+    def test_three_nights_of_transient_failure_with_work_left_is_a_warning(self, tmp_path):
+        rows = [depth_rows(3, 5000, 0, 590)] + saving_nothing(3)
+
+        found = self.barren(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'Depth phase saved nothing on the last 3 nights' in found[0]['msg']
+        assert '75 requests' in found[0]['msg']
+        assert '4,410 of 5,000' in found[0]['msg']
+        assert 'retry' in found[0]['msg']
+
+    def test_two_nights_are_not_enough(self, tmp_path):
+        rows = [depth_rows(2, 5000, 0, 590)] + saving_nothing(2)
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_one_save_on_the_newest_night_resets_the_count(self, tmp_path):
+        """24 of 25 failed and one saved: the phase is talking to Google and writing artifacts, so it is not
+        barren - the reset is keyed on a SAVE, and one is enough."""
+        rows = saving_nothing(3, newest=1) + [depth_rows(0, 5000, 590, 25, transient=24)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    def test_a_city_that_never_saved_counts_from_its_first_night(self, tmp_path):
+        found = self.barren(tmp_path, saving_nothing(3))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'on the last 3 nights' in found[0]['msg']
+
+    def test_the_measured_drift_is_critical(self, tmp_path):
+        """Upstream drift made every pano's depth None, so every request became an `unavailable` verdict:
+        ledgered at once, never re-requested. The ledger grows by exactly the failures, night after night."""
+        rows = saving_nothing(10, eligible=100_000, resolved=10_000, requests=1889, unavailable=1889)
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        found = [i for i in analyze.analyze_city('somewhere', log, stale_days=3) if 'saved nothing' in i['msg']]
+
+        assert [i['level'] for i in found] == ['CRITICAL'], found
+        assert '17,001' in found[0]['msg']
+        assert 'unavailable' in found[0]['msg']
+        assert 'nothing saved in 10 nights' in analyze.city_stats(analyze.read_log(log))
+
+    @staticmethod
+    def half_ledgered(skips):
+        """Three never-saving nights of 100 failures each, the ledger reading `skips` at the start of each."""
+        return [depth_rows(n, 5000, skip, 100, unavailable=50, transient=50) for n, skip in zip((2, 1, 0), skips)]
+
+    def test_half_the_failures_ledgered_is_the_boundary(self, tmp_path):
+        """100 of the 200 failures before the newest night came back as skips: share 0.5 exactly. The newest
+        night's failures are not in the denominator - nothing could have come back from them yet."""
+        found = self.barren(tmp_path, self.half_ledgered((590, 640, 690)))
+
+        assert [i['level'] for i in found] == ['CRITICAL'], found
+
+    def test_just_under_half_is_transient(self, tmp_path):
+        found = self.barren(tmp_path, self.half_ledgered((590, 639, 689)))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+
+    def test_the_measured_transient_outage_is_a_warning(self, tmp_path):
+        found = self.barren(tmp_path, saving_nothing(10))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert not [i for i in self.issues(tmp_path, saving_nothing(10)) if i['level'] == 'CRITICAL']
+
+    def test_stragglers_the_phase_walks_every_night_are_not_flagged(self, tmp_path):
+        """12 panos fail transiently every night and the phase reaches every one of them: depth_total equals
+        the corpus. That is the normal end of a backfill, not an outage, and must stay silent."""
+        rows = [make_row(days_ago(n), depth_fail=12, depth_skip=4988, depth_total=5000, depth_eligible=5000)
+                for n in range(9, -1, -1)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    @pytest.mark.parametrize('requests, fires', [((3, 3, 3), False), ((4, 3, 3), True)])
+    def test_nine_requests_are_not_evidence_ten_are(self, tmp_path, requests, fires):
+        rows = [depth_rows(n, 5000, 590, r, transient=r) for n, r in zip((2, 1, 0), requests)]
+
+        assert bool(self.barren(tmp_path, rows)) is fires
+
+    def test_rule_7_takes_the_night_once_requests_stop(self, tmp_path):
+        """Three failing nights, then three with no requests at all. That is a stall, and rule 7 says so; the
+        two rules must never both fire, or one outage reads as two findings."""
+        rows = ([depth_rows(6, 5000, 0, 590)] + saving_nothing(3, newest=3)
+                + [depth_rows(n, 5000, 590, 0, ran=False) for n in (2, 1, 0)])
+
+        issues = self.issues(tmp_path, rows)
+
+        assert len(issues) == 1, issues
+        assert 'Depth backfill stalled' in issues[0]['msg']
+
+    def test_nothing_fires_before_the_column_exists(self, tmp_path):
+        rows = [old_row(days_ago(n), depth_fail=25, depth_skip=590, depth_total=615) for n in (3, 2, 1, 0)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    def test_the_fleet_block_counts_a_city_saving_nothing(self, tmp_path, monkeypatch, capsys):
+        run_main(tmp_path, monkeypatch, '--no-download', logs=[('seattle-wa', saving_nothing(10))])
+
+        assert '0 stalled · 1 saving nothing' in squash(capsys.readouterr().out)
+
+    def test_the_drift_fails_the_run(self, tmp_path, monkeypatch, capsys):
+        rows = saving_nothing(10, eligible=100_000, resolved=10_000, requests=1889, unavailable=1889)
+
+        status = run_main(tmp_path, monkeypatch, '--no-download', logs=[('seattle-wa', rows)])
+
+        assert status == 1
+        assert 'Critical : 1 seattle-wa' in squash(capsys.readouterr().out)
 
 
 def test_a_blank_depth_eligible_alone_is_not_an_early_end(tmp_path):
