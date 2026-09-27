@@ -418,6 +418,24 @@ def configure_logging(log_path):
         logging.warning("Could not open %s (%s); logging to stderr for this run", log_path, fallback_error)
 
 
+def probe_streetlevel(python_exe, timeout=60):
+    """Whether `python_exe` can import streetlevel, as (ok, detail) - the dry run's advisory probe (#161).
+
+    Run in a child process with the interpreter the cities will use, because the queue's own interpreter
+    proves nothing about theirs. Never raises: a probe that cannot run is reported as a failed probe.
+    Only a dry run calls this; on the nightly path the runner itself reports `depth-unavailable`.
+    """
+    try:
+        probe = subprocess.run([python_exe, '-c', 'from streetlevel import streetview'],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e) or type(e).__name__
+    if probe.returncode != 0:
+        lines = probe.stdout.decode('utf-8', 'replace').strip().splitlines()
+        return False, lines[-1] if lines else 'exit %d' % probe.returncode
+    return True, ''
+
+
 def strip_separator(runner_args):
     """Drop a leading '--' from the pass-through arguments.
 
@@ -1310,6 +1328,17 @@ def main(argv=None):
         if extra_passes:
             print("Then extra passes over whichever cities ran out of budget, while a slot of the window "
                   "remains - which cities, and with what budgets, cannot be shown before pass 1 has run.")
+        # Two advisory preflights (#161), like the roster below: a dry run is someone at a keyboard, and the
+        # exit code stays the plan's. The streetlevel probe runs in the interpreter the cities will use, which
+        # is the only place the answer means anything; it is skipped when depth is, since then nothing needs it.
+        if not store_is_marked(args.store_root):
+            print("[queue] WARNING: %s not found - a real run would refuse to start (exit %d). See "
+                  "docs/ops.md#the-store-marker." % (store_marker_path(args.store_root), EXIT_STORE_NOT_MARKED))
+        if '--skip-depth' not in runner_args:
+            importable, detail = probe_streetlevel(python_exe)
+            if not importable:
+                print("[queue] WARNING: streetlevel is not importable by %s (%s) - every city's depth phase "
+                      "would be skipped and fail the night as depth-unavailable." % (python_exe, detail))
         # The same cross-check the night runs (#130), so a hand-run before a launch answers "is everything
         # wired?" now rather than tomorrow morning. Printed only: no log is configured on a dry run, so
         # load_roster's INFO narration goes nowhere here (the first module-level logging call installs
@@ -1317,10 +1346,6 @@ def main(argv=None):
         # simply waits up to ROSTER_MAX_HOSTS x ROSTER_TIMEOUT_SECONDS for the WARNING line. A gap exits 1
         # exactly as the night would; a roster nobody served is advisory here - this is someone at a
         # keyboard, possibly offline, reading the plan - where the night treats it as a failed check.
-        # Advisory, like the roster: a dry run is someone at a keyboard, and the exit code stays the plan's.
-        if not store_is_marked(args.store_root):
-            print("[queue] WARNING: %s not found - a real run would refuse to start (exit %d). See "
-                  "docs/ops.md#the-store-marker." % (store_marker_path(args.store_root), EXIT_STORE_NOT_MARKED))
         check = check_manifest(cities, disabled)
         gap, status = manifest_report(check, advisory=True)
         print('\n'.join(line for line, _ in gap + status))

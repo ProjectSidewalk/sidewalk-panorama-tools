@@ -286,7 +286,7 @@ with several rows on one host does not spend the whole cap on it.
 | `--only CITY_ID` | Re-run one city through the same machinery — the lock, the budgets, the summary — rather than by hand. Repeatable. |
 | `--no-rotate` | Keep manifest order. By default the starting point rotates daily, so a night that truncates does not always drop the same tail cities. |
 | `--single-pass` | Run every city once and leave the rest of the window unused — today's behaviour before [extra passes](#extra-passes). `--only` implies it. |
-| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. Warns (without changing its exit code) when the [store marker](ops.md#the-store-marker) is missing. |
+| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. Warns (without changing its exit code) when the [store marker](ops.md#the-store-marker) is missing, and when the cities' interpreter (`--python`) cannot import `streetlevel` — skipped when `--skip-depth` is passed through. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
 **Exit codes**, since the exit is the alert: it is the subject line of the night's message

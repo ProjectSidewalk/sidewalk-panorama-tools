@@ -716,7 +716,7 @@ store**, so it survives remounts and is absent from the empty directory under th
    `sudo chown root:root /tmp/under/mnt/panostore && sudo chmod 555 /tmp/under/mnt/panostore`; then
    `sudo umount /tmp/under`. Record the date in the private runbook.
 3. `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --dry-run`
-   prints no marker `WARNING`.
+   prints no marker `WARNING` (and no `streetlevel is not importable` one).
 4. Optional proof of the alarm: a throwaway crontab line (same crontab, so it inherits `SHELL`/`BASH_ENV`)
    running the queue under `cron_notify` with `--store-root /tmp/no-marker --only <city>` exits 5 before
    running anything, a `…: exit 5 on <host>` message arrives, and `cron_notify_probe.log` says `published`.

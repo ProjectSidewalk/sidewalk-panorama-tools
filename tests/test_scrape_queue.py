@@ -33,6 +33,9 @@ from conftest import posix_only
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Captured at import, before the autouse streetlevel_probe fixture replaces it for every test.
+REAL_PROBE = scrape_queue.probe_streetlevel
+
 # scrape_queue.main() adds a handler to the root logger and installs a SIGTERM handler, both process-wide.
 # conftest's autouse _isolate_process_state snapshots and restores exactly that around every test in the
 # suite, so this module does not carry its own copy - which is the point of it having been lifted there.
@@ -127,6 +130,21 @@ def _no_network(monkeypatch):
         raise urllib.error.URLError('no network in tests')
 
     monkeypatch.setattr(scrape_queue, '_open_url', refuse)
+
+
+@pytest.fixture(autouse=True)
+def streetlevel_probe(monkeypatch):
+    """A dry run probes whether the cities' interpreter can import streetlevel (#161), in a child process.
+    Stubbed for every test - answering "importable" and recording its calls - so no dry run spawns an
+    interpreter and none depends on what this machine has installed. Tests about the probe set `answer`."""
+    probe = SimpleNamespace(calls=[], answer=(True, ''))
+
+    def fake(python_exe, timeout=60):
+        probe.calls.append(python_exe)
+        return probe.answer
+
+    monkeypatch.setattr(scrape_queue, 'probe_streetlevel', fake)
+    return probe
 
 
 @pytest.fixture
@@ -2240,6 +2258,64 @@ class TestADryRunWarnsAboutAnUnmarkedStore:
         run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run')
 
         assert '.pano-store' not in capsys.readouterr().out
+
+
+class TestADryRunProbesStreetlevel:
+    """(d) of #161, advisory: a dry run before a deploy should say that the cities' interpreter cannot import
+    streetlevel, rather than leave it to the night's `depth-unavailable` lines."""
+
+    def test_an_unimportable_streetlevel_is_a_warning_and_keeps_the_exit_code(
+            self, tmp_path, fake_runner, journal, capsys, streetlevel_probe):
+        streetlevel_probe.answer = (False, "ModuleNotFoundError: No module named 'streetlevel'")
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run')
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert '[queue] WARNING: streetlevel is not importable' in out and 'ModuleNotFoundError' in out
+        assert streetlevel_probe.calls == [sys.executable], 'the probe runs in the CITIES\' interpreter'
+
+    def test_an_importable_streetlevel_says_nothing(self, tmp_path, fake_runner, journal, capsys,
+                                                    streetlevel_probe):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run')
+
+        assert 'streetlevel is not importable' not in capsys.readouterr().out
+        assert streetlevel_probe.calls == [sys.executable]
+
+    def test_it_is_skipped_when_depth_is(self, tmp_path, fake_runner, journal, streetlevel_probe):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--', '--skip-depth')
+
+        assert streetlevel_probe.calls == []
+
+    def test_the_nightly_path_never_probes(self, tmp_path, fake_runner, journal, streetlevel_probe):
+        """The runner reports depth-unavailable itself, in the real cron environment; a probe here would
+        only add a child process to every night."""
+        run_main(tmp_path, three_cities(tmp_path), fake_runner)
+
+        assert streetlevel_probe.calls == []
+
+
+class TestTheStreetlevelProbeItself:
+
+    def test_an_interpreter_that_cannot_start_is_a_failed_probe(self, tmp_path):
+        ok, detail = REAL_PROBE(str(tmp_path / 'no-python'))
+
+        assert not ok and detail
+
+    def test_a_failing_import_reports_its_last_line(self, monkeypatch):
+        def run(argv, **kwargs):
+            assert argv[1:] == ['-c', 'from streetlevel import streetview']
+            return SimpleNamespace(returncode=1, stdout=b"Traceback...\nImportError: half-written\n")
+
+        monkeypatch.setattr(scrape_queue.subprocess, 'run', run)
+
+        assert REAL_PROBE('py') == (False, 'ImportError: half-written')
+
+    def test_a_clean_import_is_ok(self, monkeypatch):
+        monkeypatch.setattr(scrape_queue.subprocess, 'run', lambda argv, **k: SimpleNamespace(returncode=0,
+                                                                                               stdout=b''))
+
+        assert REAL_PROBE('py') == (True, '')
 
 
 # --- The manifest is cross-checked against the fleet (#130) -------------------------------------------------
