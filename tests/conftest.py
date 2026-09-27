@@ -8,9 +8,11 @@ streetlevel's heavy dependency tree.
 import base64
 import logging
 import os
+import shutil
 import signal
 import struct
 import sys
+import tempfile
 import types
 from types import SimpleNamespace
 
@@ -163,8 +165,49 @@ def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(gsv, 'default_pace_state_path', lambda: str(state))
 
 
+# Set by pytest_configure: the temp directory every child process of this session resolves as its own.
+CHILD_TEMP_DIR = None
+_TEMP_VARS = ('TMPDIR', 'TEMP', 'TMP')
+_prior_temp_env = {}
+
+
+def _give_children_a_session_temp_dir():
+    """Point spawned children's temp directory at a fresh per-session one (#165).
+
+    gsv's depth block latch and pacing state and scrape_queue's lock all default to tempfile.gettempdir(),
+    deliberately - each is a fact about the host. _isolate_depth_host_state redirects them in THIS process,
+    but monkeypatching does not cross a process boundary, so the runner tests that spawn DownloadRunner.py
+    were taking the host's real pacing lock and reading its real latch. The children inherit os.environ
+    (every spawn helper passes `dict(os.environ, ...)`), and tempfile reads TMPDIR, TEMP, TMP in that order.
+
+    gettempdir() is called first on purpose: it caches the host's directory in this process before the
+    variables change, so pytest's own tmp_path stays where it always was - and survives the rmtree of the
+    session dir at unconfigure.
+    """
+    global CHILD_TEMP_DIR
+    tempfile.gettempdir()
+    CHILD_TEMP_DIR = tempfile.mkdtemp(prefix='sidewalk-tests-children-')
+    for name in _TEMP_VARS:
+        _prior_temp_env[name] = os.environ.get(name)
+        os.environ[name] = CHILD_TEMP_DIR
+
+
+def pytest_unconfigure(config):
+    """Undo _give_children_a_session_temp_dir: restore the variables and remove what the children left."""
+    global CHILD_TEMP_DIR
+    for name, value in _prior_temp_env.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    _prior_temp_env.clear()
+    if CHILD_TEMP_DIR:
+        shutil.rmtree(CHILD_TEMP_DIR, ignore_errors=True)
+        CHILD_TEMP_DIR = None
+
+
 def pytest_configure(config):
-    """Extend coverage into the subprocesses several test modules spawn (#57).
+    """Give children a session temp dir (above), then extend coverage into them (#57).
 
     The runners are driven as real subprocesses - `main()`, the argparse `type=` validators, the budget
     carve-out prints and both `__main__` guards only ever execute in a child - so without this the coverage
@@ -179,6 +222,7 @@ def pytest_configure(config):
     `parallel = True` in .coveragerc is the other half: without it each child would overwrite the parent's
     data file instead of adding to it.
     """
+    _give_children_a_session_temp_dir()
     if os.environ.get('COVERAGE_PROCESS_START'):
         return
     try:
