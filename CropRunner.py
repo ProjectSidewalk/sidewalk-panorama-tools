@@ -163,6 +163,12 @@ PROVENANCE_FIELDS = ('source', 'copyright', 'license')
 
 PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
 
+# The manifest's header before rows carried a city (#159 step 1), and where a manifest still under it is
+# moved so the city-bearing rows never land beneath it. See set_aside_pre_city_manifest.
+PRE_CITY_PROVENANCE_COLUMNS = ('label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+PROVENANCE_MANIFEST_PRE_CITY = 'crop_provenance.pre-city.csv'
+MANIFEST_PRE_CITY = 'provenance_manifest_pre_city'
+
 # crop_rule.json's answer to "may the manifest be read as covering every crop here?" (#153 M3). Named for
 # what it records - that no run has KNOWN of a crop without a row - because that is all a marker can
 # record: coverage itself is the manifest's rows against the crops on disk. See write_rule_marker.
@@ -923,6 +929,71 @@ def _store_holds_crops(destination_dir):
     return False
 
 
+class ProvenanceManifestHeaderError(Exception):
+    """The provenance manifest on disk carries a header this run must not append under. See
+    set_aside_pre_city_manifest."""
+
+
+# How much of the manifest's first line is read to judge its header. Either header is under 80 bytes; a
+# first line longer than this is not one of them.
+_MANIFEST_HEADER_READ_LIMIT = 4096
+
+
+def set_aside_pre_city_manifest(destination_dir):
+    """Check the manifest's header before anything is appended under it, and move a pre-city one aside.
+
+    ProvenanceManifest writes a header only into an EMPTY file, so it trusts whatever header a non-empty
+    one carries. When `city` became the first column (#153's stopgap for #159) that trust was wrong for
+    every manifest already on disk: seven-field rows appended under the six-field header read with every
+    column shifted by one, and nothing raised. So:
+
+    * the current header (or no file, or an empty one, or a torn header with no newline at all - the
+      manifest's own open rewrites that) passes untouched;
+    * the pre-city header (PRE_CITY_PROVENANCE_COLUMNS) is MOVED, whole, to PROVENANCE_MANIFEST_PRE_CITY,
+      and the run then starts a fresh manifest. Its rows are never rewritten or given a city: a root cut
+      before #159 may hold more than one city's crops, and a city written onto those rows would be a guess;
+    * anything else raises ProvenanceManifestHeaderError, and so does a pre-city manifest when the
+      set-aside name is already taken - never replaced, since that would lose the older file.
+
+    Called before write_rule_marker, which then finds no manifest and records a known gap if the store
+    holds crops - which it will, since the set-aside rows described crops that are still on disk.
+
+    :return: PROVENANCE_MANIFEST_PRE_CITY if a manifest was moved aside, else None.
+    :raises ProvenanceManifestHeaderError: before anything is written.
+    """
+    path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
+    try:
+        with open(path, 'rb') as f:
+            first_line = f.readline(_MANIFEST_HEADER_READ_LIMIT)
+    except OSError:
+        # Absent: nothing to check. Unreadable: ProvenanceManifest's own open raises on it just after the
+        # marker is written, before any crop - the existing failure for a store that cannot record provenance.
+        return None
+    if first_line == _csv_line(PROVENANCE_COLUMNS):
+        return None
+    if not first_line.endswith(b'\n') and len(first_line) < _MANIFEST_HEADER_READ_LIMIT:
+        # Empty, or a header torn before its newline: nothing after it can be a row, and the open cuts it.
+        return None
+    if first_line != _csv_line(PRE_CITY_PROVENANCE_COLUMNS):
+        raise ProvenanceManifestHeaderError(
+            "%s begins with a header this run does not recognise (%r; expected %s). Appending under it "
+            "would misfile every column, so nothing has been cut. Move the file aside or restore it, then "
+            "re-run." % (path, first_line[:200], ','.join(PROVENANCE_COLUMNS)))
+    aside = os.path.join(destination_dir, PROVENANCE_MANIFEST_PRE_CITY)
+    if os.path.lexists(aside):
+        raise ProvenanceManifestHeaderError(
+            "%s still has the header written before rows carried a city, and %s already exists, so it "
+            "cannot be set aside without replacing that file. Nothing has been cut. Merge or rename one of "
+            "the two by hand, then re-run." % (path, aside))
+    os.rename(path, aside)
+    message = ("%s had the header written before rows carried a city; moved it, unchanged, to %s and "
+               "started a new manifest. Crops listed only in the old file have no row in the new one."
+               % (path, PROVENANCE_MANIFEST_PRE_CITY))
+    print(message)
+    logging.warning('%s', message)
+    return PROVENANCE_MANIFEST_PRE_CITY
+
+
 class ProvenanceManifest:
     """<crop-dir>/crop_provenance.csv, appended one row per crop as it lands (#111).
 
@@ -1142,6 +1213,10 @@ def write_rule_marker(destination_dir, force=False, city=None):
     previous = marker.get('crop_rule_version')
     if city is None and isinstance(marker.get('city'), str):
         city = marker['city']
+    # Named once a pre-city manifest has been set aside (#159 step 1), and carried forward after that.
+    pre_city = marker.get(MANIFEST_PRE_CITY)
+    if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST_PRE_CITY)):
+        pre_city = PROVENANCE_MANIFEST_PRE_CITY
 
     if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST)):
         manifest_started_under = marker.get('provenance_manifest_started_under')
@@ -1179,7 +1254,8 @@ def write_rule_marker(destination_dir, force=False, city=None):
                        'previous_crop_rule_version': previous,
                        'provenance_manifest': PROVENANCE_MANIFEST,
                        'provenance_manifest_started_under': manifest_started_under,
-                       MANIFEST_NO_KNOWN_GAP: no_known_gap},
+                       MANIFEST_NO_KNOWN_GAP: no_known_gap,
+                       MANIFEST_PRE_CITY: pre_city},
                       f, indent=1, sort_keys=True)
     return previous
 
@@ -1485,6 +1561,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     # Before any crop is cut, so a run that dies partway still leaves the store saying what it holds.
     os.makedirs(destination_dir, exist_ok=True)
+    # Before the marker, so a refusal leaves it untouched, and so the marker sees the manifest it will
+    # actually be appending to (#159 step 1).
+    set_aside_pre_city_manifest(destination_dir)
     write_rule_marker(destination_dir, force=force, city=city)
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
@@ -1771,7 +1850,8 @@ def main(argv=None):
              both channels, nothing cut); EXIT_REFUSED_DESTINATION if -o looks like the production
              crop store, or holds a directory the guard cannot list, or is recorded as another
              city's store or has a crop_rule.json that cannot say whose (nothing is created or written,
-             crop.log included). 1 is deliberately not keyed
+             crop.log included); EXIT_REFUSED_DESTINATION too for a crop_provenance.csv whose header
+             this run cannot append under (after crop.log opens, before any crop). 1 is deliberately not keyed
              on "did every label produce a crop": missing panos are the normal state of a city whose
              scrape is still catching up, while `errors` only ever counts things that should not have
              happened - a corrupt pano, a malformed row, a failed write - so it is the half worth
@@ -1819,6 +1899,12 @@ def main(argv=None):
         logging.error('%s', e)
         print("CropRunner: %s" % e)
         return 1
+    except ProvenanceManifestHeaderError as e:
+        # A verdict about the store, reached before any crop was cut: re-running changes nothing until a
+        # person moves the file, so it is a refusal (3), not a label error (1).
+        logging.error('%s', e)
+        print("CropRunner: %s" % e)
+        return EXIT_REFUSED_DESTINATION
     return 1 if counts['errors'] else 0
 
 

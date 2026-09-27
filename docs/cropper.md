@@ -237,7 +237,7 @@ Errors are retried on the next run. The exit statuses, all of them:
 | `0` | Every label landed in a non-error bucket (a crop, or a skip the run chose). |
 | `1` | At least one label errored; re-running retries them. Also: a `-d` fetch of cvMetadata that fails (`Cannot fetch metadata from webserver`, the reason in `crop.log`); an `-f` file whose extension is neither `.csv` nor `.json` (the message on stderr); a label-type shard of `-o` (`<crop-dir>/<digits>/`) that cannot be listed, which stops the run before any crop with the shard named on stdout and in `crop.log` (not `3`: nothing judged `-o` to be the production store — the provenance record needs to know whether the store already holds crops, and could not find out); and what an uncaught exception exits with — a manifest that cannot be opened stops the run before any crop, with a traceback. |
 | `2` | argparse's usage error: a missing `-s`/`-o`/`--city`, a `--city` that is not a city_id, both or neither of `-d`/`-f`. |
-| `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list, or is [another city's store](#one-store-one-city), or has a `crop_rule.json` that cannot say whose it is. Nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
+| `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list, or is [another city's store](#one-store-one-city), or has a `crop_rule.json` that cannot say whose it is. Also: a `crop_provenance.csv` whose header the run cannot append under ([the manifest](#the-provenance-manifest-crop_provenancecsv)), checked after `crop.log` is opened (so the message is in it too) but before `crop_rule.json` is rewritten or any crop is cut. Otherwise nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
 
 `check_cvmetadata_schema.py` also exits `3`, for a different reason (the deployment could not be read). The
 two tools are never chained, so the codes do not meet, but a wrapper that runs both should not read a `3` as
@@ -438,6 +438,15 @@ below `main()` that passes none.
   opened the run stops before cutting anything, exactly as it does when `crop_rule.json` cannot be written.
   A handle that cannot be *closed* cleanly (a network mount reporting a deferred write error) is said on
   both channels and does not stop the run summary.
+* **The header on disk is checked before anything is appended under it**
+  ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)). A manifest written before
+  rows carried a city starts `label_id,pano_id,source,copyright,license,crop_rule_version`; appending the
+  seven-field rows under it would shift every column by one, silently. So a manifest with that header is
+  **moved, unchanged, to `crop_provenance.pre-city.csv`** and a fresh manifest is started (said on both
+  channels). Its rows are never rewritten or given a city — a store cut before #159 may hold more than one
+  city's crops, and a city written onto them would be a guess. If `crop_provenance.pre-city.csv` already
+  exists, or the header is anything else, the run stops with exit **3** before cutting anything and names
+  the file; nothing is moved or replaced.
 
 **Crops cut before the manifest existed have no rows**, since they are not re-cut without `--force` (a
 `--force` pass that reaches them adds their rows). `crop_rule.json` records what the runs know about gaps:
@@ -447,6 +456,7 @@ below `main()` that passes none.
 | `provenance_manifest` | The manifest's file name. |
 | `provenance_manifest_started_under` | The crop rule in force when the manifest was started. |
 | `provenance_manifest_no_known_gap` | `true` if the store held no crops when the manifest was started and no run since has known of a crop left without a row; `false` once either is known; `null` if a manifest is present with no record of how it started. |
+| `provenance_manifest_pre_city` | `crop_provenance.pre-city.csv` once a manifest from before rows carried a city has been set aside (above), and kept after that; `null` if none ever was. The fresh manifest started beside it records `provenance_manifest_no_known_gap: false`, since the crops the old rows describe have no row in it. |
 
 The first two are set by the run that starts the manifest and carried forward by every later run.
 `provenance_manifest_no_known_gap` starts the same way and only ever goes from `true` to `false`: a run
