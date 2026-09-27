@@ -108,6 +108,15 @@ def _get_response(url, session, stream=False):
                            stream=stream)
     if not stream:
         return response
+    # The streamed path is the two probes (resolve_zoom_and_dims, frame_covers_pano), and both read a black
+    # body as a verdict: "retired" (ledgered downloaded=0, never re-asked) and "the frame covers the pano".
+    # Google answers both of those with a black 200, so only a 200 is evidence (#166 option b, the #99 rule).
+    # `== 200`, not raise_for_status(): a 206 or a final 3xx is no more evidence than a 403. The raise is
+    # transient wherever it lands. 429/5xx never reach here - the adapter's Retry turns them into RetryError.
+    if response.status_code != 200:
+        response.close()     # return the pooled connection; nothing will read this body
+        raise requests.HTTPError('cbk probe answered %s, not 200: %s' % (response.status_code, url),
+                                 response=response)
     return response.raw
 
 
