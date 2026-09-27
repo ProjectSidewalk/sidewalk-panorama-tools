@@ -1240,8 +1240,9 @@ class TestDepthProgress:
         not None - nine earlier nights failed and none of it came back as a skip."""
         progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', saving_nothing(10))))
 
-        assert (progress['unsaved_nights'], progress['unsaved_requests'], progress['written_off'],
-                progress['unavailable_share'], progress['barren']) == (10, 250, 0, 0.0, True)
+        assert (progress['unsaved_nights'], progress['unsaved_request_nights'], progress['unsaved_requests'],
+                progress['written_off'], progress['unavailable_share'], progress['barren']) == (10, 10, 250, 0, 0.0,
+                                                                                                True)
 
     def test_stragglers_that_the_phase_walks_every_night_are_not_barren(self, tmp_path):
         """The ordinary end state of a backfill: the last 100 panos fail transiently every night. The phase
@@ -1332,7 +1333,12 @@ class TestADepthPhaseThatSavesNothingIsFlagged:
         assert 'Depth phase saved nothing on the last 3 nights' in found[0]['msg']
         assert '75 requests' in found[0]['msg']
         assert '4,410 of 5,000' in found[0]['msg']
-        assert 'retry' in found[0]['msg']
+        assert 'None of it was ledgered' in found[0]['msg']
+        # D11: the breaker's stop line is logged at ERROR, so the message must not send anyone looking for a
+        # "WARNING line" that does not exist.
+        assert 'the DEPTHDOWNLOAD lines in scrape.log' in found[0]['msg']
+        # The calendar clause appears only when it differs from the count of nights that asked.
+        assert 'since the last save' not in found[0]['msg']
 
     def test_two_nights_are_not_enough(self, tmp_path):
         rows = [depth_rows(2, 5000, 0, 590)] + saving_nothing(2)
@@ -1345,6 +1351,33 @@ class TestADepthPhaseThatSavesNothingIsFlagged:
         rows = saving_nothing(3, newest=1) + [depth_rows(0, 5000, 590, 25, transient=24)]
 
         assert self.issues(tmp_path, rows) == []
+
+    def test_nights_with_no_row_are_not_failing_nights(self, tmp_path):
+        """A save five nights ago, four nights with no row at all (a box outage, a window that never reached
+        the city), then one night of breaker trips. One failing night is exactly what DEPTH_BARREN_NIGHTS is
+        there to forgive; counting CALENDAR nights since the save read it as five (#169 review)."""
+        rows = [depth_rows(5, 5000, 0, 590)] + saving_nothing(1)
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_a_stand_down_then_one_failing_night_is_not_barren(self, tmp_path):
+        """docs/ops.md's rollback: --skip-depth for four nights (five-zero rows - rule 7's business, not this
+        rule's), then it comes off and the first night fails. That is one failing night, not five."""
+        rows = ([depth_rows(5, 5000, 0, 590)] + [depth_rows(n, 5000, 590, 0, ran=False) for n in (4, 3, 2, 1)]
+                + saving_nothing(1))
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_failing_nights_with_gaps_between_them_still_count(self, tmp_path):
+        """Three failing nights spread over eight: the rule counts nights that ASKED, wherever they fall, and
+        says how long it has been since the last save as well."""
+        rows = ([depth_rows(8, 5000, 0, 590)] + saving_nothing(1, newest=6) + saving_nothing(1, newest=3)
+                + saving_nothing(1))
+
+        found = self.barren(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'saved nothing on the last 3 nights it made requests, over 8 nights since' in found[0]['msg']
 
     def test_a_city_that_never_saved_counts_from_its_first_night(self, tmp_path):
         found = self.barren(tmp_path, saving_nothing(3))
@@ -1376,11 +1409,15 @@ class TestADepthPhaseThatSavesNothingIsFlagged:
         found = self.barren(tmp_path, self.half_ledgered((590, 640, 690)))
 
         assert [i['level'] for i in found] == ['CRITICAL'], found
+        # The two figures differ here (the drift shape makes them equal), so this pins which is which.
+        assert '100 of the 200 requests that failed before the newest run' in found[0]['msg']
+        assert 'The fleet saves ~60%' in found[0]['msg']
 
     def test_just_under_half_is_transient(self, tmp_path):
         found = self.barren(tmp_path, self.half_ledgered((590, 639, 689)))
 
         assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'Only 99 of the failures were ledgered' in found[0]['msg']
 
     def test_the_measured_transient_outage_is_a_warning(self, tmp_path):
         found = self.barren(tmp_path, saving_nothing(10))

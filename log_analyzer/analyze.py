@@ -110,13 +110,17 @@ INCOMPLETE_RUN_WARNING   = 3    # incomplete runs in the last 7 before flagging
 OVERLAP_TOLERANCE_MIN    = 1.0  # durations are whole minutes; a start this close to the previous end is rounding
 DEPTH_STALLED_NIGHTS     = 3    # consecutive nights with no depth request, with work left, before flagging
 DEPTH_RATE_NIGHTS        = 7    # nights the depth request rate (and so the ETA) is averaged over
-DEPTH_BARREN_NIGHTS      = 3    # calendar nights since the last depth SAVE, with requests made, before rule 10.
+DEPTH_BARREN_NIGHTS      = 3    # nights that made depth requests since the last SAVE, before rule 10 (not
+                                # calendar nights: a night with no row or a stand-down row is no evidence).
                                 # Same as DEPTH_STALLED_NIGHTS so "stalled" and "saving nothing" read alike; one
                                 # night is already improbable by chance (below), so this is operator latency -
                                 # a one-night network or store outage heals itself and must not page.
 DEPTH_BARREN_MIN_REQUESTS = 10  # requests since the last save before 0 saves is evidence. Fleet 2026-09-18:
                                 # 62,186 saved of 96,511 requests (64%; canary 301/500), so P(0 of 10) = 0.36^10
-                                # ~ 4e-5. Measured outage shapes: 25/night (the breaker), 1,889/night (drift).
+                                # ~ 4e-5 - a FLEET figure: per city the share ran 35% (washington-dc) to 100%
+                                # on 2026-09-27, and at a 35% save share P(0 of 10) ~ 1.3%, which 3 requesting
+                                # nights still make negligible. Measured outage shapes: 25/night (the
+                                # breaker), 1,889/night (drift).
 DEPTH_UNAVAILABLE_SHARE  = 0.5  # ledger growth / failures (excluding the newest row) at or above which the
                                 # failures are being ledgered as `unavailable`. By construction 0.0 when they are
                                 # transient (never ledgered, gsv.py) and 1.0 in the drift shape; midpoint = margin.
@@ -517,32 +521,40 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     # two shapes are told apart by whether the failures come back as skips (depth_progress). The ledgering
     # arm is CRITICAL because it is permanent: an `unavailable` row is never re-requested, so every night it
     # runs costs those panos their depth until someone scrubs the ledger. The transient arm loses nothing -
-    # those panos retry - so it is a WARNING, rule 7's tier, and so is a span too short to classify.
+    # those panos retry - so it is a WARNING, rule 7's tier.
+    #
+    # The count is of nights that ASKED (unsaved_request_nights), so the share is always a number here: three
+    # requesting nights are at least two requesting rows before the newest (depth_progress). The first version
+    # counted calendar nights and so could reach this with one requesting row, and carried a third message
+    # for "cannot be classified yet"; that state is no longer reachable (#169 review).
     if progress and progress["barren"]:
-        n = progress["unsaved_nights"]
+        asked = progress["unsaved_request_nights"]
+        since = progress["unsaved_nights"]
+        nights = f"on the last {asked} nights it made requests" + (
+            f", over {since} nights since the last save" if since != asked else "")
         share = progress["unavailable_share"]
-        if share is not None and share >= DEPTH_UNAVAILABLE_SHARE:
+        if share >= DEPTH_UNAVAILABLE_SHARE:
             issues.append({
                 "level": "CRITICAL",
                 "msg": (
-                    f"Depth phase saved nothing on the last {n} nights and is writing panos off: "
+                    f"Depth phase saved nothing {nights}, and is writing panos off: "
                     f"{progress['written_off']:,} of the {progress['failed_before_newest']:,} requests that "
                     f"failed before the newest run are now `unavailable` rows in depth_log.csv, never to be "
-                    f"re-requested. Healthy nights save ~60% of requests, so this is upstream drift "
-                    f"(streetlevel or the depth payload), not the panos. Put --skip-depth back after the `--` "
-                    f"in the crontab and scrub the ledger before the next run - docs/ops.md, When the depth "
-                    f"phase saves nothing."
+                    f"re-requested. The fleet saves ~60% of its requests on a healthy night, so this is "
+                    f"upstream drift (streetlevel or the depth payload), not the panos. Put --skip-depth back "
+                    f"after the `--` in the crontab and scrub the ledger before the next run - docs/ops.md, "
+                    f"When the depth phase saves nothing."
                 ),
             })
         else:
             tail = ("None of it was ledgered, so those panos retry - but the backfill is not moving."
-                    if share is not None else
-                    "Only one run has made requests since, so these cannot yet be told apart from "
-                    "`unavailable` verdicts.")
+                    if not progress["written_off"] else
+                    f"Only {progress['written_off']:,} of the failures were ledgered as `unavailable`; the "
+                    f"rest retry - but the backfill is not moving.")
             issues.append({
                 "level": "WARNING",
                 "msg": (
-                    f"Depth phase saved nothing on the last {n} nights: {progress['unsaved_requests']:,} "
+                    f"Depth phase saved nothing {nights}: {progress['unsaved_requests']:,} "
                     f"requests, every one failed, with {progress['unresolved']:,} of "
                     f"{progress['eligible']:,} panos unresolved. {tail} Candidates: the consecutive-failure "
                     f"breaker (network, or a full or unmounted store), Google refusing requests, or a depth "
@@ -689,6 +701,10 @@ def depth_progress(df: pd.DataFrame):
                    quiet_nights' convention: log span + 1 when the city never saved.
       unsaved_requests
                    requests (success + failed) on the rows after that date - all of them failures.
+      unsaved_request_nights
+                   the dates after that one on which the phase made at least one request: the nights that
+                   asked and saved nothing. What rule 10 counts - a night with no row or a stand-down row is
+                   no evidence the phase is failing.
       written_off  what the ledger (skip + success) gained between the first and the newest row of that span
                    that made requests, floored at 0 (a corpus can shrink). The `unavailable` verdicts, read
                    back one run late.
@@ -697,9 +713,11 @@ def depth_progress(df: pd.DataFrame):
                    have come back as skips yet.
       unavailable_share
                    written_off / failed_before_newest, or None when there is nothing to divide by - fewer than
-                   two requesting rows, so one-night lag leaves the failures unclassifiable.
+                   two requesting rows, so one-night lag leaves the failures unclassifiable. Never None when
+                   barren: DEPTH_BARREN_NIGHTS (3) requesting nights are at least two requesting rows before
+                   the newest, and every request on them failed.
       barren       rule 10 (#163): the phase is asking and saving nothing. True when panos are unresolved,
-                   unsaved_nights >= DEPTH_BARREN_NIGHTS, unsaved_requests >= DEPTH_BARREN_MIN_REQUESTS,
+                   unsaved_request_nights >= DEPTH_BARREN_NIGHTS, unsaved_requests >= DEPTH_BARREN_MIN_REQUESTS,
                    quiet_nights < DEPTH_STALLED_NIGHTS (once requests stop the night is rule 7's, so the two
                    never report one outage twice), and the newest requesting row did NOT walk its whole list
                    (depth_total < depth_eligible). That last guard is what keeps the ordinary end of a
@@ -750,6 +768,11 @@ def depth_progress(df: pd.DataFrame):
                          else (newest - per_night.index.min()).days + 1)
     in_span = (date > last_save) if last_save is not None else pd.Series(True, index=df.index)
     unsaved_requests = int(requests[in_span].sum())
+    # The nights that ASKED and saved nothing - what rule 10 counts, not unsaved_nights. A night with no row,
+    # or a five-zero stand-down row, is no evidence either way: counting calendar nights let a save, a few
+    # nights of --skip-depth (docs/ops.md's own rollback) or a window that never reached the city, then ONE
+    # failing night read as `saved nothing on the last 5 nights` (#169 review).
+    unsaved_request_nights = int(date[in_span & (requests > 0)].nunique())
     # The two all-failed shapes differ only across rows: an `unavailable` verdict is ledgered at once and
     # comes back as the next run's skip, a transient failure never does. So what the ledger gained between
     # the first and the newest requesting row of the span, over the failures of every row but the newest
@@ -766,7 +789,7 @@ def depth_progress(df: pd.DataFrame):
     newest_asked = df[requests > 0].iloc[-1] if (requests > 0).any() else None
     walked_list = bool(newest_asked is not None and pd.notna(newest_asked["depth_eligible"])
                        and newest_asked["depth_total"] >= newest_asked["depth_eligible"])
-    barren = bool(unresolved > 0 and unsaved_nights >= DEPTH_BARREN_NIGHTS
+    barren = bool(unresolved > 0 and unsaved_request_nights >= DEPTH_BARREN_NIGHTS
                   and unsaved_requests >= DEPTH_BARREN_MIN_REQUESTS
                   and quiet_nights < DEPTH_STALLED_NIGHTS and not walked_list)
 
@@ -782,6 +805,7 @@ def depth_progress(df: pd.DataFrame):
         "corpus_suspect": corpus_suspect,
         "unsaved_nights": unsaved_nights,
         "unsaved_requests": unsaved_requests,
+        "unsaved_request_nights": unsaved_request_nights,
         "written_off": written_off,
         "failed_before_newest": failed_before_newest,
         "unavailable_share": unavailable_share,

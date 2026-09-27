@@ -586,8 +586,8 @@ Field 14 includes `unavailable` — a permanent, expected, non-actionable outcom
 show large failure numbers that are entirely normal. The success/failure/unavailable split goes to stdout and
 `scrape.log`; the row has no separate column for it.
 
-Its size is not a signal; **a night on which it is the only outcome is.** Healthy nights save about 60% of
-their requests, so several nights of requests with field 13 at `0` is an outage, and the
+Its size is not a signal; **a night on which it is the only outcome is.** The fleet saves about 60% of its
+requests on a healthy night (63.8% over the week to 2026-09-27; per city anywhere from 35% to 100%), so several nights of requests with field 13 at `0` is an outage, and the
 [log analyzer](log-analyzer.md#checks) reports it — see
 [When the depth phase saves nothing](#when-the-depth-phase-saves-nothing).
 
@@ -666,14 +666,15 @@ panorama is retried on the next run. See
 A phase that makes requests and saves none of them looks, from the stall check, like a phase that is
 working: a failed request is still a request. The [log analyzer](log-analyzer.md#checks) therefore watches
 **saves** separately ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)), and
-reports a city whose phase has asked at least 10 times over the last 3 nights and saved nothing. It has two
-arms, and `log.csv` can only tell them apart across two runs, because an `unavailable` verdict is ledgered at
-once and comes back as the next run's skip (field 15) while a transient failure never does:
+reports a city whose phase has asked at least 10 times on its last 3 *requesting* nights and saved nothing. A
+night with no row, or a stand-down's five zeros, is not counted, so a `--skip-depth` rollback followed by one
+bad night does not fire. It has two arms, and `log.csv` can only tell them apart across two runs, because an
+`unavailable` verdict is ledgered at once and comes back as the next run's skip (field 15) while a transient
+failure never does:
 
 | what you see | what happened | what to do |
 |---|---|---|
-| 🟡 `Depth phase saved nothing on the last N nights … those panos retry` | Every request failed **transiently**: the consecutive-failure breaker (network, a full or unmounted store), Google refusing requests, or a payload the decoder chokes on. Nothing was ledgered. | Read the `DEPTHDOWNLOAD` lines in `scrape.log` for the cause. No panos are lost; they retry once it is fixed. |
-| 🟡 `… cannot yet be told apart from unavailable verdicts` | Only one run has asked since the last save, so its verdicts have not come back yet. | Check `scrape.log` now; the next run's report will classify it. |
+| 🟡 `Depth phase saved nothing on the last N nights it made requests … retry` | Every request failed **transiently**: the consecutive-failure breaker (network, a full or unmounted store), Google refusing requests, or a payload the decoder chokes on. Nothing was ledgered. | Read the `DEPTHDOWNLOAD` lines in `scrape.log` for the cause. No panos are lost; they retry once it is fixed. |
 | 🔴 `Depth phase saved nothing … and is writing panos off` | The ledger grew by at least half of the failures: they are being written as **`unavailable`**, which is permanent. Measured shape: upstream drift (a `streetlevel` or depth-payload change) that makes every pano's depth read as absent, so the whole corpus is written off at ~1,900 panos a night while the stats line shows a healthy rate. | Stop it tonight, then scrub the ledger — below. |
 
 **Scrubbing the ledger after a write-off.** A false `unavailable` row costs that pano its depth for ever (it
