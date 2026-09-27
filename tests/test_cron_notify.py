@@ -463,28 +463,38 @@ def _probe_argv():
     """The probe recipe from docs/ops.md, "Hearing about a bad night", as argv: everything on its line."""
     with open(os.path.join(REPO_ROOT, 'docs', 'ops.md'), encoding='utf-8') as f:
         text = f.read()
-    found = re.findall(r'^[^\n`]*cron_notify\.py --name probe [^\n`]*$', text, re.M)
+    # Any crontab-shaped line naming both the script and `--name probe`, so flag order is free to change.
+    found = [line for line in re.findall(r'^\S+ \S+ \* \* \* [^\n`]*$', text, re.M)
+             if 'cron_notify.py' in line and '--name probe' in line]
     assert len(found) == 1, 'expected exactly one probe line in docs/ops.md, found %d' % len(found)
     return shlex.split(found[0])
 
 
 def _production_line():
-    """The production crontab entry from docs/downloader.md, continuations joined, as argv."""
+    """The production crontab entry from docs/downloader.md, continuations joined, as argv. Matched by what it
+    runs (cron_notify.py --name scrape-queue), not by its start time, so rescheduling the night breaks nothing."""
     with open(os.path.join(REPO_ROOT, 'docs', 'downloader.md'), encoding='utf-8') as f:
         text = f.read()
-    match = re.search(r'^0 19 \* \* \* (.*?)^```', text, re.M | re.S)
-    assert match, 'the production crontab line is not where docs/downloader.md used to have it'
-    return shlex.split(match.group(1).replace('\\\n', ' '))
+    found = [m.replace('\\\n', ' ') for m in re.findall(r'^\S+ \S+ \* \* \* (.*?)^```', text, re.M | re.S)]
+    found = [line for line in found if 'cron_notify.py' in line and '--name scrape-queue' in line]
+    assert len(found) == 1, 'expected exactly one production crontab line in docs/downloader.md, found %d' % len(found)
+    return shlex.split(found[0])
 
 
 def _flag(argv, name):
     return argv[argv.index(name) + 1]
 
 
+def _cron_path(path):
+    """A path as cron's shell resolves it: the crontab belongs to `ubuntu`, so `~/x` is `/home/ubuntu/x`."""
+    return '/home/ubuntu/' + path[2:] if path.startswith('~/') else path
+
+
 class TestTheDocumentedProbe:
     """The recipe that proves the channel delivers (#141). Its first version omitted --only-on-failure, so
-    `false` - which prints nothing - fell under cron's no-output-no-mail rule and the sink was never called:
-    the probe "passed" by doing nothing, twice, on 2026-09-19. Nothing tied the recipe to main(), so these do.
+    `false` - which prints nothing - fell under cron's no-output-no-mail rule and the sink was never called, so
+    the probe failed whether or not the channel worked - twice, on 2026-09-19, with the channel suspected.
+    Nothing tied the recipe to main(), so these do.
     """
 
     def test_the_recipe_as_written_calls_the_sink_and_logs_published(self, sink, tmp_path):
@@ -516,4 +526,4 @@ class TestTheDocumentedProbe:
     def test_the_probe_does_not_write_into_the_nightlys_log(self):
         """The log line carries no job name, and the morning check reads `tail -1` of the nightly's log - so a
         probe's `exit 1 published` there reads as a failed night."""
-        assert _flag(_probe_argv(), '--log') != _flag(_production_line(), '--log')
+        assert _cron_path(_flag(_probe_argv(), '--log')) != _cron_path(_flag(_production_line(), '--log'))

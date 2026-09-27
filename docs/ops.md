@@ -758,7 +758,7 @@ A message with `probe: exit 1` in the subject arrives and `tail -1 ~/cron_notify
 `published`; delete the line. **`--only-on-failure` is not optional in the probe.** Without it the wrapper
 is under cron's rule — deliver when the command *printed* something — and `false` prints nothing, so the sink
 is never called and no message can arrive *whether or not the channel works*: the probe fails every time and
-points at the delivery, when the log says `nothing to publish`. The first recipe here omitted it, and on
+points at the delivery, while the log says `nothing to publish`. The first recipe here omitted it, and on
 2026-09-19 the probe was run that way twice and the channel suspected before anyone read the decision in
 `main()`. `--log` is there so a probe whose publish fails still leaves `sink failed` (or `sink could not
 start`) somewhere; stderr under cron goes to the same nowhere this section is about. It is a file of its own
