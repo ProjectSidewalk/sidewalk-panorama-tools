@@ -60,13 +60,28 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | That the docs' internal links and anchors resolve, and that cited `docs/` paths exist | `test_docs.py` |
 | That the README's hero figure still builds against the current cropper, and isn't stale | `test_make_banner.py` |
 
-## Three things that are deliberately unusual
+## Four things that are deliberately unusual
 
 **The suite is network-free**, and `streetlevel` is stubbed. One module is the exception:
 `test_streetlevel_api.py` imports the *real* `streetlevel` to pin the handful of API details
 `downloaders/gsv.py` depends on — the mocked suite can't catch drift there, because the stub accepts any
 arguments. It skips itself when `streetlevel` isn't installed (its `pyfrpc` dependency has no wheel on Windows
-or macOS and needs a C compiler there).
+or macOS and needs a C compiler there) — **except when `SIDEWALK_REQUIRE_STREETLEVEL` is set**, which CI does:
+there the import is hard, so a transitive dependency that is missing fails the run with its real message
+instead of skipping all ten contract tests behind a green check
+([#165](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/165)).
+
+**The suite is also isolated from the machine it runs on**, in two ways `tests/conftest.py` sets up and
+`tests/test_suite_isolation.py` pins (#165):
+
+- A session-scoped check fails the run if it changed the repo — `git status`, plus the gitignored
+  `reports/scripts/.cache/` stamped file by file, since git cannot see it and the fetcher never replaces a
+  file already there. It exists because one test wrote a fake one-label `richmond.csv` into the real Mapillary
+  study cache on every run. The failure is reported at the teardown of whichever test ran last; the message
+  names the files. Editing the checkout while the suite runs trips it too.
+- Every spawned child gets a per-session temp directory (`TMPDIR`/`TEMP`/`TMP`), so the subprocess runner
+  tests never take the host's real depth pacing lock or read its real block latch — monkeypatching does not
+  reach a child. The pytest process itself keeps the host temp dir, and the session dir is removed at exit.
 
 **Live re-checks against external services sit behind an opt-in env var**, so CI stays offline while the
 capture scripts that produced `tests/fixtures/` remain runnable on demand.
