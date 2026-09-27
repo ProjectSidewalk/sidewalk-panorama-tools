@@ -37,7 +37,7 @@ import importlib.util
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -110,6 +110,10 @@ DEPTH_BARREN_MIN_REQUESTS = 10  # requests since the last save before 0 saves is
 DEPTH_UNAVAILABLE_SHARE  = 0.5  # ledger growth / failures (excluding the newest row) at or above which the
                                 # failures are being ledgered as `unavailable`. By construction 0.0 when they are
                                 # transient (never ledgered, gsv.py) and 1.0 in the drift shape; midpoint = margin.
+MALFORMED_RECENT_DAYS    = 7    # a torn row newer than this (or undatable) warns; older ones are one INFO line.
+                                # 20 of 26 warnings on 2026-09-19 were rows dated 2022..2026-05 (#43 close-out).
+                                # 7 as NEW_FAIL_NIGHTS and DEPTH_RATE_NIGHTS; 30 would re-alert a one-off tear
+                                # for a month, and the INFO line keeps the total visible anyway.
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +227,10 @@ def read_log(log_path: Path) -> pd.DataFrame:
     # corpus. A torn write - the realistic case, a row cut short by the mount dropping - is dropped too; it
     # was reading as a crashed run, which is a fair description but not evidence the row can be trusted for.
     malformed = sum(1 for row in rows if len(row) not in LOG_ROW_WIDTHS)
+    # Field 1 of a torn row is still trusted for one thing: dating it, so rule 9 can tell tonight's tear from
+    # one years old (#163). The stamp is written first and a tear is at the tail, so the stamp is the part
+    # that survives; a tear that did cut it parses as NaT, and rule 9 counts that as recent.
+    torn_starts = [row[0] for row in rows if len(row) not in LOG_ROW_WIDTHS]
     rows = [(row + [""] * width)[:width] for row in rows if len(row) in LOG_ROW_WIDTHS]
 
     # dtype=object, so pandas does not get to pick a string dtype whose missing-value semantics differ across
@@ -254,6 +262,8 @@ def read_log(log_path: Path) -> pd.DataFrame:
     df = df[df["start_time"].notna()]
     result = df.sort_values("start_time").reset_index(drop=True)
     result.attrs["malformed_rows"] = malformed
+    result.attrs["malformed_starts"] = tuple(pd.to_datetime(
+        pd.Series(torn_starts, dtype=object), errors="coerce", format="ISO8601", utc=True))
     return result
 
 
@@ -517,16 +527,38 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         })
 
     # --- 9. Rows that are not runs ---
+    # Only a RECENT torn row is news (#163). Counted over the whole file, a tear from 2022 warned every
+    # morning: 20 of the 26 warnings on 2026-09-19 were rows dated 2022..2026-05, which teaches the reader to
+    # skip the WARNING tier. Dated by field 1 on rule 1's clock; an undatable row counts as recent, because a
+    # tear can cut the stamp itself and that is exactly tonight's row. Older rows are one INFO line with the
+    # total, so the count stays visible without alerting.
     malformed = df.attrs.get("malformed_rows", 0)
     if malformed:
-        issues.append({
-            "level": "WARNING",
-            "msg": (
-                f"{malformed} row(s) have a field count that is neither {LOG_ROW_WIDTHS[0]} nor "
-                f"{LOG_ROW_WIDTHS[1]} - a torn or corrupted write. Every count in such a row is shifted, so "
-                f"it is left out of every figure above rather than read as a run."
-            ),
-        })
+        starts = df.attrs.get("malformed_starts", ())
+        cutoff = now - timedelta(days=MALFORMED_RECENT_DAYS)
+        recent = [t for t in starts if pd.isna(t) or t >= cutoff]
+        undatable = sum(1 for t in recent if pd.isna(t))
+        widths = f"neither {LOG_ROW_WIDTHS[0]} nor {LOG_ROW_WIDTHS[1]}"
+        if recent:
+            undated = f" ({undatable} with no readable timestamp)" if undatable else ""
+            issues.append({
+                "level": "WARNING",
+                "msg": (
+                    f"{len(recent)} of {malformed} row(s) have a field count that is {widths} and are from "
+                    f"the last {MALFORMED_RECENT_DAYS} days{undated} - a torn or corrupted write. Every count "
+                    f"in such a row is shifted, so it is left out of every figure above rather than read as "
+                    f"a run."
+                ),
+            })
+        else:
+            issues.append({
+                "level": "INFO",
+                "msg": (
+                    f"{malformed} historical row(s) have a field count that is {widths}, the newest dated "
+                    f"{max(starts):%Y-%m-%d} - old torn writes, already left out of every figure. Recorded, "
+                    f"not alerted: only a row from the last {MALFORMED_RECENT_DAYS} days warns."
+                ),
+            })
 
     return issues
 
@@ -947,9 +979,11 @@ def main(argv=None) -> int:
             pass
 
         # Print city block
-        icon = "✅" if not issues else (
-            "🔴" if any(i["level"] == "CRITICAL" for i in issues) else "🟡"
-        )
+        # Blue when every finding is INFO (#163): rule 9's history line is recorded, not alerted, and a yellow
+        # icon for it would be the every-morning warning again in another form. Such a city counts as OK.
+        levels = {i["level"] for i in issues}
+        icon = ("✅" if not issues else "🔴" if "CRITICAL" in levels
+                else "🟡" if "WARNING" in levels else "🔵")
         print(f"\n  {icon}  {display_name}")
         if stats_line:
             print(f"      {stats_line}")
