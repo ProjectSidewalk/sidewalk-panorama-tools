@@ -248,11 +248,37 @@ geometry:
 | 900 (window shifted up) | 0.900 |
 
 Inside a large black JPEG region luma is exactly 0, and the codec's ringing is confined to the rows next to
-the edge, so any label strictly inside a band gets at least half black rows, and a shifted window gets the
-whole band's share. A window more black than imagery is not imagery. The other direction holds too: exact
-zero over half a window is not a night scene or a black car, because JPEG noise keeps those off 0 (a band of
-`(1, 1, 1)` is written). Two consequences are accepted knowingly: a label within the ringing margin of a
-band's edge (y=716 above) is written, and so is a partly black crop under half (y=650, 24% black).
+the edge, so a label inside a band whose window is *not* shifted gets at least half black rows (the rows
+from the label down to the window's bottom edge). A window more black than imagery is not imagery. The other
+direction holds too: exact zero over half a window is not a night scene or a black car, because JPEG noise
+keeps those off 0 (a band of `(1, 1, 1)` is written). Two consequences are accepted knowingly: a label within
+the ringing margin of a band's edge (y=716 above) is written, and so is a partly black crop under half
+(y=650, 24% black).
+
+**A bottom band is caught only when it is deeper than a sixth of the pano.** Near the nadir the window is
+clamped at `CROP_MAX_FOV_DEG` (90° of elevation, a third of the pano's height) and shifted up to end at the
+bottom row, so every label in the lower sixth gets the *same* window, and its black share is the band's depth
+over that window's height — wherever in the band the label sits. The check therefore withholds labels in a
+bottom band only when the band is deeper than half the nadir window: **H/6, 16.7% of the pano's height**
+(a few rows more on a JPEG, where the edge's ringing rows are not exactly 0). Measured on a 2048×1024 pano,
+JPEG q75, labels just inside the band, mid-band and on the bottom row, all three giving the same share:
+
+| Bottom band depth | Black share of each window | Verdict |
+|---|---|---|
+| 10% | 0.286 | written, `success` |
+| 15% | 0.441 | written, `success` |
+| 17% | 0.485 | written, `success` (ringing) |
+| 18% | 0.535 | withheld |
+| 18.75% (#156's D4 shape) | 0.562 | withheld |
+
+So the D4 bottom band clears the limit by about six points, while a thinner band — a pre-#68 fallback or any
+other reported/served ratio under ~1/6 — is written as `success` with up to half of each crop black. Two tests
+pin this against the geometry, in memory at the exact row and on a stored JPEG either side of a sixth. A
+right-hand band has the analogous edge case at the seam: the window wraps to imagery from the left edge, so a
+label on the last column of a band gets about half black (0.510 measured at 19%, withheld by a hair). A
+consumer who wants those crops out too filters below 0.5 (see
+[Before you train](#before-you-train-on-these-crops)); judging the rows at and below the label, rather than
+the whole window, is a possible stronger check, not made here.
 
 **Not an error.** `black_content` is like `dims_mismatch`: the run refused to trust the imagery rather than
 getting anything wrong, so it does not move the exit code or the `SYSTEMIC FAILURE` alarm. It *is* said: one
@@ -284,8 +310,8 @@ path, including re-runs:
 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + black_content + errors == total
 ```
 
-(`shifted_vertically` and `recut` annotate a success, and `stale_kept` annotates a label `--force` never
-reached the write for — see below — so they are deliberately not in that sum.)
+(`shifted_vertically` and `recut` annotate a success, and `stale_kept` annotates a label `--force` did not
+write — see below — so they are deliberately not in that sum.)
 
 The run writes a rotating `crop.log` into the crop directory, prints a per-outcome summary, and **exits 1 if
 any label errored** — a corrupt pano, a malformed metadata row, a failed write — so a cron wrapper can alert.
@@ -438,10 +464,11 @@ guard refuses with or without `--force`.
 * **Nothing else changes.** Missing panos, the two preflights and errors behave exactly as without it, so a
   label the run skips keeps whatever crop it already had — a forced run over a half-scraped pano store is
   not a whole-store re-cut. Check the summary's skip counts before relying on a store being one geometry.
-* **Known limit: a label skipped before its write keeps its old crop.** A preflight skip, a missing pano
-  or an unreadable pano all come before the "does a crop exist" check: the `dims_mismatch` and
+* **Known limit: a label the run did not write keeps its old crop.** A preflight skip, a missing pano
+  or a pano that cannot be opened all come before the "does a crop exist" check: the `dims_mismatch` and
   `out_of_frame` checks run first, and a pano that is missing or cannot be opened skips every label on it.
-  A label whose crop is on disk is then skipped with that crop untouched — cut under whatever rule cut it,
+  A pano that opens but cannot be decoded fails later, at the first label that reaches its write, and every
+  such label is an error. Either way, a label whose crop is on disk is left with that crop untouched — cut under whatever rule cut it,
   while `crop_rule.json` names the new one. A forced run counts these as `stale_kept` (an annotation of the
   skip or error, outside the sum above) and ends with `N labels skipped under --force - by a preflight, a
   missing pano or an unreadable pano - kept a crop already on disk`, on stdout and in `crop.log`.
@@ -564,7 +591,10 @@ its pano before [#164](https://github.com/ProjectSidewalk/sidewalk-panorama-tool
 as a mostly black crop. Filter them the way the cropper now would: drop a crop where
 `downloaders.common.black_fraction(img) > 0.5`. That reads the stored crop - re-encoded, and downscaled if
 its window was wider than `CROP_MAX_STORED_WIDTH` - rather than the raw window the cropper judges, so the two
-can disagree slightly for a label near a band's edge; well inside a band both read the band.
+can disagree slightly for a label near a band's edge; well inside a band both read the band. A store cut
+*with* the check can still hold crops up to half black: a bottom band thinner than a sixth of the pano is
+never withheld ([the numbers](#the-content-check-black_content)), so a stricter threshold, such as 0.25, is
+the consumer's to choose.
 
 **You will likely want to filter out labels where `disagree_count > agree_count`.** These come from human
 validations by other Project Sidewalk users; the cropper does **not** filter them by default. A stricter

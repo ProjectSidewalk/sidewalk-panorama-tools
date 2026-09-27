@@ -344,6 +344,54 @@ class TestAMostlyBlackWindowIsWithheld:
         assert counts['black_content'] == 2
         assert find_crop(out, 2) is None and find_crop(out, 3) is None
 
+    def test_at_the_nadir_a_bottom_band_is_caught_only_deeper_than_a_sixth_of_the_pano(self, crop_runner,
+                                                                                         tmp_path):
+        """KNOWN LIMIT, tied to the geometry that sets it. Near the nadir the window is clamped at
+        CROP_MAX_FOV_DEG (90 deg of elevation, a third of the pano's height) and shifted up to end at the
+        bottom row, so a label anywhere in the lower sixth gets the SAME window - and its black share is
+        the band's depth over that window's height, wherever in the band the label sits. The check
+        therefore sees a bottom band only when it is deeper than CROP_MAX_BLACK_FRACTION of that window:
+        H/6, 16.7%. The D4 bottom band (18.75%) clears it by a few points; a thinner band is written as
+        success, 29-45% black at 10-15% deep. In memory, so the rows are exact."""
+        size = (2048, 1024)
+        width, height = size
+        y = height - 1
+        box = crop_runner.compute_crop_box(LABEL_X, y, crop_runner.crop_window_width(y, width, height),
+                                           width, height)
+        assert box.shifted and box.top + box.height == height
+        assert box.height == pytest.approx(height / 3, abs=1)
+        # The deepest bottom band the check lets through, in rows: half the nadir window.
+        limit_rows = int(box.height * crop_runner.CROP_MAX_BLACK_FRACTION)
+        assert limit_rows / height == pytest.approx(1 / 6, abs=0.002)
+
+        def pano_with_bottom_band(rows):
+            image = Image.new('RGB', size, GREY)
+            image.paste((0, 0, 0), (0, height - rows, width, height))
+            return image
+
+        for label_y in (height - limit_rows + 1, height - limit_rows // 2, height - 1):
+            written = tmp_path / ('written-%d.jpg' % label_y)
+            assert crop_runner.make_single_crop(pano_with_bottom_band(limit_rows), LABEL_X, label_y,
+                                                str(written)) == box
+            assert written.exists()
+            with pytest.raises(crop_runner.CropWindowMostlyBlackError):
+                crop_runner.make_single_crop(pano_with_bottom_band(limit_rows + 1), LABEL_X, label_y,
+                                             str(tmp_path / ('withheld-%d.jpg' % label_y)))
+
+    @pytest.mark.parametrize('depth, withheld', [(0.15, False), (0.19, True)])
+    def test_a_stored_bottom_band_either_side_of_a_sixth(self, crop_runner, tmp_path, depth, withheld):
+        """The same limit on a stored JPEG pano, every label inside the band: all written at 15% deep
+        (each window ~44% black), all withheld at 19% (the D4 shape's depth)."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_banded_pano(store, bottom=depth)
+        band_top = 1024 - int(round(1024 * depth))
+        labels = [band_label(1, band_top + 10), band_label(2, (band_top + 1024) // 2), band_label(3, 1023)]
+        counts = run(crop_runner, labels, store, out)
+        if withheld:
+            assert counts['black_content'] == 3 and counts['success'] == 0
+        else:
+            assert counts['success'] == 3 and counts['black_content'] == 0
+
     def test_a_seam_crop_on_a_clean_pano_is_not_black(self, crop_runner, tmp_path):
         """A window that wraps the seam is pasted from two segments into a new image; the paste must
         leave no black behind for the check to find."""

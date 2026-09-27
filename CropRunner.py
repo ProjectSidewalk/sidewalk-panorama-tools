@@ -192,7 +192,7 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 # bulk_extract_crops' counts, beside 'total'. Every label lands in exactly one DISJOINT_OUTCOMES bucket, so
 # those sum to total on every path; a COUNT_ANNOTATIONS entry qualifies a label already in one of them and
 # is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a label
-# under --force that left an old crop in place because the run never reached its write: a dims_mismatch or
+# under --force that left an old crop in place because the run did not write it: a dims_mismatch or
 # out_of_frame skip (#153 m2), a missing_pano, the errors of a pano that cannot be opened (#153 final
 # F3) or decoded, or a black_content withhold (#164). A new key goes in exactly one of the two, and
 # tests/test_crop_runner.py asserts the dict holds nothing else. black_content is disjoint, not an
@@ -212,8 +212,11 @@ COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
 # Why 0.5, measured on a 2048x1024 grey pano with its bottom 30% black, JPEG q95: a label at y=512 cuts
 # 0.000 black, 650 -> 0.241, 700 -> 0.452, 716 -> 0.499, 730 -> 0.540, 900 (window shifted) -> 0.900.
 # Inside a large black JPEG region luma is exactly 0, and ringing is confined to the rows next to the
-# edge, so any label strictly inside a band gives at least half black rows unshifted, and the whole
-# band's share when shifted. A window more black than imagery is not imagery. Exact zero over half a
+# edge, so a label inside a band whose window is NOT shifted gives at least half black rows. A SHIFTED
+# window gives the band's depth over the window's height instead, wherever the label sits: at the nadir
+# the window is a third of the pano tall, so a bottom band is caught only when it is deeper than H/6
+# (16.7%; the D4 band is 18.75%, 0.56 black), and a thinner one is written as success, up to half black
+# (tests pin both; the table is in docs/cropper.md). A window more black than imagery is not imagery. Exact zero over half a
 # window is also not a night scene or a black car: JPEG noise keeps those off 0. The strict `>` matches
 # the stitcher; a label within the ringing margin of a band edge (y=716 above) is written, knowingly.
 CROP_MAX_BLACK_FRACTION = 0.5
