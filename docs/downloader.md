@@ -500,6 +500,20 @@ with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the s
 upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
 [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
 
+The tile retry policy distinguishes Google refusing us from the network misbehaving (#162). Until then every
+tile error — a 429 and a 403 included — was retried 10 times with uncapped exponential backoff: 5,120
+requests per refused 16384-wide pano, which is a soft refusal being escalated by the client. Now:
+
+| Tile answer | Retried? | Push-back? |
+|---|---|---|
+| HTTP 429 or 403, or a landing URL on Google's `/sorry/` or `consent.google.com` interstitial | never | yes |
+| any other 4xx except 408 (404 included) | no | no — an ordinary failure, retried next run |
+| 5xx, 408, a timeout, a connection error, a non-JPEG body | yes: up to 10 tries, each wait capped at 32 s, 120 s per tile in all | no |
+
+The interstitial check is the depth phase's rule carried over by analogy; no CBK interstitial has been
+observed. Nothing that used to succeed on a retry is lost by not retrying a 4xx: every retired pano measured
+answers 200 with an all-black body, not an error status.
+
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution
 equirectangular image. Requires a token:

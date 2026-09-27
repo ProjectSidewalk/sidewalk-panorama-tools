@@ -130,6 +130,76 @@ _CBK_BASE_URL = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&onerr
 # timeout used to get zero retries - and now that one failed tile fails the whole pano, that costs a download.
 _TILE_RETRY_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError)
 
+# How a tile answer is treated (#162). Before this, every ClientError - a 429 and a 403 included - was retried
+# 10 times with uncapped exponential backoff: 5,120 requests and ~1 MB of scrape.log per refused 16384-wide
+# pano, which is a soft refusal being escalated by the client. Now:
+#   * 429/403, or a landing URL carrying one of _BLOCK_URL_MARKERS, is PUSH-BACK: raised as TilePushbackError,
+#     which is not in _TILE_RETRY_ERRORS, so backoff never sees it. (The URL markers are the depth phase's
+#     _raise_if_blocked rule applied by analogy; no CBK interstitial has been observed.)
+#   * any other 4xx except 408 is this pano's problem, not weather: not retried (_tile_error_is_final), and
+#     not push-back either. Every retired pano measured answers 200 with an all-black body, never a 4xx.
+#   * 5xx, 408, timeouts, connection errors and a wrong Content-Type are retried, TILE_MAX_TRIES times, each
+#     wait capped at TILE_RETRY_MAX_WAIT seconds and the whole tile at TILE_RETRY_MAX_SECONDS.
+# The two limits are read at call time (see _tile_retry_waits and the decorator), so a test can zero them.
+TILE_PUSHBACK_STATUSES = frozenset((403, 429))
+TILE_MAX_TRIES = 10
+TILE_RETRY_MAX_WAIT = 32
+TILE_RETRY_MAX_SECONDS = 120
+# (_BLOCK_URL_MARKERS, the interstitial substrings, is defined once with the depth phase's constants below and
+# read by _fetch_tile at call time.)
+
+
+class TilePushbackError(Exception):
+    """Google refused a tile - an HTTP 429 or 403, or a redirect onto its interstitial - rather than failing it.
+
+    Deliberately NOT an aiohttp.ClientError, so the tile's backoff decorator cannot retry it: asking again is
+    how a soft refusal is escalated into a ban. `requested`/`total` are filled in by fetch_pano_image once the
+    fan-out has been abandoned, so the one scrape.log line the image loop writes says how much was spent.
+    """
+
+    def __init__(self, status, x, y, requested=None, total=None, landing_url=None):
+        super().__init__(status, x, y)
+        self.status = status
+        self.x = x
+        self.y = y
+        self.requested = requested
+        self.total = total
+        self.landing_url = landing_url
+
+    @property
+    def reason(self):
+        """The short cause the image loop's log line carries in parentheses: `HTTP 429`, or `interstitial`."""
+        return 'interstitial' if self.landing_url else 'HTTP %d' % (self.status,)
+
+    def __str__(self):
+        if self.landing_url:
+            message = 'tile (%d, %d) landed on %s' % (self.x, self.y, self.landing_url)
+        else:
+            message = 'tile (%d, %d) answered HTTP %d' % (self.x, self.y, self.status)
+        if self.requested is not None and self.total is not None:
+            message += '; %d of %d tile requests made, the rest abandoned' % (self.requested, self.total)
+        return message
+
+
+def _tile_error_is_final(e):
+    """backoff's giveup predicate: an HTTP 4xx other than 408 will not get better by asking again.
+
+    A Content-Type failure carries the response's own status (200), so it stays retryable - CBK intermittently
+    answers with a non-image body (tests/test_gsv_tile_contract.py's _live_get). 429 and 403 never reach here:
+    _fetch_tile has already turned them into TilePushbackError, which the decorator does not catch.
+    """
+    return isinstance(e, aiohttp.ClientResponseError) and 400 <= e.status < 500 and e.status != 408
+
+
+def _tile_retry_waits():
+    """backoff's wait generator: exponential, each wait capped at TILE_RETRY_MAX_WAIT seconds.
+
+    A generator function rather than `backoff.expo` with `max_value=` so the cap is read when a tile starts
+    retrying, not when the module was imported - that is what lets a test zero it. `yield from` forwards the
+    priming send() backoff 2.x makes (and 1.x's plain next()) straight to expo.
+    """
+    yield from backoff.expo(max_value=TILE_RETRY_MAX_WAIT)
+
 # A stitched frame with more black than this is not imagery, it is a grid bug. Nothing below the stitch can
 # see one: an out-of-range tile is answered 200 OK with a valid ALL-BLACK image/jpeg (pinned on real bytes in
 # tests/test_gsv_tile_contract.py), so a wrong grid looks exactly like a successful download tile by tile.
@@ -190,20 +260,39 @@ async def _fetch_tile(session, tile):
 
     Undecorated so tests can drive it without backoff's sleeps; _download_tile below is the retrying variant
     the fan-out uses.
+
+    A refusal - HTTP 429/403 (raised by the session's raise_for_status on entering the request), or a landing
+    URL on Google's interstitial - becomes TilePushbackError, which backoff does not catch (#162).
     """
     x, y, url = tile
-    async with session.get(url, proxy=_proxies.get("http"), headers=_random_header()) as response:
-        # .get(), not [..]: a response with no Content-Type must raise the same retryable error as a wrong
-        # one, not a bare KeyError that is in neither backoff tuple (#45).
-        content_type = response.headers.get('Content-Type', '')
-        if content_type[0:10] != "image/jpeg":
-            raise aiohttp.ClientResponseError(
-                response.request_info, response.history, status=response.status,
-                message="unexpected Content-Type %r for tile (%d, %d)" % (content_type, x, y))
-        return x, y, await response.content.read()
+    try:
+        async with session.get(url, proxy=_proxies.get("http"), headers=_random_header()) as response:
+            # Before the Content-Type check: an interstitial is also not image/jpeg, and that check raises a
+            # RETRYABLE error - the one answer to push-back this module must never give.
+            landing_url = str(response.url)
+            if any(marker in landing_url for marker in _BLOCK_URL_MARKERS):
+                raise TilePushbackError(response.status, x, y, landing_url=landing_url)
+            # .get(), not [..]: a response with no Content-Type must raise the same retryable error as a wrong
+            # one, not a bare KeyError that is in neither backoff tuple (#45).
+            content_type = response.headers.get('Content-Type', '')
+            if content_type[0:10] != "image/jpeg":
+                raise aiohttp.ClientResponseError(
+                    response.request_info, response.history, status=response.status,
+                    message="unexpected Content-Type %r for tile (%d, %d)" % (content_type, x, y))
+            return x, y, await response.content.read()
+    except aiohttp.ClientResponseError as e:
+        if e.status in TILE_PUSHBACK_STATUSES:
+            raise TilePushbackError(e.status, x, y) from e
+        raise
 
 
-_download_tile = backoff.on_exception(backoff.expo, _TILE_RETRY_ERRORS, max_tries=10)(_fetch_tile)
+# logger=None: backoff's own handlers wrote one INFO line per retry and one ERROR per give-up - 5,120 lines
+# for one refused pano. Capping the 'backoff' logger at WARNING would still have left the 512 ERROR lines, so
+# the decorator logs nothing and each pano owns its one line (fetch_pano_image, or the image loop for a
+# refusal). max_time is a callable so the bound is read per tile, not frozen at import.
+_download_tile = backoff.on_exception(_tile_retry_waits, _TILE_RETRY_ERRORS, max_tries=TILE_MAX_TRIES,
+                                      max_time=lambda: TILE_RETRY_MAX_SECONDS, giveup=_tile_error_is_final,
+                                      logger=None)(_fetch_tile)
 
 
 async def _download_tiles(tiles):
