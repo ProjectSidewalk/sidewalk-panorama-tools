@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import aiohttp
 import numpy as np
 import pytest
+import requests
 from PIL import Image
 from requests.adapters import HTTPAdapter
 
@@ -1277,6 +1278,47 @@ class TestARefusedTileAbandonsThePano:
             answer=lambda url, attempt: _FakeResponse({'Content-Type': 'image/jpeg'}, body))
         gsv.fetch_pano_image('healthyPanoAAAAAAAAAAA', 1024, 512, 1)
         assert gsv._TILE_FANOUT.get() is None
+
+
+def probe_retry_error(status_code):
+    """The RetryError the zoom probe's urllib3 policy raises when every retry met `status_code`."""
+    from urllib3.exceptions import MaxRetryError, ResponseError
+    return requests.exceptions.RetryError(MaxRetryError(
+        None, 'https://maps.google.com/cbk', ResponseError(ResponseError.SPECIFIC_ERROR.format(
+            status_code=status_code))))
+
+
+class TestPushbackReason:
+    """gsv.pushback_reason: what the image loop's breaker counts (#162, plan D2).
+
+    Push-back is Google's own refusal, never this box's network: a timeout or a reset is weather and must
+    not latch the fleet. A probe RetryError counts only when it carries 429 or 403 - a 5xx storm exhausting
+    urllib3's policy is Google being ill, not Google refusing us, and the breaker now writes a FLEET-wide
+    latch, so reading it as a refusal would stand every city's depth down for six hours over an outage.
+    """
+
+    @pytest.mark.parametrize('error, reason', [
+        (gsv.TilePushbackError(429, 0, 0), 'HTTP 429'),
+        (gsv.TilePushbackError(403, 5, 2), 'HTTP 403'),
+        (gsv.TilePushbackError(200, 0, 0, landing_url='https://www.google.com/sorry/index'), 'interstitial'),
+        (probe_retry_error(429), 'HTTP 429'),
+        (probe_retry_error(403), 'HTTP 403'),
+        (probe_retry_error(503), None),
+        (probe_retry_error(500), None),
+        (requests.exceptions.RetryError('no status in this one'), None),
+        (asyncio.TimeoutError(), None),
+        (aiohttp.ClientConnectionError('reset'), None),
+        (requests.exceptions.ConnectionError('dns'), None),
+        (aiohttp.ClientResponseError(None, (), status=404), None),
+        (aiohttp.ClientResponseError(None, (), status=503), None),
+        (aiohttp.ClientResponseError(None, (), status=429), None),   # never reaches here raw; not ours to read
+        (gsv.StitchedPanoMostlyBlackError('black'), None),
+        (gsv._TileAbandonedError('abandoned'), None),
+        (OSError('disk full'), None),
+        (ValueError('bug'), None),
+    ])
+    def test_the_table(self, error, reason):
+        assert gsv.pushback_reason(error) == reason
 
 
 class TestAnEmptyFanOutStillHasACellSize:

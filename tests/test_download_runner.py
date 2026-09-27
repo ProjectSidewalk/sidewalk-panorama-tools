@@ -33,6 +33,7 @@ import DownloadRunner
 import pytest
 
 from conftest import posix_only
+from test_gsv_stitcher import probe_retry_error
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER = os.path.join(REPO_ROOT, 'DownloadRunner.py')
@@ -2254,6 +2255,238 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
         monkeypatch.chdir(tmp_path)
         return DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'),
                                     '-c', str(csv_path), '--skip-depth'])
+
+
+class TestGoogleRefusingGsvImagesStopsThePhase:
+    """#162: the image phase's push-back breaker - a DIFFERENT breaker from #113's, on purpose.
+
+    #113 counts permanent verdicts and must stay off GSV, where 8.4% of a mature ledger is a retired pano.
+    This one counts only Google's own refusal (gsv.pushback_reason: a tile 429/403, an interstitial, or a
+    zoom-probe RetryError carrying 429/403), resets only on a GSV success, and costs no ledger rows at all -
+    a push-back is never a verdict, so there is nothing to withhold. On a trip it stops GSV for the run,
+    books the city failed (tripped_sources), reports 'blocked' to the queue, and writes the block latch and
+    forfeits the depth pace, because tiles and photometa leave the same IP.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _paths(self, tmp_path):
+        from downloaders import gsv
+        self.gsv = gsv
+        self.P = gsv.TilePushbackError(429, 0, 0)
+        self.latch = tmp_path / 'latch'
+        self.pace = tmp_path / 'pace'
+        self.storage = tmp_path / 'storage'
+        self.storage.mkdir()
+
+    @staticmethod
+    def gsv_panos(count):
+        return [{'pano_id': 'gsv-%d' % n, 'source': 'gsv'} for n in range(count)]
+
+    def drive(self, monkeypatch, panos, verdicts):
+        """Run the image phase over `panos` in list order; return (result, calls, tripped, stop_reasons)."""
+        calls, tripped, stop_reasons = [], set(), {'image_stop': None, 'depth_stop': None}
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', scripted_download_pano(verdicts, calls))
+        result = DownloadRunner.download_panorama_images(
+            str(self.storage), panos, tripped_sources=tripped, stop_reasons=stop_reasons,
+            block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+        return result, calls, tripped, stop_reasons
+
+    def ledger(self):
+        return ledger_verdict_rows(self.storage, sort=False)
+
+    def test_three_refused_panos_in_a_row_stop_gsv_and_latch_the_host(self, monkeypatch):
+        gsv = self.gsv
+        # A pace file holding EARNED standing, so the forfeit is observable: the conftest zeroes the opening
+        # interval, which would make a forfeited file and an untouched one read the same.
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        gsv._write_pace_state(str(self.pace), 0.25, 50)
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-4'] = downloaders.DownloadResult.success
+
+        result, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2'], 'panos after the trip must not be attempted at all'
+        assert self.ledger() == [], 'a push-back is never a verdict, so nothing is ledgered - and nothing withheld'
+        assert result == (0, 0, 3, 0, 3)
+        assert tripped == {'gsv'}, 'tripped_sources is what makes main() exit 1'
+        assert stop_reasons['image_stop'] == 'blocked'
+        age = gsv._block_latch_age_hours(str(self.latch))
+        assert age is not None and age < 0.01, 'the latch must be written, and fresh'
+        with open(self.pace) as f:
+            pace = json.load(f)
+        assert (pace['interval'], pace['clean_streak']) == (1.0, 0), 'the earned pace must be forfeited'
+
+    def test_two_are_not_a_trip(self, monkeypatch):
+        panos = self.gsv_panos(2)
+        result, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, {p['pano_id']: self.P for p in panos})
+
+        assert calls == ['gsv-0', 'gsv-1']
+        assert tripped == set()
+        assert stop_reasons['image_stop'] is None
+        assert not self.latch.exists() and not self.pace.exists()
+
+    def test_a_transient_failure_neither_counts_nor_resets(self, monkeypatch):
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-1'] = ConnectionError('connection reset')
+
+        result, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2', 'gsv-3'], 'trips on the third push-back'
+        assert tripped == {'gsv'}
+
+    def test_only_a_success_resets_the_count(self, monkeypatch):
+        panos = self.gsv_panos(7)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-2'] = downloaders.DownloadResult.success
+
+        result, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-%d' % n for n in range(6)], 'the success resets, so the trip is at gsv-5'
+        assert self.ledger() == ['gsv-2,1']
+        assert tripped == {'gsv'}
+
+    def test_a_fallback_success_resets_too(self, monkeypatch):
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-2'] = downloaders.DownloadResult.fallback_success
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-%d' % n for n in range(5)]
+        assert tripped == set()
+
+    def test_a_permanent_verdict_neither_counts_nor_resets(self, monkeypatch):
+        """DownloadResult.failure comes from the zoom probe's black tiles, which proves nothing about being
+        answered honestly - but it is still an ordinary verdict and still ledgered."""
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-1'] = downloaders.DownloadResult.failure
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2', 'gsv-3']
+        assert self.ledger() == ['gsv-1,0']
+        assert tripped == {'gsv'}
+
+    def test_a_skip_neither_counts_nor_resets(self, monkeypatch):
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-1'] = downloaders.DownloadResult.skipped
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2', 'gsv-3']
+        assert tripped == {'gsv'}
+
+    def test_it_is_keyed_on_gsv_and_stops_only_gsv(self, monkeypatch):
+        panos = [{'pano_id': 'gsv-0', 'source': 'gsv'}, {'pano_id': 'mly-0', 'source': 'mapillary'},
+                 {'pano_id': 'gsv-1', 'source': 'gsv'}, {'pano_id': 'gsv-2', 'source': 'gsv'},
+                 {'pano_id': 'mly-1', 'source': 'mapillary'}, {'pano_id': 'gsv-3', 'source': 'gsv'}]
+        verdicts = {'gsv-0': self.P, 'mly-0': downloaders.DownloadResult.success, 'gsv-1': self.P,
+                    'gsv-2': self.P, 'mly-1': downloaders.DownloadResult.success,
+                    'gsv-3': downloaders.DownloadResult.success}
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'mly-0', 'gsv-1', 'gsv-2', 'mly-1'], \
+            'a Mapillary success does not reset GSV, and Mapillary keeps downloading after the trip'
+        assert self.ledger() == ['mly-0,1', 'mly-1,1']
+        assert tripped == {'gsv'}
+
+    def test_another_sources_push_back_shaped_errors_trip_nothing(self, monkeypatch):
+        panos = [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(5)]
+        verdicts = {p['pano_id']: probe_retry_error(429) for p in panos}
+
+        _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert len(calls) == 5 and tripped == set() and stop_reasons['image_stop'] is None
+        assert not self.latch.exists()
+
+    def test_a_probe_shaped_refusal_counts_and_names_itself(self, monkeypatch, caplog):
+        panos = self.gsv_panos(4)
+        verdicts = {p['pano_id']: probe_retry_error(429) for p in panos}
+
+        with caplog.at_level(logging.ERROR):
+            _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2'] and tripped == {'gsv'}
+        per_pano = [r.getMessage() for r in caplog.records if 'refused by Google' in r.getMessage()]
+        assert len(per_pano) == 3
+        assert all('(HTTP 429)' in line for line in per_pano)
+
+    def test_a_probe_5xx_storm_is_weather_not_a_refusal(self, monkeypatch):
+        """The Fable amendment to D2, end to end: urllib3 exhausting its policy on 503s is Google being
+        ill. Latching would stand the whole fleet's depth down for six hours over an outage."""
+        panos = self.gsv_panos(5)
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, {p['pano_id']: probe_retry_error(503) for p in panos})
+
+        assert len(calls) == 5 and tripped == set()
+        assert not self.latch.exists()
+
+    def test_both_channels_carry_it_and_neither_carries_113s_advice(self, monkeypatch, capsys, caplog):
+        panos = self.gsv_panos(6)
+
+        with caplog.at_level(logging.DEBUG):
+            self.drive(monkeypatch, panos, {p['pano_id']: self.P for p in panos})
+
+        logged = [r.getMessage() for r in caplog.records]
+        assert len([m for m in logged if 'refused by Google: ' in m and '(HTTP 429)' in m]) == 3
+        assert len([m for m in logged if 'consecutive GSV panos' in m]) == 1
+        assert len([m for m in logged if 'Google pushed back on GSV imagery' in m]) == 1
+        assert any('3 pano(s) were left unattempted' in m for m in logged)
+        stdout = capsys.readouterr().out
+        assert 'WARNING' in stdout and str(self.latch) in stdout
+        assert '3 pano(s) were left unattempted' in stdout
+        for channel in (stdout, '\n'.join(logged)):
+            assert 'false downloaded=0 rows' not in channel, 'a push-back trip writes no rows to repair'
+
+    def test_the_real_fan_out_spends_at_most_one_slot_of_requests_per_refused_pano(self, monkeypatch, caplog):
+        """The whole issue in one number, through the REAL gsv.fetch_pano_image under a 429 on every tile:
+        master spent 5,120 requests per pano and never stopped; this spends 8 per pano and stops at three."""
+        from test_gsv_stitcher import _StatusSession
+        gsv = self.gsv
+        session = _StatusSession(429, await_first=True)
+
+        class FakeClientSession:
+            def __init__(self, raise_for_status=None, connector=None):
+                pass
+
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, *args):
+                return False
+
+        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', lambda limit=None: None)
+        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
+        monkeypatch.setattr(gsv, 'thread_count', 8)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        calls = []
+
+        def download_pano(storage_path, pano_info):
+            calls.append(pano_info['pano_id'])
+            gsv.fetch_pano_image(pano_info['pano_id'], 16384, 8192, 5)
+            return downloaders.DownloadResult.success
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', download_pano)
+        tripped = set()
+        with caplog.at_level(logging.DEBUG, logger='backoff'):
+            DownloadRunner.download_panorama_images(
+                str(self.storage), self.gsv_panos(5), tripped_sources=tripped,
+                block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2']
+        assert session.requests == 24
+        assert tripped == {'gsv'}
+        assert [r for r in caplog.records if r.name == 'backoff'] == []
+
+    def test_the_blocked_stop_string_is_the_depth_phases(self):
+        """scrape_queue reads 'blocked' as "do not re-run"; one spelling across both phases."""
+        assert DownloadRunner.STOP_BLOCKED == self.gsv.DEPTH_STOP_BLOCKED
 
 
 class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
