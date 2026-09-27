@@ -169,6 +169,11 @@ STORE_FILES = ('crop_rule.json', 'crop_provenance.csv', 'crop_provenance.pre-cit
                'crop.log.1', 'crop.log.3')
 
 
+def body(name):
+    """Bytes that name the file and are also a readable marker, so crop_rule.json passes the city check."""
+    return ('{"file": "%s"}' % name).encode('utf-8')
+
+
 def write_marker(path, **fields):
     import json
     os.makedirs(os.path.dirname(str(path)), exist_ok=True)
@@ -180,20 +185,20 @@ class TestTheStoreFilesMoveWithIt:
     @pytest.mark.parametrize('name', STORE_FILES)
     def test_each_moves_unchanged(self, tmp_path, name):
         root = flat_store(tmp_path / 'crops')
-        plant(root, name)
+        plant(root, name, data=body(name))
         summary = migrate(root)
-        assert read_bytes(root / CITY / name) == name.encode('utf-8')
+        assert read_bytes(root / CITY / name) == body(name)
         assert not (root / name).exists()
         assert summary.store_files_moved == 1
 
     @pytest.mark.parametrize('name', STORE_FILES)
     def test_each_collides_rather_than_replaces(self, tmp_path, name):
         root = flat_store(tmp_path / 'crops')
-        plant(root, name)
-        plant(root, CITY + '/' + name, data=b'the store already has one')
+        plant(root, name, data=body(name))
+        plant(root, CITY + '/' + name, data=b'{"already": "here"}')
         summary = migrate(root)
-        assert read_bytes(root / CITY / name) == b'the store already has one'
-        assert read_bytes(root / name) == name.encode('utf-8')
+        assert read_bytes(root / CITY / name) == b'{"already": "here"}'
+        assert read_bytes(root / name) == body(name)
         assert summary.collisions == 1 and summary.store_files_moved == 0
 
     def test_other_files_at_the_root_stay(self, tmp_path):

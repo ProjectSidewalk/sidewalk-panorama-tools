@@ -22,6 +22,7 @@ on disk: CropRunner's resume marker is the crop file, so a store left in the old
 import argparse
 import collections
 import os
+import re
 
 # Side-effect free on import (the #52.1 contract). Its predicates and names are reused rather than restated,
 # so the two tools cannot disagree about what a shard or a store file is.
@@ -30,6 +31,9 @@ import CropRunner
 MigrationSummary = collections.namedtuple(
     'MigrationSummary', ['dirs_moved', 'files_moved', 'store_files_moved', 'collisions', 'failed', 'left'])
 
+# crop.log's rotated segments, as logging.handlers.RotatingFileHandler names them.
+_ROTATED_LOG = re.compile(r'crop\.log\.\d+')
+
 
 def _shards(crop_dir):
     """The label-type shards directly under crop_dir, in a stable order."""
@@ -37,14 +41,61 @@ def _shards(crop_dir):
         return sorted(entry.name for entry in listing if entry.is_dir() and CropRunner._is_numeric_name(entry.name))
 
 
+def _store_files(crop_dir):
+    """The store's own files directly under crop_dir, in the order they move: the log and its rotated
+    segments, then the manifests, then crop_rule.json LAST. The marker is what CropRunner's legacy refusal
+    and this tool's city check read, so a run that dies partway leaves the root still marked as a flat
+    store - refused by CropRunner, and checked again by the next run of this one."""
+    with os.scandir(crop_dir) as listing:
+        names = {entry.name for entry in listing if not entry.is_dir()}
+    logs = sorted(name for name in names if _ROTATED_LOG.fullmatch(name))
+    ordered = logs + ['crop.log', CropRunner.PROVENANCE_MANIFEST_PRE_CITY, CropRunner.PROVENANCE_MANIFEST,
+                      CropRunner.CROP_RULE_MARKER]
+    return [name for name in ordered if name in names]
+
+
+def _move_file(source, target, dry_run, counts, key, make_parent=False):
+    """One file, never over another. Counts under `key` on a move (or a predicted one). make_parent
+    creates the target's directory first - only where it may not exist, since over sshfs even an
+    exist_ok makedirs is a round trip, and a shard's files number in the tens of thousands."""
+    if os.path.lexists(target):
+        counts['collisions'] += 1
+        print("COLLISION %s -> %s: destination exists; both left as they are" % (source, target))
+        return
+    if not dry_run:
+        try:
+            if make_parent:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+            os.rename(source, target)
+        except OSError as e:
+            counts['failed'] += 1
+            print("FAILED %s -> %s: %s" % (source, target, e))
+            return
+    counts[key] += 1
+    print("%s file %s -> %s" % ('Would move' if dry_run else 'Moved', source, target))
+
+
 def migrate_store(crop_dir, city, dry_run=False):
-    """Move crop_dir's label-type shards (and, after them, its store files) under crop_dir/<city>/.
+    """Move crop_dir's label-type shards, then its store files, under crop_dir/<city>/.
+
+    Refuses, before touching anything, a crop_dir that looks like the production canvas-capture store
+    (CropRunner.refuse_production_crop_store - its root holds city directories too, and nothing in it can
+    be regenerated), and a crop_dir or crop_dir/<city>/ whose crop_rule.json records another city or
+    cannot be read (CropRunner.check_store_city): moving Chicago's store into seattle-wa/ would be the
+    collision #159 exists to end, made permanent. A marker with no city - every store cut before #153's
+    stopgap - passes, and CropRunner adopts the city on its next run.
+
+    Everything else at the root - other cities' stores, notes, figures - is left alone.
 
     :return: MigrationSummary. Under dry_run every count is a prediction and nothing is written.
+    :raises CropRunner.ProductionCropStoreError, CropRunner.CropStoreCityError: with nothing touched.
     """
-    counts = dict.fromkeys(MigrationSummary._fields, 0)
+    CropRunner.refuse_production_crop_store(crop_dir)
     store = os.path.join(crop_dir, city)
-    verb = 'Would move' if dry_run else 'Moved'
+    CropRunner.check_store_city(crop_dir, city)
+    CropRunner.check_store_city(store, city)
+
+    counts = dict.fromkeys(MigrationSummary._fields, 0)
 
     for name in _shards(crop_dir):
         source = os.path.join(crop_dir, name)
@@ -76,22 +127,14 @@ def migrate_store(crop_dir, city, dry_run=False):
                 print("LEFT %s: a directory inside a label-type shard, which this tool never writes; not "
                       "moved" % entry.path)
                 continue
-            target = os.path.join(destination, entry.name)
-            if os.path.lexists(target):
-                counts['collisions'] += 1
-                print("COLLISION %s -> %s: destination exists; both left as they are" % (entry.path, target))
-                continue
-            if not dry_run:
-                try:
-                    os.rename(entry.path, target)
-                except OSError as e:
-                    counts['failed'] += 1
-                    print("FAILED %s -> %s: %s" % (entry.path, target, e))
-                    continue
-            counts['files_moved'] += 1
-            print("%s file %s -> %s" % (verb, entry.path, target))
+            _move_file(entry.path, os.path.join(destination, entry.name), dry_run, counts, 'files_moved')
+        # Only once empty: a collision or a left directory keeps the shard, and its crops, where they are.
         if not dry_run and not os.listdir(source):
             os.rmdir(source)
+
+    for name in _store_files(crop_dir):
+        _move_file(os.path.join(crop_dir, name), os.path.join(store, name), dry_run, counts, 'store_files_moved',
+                   make_parent=True)
 
     return MigrationSummary(**counts)
 
