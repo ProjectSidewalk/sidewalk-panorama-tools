@@ -292,7 +292,8 @@ with several rows on one host does not spend the whole cap on it.
 **Exit codes**, since the exit is the alert: it is the subject line of the night's message
 ([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), and it is the code cron sees: `0` every city ran and succeeded and the
 manifest names every city, `1` something failed, timed out, **was never reached**, **a city has no manifest
-row** (private or public), or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
+row** (private or public), no host would serve the roster to check that, or **a city reported a
+[condition](#a-city-can-finish-ok-and-still-fail-the-night)**, `2` usage, `3` another queue run holds the
 lock. A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
 cities a night is the silent failure this design exists to surface. If a night's truncation is expected and
 accepted, the window is the wrong size.
@@ -308,7 +309,14 @@ Each such shape is now a **condition**: the runner records it in the run summary
 (`--run-summary-file`, [below](#extra-passes)), as `{"code": ..., "detail": ...}` in a `conditions` list that
 is always present, empty on a clean run. A condition does **not** change the city's outcome — it stays `ok`,
 keeps its place in the `N/M cities ok` count and its eligibility for an extra pass — but **any condition fails
-the night**. The runner's own exit code is unchanged.
+the night**. The runner's own exit code is unchanged. The city's line in the night's narrative carries them:
+
+```
+[queue] bravo-bb: ok (exit 0) in 11.9 min; conditions: depth-refused
+```
+
+A code the queue does not know is kept and still fails the night, so a runner newer than its queue cannot be
+silenced by it.
 
 | code | what happened | where to read more |
 |---|---|---|
@@ -321,6 +329,8 @@ the night**. The runner's own exit code is unchanged.
 | `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |
 | `images-no-success` | At least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) image attempts raised and none was answered — the network, the store, or a bug | the errors in the city's `scrape.log` |
 | `pano-list-empty` | The pano list was empty for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
+| `no-run-summary` | *(the queue's own)* An `ok` run left no readable run summary, so its conditions are unknown — a check that did not run has not passed. Also what an operator's own `--run-summary-file` after `--` produces, so do not pass one through the queue | [Extra passes](#extra-passes) |
+| `conditions-unreadable` | *(the queue's own)* The summary's `conditions` was present but not a list of objects with a string `code` | — |
 | `pano-schema-drift` | 90% or more of the pano list's records lack `pano_id`, `source`, `width` or `height` — a renamed field. **Neither phase runs and nothing is ledgered**, because scraping it would write every new GSV pano off permanently | [API fields](api-fields.md#adminapipanos--the-downloaders-pano-list) |
 
 ### Extra passes

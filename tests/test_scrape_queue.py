@@ -79,6 +79,12 @@ FAKE_RUNNER = textwrap.dedent('''
         summary = {'image_stop': None, 'depth_stop': None}
         if stop:
             summary['%s_stop' % stop.split(':')[0]] = stop.split(':')[1]
+        # Run conditions (#161), reported on EVERY run, as 'code=detail;code2=detail'. Empty by default,
+        # which is what DownloadRunner writes on a clean run.
+        conditions = os.environ.get('QUEUE_TEST_CONDITIONS_%s' % city.replace('-', '_').upper(),
+                                    os.environ.get('QUEUE_TEST_CONDITIONS', ''))
+        summary['conditions'] = [dict(zip(('code', 'detail'), c.split('=', 1)))
+                                 for c in conditions.split(';') if c]
         with open(target, 'w') as f:
             json.dump(summary, f)
 
@@ -1827,6 +1833,167 @@ class TestReadingARunSummaryResolvesEveryDoubtTowardsTheFallback:
         summary = self.write(tmp_path, '{"image_stop": null, "depth_stop": null, "future_field": 7}')
 
         assert scrape_queue.read_run_summary(summary) == {'image_stop': None, 'depth_stop': None}
+
+
+# --- An ok city can still fail the night (#161) ---------------------------------------------------------------
+#
+# Production delivers only nonzero exits (cron_notify --only-on-failure), and the runner exits 0 on every shape
+# below: a refused or stood-down depth phase, a missing Mapillary token, an empty pano list... So the runner
+# reports them as CONDITIONS in the run summary, and any condition fails the night. The city's OUTCOME is not
+# touched: it stays 'ok', counts in N/M, and keeps its extra-pass eligibility.
+
+def conditioned(city_id, *codes, **kwargs):
+    return result(city_id, **kwargs)._replace(
+        conditions=tuple(scrape_queue.Condition(code, 'detail of %s' % code) for code in codes))
+
+
+class TestReadingTheRunConditions:
+
+    def write(self, tmp_path, payload):
+        path = tmp_path / 'summary.json'
+        path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+        return str(path)
+
+    def test_a_missing_file_is_no_conditions(self, tmp_path):
+        """The queue adds `no-run-summary` itself for an ok run; the reader stays a reader."""
+        assert scrape_queue.read_run_conditions(str(tmp_path / 'absent.json')) == ()
+
+    def test_a_summary_without_the_key_is_no_conditions(self, tmp_path):
+        """An older runner, from before #161. Absent is not malformed."""
+        path = self.write(tmp_path, {'image_stop': None, 'depth_stop': None})
+        assert scrape_queue.read_run_conditions(path) == ()
+
+    def test_bad_json_is_no_conditions(self, tmp_path):
+        assert scrape_queue.read_run_conditions(self.write(tmp_path, '{"conditions": [')) == ()
+
+    def test_a_well_formed_list_comes_back_in_order(self, tmp_path):
+        path = self.write(tmp_path, {'image_stop': None, 'depth_stop': 'blocked', 'conditions': [
+            {'code': 'depth-refused', 'detail': 'HTTP 429'}, {'code': 'pano-list-empty', 'detail': 'x'}]})
+
+        assert scrape_queue.read_run_conditions(path) == (
+            scrape_queue.Condition('depth-refused', 'HTTP 429'), scrape_queue.Condition('pano-list-empty', 'x'))
+
+    def test_an_empty_list_is_no_conditions(self, tmp_path):
+        path = self.write(tmp_path, {'image_stop': None, 'depth_stop': None, 'conditions': []})
+        assert scrape_queue.read_run_conditions(path) == ()
+
+    @pytest.mark.parametrize('conditions', ['depth-refused', {'code': 'depth-refused'}, [['depth-refused']],
+                                            [{'detail': 'no code'}], [{'code': 7}], None])
+    def test_a_present_but_malformed_list_is_itself_a_condition(self, tmp_path, conditions):
+        """A check that did not run has not passed: a summary saying something unreadable about conditions
+        must not read as "none"."""
+        path = self.write(tmp_path, {'image_stop': None, 'depth_stop': None, 'conditions': conditions})
+
+        codes = [c.code for c in scrape_queue.read_run_conditions(path)]
+
+        assert codes == ['conditions-unreadable']
+
+    def test_an_unknown_code_is_kept_not_dropped(self, tmp_path):
+        """A runner newer than the queue must still be able to fail the night."""
+        path = self.write(tmp_path, {'conditions': [{'code': 'something-new', 'detail': 'x'}]})
+
+        assert [c.code for c in scrape_queue.read_run_conditions(path)] == ['something-new']
+
+    def test_a_missing_detail_is_an_empty_string(self, tmp_path):
+        path = self.write(tmp_path, {'conditions': [{'code': 'depth-refused'}]})
+
+        assert scrape_queue.read_run_conditions(path) == (scrape_queue.Condition('depth-refused', ''),)
+
+
+class TestConditionsReachTheCityResult:
+
+    def run(self, fake_runner, tmp_path):
+        return scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                     sys.executable, fake_runner, 12.0, 1.0, [])
+
+    def test_what_the_city_reported_lands_on_the_result(self, fake_runner, journal, tmp_path, monkeypatch,
+                                                        capsys):
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS', 'depth-refused=HTTP 429;pano-list-empty=empty')
+
+        outcome = self.run(fake_runner, tmp_path)
+
+        assert outcome.outcome == 'ok', 'a condition must not change the outcome'
+        assert [c.code for c in outcome.conditions] == ['depth-refused', 'pano-list-empty']
+        assert 'ok (exit 0)' in capsys.readouterr().out.split('conditions:')[0]
+
+    def test_the_per_city_line_names_them(self, fake_runner, journal, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS', 'depth-refused=HTTP 429')
+
+        self.run(fake_runner, tmp_path)
+
+        line = [l for l in capsys.readouterr().out.splitlines() if 'ok (exit 0)' in l][0]
+        assert line.endswith('; conditions: depth-refused')
+
+    def test_a_clean_city_has_none_and_no_suffix(self, fake_runner, journal, tmp_path, capsys):
+        outcome = self.run(fake_runner, tmp_path)
+
+        assert outcome.conditions == ()
+        assert 'conditions:' not in capsys.readouterr().out
+
+    def test_an_ok_run_with_no_summary_is_a_condition(self, journal, tmp_path):
+        """D6: conditions ride the summary, so a run that left none has reported nothing - and a check that
+        did not run has not passed."""
+        mute_runner = tmp_path / 'mute_runner.py'
+        mute_runner.write_text('import sys\nsys.exit(0)\n')
+
+        outcome = self.run(str(mute_runner), tmp_path)
+
+        assert outcome.outcome == 'ok'
+        assert [c.code for c in outcome.conditions] == ['no-run-summary']
+
+    def test_a_failed_run_with_no_summary_is_not_also_a_condition(self, journal, tmp_path):
+        """It already fails the night as `failed`; a second line about the same run is noise."""
+        crashing_runner = tmp_path / 'crashing_runner.py'
+        crashing_runner.write_text('import sys\nsys.exit(1)\n')
+
+        outcome = self.run(str(crashing_runner), tmp_path)
+
+        assert outcome.outcome == 'failed'
+        assert outcome.conditions == ()
+
+    def test_a_city_result_built_the_old_way_has_no_conditions(self):
+        assert scrape_queue.CityResult('a', 'ok', 0, 1.0).conditions == ()
+
+
+class TestAnyConditionFailsTheNight:
+
+    @pytest.mark.parametrize('code', sorted(scrape_queue.CONDITION_LABELS) + ['something-new'])
+    def test_each_code_alone_fails_an_otherwise_clean_night(self, code):
+        results = [result('alpha-aa'), conditioned('bravo-bb', code)]
+
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_a_night_with_no_conditions_is_still_zero(self):
+        assert scrape_queue.exit_code_for([result('alpha-aa'), result('bravo-bb')]) == 0
+
+    def test_a_condition_in_a_later_pass_fails_it_too(self):
+        results = [result('alpha-aa'), conditioned('alpha-aa', 'depth-breaker', pass_number=2)]
+
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_end_to_end_the_city_is_ok_and_the_night_is_not(self, tmp_path, fake_runner, journal,
+                                                            monkeypatch, fleet_in_step, capsys):
+        """fleet_in_step so the cross-check passes and the exit 1 can only be the condition's."""
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS_BRAVO_BB', 'depth-refused=HTTP 429')
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert '3/3 cities ok' in out
+        assert any(l.startswith('[queue] bravo-bb: ok (exit 0)') and l.endswith('; conditions: depth-refused')
+                   for l in out.splitlines()), out
+
+    def test_end_to_end_a_clean_fleet_is_still_zero(self, tmp_path, fake_runner, journal, fleet_in_step):
+        """Guard the guard: the fake runner writes `conditions: []` on every run, as the real one does."""
+        assert run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate') == 0
+
+    def test_the_label_table_is_the_runners_vocabulary(self):
+        """Repeated in scrape_queue rather than imported (importing DownloadRunner pulls requests and
+        aiohttp into a driver that never touches either), so this is what keeps the two in step."""
+        DownloadRunner = pytest.importorskip('DownloadRunner')
+        assert set(scrape_queue.CONDITION_LABELS) == (DownloadRunner.RUN_CONDITIONS
+                                                      | {'no-run-summary', 'conditions-unreadable'})
 
 
 # --- The manifest is cross-checked against the fleet (#130) -------------------------------------------------

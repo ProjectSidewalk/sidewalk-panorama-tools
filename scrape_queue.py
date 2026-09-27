@@ -55,7 +55,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from collections import namedtuple
+from collections import OrderedDict, namedtuple
 from contextlib import contextmanager
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -82,13 +82,19 @@ _DEFAULT_LOCK_NAME = 'sidewalk-scrape-queue.lock'
 
 City = namedtuple('City', 'city_id fqdn')
 
+# One run condition (#161): a shape the runner calls a failure of the night without changing its exit code.
+# code is the runner's vocabulary (CONDITION_LABELS); detail is display-only.
+Condition = namedtuple('Condition', 'code detail')
+
 # outcome is one of: 'ok', 'failed', 'timed_out', 'skipped_deadline'. exit_code and seconds are None for a
 # city that never started. budget_minutes is what the city was given (None when there was no budget),
-# pass_number which pass of the night ran it (#43), and stop_reasons the run summary the runner wrote
-# (None when it wrote none); all three default so a four-field construction still works.
+# pass_number which pass of the night ran it (#43), stop_reasons the run summary the runner wrote (None when
+# it wrote none), and conditions the run conditions it reported (#161) - a separate axis from the outcome: an
+# 'ok' city with conditions is still 'ok', still counts in N/M and can still be re-run, but fails the night.
+# All four default so a four-field construction still works.
 CityResult = namedtuple('CityResult',
-                        'city_id outcome exit_code seconds budget_minutes pass_number stop_reasons',
-                        defaults=(None, 1, None))
+                        'city_id outcome exit_code seconds budget_minutes pass_number stop_reasons conditions',
+                        defaults=(None, 1, None, ()))
 
 # A city the fleet serves that the manifest does not name (#130, private cities too since #143). fqdn is the
 # host its roster url names (None when the roster publishes no url - every private city, never guessed);
@@ -115,6 +121,28 @@ STOP_MAX_RUNTIME = 'max-runtime'
 
 # Name of the per-run summary file the queue asks each city to write, inside a per-run temp directory.
 _RUN_SUMMARY_NAME = 'run_summary.json'
+
+# Every run condition the queue knows how to name (#161), in the order the summary reports them, with the
+# label its line carries. The runner's codes are DownloadRunner.RUN_CONDITIONS, repeated here rather than
+# imported for STOP_MAX_RUNTIME's reason (importing DownloadRunner pulls requests and aiohttp into a driver
+# that never touches either); a test pins the two sets together. The last two are the queue's own. An
+# unknown code is never dropped - it still fails the night, labelled by its code.
+CONDITION_NO_RUN_SUMMARY = 'no-run-summary'
+CONDITION_UNREADABLE = 'conditions-unreadable'
+CONDITION_LABELS = OrderedDict([
+    ('pano-schema-drift', 'the pano list lost a required field; nothing was scraped'),
+    ('pano-list-empty', 'empty pano list for a city that has scraped before'),
+    ('images-no-success', 'every image attempt raised; none succeeded'),
+    ('mapillary-token-missing', 'Mapillary panos skipped: MAPILLARY_ACCESS_TOKEN not set'),
+    ('unsupported-source', 'panos with an unsupported source skipped'),
+    ('depth-refused', 'Google refused the depth phase; latch written'),
+    ('depth-stood-down', 'depth stood down on the block latch'),
+    ('depth-breaker', 'depth breaker tripped'),
+    ('depth-ledger-unusable', 'depth ledger unreadable or unwritable'),
+    ('depth-unavailable', 'streetlevel not importable; no depth phase'),
+    (CONDITION_NO_RUN_SUMMARY, 'ok run left no readable run summary'),
+    (CONDITION_UNREADABLE, 'run summary conditions unreadable'),
+])
 
 # The fleet roster (#130): every deployment serves this list of every city - city_id, url, visibility - and it
 # is the same list from every host. The manifest is compared against it once a night, after the fleet has run.
@@ -419,6 +447,38 @@ def read_run_summary(path):
     return {key: reported.get(key) for key in ('image_stop', 'depth_stop')}
 
 
+def read_run_conditions(path):
+    """The run conditions a city reported (#161), as a tuple of Condition; () when it reported none.
+
+    Unlike read_run_summary this has no fallback to resolve doubt towards, so the rule is the other way
+    round - a check that did not run has not passed:
+
+      - no file, not JSON, not an object, or no `conditions` key: () - nothing reported. (An `ok` run with no
+        summary at all gets CONDITION_NO_RUN_SUMMARY from the caller; an older runner's summary simply
+        lacks the key.)
+      - a `conditions` value that is not a list of objects each carrying a string `code`: one
+        CONDITION_UNREADABLE, never "none".
+      - an unknown code: kept, so a runner newer than this queue can still fail the night.
+
+    Example::
+
+        >>> read_run_conditions('/no/such/file')
+        ()
+    """
+    try:
+        with open(path) as f:
+            reported = json.load(f)
+    except (OSError, ValueError):
+        return ()
+    if not isinstance(reported, dict) or 'conditions' not in reported:
+        return ()
+    listed = reported['conditions']
+    if not isinstance(listed, list) or not all(
+            isinstance(c, dict) and isinstance(c.get('code'), str) and c['code'] for c in listed):
+        return (Condition(CONDITION_UNREADABLE, 'conditions: %s' % (json.dumps(listed)[:200],)),)
+    return tuple(Condition(c['code'], str(c.get('detail') or '')) for c in listed)
+
+
 def _city_budget(city_max_runtime, remaining_minutes):
     """What to give one city in pass 1: its own cap, further clamped by what is left of the queue window.
 
@@ -630,10 +690,17 @@ def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budge
     elapsed = time.monotonic() - started
     if outcome != 'timed_out':
         outcome = 'ok' if exit_code == 0 else 'failed'
-    level = logging.INFO if outcome == 'ok' else logging.ERROR
-    logging.log(level, "%s: %s (exit %s) in %.1f min", city.city_id, outcome, exit_code, elapsed / 60.0)
-    print("[queue] %s: %s (exit %s) in %.1f min" % (city.city_id, outcome, exit_code, elapsed / 60.0))
     stop_reasons = read_run_summary(summary_path)
+    conditions = read_run_conditions(summary_path)
+    if stop_reasons is None and outcome == 'ok':
+        # Conditions ride the summary, so an ok run that left none has reported nothing - and a check that
+        # did not run has not passed (#161). Not added to a failed run, which already fails the night.
+        conditions += (Condition(CONDITION_NO_RUN_SUMMARY, 'no readable run summary from an ok run'),)
+    suffix = '' if not conditions else '; conditions: %s' % ', '.join(c.code for c in conditions)
+    level = logging.INFO if outcome == 'ok' and not conditions else logging.ERROR
+    logging.log(level, "%s: %s (exit %s) in %.1f min%s", city.city_id, outcome, exit_code, elapsed / 60.0,
+                suffix)
+    print("[queue] %s: %s (exit %s) in %.1f min%s" % (city.city_id, outcome, exit_code, elapsed / 60.0, suffix))
     if stop_reasons is None and outcome == 'ok':
         # Worth one log line and no more: the run was fine, and the elapsed-time fallback still decides.
         # NOT the signature of an old runner beside a new queue - that one refuses the flag and exits 2, so
@@ -641,7 +708,7 @@ def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budge
         # stdout), or an operator's own --run-summary-file after `--` displacing the queue's.
         logging.info("%s: no run summary (could not be written, or displaced by a --run-summary-file after "
                      "--); falling back to elapsed time to decide whether it has work left", city.city_id)
-    return CityResult(city.city_id, outcome, exit_code, elapsed, stop_reasons=stop_reasons)
+    return CityResult(city.city_id, outcome, exit_code, elapsed, stop_reasons=stop_reasons, conditions=conditions)
 
 
 def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runtime_minutes=None,
@@ -1076,19 +1143,23 @@ def exit_code_for(results, manifest_check=None):
     three of them failing this call is a broken check (an API rename, an env proxy, a moved endpoint) rather
     than weather, and a check silently skipped every night is the failure the check exists to prevent. None
     means the check did not run (a dry run reports it its own way; a stopped queue never gets to it).
+
+    Any run condition fails the night too (#161), though it changes no city's outcome: production delivers
+    only a nonzero exit (cron_notify --only-on-failure), so a condition that did not fail the night would
+    reach nobody - which is exactly how a refused depth phase or a missing Mapillary token went unseen.
     """
     runs_ok = all(r.outcome == 'ok' for r in results)
     check_ok = (manifest_check is None
                 or (manifest_check.roster_host is not None and not manifest_check.unlisted))
-    return 0 if runs_ok and check_ok else 1
+    return 0 if runs_ok and check_ok and not any(r.conditions for r in results) else 1
 
 
 def main(argv=None):
     """Parse argv, take the lock, run the queue, print the summary; return the process exit code.
 
     Returns rather than calling sys.exit so the whole flow can be driven in-process by a test, the shape
-    analyze.py and CropRunner already use. Exit codes: 0 all cities ok, 1 something did not run or failed,
-    2 usage (argparse), 3 another queue run holds the lock.
+    analyze.py and CropRunner already use. Exit codes: 0 all cities ok, 1 something did not run or failed or
+    reported a run condition (#161), 2 usage (argparse), 3 another queue run holds the lock.
     """
     args = build_parser().parse_args(argv)
 
