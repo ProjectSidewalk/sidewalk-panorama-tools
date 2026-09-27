@@ -303,3 +303,117 @@ class TestCropRunnerTakesTheMigratedStore:
         after = {k[len(CITY) + 1:]: v for k, v in tree_snapshot(root).items() if k.endswith('.jpg')}
         assert after == before
         assert read_bytes(root / CITY / 'crop.log').startswith(b'an old run\n')
+
+
+# ---------------------------------------------------------------------------
+# The command line: python3 migrate_crop_store.py <crop-dir> --city <city_id> [--dry-run]
+# ---------------------------------------------------------------------------
+
+def run_main(root, *extra, city=CITY):
+    return migrate_crop_store.main([str(root), '--city', city, *extra])
+
+
+class TestTheCommandLine:
+    def test_a_clean_migration_exits_0_and_says_what_it_did(self, tmp_path, capsys):
+        root = flat_store(tmp_path / 'crops')
+        plant(root, 'crop_rule.json', data=b'{}')
+        assert run_main(root) == 0
+        printed = capsys.readouterr().out
+        assert ('2 type directories moved whole, 0 files moved one by one, 1 store files moved, '
+                '0 collisions left in place, 0 left for a person, 0 failed') in printed
+
+    def test_it_names_the_next_cropper_command_and_warns_consumers(self, tmp_path, capsys):
+        root = flat_store(tmp_path / 'crops')
+        run_main(root)
+        printed = capsys.readouterr().out
+        assert '-o %s --city %s' % (root, CITY) in printed
+        assert os.path.join(str(root), CITY, '<label_type_id>') in printed
+
+    def test_nothing_to_do_is_exit_0(self, tmp_path):
+        root = tmp_path / 'crops'
+        root.mkdir()
+        assert run_main(root) == 0
+        assert run_main(flat_store(root)) == 0
+        assert run_main(root) == 0
+
+    def test_a_collision_is_exit_1(self, tmp_path):
+        root = flat_store(tmp_path / 'crops')
+        plant(root, CITY + '/1/1.jpg', data=b'already here')
+        assert run_main(root) == 1
+
+    def test_a_predicted_collision_is_exit_1_under_dry_run(self, tmp_path, capsys):
+        root = flat_store(tmp_path / 'crops')
+        plant(root, CITY + '/1/1.jpg', data=b'already here')
+        before = tree_snapshot(root)
+        assert run_main(root, '--dry-run') == 1
+        assert tree_snapshot(root) == before
+        printed = capsys.readouterr().out
+        assert ('0 type directories would be moved whole, 1 files would be moved one by one, 0 store files '
+                'would be moved, 1 collisions would be left in place') in printed
+
+    def test_a_directory_left_inside_a_shard_is_exit_1(self, tmp_path):
+        root = flat_store(tmp_path / 'crops')
+        plant(root, CITY + '/1/9.jpg')
+        plant(root, '1/extra/a.jpg')
+        assert run_main(root) == 1
+
+    def test_one_failed_rename_is_counted_and_the_rest_still_move(self, tmp_path, monkeypatch, capsys):
+        root = flat_store(tmp_path / 'crops')
+        plant(root, CITY + '/1/9.jpg')
+        real_rename = os.rename
+
+        def fail_one(src, dst):
+            if os.path.basename(src) == '1.jpg':
+                raise PermissionError(13, 'Permission denied', src)
+            return real_rename(src, dst)
+
+        monkeypatch.setattr(migrate_crop_store.os, 'rename', fail_one)
+        assert run_main(root) == 1
+        assert (root / '1' / '1.jpg').is_file()
+        assert (root / CITY / '1' / '2.jpg').is_file() and (root / CITY / '2' / '3.jpg').is_file()
+        assert '1 failed' in capsys.readouterr().out
+
+    @pytest.mark.parametrize('argv', [[], ['--city', 'seattle-wa'], ['X', '--city', 'Seattle'],
+                                      ['X', '--city', 'atlantis-ga']],
+                             ids=['nothing', 'no-dir', 'malformed-city', 'unknown-city'])
+    def test_usage_errors_exit_2(self, tmp_path, argv):
+        argv = [str(tmp_path / 'crops') if a == 'X' else a for a in argv]
+        with pytest.raises(SystemExit) as e:
+            migrate_crop_store.main(argv)
+        assert e.value.code == 2
+
+    def test_a_crop_dir_that_does_not_exist_is_exit_2(self, tmp_path):
+        with pytest.raises(SystemExit) as e:
+            run_main(tmp_path / 'nowhere')
+        assert e.value.code == 2
+        assert not (tmp_path / 'nowhere').exists()
+
+    def test_a_production_shaped_root_is_exit_3_with_nothing_touched(self, tmp_path, capsys, caplog):
+        import logging
+        from test_crop_runner import make_production_store
+        root = make_production_store(tmp_path / 'prod')
+        plant(root, '1/5.jpg')
+        before = tree_snapshot(root)
+        with caplog.at_level(logging.ERROR):
+            assert run_main(root) == 3
+        assert tree_snapshot(root) == before
+        assert 'Refusing' in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and 'Refusing' in r.getMessage() for r in caplog.records)
+
+    def test_another_citys_marker_is_exit_3_with_nothing_touched(self, tmp_path, capsys):
+        root = flat_store(tmp_path / 'crops')
+        write_marker(root / 'crop_rule.json', city='chicago-il')
+        before = tree_snapshot(root)
+        assert run_main(root) == 3
+        assert tree_snapshot(root) == before
+        assert 'chicago-il' in capsys.readouterr().out
+
+    def test_it_runs_as_a_script(self, tmp_path):
+        import subprocess
+        import sys
+        root = flat_store(tmp_path / 'crops')
+        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'migrate_crop_store.py')
+        proc = subprocess.run([sys.executable, script, str(root), '--city', CITY], capture_output=True, text=True,
+                              timeout=120, cwd=str(tmp_path))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert (root / CITY / '1' / '1.jpg').is_file()
