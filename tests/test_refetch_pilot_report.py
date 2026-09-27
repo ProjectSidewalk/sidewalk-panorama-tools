@@ -217,7 +217,9 @@ class TestSection5TheTilePair:
     """The one section whose artifact is the committed bytes themselves; every figure is recomputed here."""
 
     @pytest.fixture(scope='class')
-    def tiles(self):
+
+    @classmethod
+    def tiles(cls):
         A = lambda im: np.asarray(im, dtype=np.float32)  # noqa: E731
         f256 = Image.open(os.path.join(FIXTURES, 'z5_fover2_4_2.jpg')).convert('L')
         g512 = A(Image.open(os.path.join(FIXTURES, 'z5_nofover_4_2.jpg')).convert('L'))

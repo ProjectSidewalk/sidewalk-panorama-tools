@@ -613,7 +613,9 @@ class TestImageryExamples:
     visibly off (>= 15 px), and shows the repair landing on the truth marker."""
 
     @pytest.fixture(scope='class')
-    def examples(self):
+
+    @classmethod
+    def examples(cls):
         with open(EXAMPLES) as f:
             return json.load(f)['examples']
 
@@ -757,7 +759,9 @@ class TestReportMatchesTheArtifact:
     """
 
     @pytest.fixture(scope='class')
-    def report(self):
+
+    @classmethod
+    def report(cls):
         path = os.path.join(REPO_ROOT, 'reports', '2026-08-10-off-target-markers-validate.md')
         with open(path, encoding='utf-8') as f:
             return f.read()

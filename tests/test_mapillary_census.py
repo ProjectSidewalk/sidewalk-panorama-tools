@@ -944,7 +944,9 @@ class TestTheCommittedRuleIsCurrentOrSuperseded:
     """
 
     @pytest.fixture(scope='class')
-    def report_text(self):
+
+    @classmethod
+    def report_text(cls):
         with open(REPORT, encoding='utf-8') as f:
             return f.read()
 
