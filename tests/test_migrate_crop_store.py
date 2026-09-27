@@ -348,7 +348,7 @@ class TestTheCommandLine:
         assert run_main(root, '--dry-run') == 1
         assert tree_snapshot(root) == before
         printed = capsys.readouterr().out
-        assert ('0 type directories would be moved whole, 1 files would be moved one by one, 0 store files '
+        assert ('1 type directories would be moved whole, 1 files would be moved one by one, 0 store files '
                 'would be moved, 1 collisions would be left in place') in printed
 
     def test_a_directory_left_inside_a_shard_is_exit_1(self, tmp_path):

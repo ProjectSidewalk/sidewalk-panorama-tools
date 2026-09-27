@@ -21,6 +21,7 @@ on disk: CropRunner's resume marker is the crop file, so a store left in the old
 
 import argparse
 import collections
+import logging
 import os
 import re
 
@@ -140,17 +141,63 @@ def migrate_store(crop_dir, city, dry_run=False):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
-    parser.add_argument('crop_dir')
-    parser.add_argument('--city', required=True)
-    parser.add_argument('--dry-run', action='store_true')
+    parser = argparse.ArgumentParser(
+        description="Move a pre-#159 crop store (<crop-dir>/<label_type_id>/<label_id>.jpg) under "
+                    "<crop-dir>/<city>/. Moves only - never copies, replaces or deletes; a file already at "
+                    "a destination is listed as a collision and both are left where they are.")
+    parser.add_argument('crop_dir', help='the directory CropRunner used as -o before #159; it stays the -o '
+                                         'after, holding one store per city')
+    # CropRunner's own argparse type: well-formed, and an active row of log_analyzer/cities.csv, so a typo
+    # cannot move a store under a directory CropRunner would never be pointed at.
+    parser.add_argument('--city', required=True, type=CropRunner.city_id,
+                        help='the city whose crops these are (seattle-wa, cdmx - log_analyzer/cities.csv)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='print every move and collision the real run would make, and write nothing')
     return parser
 
 
+def summary_line(summary, dry_run):
+    """The counts in words, in the form a dry run predicts and a real run reports."""
+    would = ' would be' if dry_run else ''
+    return ("%d type directories%s moved whole, %d files%s moved one by one, %d store files%s moved, "
+            "%d collisions%s left in place, %d left for a person, %d failed."
+            % (summary.dirs_moved, would, summary.files_moved, would, summary.store_files_moved, would,
+               summary.collisions, would, summary.left, summary.failed))
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
-    summary = migrate_store(args.crop_dir, args.city, dry_run=args.dry_run)
-    return 1 if summary.collisions or summary.failed or summary.left else 0
+    """:return: 0 when the store is migrated (or there was nothing to move); 1 when anything was left where it
+             was - a collision, a directory inside a shard, a failed rename - predicted ones included under
+             --dry-run, since CropRunner keeps refusing the root until a person settles each; 2 on a usage
+             error, a crop dir that does not exist included; 3 when the root is refused - it looks like the
+             production canvas-capture store, or its crop_rule.json (or <city>/'s) records another city or
+             cannot be read - with nothing touched."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not os.path.isdir(args.crop_dir):
+        parser.error("%s is not a directory" % args.crop_dir)
+    try:
+        summary = migrate_store(args.crop_dir, args.city, dry_run=args.dry_run)
+    except (CropRunner.ProductionCropStoreError, CropRunner.CropStoreCityError) as e:
+        # Both channels, CropRunner's pattern: logging is not configured, so this reaches stderr through the
+        # root logger's last-resort handler.
+        print("migrate_crop_store: %s" % e)
+        logging.error('%s', e)
+        return CropRunner.EXIT_REFUSED_DESTINATION
+    print(summary_line(summary, args.dry_run))
+    incomplete = summary.collisions or summary.failed or summary.left
+    if incomplete:
+        print("Everything listed above is still where it was. CropRunner refuses %s until the root holds no "
+              "label-type directory or store file of its own: settle each by hand, then re-run this."
+              % args.crop_dir)
+    elif not args.dry_run:
+        print("Next: python3 CropRunner.py (-d <fqdn> | -f <file>) -s <pano-dir> -o %s --city %s"
+              % (args.crop_dir, args.city))
+    print("Consumers that read %s must now read %s, or glob %s and key on (city, label_id)."
+          % (os.path.join(args.crop_dir, '<label_type_id>'),
+             os.path.join(args.crop_dir, args.city, '<label_type_id>'),
+             os.path.join(args.crop_dir, '*', '<label_type_id>')))
+    return 1 if incomplete else 0
 
 
 if __name__ == '__main__':

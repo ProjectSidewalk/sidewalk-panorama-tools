@@ -68,7 +68,45 @@ settled by hand. There are two ways out:
   `/srv/crops`, and the store is `<crop-dir>/<city>/` as it stands; it adopts the city on its next run and
   nothing is re-cut.
 * **Anything else** — a flat store not named for its city, or one `-o` several cities were cut into:
-  move it with `migrate_crop_store.py` first.
+  [move it with `migrate_crop_store.py`](#moving-a-pre-159-store) first.
+
+### Moving a pre-#159 store
+
+```bash
+python3 migrate_crop_store.py <crop-dir> --city <city_id> --dry-run   # every move and collision, nothing written
+python3 migrate_crop_store.py <crop-dir> --city <city_id>             # then for real
+```
+
+`<crop-dir>` is the directory that was `-o` before #159; it stays `-o` afterwards, now holding
+`<crop-dir>/<city>/`. The migrator **moves, never copies, and never replaces**:
+
+* Each label-type directory moves whole — one rename, which over sshfs is one round trip rather than one per
+  crop — unless `<crop-dir>/<city>/<label_type_id>/` already exists (a run under the new layout, or a
+  migration that died partway). Then it moves file by file, and **a file already at the destination is a
+  collision: counted, listed as `COLLISION <src> -> <dst>`, and both are left exactly where they are.** A
+  directory inside a type directory is left and listed; a type directory is removed only once empty.
+* Then the store's own files, each the same way: `crop.log` and its rotated `crop.log.<n>`,
+  `crop_provenance.pre-city.csv`, `crop_provenance.csv`, and `crop_rule.json` **last**, so a run that dies
+  partway leaves the root still marked as a flat store. Nothing is rewritten: the old manifest's rows keep
+  no city, and CropRunner's next run [sets it aside](#the-provenance-manifest-crop_provenancecsv) and
+  starts a fresh one.
+* Everything else at the root — another city's store, notes, figures — is not touched.
+* Before anything moves it refuses (exit **3**) a root that looks like the production canvas-capture store,
+  and a root or `<city>/` whose `crop_rule.json` names another city or cannot be read: moving Chicago's
+  store into `seattle-wa/` would make the collision this layout ends permanent. A marker with no city — any
+  store cut before the city was recorded — passes, and CropRunner adopts the city on its next run. `--city`
+  is checked against `log_analyzer/cities.csv` exactly as CropRunner checks it.
+
+It prints `N type directories moved whole, F files moved one by one, K store files moved, C collisions left
+in place, L left for a person, E failed` (each "would be" under `--dry-run`), then the next CropRunner
+command and a reminder for consumers. It exits **0** when the store is migrated or there was nothing to move,
+**1** when anything was left where it was — a collision, a directory inside a type directory, a failed
+rename, predicted ones included under `--dry-run` — since CropRunner keeps refusing the root until each is
+settled by hand, **2** on a usage error (a `crop-dir` that does not exist included), and **3** on a refusal.
+It is idempotent and resumable: re-running it after a partial run, or after settling collisions, finishes
+the job. **Run one migrator per store at a time**, and not while a CropRunner is cutting into it.
+
+### Never the production crop store
 
 **`-o` must never be the production crop store, and a destination that looks like one is refused.**
 SidewalkWebpage serves the Gallery, the label cards and the social preview from a different crop store,
@@ -111,6 +149,8 @@ for a re-cut campaign that deletes "the crop store" first, which is the mistake 
 The scan is cheap by construction: bounded depth, one directory listing per level, stopping at the first hit,
 and it never lists the numeric type directories that hold a formula store's crops. A new, empty directory, or
 an existing formula store, passes.
+
+### Paths and intake
 
 Both paths used to have defaults — `/crops/` and `/tmp/download_dest/`, the filesystem root and a Docker-only
 scratch path — so forgetting one wrote an ML training corpus somewhere nobody would look for it. Since
