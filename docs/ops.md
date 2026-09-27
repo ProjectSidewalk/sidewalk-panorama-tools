@@ -146,13 +146,14 @@ confirms it. Then:
 1. Set `WRITE_DISPLAY_COPIES = True` in `downloaders/common.py`. It is a code change on purpose, and
    `TestTheSwitch::test_the_shipped_default_is_off` pins the shipped `False`, so that test changes in the same
    commit, saying why.
-2. Run `downscale_panos.py` on each affected store — [by hand](#running-the-sweep-by-hand), `--dry-run` first.
-   **Budget the disk before you do:** the sweep writes a copy for every panorama wider than
-   `DOWNSCALED_MAX_WIDTH` (8192), which is nearly every modern panorama and not only the ones over the ceiling,
-   so this is the fleet-wide +63% below, not a copy of the new frames alone. A `--min-width` option limiting
-   the sweep to frames over the ceiling is proposed in
-   [#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160); check whether it has landed
-   first.
+2. Run `downscale_panos.py --min-width 16384` on each affected store — [by hand](#running-the-sweep-by-hand),
+   `--dry-run` first. That writes copies for the frames **over the ceiling only**, the ones 8192-class GPUs
+   cannot render, and reports every other panorama over the cap as `under --min-width` without touching or
+   even reading its copy ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)).
+   Only if you mean to restore copies for everything over the cap as well, run it again without
+   `--min-width` — and **budget the disk before you do:** that sweep writes a copy for every panorama wider
+   than `DOWNSCALED_MAX_WIDTH` (8192), which is nearly every modern panorama, so it is the fleet-wide +63%
+   below, not a copy of the new frames alone.
 3. Tell the web app's maintainers: the on-demand downscale
    ([SidewalkWebpage#5256](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5256)) absorbs a wider
    frame silently at a cost per view, and its `pano.downscaled.max-width` has to agree with
@@ -164,7 +165,18 @@ confirms it. Then:
 python3 downscale_panos.py <storage-dir> --dry-run          # count the missing copies, write nothing
 python3 downscale_panos.py <storage-dir>                    # write them
 python3 downscale_panos.py <storage-dir> --max-runtime 240  # a nightly-sized slice; the rest report as unreached
+python3 downscale_panos.py <storage-dir> --min-width 16384 --dry-run  # only frames over the viewer ceiling (#121)
 ```
+
+`--min-width PX` ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)) limits the
+sweep to panoramas **wider than** `PX`: one over the cap but at or below it is counted as `under --min-width`
+and its copy is never read, so it is reported neither as written nor as already having a copy, whatever is on
+disk. `16384` — `VIEWER_MAX_PANO_WIDTH`, and GSV's widest frame today — is the value it exists for: the
+[width tripwire](#the-width-tripwire)'s remedy, which should touch only what the viewer fleet cannot render.
+A value at or below `--max-width` is refused, since it would filter nothing and quietly be the full sweep.
+Every panorama the run examines lands in exactly one of written, under the cap, already had a copy, failed and
+under `--min-width`; `unreached` is the part the runtime budget never examined. The summary line always ends
+`…, N unreached, N under --min-width.`, as `0` when the option is not given.
 
 **Budget the disk first, per city.** A display copy is not a thumbnail: measured on the committed
 `samples/sample_pano.jpg` (13312 × 6656, 6.08 MB), the 8192-wide copy is **3.82 MB — 63% of the native file**
