@@ -508,6 +508,14 @@ with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the s
 upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
 [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
 
+**What the ledger learns from GSV.** Two answers are permanent and write a `downloaded=0` row: a pano with no
+reported width/height (decided before any request), and no imagery at either zoom, which means **both** zoom
+probes came back **200** with a fully black tile (Google's answer for a pano id it has retired). Any other
+status on a probe — 403, 404, 410, a 206, a final 3xx — raises, even when its body is a black JPEG: the pano
+counts as tonight's failure, gets no ledger row, and is asked again next run. 429 and 5xx never get that far;
+the retry policy owns them and an exhausted retry raises too. The same rule covers `refetch_panos.py`'s frame
+probe, where a non-200 black edge tile used to read as "the frame covers the pano" ([#166]).
+
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution
 equirectangular image. Requires a token:
@@ -584,6 +592,7 @@ Only a **success** resets the count — not a transient failure, and not a skip.
 difference between a breaker that fires and one that cannot.
 
 [#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
+[#166]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166
 
 Where the reason lands: the night's message carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
