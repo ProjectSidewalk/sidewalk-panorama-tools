@@ -47,7 +47,7 @@ Without that flag, the default is to download from the imagery provider yourself
 Then cut a crop for every label in that city:
 
 ```bash
-python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu \
+python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu --city columbus-oh \
   -s /srv/panos/columbus-oh -o /srv/crops/columbus-oh
 ```
 

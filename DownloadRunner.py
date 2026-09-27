@@ -20,6 +20,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from downloaders import DownloadResult, download_pano, gsv, mapillary, store_sftp
+from downloaders import common
 from downloaders.common import raise_decompression_bomb_ceiling
 
 
@@ -58,6 +59,7 @@ def build_parser():
     parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
     parser.add_argument('--depth-block-latch', default=None, metavar='PATH', help='Where to remember that Google refused this host, so the next city in the queue stands down instead of rediscovering the block with fresh requests. Defaults to a file in the system temp directory - LOCAL disk, not the pano store, because it is a fact about this host and because the storage dir given to a run belongs to a single city. A latch younger than 6 hours skips the depth phase entirely; images are unaffected.')
     parser.add_argument('--depth-pace-state', default=None, metavar='PATH', help='Where the depth pacer remembers the request interval this host has EARNED, so the next city in the queue opens there instead of ramping down from depth_start_interval again. Only earned speed is remembered - a back-off or a refusal resets it - and a file older than a day is ignored. Defaults to a file in the system temp directory beside the block latch, for the same reasons.')
+    parser.add_argument('--width-alarm-latch', default=None, metavar='PATH', help='Where to remember that this host has already alarmed on a frame wider than the viewer ceiling (#121). The FIRST run that sees one exits 1, so the failure-only alarm wrapper delivers it; later runs find this file and only warn. Delete it to re-arm. Defaults to a file in the system temp directory - local disk, because a wider frame is a fact about Google, not one city.')
     parser.add_argument('--run-summary-file', default=None, metavar='PATH', help='Write a small JSON object naming what stopped each phase (image_stop, depth_stop) to PATH. This is how scrape_queue decides which cities still have work and so get an extra pass over the leftover window (#43); nothing else reads it, and without the flag nothing is written. Deliberately has no default: a default path would write into whatever CWD cron happened to start in.')
     # Store mode (#30). The help text says the two operator facts in so many words, and a test pins them.
     parser.add_argument('--from-store', type=store_sftp.remote_city_id, default=None, metavar='CITY_ID', help='Pull already-scraped panoramas for this city from the Project Sidewalk pano store over SFTP instead of downloading them from the imagery provider. The default, without this flag, is to download from the provider yourself. This mode is for collaborators with a working relationship with the Project Sidewalk team, who issue the SFTP credentials it needs; read them from PS_SFTP_HOST / PS_SFTP_BASE (and optionally PS_SFTP_USER / PS_SFTP_PORT / PS_SFTP_KEY) or the matching --sftp-* flags. CITY_ID is the city folder on the store (e.g. seattle-wa) and has no default. Google is never contacted in this mode: the depth phase is skipped unless --with-depth pulls the stored artifacts instead. A pano the store does not have yet is retried next run, never written off.')
@@ -1155,8 +1157,9 @@ def main(argv=None):
     Exceptions propagate (the interpreter prints the traceback and exits 1) and argparse errors exit 2,
     exactly as the pre-#52 module-scope script behaved.
 
-    Returns 1 when an image-source breaker tripped (#113) and 0 otherwise, so a run that stopped trusting a
-    source reads as a failed city to scrape_queue.py and reaches cron's mail-on-failure. Returned rather
+    Returns 1 when an image-source breaker tripped (#113), or when this is the first run on this host to see a
+    frame wider than the viewer ceiling (#121, see _width_alarm), and 0 otherwise, so either reads as a
+    failed city to scrape_queue.py and reaches cron's mail-on-failure. Returned rather
     than exited, so tests can drive the whole flow in-process - the shape scrape_queue.main and
     CropRunner.main already use.
     """
@@ -1203,6 +1206,7 @@ def main(argv=None):
 
     print("Starting run with pano list fetched from %s and destination path %s" % (args.d, args.s))
 
+    sightings_before = common.ceiling_sightings()
     tripped_sources = run(sidewalk_server_fqdn=args.d, storage_location=args.s, pano_metadata_csv=args.c,
                           all_panos=args.all_panos, skip_depth=args.skip_depth,
                           max_runtime_minutes=args.max_runtime, min_depth_runtime=args.min_depth_runtime,
@@ -1210,7 +1214,35 @@ def main(argv=None):
                           depth_block_latch=args.depth_block_latch, depth_pace_state=args.depth_pace_state,
                           run_summary_path=args.run_summary_file, store_settings=store_settings,
                           with_depth=args.with_depth)
-    return 1 if tripped_sources else 0
+    width_alarm = _width_alarm(common.ceiling_sightings() - sightings_before, args.width_alarm_latch)
+    return 1 if tripped_sources or width_alarm else 0
+
+
+def _width_alarm(sightings, latch_path):
+    """Decide whether this run is the one that fails to deliver the #121 alarm, and say so on both channels.
+
+    The per-pano tripwire lines have already been written; this adds the one line that explains the exit code.
+    Nothing when the run saw no wide frame. The count is this run's own - main() takes the difference - so a
+    wide frame seen earlier in the same process is not tonight's.
+
+    @return True when this run should exit nonzero because it is the first sighting on this host.
+    """
+    if not sightings:
+        return False
+    path = common.default_width_alarm_latch_path() if latch_path is None else latch_path
+    if common.arm_width_alarm(path):
+        message = ("WIDTH ALARM (#121): %d pano(s) this run are wider than the viewer ceiling of %d. Failing this "
+                   "run ONCE so the alarm is delivered; later runs on this host will only warn while %s exists. "
+                   "Delete it to re-arm. See docs/ops.md, 'The width tripwire'."
+                   % (sightings, common.VIEWER_MAX_PANO_WIDTH, path))
+        logging.error(message)
+        print(message)
+        return True
+    message = ("%d pano(s) this run are wider than the viewer ceiling (#121); already alarmed on this host "
+               "(latch %s), so not failing the run." % (sightings, path))
+    logging.warning(message)
+    print("WARNING: " + message)
+    return False
 
 
 # The depth flags store mode ignores, as (attribute, flag, default). Store mode never contacts Google, so none

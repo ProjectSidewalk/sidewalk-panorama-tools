@@ -16,6 +16,7 @@ Three properties that are cheap to break and expensive to notice:
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -454,3 +455,75 @@ class TestTheCli:
         result = subprocess.run([sys.executable, '-c', 'import cron_notify; print("imported")'],
                                 cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
         assert result.returncode == 0 and result.stdout.strip() == 'imported', result.stderr
+
+
+# --- The documented probe -----------------------------------------------------------------------------------------
+
+def _probe_argv():
+    """The probe recipe from docs/ops.md, "Hearing about a bad night", as argv: everything on its line."""
+    with open(os.path.join(REPO_ROOT, 'docs', 'ops.md'), encoding='utf-8') as f:
+        text = f.read()
+    # Any crontab-shaped line naming both the script and `--name probe`, so flag order is free to change.
+    found = [line for line in re.findall(r'^\S+ \S+ \* \* \* [^\n`]*$', text, re.M)
+             if 'cron_notify.py' in line and '--name probe' in line]
+    assert len(found) == 1, 'expected exactly one probe line in docs/ops.md, found %d' % len(found)
+    return shlex.split(found[0])
+
+
+def _production_line():
+    """The production crontab entry from docs/downloader.md, continuations joined, as argv. Matched by what it
+    runs (cron_notify.py --name scrape-queue), not by its start time, so rescheduling the night breaks nothing."""
+    with open(os.path.join(REPO_ROOT, 'docs', 'downloader.md'), encoding='utf-8') as f:
+        text = f.read()
+    found = [m.replace('\\\n', ' ') for m in re.findall(r'^\S+ \S+ \* \* \* (.*?)^```', text, re.M | re.S)]
+    found = [line for line in found if 'cron_notify.py' in line and '--name scrape-queue' in line]
+    assert len(found) == 1, 'expected exactly one production crontab line in docs/downloader.md, found %d' % len(found)
+    return shlex.split(found[0])
+
+
+def _flag(argv, name):
+    return argv[argv.index(name) + 1]
+
+
+def _cron_path(path):
+    """A path as cron's shell resolves it: the crontab belongs to `ubuntu`, so `~/x` is `/home/ubuntu/x`."""
+    return '/home/ubuntu/' + path[2:] if path.startswith('~/') else path
+
+
+class TestTheDocumentedProbe:
+    """The recipe that proves the channel delivers (#141). Its first version omitted --only-on-failure, so
+    `false` - which prints nothing - fell under cron's no-output-no-mail rule and the sink was never called, so
+    the probe failed whether or not the channel worked - twice, on 2026-09-19, with the channel suspected.
+    Nothing tied the recipe to main(), so these do.
+    """
+
+    def test_the_recipe_as_written_calls_the_sink_and_logs_published(self, sink, tmp_path):
+        argv = _probe_argv()
+        script = next(i for i, a in enumerate(argv) if a.endswith('cron_notify.py'))
+        split = argv.index('--')
+        assert argv[split + 1:] == ['false'], 'the probe command is supposed to be `false`'
+        flags = argv[script + 1:split]
+        # The sink and the log are deployment facts; everything else is exactly as documented. `false` becomes
+        # its portable equivalent - exit 1, print nothing - since Windows has no `false`.
+        flags[flags.index('--sink') + 1] = sink.command
+        log = tmp_path / 'probe.log'
+        flags[flags.index('--log') + 1] = str(log)
+
+        code = cron_notify.main([*flags, '--', sys.executable, '-c', 'raise SystemExit(1)'])
+
+        assert code == 1
+        assert sink.calls() == 1, 'the documented probe never reaches the sink'
+        assert sink.env()['NOTIFY_SUBJECT'].startswith('probe: exit 1 on ')
+        assert ' exit 1 published ' in log.read_text().splitlines()[-1]
+
+    def test_the_probe_runs_what_the_nightly_runs(self):
+        """A throwaway cron line that cannot find the script tests nothing; the interpreter and script are the
+        production line's own."""
+        argv, prod = _probe_argv(), _production_line()
+        script = next(i for i, a in enumerate(prod) if a.endswith('cron_notify.py'))
+        assert prod[:script + 1] == argv[argv.index(prod[0]):argv.index(prod[0]) + script + 1]
+
+    def test_the_probe_does_not_write_into_the_nightlys_log(self):
+        """The log line carries no job name, and the morning check reads `tail -1` of the nightly's log - so a
+        probe's `exit 1 published` there reads as a failed night."""
+        assert _cron_path(_flag(_probe_argv(), '--log')) != _cron_path(_flag(_production_line(), '--log'))
