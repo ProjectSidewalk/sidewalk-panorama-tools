@@ -324,3 +324,122 @@ class TestPanoramaxWiring:
 
         assert tripwire_records(caplog) == []
         assert tripwire_lines(capsys.readouterr().out) == []
+
+
+# ---------------------------------------------------------------------------------------------------------
+# The alarm fires ONCE (#121, decided on #153 2026-09-26). The tripwire above only warns, and the queue runs
+# under `cron_notify --only-on-failure`, so on a night that otherwise exits 0 the warning reaches no one.
+# Failing every run that sees a wide frame would reach someone - and then keep the city red every night after,
+# since Google does not un-widen, hiding any real failure behind a known one. So the first sighting on a host
+# arms a latch on LOCAL disk and fails that run; later runs see the latch and only warn. Deleting the latch
+# re-arms it.
+
+from test_download_runner import CSV_HEADER  # noqa: E402
+
+import DownloadRunner  # noqa: E402
+
+
+def wide_pano_download(width):
+    """A download_pano stand-in that does what every real downloader does first: report the frame's width to
+    the tripwire. No network and no disk - the alarm is decided in main(), from the tripwire's count."""
+    def fake(storage_path, pano_info):
+        common.warn_if_wider_than_viewer_ceiling(pano_info['pano_id'], width, pano_info['source'])
+        return DownloadResult.success
+    return fake
+
+
+def run_main_over(monkeypatch, tmp_path, width, latch, name='storage'):
+    """Drive the whole of DownloadRunner.main() over one GSV pano whose frame is `width` wide."""
+    csv_path = tmp_path / (name + '.csv')
+    csv_path.write_text(CSV_HEADER + 'wideTestPano%s,%d,%d,47.6,-122.3,180.0,0.0,gsv,True' % (name, width, width // 2)
+                        + chr(10))
+    monkeypatch.setattr(DownloadRunner, 'download_pano', wide_pano_download(width))
+    monkeypatch.chdir(tmp_path)
+    return DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / name), '-c', str(csv_path),
+                                '--skip-depth', '--width-alarm-latch', str(latch)])
+
+
+class TestTheSightingCount:
+    def test_a_wide_frame_is_counted(self):
+        before = common.ceiling_sightings()
+        common.warn_if_wider_than_viewer_ceiling('p', WIDE, 'gsv')
+        assert common.ceiling_sightings() == before + 1
+
+    def test_a_frame_at_the_ceiling_is_not(self):
+        before = common.ceiling_sightings()
+        common.warn_if_wider_than_viewer_ceiling('p', CEILING, 'gsv')
+        assert common.ceiling_sightings() == before
+
+
+class TestTheLatch:
+    def test_the_first_arming_reports_itself(self, tmp_path):
+        latch = tmp_path / 'latch'
+        assert common.arm_width_alarm(str(latch)) is True
+        assert latch.exists()
+
+    def test_a_second_arming_does_not(self, tmp_path):
+        latch = tmp_path / 'latch'
+        common.arm_width_alarm(str(latch))
+        assert common.arm_width_alarm(str(latch)) is False
+
+    def test_it_never_overwrites_the_first_sighting(self, tmp_path):
+        """The latch's content is when the ceiling was first crossed - the one date an operator needs."""
+        latch = tmp_path / 'latch'
+        latch.write_text('first sighting')
+        common.arm_width_alarm(str(latch))
+        assert latch.read_text() == 'first sighting'
+
+    def test_a_latch_that_cannot_be_written_resolves_towards_alarming(self, tmp_path, caplog):
+        """Every ambiguity resolves towards telling a human: a latch nobody can write must not swallow the one
+        alarm this exists to deliver. The cost is an alarm every night until the path is fixed - noisy, and
+        the message names the path."""
+        latch = tmp_path / 'no-such-dir' / 'latch'
+        assert common.arm_width_alarm(str(latch)) is True
+        assert any(str(latch) in r.getMessage() for r in caplog.records)
+
+    def test_the_default_is_local_disk_not_the_store(self):
+        """A fact about Google, not about one city: a per-city latch would alarm once per city, 53 times."""
+        import tempfile
+        assert os.path.dirname(common.default_width_alarm_latch_path()) == tempfile.gettempdir()
+
+
+class TestTheAlarmFiresOnce:
+    def test_the_first_sighting_fails_the_run(self, monkeypatch, tmp_path, capsys):
+        latch = tmp_path / 'latch'
+        assert run_main_over(monkeypatch, tmp_path, WIDE, latch) == 1
+        assert latch.exists()
+        assert 'WIDTH ALARM' in capsys.readouterr().out
+
+    def test_a_later_sighting_only_warns(self, monkeypatch, tmp_path, capsys):
+        latch = tmp_path / 'latch'
+        run_main_over(monkeypatch, tmp_path, WIDE, latch, name='first')
+        capsys.readouterr()
+        assert run_main_over(monkeypatch, tmp_path, WIDE, latch, name='second') == 0
+        out = capsys.readouterr().out
+        # Still said, on both nights - only the exit code changes.
+        assert tripwire_lines(out)
+        assert str(latch) in out
+
+    def test_deleting_the_latch_re_arms_it(self, monkeypatch, tmp_path):
+        latch = tmp_path / 'latch'
+        run_main_over(monkeypatch, tmp_path, WIDE, latch, name='first')
+        latch.unlink()
+        assert run_main_over(monkeypatch, tmp_path, WIDE, latch, name='second') == 1
+
+    def test_an_ordinary_run_neither_fails_nor_arms(self, monkeypatch, tmp_path):
+        latch = tmp_path / 'latch'
+        assert run_main_over(monkeypatch, tmp_path, CEILING, latch) == 0
+        assert not latch.exists()
+
+    def test_only_this_runs_sightings_count(self, monkeypatch, tmp_path):
+        """The count is process-wide, so main() must read the DIFFERENCE across its own run. A wide pano seen
+        earlier in the process (another test, or refetch_panos sharing an interpreter) is not tonight's."""
+        common.warn_if_wider_than_viewer_ceiling('earlier', WIDE, 'gsv')
+        latch = tmp_path / 'latch'
+        assert run_main_over(monkeypatch, tmp_path, CEILING, latch) == 0
+        assert not latch.exists()
+
+    def test_an_unwritable_latch_fails_every_run(self, monkeypatch, tmp_path):
+        latch = tmp_path / 'no-such-dir' / 'latch'
+        assert run_main_over(monkeypatch, tmp_path, WIDE, latch, name='first') == 1
+        assert run_main_over(monkeypatch, tmp_path, WIDE, latch, name='second') == 1
