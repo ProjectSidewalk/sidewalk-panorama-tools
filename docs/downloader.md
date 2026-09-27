@@ -70,6 +70,7 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--max-depth-requests N` | Stop the depth phase after N metadata requests. Useful for throttling the initial backfill. |
 | `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
 | `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back **from Google** or a refusal resets it, a local failure does not, a phase that made no requests writes nothing, and a day-old file is ignored. The phase holds `<PATH>.lock` while it runs, so a second concurrent phase paces itself from scratch. Defaults to a file beside the *default* block latch; `--depth-block-latch` does not move it. |
+| `--width-alarm-latch PATH` | Where this host remembers it has already alarmed on a frame wider than the viewer ceiling (#121). The first run to see one exits 1; later runs find this file and only warn; delete it to re-arm. Defaults to a file in the system temp directory — local disk, because a wider frame is a fact about Google, not one city. See [Operations](ops.md#the-width-tripwire). |
 | `--run-summary-file PATH` | Write a small JSON object (`image_stop`, `depth_stop`) naming what stopped each phase. `scrape_queue` passes this and reads it back to decide which cities still have work; nothing else reads it, and without the flag nothing is written. No default, deliberately — a default path would write into whatever CWD cron started in. |
 
 Budgets are measured with `time.monotonic()`, never the wall clock, so an NTP step or a DST transition cannot
@@ -495,9 +496,9 @@ pick them up.
 
 All three sources also carry the **width tripwire**: a panorama wider than 16384 px — the widest an
 8192-class GPU can render — gets an `over the viewer ceiling` warning in `scrape.log` and on stdout, and is
-downloaded exactly as it would have been otherwise. It never changes the exit code, so on a clean night the
-alarm does not carry it and it reaches no one: it sits in `scrape.log` until someone greps for it, and
-nothing does that routinely. What it means, the grep, and what to do are in
+downloaded exactly as it would have been otherwise. The **first** run on a host to see one also exits 1, so
+the failure-only alarm delivers it once; a latch file then keeps later runs to a warning (see
+`--width-alarm-latch`). What it means, the latch, and what to do are in
 [Operations](ops.md#the-width-tripwire).
 
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented

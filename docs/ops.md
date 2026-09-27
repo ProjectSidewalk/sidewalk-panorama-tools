@@ -104,21 +104,32 @@ first width that warns.
   stdout already carries one `Processing pano` line per pano attempted, and the alarm wrapper
   [cuts the middle](#hearing-about-a-bad-night) of a long night's output, where a single announcement is the
   line most likely to be lost.
-* **Where you will actually see it: only where someone greps for it. This is not a daily watch.**
-  Production runs the queue under `cron_notify.py --only-on-failure`, and the tripwire does not change any
-  exit code, so on an ordinary night — the queue exits 0 — its stdout line is **not delivered anywhere a person
-  looks**; the warning sits in `scrape.log` until someone reads it. The check is
+* **It alarms once per host, then only warns** (decided on
+  [#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153), 2026-09-26). Production runs the
+  queue under `cron_notify.py --only-on-failure`, so a warning alone reaches no one on a night that exits 0.
+  Failing *every* run that sees a wide frame would reach someone, and then keep the city red every night after,
+  since Google does not un-widen, hiding any real failure behind a known one. So the **first** `DownloadRunner`
+  run on a host to see a frame over the ceiling prints `WIDTH ALARM (#121): …` on both channels, creates a
+  latch file and **exits 1**, so the queue books a failed city and the alarm is delivered. Every later run finds
+  the latch and prints only `… already alarmed on this host (latch <path>), so not failing the run.`
+
+  * **The latch** is `sidewalk-width-ceiling-alarmed` in the system temp directory, or `--width-alarm-latch
+    PATH`. It is on local disk, beside the depth block latch, because a wider frame is a fact about Google
+    rather than one city: a per-city latch would alarm once per city. Its content is the UTC time of the first
+    sighting, and it is never rewritten.
+  * **Delete it to re-arm** — after acting on an alarm, say, so the next change reaches you too.
+  * **A latch that cannot be written fails every run** that sees a wide frame, with the path in `scrape.log`:
+    a latch nobody can write must not swallow the one alarm it exists for.
+  * `refetch_panos.py` warns through the same seam but never arms the latch or changes its exit code; a repair
+    pass is run by someone watching it.
+
+  The per-pano lines are still there afterwards, so to find which stores have seen one:
 
   ```bash
   grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*
   ```
 
-  (the `*` after `.log` takes in the rotated `.1`–`.3` files; `-s` quiets a store with no `refetch.log`). It is
-  listed under [routine checks](#routine-checks) and [the morning after a deploy](#the-morning-after-a-deploy),
-  but **nothing runs it routinely**, so a widened frame goes unnoticed for as long as nobody looks. Making the
-  tripwire reach a person on its own is an open decision between two options: the queue exits nonzero on a
-  night a frame over the ceiling was seen, so the existing alarm carries it, or the width is persisted as a
-  `log.csv` column, proposed on #121 first, that the log analyzer can then rule on.
+  (the `*` after `.log` takes in the rotated `.1`–`.3` files; `-s` quiets a store with no `refetch.log`).
 * **Not a `log.csv` column, and so not a log-analyzer rule — on purpose, not an oversight.** `log.csv` is a
   fixed set of positional fields that the analyzer and other tooling read by position, and #121 asks for any
   persisted width to be proposed there first. The [log analyzer](log-analyzer.md) reads nothing but `log.csv`,
@@ -138,7 +149,10 @@ confirms it. Then:
 2. Run `downscale_panos.py` on each affected store — [by hand](#running-the-sweep-by-hand), `--dry-run` first.
    **Budget the disk before you do:** the sweep writes a copy for every panorama wider than
    `DOWNSCALED_MAX_WIDTH` (8192), which is nearly every modern panorama and not only the ones over the ceiling,
-   so this is the fleet-wide +63% below, not a copy of the new frames alone.
+   so this is the fleet-wide +63% below, not a copy of the new frames alone. A `--min-width` option limiting
+   the sweep to frames over the ceiling is proposed in
+   [#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160); check whether it has landed
+   first.
 3. Tell the web app's maintainers: the on-demand downscale
    ([SidewalkWebpage#5256](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5256)) absorbs a wider
    frame silently at a cost per view, and its `pano.downscaled.max-width` has to agree with

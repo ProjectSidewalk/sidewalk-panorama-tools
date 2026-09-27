@@ -338,6 +338,10 @@ from test_download_runner import CSV_HEADER  # noqa: E402
 
 import DownloadRunner  # noqa: E402
 
+# Captured at import, before conftest's autouse fixture points the default at a per-test tmp dir, so the test of
+# the deployment default reads the real one.
+REAL_DEFAULT_WIDTH_ALARM_LATCH_PATH = common.default_width_alarm_latch_path
+
 
 def wide_pano_download(width):
     """A download_pano stand-in that does what every real downloader does first: report the frame's width to
@@ -400,7 +404,7 @@ class TestTheLatch:
     def test_the_default_is_local_disk_not_the_store(self):
         """A fact about Google, not about one city: a per-city latch would alarm once per city, 53 times."""
         import tempfile
-        assert os.path.dirname(common.default_width_alarm_latch_path()) == tempfile.gettempdir()
+        assert os.path.dirname(REAL_DEFAULT_WIDTH_ALARM_LATCH_PATH()) == tempfile.gettempdir()
 
 
 class TestTheAlarmFiresOnce:
