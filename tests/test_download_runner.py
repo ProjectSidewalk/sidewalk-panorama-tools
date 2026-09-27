@@ -2401,14 +2401,19 @@ class TestGoogleRefusingGsvImagesStopsThePhase(_PushbackHarness):
         assert self.ledger() == ['mly-0,1', 'mly-1,1']
         assert tripped == {'gsv'}
 
-    def test_another_sources_push_back_shaped_errors_trip_nothing(self, monkeypatch):
+    def test_another_sources_push_back_shaped_errors_trip_nothing(self, monkeypatch, caplog):
+        """A Mapillary 429 is Mapillary's business: it neither counts here nor is logged as Google's refusal."""
         panos = [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(5)]
         verdicts = {p['pano_id']: probe_retry_error(429) for p in panos}
 
-        _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+        with caplog.at_level(logging.ERROR):
+            _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
 
         assert len(calls) == 5 and tripped == set() and stop_reasons['image_stop'] is None
         assert not self.latch.exists()
+        logged = [r.getMessage() for r in caplog.records]
+        assert len([m for m in logged if 'due to error' in m]) == 5
+        assert not any('refused by Google' in m for m in logged)
 
     def test_a_probe_shaped_refusal_counts_and_names_itself(self, monkeypatch, caplog):
         panos = self.gsv_panos(4)
