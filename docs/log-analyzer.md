@@ -26,14 +26,13 @@ wrong default would silently analyze the wrong store.
 | `PS_SFTP_USER` | `--user` | optional — omit when the ssh config supplies it |
 | `PS_SFTP_PORT` | `--port` | optional — omit for 22 |
 | `PS_SFTP_KEY`  | `--key`  | optional — omit to let ssh choose (ssh config / agent) |
-| `PS_ROSTER_HOST` | `--roster-host` | **required** in download mode — a deployment that serves `/v3/api/cities`, for the roster cross-check below. Unset, every run is CRITICAL and exits 1 |
+| `PS_ROSTER_HOST` | `--roster-host` | optional — deployments serving `/v3/api/cities` for the roster cross-check below, comma-separated and tried in order; omit for `sidewalk-sea`, then `sidewalk-chicago` |
 
 Setting up an `~/.ssh/config` `Host` alias is the tidiest option: with the user, port, and key declared there,
-only `PS_SFTP_HOST`, `PS_SFTP_BASE` and `PS_ROSTER_HOST` are needed.
+only `PS_SFTP_HOST` and `PS_SFTP_BASE` are needed.
 
 ```bash
 export PS_SFTP_HOST=... PS_SFTP_BASE=... PS_SFTP_USER=... PS_SFTP_PORT=... PS_SFTP_KEY=~/.ssh/...
-export PS_ROSTER_HOST=sidewalk-sea.cs.washington.edu
 
 python3 log_analyzer/analyze.py                    # download all city logs, then analyze
 python3 log_analyzer/analyze.py --no-download      # re-analyze the local cache
@@ -56,15 +55,20 @@ times: `newport-ky` was scraped nightly for weeks while sitting outside the anal
 2026-09-22 `washington-dc` — re-launched and live — had no row either. Each was found by hand.
 
 **Since [#133](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/133) the report cross-checks
-itself.** After the per-city blocks it asks one deployment for `/v3/api/cities` — every deployment serves the
-same roster of every city — and names, at CRITICAL, each city with no row here:
+itself.** After the per-city blocks it asks a deployment for `/v3/api/cities`, falling back to the next if one
+does not answer (at most three) — every deployment serves the same roster of every city — and names, at
+CRITICAL, each city with no row here:
 
 ```
 🔴  Roster cross-check — checked 55 rows against 39 public + 20 private cities on sidewalk-sea.cs.washington.edu
     🔴 [CRITICAL] not in cities.csv: laurens-ia (https://sidewalk-laurens.cs.washington.edu)
 ```
 
-Set the host with `--roster-host` or `PS_ROSTER_HOST`. Four rules are load-bearing:
+The hosts default to `sidewalk-sea.cs.washington.edu`, then `sidewalk-chicago.cs.washington.edu` if Seattle does
+not answer. Unlike the SFTP settings these can safely have a default: every deployment on the current release
+serves the same roster, so the choice decides only whether the check runs, never what it compares against. The
+fallback is a second app stage on the same host, so it covers one deployment being down, not the whole app
+host. `--roster-host` or `PS_ROSTER_HOST` replaces the list. Four rules are load-bearing:
 
 - **It is a comparison, not auto-discovery.** This file stays the source of what to monitor; generating it from
   the roster would silently pick up cities nobody decided to watch.
@@ -72,9 +76,8 @@ Set the host with `--roster-host` or `PS_ROSTER_HOST`. Four rules are load-beari
   under its *own* id. The Bayonne row would have matched on fqdn and still been wrong.
 - **Private cities count** ([#143](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/143)).
   Twenty of the fifty-nine deployments are private, `washington-dc` among them.
-- **It never fails open.** An unset host and a host that serves no roster are each
-  CRITICAL — a check silently skipped every night is the failure it exists to prevent. `--no-download` is
-  offline mode and skips it.
+- **It never fails open.** If no host serves a roster, that is CRITICAL — a check silently skipped every night
+  is the failure it exists to prevent. `--no-download` is offline mode and skips it.
 
 To record a deployment that is deliberately **never** monitored, give it a `#` row carrying the marker:
 
