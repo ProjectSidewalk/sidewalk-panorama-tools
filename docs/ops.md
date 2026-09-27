@@ -791,7 +791,9 @@ previous deploy's changes again.
    [cross-checks the manifest](downloader.md#the-manifest-is-cross-checked-against-the-fleet) — any city
    still missing a row, or listed under the wrong id, is named and the dry run exits 1. A private deployment
    that is deliberately not scraped here gets a `#city_id,fqdn` row instead, once.
-3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it.
+3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it — and `CropRunner.py`
+   refuses `--city` for it (exit 2), since that roster is what it checks the name of a crop store against
+   ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)).
 4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
 
 ### Hearing about a bad night

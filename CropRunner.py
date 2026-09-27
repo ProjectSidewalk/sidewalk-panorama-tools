@@ -148,6 +148,13 @@ PRODUCTION_STORE_SCAN_DEPTH = 2
 # next run retries them": this run never looked at a label, and re-running it changes nothing.
 EXIT_REFUSED_DESTINATION = 3
 
+# The fleet's city roster, which --city must name an active row of (#159): --city is a directory name under
+# -o, so a well-formed typo would quietly open a new, empty store beside the real one. Read as a FILE with
+# csv, never by importing log_analyzer (which imports pandas - no production module may), and never copied
+# into a constant here, which would drift from the roster the analyzer and docs/ops.md keep. Read at parse
+# time, so tests can point it elsewhere.
+CITIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'log_analyzer', 'cities.csv')
+
 # The per-crop provenance manifest (#111), beside the marker: one row per crop, appended as it lands. A
 # crop is a bare JPEG and every consumer of this store is an ML dataset, so where its pixels came from -
 # and, for Mapillary and Panoramax imagery, under which licence - has to travel with it. See
@@ -234,12 +241,44 @@ LOG_ID_MAX_CHARS = 60
 _CITY_ID = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*')
 
 
+def known_city_ids(path):
+    """The active city_ids in a cities.csv-shaped roster: every non-blank city_id not commented out with '#'
+    (a deployment deliberately not scraped here, so it has no panos to crop).
+
+    :raises OSError: if the file cannot be read.
+    :raises ValueError: if it has no city_id column.
+    """
+    with open(path, encoding='utf-8', newline='') as f:
+        reader = csv.DictReader(f)
+        if 'city_id' not in (reader.fieldnames or ()):
+            raise ValueError("no city_id column")
+        ids = set()
+        for row in reader:
+            city = (row.get('city_id') or '').strip()
+            if city and not city.startswith('#'):
+                ids.add(city)
+        return ids
+
+
 def city_id(value):
     """argparse type for --city. Strict, because the city is compared as a string - a city spelled two ways
-    would be two cities - and because #159 makes it a path component."""
+    would be two cities - and because it is a path component (#159): <crop-dir>/<city>/.
+
+    Well-formed first, then an active row of CITIES_FILE, read now. A roster that cannot be read fails
+    closed (exit 2 naming it): accepting every well-formed name there is exactly the typo gap this closes."""
     if not _CITY_ID.fullmatch(value):
         raise argparse.ArgumentTypeError("%r is not a city_id: lowercase letters and digits joined by single "
                                          "hyphens, as in log_analyzer/cities.csv (seattle-wa, cdmx)" % value)
+    try:
+        known = known_city_ids(CITIES_FILE)
+    except (OSError, ValueError, csv.Error) as e:
+        raise argparse.ArgumentTypeError("cannot read the city roster %s (%s), so cannot confirm %r is a city; "
+                                         "nothing has been written" % (CITIES_FILE, e, value))
+    if value not in known:
+        raise argparse.ArgumentTypeError(
+            "%r is not an active city in %s. --city names the crop store's directory, so a misspelling would "
+            "start a new store; a city missing from the roster is added there first (docs/ops.md, Adding a "
+            "city, step 3)" % (value, CITIES_FILE))
     return value
 
 
@@ -254,7 +293,7 @@ def build_parser():
     parser.add_argument('-s', required=True, help='pano_storage_directory - path to directory containing panoramas downloaded using DownloadRunner.py')
     parser.add_argument('-o', required=True, help='crop_output_directory - path to location for saving the crops')
     parser.add_argument('--mark-label', action='store_true', help='Draw a dot at the label position in every crop. Debugging aid - deliberately OFF by default, because these crops are ML training data and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.')
-    parser.add_argument('--city', required=True, type=city_id, help="The city_id these labels belong to (seattle-wa, cdmx - log_analyzer/cities.csv). Required: label_id restarts at 1 in every deployment, so crops are only unique per city. The first run records it in crop_rule.json, and a run naming a different city is refused before anything is cut, so no city can overwrite another city's crops (#159). Recorded on every provenance row.")
+    parser.add_argument('--city', required=True, type=city_id, help="The city_id these labels belong to (seattle-wa, cdmx): an active row of log_analyzer/cities.csv, read at startup. Required: label_id restarts at 1 in every deployment, so crops are only unique per city. The first run records it in crop_rule.json, and a run naming a different city is refused before anything is cut, so no city can overwrite another city's crops (#159). Recorded on every provenance row.")
     parser.add_argument('--force', action='store_true', help='Re-cut a label whose crop already exists instead of skipping it (#83) - the repair for a store cut under an older sizing rule. Each crop is replaced atomically, so a failed write leaves the old one in place. For the ML crop store this tool writes ONLY; a destination that looks like the production canvas-capture store is refused either way.')
     return parser
 

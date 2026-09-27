@@ -30,7 +30,8 @@ python3 cron_notify.py --sink '<shell command>' [--name NAME] [--only-on-failure
 
 # Cropper (exits 1 if any label errored; missing/untrusted panos alone are not an error). --force re-cuts existing
 # crops (#83); a -o that looks like the production canvas-capture crop store, or that crop_rule.json records as
-# another city's, is refused: exit 3, nothing written. --city is required (label_id restarts per city; #159).
+# another city's, is refused: exit 3, nothing written. --city is required (label_id restarts per city; #159)
+# and must be an active row of log_analyzer/cities.csv (exit 2 otherwise).
 python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force]
 
 # flag_panos JSON -> CSV, for one city (one-off tool; see flag_panos/README.md)
@@ -261,6 +262,14 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
   column**, so a single missing `width` made every other row's width a float and the blank itself a `NaN`
   that `gsv`'s `is not None` guard cannot see. Blank cells become `None` in `DownloadRunner` and stay `''`
   in `CropRunner` — deliberate, and explained at both seams.
+- **CropRunner's `--city` roster is `log_analyzer/cities.csv` read as a FILE — never imported, never copied
+  (#159).** `--city` names the crop store's directory, so a well-formed typo would start a new store;
+  `city_id()` checks the regex, then membership in `known_city_ids(CITIES_FILE)` (active rows only: a
+  `#`-commented deployment has no panos to crop), read at parse time. Importing `log_analyzer` would pull
+  pandas into a production module (`tests/test_csv_intake.py` fails on that), and a constant list here would
+  drift from the roster `docs/ops.md`'s "Adding a city" keeps. An unreadable roster fails **closed** (exit 2
+  naming it): accepting every well-formed name there is exactly the gap. Semantics tests monkeypatch
+  `CITIES_FILE`; only `TestTheCommittedRosterIsSafeAsDirectoryNames` reads the real list.
 - **`print` and `logging` are two channels with different jobs — do not "unify" them.** `print` is the
   operator-facing run narrative and the warnings **the night's message carries** (cron's mail rule, delivered by `cron_notify.py` on the production host, #141); `logging` is the durable per-item detail in
   `scrape.log` / `crop.log`. **A warning that matters goes to both**, which is the depth phase's pattern
