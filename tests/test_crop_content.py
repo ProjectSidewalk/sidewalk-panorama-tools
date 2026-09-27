@@ -493,3 +493,133 @@ class TestAnUndecodablePanoIsDecodedOnce:
         assert counts['errors'] == 2 and counts['stale_kept'] == 1 and counts['success'] == 0
         assert read_bytes(find_crop(out, 1)) == before
         assert STALE_KEPT_SUMMARY % 1 in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# C. The JSON intake: one bad row is one bad label, never a dead run
+# ---------------------------------------------------------------------------
+
+def without(row, key):
+    return {k: v for k, v in row.items() if k != key}
+
+
+def write_json(path, payload):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f)
+    return str(path)
+
+
+class TestTheJsonIntakeCountsABadRowAsOneBadLabel:
+    """json_to_list indexed value["label_id"] outside any try, so one row without it (KeyError), a null
+    element (TypeError) or a 200 carrying an error object (its keys iterated) crashed the whole run - while
+    the module comment promised "a row missing any of them as one bad label". The CSV intake already
+    behaved that way; this is the same contract for JSON."""
+
+    def test_a_row_without_label_id_is_one_error(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        ok = label_row(pano_id=GOOD, label_id=1)
+        rows = crop_runner.json_to_list([ok, without(label_row(pano_id=GOOD, label_id=2), 'label_id')])
+        assert len(rows) == 2
+
+        counts = run(crop_runner, rows, store, out)
+        assert counts['total'] == 2 and counts['errors'] == 1 and counts['success'] == 1
+        assert reconciles(counts)
+
+    def test_through_main_the_run_finishes_and_exits_one(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        path = write_json(tmp_path / 'labels.json',
+                          [label_row(pano_id=GOOD, label_id=1),
+                           without(label_row(pano_id=GOOD, label_id=2), 'label_id')])
+        assert crop_runner.main(['--city', CITY, '-f', path, '-s', str(store), '-o', str(out)]) == 1
+        assert find_crop(out, 1) is not None
+
+    def test_a_null_element_is_one_error(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        rows = crop_runner.json_to_list([label_row(pano_id=GOOD, label_id=1), None])
+        counts = run(crop_runner, rows, store, out)
+        assert counts['total'] == 2 and counts['errors'] == 1 and counts['success'] == 1
+
+    def test_a_row_that_is_not_an_object_is_one_error(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        rows = crop_runner.json_to_list([label_row(pano_id=GOOD, label_id=1), 'label', 7, [1, 2]])
+        counts = run(crop_runner, rows, store, out)
+        assert counts['total'] == 4 and counts['errors'] == 3 and counts['success'] == 1
+        assert reconciles(counts)
+
+    @pytest.mark.parametrize('payload', [{'error': 'unauthorized'}, None, 3, 'x'],
+                             ids=['object', 'null', 'number', 'string'])
+    def test_a_top_level_that_is_not_an_array_is_refused_naming_the_file(self, crop_runner, tmp_path,
+                                                                        payload):
+        """A dict would otherwise be iterated as its keys - every key a 'row'. One error naming the file,
+        the CSV intake's header-typo rule, rather than N bogus labels or a TypeError."""
+        path = write_json(tmp_path / 'labels.json', payload)
+        with pytest.raises(ValueError, match=re.escape(path)) as e:
+            crop_runner.fetch_cvMetadata_from_file(path)
+        assert 'JSON array' in str(e.value)
+
+    def test_the_server_path_refuses_a_non_array_and_exits_one(self, crop_runner, monkeypatch, caplog):
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {'error': 'unauthorized'}
+
+        class FakeSession:
+            trust_env = False
+
+            def get(self, url, **kwargs):
+                return FakeResponse()
+
+            def close(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+                return False
+
+        monkeypatch.setattr(crop_runner, 'request_session', lambda: FakeSession())
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(SystemExit) as e:
+                crop_runner.fetch_cvMetadata_from_server('sidewalk-test.invalid')
+        assert e.value.code == 1
+        assert 'https://sidewalk-test.invalid/adminapi/labels/cvMetadata' in caplog.text
+        assert 'JSON array' in caplog.text
+
+
+class TestTheJsonIntakeDedupesOnTheIdTheLoopFilesUnder:
+    """The loop files a crop under int(label_id). Deduping on the raw value let 1 and "1" both through,
+    and under --force both re-cut the same file. The key is now that same int()."""
+
+    def test_spellings_of_one_id_are_one_label(self, crop_runner):
+        rows = crop_runner.json_to_list([label_row(label_id=1, pano_x=100), label_row(label_id='1', pano_x=200),
+                                         label_row(label_id=1.0, pano_x=300),
+                                         label_row(label_id=' 1', pano_x=400)])
+        assert len(rows) == 1 and rows[0]['pano_x'] == 100
+
+    def test_under_force_one_id_is_cut_once(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        rows = crop_runner.json_to_list([label_row(pano_id=GOOD, label_id=1),
+                                         label_row(pano_id=GOOD, label_id='1', pano_x=600)])
+        counts = run(crop_runner, rows, store, out, force=True)
+        assert counts['total'] == 1 and counts['success'] == 1
+
+    def test_unusable_ids_are_never_collapsed(self, crop_runner, tmp_path):
+        """A row whose id cannot be an int is its own bad label: collapsing two of them would hide one."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        base = label_row(pano_id=GOOD)
+        rows = crop_runner.json_to_list([dict(base, label_id=None), dict(base, label_id=None),
+                                         dict(base, label_id='abc'), dict(base, label_id='abc'),
+                                         without(base, 'label_id'), without(base, 'label_id')])
+        assert len(rows) == 6
+        counts = run(crop_runner, rows, store, out)
+        assert counts['errors'] == 6 and reconciles(counts)
