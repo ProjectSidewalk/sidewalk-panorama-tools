@@ -93,7 +93,7 @@ splits into a row for `laurens-ia`) would silence the very city it is about.
 | 🔴 CRITICAL | Log download failed, or the file is missing/empty/unparseable |
 | 🔴 CRITICAL | Last log entry is more than `--stale-days` days old (default 3) |
 | 🟡 WARNING | `image_fail` growing by ≥20/day (7-night average) — new panos failing. Averaged over calendar **nights**, not rows: the queue's extra passes put more than one row on a night |
-| 🟡 WARNING | Zero new images for 30 consecutive **nights**, after a period that had some (regression) |
+| 🟡 WARNING | Zero new images for 30 consecutive **nights**, after a period that had some (regression), **and there was work** ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)): the image-eligible corpus (field 5) grew by at least 3 from the last night before the window to the newest night in it, or field 5 − field 11 on the newest row — eligible panos the image phase never attempted — is at least 3. A blank field 5 is unknown rather than zero, and fires as before. A mature city with nothing new is silent: three of the 26 warnings on 2026-09-19 were exactly that. Field 11 alone is not evidence — it counts *attempts*, so a starved image phase does not grow it |
 | 🟡 WARNING | A recent **image phase** took >3× the historical median, with the median floored at `LONG_RUN_MIN_MEDIAN` minutes before the multiplier. Read from `image_minutes` directly: a mature city's image phase is a ledger read while depth spends the whole slot, so an unfloored median is 0 and the rule could never fire |
 | 🟡 WARNING | ≥3 of the last 7 runs ended early (blank columns) |
 | 🟡 WARNING | Two runs **overlapped**: one started before the previous one's recorded end — two processes racing on one city's ledgers. Same-day runs alone are not reported; the queue's extra passes produce them by design |
@@ -109,6 +109,17 @@ blue icon and counts as OK.
 
 A healthy mature city looks like: `image_success` small or zero most days, stable `image_fail`,
 `image_skip ≈ image_total`.
+
+### What `log.csv` cannot show
+
+**A steady set of panos failing the image phase transiently every night is invisible.** Field 9 mixes the
+permanent failures already ledgered, tonight's permanent ones and tonight's transient ones, so a transient set
+of constant size T adds T to every night's figure and the night-to-night change the growing-failures check
+reads is about zero. Field 5 − field 11 does not see it either, because those panos *are* attempted and field
+11 counts attempts. Measured: 20 nights of 200 transient failures each and no downloads returned no finding.
+Detecting it would need the runner to write tonight's transient count as a field 20 — and `LOG_COLUMNS` here
+and `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` move together, which a test asserts. The depth phase does not
+have this blind spot: a phase that requests and saves nothing is reported above.
 
 ## The depth backfill
 

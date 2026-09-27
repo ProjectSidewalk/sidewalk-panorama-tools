@@ -114,6 +114,9 @@ MALFORMED_RECENT_DAYS    = 7    # a torn row newer than this (or undatable) warn
                                 # 20 of 26 warnings on 2026-09-19 were rows dated 2022..2026-05 (#43 close-out).
                                 # 7 as NEW_FAIL_NIGHTS and DEPTH_RATE_NIGHTS; 30 would re-alert a one-off tear
                                 # for a month, and the INFO line keeps the total visible anyway.
+ZERO_PROGRESS_MIN_NEW_WORK = 3  # new image-eligible panos (field 5 growth) or unattempted ones (5 - 11) rule 3
+                                # needs. 7.9-8.4% of a GSV ledger is a permanent verdict (2026-09-06), so k new
+                                # panos all retired - no success, no regression - is ~0.084^k: 8% at 1, 0.06% at 3.
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +364,40 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         prior_had_some = (prior_n > 0).any()
 
         if tail_all_zero and prior_had_some:
+            # ...and there was something to fetch (#163). A mature city with no new panos downloads nothing
+            # and is healthy; three of 2026-09-19's warnings were exactly that. The evidence is field 5
+            # (xml_total = len(image_pano_infos), the image-eligible corpus), NOT field 11: image_total is
+            # prior + tonight's ATTEMPTS, so panos a starved image phase never reaches do not grow it, and
+            # "field 11 did not grow" is silent on precisely the regression this rule exists for. Two arms:
+            # field 5 grew from the last logged night before the window to the newest night in it, or
+            # field 5 - field 11 on the newest row carrying both (a lower bound on eligible panos never
+            # attempted) is at least the minimum. A corpus nobody wrote (field 5 blank) is unknown, not
+            # zero, and keeps the old behaviour: fire.
+            xml_by_night = df.groupby("date")["xml_total"].last()   # last() skips NaN
+            before = xml_by_night.iloc[:-ZERO_PROGRESS_DAYS].dropna()
+            during = xml_by_night.tail(ZERO_PROGRESS_DAYS).dropna()
+            growth = None if before.empty or during.empty else int(during.iloc[-1] - before.iloc[-1])
+            both = df[df["xml_total"].notna() & df["image_total"].notna()]
+            backlog = int(both["xml_total"].iloc[-1] - both["image_total"].iloc[-1]) if not both.empty else None
+            evidence = []
+            if growth is None:
+                evidence.append("the image-eligible corpus size is unknown (field 5 blank)")
+            elif growth >= ZERO_PROGRESS_MIN_NEW_WORK:
+                evidence.append(f"{growth:,} new image-eligible panos (field 5, "
+                                f"{int(before.iloc[-1]):,} → {int(during.iloc[-1]):,})")
+            if backlog is not None and backlog >= ZERO_PROGRESS_MIN_NEW_WORK:
+                evidence.append(f"{backlog:,} eligible panos never attempted on the newest run "
+                                f"(field 5 − field 11)")
             last_success_mask = df["daily_success"] > 0
-            if last_success_mask.any():
+            if evidence and last_success_mask.any():
                 last_success_date = df.loc[last_success_mask, "date"].iloc[-1]
                 issues.append({
                     "level": "WARNING",
                     "msg": (
                         f"No new images downloaded in {ZERO_PROGRESS_DAYS} days "
-                        f"(last success: {last_success_date.strftime('%Y-%m-%d')})"
+                        f"(last success: {last_success_date.strftime('%Y-%m-%d')}) though there was work: "
+                        f"{' and '.join(evidence)}. Check the image phase's budget (--min-depth-runtime at "
+                        f"or above --max-runtime downloads nothing) and scrape.log."
                     ),
                 })
 
