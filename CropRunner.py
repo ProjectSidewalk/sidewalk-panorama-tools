@@ -293,7 +293,7 @@ def build_parser():
     # Docker container's scratch path - and the container runs DownloadRunner, not this script. A forgotten
     # flag should name itself, not quietly put an ML training corpus somewhere nobody thinks to look.
     parser.add_argument('-s', required=True, help='pano_storage_directory - path to directory containing panoramas downloaded using DownloadRunner.py')
-    parser.add_argument('-o', required=True, help='crop_output_directory - path to location for saving the crops')
+    parser.add_argument('-o', required=True, help='crop_output_directory - the root holding one crop store per city; this run writes into <crop-dir>/<city>/ only (#159)')
     parser.add_argument('--mark-label', action='store_true', help='Draw a dot at the label position in every crop. Debugging aid - deliberately OFF by default, because these crops are ML training data and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.')
     parser.add_argument('--city', required=True, type=city_id, help="The city_id these labels belong to (seattle-wa, cdmx): an active row of log_analyzer/cities.csv, read at startup. Required: label_id restarts at 1 in every deployment, so crops are only unique per city. The first run records it in crop_rule.json, and a run naming a different city is refused before anything is cut, so no city can overwrite another city's crops (#159). Recorded on every provenance row.")
     parser.add_argument('--force', action='store_true', help='Re-cut a label whose crop already exists instead of skipping it (#83) - the repair for a store cut under an older sizing rule. Each crop is replaced atomically, so a failed write leaves the old one in place. For the ML crop store this tool writes ONLY; a destination that looks like the production canvas-capture store is refused either way.')
@@ -1114,7 +1114,7 @@ def set_aside_pre_city_manifest(destination_dir):
 
 
 class ProvenanceManifest:
-    """<crop-dir>/crop_provenance.csv, appended one row per crop as it lands (#111).
+    """<crop-dir>/<city>/crop_provenance.csv, appended one row per crop as it lands (#111).
 
     The contract is the two nightly ledgers' (DownloadRunner's pano_id_log.csv, gsv's depth_log.csv): one
     handle held for the run and a row on disk per item, so a run killed at any point leaves a truthful
