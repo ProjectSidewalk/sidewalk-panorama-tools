@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import random
+import re
 import stat
 import struct
 import tempfile
@@ -669,6 +670,36 @@ def fetch_pano_image(pano_id, width, height, zoom):
     return StitchedPano(image, degraded, upscaled)
 
 
+# urllib3's ResponseError.SPECIFIC_ERROR, 'too many {status_code} error responses', as it reads inside the
+# RetryError requests raises when the zoom probe's retry policy is exhausted.
+_RETRY_STATUS_RE = re.compile(r'too many (\d{3}) error responses')
+
+
+def pushback_reason(exc):
+    """'HTTP 429' / 'HTTP 403' / 'interstitial' when `exc` is Google refusing this host; None otherwise (#162).
+
+    What the image loop's push-back breaker counts, so the line is drawn at GOOGLE'S OWN refusal and never at
+    this box's network: a timeout, a reset, a DNS failure is weather. Two shapes qualify:
+
+    * TilePushbackError - a tile answered 429/403 or landed on an interstitial.
+    * requests' RetryError from the zoom probe, whose urllib3 policy retries 429 and 5xx and gives up with
+      'too many N error responses'. It counts ONLY when N is in TILE_PUSHBACK_STATUSES. A 5xx storm exhausting
+      the policy is Google being ill, not Google refusing us - and a trip writes the fleet-wide block latch,
+      so reading an outage as a refusal would stand every city's depth phase down for six hours. (The depth
+      phase's own `except (DepthBlockedError, RetryError)` is broader; its latch predates this breaker.) A
+      RetryError whose status cannot be read is None for the same reason.
+
+    Everything else - a tile 404 or 5xx, a mostly-black stitch, an OSError from the store - is None.
+    """
+    if isinstance(exc, TilePushbackError):
+        return exc.reason
+    if isinstance(exc, requests.exceptions.RetryError):
+        match = _RETRY_STATUS_RE.search(str(exc))
+        if match and int(match.group(1)) in TILE_PUSHBACK_STATUSES:
+            return 'HTTP %s' % (match.group(1),)
+    return None
+
+
 def _write_display_copy(image, out_image_name, pano_id):
     """The viewer's copy of a pano wider than it can texture (#115), beside the native file.
 
@@ -1111,6 +1142,25 @@ def _write_block_latch(path):
     except OSError as e:
         logging.error("DEPTHDOWNLOAD: could not write the block latch %s (%s); the next city will "
                       "rediscover the block itself", path, str(e))
+
+
+def record_google_refusal(block_latch_path=None, pace_state_path=None):
+    """The image phase's push-back breaker tripped: remember it the way a depth blocked stop does (#162).
+
+    Writes the block latch - "this host's standing with Google"; tiles and photometa leave the same IP, so a
+    host Google refuses images to should not go on to spend depth requests either - and forfeits the depth
+    pace this host has earned, the other half of what a refusal costs. Never raises: the run has already been
+    refused, and losing the log.csv evidence row over this bookkeeping would be the wrong trade. Each path
+    resolves to its host default when not given, at call time (so the suite's isolation applies).
+    """
+    _write_block_latch(default_block_latch_path() if block_latch_path is None else block_latch_path)
+    try:
+        DepthPacer(state_path=default_pace_state_path() if pace_state_path is None else pace_state_path).forfeit()
+    except Exception as e:
+        # DepthPacer's own reads and writes already swallow what they can meet; this is the backstop for the
+        # invariant, not an expected path.
+        logging.error("IMAGEDOWNLOAD: could not forfeit the depth pace (%r); the next depth phase may open "
+                      "at an interval this host has not earned back", e)
 
 
 def default_pace_state_path():

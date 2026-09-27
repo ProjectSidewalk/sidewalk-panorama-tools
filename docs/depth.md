@@ -228,8 +228,11 @@ fan-out — and on top of that:
   the endpoint that just refused us, which is how a soft refusal is escalated into a ban that stops the image
   phase too (tiles leave the same IP). So a blocked stop writes a timestamp file, and any depth phase starting
   within `DEPTH_BLOCK_LATCH_HOURS` (6) skips itself entirely, at zero requests, with a `WARNING` on stdout.
-  * **Only a blocked stop latches.** The circuit breaker counts storage failures too, and a full disk says
-    nothing about Google.
+  * **Only Google's refusal latches: a depth blocked stop, or the image phase's push-back breaker.** The
+    circuit breaker counts storage failures too, and a full disk says nothing about Google. The image phase
+    writes the same latch (and forfeits the earned pace) when three GSV panos in a row are refused with a
+    429/403 ([#162](ops.md#when-google-pushes-back-on-the-image-phase)): tiles and photometa leave the same IP,
+    so the same run's depth phase stands down at zero requests rather than walk into the refusal again.
   * **It lives on local disk** (`--depth-block-latch` overrides), *not* the pano store: the storage directory
     a run is given belongs to a single city, so a latch there could not be cross-city even in principle, and
     what is being remembered is this host's standing with Google. Same reasoning as `scrape_queue`'s lock.

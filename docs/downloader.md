@@ -328,8 +328,9 @@ Three rules that are load-bearing:
   exhausted its own list exits at minute ~6.4 of 12 — so the city that most needed the leftover window was
   the one denied it.
 
-  The other depth stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
-  collapsed into "stopped early": `blocked` means the host is standing down for six hours and a re-run would
+  The other stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
+  collapsed into "stopped early": `blocked` (from either phase — the image phase reports it when Google's
+  push-back stopped GSV, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) means the host is standing down for six hours and a re-run would
   spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again, and
   `max-requests` is a per-process cap the operator asked for, which re-running would silently multiply. If no
   summary arrives at all the queue falls back to the old elapsed-time rule, which is at least a *necessary*
@@ -389,7 +390,8 @@ The queue is a driver, not a replacement for the runner. A single city is still 
 * **Give it the venv interpreter by absolute path.** Cron's `PATH` is minimal, and `source activate` buys
   nothing a direct path doesn't.
 * **The exit code is the run's own**, so the queue — and the night's message — can read it. `SIGTERM` becomes exit
-  143 *after* the `finally` that writes the `log.csv` row, so stopping a run still leaves evidence.
+  143 *after* the `finally` that writes the `log.csv` row, so stopping a run still leaves evidence. A tripped
+  image breaker — #113's, or GSV's push-back breaker — is exit 1.
 * **Nothing is written relative to the CWD.** `scrape.log` and `log.csv` both land in `<storage-dir>`.
 * **Sizing:** `--max-runtime` is the slot, `--min-depth-runtime 60` reserves the tail for depth. Overlapping
   city runs share Google's patience — see the per-process caveat in
@@ -598,6 +600,12 @@ view other than 360 is refused one at a time, but **323 of the 1,000 pictures in
 shape one federated instance wide. If either ever goes wrong the candidates are shuffled, so the breaker
 trips within about ninety panos on the first night and the night's message says so — instead of the city writing itself
 off a third at a time, silently and permanently.
+
+**GSV has a different breaker, for Google refusing the host** ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)).
+Three consecutive GSV panos refused with a 429/403 (a tile, an interstitial, or a zoom probe that gave up on
+429s) stop GSV images for the run, leave nothing ledgered, write the depth block latch, and exit nonzero. It is
+not an entry in the table above and counts nothing the table counts; what it does and what to do about it are
+in [Ops → When Google pushes back on the image phase](ops.md#when-google-pushes-back-on-the-image-phase).
 
 Only a **success** resets the count — not a transient failure, and not a skip. See
 [ops.md](ops.md#when-the-image-phase-stops-trusting-a-source) for why that distinction is the whole
