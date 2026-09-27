@@ -11,6 +11,7 @@ pinned here against the failure it exists for:
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,38 @@ class TestTreeChanges:
 
     def test_git_being_unavailable_is_not_a_change(self):
         assert conftest.tree_changes(({}, None), ({}, '?? stray.csv\n')) == []
+
+    def test_a_run_that_writes_into_the_study_cache_fails(self, tmp_path):
+        """End to end, through the real session fixture: a child pytest whose one test drops a file into this
+        checkout's study cache must exit nonzero naming it. The TestTreeChanges cases above pin the
+        comparison; only this catches the fixture itself being disabled, unwired or never asserting.
+
+        The probe is removed in `finally`, before this run's own guard looks - it is the one sanctioned
+        write into the repo in the suite, and it lasts a few seconds."""
+        probe_rel = os.path.join('reports', 'scripts', '.cache', f'_suite_isolation_probe_{os.getpid()}.txt')
+        probe = os.path.join(REPO_ROOT, probe_rel)
+        cache_existed = os.path.isdir(conftest.STUDY_CACHE)
+        writer = tmp_path / 'test_writes_into_the_repo.py'
+        writer.write_text(
+            'import os\n\n'
+            'def test_writes():\n'
+            f'    os.makedirs(os.path.dirname({probe!r}), exist_ok=True)\n'
+            f'    open({probe!r}, "w").write("x")\n')
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+            p for p in (os.path.join(REPO_ROOT, 'tests'), os.environ.get('PYTHONPATH')) if p))
+        try:
+            result = subprocess.run(
+                [sys.executable, '-m', 'pytest', str(writer), '-q', '-p', 'no:cacheprovider', '-p', 'conftest',
+                 '--rootdir', str(tmp_path)],
+                cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120)
+        finally:
+            if os.path.exists(probe):
+                os.remove(probe)
+            if not cache_existed:
+                shutil.rmtree(conftest.STUDY_CACHE, ignore_errors=True)
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, output
+        assert 'created: ' + probe_rel in output, output
 
     def test_the_real_checkout_is_snapshotted_through_git(self):
         """In a checkout the porcelain half must actually be live, or the tracked-tree guard is a no-op."""
