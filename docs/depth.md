@@ -162,6 +162,9 @@ fan-out — and on top of that:
   assuming a Google rate limit: `[Errno 28] No space left on device` points at the store, not the network. A
   run that stops on its `--max-runtime` or `--max-depth-requests` budget (or finishes its list) after failures
   prints a warning with the last error too, so a store that fills mid-run can't hide behind a budget stop.
+  A refusal, a stand-down on the latch and a tripped breaker are each also a
+  [condition that fails the night](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) (#161), so the
+  nightly alarm fires on them; a budget stop after scattered failures is not one.
 * **The pacing is adaptive** ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)).
   A run opens at `config.depth_start_interval` (1.0 s), **doubles** on any sign of push-back, and earns its way
   back down towards `config.depth_min_request_interval` (0.25 s) by a factor of 0.8 only after 200 consecutive

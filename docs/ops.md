@@ -528,13 +528,18 @@ Two shapes to read carefully:
 
 ## When the depth phase stands itself down
 
-Two mechanisms stop depth without stopping the run, and they look identical from `log.csv` (all five depth
-columns are `0`), so read stdout or `scrape.log` rather than the row:
+Several things stop depth without stopping the run, and they look identical from `log.csv` (all five depth
+columns are `0`), so read stdout or `scrape.log` rather than the row. Each one is also a
+[condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) that **fails the night** (#161): the
+city stays `ok`, but the queue exits 1 and the night's message carries one line per code.
 
-| what you see | what happened | what to do |
-|---|---|---|
-| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
-| `WARNING - the depth phase stopped early because Google stopped answering` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
+| what you see | code in the night's message | what happened | what to do |
+|---|---|---|---|
+| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | `depth-stood-down` | An earlier run on this host was blocked, and the **block latch** is still fresh. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. It alarms even on a night nothing was refused, because the latch outlives the window: a stand-down at 19:00 is a refusal the queue never saw (a manual backfill, say). |
+| `WARNING - the depth phase stopped early because Google stopped answering` | `depth-refused` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
+| `WARNING - the depth phase stopped early after 25 consecutive failures (…)` | `depth-breaker` | 25 transient failures in a row. The breakdown in brackets says whether they were the store or the network. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. |
+| `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened. The phase sat the run out rather than re-request the whole corpus against a sick store. | Check the mount and the file's permissions. |
+| `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt` into `.venv` (see [Deploying](#deploying)). |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
 with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
@@ -669,6 +674,9 @@ previous deploy's changes again.
   its 30th city. `streetlevel` is the exception: it is imported lazily when the depth phase starts, so a city in
   its image phase while pip rewrites the package loads whatever is half-written. If `requirements.txt` changed,
   do the install between cities (watch `scrape_queue.log` for the `ok`/`failed` line) or when the queue is idle.
+  A half-written package that raises `ImportError` now says so on stdout and fails the night as
+  `depth-unavailable` (#161) rather than skipping depth silently; one that raises something else still crashes
+  the city and books it `failed`.
 - **Roll forward, never back, past 2026-09-17.** [`fetched_at`](#fetched_at-and-the-two-row-widths) widened
   `pano_id_log.csv` to three fields, and a pre-#129 reader skips every three-field row — so every permanent
   verdict recorded since that deploy is re-requested nightly, and a store that has only ever seen the new

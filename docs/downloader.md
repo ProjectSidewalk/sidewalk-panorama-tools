@@ -310,6 +310,14 @@ is always present, empty on a clean run. A condition does **not** change the cit
 keeps its place in the `N/M cities ok` count and its eligibility for an extra pass — but **any condition fails
 the night**. The runner's own exit code is unchanged.
 
+| code | what happened | where to read more |
+|---|---|---|
+| `depth-refused` | Google refused this run's depth requests; the 6 h block latch was written | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-stood-down` | A live latch from an earlier refusal; the depth phase made no request | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-breaker` | 25 consecutive depth failures; the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-ledger-unusable` | `depth_log.csv` could not be read or written; depth sat the run out | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
+
 ### Extra passes
 
 Pass 1 gives every city its guaranteed slot, `--city-max-runtime`, in the night's rotated order: that is the
