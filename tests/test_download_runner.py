@@ -2416,6 +2416,243 @@ class TestTheRunSummaryAlwaysCarriesConditions:
             assert json.load(f)['conditions'] == [{'code': 'pano-list-empty', 'detail': 'nothing served'}]
 
 
+def summary_codes(tmp_path):
+    with open(tmp_path / 'summary.json') as f:
+        return [c['code'] for c in json.load(f)['conditions']]
+
+
+def summary_conditions(tmp_path):
+    with open(tmp_path / 'summary.json') as f:
+        return {c['code']: c['detail'] for c in json.load(f)['conditions']}
+
+
+class TestPanosTheRunCannotDownloadFailTheNight:
+    """A pano dropped before the image phase is not ledgered (a later run can pick it up), which is right -
+    and was also silent: 9,229 Richmond panos skipped every night for want of a token would have exited 0."""
+
+    MAPILLARY_ROW = 'mapillaryPanoId0000001,4096,2048,47.6,-122.3,180.0,0.0,mapillary,True\n'
+
+    def test_a_missing_mapillary_token_is_a_condition_naming_the_count(self, monkeypatch, tmp_path):
+        monkeypatch.delenv('MAPILLARY_ACCESS_TOKEN', raising=False)
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS + self.MAPILLARY_ROW,
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        conditions = summary_conditions(tmp_path)
+        assert list(conditions) == [DownloadRunner.CONDITION_MAPILLARY_TOKEN]
+        assert conditions[DownloadRunner.CONDITION_MAPILLARY_TOKEN].startswith('1 ')
+
+    def test_with_the_token_set_there_is_no_condition(self, monkeypatch, tmp_path):
+        monkeypatch.setenv('MAPILLARY_ACCESS_TOKEN', 'MLY|test|token')
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS + self.MAPILLARY_ROW,
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_an_unsupported_source_is_a_condition(self, monkeypatch, tmp_path):
+        """The shape Bayonne would have taken before #110 taught the runner the word `panoramax`."""
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS + 'fooPanoId,4096,2048,47.6,-122.3,180.0,0.0,foo,True\n',
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        conditions = summary_conditions(tmp_path)
+        assert list(conditions) == [DownloadRunner.CONDITION_UNSUPPORTED_SOURCE]
+        assert "'foo'" in conditions[DownloadRunner.CONDITION_UNSUPPORTED_SOURCE]
+
+
+class TestAnEmptyPanoListForACityWithHistoryFailsTheNight:
+    """An empty /adminapi/panos answer ran both phases over nothing and exited 0. For a city that has
+    scraped before, that is the server (or a proxy) failing, not the city being empty."""
+
+    def seed(self, tmp_path, name, rows):
+        storage = tmp_path / 'storage'
+        storage.mkdir(exist_ok=True)
+        (storage / name).write_text(rows)
+
+    def test_an_empty_list_over_an_image_ledger_is_a_condition(self, monkeypatch, tmp_path, capsys):
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
+
+        call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_LIST_EMPTY]
+        assert 'WARNING' in capsys.readouterr().out
+
+    def test_a_depth_ledger_alone_is_history_too(self, monkeypatch, tmp_path):
+        self.seed(tmp_path, 'depth_log.csv', 'pano_id,status\nsomePano,saved\n')
+
+        call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_LIST_EMPTY]
+
+    def test_a_header_only_ledger_is_not_history(self, monkeypatch, tmp_path):
+        """What any empty run leaves behind: the image phase creates the ledger with its header."""
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded,fetched_at\n')
+
+        call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_fresh_store_is_not_a_condition(self, monkeypatch, tmp_path):
+        """A city being set up has nothing yet; alarming on it would be crying wolf at every launch."""
+        call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == []
+
+
+def call_main_scripted(monkeypatch, tmp_path, verdicts, *extra_args):
+    """call_main, but every pano answers with its scripted verdict (or raises it)."""
+    rows = ''.join('%s,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % p for p in verdicts)
+    csv_path = tmp_path / 'panos.csv'
+    csv_path.write_text(CSV_HEADER + rows)
+    storage = tmp_path / 'storage'
+    monkeypatch.setattr(DownloadRunner, 'download_pano', scripted_download_pano(verdicts))
+    monkeypatch.chdir(tmp_path)
+    code = DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path), '--skip-depth',
+                                '--run-summary-file', str(tmp_path / 'summary.json'), *extra_args])
+    return storage, code
+
+
+class TestAnImagePhaseWithNoSuccessFailsTheNight:
+    """Every attempted pano raising is a condition of the run (the network, the store, a bug), not of the
+    panos - and a transient is never ledgered, so nothing on disk says it happened. A permanent verdict is
+    the source ANSWERING, so a night of those is not this."""
+
+    @pytest.fixture(autouse=True)
+    def small_minimum(self, monkeypatch):
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 3)
+
+    def verdicts(self, raised=0, success=0, failure=0, skipped=0):
+        out = {}
+        for i in range(raised):
+            out['raisedPano%03d' % i] = RuntimeError('store went away')
+        for i in range(success):
+            out['successPano%03d' % i] = downloaders.DownloadResult.success
+        for i in range(failure):
+            out['failurePano%03d' % i] = downloaders.DownloadResult.failure
+        for i in range(skipped):
+            out['skippedPano%03d' % i] = downloaders.DownloadResult.skipped
+        return out
+
+    def test_the_minimum_number_of_raises_and_nothing_answered_is_a_condition(self, monkeypatch, tmp_path,
+                                                                              capsys):
+        _, code = call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+        assert 'IMAGEDOWNLOAD: WARNING' in capsys.readouterr().out
+        assert code == 0, 'a condition fails the NIGHT through the queue; the runner exit code is unchanged'
+
+    def test_fewer_raises_than_the_minimum_are_not(self, monkeypatch, tmp_path):
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=2))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_one_success_among_them_is_not(self, monkeypatch, tmp_path):
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3, success=1))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_permanent_verdicts_are_answers_not_raises(self, monkeypatch, tmp_path):
+        """fail_count includes both; only the raises count here."""
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(failure=3))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_permanent_verdict_among_the_raises_is_an_answer(self, monkeypatch, tmp_path):
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3, failure=1))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_skips_are_neither(self, monkeypatch, tmp_path):
+        """A skip is os.path.isfile() returning true: the source was never contacted, so it says nothing
+        about whether this run could download anything."""
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3, skipped=4))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+
+class TestAPanoListWhoseSchemaMovedIsNotScraped:
+    """D8 (#161): the one condition that also stops work.
+
+    If /adminapi/panos renamed `width`/`height` (cvMetadata already serves `pano_width`/`pano_height`, and
+    #123 just renamed that endpoint's fields), gsv.resolve_zoom_and_dims returns None before any request,
+    download_single_pano turns that into a permanent failure verdict, and every not-yet-downloaded GSV pano
+    is ledgered downloaded=0 in one night, fleet-wide, with no GSV breaker by design (#113). A missing KEY is
+    a schema; a blank value is a per-pano fact and is left to the phases.
+    """
+
+    def run_with(self, monkeypatch, tmp_path, records):
+        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
+        return call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--run-summary-file', str(tmp_path / 'summary.json'))
+
+    def records(self, count, lacking=0, drop='width'):
+        out = []
+        for i in range(count):
+            record = {'pano_id': 'gsvPano%04d' % i, 'source': 'gsv', 'width': '16384', 'height': '8192',
+                      'has_labels': True}
+            if i < lacking:
+                del record[drop]
+            out.append(record)
+        return out
+
+    def test_a_list_that_lost_width_is_not_scraped_and_nothing_is_ledgered(self, monkeypatch, tmp_path):
+        storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        assert calls == [], 'no pano may be attempted from a list whose schema moved'
+        assert not (storage / 'pano_id_log.csv').exists(), 'nothing may be ledgered'
+        fields = last_log_fields(storage)
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[1:] == [''] * (DownloadRunner.LOG_CSV_FIELD_COUNT - 1), 'the phases stay blank'
+
+    @pytest.mark.parametrize('key', ['source', 'height'])
+    def test_any_required_key_counts(self, monkeypatch, tmp_path, key):
+        self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20, drop=key))
+
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT in summary_codes(tmp_path)
+
+    def test_the_threshold_is_inclusive(self, monkeypatch, tmp_path):
+        lacking = int(round(DownloadRunner.INTAKE_SCHEMA_MIN_FRACTION * 20))
+        storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=lacking))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        assert calls == []
+
+    def test_just_under_the_threshold_runs_normally(self, monkeypatch, tmp_path):
+        lacking = int(round(DownloadRunner.INTAKE_SCHEMA_MIN_FRACTION * 20)) - 1
+        storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=lacking))
+
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
+        assert len(calls) == 20
+
+    def test_one_record_lacking_a_key_runs_normally(self, monkeypatch, tmp_path):
+        storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=1))
+
+        assert summary_codes(tmp_path) == []
+        assert len(calls) == 20
+
+    def test_blank_values_are_not_a_schema(self, monkeypatch, tmp_path):
+        """A blank width is one pano the server knows nothing about; the key is still there."""
+        records = self.records(20)
+        for record in records:
+            record['width'] = None
+
+        storage, calls = self.run_with(monkeypatch, tmp_path, records)
+
+        assert summary_codes(tmp_path) == []
+        assert len(calls) == 20
+
+    def test_an_empty_list_is_not_schema_drift(self, monkeypatch, tmp_path):
+        self.run_with(monkeypatch, tmp_path, [])
+
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
+
+    def test_the_run_codes_are_one_vocabulary(self):
+        from downloaders import gsv
+        assert gsv.DEPTH_CONDITIONS < DownloadRunner.RUN_CONDITIONS
+        assert {DownloadRunner.CONDITION_MAPILLARY_TOKEN, DownloadRunner.CONDITION_UNSUPPORTED_SOURCE,
+                DownloadRunner.CONDITION_PANO_LIST_EMPTY, DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
+                DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 10
+
+
 # --- log.csv field 19: the depth corpus size (#43) ---------------------------------------------------------
 #
 # Field 16 says how many panos the depth phase has resolved and nothing in the row said out of how many, so a

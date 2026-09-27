@@ -317,6 +317,11 @@ the night**. The runner's own exit code is unchanged.
 | `depth-breaker` | 25 consecutive depth failures; the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-ledger-unusable` | `depth_log.csv` could not be read or written; depth sat the run out | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
+| `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
+| `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |
+| `images-no-success` | At least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) image attempts raised and none was answered — the network, the store, or a bug | the errors in the city's `scrape.log` |
+| `pano-list-empty` | The pano list was empty for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
+| `pano-schema-drift` | 90% or more of the pano list's records lack `pano_id`, `source`, `width` or `height` — a renamed field. **Neither phase runs and nothing is ledgered**, because scraping it would write every new GSV pano off permanently | [API fields](api-fields.md#adminapipanos--the-downloaders-pano-list) |
 
 ### Extra passes
 
@@ -604,9 +609,10 @@ Where the reason lands: the night's message carries the count (`N failed` in the
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
 `code` and `message` are in `scrape.log` on the store, one line per pano.
 
-Without the token, Mapillary panos are filtered out of the run rather than failed — **silently enough to
-miss**, so a city that should have Mapillary imagery and downloads none is the symptom of a token that never
-arrived.
+Without the token, Mapillary panos are filtered out of the run rather than failed, and not ledgered, so a
+run with the token picks them up. That used to be silent enough to miss; it is now reported as the condition
+`mapillary-token-missing` with the count, which
+[fails the night](#a-city-can-finish-ok-and-still-fail-the-night) (#161).
 
 **Under cron, keep it out of the crontab body.** `crontab -l` output lands in backups, screenshots and
 pastes, and the file itself outlives the person who wrote it. Put it in a mode-`600` file and let bash source

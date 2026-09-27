@@ -45,6 +45,33 @@ def _reservation_minutes(value):
 # night's leftover window unspent.
 STOP_MAX_RUNTIME = 'max-runtime'
 
+# Run conditions (#161): shapes this runner calls a failure of the night without changing its own exit code.
+# Each is noted into the run summary's `conditions` list (downloaders.common.note_condition) and scrape_queue
+# books it against the night, which is what makes cron_notify --only-on-failure deliver it. The depth phase's
+# five are gsv.DEPTH_CONDITIONS; scrape_queue.CONDITION_LABELS repeats the whole vocabulary and a test pins it.
+CONDITION_MAPILLARY_TOKEN = 'mapillary-token-missing'
+CONDITION_UNSUPPORTED_SOURCE = 'unsupported-source'
+CONDITION_PANO_LIST_EMPTY = 'pano-list-empty'
+CONDITION_IMAGES_NO_SUCCESS = 'images-no-success'
+CONDITION_PANO_SCHEMA_DRIFT = 'pano-schema-drift'
+RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
+    CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
+    CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT})
+
+# `images-no-success` needs at least this many raised attempts and not one answer. A floor, because one or
+# two transient failures on a mature city whose only candidates are perennial raisers is an ordinary night;
+# ten raises and nothing else is a run that could not download anything. TODO(#161): confirm against the
+# production scrape.logs that no mature city's nightly candidate set is ten or more perennial raisers.
+IMAGE_NO_SUCCESS_MIN_RAISED = 10
+
+# The keys every /adminapi/panos record must carry, and the fraction of records lacking one that makes the
+# list a schema drift rather than a few odd rows (D8, #161). A missing width or height makes
+# gsv.resolve_zoom_and_dims return None before any request, which download_single_pano turns into a
+# PERMANENT failure verdict - so a renamed field would write off every new GSV pano in one night, fleet-wide.
+# A missing KEY is a schema; a blank VALUE (None) is a per-pano fact and is left to the phases.
+INTAKE_REQUIRED_KEYS = ('pano_id', 'source', 'width', 'height')
+INTAKE_SCHEMA_MIN_FRACTION = 0.9
+
 
 def build_parser():
     parser = argparse.ArgumentParser()
@@ -289,10 +316,14 @@ def select_image_panos(pano_infos, include_all_panos):
     return [p for p in pano_infos if p.get('has_labels', True)]
 
 
-def filter_supported_sources(pano_infos):
+def filter_supported_sources(pano_infos, conditions=None):
     """
     Drop panos we can't download in this run, preserving the server's ordering, with a one-time warning per
     reason.
+
+    `conditions`, when given, is the run summary the warnings are also noted into as run conditions (#161):
+    a skipped pano is not ledgered, which is right, and was also silent - so richmond-va's 9,229 Mapillary
+    panos dropped every night for want of a token would have exited 0.
 
     Supported sources: gsv, panoramax, and mapillary when MAPILLARY_ACCESS_TOKEN is set. Filtered-out panos
     are NOT written to pano_id_log.csv, so a later run with the token / updated code can still pick them up.
@@ -329,11 +360,17 @@ def filter_supported_sources(pano_infos):
                             source_counts['mapillary'], mapillary.TOKEN_ENV_VAR)
             print("WARNING: %d Mapillary panos skipped — set %s to download them"
                   % (source_counts['mapillary'], mapillary.TOKEN_ENV_VAR))
+            note_condition(conditions, CONDITION_MAPILLARY_TOKEN, '%d Mapillary panos skipped; %s is not set'
+                           % (source_counts['mapillary'], mapillary.TOKEN_ENV_VAR))
 
+    unsupported = []
     for source, count in source_counts.items():
         if source not in known:
             logging.warning("%d panos with unsupported source %r skipped", count, source)
             print("WARNING: %d panos with unsupported source %r skipped" % (count, source))
+            unsupported.append('%d with source %r' % (count, source))
+    if unsupported:
+        note_condition(conditions, CONDITION_UNSUPPORTED_SOURCE, 'skipped: ' + ', '.join(unsupported))
 
     return [p for p in pano_infos if p.get('source') in supported]
 
@@ -423,6 +460,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     consecutive_permanent = {}
     tripped = set() if tripped_sources is None else tripped_sources
     breaker_skipped = 0
+    # For `images-no-success` (#161): attempts the source answered with a verdict, and attempts that raised.
+    # A skip is neither - it never contacted the source.
+    answered, raised = 0, 0
 
     # One handle held for the whole phase, appended and flushed per row - the depth ledger's pattern (#55).
     # The old shape opened/closed the file per pano over sshfs, and carried a dead 'update' branch that,
@@ -499,6 +539,11 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
                 logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
 
+            if result_code is None:
+                raised += 1
+            elif result_code != DownloadResult.skipped:
+                answered += 1
+
             limit = MAX_CONSECUTIVE_PERMANENT_FAILURES.get(source)
             if limit is not None:
                 # `downloaded == 0` is exactly the permanent verdict. ONLY A REAL SUCCESS RESETS - not a
@@ -571,6 +616,17 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                    % (', '.join(sorted(tripped)), breaker_skipped))
         logging.error("%s", summary)
         print(summary)
+
+    if raised >= IMAGE_NO_SUCCESS_MIN_RAISED and answered == 0:
+        # Every attempt raised and none was answered: the network, the store or a bug, not the panos. A
+        # transient is never ledgered, so without this the only trace is one ERROR per pano in scrape.log and
+        # a log.csv row that looks like a quiet night's retries (#161).
+        message = ("IMAGEDOWNLOAD: WARNING - all %d attempted panos raised and none was answered; nothing was "
+                   "ledgered, so they retry next run. Look at the errors in scrape.log." % (raised,))
+        logging.error("%s", message)
+        print(message)
+        note_condition(stop_reasons, CONDITION_IMAGES_NO_SUCCESS,
+                       '%d attempts raised, 0 answered' % (raised,))
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -774,6 +830,51 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     return tripped_sources
 
 
+def _store_has_history(storage_location):
+    """Whether this store has scraped before: either ledger holds at least one row past its header.
+
+    Reads at most two lines of each. A header alone is what any run leaves behind - the image phase creates
+    pano_id_log.csv with one even over an empty list - so it is not history. An unreadable ledger is not
+    evidence either way and reads as no history: the depth phase reports an unusable ledger itself.
+    """
+    for name in ('pano_id_log.csv', gsv.DEPTH_LOG_FILENAME):
+        try:
+            with open(os.path.join(storage_location, name), newline='') as f:
+                f.readline()
+                if f.readline().strip():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _intake_schema_drift(pano_infos):
+    """A description of the schema drift in the fetched pano list, or None if it has none (D8, #161).
+
+    Drift is INTAKE_SCHEMA_MIN_FRACTION or more of the records lacking any INTAKE_REQUIRED_KEYS key. A key
+    present with a blank (None) value is not drift. An empty list is not drift either - it has no schema to
+    have moved, and `pano-list-empty` covers it.
+
+    Example::
+
+        >>> _intake_schema_drift([{'pano_id': 'a', 'source': 'gsv', 'pano_width': 1, 'pano_height': 1}])
+        '1 of 1 records lack a required key (width: 1, height: 1)'
+    """
+    if not pano_infos:
+        return None
+    missing = {key: 0 for key in INTAKE_REQUIRED_KEYS}
+    lacking = 0
+    for record in pano_infos:
+        absent = [key for key in INTAKE_REQUIRED_KEYS if key not in record]
+        lacking += bool(absent)
+        for key in absent:
+            missing[key] += 1
+    if lacking < INTAKE_SCHEMA_MIN_FRACTION * len(pano_infos):
+        return None
+    return "%d of %d records lack a required key (%s)" % (
+        lacking, len(pano_infos), ', '.join('%s: %d' % (k, n) for k, n in missing.items() if n))
+
+
 def _write_run_summary(path, stop_reasons):
     """Write the queue's run summary, or warn and carry on.
 
@@ -832,7 +933,12 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
             pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
         else:
             pano_infos = fetch_pano_ids_from_webserver(sidewalk_server_fqdn)
-        pano_infos = filter_supported_sources(pano_infos)
+        # Checked on the list as served, before anything filters it: a renamed `source` would otherwise be
+        # reported as an unsupported source per pano. A drifted list goes no further (below).
+        schema_drift = _intake_schema_drift(pano_infos)
+        if schema_drift is not None:
+            pano_infos = []
+        pano_infos = filter_supported_sources(pano_infos, conditions=stop_reasons)
         image_pano_infos = select_image_panos(pano_infos, all_panos)
     except BaseException:
         # A crash before the scrape starts - a webserver outage being the single most likely nightly failure -
@@ -841,6 +947,29 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         logging.exception("Run crashed before the scrape started")
         write_log_csv_row(storage_location, [log_timestamp()])
         raise
+
+    if schema_drift is not None:
+        # The one condition that also stops work (D8, #161): scraping a list whose width/height keys moved
+        # would ledger every new GSV pano downloaded=0 PERMANENTLY, and there is no GSV breaker by design
+        # (#113). So neither phase runs and nothing is ledgered; the log.csv row records a run that started
+        # and did nothing, with every phase blank.
+        logging.error("Pano list schema drift: %s; required keys %s. Skipping both phases and ledgering "
+                      "nothing.", schema_drift, ', '.join(INTAKE_REQUIRED_KEYS))
+        print("WARNING: the pano list's schema has moved - %s. Neither phase ran and nothing was ledgered; "
+              "see docs/api-fields.md for the fields the downloader requires." % (schema_drift,))
+        note_condition(stop_reasons, CONDITION_PANO_SCHEMA_DRIFT, schema_drift)
+        write_log_csv_row(storage_location, [log_timestamp()])
+        return set()
+
+    if not pano_infos and _store_has_history(storage_location):
+        # An empty list for a city that has scraped before is the server (or something between us and it)
+        # failing, not the city emptying. The run continues - there is nothing to do and nothing to lose -
+        # but the night is told (#161).
+        logging.error("The pano list is empty, but this store has scraped before (%s)", storage_location)
+        print("WARNING: the pano list is empty, but this store has scraped before. Check the server's "
+              "/adminapi/panos.")
+        note_condition(stop_reasons, CONDITION_PANO_LIST_EMPTY,
+                       'no supported panos served for a store with ledger history')
 
     # Uncomment this to test on a smaller subset of the pano_info.
     # import random
