@@ -98,6 +98,8 @@ splits into a row for `laurens-ia`) would silence the very city it is about.
 | 🟡 WARNING | ≥3 of the last 7 runs ended early (blank columns) |
 | 🟡 WARNING | Two runs **overlapped**: one started before the previous one's recorded end — two processes racing on one city's ledgers. Same-day runs alone are not reported; the queue's extra passes produce them by design |
 | 🟡 WARNING | **Depth backfill stalled**: no depth request on the last 3 calendar nights while panos remain unresolved. The message names the *candidates* rather than asserting a cause, because the row cannot tell them apart: a phase that accounted for panos but made no requests is either out of budget or unable to write the ledger (which returns `(0, 0, skipped, skipped)`, not five zeros), and a phase that accounted for nothing is `--skip-depth`, a block latch, `streetlevel` missing, a crash before the phase, or a fresh city whose image phase spent the budget |
+| 🔴 CRITICAL | **Depth phase saved nothing and is writing panos off**: the WARNING below, and the ledger grew by at least half of the failures before the newest run — they are coming back as `unavailable` rows, which are never re-requested. That is upstream drift (a depth payload `streetlevel` can no longer read), and every night it runs costs those panos their depth until the ledger is scrubbed: see [When the depth phase saves nothing](ops.md#when-the-depth-phase-saves-nothing) |
+| 🟡 WARNING | **Depth phase saved nothing** on the last 3 calendar nights despite ≥10 requests, with panos unresolved and the newest requesting run stopping short of its list ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)). The stall rule above counts *requests*, and a failed request is a request, so a phase whose every attempt fails used to read as healthy. The failures are transient — nothing is ledgered, the panos retry — or there has been only one requesting run, so they cannot be classified yet. A city whose last few panos fail every night walks its whole list (field 16 = field 19) and is not reported: that is the ordinary end of a backfill. Once requests stop altogether the night is the stall rule's, so one outage is never reported twice |
 | 🟡 WARNING | **The newest GSV corpus size is not believable** — a `0` in field 19, which is what an empty or source-less `/adminapi/panos` answer writes. The backfill is measured against the newest earlier row instead, rather than the city silently dropping out of the report |
 | 🟡 WARNING | **Rows that are not runs** — a field count that is neither 18 nor 19, i.e. a torn or corrupted write. Every count in such a row is shifted, so it is left out of every figure rather than read as a run (a file holding nothing else is CRITICAL, and says so) |
 
@@ -115,10 +117,16 @@ Every city's stats line carries a depth clause once its `log.csv` has a row with
 depth 1,753/183,680 (1.0%) · +590 panos/night · ~308 nights left
 depth complete (2,709)
 depth not started (0/5,381)
+depth 27,001/100,000 (27.0%) · +1,889 panos/night · ~39 nights left · nothing saved in 10 nights
 ```
 
-and the report ends with the fleet's block — resolved out of eligible, panos resolved and requests made per
-night, how many cities are complete or stalled, and the three cities with the longest road ahead. That last
+The last line is a phase that is asking and saving nothing (the CRITICAL above): its ledger is growing by
+every failure, so the rate and the ETA beside it are counting `unavailable` verdicts, not depth. The trailing
+clause is there so the line cannot read as a healthy backfill.
+
+The report ends with the fleet's block — resolved out of eligible, panos resolved and requests made per
+night, how many cities are complete, stalled or saving nothing, and the three cities with the longest road
+ahead. That last
 line is the operational number: the fleet finishes when its slowest city does, and a fleet *average* (the
 47-night estimate that sized the current slots) hid a tail more than ten times longer.
 

@@ -279,7 +279,9 @@ fan-out — and on top of that:
   normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; the row has no
   separate column for it. What the row does carry, since [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124), is the **corpus size** (field 19), so
   the [log analyzer](log-analyzer.md#the-depth-backfill) can report how far along each city is and when it
-  will finish.
+  will finish. Its *size* is not a signal, but a phase whose requests are **all** failures is: the analyzer
+  reports several nights of requests with no save, and at CRITICAL when those failures are being ledgered as
+  `unavailable` — see [When the depth phase saves nothing](ops.md#when-the-depth-phase-saves-nothing).
 * **Storage or ledger write failures** (a full or unmounted store) are treated as transient per-pano failures
   and retried next run — the phase deliberately never lets them escape.
 

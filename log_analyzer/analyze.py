@@ -100,6 +100,16 @@ INCOMPLETE_RUN_WARNING   = 3    # incomplete runs in the last 7 before flagging
 OVERLAP_TOLERANCE_MIN    = 1.0  # durations are whole minutes; a start this close to the previous end is rounding
 DEPTH_STALLED_NIGHTS     = 3    # consecutive nights with no depth request, with work left, before flagging
 DEPTH_RATE_NIGHTS        = 7    # nights the depth request rate (and so the ETA) is averaged over
+DEPTH_BARREN_NIGHTS      = 3    # calendar nights since the last depth SAVE, with requests made, before rule 10.
+                                # Same as DEPTH_STALLED_NIGHTS so "stalled" and "saving nothing" read alike; one
+                                # night is already improbable by chance (below), so this is operator latency -
+                                # a one-night network or store outage heals itself and must not page.
+DEPTH_BARREN_MIN_REQUESTS = 10  # requests since the last save before 0 saves is evidence. Fleet 2026-09-18:
+                                # 62,186 saved of 96,511 requests (64%; canary 301/500), so P(0 of 10) = 0.36^10
+                                # ~ 4e-5. Measured outage shapes: 25/night (the breaker), 1,889/night (drift).
+DEPTH_UNAVAILABLE_SHARE  = 0.5  # ledger growth / failures (excluding the newest row) at or above which the
+                                # failures are being ledgered as `unavailable`. By construction 0.0 when they are
+                                # transient (never ledgered, gsv.py) and 1.0 in the drift shape; midpoint = margin.
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +461,47 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
             ),
         })
 
+    # --- 10. Depth phase requesting and saving nothing (#163) ---
+    # Numbered 10 so no existing rule moves; it sits here because it reads the same `progress`. Rule 7 counts
+    # requests, so a phase whose every request fails resets it nightly: measured, 10 nights of 25 transient
+    # failures and 10 nights of 1,889 requests all written off as `unavailable` both returned no issue. The
+    # two shapes are told apart by whether the failures come back as skips (depth_progress). The ledgering
+    # arm is CRITICAL because it is permanent: an `unavailable` row is never re-requested, so every night it
+    # runs costs those panos their depth until someone scrubs the ledger. The transient arm loses nothing -
+    # those panos retry - so it is a WARNING, rule 7's tier, and so is a span too short to classify.
+    if progress and progress["barren"]:
+        n = progress["unsaved_nights"]
+        share = progress["unavailable_share"]
+        if share is not None and share >= DEPTH_UNAVAILABLE_SHARE:
+            issues.append({
+                "level": "CRITICAL",
+                "msg": (
+                    f"Depth phase saved nothing on the last {n} nights and is writing panos off: "
+                    f"{progress['written_off']:,} of the {progress['failed_before_newest']:,} requests that "
+                    f"failed before the newest run are now `unavailable` rows in depth_log.csv, never to be "
+                    f"re-requested. Healthy nights save ~60% of requests, so this is upstream drift "
+                    f"(streetlevel or the depth payload), not the panos. Put --skip-depth back after the `--` "
+                    f"in the crontab and scrub the ledger before the next run - docs/ops.md, When the depth "
+                    f"phase saves nothing."
+                ),
+            })
+        else:
+            tail = ("None of it was ledgered, so those panos retry - but the backfill is not moving."
+                    if share is not None else
+                    "Only one run has made requests since, so these cannot yet be told apart from "
+                    "`unavailable` verdicts.")
+            issues.append({
+                "level": "WARNING",
+                "msg": (
+                    f"Depth phase saved nothing on the last {n} nights: {progress['unsaved_requests']:,} "
+                    f"requests, every one failed, with {progress['unresolved']:,} of "
+                    f"{progress['eligible']:,} panos unresolved. {tail} Candidates: the consecutive-failure "
+                    f"breaker (network, or a full or unmounted store), Google refusing requests, or a depth "
+                    f"payload streetlevel can no longer read - the DEPTHDOWNLOAD lines in scrape.log name "
+                    f"which."
+                ),
+            })
+
     # --- 8. The corpus column contradicts the ledger ---
     # depth_eligible is len(gsv_panos), so an empty or source-less pano-list answer writes a plausible 0 and
     # erases the city's whole depth report. corpus_size refuses such a value; this is where that refusal is
@@ -562,6 +613,28 @@ def depth_progress(df: pd.DataFrame):
                    names the candidates instead of asserting one.
       corpus_suspect
                    whether `eligible` had to be taken from an older row than the newest - see corpus_size.
+      unsaved_nights
+                   CALENDAR nights since the newest date with a depth SAVE (depth_success > 0), on
+                   quiet_nights' convention: log span + 1 when the city never saved.
+      unsaved_requests
+                   requests (success + failed) on the rows after that date - all of them failures.
+      written_off  what the ledger (skip + success) gained between the first and the newest row of that span
+                   that made requests, floored at 0 (a corpus can shrink). The `unavailable` verdicts, read
+                   back one run late.
+      failed_before_newest
+                   depth_fail summed over the same requesting rows except the newest, whose verdicts cannot
+                   have come back as skips yet.
+      unavailable_share
+                   written_off / failed_before_newest, or None when there is nothing to divide by - fewer than
+                   two requesting rows, so one-night lag leaves the failures unclassifiable.
+      barren       rule 10 (#163): the phase is asking and saving nothing. True when panos are unresolved,
+                   unsaved_nights >= DEPTH_BARREN_NIGHTS, unsaved_requests >= DEPTH_BARREN_MIN_REQUESTS,
+                   quiet_nights < DEPTH_STALLED_NIGHTS (once requests stop the night is rule 7's, so the two
+                   never report one outage twice), and the newest requesting row did NOT walk its whole list
+                   (depth_total < depth_eligible). That last guard is what keeps the ordinary end of a
+                   backfill quiet: a handful of stragglers that fail every night are reached every night.
+                   quiet_nights cannot see this shape at all - it counts requests, and a failed request is a
+                   request - which is why a phase whose every attempt failed read as healthy before #163.
     """
     ran = df[df["depth_total"] > 0]  # NaN compares false: a crashed row neither ran nor resolved anything
     ledgered = ran["depth_skip"].fillna(0) + ran["depth_success"].fillna(0)
@@ -595,6 +668,37 @@ def depth_progress(df: pd.DataFrame):
     quiet_nights = (int((newest - with_requests.index.max()).days) if not with_requests.empty
                     else int((newest - per_night.index.min()).days) + 1)
 
+    # Calendar nights since the last SAVE (rule 10), on quiet_nights' convention: a city that never saved
+    # counts from its first night, +1, so a first night can never fire and a never-saved city fires on its
+    # DEPTH_BARREN_NIGHTS-th. A request is not progress; only a save is.
+    date = df["start_time"].dt.normalize()
+    saves = df["depth_success"].fillna(0).groupby(date).sum()
+    saved = saves[saves > 0]
+    last_save = saved.index.max() if not saved.empty else None
+    unsaved_nights = int((newest - last_save).days if last_save is not None
+                         else (newest - per_night.index.min()).days + 1)
+    in_span = (date > last_save) if last_save is not None else pd.Series(True, index=df.index)
+    unsaved_requests = int(requests[in_span].sum())
+    # The two all-failed shapes differ only across rows: an `unavailable` verdict is ledgered at once and
+    # comes back as the next run's skip, a transient failure never does. So what the ledger gained between
+    # the first and the newest requesting row of the span, over the failures of every row but the newest
+    # (whose verdicts cannot have come back yet), is 1.0 when failures are being written off and 0.0 when
+    # they are transient - by construction, gsv.download_depth_maps. None until two rows have asked.
+    asked = df[in_span & (requests > 0)]
+    held = asked["depth_skip"].fillna(0) + asked["depth_success"].fillna(0)
+    written_off = max(int(held.iloc[-1] - held.iloc[0]), 0) if len(asked) >= 2 else 0
+    failed_before_newest = int(asked["depth_fail"].fillna(0).iloc[:-1].sum())
+    unavailable_share = float(written_off / failed_before_newest) if failed_before_newest else None
+    # A phase that reached every pano on its list (depth_total == depth_eligible) did not stop early: the
+    # candidates are eligible - skip and every stop happens with work left. That is the ordinary end of a
+    # backfill - a handful of stragglers that fail every night - and not an outage.
+    newest_asked = df[requests > 0].iloc[-1] if (requests > 0).any() else None
+    walked_list = bool(newest_asked is not None and pd.notna(newest_asked["depth_eligible"])
+                       and newest_asked["depth_total"] >= newest_asked["depth_eligible"])
+    barren = bool(unresolved > 0 and unsaved_nights >= DEPTH_BARREN_NIGHTS
+                  and unsaved_requests >= DEPTH_BARREN_MIN_REQUESTS
+                  and quiet_nights < DEPTH_STALLED_NIGHTS and not walked_list)
+
     return {
         "eligible": eligible,
         "resolved": resolved,
@@ -605,6 +709,12 @@ def depth_progress(df: pd.DataFrame):
         "quiet_nights": quiet_nights,
         "newest_accounted": bool(df["depth_total"].iloc[-1] > 0),
         "corpus_suspect": corpus_suspect,
+        "unsaved_nights": unsaved_nights,
+        "unsaved_requests": unsaved_requests,
+        "written_off": written_off,
+        "failed_before_newest": failed_before_newest,
+        "unavailable_share": unavailable_share,
+        "barren": barren,
     }
 
 
@@ -624,8 +734,11 @@ def depth_status(progress) -> str:
     # Panos per night, not requests per night. Printing the request rate next to a pano-based ETA invited
     # exactly the arithmetic the ETA no longer does - and on a night of heavy transient failure the two
     # numbers differ by the whole failure count.
+    # A barren phase says so here too: in the drift shape the ledger grows by every failure, so the rate and
+    # the ETA beside it are counting `unavailable` verdicts and read as a healthy backfill (#163).
+    barren = f" · nothing saved in {progress['unsaved_nights']} nights" if progress["barren"] else ""
     return (f"depth {progress['resolved']:,}/{progress['eligible']:,} ({pct:.1f}%) · "
-            f"+{progress['nightly_resolved']:,.0f} panos/night · {eta}")
+            f"+{progress['nightly_resolved']:,.0f} panos/night · {eta}{barren}")
 
 
 def fleet_depth_summary(progress_by_city: dict, total_cities: int = None) -> list[str]:
@@ -647,6 +760,7 @@ def fleet_depth_summary(progress_by_city: dict, total_cities: int = None) -> lis
     complete  = sum(1 for p in reporting.values() if p["unresolved"] == 0)
     stalled   = sum(1 for p in reporting.values()
                     if p["unresolved"] > 0 and p["quiet_nights"] >= DEPTH_STALLED_NIGHTS)
+    barren    = sum(1 for p in reporting.values() if p["barren"])
     with_eta  = sorted((p["nights_left"], c) for c, p in reporting.items() if p["nights_left"] is not None)
     longest   = ", ".join(f"{c} ~{max(1, round(n)):,} nights ({reporting[c]['unresolved']:,} left)"
                           for n, c in reversed(with_eta[-3:]))
@@ -657,7 +771,7 @@ def fleet_depth_summary(progress_by_city: dict, total_cities: int = None) -> lis
         f"  DEPTH BACKFILL — {len(reporting)} of {total_cities} cities report a corpus",
         f"  resolved {resolved:,} of {eligible:,} GSV panos ({100.0 * resolved / eligible:.1f}%) · "
         f"+{gaining:,.0f} panos/night on +{nightly:,.0f} requests ({DEPTH_RATE_NIGHTS}-night avg) · "
-        f"{complete} complete · {stalled} stalled",
+        f"{complete} complete · {stalled} stalled · {barren} saving nothing",
     ]
     if longest:
         lines.append(f"  longest remaining: {longest}")
