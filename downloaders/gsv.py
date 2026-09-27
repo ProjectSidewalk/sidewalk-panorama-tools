@@ -10,6 +10,7 @@ import asyncio
 import base64
 import collections
 import contextlib
+import contextvars
 import csv
 import json
 import logging
@@ -200,6 +201,42 @@ def _tile_retry_waits():
     """
     yield from backoff.expo(max_value=TILE_RETRY_MAX_WAIT)
 
+
+class _TileAbandonedError(Exception):
+    """A tile never requested, because another tile of the same pano had already been refused (#162)."""
+
+
+class _TileFanOut:
+    """One pano's fan-out state, shared by every tile task: the concurrency slot, and what the tiles saw.
+
+    `slot` bounds requests in flight to thread_count, like the connector, but it is what lets the refusal
+    check sit AFTER a task gets its turn - all 512 tasks start at t=0, so a check at task start would see
+    nothing refused yet and every one would go on to send. `requests` counts requests actually made,
+    `retries` the backoff retries (backoff itself no longer logs), `refused` the first TilePushbackError.
+    """
+
+    def __init__(self):
+        self.slot = None
+        self.requests = 0
+        self.retries = 0
+        self.refused = None
+
+
+# Why a context variable rather than a parameter: `_download_tiles(tiles)` and `_download_tile(session, tile)`
+# are replaced by stubs of exactly those signatures across the suite (stub_tiles, TestTheTileFanOutContract,
+# test_image_downloaders.py), so threading a state object through them would break every one. fetch_pano_image
+# sets it around asyncio.run; asyncio.run and ensure_future copy the context, so every tile task sees the same
+# _TileFanOut object. When it is unset - _fetch_tile or _download_tile driven directly - behaviour is exactly
+# what it was before #162: no slot, no counting, no abandonment.
+_TILE_FANOUT = contextvars.ContextVar('_TILE_FANOUT', default=None)
+
+
+def _count_tile_retry(details):
+    """backoff's on_backoff handler: count the retry on this pano's fan-out, in place of backoff's log line."""
+    fanout = _TILE_FANOUT.get()
+    if fanout is not None:
+        fanout.retries += 1
+
 # A stitched frame with more black than this is not imagery, it is a grid bug. Nothing below the stitch can
 # see one: an out-of-range tile is answered 200 OK with a valid ALL-BLACK image/jpeg (pinned on real bytes in
 # tests/test_gsv_tile_contract.py), so a wrong grid looks exactly like a successful download tile by tile.
@@ -262,8 +299,27 @@ async def _fetch_tile(session, tile):
     the fan-out uses.
 
     A refusal - HTTP 429/403 (raised by the session's raise_for_status on entering the request), or a landing
-    URL on Google's interstitial - becomes TilePushbackError, which backoff does not catch (#162).
+    URL on Google's interstitial - becomes TilePushbackError, which backoff does not catch (#162). Inside a
+    pano's fan-out (_TILE_FANOUT set) the first refusal also abandons every tile not yet requested.
     """
+    fanout = _TILE_FANOUT.get()
+    if fanout is None or fanout.slot is None:
+        return await _request_tile(session, tile)
+    async with fanout.slot:
+        # After taking the slot, never before: see _TileFanOut.
+        if fanout.refused is not None:
+            raise _TileAbandonedError('tile (%d, %d) not requested: %s' % (tile[0], tile[1], fanout.refused))
+        fanout.requests += 1
+        try:
+            return await _request_tile(session, tile)
+        except TilePushbackError as e:
+            if fanout.refused is None:
+                fanout.refused = e
+            raise
+
+
+async def _request_tile(session, tile):
+    """The one HTTP request behind _fetch_tile, and the translation of Google's refusal into push-back."""
     x, y, url = tile
     try:
         async with session.get(url, proxy=_proxies.get("http"), headers=_random_header()) as response:
@@ -292,7 +348,7 @@ async def _fetch_tile(session, tile):
 # refusal). max_time is a callable so the bound is read per tile, not frozen at import.
 _download_tile = backoff.on_exception(_tile_retry_waits, _TILE_RETRY_ERRORS, max_tries=TILE_MAX_TRIES,
                                       max_time=lambda: TILE_RETRY_MAX_SECONDS, giveup=_tile_error_is_final,
-                                      logger=None)(_fetch_tile)
+                                      on_backoff=_count_tile_retry, logger=None)(_fetch_tile)
 
 
 async def _download_tiles(tiles):
@@ -302,6 +358,10 @@ async def _download_tiles(tiles):
     return_exceptions=True nothing propagates out of the gather anyway - the decorator this replaces could
     never fire for tile errors and only re-ran connector construction, re-downloading every tile (#45).
     """
+    fanout = _TILE_FANOUT.get()
+    if fanout is not None:
+        # Built here, inside the running loop, because a Semaphore belongs to the loop that first waits on it.
+        fanout.slot = asyncio.Semaphore(thread_count)
     conn = aiohttp.TCPConnector(limit=thread_count)
     async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
         tasks = [asyncio.ensure_future(_download_tile(session, tile)) for tile in tiles]
@@ -553,17 +613,36 @@ def fetch_pano_image(pano_id, width, height, zoom):
     final_im_dimension = (width, height)
 
     tiles = _generate_tile_urls(pano_id, width, height, zoom)
-    results = asyncio.run(_download_tiles(tiles))
+    # The fan-out's shared state (#162) - see _TILE_FANOUT for why it rides in a context variable. Reset in a
+    # finally, so no later fan-out in this thread can inherit a refusal it did not see.
+    fanout = _TileFanOut()
+    token = _TILE_FANOUT.set(fanout)
+    try:
+        results = asyncio.run(_download_tiles(tiles))
+    finally:
+        _TILE_FANOUT.reset(token)
     ok, failed = _partition_tile_results(tiles, results)
     if failed:
+        refusals = [error for _cell, error in failed if isinstance(error, TilePushbackError)]
+        if refusals:
+            # Google refused us. Raised WITHOUT a log line: the image loop writes the one line a refused
+            # pano gets, naming the push-back, and this layer adding its own is how one refusal used to cost
+            # 5,120 lines (#162). The counts go on the exception so that one line says what was spent.
+            refusal = refusals[0]
+            refusal.requested, refusal.total = fanout.requests, len(tiles)
+            raise refusal
         # Fail the whole pano: a partial stitch would leave silently-black regions that downstream crops
         # can't detect - exactly the corruption #44 is about. Raise (rather than return failure) so the
         # failure is treated as transient: the tile that timed out today usually exists tomorrow, and under
         # #41's ledger semantics a raised pano is re-attempted next run instead of blacklisted.
         (x, y), first_error = failed[0]
-        logging.error("IMAGEDOWNLOAD: pano %s: %d/%d tiles failed; first failure: tile (%d, %d): %r",
-                      pano_id, len(failed), len(tiles), x, y, first_error)
+        logging.error("IMAGEDOWNLOAD: pano %s: %d/%d tiles failed after %d tile retries; first failure: "
+                      "tile (%d, %d): %r", pano_id, len(failed), len(tiles), fanout.retries, x, y, first_error)
         raise first_error
+    if fanout.retries:
+        # backoff no longer logs its retries, so this is the one place a pano that needed them says so - the
+        # earliest sign of trouble that is not yet a failure.
+        logging.info("IMAGEDOWNLOAD: pano %s: stitched after %d tile retries", pano_id, fanout.retries)
 
     degraded = _undersized_tile_count(ok)
     if degraded:

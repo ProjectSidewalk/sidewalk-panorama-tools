@@ -514,6 +514,20 @@ The interstitial check is the depth phase's rule carried over by analogy; no CBK
 observed. Nothing that used to succeed on a retry is lost by not retrying a 4xx: every retired pano measured
 answers 200 with an all-black body, not an error status.
 
+A refusal also **abandons the rest of that pano's fan-out**: the tiles already in flight (at most
+`thread_count`, 8 by default) finish, and no further tile is requested. An ordinary failure does not abandon
+anything — the other tiles still complete, as they always have. Each pano leaves at most one line in
+`scrape.log` about its tiles:
+
+| Pano | `scrape.log` |
+|---|---|
+| refused | one ERROR from the image loop: `Failed to download pano <id> (HTTP 429): refused by Google: tile (x, y) answered HTTP 429; 8 of 512 tile requests made, the rest abandoned` |
+| failed after retries | one ERROR, `N/M tiles failed after K tile retries; first failure: ...`, plus the loop's usual line |
+| succeeded after retries | one INFO, `stitched after K tile retries` |
+
+`backoff` itself logs nothing any more. Capping its logger at WARNING would not have been enough: its
+per-retry lines are INFO but its per-tile give-up line is ERROR, 512 of them for a pano whose every tile failed.
+
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution
 equirectangular image. Requires a token:
