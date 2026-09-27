@@ -266,3 +266,69 @@ class TestTwoCitiesShareOneRoot:
         monkeypatch.setattr(crop_runner, 'bulk_extract_crops', spy)
         assert city_run(crop_runner, tmp_path, out, CHICAGO, '--force', put=False) == 0
         assert seen['counts']['missing_pano'] == 1 and seen['counts']['stale_kept'] == 0
+
+
+# ---------------------------------------------------------------------------
+# The production-store guard under the new layout
+# ---------------------------------------------------------------------------
+
+def tree(root):
+    """Every path under root with its bytes (None for a directory)."""
+    snapshot = {}
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        for d in dirnames:
+            snapshot[os.path.relpath(os.path.join(dirpath, d), str(root))] = None
+        for name in filenames:
+            snapshot[os.path.relpath(os.path.join(dirpath, name), str(root))] = read_bytes(
+                os.path.join(dirpath, name))
+    return snapshot
+
+
+class TestTheGuardRunsAtTheCityStoreToo:
+    """Both layouts are city-first now: ours is <crop-dir>/<city>/<digits>/<label_id>.jpg, the production
+    store's <root>/<city-id>/<LabelType>/crop_<labelId>.png. From -o the guard lists city directories at
+    depth 1 and finds nothing, so a production city directory whose LabelType directories are still EMPTY -
+    the name signal is only read at depth 0 - passes the root-level scan. Scanning the store itself is what
+    catches it."""
+
+    def test_a_production_city_with_empty_type_directories_is_refused(self, crop_runner, tmp_path, capsys):
+        prod = tmp_path / 'prod'
+        for name in ('CurbRamp', 'NoCurbRamp'):
+            (prod / SEATTLE / name).mkdir(parents=True)
+        before = tree(prod)
+        code = city_run(crop_runner, tmp_path, prod, SEATTLE, '--force')
+        assert code == crop_runner.EXIT_REFUSED_DESTINATION
+        assert tree(prod) == before
+        assert not (prod / SEATTLE / 'crop.log').exists()
+
+    def test_the_refusal_is_said_on_both_channels(self, crop_runner, tmp_path, capsys, caplog):
+        import logging
+        prod = tmp_path / 'prod'
+        (prod / SEATTLE / 'CurbRamp').mkdir(parents=True)
+        with caplog.at_level(logging.ERROR):
+            city_run(crop_runner, tmp_path, prod, SEATTLE)
+        printed = capsys.readouterr().out
+        assert 'Refusing' in printed and 'CurbRamp' in printed
+        assert any(r.levelno == logging.ERROR and 'CurbRamp' in r.getMessage() for r in caplog.records)
+
+    def test_neither_scan_lists_a_numeric_shard(self, crop_runner, tmp_path, monkeypatch):
+        """A root with two city stores: the root-level scan lists the root and each city directory, the
+        store-level scan lists the store - and neither opens a shard of ~400k crops over sshfs."""
+        out = tmp_path / 'crops'
+        for city in (SEATTLE, CHICAGO):
+            for type_id in ('1', '2', '10'):
+                (out / city / type_id).mkdir(parents=True)
+                (out / city / type_id / '5.jpg').write_bytes(b'x')
+        listed = []
+        real_scandir = os.scandir
+
+        def recording_scandir(path='.'):
+            listed.append(os.path.relpath(str(path), str(out)))
+            return real_scandir(path)
+
+        monkeypatch.setattr(crop_runner.os, 'scandir', recording_scandir)
+        crop_runner.refuse_production_crop_store(str(out))
+        assert sorted(listed) == sorted(['.', SEATTLE, CHICAGO])
+        del listed[:]
+        crop_runner.refuse_production_crop_store(str(out / SEATTLE))
+        assert listed == [SEATTLE]
