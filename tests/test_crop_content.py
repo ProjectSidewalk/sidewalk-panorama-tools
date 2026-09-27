@@ -623,3 +623,36 @@ class TestTheJsonIntakeDedupesOnTheIdTheLoopFilesUnder:
         assert len(rows) == 6
         counts = run(crop_runner, rows, store, out)
         assert counts['errors'] == 6 and reconciles(counts)
+
+    @pytest.mark.parametrize('bad_id', [float('inf'), float('-inf'), [1], {}],
+                             ids=['inf', '-inf', 'list', 'object'])
+    def test_ids_int_refuses_by_overflow_or_type_are_never_collapsed(self, crop_runner, tmp_path, bad_id):
+        """int() refuses an infinite id with OverflowError and a list or object with TypeError, not
+        ValueError, so each needs its own clause in _label_id_key: without it json_to_list itself raises,
+        the pre-#164 crash one layer up. Two such rows are two bad labels, and the loop counts each as one
+        error rather than letting the exception end the run."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        base = label_row(pano_id=GOOD)
+        rows = crop_runner.json_to_list([dict(base, label_id=1), dict(base, label_id=bad_id),
+                                         dict(base, label_id=bad_id)])
+        assert len(rows) == 3
+        counts = run(crop_runner, rows, store, out)
+        assert counts['total'] == 3 and counts['errors'] == 2 and counts['success'] == 1
+        assert reconciles(counts)
+
+    @pytest.mark.parametrize('literal', ['1e999', 'Infinity', '-Infinity'])
+    def test_an_infinite_id_in_a_json_file_is_one_error_through_main(self, crop_runner, tmp_path, literal):
+        """json.load reads 1e999 and Infinity as float('inf') - valid input as far as the parser knows -
+        and the loop's int() raises OverflowError on it. The run must finish, count one error and cut the
+        good label, exactly as for any other bad row."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        good = json.dumps(label_row(pano_id=GOOD, label_id=1))
+        bad = json.dumps(label_row(pano_id=GOOD, label_id=2)).replace('"label_id": 2', '"label_id": ' + literal)
+        assert literal in bad
+        path = tmp_path / 'labels.json'
+        path.write_text('[%s, %s]' % (good, bad), encoding='utf-8')
+
+        assert crop_runner.main(['--city', CITY, '-f', str(path), '-s', str(store), '-o', str(out)]) == 1
+        assert find_crop(out, 1) is not None

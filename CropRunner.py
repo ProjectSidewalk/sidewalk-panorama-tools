@@ -1618,7 +1618,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     raise ValueError("non-finite label position (%r, %r)" % (row['pano_x'], row['pano_y']))
                 meta_dims = _metadata_dims(row)
                 provenance = tuple(_provenance_value(row.get(field)) for field in PROVENANCE_FIELDS)
-            except (KeyError, TypeError, ValueError) as e:
+            # OverflowError: json.load reads 1e999 and Infinity as float('inf'), and int() of that raises
+            # OverflowError rather than ValueError - uncaught, it ended the whole run (#170 review).
+            except (KeyError, TypeError, ValueError, OverflowError) as e:
                 counts['errors'] += 1
                 # Named fields first, then the reason and the row clipped: a whole row repr'd is ~300-500 B,
                 # and it was 260,000 of those that flooded crop.log (#139). The count above is not
