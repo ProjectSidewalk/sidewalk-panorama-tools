@@ -332,3 +332,110 @@ class TestTheGuardRunsAtTheCityStoreToo:
         del listed[:]
         crop_runner.refuse_production_crop_store(str(out / SEATTLE))
         assert listed == [SEATTLE]
+
+
+# ---------------------------------------------------------------------------
+# A pre-#159 flat root is refused, never cut into
+# ---------------------------------------------------------------------------
+
+def plant(root, relpath, data=b'x'):
+    path = os.path.join(str(root), relpath)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as f:
+        f.write(data)
+
+
+LEGACY_SHAPES = {
+    'a-shard': ['1/5.jpg'],
+    'only-the-marker': ['crop_rule.json'],
+    'only-the-manifest': ['crop_provenance.csv'],
+    'half-migrated': ['seattle-wa/1/1.jpg', '2/3.jpg'],
+}
+
+
+class TestALegacyFlatRootIsRefused:
+    """Before #159, -o WAS the store: <crop-dir>/<label_type_id>/<label_id>.jpg with crop_rule.json and
+    crop_provenance.csv beside the shards. A run that treated such a root as a root would start
+    <crop-dir>/<city>/ beside the old shards, cut every crop again, and leave two copies of the city's store
+    with nothing saying which is current - so it is refused, and the migrator is named."""
+
+    @pytest.mark.parametrize('extra', [(), ('--force',)], ids=['plain', 'force'])
+    @pytest.mark.parametrize('shape', sorted(LEGACY_SHAPES))
+    def test_it_is_refused_with_nothing_written(self, crop_runner, tmp_path, shape, extra):
+        out = tmp_path / 'crops'
+        for relpath in LEGACY_SHAPES[shape]:
+            plant(out, relpath)
+        before = tree(out)
+        assert city_run(crop_runner, tmp_path, out, SEATTLE, *extra) == crop_runner.EXIT_REFUSED_DESTINATION
+        assert tree(out) == before
+        assert not (out / 'crop.log').exists()
+
+    def test_the_message_names_the_finding_and_the_migrator_on_both_channels(self, crop_runner, tmp_path,
+                                                                             capsys, caplog):
+        import logging
+        out = tmp_path / 'crops'
+        plant(out, '1/5.jpg')
+        with caplog.at_level(logging.ERROR):
+            city_run(crop_runner, tmp_path, out, SEATTLE)
+        printed = capsys.readouterr().out
+        command = 'python3 migrate_crop_store.py %s --city %s --dry-run' % (out, SEATTLE)
+        assert command in printed and os.path.join(str(out), '1') in printed
+        assert any(r.levelno == logging.ERROR and command in r.getMessage() for r in caplog.records)
+
+    def test_a_store_already_named_for_its_city_is_told_to_point_at_the_parent(self, crop_runner, tmp_path,
+                                                                                 capsys):
+        """-o /srv/crops/seattle-wa --city seattle-wa: nothing needs to move, only -o."""
+        out = tmp_path / 'crops' / SEATTLE
+        plant(out, '1/5.jpg')
+        city_run(crop_runner, tmp_path, out, SEATTLE)
+        printed = capsys.readouterr().out
+        assert 'point -o at its parent' in printed and str(out.parent) in printed
+
+    def test_the_parent_remedy_is_not_offered_to_any_other_root(self, crop_runner, tmp_path, capsys):
+        out = tmp_path / 'crops'
+        plant(out, '1/5.jpg')
+        city_run(crop_runner, tmp_path, out, SEATTLE)
+        assert 'point -o at its parent' not in capsys.readouterr().out
+
+    def test_a_root_of_city_stores_and_other_things_passes(self, crop_runner, tmp_path):
+        """Not every directory is a signal: another city's store, notes, figures and crop.log alone are what
+        an ordinary root holds."""
+        out = tmp_path / 'crops'
+        plant(out, CHICAGO + '/1/1.jpg')
+        plant(out, 'notes.txt')
+        plant(out, 'figures/overview.png')
+        plant(out, 'crop.log')
+        assert city_run(crop_runner, tmp_path, out, SEATTLE) == 0
+        assert (out / SEATTLE / '1' / '1.jpg').is_file()
+
+    def test_a_missing_root_is_no_signal(self, crop_runner, tmp_path):
+        assert crop_runner.legacy_layout_signal(str(tmp_path / 'not-yet')) is None
+
+
+class TestAFlatStoreAlreadyNamedForItsCityNeedsNoMove:
+    """Case A of the production migration: a pre-#159 store at <X>/<city_id>/ - the form the README always
+    showed - is already <crop-dir>/<city>/ for -o <X>. It adopts the city, and nothing is re-cut."""
+
+    def test_it_adopts_the_city_and_skips_every_crop(self, crop_runner, tmp_path, monkeypatch):
+        import json
+        out = tmp_path / 'crops'
+        assert city_run(crop_runner, tmp_path, out, SEATTLE) == 0
+        store = out / SEATTLE
+        marker_path = store / crop_runner.CROP_RULE_MARKER
+        marker = json.loads(marker_path.read_text(encoding='utf-8'))
+        del marker['city']
+        marker_path.write_text(json.dumps(marker), encoding='utf-8')
+        crop_file = store / '1' / '1.jpg'
+        before = read_bytes(crop_file)
+        seen = {}
+        real = crop_runner.bulk_extract_crops
+
+        def spy(*args, **kwargs):
+            seen['counts'] = real(*args, **kwargs)
+            return seen['counts']
+
+        monkeypatch.setattr(crop_runner, 'bulk_extract_crops', spy)
+        assert city_run(crop_runner, tmp_path, out, SEATTLE) == 0
+        assert seen['counts']['skipped_existing'] == 1 and seen['counts']['success'] == 0
+        assert read_bytes(crop_file) == before
+        assert json.loads(marker_path.read_text(encoding='utf-8'))['city'] == SEATTLE
