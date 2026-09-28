@@ -2519,13 +2519,40 @@ class TestAnEmptyPanoListForACityWithHistoryFailsTheNight:
         storage.mkdir(exist_ok=True)
         (storage / name).write_text(rows)
 
-    def test_an_empty_list_over_an_image_ledger_is_a_condition(self, monkeypatch, tmp_path, capsys):
+    def test_an_empty_list_over_an_image_ledger_is_a_condition(self, monkeypatch, tmp_path, capsys, caplog):
         self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
 
-        call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+        with caplog.at_level(logging.ERROR):
+            call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
 
         assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_LIST_EMPTY]
         assert 'WARNING' in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and 'pano list is empty' in r.getMessage() for r in caplog.records)
+
+    def test_a_list_the_filter_emptied_is_the_filters_condition_only(self, monkeypatch, tmp_path, capsys):
+        """A Mapillary-only city whose token did not reach cron: the server served its panos, the runner
+        dropped them. `pano-list-empty` would send the operator to a server that is fine - one fact, one
+        condition, and the filter already names it (#174 review)."""
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
+        monkeypatch.delenv('MAPILLARY_ACCESS_TOKEN', raising=False)
+
+        call_main(monkeypatch, tmp_path, TestPanosTheRunCannotDownloadFailTheNight.MAPILLARY_ROW,
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_MAPILLARY_TOKEN]
+        assert '/adminapi/panos' not in capsys.readouterr().out
+
+    def test_a_list_with_no_labelled_pano_is_not_empty(self, monkeypatch, tmp_path):
+        """Without --all-panos the image list is the labelled panos only, and a hand run over a city with
+        none left has an empty image list over a served one. The server served panos; nothing is wrong."""
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
+
+        storage, calls = call_main(monkeypatch, tmp_path,
+                                   'unlabelledPano,16384,8192,47.6,-122.3,180.0,0.0,gsv,False\n',
+                                   '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert calls == [], 'the case under test: nothing eligible for the image phase'
+        assert summary_codes(tmp_path) == []
 
     def test_a_depth_ledger_alone_is_history_too(self, monkeypatch, tmp_path):
         self.seed(tmp_path, 'depth_log.csv', 'pano_id,status\nsomePano,saved\n')

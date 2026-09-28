@@ -955,6 +955,9 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         schema_drift = _intake_schema_drift(pano_infos)
         if schema_drift is not None:
             pano_infos = []
+        # Also read before the filter: a list the FILTER emptied (a Mapillary city without its token, a source
+        # this runner does not know) is the filter's condition, already noted by it, and not the server's.
+        served_empty = not pano_infos
         pano_infos = filter_supported_sources(pano_infos, conditions=stop_reasons)
         image_pano_infos = select_image_panos(pano_infos, all_panos)
     except BaseException:
@@ -978,7 +981,7 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         write_log_csv_row(storage_location, [log_timestamp()])
         return set()
 
-    if not pano_infos and _store_has_history(storage_location):
+    if served_empty and _store_has_history(storage_location):
         # An empty list for a city that has scraped before is the server (or something between us and it)
         # failing, not the city emptying. The run continues - there is nothing to do and nothing to lose -
         # but the night is told (#161).
@@ -986,7 +989,7 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         print("WARNING: the pano list is empty, but this store has scraped before. Check the server's "
               "/adminapi/panos.")
         note_condition(stop_reasons, CONDITION_PANO_LIST_EMPTY,
-                       'no supported panos served for a store with ledger history')
+                       'no panos served for a store with ledger history')
 
     # Uncomment this to test on a smaller subset of the pano_info.
     # import random
