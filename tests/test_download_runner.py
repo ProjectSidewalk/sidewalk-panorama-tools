@@ -2760,10 +2760,15 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
             out.append(record)
         return out
 
-    def test_a_list_that_lost_width_is_not_scraped_and_nothing_is_ledgered(self, monkeypatch, tmp_path):
-        storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20))
+    def test_a_list_that_lost_width_is_not_scraped_and_nothing_is_ledgered(self, monkeypatch, tmp_path, capsys,
+                                                                          caplog):
+        with caplog.at_level(logging.ERROR):
+            storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20))
 
         assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        # Both channels: the stdout line is the one in the night's mail that says neither phase ran.
+        assert "WARNING: the pano list's schema has moved" in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and 'schema drift' in r.getMessage() for r in caplog.records)
         assert calls == [], 'no pano may be attempted from a list whose schema moved'
         assert not (storage / 'pano_id_log.csv').exists(), 'nothing may be ledgered'
         fields = last_log_fields(storage)
@@ -2804,8 +2809,41 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         assert summary_codes(tmp_path) == []
         assert len(calls) == 20
 
+    def test_the_fraction_counts_records_not_missing_keys(self, monkeypatch, tmp_path):
+        """Half the records lacking BOTH dims is half the records, not all of them. This is the shape the
+        server really sends for a pano with no dims (it omits the keys - seattle had 106 such records in
+        2026-09), so a loop that counted keys would refuse a city at half the threshold."""
+        records = self.records(20)
+        for record in records[:10]:
+            del record['width']
+            del record['height']
+
+        storage, calls = self.run_with(monkeypatch, tmp_path, records)
+
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
+        assert len(calls) == 20
+
+    def test_a_hand_csv_without_the_dims_columns_is_drift_end_to_end(self, monkeypatch, tmp_path):
+        """D10 through the real -c intake rather than a patched fetch: a CSV missing the column is a list
+        missing the key, and would write every GSV pano in it off permanently."""
+        header = 'pano_id,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
+        rows = ''.join('%s,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % p for p in GSV_PANO_IDS)
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(header + rows)
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+        monkeypatch.chdir(tmp_path)
+        DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+                             '--skip-depth', '--run-summary-file', str(tmp_path / 'summary.json')])
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        assert calls == []
+
     def test_blank_values_are_not_a_schema(self, monkeypatch, tmp_path):
-        """A blank width is one pano the server knows nothing about; the key is still there."""
+        """A blank cell is one pano the list knows nothing about; the key is still there. This is the -c
+        intake's shape (csv.DictReader gives every row every column). The webserver does NOT send it - its
+        writeNullable omits the key for a null - so over /adminapi/panos only the fraction separates a
+        per-pano null from a renamed field."""
         records = self.records(20)
         for record in records:
             record['width'] = None

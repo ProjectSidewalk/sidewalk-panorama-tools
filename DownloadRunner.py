@@ -76,7 +76,11 @@ IMAGE_NO_SUCCESS_MIN_RAISED = 10
 # list a schema drift rather than a few odd rows (D8, #161). A missing width or height makes
 # gsv.resolve_zoom_and_dims return None before any request, which download_single_pano turns into a
 # PERMANENT failure verdict - so a renamed field would write off every new GSV pano in one night, fleet-wide.
-# A missing KEY is a schema; a blank VALUE (None) is a per-pano fact and is left to the phases.
+# A missing KEY counts and a blank VALUE (None) does not - but over /adminapi/panos the two are one shape:
+# the endpoint serialises the dims with Play's writeNullable, which OMITS the key for a null (seattle served
+# 106 of 183,927 records that way, 2026-09). Only the -c intake produces a blank value. So per record a null
+# cannot be told from a rename, and the FRACTION is what separates a few dimensionless panos from a schema.
+# `pano_id` is belt-and-braces: _normalize_pano_records has already dropped every record without one (D9).
 INTAKE_REQUIRED_KEYS = ('pano_id', 'source', 'width', 'height')
 INTAKE_SCHEMA_MIN_FRACTION = 0.9
 
@@ -868,9 +872,10 @@ def _store_has_history(storage_location):
 def _intake_schema_drift(pano_infos):
     """A description of the schema drift in the fetched pano list, or None if it has none (D8, #161).
 
-    Drift is INTAKE_SCHEMA_MIN_FRACTION or more of the records lacking any INTAKE_REQUIRED_KEYS key. A key
-    present with a blank (None) value is not drift. An empty list is not drift either - it has no schema to
-    have moved, and `pano-list-empty` covers it.
+    Drift is INTAKE_SCHEMA_MIN_FRACTION or more of the records lacking any INTAKE_REQUIRED_KEYS key, counted
+    per record, not per key. A key present with a blank (None) value is not drift (the -c intake's shape; the
+    webserver omits the key instead, see INTAKE_REQUIRED_KEYS). An empty list is not drift either - it has no
+    schema to have moved, and `pano-list-empty` covers it.
 
     Example::
 
