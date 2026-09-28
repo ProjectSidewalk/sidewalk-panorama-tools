@@ -407,7 +407,11 @@ class TestLabelCsvIntake:
         assert labels[0]['pano_x'] == '100'
 
     def test_label_ids_differing_only_by_a_leading_zero_stay_distinct(self, tmp_path):
-        """drop_duplicates deduped on the inferred int64, so 7 and 07 collapsed into one label."""
+        """Pins the CSV intake's raw-cell dedupe: '7' and '07' are two labels. That is the #72 fix for
+        pandas' drop_duplicates, which deduped on the inferred int64 - but both rows still file as
+        <type>/7.jpg, which is exactly the collision #164 closed for the JSON intake by keying on int().
+        D9 of #170 leaves this divergence in place on purpose; whether the CSV intake should key on int()
+        too is an open decision, and this test flips if it does."""
         path = write_label_csv(tmp_path,
                                LABEL_HEADER + label_csv_row(label_id='7')
                                + label_csv_row(label_id='07'))
@@ -627,7 +631,7 @@ PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape
                       'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
                       'downloaders/gsv.py', 'downloaders/mapillary.py',
-                      'downloaders/panoramax.py']
+                      'downloaders/panoramax.py', 'downloaders/store_sftp.py']
 
 
 def imported_names(source):
