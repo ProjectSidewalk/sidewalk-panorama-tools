@@ -71,6 +71,18 @@ class TestTreeChanges:
         assert conftest.tree_changes(before, conftest.snapshot_tree_state(str(tmp_path))) == \
             ['modified: ' + os.path.join('reports', 'scripts', '.cache', 'rawlabels', 'seattle.csv')]
 
+    def test_a_resized_cache_file_with_the_same_mtime_is_reported(self, tmp_path):
+        """Different size, identical mtime_ns: what a same-second rewrite looks like on a coarse-mtime
+        filesystem (FAT's 2 s, some SMB/sshfs mounts). The stamp is (size, mtime), not mtime alone."""
+        path = str(tmp_path / 'reports' / 'scripts' / '.cache' / 'rawlabels' / 'seattle.csv')
+        _write(path, 'a\n')
+        st = os.stat(path)
+        before = conftest.snapshot_tree_state(str(tmp_path))
+        _write(path, 'a longer fake\n')
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert conftest.tree_changes(before, conftest.snapshot_tree_state(str(tmp_path))) == \
+            ['modified: ' + os.path.join('reports', 'scripts', '.cache', 'rawlabels', 'seattle.csv')]
+
     def test_a_deleted_cache_file_is_reported(self, tmp_path):
         path = str(tmp_path / 'reports' / 'scripts' / '.cache' / 'rawlabels' / 'seattle.csv')
         _write(path, 'a\n')
@@ -135,6 +147,27 @@ class TestTreeChanges:
         assert result.returncode != 0, output
         assert 'created: ' + probe_rel in output, output
 
+    def test_the_guard_still_checks_a_tree_that_was_dirty_at_the_start(self):
+        """CI always starts clean, so a guard that stood down on a dirty start would pass CI while doing
+        nothing on a dev box, where a dirty checkout is the normal state (#171 review)."""
+        snapshots = iter([
+            ({}, ' M README.md\n'),
+            ({os.path.join('reports', 'scripts', '.cache', 'x.csv'): (1, 1)}, ' M README.md\n'),
+        ])
+        guard = conftest.guard_the_tree(lambda: next(snapshots))
+        next(guard)
+        with pytest.raises(AssertionError) as raised:
+            next(guard)
+        message = str(raised.value)
+        assert 'created: ' + os.path.join('reports', 'scripts', '.cache', 'x.csv') in message
+        assert 'reported once' in message  # the next run will take this as its baseline
+
+    def test_the_guard_passes_a_tree_left_as_it_was(self):
+        guard = conftest.guard_the_tree(lambda: ({}, ' M README.md\n'))
+        next(guard)
+        with pytest.raises(StopIteration):
+            next(guard)
+
     def test_the_real_checkout_is_snapshotted_through_git(self):
         """In a checkout the porcelain half must actually be live, or the tracked-tree guard is a no-op."""
         if not os.path.isdir(os.path.join(REPO_ROOT, '.git')) and \
@@ -167,6 +200,21 @@ class TestChildrenGetASessionTempDir:
         here = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
         assert os.path.normcase(os.path.realpath(session_dir)) != here
         assert os.path.isdir(session_dir)
+
+    def test_unconfigure_restores_the_variables_and_removes_the_dir(self, monkeypatch, tmp_path):
+        """Driven in-process against substitute state; monkeypatch puts the session's real state back.
+        Matters for an in-process pytest.main() caller, and docs/testing.md claims the removal."""
+        session_dir = tmp_path / 'children'
+        (session_dir / 'left-by-a-child').mkdir(parents=True)
+        monkeypatch.setattr(conftest, 'CHILD_TEMP_DIR', str(session_dir))
+        monkeypatch.setattr(conftest, '_prior_temp_env', {'TMPDIR': None, 'TEMP': 'host-temp'})
+        monkeypatch.setenv('TMPDIR', str(session_dir))
+        monkeypatch.setenv('TEMP', str(session_dir))
+        conftest.pytest_unconfigure(None)
+        assert 'TMPDIR' not in os.environ
+        assert os.environ['TEMP'] == 'host-temp'
+        assert not session_dir.exists()
+        assert conftest.CHILD_TEMP_DIR is None
 
 # --- a broken streetlevel fails CI instead of skipping -------------------------------------------------------
 

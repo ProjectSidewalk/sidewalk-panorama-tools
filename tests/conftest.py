@@ -96,11 +96,27 @@ def _the_suite_leaves_the_repo_as_it_found_it():
     failure: tests/test_fetch_rawlabels.py wrote an 11-byte richmond.csv into the real Mapillary study cache
     on every run, and nothing in the suite could see it.
     """
-    before = snapshot_tree_state()
+    yield from guard_the_tree(snapshot_tree_state)
+
+
+def guard_the_tree(snapshot):
+    """The session fixture's body, over an injectable snapshot so it can be driven against synthetic state.
+
+    The comparison runs unconditionally - in particular on a tree that was already dirty at session start,
+    which is a dev box's normal state and never CI's, so a guard that stood down there would pass CI.
+
+    It reports and does not undo: the next session snapshots whatever this one left as its baseline, so a
+    write is reported ONCE. The message says so, because a fake the fetcher then skips is the #165 shape.
+    """
+    before = snapshot()
     yield
-    changes = tree_changes(before, snapshot_tree_state())
-    assert not changes, ('the test run changed the repo it was run from; a test is writing outside its '
-                         'tmp_path:\n  ' + '\n  '.join(changes))
+    changes = tree_changes(before, snapshot())
+    assert not changes, (
+        'the test run changed the repo it was run from; a test is writing outside its tmp_path:\n  '
+        + '\n  '.join(changes)
+        + '\nThis is reported once: the next run takes the tree as it is now for its baseline and will pass. '
+        'Restore or delete the paths above by hand - a file left in reports/scripts/.cache/ is skipped by '
+        'fetch_rawlabels.py and read by every study.')
 
 
 @pytest.fixture(autouse=True)
