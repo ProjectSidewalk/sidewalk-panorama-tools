@@ -28,6 +28,7 @@ PRODUCTION_MODULES = {
     'downloaders/gsv.py',
     'downloaders/mapillary.py',
     'downloaders/panoramax.py',
+    'downloaders/store_sftp.py',
     'downscale_panos.py',
     'log_analyzer/analyze.py',
     'log_analyzer/roster.py',

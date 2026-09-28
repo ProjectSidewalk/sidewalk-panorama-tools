@@ -53,6 +53,22 @@ def _isolate_process_state():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_ssh_config(monkeypatch, tmp_path_factory):
+    """Keep store mode's `ssh -G <host>` lookup (#30) from reading this machine's ~/.ssh/config.
+
+    A failed store session resolves the host through ssh's config to learn what else to redact, and would
+    otherwise pick up the developer's or the CI runner's own config - the local login name and port 22 then
+    get redacted out of expected messages, differently on every machine. Pointing the command at a binary
+    that does not exist takes the lookup's own tolerate-and-continue path; the tests that are ABOUT the
+    lookup point it at a stand-in of their own.
+    """
+    from downloaders import store_sftp
+
+    missing = tmp_path_factory.mktemp('no-ssh') / 'ssh-not-installed'
+    monkeypatch.setattr(store_sftp, 'SSH_CONFIG_COMMAND', [str(missing), '-G'])
+
+
+@pytest.fixture(autouse=True)
 def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     """Keep the depth phase's three HOST-level side effects (#43) out of the suite.
 
@@ -86,6 +102,12 @@ def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     # test, its sleeps.
     state = tmp_path_factory.mktemp('depth-pace') / gsv.DEPTH_PACE_STATE_FILENAME
     monkeypatch.setattr(gsv, 'default_pace_state_path', lambda: str(state))
+    # The image phase's per-process photometa memory (#74): three failing photometa stubs in one test would
+    # otherwise stop every later test's image phase from asking photometa at all. And the host-state paths
+    # DownloadRunner.run sets from its arguments, which an in-process run() test would otherwise leave behind.
+    monkeypatch.setattr(gsv, '_photometa_run', gsv._PhotometaRunMemory())
+    monkeypatch.setattr(gsv, 'image_block_latch_path', None)
+    monkeypatch.setattr(gsv, 'image_pace_state_path', None)
     # The width-alarm latch (#121) is the same shape of host state, and one test driving main() over a wide frame
     # without passing --width-alarm-latch would arm the real one, making every later first-sighting test see
     # "already alarmed".
