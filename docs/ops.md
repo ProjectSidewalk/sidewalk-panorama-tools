@@ -145,10 +145,12 @@ confirms it. Then:
 
 1. Set `WRITE_DISPLAY_COPIES = True` in `downloaders/common.py`. It is a code change on purpose, and
    `TestTheSwitch::test_the_shipped_default_is_off` pins the shipped `False`, so that test changes in the same
-   commit, saying why.
-2. Run `downscale_panos.py --min-width 16384` on each affected store — [by hand](#running-the-sweep-by-hand),
-   `--dry-run` first. That writes copies for the frames **over the ceiling only**, the ones 8192-class GPUs
-   cannot render, and reports every other panorama over the cap as `under --min-width` without touching or
+   commit, saying why. **The downloaders' hook has no floor:** from then on every newly downloaded panorama
+   wider than `DOWNSCALED_MAX_WIDTH` (8192) gets a copy, not only the ones over the ceiling, so new scrapes
+   grow the store at the full +63% below even though step 2 does not.
+2. Run `python3 downscale_panos.py <storage-dir> --min-width 16384 --dry-run`, then again without `--dry-run`,
+   on each affected store ([by hand](#running-the-sweep-by-hand)). That writes copies for the frames **over
+   the ceiling only**, the ones 8192-class GPUs cannot render, and reports every other panorama over the cap as `under --min-width` without touching or
    even reading its copy ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)).
    Only if you mean to restore copies for everything over the cap as well, run it again without
    `--min-width` — and **budget the disk before you do:** that sweep writes a copy for every panorama wider
@@ -171,7 +173,8 @@ python3 downscale_panos.py <storage-dir> --min-width 16384 --dry-run  # only fra
 `--min-width PX` ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)) limits the
 sweep to panoramas **wider than** `PX`: one over the cap but at or below it is counted as `under --min-width`
 and its copy is never read, so it is reported neither as written nor as already having a copy, whatever is on
-disk. `16384` — `VIEWER_MAX_PANO_WIDTH`, and GSV's widest frame today — is the value it exists for: the
+disk. A stale copy under the floor is therefore left as it is; run without `--min-width` to refresh it.
+`16384` — `VIEWER_MAX_PANO_WIDTH`, and GSV's widest frame today — is the value it exists for: the
 [width tripwire](#the-width-tripwire)'s remedy, which should touch only what the viewer fleet cannot render.
 A value at or below `--max-width` is refused, since it would filter nothing and quietly be the full sweep.
 Every panorama the run examines lands in exactly one of written, under the cap, already had a copy, failed and

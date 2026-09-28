@@ -50,7 +50,7 @@ python3 migrate_depth_artifacts.py <storage-dir> [--dry-run]
 # more (switched off 2026-09-09) - this is the only writer that CREATES one, and it runs only when you run
 # it. refetch_panos refreshes a copy already on the store after a swap, but never creates one, and deletes
 # it if that refresh fails (#122).
-python3 downscale_panos.py <storage-dir> [--dry-run] [--max-runtime MINUTES] [--max-width PX]
+python3 downscale_panos.py <storage-dir> [--dry-run] [--max-runtime MINUTES] [--max-width PX] [--min-width PX]
 
 # One-off repair pass for fover-era panos (#73). Never backfills, never downgrades; see docs/ops.md
 python3 reports/scripts/pano_y_histogram.py <city-fqdn> --write-worklist
