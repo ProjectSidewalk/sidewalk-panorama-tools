@@ -252,7 +252,8 @@ re-cutting the store under one rule's constants ([`--force`](#re-cutting-a-store
 forced pass does **not** clear the history: like `provenance_manifest_no_known_gap`, nothing in the marker
 can tell that it reached every crop. **The reset:** once the whole store has been re-cut under one rule,
 remove `rules_seen`, `constants_seen` and `previous_crop_rule_version` from `crop_rule.json` — never a
-crop — and the next run records only its own rule. Remove those three keys rather than deleting the file:
+crop — and the next run records only its own rule. The plain-run warning names this reset as well as
+`--force`, since after a whole forced re-cut it still fires and another forced pass would not quiet it. Remove those three keys rather than deleting the file:
 the file also holds the store's `city` and the manifest's gap record, and a deleted marker turns that
 record into `null` (unknown) for good. Do it only after a *whole* re-cut: over a store that still holds
 crops from another rule, it makes a mixed store read as a clean one.

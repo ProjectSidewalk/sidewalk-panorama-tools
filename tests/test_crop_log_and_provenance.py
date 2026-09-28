@@ -413,7 +413,8 @@ class TestTheProvenanceManifest:
         def fail_label_7(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '7.jpg':
                 raise OSError('No space left on device')
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', fail_label_7)
         labels = [labelled(1, source='gsv'),
@@ -476,7 +477,8 @@ class TestTheProvenanceManifest:
         def spy(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '2.jpg':
                 seen.append(manifest_rows(out, crop_runner))
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', spy)
         crop_runner.bulk_extract_crops([labelled(1, source='gsv'), labelled(2, source='gsv')],
@@ -497,7 +499,8 @@ class TestTheProvenanceManifest:
         def killed_at_3(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '3.jpg':
                 raise KeyboardInterrupt
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         labels = [labelled(i, source='gsv') for i in range(1, 5)]
         monkeypatch.setattr(crop_runner, 'make_single_crop', killed_at_3)
@@ -794,7 +797,8 @@ class TestAFailingManifestCannotTakeTheSummaryDown:
         def killed_at_2(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '2.jpg':
                 raise KeyboardInterrupt
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', killed_at_2)
         with pytest.raises(KeyboardInterrupt):
@@ -1398,7 +1402,8 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         def killed_at_2(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '2.jpg':
                 raise KeyboardInterrupt
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', killed_at_2)
         with pytest.raises(KeyboardInterrupt):

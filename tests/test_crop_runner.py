@@ -2989,7 +2989,8 @@ class TestTheMarkerKeepsItsHistory:
         assert 'cut under sizing rule unknown and this run uses v3' in caplog.text
 
     @pytest.mark.parametrize('field', ['crop_rule_version', 'previous_crop_rule_version',
-                                       'crop_size_scale'])
+                                       'crop_size_scale', 'distance_estimator', 'v3_context_width_m',
+                                       'v3_camera_height_m'])
     @pytest.mark.parametrize('bad', [[], {}, True])
     def test_a_field_that_is_not_a_string_or_number_is_unreadable_not_a_crash(
             self, crop_runner, tmp_path, caplog, capsys, field, bad):
@@ -3084,6 +3085,87 @@ class TestTheMarkerKeepsItsHistory:
         kept = sorted(p.read_text(encoding='utf-8')
                       for p in tmp_path.glob(crop_runner.CROP_RULE_MARKER + '.unreadable-*'))
         assert kept == ['{one', '{two']
+
+
+class TestTheMarkerFixesAfterVerification:
+    """#157 integration verification (MINOR-1..3): wording and key-set contracts the port left unpinned."""
+
+    RESET = 'remove rules_seen, constants_seen and previous_crop_rule_version from crop_rule.json'
+
+    def test_the_scalar_keys_are_the_rule_ids_and_every_constant(self, crop_runner):
+        """C1/C2: a key set missing the v3 constants or distance_estimator let a `{}` constant be read as
+        a changed value and appended to the history for good."""
+        assert set(crop_runner.RULE_MARKER_SCALAR_KEYS) == (
+            {'crop_rule_version', 'previous_crop_rule_version', 'distance_estimator'}
+            | set(crop_runner._rule_constants()))
+        assert crop_runner.MANIFEST_NO_KNOWN_GAP not in crop_runner.RULE_MARKER_SCALAR_KEYS
+
+    def test_an_object_valued_v3_constant_is_unreadable_not_history(self, crop_runner, tmp_path, caplog):
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        marker = _read_marker(crop_runner, tmp_path)
+        marker['v3_context_width_m'] = {}
+        (tmp_path / crop_runner.CROP_RULE_MARKER).write_text(json.dumps(marker), encoding='utf-8')
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') == 'unknown'
+        assert 'could not be read' in caplog.text and 'this run uses' not in caplog.text
+        seen = _read_marker(crop_runner, tmp_path)['constants_seen']['v3']['v3_context_width_m']
+        assert seen == [crop_runner.V3_CONTEXT_WIDTH_M]
+
+    def test_after_a_forced_recut_the_plain_warning_names_the_reset(self, crop_runner, tmp_path, caplog,
+                                                                   capsys):
+        """MINOR-1: the history is sticky through --force, so a plain run after a whole forced re-cut
+        still warns. Telling the operator only to re-run with --force sent them round a loop that no
+        number of forced passes could leave; the warning names the manual reset too."""
+        crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v2')
+        crop_runner.write_rule_marker(str(tmp_path), force=True, sizing_rule='v3')
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        printed = capsys.readouterr().out
+        for channel in (caplog.text, printed):
+            assert 're-run with --force' in channel
+            assert 'the marker cannot tell' in channel
+            assert self.RESET in channel and "docs/cropper.md, 'The reset'" in channel
+        assert _read_marker(crop_runner, tmp_path)['rules_seen'] == ['v2', 'v3']
+
+    def test_a_refit_constant_names_the_reset_too(self, crop_runner, tmp_path, caplog, monkeypatch):
+        with monkeypatch.context() as m:
+            m.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 6.4)
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        assert 'v3_context_width_m=6.4' in caplog.text and self.RESET in caplog.text
+
+    def test_a_refit_constant_under_force_says_this_run_is_recutting(self, crop_runner, tmp_path, caplog,
+                                                                    capsys, monkeypatch):
+        """B9: under --force the refit warning must not tell the operator to re-run with --force."""
+        with monkeypatch.context() as m:
+            m.setattr(crop_runner, 'V3_CONTEXT_WIDTH_M', 6.4)
+            crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), force=True, sizing_rule='v3')
+        printed = capsys.readouterr().out
+        for channel in (caplog.text, printed):
+            assert 'v3_context_width_m=6.4' in channel
+            assert "re-cutting every label it reaches with this run's (--force)" in channel
+            assert 'finish the run before training' in channel
+            assert 're-run with --force' not in channel
+
+    def test_stale_kept_names_the_running_rule_under_v3(self, crop_runner, tmp_path, capsys):
+        """D1: a v3 --force run that keeps an old crop says the marker names v3 - the rule it rewrote the
+        marker to - not the module default."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        pano = put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
+        os.remove(pano)
+        capsys.readouterr()
+        counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out), force=True,
+                                                sizing_rule='v3')
+        assert counts['stale_kept'] == 1
+        printed = capsys.readouterr().out
+        assert 'while %s says v3' % crop_runner.CROP_RULE_MARKER in printed
+        assert 'while %s says v2' % crop_runner.CROP_RULE_MARKER not in printed
 
 
 class TestTheMarkerInThePerCityStore:

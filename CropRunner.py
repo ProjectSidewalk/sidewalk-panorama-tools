@@ -1661,7 +1661,13 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
         rules_seen, constants_seen = _marker_history(recorded)
 
     # The remedy depends on --force (#153 m3): without it the store stays mixed and the remedy is a forced
-    # run; with it, this run is the remedy, and the store is not one rule until it finishes.
+    # run; with it, this run is the remedy, and the store is not one rule until it finishes. The plain form
+    # also names the manual reset: the history is sticky through --force, so after a whole forced re-cut
+    # this warning still fires, and "re-run with --force" alone is a loop no forced pass can leave.
+    reset = (" rules_seen only grows, so a store since re-cut whole under %s (--force) reads the same way and "
+             "the marker cannot tell: once a whole-city re-cut is done, remove rules_seen, constants_seen and "
+             "previous_crop_rule_version from %s (docs/cropper.md, 'The reset')." % (sizing_rule,
+                                                                                    CROP_RULE_MARKER))
     others = [rule for rule in rules_seen if rule != sizing_rule]
     if others and not unreadable:
         mixed = ("Crop store %s was cut under sizing rule %s and this run uses %s (%s rules_seen: %s). "
@@ -1676,7 +1682,7 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
             message = mixed + ("Existing crops are re-cut only under --force, so without it the ones cut "
                                "under %s keep that geometry and any crop this run cuts is %s beside them. "
                                "To make the store one rule it has to be re-cut under this run's constants: "
-                               "re-run with --force." % (' and '.join(others), sizing_rule))
+                               "re-run with --force." % (' and '.join(others), sizing_rule) + reset)
         print(message)
         logging.warning(message)
 
@@ -1699,7 +1705,7 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
             message = mixed + ("Existing crops are re-cut only under --force, so the ones cut under the "
                                "other value keep it and any crop this run cuts uses this run's. To make the "
                                "store one rule it has to be re-cut under this run's constants: re-run "
-                               "with --force.")
+                               "with --force." + reset)
         print(message)
         logging.warning(message)
 
