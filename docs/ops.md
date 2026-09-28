@@ -77,7 +77,7 @@ full raster" half of #115's rationale is retired too.
 every 8192-class GPU — every Mali-G710-era Android, which is most of the non-Apple fleet — stops rendering
 stored panoramas natively, and the affected population jumps from ~2% of mobile to most of Android. **This
 repo is the only place that sees GSV's reported frame width at the moment it changes**
-(`downloaders/gsv.py::resolve_zoom_and_dims`), and it now says so when it does — see
+(`downloaders/gsv.py::resolve_frame`), and it now says so when it does — see
 [the width tripwire](#the-width-tripwire) below. So the switch stays one line away rather than in the history.
 
 #### The width tripwire
@@ -87,8 +87,8 @@ source hands it a panorama **wider than `VIEWER_MAX_PANO_WIDTH` (16384)** in `do
 never fire: 16384 is GSV's widest frame today and the fleet's normal, so 16384 itself is silent and 16385 is the
 first width that warns.
 
-* **Where it looks.** GSV: in `resolve_zoom_and_dims`, on the width `/adminapi/panos` reports, before any request
-  is spent, so a probe that then fails cannot swallow it (`refetch_panos.py` goes through the same seam, so a
+* **Where it looks.** GSV: in `resolve_frame`, on the width `/adminapi/panos` reports, before any request
+  is spent, so a photometa request or probe that then fails cannot swallow it (`refetch_panos.py` reaches it through `resolve_zoom_and_dims`, so a
   repair pass warns on a stored frame that wide too — but there the line lands in that pass's **`refetch.log`**
   and its stdout, not in `scrape.log`, and keeps the `IMAGEDOWNLOAD:` prefix in the middle of the pass's
   `REFETCH:` narrative, so grep a refetched store's `refetch.log*` as well). Mapillary and Panoramax: on the downloaded JPEG's own
@@ -565,7 +565,7 @@ deployed has 18 fields, and the analyzer reads them with the last one blank.
 | 5 | metadata total processed | count of image-eligible panos (stub) |
 | 6 | metadata phase duration | effectively `0` (stub) |
 | 7 | image successes | |
-| 8 | image fallback successes | downloaded, but at a fallback resolution — only zoom 3 was available for a frame whose reported dimensions need zoom 5, so the stitch was upscaled to reach them. Real imagery, materially less of it. **Not** simply "downloaded at zoom 3": an old pano whose own max zoom is 3 is at its native resolution and counts in field 7. Was a constant `0` before [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) because nothing ever returned the verdict, so runs before that show every fallback inside field 7 |
+| 8 | image fallback successes | downloaded, but at a fallback resolution — only a lower level was available (zoom 3, or since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) zoom 4) for a frame whose reported dimensions need a higher one, so the stitch was upscaled to reach them. Real imagery, materially less of it. **Not** simply "downloaded at zoom 3": an old pano whose own max zoom is 3 is at its native resolution and counts in field 7. Was a constant `0` before [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) because nothing ever returned the verdict, so runs before that show every fallback inside field 7 |
 | 9 | image failures | includes prior runs' permanent failures, seeded from `pano_id_log.csv`; a transient failure is not ledgered, so it is counted again if it fails again next run |
 | 10 | image skipped | includes panos already downloaded on previous runs, seeded likewise |
 | 11 | image total processed | sum of fields 7–10 |
@@ -642,26 +642,39 @@ Two shapes to read carefully:
   the ledger and made no requests. The row cannot distinguish that from running out of budget, which is why
   the analyzer names both candidates instead of asserting one.
 
+## A GSV pano refused for a frame disagreement
+
+Since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) the image phase refuses a GSV
+pano whose app-reported `width`/`height` is not a frame Google serves, rather than stitching the top-left
+corner of a larger one. Each refusal is one stdout `WARNING` and one `scrape.log` `ERROR`, both containing
+`frame disagreement`; it is counted in `log.csv` field 9, never ledgered, and retried every run. Field 9 is
+seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. The
+remedy is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what
+Google serves now. The stdout line reaches no one on a night that exits 0 (see
+[Hearing about a bad night](#hearing-about-a-bad-night)).
+
 ## When the depth phase stands itself down
 
-Several things stop depth without stopping the run, and they look identical from `log.csv` (all five depth
-columns are `0`), so read stdout or `scrape.log` rather than the row. Each one is also a
+Several things stop depth without stopping the run (the latch has two sources, the depth phase and the
+image phase), and they look identical from `log.csv` (all five depth columns are `0`), so read stdout or
+`scrape.log` rather than the row. Each one is also a
 [condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) that **fails the night** (#161): the
 city stays `ok`, but the queue exits 1 and the night's message carries one line per code.
 
 | what you see | code in the night's message | what happened | what to do |
 |---|---|---|---|
-| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | `depth-stood-down` | An earlier run on this host was blocked, and the **block latch** is still fresh. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. It alarms even on a night nothing was refused, because the latch outlives the window: a stand-down at 19:00 is a refusal the queue never saw (a manual backfill, say). |
+| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | `depth-stood-down` | An earlier run on this host was blocked, and the **block latch** is still fresh. If an `IMAGEDOWNLOAD: WARNING - Google refused a photometa request` line comes before it in the same output, *this* run was refused: that is the next-but-one row. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. It alarms even on a night nothing was refused, because the latch outlives the window: a stand-down at 19:00 is a refusal the queue never saw (a manual backfill, say). |
 | `WARNING - the depth phase stopped early because Google stopped answering` | `depth-refused` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
+| `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | `depth-stood-down` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. | As the row above: check for a rate limit before the next night. |
 | `WARNING - the depth phase stopped early after 25 consecutive failures (…)` | `depth-breaker` | 25 transient failures in a row. The breakdown in brackets says whether they were the store or the network. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. |
 | `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened. The phase sat the run out rather than re-request the whole corpus against a sick store. | Check the mount and the file's permissions. |
 | `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt` into `.venv` (see [Deploying](#deploying)). |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
 with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
-moves it. To clear one by hand, delete the file; a missing, unparseable or implausibly future-dated latch
-all mean "not blocked", because a latch nobody can read must never be able to stand the whole fleet's depth
-phase down indefinitely.
+moves it, for both phases. To clear one by hand, delete the file; a missing, unparseable or implausibly
+future-dated latch all mean "not blocked", because a latch nobody can read must never be able to stand the
+whole fleet's depth phase down indefinitely.
 
 Beside the **default** latch lives the pacer's **earned standing** (`sidewalk-depth-pace`,
 `--depth-pace-state PATH` moves it — the two paths are independent, so moving the latch alone leaves this
@@ -669,7 +682,9 @@ file in the temp directory): the request interval and clean streak the last run 
 the next run opens at instead of ramping down from `depth_start_interval` again. Deleting it costs one ramp
 (~1,400 requests); an unreadable, `NaN`, or day-old file is ignored the same way, and so is one nothing can
 parse at all. It never holds a value slower than the opening interval, so it cannot be used to slow the
-fleet down, only to keep the speed it has already earned. Only Google's own push-back forfeits it — a
+fleet down, only to keep the speed it has already earned. Only Google's own push-back or refusal forfeits it
+(since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) including a photometa
+refusal met by the image phase) — a
 local network blip or one malformed pano slows the running phase down and leaves the file alone, the same
 rule the latch follows when it declines to blame a full disk on Google — and a phase that made no
 requests writes nothing.
