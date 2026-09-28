@@ -1904,6 +1904,12 @@ class TestReadingTheRunConditions:
     def test_bad_json_is_no_conditions(self, tmp_path):
         assert scrape_queue.read_run_conditions(self.write(tmp_path, '{"conditions": [')) == ()
 
+    @pytest.mark.parametrize('payload', ['["conditions"]', '"conditions"', '7'])
+    def test_a_summary_that_is_not_an_object_is_no_conditions_and_does_not_raise(self, tmp_path, payload):
+        """No runner writes one, but `'conditions' in <list or str>` is True for these, and the lookup after
+        it would raise out of _run_city_with_summary."""
+        assert scrape_queue.read_run_conditions(self.write(tmp_path, payload)) == ()
+
     def test_a_well_formed_list_comes_back_in_order(self, tmp_path):
         path = self.write(tmp_path, {'image_stop': None, 'depth_stop': 'blocked', 'conditions': [
             {'code': 'depth-refused', 'detail': 'HTTP 429'}, {'code': 'pano-list-empty', 'detail': 'x'}]})
@@ -1916,7 +1922,7 @@ class TestReadingTheRunConditions:
         assert scrape_queue.read_run_conditions(path) == ()
 
     @pytest.mark.parametrize('conditions', ['depth-refused', {'code': 'depth-refused'}, [['depth-refused']],
-                                            [{'detail': 'no code'}], [{'code': 7}], None])
+                                            [{'detail': 'no code'}], [{'code': 7}], [{'code': ''}], None])
     def test_a_present_but_malformed_list_is_itself_a_condition(self, tmp_path, conditions):
         """A check that did not run has not passed: a summary saying something unreadable about conditions
         must not read as "none"."""
@@ -2087,6 +2093,25 @@ class TestTheSummaryReportsOneLinePerConditionKind:
         report = scrape_queue.conditions_report([conditioned('a', 'depth-refused')])
         assert [level for _, level in report] == [logging.ERROR]
 
+    def test_a_multi_line_detail_still_logs_as_one_error_line(self, tmp_path, caplog):
+        """_report maps levels by exact summary line, so a detail that split the line (from any runner, not
+        only this one's note_condition) would log both halves at INFO."""
+        results = [result('bravo-bb')._replace(
+            conditions=(scrape_queue.Condition('depth-breaker', 'line one\nline two'),))]
+
+        with caplog.at_level(logging.INFO):
+            scrape_queue._report(results, time.monotonic())
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any('first bravo-bb: line one line two' in m for m in errors), errors
+        assert not any(r.getMessage() == 'line two' for r in caplog.records)
+
+    def test_an_unknown_code_with_a_space_is_named_whole_on_the_totals_line(self):
+        results = [conditioned('a', 'two words')]
+        totals = [ln for ln in scrape_queue.summarise(results, 1.0).splitlines() if 'cities ok' in ln][0]
+
+        assert 'conditions: two words;' in totals
+
     def test_no_conditions_no_lines(self):
         assert scrape_queue.conditions_report([result('a'), result('b')]) == []
 
@@ -2116,6 +2141,8 @@ class TestTheSummaryReportsOneLinePerConditionKind:
 
         log = (tmp_path / 'store' / 'scrape_queue.log').read_text()
         assert re.search(r' ERROR depth-refused: .*first bravo-bb', log), log
+        # The per-city line too: an ok exit with a condition is still the night's failure.
+        assert re.search(r' ERROR bravo-bb: ok \(exit 0\).*; conditions: depth-refused', log), log
 
 
 # --- The store marker (#161) ----------------------------------------------------------------------------------
@@ -2316,6 +2343,16 @@ class TestTheStreetlevelProbeItself:
                                                                                                stdout=b''))
 
         assert REAL_PROBE('py') == (True, '')
+
+    def test_a_probe_that_times_out_is_a_failed_probe_not_a_raise(self, monkeypatch):
+        """"Never raises" covers a hung import too - a half-mounted venv on the store is the likely one."""
+        def run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get('timeout'))
+
+        monkeypatch.setattr(scrape_queue.subprocess, 'run', run)
+
+        ok, detail = REAL_PROBE('py', timeout=1)
+        assert not ok and 'timed out' in detail
 
 
 # --- The manifest is cross-checked against the fleet (#130) -------------------------------------------------

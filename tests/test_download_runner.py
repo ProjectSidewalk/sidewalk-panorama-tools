@@ -2421,6 +2421,13 @@ class TestNoteCondition:
         downloaders.common.note_condition(sink, 'depth-refused', 'HTTP 429')
         assert sink == {'conditions': [{'code': 'depth-refused', 'detail': 'HTTP 429'}]}
 
+    def test_a_detail_is_one_line(self):
+        """An exception's str can carry newlines (depth-breaker's last_error), and the queue's summary line
+        would split on them - dropping both halves out of `grep ERROR scrape_queue.log` (#174 review)."""
+        sink = {}
+        downloaders.common.note_condition(sink, 'depth-breaker', 'line one\n  line two\r\n\tthree')
+        assert sink['conditions'][0]['detail'] == 'line one line two three'
+
     def test_no_sink_is_a_no_op(self):
         """Callers that pass no stop_reasons (every direct test of a phase) must not need a dict."""
         downloaders.common.note_condition(None, 'depth-refused', 'x')

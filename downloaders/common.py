@@ -26,7 +26,9 @@ def note_condition(sink, code, detail):
 
     Every condition goes through here so the rules live in one place: no sink (a phase driven directly by a
     test, or by hand) is a no-op; a code is recorded once per run and the FIRST detail wins, because the
-    queue's line names the first occurrence; the detail is cut to CONDITION_DETAIL_MAX.
+    queue's line names the first occurrence; the detail is one line (whitespace runs, newlines included,
+    collapse to a space, because the queue's summary line would split on a newline and drop both halves out of
+    `grep ERROR scrape_queue.log`) cut to CONDITION_DETAIL_MAX.
 
     Example::
 
@@ -40,7 +42,7 @@ def note_condition(sink, code, detail):
     conditions = sink.setdefault('conditions', [])
     if any(c.get('code') == code for c in conditions):
         return
-    conditions.append({'code': code, 'detail': str(detail)[:CONDITION_DETAIL_MAX]})
+    conditions.append({'code': code, 'detail': ' '.join(str(detail).split())[:CONDITION_DETAIL_MAX]})
 
 
 class HostStateLocked(Exception):

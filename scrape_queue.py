@@ -1138,6 +1138,8 @@ def conditions_report(results):
     of first appearance - kept, so a runner newer than the queue can still be heard.
 
     ERROR, every one: these lines are why the night exits 1, and `grep ERROR scrape_queue.log` should agree.
+    So each is one line whatever the runner sent: _report maps levels by exact line, and a detail carrying a
+    newline would split its line into two that both log at INFO.
 
     Example::
 
@@ -1145,6 +1147,24 @@ def conditions_report(results):
         >>> conditions_report([r])[0][0]
         '[queue] depth-refused: Google refused the depth phase; latch written - 1 city, first bravo-bb: HTTP 429'
     """
+    by_code = _conditions_by_code(results)
+    lines = []
+    for code, cities in by_code.items():
+        cities = list(cities.items())
+        first_city, (first_pass, detail) = cities[0]
+        line = "[queue] %s: %s - %d %s, first %s%s: %s" % (
+            code, CONDITION_LABELS.get(code, 'a condition this queue does not know'), len(cities),
+            'city' if len(cities) == 1 else 'cities', first_city,
+            '' if first_pass == 1 else ' in pass %d' % first_pass, ' '.join(detail.split()))
+        if len(cities) > 1:
+            line += '; also %s' % ', '.join(city for city, _ in cities[1:])
+        lines.append((line, logging.ERROR))
+    return lines
+
+
+def _conditions_by_code(results):
+    """{code: {city_id: (first pass, detail)}} in report order - CONDITION_LABELS order, then codes this queue
+    does not know by first appearance. The one ordering conditions_report and the totals line both use."""
     by_code = OrderedDict()
     for r in results:
         for condition in r.conditions:
@@ -1153,18 +1173,7 @@ def conditions_report(results):
                 cities[r.city_id] = (r.pass_number, condition.detail)
     ordered = [code for code in CONDITION_LABELS if code in by_code]
     ordered += [code for code in by_code if code not in CONDITION_LABELS]
-    lines = []
-    for code in ordered:
-        cities = list(by_code[code].items())
-        first_city, (first_pass, detail) = cities[0]
-        line = "[queue] %s: %s - %d %s, first %s%s: %s" % (
-            code, CONDITION_LABELS.get(code, 'a condition this queue does not know'), len(cities),
-            'city' if len(cities) == 1 else 'cities', first_city,
-            '' if first_pass == 1 else ' in pass %d' % first_pass, detail)
-        if len(cities) > 1:
-            line += '; also %s' % ', '.join(city for city, _ in cities[1:])
-        lines.append((line, logging.ERROR))
-    return lines
+    return OrderedDict((code, by_code[code]) for code in ordered)
 
 
 # The order the non-ok lines are printed in. stdout is what cron mails, so the two or three real crashes
@@ -1231,7 +1240,7 @@ def summarise(results, elapsed_minutes, manifest_check=None):
                    % (n_missing, 'city' if n_missing == 1 else 'cities'))
     # The kinds, not the cities: the lines above name those, and "54/54 cities ok" must not read clean above
     # an exit 1 that the conditions earned (#161).
-    kinds = [line.split()[1].rstrip(':') for line, _ in condition_lines]
+    kinds = list(_conditions_by_code(results))
     conditions = '' if not kinds else ', conditions: %s' % ', '.join(kinds)
     n_unmounted = len(by_outcome.get('store_missing', []))
     unmounted = '' if not n_unmounted else ', %d not started (store not mounted)' % n_unmounted
