@@ -30,7 +30,7 @@ from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from downloaders.common import atomic_output_path, raise_decompression_bomb_ceiling  # noqa: F401
+from downloaders.common import atomic_output_path, black_fraction, raise_decompression_bomb_ceiling  # noqa: F401
 
 # raise_decompression_bomb_ceiling is imported, not defined here, and re-exported under this module's name so
 # `CropRunner.raise_decompression_bomb_ceiling()` keeps working for reports/scripts/annotation_tiles.py and
@@ -38,8 +38,10 @@ from downloaders.common import atomic_output_path, raise_decompression_bomb_ceil
 # for the Mapillary display copy and CropRunner stopped being the only entry point that opens a 134 MP file.
 
 # What the crop loop actually reads off every label row. Only the CSV intake enforces them up front (a
-# header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake keeps
-# whatever the payload had, and bulk_extract_crops counts a row missing any of them as one bad label.
+# header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake passes
+# every element of the array through as it came - json_to_list indexes nothing (#164) - and
+# bulk_extract_crops counts a row missing any of them, or an element that is not an object at all, as one
+# bad label.
 REQUIRED_LABEL_COLUMNS = ('pano_id', 'pano_x', 'pano_y', 'label_id')
 
 # The label's type arrives under one of two names, and a row needs exactly one of them (#123).
@@ -190,13 +192,34 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 # bulk_extract_crops' counts, beside 'total'. Every label lands in exactly one DISJOINT_OUTCOMES bucket, so
 # those sum to total on every path; a COUNT_ANNOTATIONS entry qualifies a label already in one of them and
 # is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a label
-# under --force that left an old crop in place because the run never reached its write: a dims_mismatch or
-# out_of_frame skip (#153 m2), a missing_pano, or the errors of a pano that cannot be opened (#153 final
-# F3). A new key goes in exactly one of the two, and tests/test_crop_runner.py asserts the dict holds
-# nothing else.
+# under --force that left an old crop in place because the run did not write it: a dims_mismatch or
+# out_of_frame skip (#153 m2), a missing_pano, the errors of a pano that cannot be opened (#153 final
+# F3) or decoded, or a black_content withhold (#164). A new key goes in exactly one of the two, and
+# tests/test_crop_runner.py asserts the dict holds nothing else. black_content is disjoint, not an
+# annotation: a withheld label is not a success, and like dims_mismatch it is something the run refused
+# to trust rather than an error it made.
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch', 'out_of_frame',
-                     'errors')
+                     'black_content', 'errors')
 COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
+
+# The content check (#164): a cut window more than this fraction exactly-black (luma 0) is not written and
+# is counted black_content. The #47 guarantee is about geometry - no crop contains synthetic black the
+# cropper made - and says nothing about black the STORED pano already holds: a stitch that ran past what
+# Google serves (#156's D4 shape, ~34% black along its right and bottom 19%) or a pre-#68 fallback. Those
+# pass the stitcher's own guard (gsv.STITCH_MAX_BLACK_FRACTION, also 0.5 but of the whole pano), so a
+# label inside the band was cut as a black crop and counted success.
+#
+# Why 0.5, measured on a 2048x1024 grey pano with its bottom 30% black, JPEG q95: a label at y=512 cuts
+# 0.000 black, 650 -> 0.241, 700 -> 0.452, 716 -> 0.499, 730 -> 0.540, 900 (window shifted) -> 0.900.
+# Inside a large black JPEG region luma is exactly 0, and ringing is confined to the rows next to the
+# edge, so a label inside a band whose window is NOT shifted gives at least half black rows. A SHIFTED
+# window gives the band's depth over the window's height instead, wherever the label sits: at the nadir
+# the window is a third of the pano tall, so a bottom band is caught only when it is deeper than H/6
+# (16.7%; the D4 band is 18.75%, 0.56 black), and a thinner one is written as success, up to half black
+# (tests pin both; the table is in docs/cropper.md). A window more black than imagery is not imagery. Exact zero over half a
+# window is also not a night scene or a black car: JPEG noise keeps those off 0. The strict `>` matches
+# the stitcher; a label within the ringing margin of a band edge (y=716 above) is written, knowingly.
+CROP_MAX_BLACK_FRACTION = 0.5
 
 # ---------------------------------------------------------------------------
 # Bounding crop.log under a systemic fault (#139). The crop loop logs one WARNING per failed label, which
@@ -208,9 +231,10 @@ COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
 # one is what actually bounds the file, since even a 100-byte line times 260,000 is 26 MB.
 #
 # Lines of one KIND (a malformed row, a failed write, an unopenable pano, a dims mismatch, a label out
-# of frame, an unrecorded provenance row) logged per run before the rest are suppressed. Per kind, not
-# shared, so a flood of one cannot silence the first lines of another, which may be the actual cause.
-# Six kinds x 100 lines x ~300 B stays under 1 MB, a tenth of one rotation segment. Suppression is of
+# of frame, a mostly black window, an unrecorded provenance row) logged per run before the rest are
+# suppressed. Per kind, not shared, so a flood of one cannot silence the first lines of another, which
+# may be the actual cause. Seven kinds x 100 lines x ~300 B is ~210 KB, a fiftieth of one rotation
+# segment. Suppression is of
 # LINES only: every label is still counted, which is what the summary, the #136 alarm and the exit
 # code read.
 LOG_WARNINGS_PER_KIND = 100
@@ -333,13 +357,45 @@ def fetch_label_ids_csv(metadata_csv_path):
     return labels
 
 
-def json_to_list(jsondata):
+def _label_id_key(raw):
+    """The dedupe key for a JSON row's label_id: the int the crop loop will file its crop under, or None.
+
+    The loop names a crop int(row['label_id']), so the key is that same int(): 1, "1", 1.0 and " 1" are one
+    label, as are "07" and 7. Deduping on the raw value let 1 and "1" both through, and under --force both
+    re-cut the same file (#164). None means "no usable id" - absent, null, blank, or something int() refuses
+    - and such rows are never deduped against each other: each is its own bad label, counted once by the
+    loop, and collapsing two would hide one.
+    """
+    if _absent(raw):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def json_to_list(jsondata, source=None):
     """
     Transforms json like object to a list of dict to be read in bulk_extract_crops() to crop panos with label metadata
     :param jsondata: json object containing label ids and their associated properties
+    :param source: the file path or URL it came from, named in the refusal below
     :return: A list of dicts containing the following metadata: label_id, pano_id, label_type, agree_count,
     disagree_count, unsure_count, pano_width, pano_height, pano_x, pano_y, canvas_width, canvas_height, canvas_x,
     canvas_y, zoom, heading, pitch, camera_heading, camera_pitch, camera_roll
+    :raises ValueError: the top level is not an array. A 200 carrying an error object would otherwise be
+        iterated as its keys; one error naming the source, like the CSV intake's header check, is the
+        honest answer.
+
+    Nothing here indexes a row (#164): every element is passed through, and the crop loop counts one that
+    is not an object, or lacks a field it needs, as one malformed row - the CSV intake's behaviour. Rows are
+    deduped on _label_id_key, the int the loop files under. Two ways this differs from the CSV intake, left
+    alone on purpose: that one dedupes on the raw cell ('7' and '07' stay distinct and both file as 7.jpg),
+    and it collapses repeated blank or unparseable label_id cells into one.
+
+    The dedupe keeps the FIRST row with a key, whether or not that row is usable, so a malformed row shadows
+    a good one sharing its int: [{"label_id": 7, "pano_x": "bad"}, {"label_id": "7", ...}] is one error and
+    no crop. Before #164 the raw keys 7 and "7" were distinct and the good row was cut; keep-first on a bad
+    first row was already the rule for identical raw keys, so this only widens it (#170 review).
 
     Measured against sidewalk-sea 2026-09-18 (#123): `label_type` is a name and replaced the older
     `label_type_id`; `unsure_count` was documented here as `notsure_count`; `camera_roll` is served and
@@ -347,13 +403,19 @@ def json_to_list(jsondata):
     a column by that name. Nor does it send `copyright` or `license`; the provenance manifest (#111)
     copies all three when a row carries them and writes them empty otherwise.
     """
+    if not isinstance(jsondata, list):
+        raise ValueError("%s: expected a JSON array of label rows, got %s: %s"
+                         % (source or 'label metadata', type(jsondata).__name__,
+                            _clip(repr(jsondata), LOG_ROW_REPR_MAX_CHARS)))
     unique_label_ids = set()
     label_info = []
 
     for value in jsondata:
-        label_id = value["label_id"]
-        if label_id not in unique_label_ids:
-            unique_label_ids.add(label_id)
+        key = _label_id_key(value.get('label_id') if isinstance(value, dict) else None)
+        if key is None:
+            label_info.append(value)
+        elif key not in unique_label_ids:
+            unique_label_ids.add(key)
             label_info.append(value)
         else:
             print("Duplicate label ID")
@@ -368,7 +430,7 @@ def fetch_cvMetadata_from_file(metadata_json_path):
     """
     with open(metadata_json_path) as json_file:
         json_meta = json.load(json_file)
-    return json_to_list(json_meta)
+    return json_to_list(json_meta, source=metadata_json_path)
 
 
 def fetch_cvMetadata_from_server(server_fqdn):
@@ -388,12 +450,17 @@ def fetch_cvMetadata_from_server(server_fqdn):
             response = session.get(url, timeout=(30, 600))
             response.raise_for_status()
             jsondata = response.json()
+        # Inside the try (#164): a 200 whose body is not an array - an error object, say - is a failed
+        # fetch like any other, not a traceback.
+        return json_to_list(jsondata, source=url)
     except requests.exceptions.RequestException as e:
         logging.error('Fetching cvMetadata from %s failed: %s', url, e)
         print("Cannot fetch metadata from webserver. Check log file.")
         sys.exit(1)
-
-    return json_to_list(jsondata)
+    except ValueError as e:
+        logging.error('cvMetadata from %s is not usable: %s', url, e)
+        print("The webserver's metadata is not a list of labels. Check log file.")
+        sys.exit(1)
 
 
 def _absent(value):
@@ -1216,12 +1283,32 @@ def _record_manifest_gap(destination_dir):
             json.dump(marker, f, indent=1, sort_keys=True)
 
 
+class CropWindowMostlyBlackError(Exception):
+    """The window about to be written is more than CROP_MAX_BLACK_FRACTION exactly-black (#164).
+
+    Raised by make_single_crop before anything is written; bulk_extract_crops counts it black_content.
+    `fraction` is the measured share, `box` the CropBox that was cut."""
+
+    def __init__(self, fraction, box):
+        super().__init__("%.1f%% of the cut window is black (limit %.0f%%)"
+                         % (100 * fraction, 100 * CROP_MAX_BLACK_FRACTION))
+        self.fraction = fraction
+        self.box = box
+
+
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     """
     Makes a crop around the object of interest and saves it atomically.
 
     Geometry per compute_crop_box: x wraps at the equirectangular seam, y clamps by shifting, so the
     crop is real imagery edge to edge (#47).
+
+    Geometry is not content (#164): a window can be edge to edge inside the pano and still be black,
+    because the STORED pano holds black where Google served nothing. So the window is judged as
+    extract_crop returns it - before the storage downscale and before the mark - and if more than
+    CROP_MAX_BLACK_FRACTION of it is exactly black, CropWindowMostlyBlackError is raised and nothing is
+    written. This runs only on a crop about to be written: bulk_extract_crops never reaches here for a
+    crop already on disk without --force, so crops cut before the check are never re-judged.
 
     :param pano: an open PIL.Image, or a path to one. bulk_extract_crops opens each pano once and passes
                  the image (a 13312x6656 pano is ~250 MB decoded and a 16384x8192 one 384 MB; re-opening
@@ -1232,6 +1319,7 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     :param draw_mark: if a dot should be drawn at the label position in the crop
     :return: the CropBox that was cut, so the caller can count a de-centred (shifted) crop without
              recomputing the geometry.
+    :raises CropWindowMostlyBlackError: the window is mostly black; nothing was written.
     """
     close_after = False
     if not hasattr(pano, 'crop'):
@@ -1242,7 +1330,11 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
 
         box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_width, pano_height),
                                pano_width, pano_height)
-        cropped = downscale_for_storage(extract_crop(pano, box.left, box.top, box.width, box.height))
+        window = extract_crop(pano, box.left, box.top, box.width, box.height)
+        fraction = black_fraction(window)
+        if fraction > CROP_MAX_BLACK_FRACTION:
+            raise CropWindowMostlyBlackError(fraction, box)
+        cropped = downscale_for_storage(window)
 
         if draw_mark:
             # Draw on the crop, never the source pano: the pano image is shared by every label on it, so a
@@ -1441,7 +1533,11 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
     pano, malformed row, or failed write is counted as an error and logged; both leave the remaining labels
-    running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). That includes the
+    running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). A pano whose header
+    opens but whose body cannot be decoded is decoded once, lazily, by the first label that reaches the
+    write; that label and every later one that reaches the write is an error, with one crop.log line for
+    the pano (#164). Labels a preflight or skipped_existing decides never need the body, so their buckets
+    do not depend on where they sit in the list. That includes the
     output side: a full store or a read-only mount is one counted error per label, not an exception out of
     this function with the counts lost. Crops on disk are the resume marker: existing ones are counted as
     skipped_existing and everything failed here is simply re-attempted on the next run.
@@ -1456,16 +1552,18 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     :return: counts dict. The disjoint outcomes reconcile, including on re-runs:
 
-                 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors
-                     == total
+                 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame
+                     + black_content + errors == total
 
-             Those six are DISJOINT_OUTCOMES. The COUNT_ANNOTATIONS are NOT among them:
+             Those seven are DISJOINT_OUTCOMES. black_content (#164) is a label whose cut window was more
+             than CROP_MAX_BLACK_FRACTION exactly-black: nothing is written and it is not an error, so
+             a re-run cuts it once the pano is repaired. The COUNT_ANNOTATIONS are NOT among them:
              shifted_vertically annotates a success whose window had to move to stay inside the pano, so
              the crop exists but the label is off-centre in it; recut annotates a success that replaced a
              crop already on disk (force=True only); stale_kept annotates a label, under force=True,
-             that the run skipped before its write - a dims_mismatch or out_of_frame skip, a missing_pano,
-             or an error because its pano could not be opened - and whose crop was already on disk, which
-             therefore stays as whatever rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
+             that the run did not write - a dims_mismatch or out_of_frame skip, a missing_pano, a
+             black_content withhold, or an error because its pano could not be opened or decoded - and whose crop
+             was already on disk, which therefore stays as whatever rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
              went stale before; tests/test_crop_runner.py asserts the sum, and the key set, from the dict
              rather than from this docstring.
 
@@ -1502,6 +1600,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
     manifest = ProvenanceManifest(destination_dir, city)
     unrecorded = 0
+    # The stale_kept labels the content check withheld, for the stale_kept summary's addendum (#164).
+    stale_black_content = 0
     close_failure = None
     try:
         for row in labels_to_crop:
@@ -1526,7 +1626,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     raise ValueError("non-finite label position (%r, %r)" % (row['pano_x'], row['pano_y']))
                 meta_dims = _metadata_dims(row)
                 provenance = tuple(_provenance_value(row.get(field)) for field in PROVENANCE_FIELDS)
-            except (KeyError, TypeError, ValueError) as e:
+            # OverflowError: json.load reads 1e999 and Infinity as float('inf'), and int() of that raises
+            # OverflowError rather than ValueError - uncaught, it ended the whole run (#170 review).
+            except (KeyError, TypeError, ValueError, OverflowError) as e:
                 counts['errors'] += 1
                 # Named fields first, then the reason and the row clipped: a whole row repr'd is ~300-500 B,
                 # and it was 260,000 of those that flooded crop.log (#139). The count above is not
@@ -1568,6 +1670,15 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             # stopped closing anything while requirements.txt still allows the older Pillow where it did.
             # close() is what actually releases the decoded buffer, which is the whole cost decode-once
             # accepts (~250 MB for a 13312x6656 pano, 384 MB for a 16384x8192 one).
+            #
+            # Decoding stays lazy (#164): the preflights and skipped_existing read only the header, so a
+            # finished store never decodes a pano. The first label that reaches the write decodes it; if
+            # that fails - a truncated body behind a good header - the failure is remembered and the pano
+            # is never decoded again. Pillow keeps im.tile after a failed load, so every crop() used to
+            # re-decode the whole file and log a crop_failed line per label.
+            decoded = False
+            decode_error = None
+            undecodable = 0
             try:
                 for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                     processed += 1
@@ -1618,6 +1729,21 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     if existed and not force:
                         counts['skipped_existing'] += 1
                         continue
+                    if not decoded and decode_error is None:
+                        try:
+                            pano.load()
+                            decoded = True
+                        except Exception as e:
+                            decode_error = e
+                    if decode_error is not None:
+                        # One counted error per label, like a pano that cannot be opened, but one crop.log
+                        # line for the pano (after this loop), not one per label - so a truncated pano
+                        # with many labels cannot spend the crop_failed budget real write failures need.
+                        counts['errors'] += 1
+                        undecodable += 1
+                        if force and existed:
+                            counts['stale_kept'] += 1
+                        continue
                     try:
                         # Once per label type, not per label: exist_ok still costs a stat, and over sshfs
                         # that is a network round trip for each of a city's ~400k labels. Inside the try
@@ -1628,6 +1754,19 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                             made_dirs.add(destination_folder)
                         box = make_single_crop(pano, pano_x, pano_y, crop_destination,
                                                draw_mark=mark_label)
+                    except CropWindowMostlyBlackError as e:
+                        # Not an error (#164): the pano on disk holds black where imagery should be, and
+                        # nothing was written, so a re-run cuts this label once the pano is repaired.
+                        # Under --force an old crop stays exactly as it was, like a preflight skip.
+                        counts['black_content'] += 1
+                        if force and existed:
+                            counts['stale_kept'] += 1
+                            stale_black_content += 1
+                        budget.warning('black_content', "Label %d on pano %s: %.0f%% of the cut window is "
+                                       "black (limit %.0f%%); not written - the pano on disk holds black "
+                                       "where imagery should be", label_id, pano_id, 100 * e.fraction,
+                                       100 * CROP_MAX_BLACK_FRACTION)
+                        continue
                     except Exception as e:
                         counts['errors'] += 1
                         budget.warning('crop_failed', "Failed to crop label %d on pano %s: %s",
@@ -1658,6 +1797,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                                      label_id, pano_id, box.top,
                                      abs(int(pano_y - box.top - box.height / 2)))
                     logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
+                if undecodable:
+                    # The cannot_open kind, since it is the same fault one step later: the header opened,
+                    # the body did not. "decode", not "open", in the text, so the two stay tellable apart.
+                    budget.warning('cannot_open', "Skipped %d labels on pano %s: cannot decode %s (%s); "
+                                   "counted as errors without decoding it again per label",
+                                   undecodable, pano_id, pano_img_path, decode_error)
             finally:
                 pano.close()
     finally:
@@ -1694,9 +1839,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     print("Crop sizing rule %s (recorded in %s)." % (CROP_RULE_VERSION, CROP_RULE_MARKER))
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
           "%d skipped on a metadata/image dimension mismatch, %d skipped for a label position outside "
-          "the image, %d errors, of %d labels total."
+          "the image, %d withheld for a mostly black window, %d errors, of %d labels total."
           % (counts['success'], counts['skipped_existing'], counts['missing_pano'],
-             counts['dims_mismatch'], counts['out_of_frame'], counts['errors'], counts['total']))
+             counts['dims_mismatch'], counts['out_of_frame'], counts['black_content'], counts['errors'],
+             counts['total']))
     if counts['shifted_vertically']:
         print("%d of those crops were shifted to stay inside the pano, so their label is not at the "
               "crop's centre." % counts['shifted_vertically'])
@@ -1713,6 +1859,22 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                    "crop.log's dims_mismatch, out_of_frame and cannot_open lines (up to %d of each) and its "
                    "missing-pano lines include them, without marking which kept an old crop."
                    % (counts['stale_kept'], CROP_RULE_MARKER, CROP_RULE_VERSION, LOG_WARNINGS_PER_KIND))
+        if stale_black_content:
+            # Appended, never rewording the sentence above: the content check reaches the write and then
+            # declines it, so "skipped by a preflight" does not describe these (#164).
+            message += (" %d of them were withheld by the content check (black_content) rather than skipped "
+                        "by a preflight; crop.log's black_content lines (up to %d) include them."
+                        % (stale_black_content, LOG_WARNINGS_PER_KIND))
+        logging.warning('%s', message)
+        print(message)
+    if counts['black_content']:
+        # Both channels (#164): black_content is not an error, so the exit code stays 0, and a run that
+        # withheld every label would otherwise complete silently - the #101 shape.
+        message = ("%d labels were withheld because more than %.0f%% of their cut window was black "
+                   "(black_content): the pano on disk holds black where imagery should be (a stitch that ran "
+                   "past what Google serves - #156 - or a pre-#68 fallback). Nothing was written for them, so "
+                   "a re-run cuts them once the pano is re-downloaded; crop.log names up to %d of them."
+                   % (counts['black_content'], 100 * CROP_MAX_BLACK_FRACTION, LOG_WARNINGS_PER_KIND))
         logging.warning('%s', message)
         print(message)
 
