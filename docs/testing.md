@@ -31,7 +31,10 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
   *process's* CWD, and the runner tests spawn subprocesses with `cwd=tmp_path`. That variable, plus
   `COVERAGE_PROCESS_START` and `COVERAGE_FILE`, is set by `tests/conftest.py`'s `pytest_configure`, and only
   when the parent is itself being measured. Break any of the three and `main()`, the argparse `type=`
-  validators and the budget carve-out all read as dead code while nothing fails.
+  validators and the budget carve-out all read as dead code while nothing fails. Every `omit` pattern is
+  anchored to the same root (`${SIDEWALK_COVERAGE_ROOT-.}/tests/*`, ...) for the same reason, and
+  `test_coverage_config.py` asserts it: a bare `tests/*` means `<tmp_path>/tests/*` in such a child, and one
+  that loaded `tests/conftest.py` from there once took CI's figure from 99.46% to 98.07% with nothing failing.
 
 ## What the suite covers
 
@@ -49,6 +52,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | [`--force`](cropper.md#re-cutting-a-store-with---force) (#83): a re-cut byte-identical to a fresh run's crop, `recut` annotating a success and staying out of the disjoint sum (checked against CropRunner's own `DISJOINT_OUTCOMES`), a failed re-cut leaving the old crop whole, `stale_kept` for an old crop a preflight skip, a missing pano or an unreadable pano leaves behind (and only under `--force`, and only when the crop is on disk), and the rule marker's warning saying a forced run is re-cutting rather than telling it to re-run with `--force` | `test_crop_runner.py` (`TestForceRecut`, `TestTheRuleMarker`) |
 | The [production-crop-store guard](cropper.md#usage) (#83): every level of the production layout refused with nothing written, each signal alone, the numeric shards never listed, the scan's depth, an unreadable directory refused with exit 3 on both channels rather than crashed on, and a genuine formula store passing | `test_crop_runner.py` (`TestTheProductionCropStoreGuard`) |
 | What the crop loop records rather than cuts: the bounded, per-kind-capped `crop.log` (#139) with its counts untouched at any cap; the [provenance manifest](cropper.md#the-provenance-manifest-crop_provenancecsv) (#111) on all three intakes, a row per landed crop and none for anything else, a row whole or not at all under a fault injected *below* the write buffer (failed and torn appends, a failed close, a torn row or header cut back at open), and a failing manifest never taking the run summary down; and `crop_rule.json`'s `provenance_manifest_no_known_gap`, turned false for good by a known gap | `test_crop_log_and_provenance.py` |
+| The cropper's [content check](cropper.md#the-content-check-black_content) (#164): a label inside a black band withheld as `black_content` with nothing written (no crop, no `.part`, no provenance row) while the other crops stay byte-identical, `main()` exiting 0 and saying so on both channels, the strict `>` at the shipped 0.5, exact zero rather than a tolerance, the raw cut window measured (not the downscale, the mark or the pano), crops on disk never re-judged, `--force` keeping the old crop as `stale_kept`, its own warning budget with the counts untouched at any cap, the D4 shape's blind spot outside its bands pinned as a known limit, and one `black_fraction` primitive shared with the stitcher; a truncated pano decoded once rather than once per label, with one `cannot decode` line per pano under the `cannot_open` kind so a real write failure still shows, a resumed pano never decoded, buckets independent of label order, and `stale_kept` on that route under `--force`; and the JSON intake counting a row without `label_id`, a null, a string, a number or a list as one bad label each, refusing a non-array top level (from a file or from the server) with one error naming its source, and deduplicating on the int the loop files under while never collapsing rows with no usable id | `test_crop_content.py` |
 | The CSV/JSON file intakes as one contract, measured against `pd.read_csv` before pandas was dropped | `test_csv_intake.py` |
 | [Store mode](downloader.md#pulling-from-the-project-sidewalk-pano-store) (`--from-store`): the batch text and its `-`/unprefixed/`./` semantics, the verifiers (a half transfer, trailing bytes, an embedded thumbnail's EOI), redaction layer by layer, and the ledger and `log.csv` effects driven through `main()`. Run against a Python stand-in for `sftp -b -` that models batch-mode abort semantics over a local directory tree, plus `TestAgainstRealOpenSSH`, which drives the real client as `sftp -D <sftp-server>` (no network) and skips where the server binary is not installed | `test_store_sftp.py`, `test_download_runner.py` (`TestStoreMode`, `TestStoreModeCli`) |
 | The nightly queue: manifest parsing, ordering and rotation, both budgets, the lock, exit codes, the [extra passes](downloader.md#extra-passes) and the run-summary channel they read (the runner's side of it is in `test_download_runner.py` and `test_depth_pacing.py`) | `test_scrape_queue.py` |
@@ -67,13 +71,40 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | That the docs' internal links and anchors resolve, and that cited `docs/` paths exist | `test_docs.py` |
 | That the README's hero figure still builds against the current cropper, and isn't stale | `test_make_banner.py` |
 
-## Three things that are deliberately unusual
+## Four things that are deliberately unusual
 
 **The suite is network-free**, and `streetlevel` is stubbed. One module is the exception:
 `test_streetlevel_api.py` imports the *real* `streetlevel` to pin the handful of API details
 `downloaders/gsv.py` depends on — the mocked suite can't catch drift there, because the stub accepts any
 arguments. It skips itself when `streetlevel` isn't installed (its `pyfrpc` dependency has no wheel on Windows
-or macOS and needs a C compiler there).
+or macOS and needs a C compiler there) — **except when `SIDEWALK_REQUIRE_STREETLEVEL` is set**, which CI does:
+there the import is hard, so a transitive dependency that is missing fails the run with its real message
+instead of skipping all ten contract tests behind a green check
+([#165](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/165)). Any value but empty or `0`
+turns it on. CI also passes `--continue-on-collection-errors`, because that failure is a collection error and
+pytest's default on one is to run nothing else; the run still exits nonzero, with every other result kept.
+
+**The suite is also isolated from the machine it runs on, and held to the next pytest**, in three ways
+`tests/conftest.py` sets up and `tests/test_suite_isolation.py` pins (#165):
+
+- A session-scoped check fails the run if it changed the repo — `git status`, plus the gitignored
+  `reports/scripts/.cache/` stamped file by file, since git cannot see it and the fetcher never replaces a file
+  already there. It exists because one test wrote a fake one-label `richmond.csv` into the real Mapillary study
+  cache on every run. The failure is reported at the teardown of whichever test ran last; the message names the
+  files. Editing the checkout while the suite runs trips it too, including during the child pytests that load
+  the real `conftest.py`, where the edit fails the child and reads as that parent test failing. It reports and
+  does not undo, so a write is reported **once**: the next run takes the tree as it finds it for its baseline
+  and passes, and the named paths have to be removed by hand.
+- Every spawned child gets a per-session temp directory (`TMPDIR`/`TEMP`/`TMP`), so the subprocess runner
+  tests never take the host's real depth pacing lock, read its real block latch, arm its real width-alarm
+  latch (#121, which fails a host's first sighting and only warns after) or take `scrape_queue`'s lock —
+  monkeypatching does not reach a child. The pytest process itself keeps the host temp dir, and the session
+  dir is removed at exit.
+- `PytestRemovedIn10Warning` is an error, added to `filterwarnings` by `conftest.py` when the running pytest has
+  the class, so a shape pytest 10 removes fails the PR that adds it rather than every PR on the day pytest 10
+  lands. There is deliberately no `pytest<10` bound, and the price runs the other way: CI installs the latest
+  pytest, so a new 9.x that deprecates a shape already in the suite fails every open PR the day it ships. That
+  is the intended early warning, arriving with its reason in the error rather than as a summary line.
 
 **Live re-checks against external services sit behind an opt-in env var**, so CI stays offline while the
 capture scripts that produced `tests/fixtures/` remain runnable on demand.

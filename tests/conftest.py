@@ -8,9 +8,11 @@ streetlevel's heavy dependency tree.
 import base64
 import logging
 import os
+import shutil
 import signal
 import struct
 import sys
+import tempfile
 import types
 from types import SimpleNamespace
 
@@ -24,6 +26,101 @@ if REPO_ROOT not in sys.path:
 # The scraper only ever runs on Linux in production, but the suite should stay usable on a Windows dev box, so
 # assertions about POSIX file modes are skipped rather than failed there.
 posix_only = pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes are unavailable on Windows')
+
+# The desk studies' gitignored download cache. Gitignored is exactly what makes a write into it dangerous:
+# `git status` cannot see it, the fetcher skips any file already there (fetch_rawlabels.py), and every study
+# globs `*.csv` over it - so one fake file written by a test becomes a sticky, invisible change to the corpus
+# behind committed numbers (#165). It is watched by content stamp, not through git.
+STUDY_CACHE = os.path.join(REPO_ROOT, 'reports', 'scripts', '.cache')
+
+
+def snapshot_tree_state(repo_root=REPO_ROOT):
+    """Record what a test run could leave behind in the repo: the study cache's files and `git status`.
+
+    Returns `(cache, porcelain)`. `cache` maps each file under `<repo_root>/reports/scripts/.cache` to
+    `(size, mtime_ns)`; `porcelain` is `git status --porcelain --untracked-files=all` as text, or None where
+    git is unavailable or `repo_root` is not a checkout (a tarball, a test's tmp_path). Porcelain reports a
+    path's state rather than its content, so a test that rewrites a file already dirty before the run goes
+    unseen; the cache half, the one that motivated this, is stamped per file and does not have that gap.
+    """
+    import subprocess
+
+    cache = {}
+    for dirpath, _, filenames in os.walk(os.path.join(repo_root, 'reports', 'scripts', '.cache')):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            cache[os.path.relpath(path, repo_root)] = (st.st_size, st.st_mtime_ns)
+    try:
+        status = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], cwd=repo_root,
+                                capture_output=True, text=True, timeout=60)
+        porcelain = status.stdout if status.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        porcelain = None
+    return cache, porcelain
+
+
+def tree_changes(before, after):
+    """Describe every difference between two snapshot_tree_state() results, as a list of lines.
+
+    Empty means the run left the tree as it found it.
+    """
+    changes = []
+    cache_before, porcelain_before = before
+    cache_after, porcelain_after = after
+    for path in sorted(set(cache_before) | set(cache_after)):
+        if path not in cache_before:
+            changes.append(f'created: {path}')
+        elif path not in cache_after:
+            changes.append(f'deleted: {path}')
+        elif cache_before[path] != cache_after[path]:
+            changes.append(f'modified: {path}')
+    if porcelain_before is not None and porcelain_after is not None:
+        lines_before = set(porcelain_before.splitlines())
+        for line in sorted(set(porcelain_after.splitlines()) - lines_before):
+            changes.append(f'git status gained: {line}')
+        for line in sorted(lines_before - set(porcelain_after.splitlines())):
+            changes.append(f'git status lost: {line}')
+    return changes
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _the_suite_leaves_the_repo_as_it_found_it():
+    """Fail the run if any test created, modified or deleted a file in the repo (#165).
+
+    A session-scoped teardown, so a violation is reported as an error at the teardown of whichever test ran
+    last - read the message, not that test's name, for the culprit's trail. Found by audit rather than by a
+    failure: tests/test_fetch_rawlabels.py wrote an 11-byte richmond.csv into the real Mapillary study cache
+    on every run, and nothing in the suite could see it.
+
+    Editing the checkout while the suite runs trips it too, and that includes the few seconds of each child
+    pytest loaded with `-p conftest` (test_suite_isolation.py): the child runs this same guard against the
+    real checkout, so an edit then fails the child and reads as that parent test failing.
+    """
+    yield from guard_the_tree(snapshot_tree_state)
+
+
+def guard_the_tree(snapshot):
+    """The session fixture's body, over an injectable snapshot so it can be driven against synthetic state.
+
+    The comparison runs unconditionally - in particular on a tree that was already dirty at session start,
+    which is a dev box's normal state and never CI's, so a guard that stood down there would pass CI.
+
+    It reports and does not undo: the next session snapshots whatever this one left as its baseline, so a
+    write is reported ONCE. The message says so, because a fake the fetcher then skips is the #165 shape.
+    """
+    before = snapshot()
+    yield
+    changes = tree_changes(before, snapshot())
+    assert not changes, (
+        'the test run changed the repo it was run from; a test is writing outside its tmp_path:\n  '
+        + '\n  '.join(changes)
+        + '\nThis is reported once: the next run takes the tree as it is now for its baseline and will pass. '
+        'Restore or delete the paths above by hand - a file left in reports/scripts/.cache/ is skipped by '
+        'fetch_rawlabels.py and read by every study.')
 
 
 @pytest.fixture(autouse=True)
@@ -116,8 +213,50 @@ def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(common, 'default_width_alarm_latch_path', lambda: str(width_latch))
 
 
+# Set by pytest_configure: the temp directory every child process of this session resolves as its own.
+CHILD_TEMP_DIR = None
+_TEMP_VARS = ('TMPDIR', 'TEMP', 'TMP')
+_prior_temp_env = {}
+
+
+def _give_children_a_session_temp_dir():
+    """Point spawned children's temp directory at a fresh per-session one (#165).
+
+    gsv's depth block latch and pacing state, common's width-alarm latch (#121) and scrape_queue's lock all
+    default to tempfile.gettempdir(), deliberately - each is a fact about the host. _isolate_depth_host_state
+    redirects them in THIS process, but monkeypatching does not cross a process boundary, so the runner tests that
+    spawn DownloadRunner.py were taking the host's real pacing lock and reading its real latch. The children
+    inherit os.environ (every spawn helper passes `dict(os.environ, ...)`), and tempfile reads TMPDIR, TEMP, TMP
+    in that order.
+
+    gettempdir() is called first on purpose: it caches the host's directory in this process before the
+    variables change, so pytest's own tmp_path stays where it always was - and survives the rmtree of the
+    session dir at unconfigure.
+    """
+    global CHILD_TEMP_DIR
+    tempfile.gettempdir()
+    CHILD_TEMP_DIR = tempfile.mkdtemp(prefix='sidewalk-tests-children-')
+    for name in _TEMP_VARS:
+        _prior_temp_env[name] = os.environ.get(name)
+        os.environ[name] = CHILD_TEMP_DIR
+
+
+def pytest_unconfigure(config):
+    """Undo _give_children_a_session_temp_dir: restore the variables and remove what the children left."""
+    global CHILD_TEMP_DIR
+    for name, value in _prior_temp_env.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    _prior_temp_env.clear()
+    if CHILD_TEMP_DIR:
+        shutil.rmtree(CHILD_TEMP_DIR, ignore_errors=True)
+        CHILD_TEMP_DIR = None
+
+
 def pytest_configure(config):
-    """Extend coverage into the subprocesses several test modules spawn (#57).
+    """Give children a session temp dir (above), then extend coverage into them (#57).
 
     The runners are driven as real subprocesses - `main()`, the argparse `type=` validators, the budget
     carve-out prints and both `__main__` guards only ever execute in a child - so without this the coverage
@@ -132,6 +271,16 @@ def pytest_configure(config):
     `parallel = True` in .coveragerc is the other half: without it each child would overwrite the parent's
     data file instead of adding to it.
     """
+    _give_children_a_session_temp_dir()
+    # The next pytest's removals as errors, so a class-scoped instance-method fixture (fcadac1) or any other
+    # removed-in-10 shape fails the PR that adds it rather than every PR on the day pytest 10 lands (#165, D3: no
+    # upper bound). The price of D3 is the other direction: CI installs the latest pytest, so a new 9.x that
+    # deprecates a shape already in the suite fails every open PR the day it ships. That is the intended early
+    # warning - it arrives with the reason in the error, instead of as a summary line. Guarded, not an ini line or
+    # a CI `-W`: under the pytest>=7 floor the class may not exist yet, and after 10 it may not exist any more,
+    # and naming an unknown class is a usage error.
+    if hasattr(pytest, 'PytestRemovedIn10Warning'):
+        config.addinivalue_line('filterwarnings', 'error::pytest.PytestRemovedIn10Warning')
     if os.environ.get('COVERAGE_PROCESS_START'):
         return
     try:

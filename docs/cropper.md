@@ -17,7 +17,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | Flag | What it does |
 |---|---|
 | `-d <fqdn>` | Fetch label metadata from a Project Sidewalk server's `/adminapi/labels/cvMetadata`. Mutually exclusive with `-f`; one is required. |
-| `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. |
+| `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. A `.json` file must hold an **array** of label rows; anything else stops the run before any crop with a `ValueError` traceback naming the file (exit 1, on stderr, not in `crop.log` — the same as a file that is not valid JSON). Inside the array, a row that is not an object or lacks a field the crop loop needs is one counted error, never the end of the run, and rows are deduplicated on the integer their crop is filed under (`1`, `"1"` and `1.0` are one label). |
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
 | `-o <dir>` | **Required.** Where crops are written. `crop.log`, `crop_rule.json` and `crop_provenance.csv` go here too — see [What a crop store holds](#what-a-crop-store-holds). |
 | `--city <city_id>` | **Required.** The city the labels belong to, spelled as in `log_analyzer/cities.csv` (`seattle-wa`, `cdmx`). Recorded in `crop_rule.json` and on every provenance row; a store recorded as another city's is refused — see [One store, one city](#one-store-one-city). |
@@ -145,7 +145,9 @@ The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top
   of crops cross the seam; before this was fixed, every one of them carried a black bar
   ([#47](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/47)).
 * **y clamps by shifting.** A window that would run past the top or bottom is moved inside the image instead
-  of being padded. No crop ever contains synthetic black.
+  of being padded. No crop ever contains synthetic black — black the cropper made. That is geometry; black
+  the *stored pano* already holds is a question about content, and
+  [the content check](#the-content-check-black_content) answers it.
 
 A shifted crop still contains its label, but not at the center. Those are counted separately in the run
 summary (`shifted_vertically`) and logged with their offset, so a consumer that assumes centering can see how
@@ -216,17 +218,100 @@ recover it: the poles are not adjacent, so clamping produces clean imagery of a 
 so the seam wrap reads any finite x correctly, and production rows storing `pano_x == pano_width` exactly do
 exist and crop fine.
 
+## The content check (`black_content`)
+
+The two preflights and the geometry above are all about *where* a window is. None of them looks at what is
+in it, and a stored pano can hold black where imagery should be: a stitch that ran past what Google serves
+([#156](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/156)'s D4 shape — a frame reported
+larger than the pano, ~34% black along its right and bottom 19%), or an old pre-#68 fallback. The stitcher's
+own guard rejects only a pano more than *half* black, so those are on disk. Before
+[#164](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/164), a label inside such a band —
+and the bottom band is where ground features sit — was cut as a black crop, counted `success`, and landed in
+a training directory with a clean summary.
+
+**What is measured.** The window exactly as it is cut from the pano, before the storage downscale and before
+`--mark-label`'s dot: the fraction of its pixels whose luma is exactly 0
+(`downloaders.common.black_fraction`, the stitcher's own primitive). If that is **more than**
+`CROP_MAX_BLACK_FRACTION` (0.5), nothing is written — no crop, no `.part`, no provenance row — and the label
+is counted `black_content`.
+
+**Why 0.5.** Measured on a 2048×1024 grey pano whose bottom 30% is black, JPEG q95, with the real window
+geometry:
+
+| Label y | Black share of the window |
+|---|---|
+| 512 (horizon) | 0.000 |
+| 650 | 0.241 |
+| 700 | 0.452 |
+| 716 | 0.499 |
+| 730 | 0.540 |
+| 900 (window shifted up) | 0.900 |
+
+Inside a large black JPEG region luma is exactly 0, and the codec's ringing is confined to the rows next to
+the edge, so a label inside a band whose window is *not* shifted gets at least half black rows (the rows
+from the label down to the window's bottom edge). A window more black than imagery is not imagery. The other
+direction holds too: exact zero over half a window is not a night scene or a black car, because JPEG noise
+keeps those off 0 (a band of `(1, 1, 1)` is written). Two consequences are accepted knowingly: a label within
+the ringing margin of a band's edge (y=716 above) is written, and so is a partly black crop under half
+(y=650, 24% black).
+
+**A bottom band is caught only when it is deeper than a sixth of the pano.** Near the nadir the window is
+clamped at `CROP_MAX_FOV_DEG` (90° wide, so at 3:2 it spans 60° of elevation, a third of the pano's height)
+and shifted up to end at the bottom row, so every label in the lower sixth gets the *same* window, and its
+black share is the band's depth over that window's height — wherever in the band the label sits. The check therefore withholds labels in a
+bottom band only when the band is deeper than half the nadir window: **H/6, 16.7% of the pano's height**
+(a few rows more on a JPEG, where the edge's ringing rows are not exactly 0). Measured on a 2048×1024 pano,
+JPEG q75, labels just inside the band, mid-band and on the bottom row, all three giving the same share:
+
+| Bottom band depth | Black share of each window | Verdict |
+|---|---|---|
+| 10% | 0.286 | written, `success` |
+| 15% | 0.441 | written, `success` |
+| 17% | 0.485 | written, `success` (ringing) |
+| 18% | 0.535 | withheld |
+| 18.75% (#156's D4 shape) | 0.562 | withheld |
+
+So the D4 bottom band clears the limit by about six points, while a thinner band — a pre-#68 fallback or any
+other reported/served ratio under ~1/6 — is written as `success` with up to half of each crop black. Two tests
+pin this against the geometry, in memory at the exact row and on a stored JPEG either side of a sixth. A
+right-hand band has the analogous edge case at the seam: the window wraps to imagery from the left edge, so a
+label on the last column of a band gets about half black (0.510 measured at 19%, withheld by a hair). A
+consumer who wants those crops out too filters below 0.5 (see
+[Before you train](#before-you-train-on-these-crops)); judging the rows at and below the label, rather than
+the whole window, is a possible stronger check, not made here.
+
+**Not an error.** `black_content` is like `dims_mismatch`: the run refused to trust the imagery rather than
+getting anything wrong, so it does not move the exit code or the `SYSTEMIC FAILURE` alarm. It *is* said: one
+`crop.log` line per label under its own capped kind, and — when the count is nonzero — one summary line on
+stdout **and** in `crop.log`, because a run that withheld every label would otherwise exit 0 in silence.
+Since nothing was written, a re-run cuts the label once the pano is repaired (re-downloaded, or replaced by
+`refetch_panos.py`).
+
+**It never judges a crop already on disk.** The check runs only on a crop about to be written, after the
+"does a crop exist" check, so a store cut before this check keeps whatever it holds (see
+[Before you train](#before-you-train-on-these-crops)). Under `--force`, a window that would now be withheld
+is not written, so the crop already there is kept byte for byte, and counted `stale_kept` as well as
+`black_content`.
+
+**Known limit: the D4 shape outside its bands.** A label *outside* the black bands of a D4 stitch gets clean
+imagery — at the wrong scale and position, because the real pano was stretched to the wrong frame. It is 0%
+black, its dimensions agree with the metadata, and no crop-level check can see it; a test pins that as a
+known limit. A pano-level check belongs on the downloader side (`refetch_panos.py`'s `too_black` gate already
+knows this shape for its own swaps), not here: judging the whole pano would mean an eager decode plus a
+full-frame luma copy (~134 MB at 16384×8192) per pano, and a threshold calibrated against real zenith and
+nadir caps.
+
 ## Outcomes, exit code, and re-runs
 
 Nothing in the crop loop is fatal. Every label lands in exactly one bucket and the counts reconcile on every
 path, including re-runs:
 
 ```
-success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors == total
+success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + black_content + errors == total
 ```
 
-(`shifted_vertically` and `recut` annotate a success, and `stale_kept` annotates a label `--force` never
-reached the write for — see below — so they are deliberately not in that sum.)
+(`shifted_vertically` and `recut` annotate a success, and `stale_kept` annotates a label `--force` did not
+write — see below — so they are deliberately not in that sum.)
 
 The run writes a rotating `crop.log` into the crop directory, prints a per-outcome summary, and **exits 1 if
 any label errored** — a corrupt pano, a malformed metadata row, a failed write — so a cron wrapper can alert.
@@ -235,7 +320,7 @@ Errors are retried on the next run. The exit statuses, all of them:
 | Status | Meaning |
 |---|---|
 | `0` | Every label landed in a non-error bucket (a crop, or a skip the run chose). |
-| `1` | At least one label errored; re-running retries them. Also: a `-d` fetch of cvMetadata that fails (`Cannot fetch metadata from webserver`, the reason in `crop.log`); an `-f` file whose extension is neither `.csv` nor `.json` (the message on stderr); a label-type shard of `-o` (`<crop-dir>/<digits>/`) that cannot be listed, which stops the run before any crop with the shard named on stdout and in `crop.log` (not `3`: nothing judged `-o` to be the production store — the provenance record needs to know whether the store already holds crops, and could not find out); and what an uncaught exception exits with — a manifest that cannot be opened stops the run before any crop, with a traceback. |
+| `1` | At least one label errored; re-running retries them. Also: a `-d` fetch of cvMetadata that fails (`Cannot fetch metadata from webserver`, the reason in `crop.log`), or answers with something other than a JSON array of labels — an error object, say (`The webserver's metadata is not a list of labels`, the URL and what came back in `crop.log`); an `-f` file whose extension is neither `.csv` nor `.json` (the message on stderr), or a `.json` one that does not hold an array (a traceback naming the file); a label-type shard of `-o` (`<crop-dir>/<digits>/`) that cannot be listed, which stops the run before any crop with the shard named on stdout and in `crop.log` (not `3`: nothing judged `-o` to be the production store — the provenance record needs to know whether the store already holds crops, and could not find out); and what an uncaught exception exits with — a manifest that cannot be opened stops the run before any crop, with a traceback. |
 | `2` | argparse's usage error: a missing `-s`/`-o`/`--city`, a `--city` that is not a city_id, both or neither of `-d`/`-f`. |
 | `3` | The destination was refused ([under Usage](#usage)): `-o` looks like the production canvas-capture store, or holds a directory the guard cannot list, or is [another city's store](#one-store-one-city), or has a `crop_rule.json` that cannot say whose it is. Nothing was written and no label was looked at, so re-running changes nothing until `-o` does. |
 
@@ -243,9 +328,21 @@ Errors are retried on the next run. The exit statuses, all of them:
 two tools are never chained, so the codes do not meet, but a wrapper that runs both should not read a `3` as
 the same failure.
 
+**A pano that opens but cannot be decoded is decoded once.** `Image.open` reads only the header, so a
+truncated file gets past the "cannot open" check. Decoding stays lazy — the preflights and
+`skipped_existing` read only the header, so a finished store never decodes a pano — and the first label
+that reaches the write decodes it. If that fails, the pano is not decoded again: that label and every later
+one on the pano that reaches the write is one counted error (and `stale_kept` under `--force` when its crop
+is on disk), and `crop.log` gets one `cannot decode` line for the pano under the `cannot_open` kind. Before
+[#164](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/164) each label re-decoded the
+whole file (Pillow keeps the pending decode after a failure, 0.25 s per label on a 13312-wide pano) and
+logged its own `Failed to crop label` line, spending the `crop_failed` budget that a real write failure
+needs. A label's bucket does not depend on where it sits in the list.
+
 The skip outcomes are **not** errors and do not affect the exit code: `missing_pano` (the pano store is
-scraped independently and legitimately lags the label list) and the two preflight rejections. Those are
-metadata the run declined to trust, not work it got wrong.
+scraped independently and legitimately lags the label list), the two preflight rejections, and
+`black_content` ([the content check](#the-content-check-black_content)). Those are metadata or imagery the
+run declined to trust, not work it got wrong.
 
 ### `crop.log` stays bounded under a flood
 
@@ -265,8 +362,9 @@ flood's own lines with it. Two bounds now apply, and both are needed:
   logs one total — `Suppressed N per-label warnings this run (malformed_row: …, crop_failed: …)` — ahead of
   the `SYSTEMIC FAILURE` line, which stays the last thing written. The kinds are `malformed_row`,
   `crop_failed` (a failed write: a full or read-only store), `cannot_open` (a pano that exists but will not
-  open: a dead mount that still answers a stat), `dims_mismatch` (a city re-served wider than the store),
-  `out_of_frame`, and `provenance_unrecorded` (a crop whose manifest row could not be written). Each has its
+  open: a dead mount that still answers a stat; or whose body cannot be decoded — a truncated file behind a
+  good header — one line per pano), `dims_mismatch` (a city re-served wider than the store),
+  `out_of_frame`, `black_content` (a window withheld by the content check), and `provenance_unrecorded` (a crop whose manifest row could not be written). Each has its
   own budget, so a flood of one cannot hide the first lines of another, which may be the actual cause.
 
 **Suppression drops lines, never counts.** Every label is still counted in its bucket, so the summary, the
@@ -300,7 +398,7 @@ inside the range an ordinary bad night can reach, since a corrupt slice of the s
 per-row fault and the loop is built to survive it.
 
 **A corrupt pano contributes one error per label on it, not one error.** The loop decodes each pano once
-for all its labels, so a failure there does `errors += len(labels)`. Corpus-wide that barely matters
+for all its labels, so a failure there is an error for every label that needed it. Corpus-wide that barely matters
 (~2.5 labels per pano), but the `-f` route over a study subset is exactly the few-panos-many-labels shape:
 a 40-label run where one truncated file carries 22 labels prints `22 of 40 ... (55.0%)` for a single bad
 file. A one-label run that errors likewise reads 100%. Neither is wrong, and neither is harmful, but both
@@ -336,7 +434,9 @@ Three blind spots come with that denominator, and only the first is benign:
   re-serving a city's panos wider than the stored frame. Zero crops, exit 0, no alarm, no cron mail — the
   silent-completion shape [#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)
   exists to prevent. Out of scope for #136, which is about `errors`, but it is the next gap, not a
-  theoretical one.
+  theoretical one. A run that is 100% `black_content` also exits 0 with no alarm, but it is not silent:
+  that bucket gets its own summary line on both channels
+  ([#164](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/164)).
 
 It is a second *reading* of the counts, not a bucket: nothing about the invariant above changes, the exit
 code is what it always was, and the per-outcome summary is still printed in full.
@@ -364,17 +464,21 @@ guard refuses with or without `--force`.
 * **Nothing else changes.** Missing panos, the two preflights and errors behave exactly as without it, so a
   label the run skips keeps whatever crop it already had — a forced run over a half-scraped pano store is
   not a whole-store re-cut. Check the summary's skip counts before relying on a store being one geometry.
-* **Known limit: a label skipped before its write keeps its old crop.** A preflight skip, a missing pano
-  or an unreadable pano all come before the "does a crop exist" check: the `dims_mismatch` and
+* **Known limit: a label the run did not write keeps its old crop.** A preflight skip, a missing pano
+  or a pano that cannot be opened all come before the "does a crop exist" check: the `dims_mismatch` and
   `out_of_frame` checks run first, and a pano that is missing or cannot be opened skips every label on it.
-  A label whose crop is on disk is then skipped with that crop untouched — cut under whatever rule cut it,
+  A pano that opens but cannot be decoded fails later, at the first label that reaches its write, and every
+  such label is an error. Either way, a label whose crop is on disk is left with that crop untouched — cut under whatever rule cut it,
   while `crop_rule.json` names the new one. A forced run counts these as `stale_kept` (an annotation of the
   skip or error, outside the sum above) and ends with `N labels skipped under --force - by a preflight, a
   missing pano or an unreadable pano - kept a crop already on disk`, on stdout and in `crop.log`.
   `crop.log`'s `dims_mismatch`, `out_of_frame` and `cannot_open` lines (up to `LOG_WARNINGS_PER_KIND` of
   each) and its missing-pano lines include them, without marking which kept an old crop. The crop is
   **not** deleted: whether a forced run should remove a crop it can no longer vouch for is an open decision, not
-  something this tool does on its own.
+  something this tool does on its own. A label [the content check](#the-content-check-black_content) withholds
+  reaches its write and then declines it, with the same result: its old crop is kept, it counts as
+  `stale_kept` too, and the sentence above gains `N of them were withheld by the content check
+  (black_content) rather than skipped by a preflight`.
 * **It re-cuts the labels you hand it, not the directory.** A crop on disk whose label is absent from the
   metadata (deleted upstream, or outside a `-f` subset) is left alone.
 
@@ -480,6 +584,17 @@ position.** Marking used to be a `MARK_LABEL = True` constant at the top of the 
 dot sits directly over the feature of interest and is exactly what a model will learn instead of the feature.
 Re-cut such a store with `--force` rather than reuse it
 ([#48](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/48)).
+
+**Stores cut before the content check may hold black crops counted `success`.** Crops on disk are never
+re-judged ([the content check](#the-content-check-black_content)), so a label that sat inside a black band of
+its pano before [#164](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/164) is still there
+as a mostly black crop. Filter them the way the cropper now would: drop a crop where
+`downloaders.common.black_fraction(img) > 0.5`. That reads the stored crop - re-encoded, and downscaled if
+its window was wider than `CROP_MAX_STORED_WIDTH` - rather than the raw window the cropper judges, so the two
+can disagree slightly for a label near a band's edge; well inside a band both read the band. A store cut
+*with* the check can still hold crops up to half black: a bottom band thinner than a sixth of the pano is
+never withheld ([the numbers](#the-content-check-black_content)), so a stricter threshold, such as 0.25, is
+the consumer's to choose.
 
 **You will likely want to filter out labels where `disagree_count > agree_count`.** These come from human
 validations by other Project Sidewalk users; the cropper does **not** filter them by default. A stricter

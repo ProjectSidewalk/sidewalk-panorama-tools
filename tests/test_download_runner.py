@@ -2896,6 +2896,30 @@ class TestTheDepthCorpusSizeReachesLogCsv:
         assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT
 
 
+class TestField5IsTheImageListsLength:
+    """Fields 2-5 are the stub of an XML-metadata endpoint that died in 2022, which makes "write zeros" look like
+    a harmless cleanup. It is not: field 5 is len(image_pano_infos), and log_analyzer's rule 3 (#163) reads it
+    as the image-eligible corpus - its growth, and field 5 minus field 11, are the rule's only evidence that
+    there was work. Zeros there would make a starved image phase silent for ever. The subprocess tests above
+    only ever see it as 0, with every pano filtered out."""
+
+    def test_it_counts_the_panos_the_image_phase_was_given(self, monkeypatch, tmp_path):
+        """One unlabelled GSV pano beside three labelled ones: without --all-panos the image list is 3 and the
+        depth corpus (field 19) is 4, so the field cannot be either the whole list or a constant."""
+        rows = GSV_CSV_ROWS + 'gsvPanoIdUnlabelledDDDD,16384,8192,47.6,-122.3,180.0,0.0,gsv,False\n'
+        storage, _ = call_main(monkeypatch, tmp_path, rows)
+
+        fields = last_log_fields(storage)
+        assert fields[3] == fields[4] == str(len(GSV_PANO_IDS))
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS) + 1)
+
+    def test_all_panos_widens_it(self, monkeypatch, tmp_path):
+        rows = GSV_CSV_ROWS + 'gsvPanoIdUnlabelledDDDD,16384,8192,47.6,-122.3,180.0,0.0,gsv,False\n'
+        storage, _ = call_main(monkeypatch, tmp_path, rows, '--all-panos')
+
+        assert last_log_fields(storage)[4] == str(len(GSV_PANO_IDS) + 1)
+
+
 # --- Store mode: --from-store CITY_ID (#30) -------------------------------------------------------------------
 #
 # Driven in-process through main() against the fake `sftp -b -` in tests/test_store_sftp.py, which reads a local

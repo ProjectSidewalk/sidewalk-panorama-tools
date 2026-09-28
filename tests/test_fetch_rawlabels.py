@@ -89,6 +89,10 @@ class TestFetchDoesNotHangForever:
         block partway through a multi-gigabyte sweep rather than a logged FAILED line."""
         monkeypatch.setattr(fr, 'DEST', str(tmp_path / 'd'))
         monkeypatch.setattr(fr, 'CITIES', {'x': 'https://example.invalid'})
+        # Both study destinations, or main([]) fetches MAPILLARY_CITIES into the developer's real
+        # .cache/rawlabels-mapillary/ - where the 11-byte fake below then shadows the real Richmond for
+        # ever, since the fetcher skips a file that exists (#165).
+        monkeypatch.setattr(fr, 'MAPILLARY_DEST', str(tmp_path / 'm'))
         seen = {}
 
         def fake_urlopen(url, timeout=None):

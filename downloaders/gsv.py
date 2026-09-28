@@ -542,17 +542,10 @@ def _stitch_tiles(tile_results, zoom_dims, final_dims):
     return image
 
 
-def _black_fraction(image):
-    """Exact fraction of black pixels in the frame, via the luma histogram.
-
-    Counted over every pixel rather than a downsampled probe, and by histogram rather than a numpy array so
-    it stays a C-level pass with no second copy of a 16384x8192 frame. Both alternatives to an exact count
-    are wrong in a way that matters here: an averaging downscale blends a black region into its neighbours
-    and reports "slightly dark" for a frame that is three-quarters missing, while a NEAREST probe aliases on
-    exactly the sort of regular black/imagery pattern a tiling bug produces.
-    """
-    luma = image.convert('L')
-    return luma.histogram()[0] / float(luma.width * luma.height)
+# Moved to downloaders/common.py with #164, so CropRunner can judge a cut window with the same primitive
+# without importing this module. The alias keeps refetch_panos and the stitcher/tile-contract tests on the
+# name they already use; it is the same function object, not a copy.
+_black_fraction = common.black_fraction
 
 
 def _reject_mostly_black_stitch(image, pano_id, zoom):
