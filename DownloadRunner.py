@@ -57,7 +57,7 @@ def build_parser():
     parser.add_argument('--max-runtime', type=float, default=None, metavar='MINUTES', help='Stop starting new downloads after this many minutes have elapsed.')
     parser.add_argument('--min-depth-runtime', type=_reservation_minutes, default=0.0, metavar='MINUTES', help='Reserve the last MINUTES of --max-runtime for the depth phase when the depth ledger shows unresolved work, so an image backlog cannot starve depth. This is a reservation carved out of the image phase\'s start budget, not a hard floor on depth wall time: the image phase stops STARTING new panos once its share is spent (a pano already in flight can overrun into the reserved slice), and depth still ends at --max-runtime, so it also gets any slack images leave. If the reservation meets or exceeds --max-runtime, NO images are downloaded that run. Default 0 (no reservation); it is a share of --max-runtime, and the production queue passes 6 of a 12-minute slot. Ignored without --max-runtime or with --skip-depth.')
     parser.add_argument('--max-depth-requests', type=int, default=None, metavar='N', help='Stop the depth phase after this many depth metadata requests.')
-    parser.add_argument('--depth-block-latch', default=None, metavar='PATH', help='Where to remember that Google refused this host, so the next city in the queue stands down instead of rediscovering the block with fresh requests. Defaults to a file in the system temp directory - LOCAL disk, not the pano store, because it is a fact about this host and because the storage dir given to a run belongs to a single city. A latch younger than 6 hours skips the depth phase entirely, and the GSV image phase stops asking photometa (every zoom then comes from the tile probe); images still download. The image phase reads and writes this same file, so a photometa refusal there also stands the depth phase down.')
+    parser.add_argument('--depth-block-latch', default=None, metavar='PATH', help='Where to remember that Google refused this host, so the next city in the queue stands down instead of rediscovering the block with fresh requests. Defaults to a file in the system temp directory - LOCAL disk, not the pano store, because it is a fact about this host and because the storage dir given to a run belongs to a single city. A latch younger than 6 hours skips the depth phase entirely, and the GSV image phase stops asking photometa (every zoom then comes from the tile probe); images still download. The image phase reads and writes this same file, so a photometa refusal there, or 3 consecutive refused GSV panos (1 while a latch is fresh), also stands the depth phase down.')
     parser.add_argument('--depth-pace-state', default=None, metavar='PATH', help='Where the depth pacer remembers the request interval this host has EARNED, so the next city in the queue opens there instead of ramping down from depth_start_interval again. Only earned speed is remembered - a back-off or a refusal (in either phase) resets it - and a file older than a day is ignored. Defaults to a file in the system temp directory beside the block latch, for the same reasons.')
     parser.add_argument('--width-alarm-latch', default=None, metavar='PATH', help='Where to remember that this host has already alarmed on a frame wider than the viewer ceiling (#121). The FIRST run that sees one exits 1, so the failure-only alarm wrapper delivers it; later runs find this file and only warn. Delete it to re-arm. Defaults to a file in the system temp directory - local disk, because a wider frame is a fact about Google, not one city.')
     parser.add_argument('--run-summary-file', default=None, metavar='PATH', help='Write a small JSON object naming what stopped each phase (image_stop, depth_stop) to PATH. This is how scrape_queue decides which cities still have work and so get an extra pass over the leftover window (#43); nothing else reads it, and without the flag nothing is written. Deliberately has no default: a default path would write into whatever CWD cron happened to start in.')
@@ -455,19 +455,46 @@ class ImageLedger:
 MAX_CONSECUTIVE_PERMANENT_FAILURES = {'mapillary': 3, 'panoramax': 3}
 
 
+# --- The GSV push-back breaker (#162) ---------------------------------------------------------------------
+#
+# NOT an entry in the table above, and `gsv` must still never get one there. #113 counts permanent verdicts,
+# and 8.4% of a mature GSV ledger is an ordinary retired pano, so three in a row is routine. This breaker
+# counts something else: Google REFUSING this host (gsv.pushback_reason - a tile 429/403, an interstitial, or
+# a zoom-probe RetryError carrying 429/403), which is never a verdict and so is never ledgered. The rules differ
+# accordingly: only a GSV success or fallback_success resets the count (a transient, a skip, a permanent verdict
+# and any other source's outcome neither count nor reset); a trip withholds nothing, because there are no rows
+# to withhold; and a trip writes the block latch and forfeits the depth pace, because tiles and photometa leave
+# the same IP. Three for MAX_CONSECUTIVE_UNDERSIZED's reason (refetch_panos.py): one refusal can be a blip,
+# three in a row in a shuffled list is the host being refused.
+GSV_MAX_CONSECUTIVE_PUSHBACK = 3
+# The threshold while the block latch is fresh: probation, not a stand-down (see download_panorama_images).
+GSV_PUSHBACK_PROBATION = 1
+
+# The stop reason a push-back trip records under 'image_stop'. The depth phase's DEPTH_STOP_BLOCKED spelling,
+# pinned equal by a test: scrape_queue reads 'blocked' as "do not spend an extra pass on this city".
+STOP_BLOCKED = 'blocked'
+
+
 def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
-                             tripped_sources=None, stop_reasons=None):
+                             tripped_sources=None, stop_reasons=None, block_latch_path=None,
+                             pace_state_path=None):
     """Download every eligible pano, ledgering each permanent verdict, and return the log.csv counters.
 
-    @param tripped_sources An optional set the phase adds each breaker-tripped source to. An out-parameter
+    @param tripped_sources An optional set the phase adds each breaker-tripped source to - #113's
+        permanent-verdict breaker, or 'gsv' for the push-back breaker (#162). An out-parameter
         rather than a sixth return value on purpose: the returned tuple IS log.csv fields 7-11 and
         log_analyzer reads those positionally, so widening it with a field that is not a log column is how a
         transposition gets introduced - the trap TestEveryDownloadResultLandsInItsOwnCounter exists for.
         (refetch_panos.refetch_pano takes `measurements` the same way, for the same reason.)
     @param stop_reasons An optional dict the phase records why it stopped early into, under 'image_stop' -
-        STOP_MAX_RUNTIME, or left as None if it worked through its whole list. Same out-parameter reasoning
+        STOP_MAX_RUNTIME, STOP_BLOCKED when Google's push-back stopped GSV (#162), or left as None if it
+        worked through its whole list. Same out-parameter reasoning
         as tripped_sources, and the depth phase fills 'depth_stop' in the same dict. scrape_queue reads it
         to decide who still has work (#43); nothing here or in log.csv depends on it.
+    @param block_latch_path, pace_state_path Where a push-back trip writes the block latch and forfeits the
+        depth pace (gsv.record_google_refusal). None falls through gsv.image_host_state_paths - the module
+        paths DownloadRunner.run sets, then the host defaults - and photometa's refusals (#74) are held to the
+        same pair for the loop's duration, so the two can never write different files.
     """
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
@@ -496,9 +523,34 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # Breaker state, per source and per run (#113). `tripped` is shared with the caller when it passed a set.
     consecutive_permanent = {}
     tripped = set() if tripped_sources is None else tripped_sources
-    breaker_skipped = 0
+    # Panos the breakers left unattempted, per source, so each summary counts only its own.
+    unattempted = collections.Counter()
+    # The push-back breaker (#162): GSV only, its own count, and `refused` - the sources tripped by Google's
+    # refusal rather than by permanent verdicts - keeps #113's repair advice out of its summary.
+    consecutive_pushback = 0
+    refused = set()
+    # One resolution order for both halves of the phase that touch this host's standing (#172 final review,
+    # cross-PR item 4): the breaker uses these, and the loop below scopes photometa's module paths to them.
+    latch_path, pace_state_path = gsv.image_host_state_paths(block_latch_path, pace_state_path)
+    last_pushback = None
+    latch_written = False
+    # Probation, not a stand-down (#162 D5). A fresh latch means Google refused this host recently - maybe the
+    # depth phase, after a SINGLE photometa refusal from another endpoint - so the first refusal of our own is
+    # believed. Standing images down on read would let one interstitial stop the whole fleet's images for six
+    # hours. Read once, at zero requests; information, not the night's alarm, so no WARNING token.
+    latched_hours = gsv.fresh_block_latch_hours(latch_path)
+    if not any(p.get('source') == 'gsv' for p in candidates):
+        latched_hours = None    # nothing of Google's to put on probation, so nothing to announce
+    if latched_hours is None:
+        pushback_limit = GSV_MAX_CONSECUTIVE_PUSHBACK
+    else:
+        pushback_limit = GSV_PUSHBACK_PROBATION
+        logging.info("IMAGEDOWNLOAD: block latch %s set %.1fh ago; GSV images on probation (one refused pano "
+                     "stops them)", latch_path, latched_hours)
+        print("IMAGEDOWNLOAD: Google refused this host %.1f hours ago (latch %s); GSV images run on "
+              "probation - one refused pano stops them." % (latched_hours, latch_path))
 
-    with ledger:
+    with ledger, gsv.scoped_image_host_state(latch_path, pace_state_path):
         for pano_info in candidates:
             pano_id = pano_info['pano_id']
             # candidates is already filtered against the ledger; this still catches a duplicate id surviving
@@ -509,7 +561,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             if source in tripped:
                 # Not attempted, not counted, not ledgered: the breaker's whole point is that this source's
                 # answers are not trustworthy tonight, so the pano comes back next run untouched (#41).
-                breaker_skipped += 1
+                unattempted[source] += 1
                 continue
             if max_runtime_minutes is not None and run_start_monotonic is not None:
                 # time.monotonic, not the wall clock: an NTP step or DST transition must not stretch or shrink
@@ -520,11 +572,14 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                     # Recorded only HERE, where the phase actually gave up with panos still in its list -
                     # not wherever --max-runtime is merely set. A city that finished its list inside the
                     # budget must report no stop at all, or the queue re-runs it for nothing.
-                    if stop_reasons is not None:
+                    # Never over 'blocked': in a mixed-source city a GSV trip can come first, and it is the
+                    # stop the queue must read - it re-runs a 'max-runtime' city, not a blocked one.
+                    if stop_reasons is not None and stop_reasons.get('image_stop') is None:
                         stop_reasons['image_stop'] = STOP_MAX_RUNTIME
                     break
             start_time = time.time()
             print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
+            pushback = None
             try:
                 result_code = download_pano(storage_path, pano_info)
                 if result_code == DownloadResult.success:
@@ -545,7 +600,14 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 fail_count += 1
                 downloaded = None
                 result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
-                logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
+                pushback = gsv.pushback_reason(e) if source == 'gsv' else None
+                if pushback is not None:
+                    # The ONE line a refused pano gets (#162): fetch_pano_image raises a refusal without
+                    # logging, and backoff logs nothing. `(HTTP N)` is what the ops grep keys on.
+                    logging.error("IMAGEDOWNLOAD: Failed to download pano %s (%s): refused by Google: %s",
+                                  pano_id, pushback, str(e))
+                else:
+                    logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
 
             limit = MAX_CONSECUTIVE_PERMANENT_FAILURES.get(source)
             if limit is not None:
@@ -583,6 +645,40 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                               "source is ledgered tonight." % (limit, source))
                 elif result_code in (DownloadResult.success, DownloadResult.fallback_success):
                     consecutive_permanent[source] = 0
+
+            if source == 'gsv':
+                # The push-back breaker (#162) - see GSV_MAX_CONSECUTIVE_PUSHBACK for why it is not #113's.
+                # Only Google's refusal counts and only a GSV success resets: a transient says nothing about
+                # being refused, a skip never contacted Google, and a permanent verdict (black probe tiles)
+                # proves nothing about being answered honestly.
+                if pushback is not None:
+                    consecutive_pushback += 1
+                    last_pushback = pushback
+                    if consecutive_pushback >= pushback_limit:
+                        tripped.add(source)
+                        refused.add(source)
+                        if stop_reasons is not None:
+                            stop_reasons['image_stop'] = STOP_BLOCKED
+                        latch_written = gsv.record_google_refusal(latch_path, pace_state_path)
+                        # Both channels: stdout is what the night's message carries, scrape.log what is
+                        # still there next week. Worded from what record_google_refusal reports, because it
+                        # never raises: a latch it could not write stands nothing down, here or in any later
+                        # city, and saying otherwise would hide exactly that.
+                        if latch_written:
+                            latch_said = ("Block latch %s written, so the depth phase stands down too"
+                                          % (latch_path,))
+                        else:
+                            latch_said = ("Block latch %s could not be written, so neither this run's depth "
+                                          "phase nor a later city will know" % (latch_path,))
+                        logging.error("IMAGEDOWNLOAD: Google refused %d consecutive GSV panos (%s). Stopping "
+                                      "GSV images for the rest of this run; its remaining panos are left "
+                                      "unattempted and retry next run. %s (#162).", consecutive_pushback,
+                                      pushback, latch_said)
+                        print("IMAGEDOWNLOAD: WARNING - Google refused %d GSV panos in a row (%s). Stopping GSV "
+                              "images for this run. %s."
+                              % (consecutive_pushback, pushback, latch_said))
+                elif result_code in (DownloadResult.success, DownloadResult.fallback_success):
+                    consecutive_pushback = 0
             total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
             if downloaded is not None:
@@ -607,14 +703,28 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                   % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
             print("--- %s seconds ---" % (time.time() - start_time))
 
-    if tripped:
+    verdict_tripped = tripped - refused
+    if verdict_tripped:
         # Both channels, like the per-trip message above: this is the half that carries the unattempted count
         # and the repair pointer, which is exactly what someone needs a week later reading scrape.log while
         # editing the ledger. It was print-only until the 2026-09-09 review.
         summary = ("IMAGEDOWNLOAD: WARNING - breaker tripped for %s; %d pano(s) were left unattempted and "
                    "nothing was ledgered for them, so they retry next run. Check that source's credentials "
                    "before the next run, then look for false downloaded=0 rows in pano_id_log.csv."
-                   % (', '.join(sorted(tripped)), breaker_skipped))
+                   % (', '.join(sorted(verdict_tripped)), sum(unattempted[s] for s in verdict_tripped)))
+        logging.error("%s", summary)
+        print(summary)
+    if refused:
+        # Not #113's summary: a push-back trip ledgered nothing false, so there is no repair to point at.
+        if latch_written:
+            latch_said = "the depth phase stands down while the block latch %s is fresh" % (latch_path,)
+        else:
+            latch_said = ("the block latch %s could not be written, so nothing else on this host will stand "
+                          "down for it" % (latch_path,))
+        summary = ("IMAGEDOWNLOAD: WARNING - Google pushed back on GSV imagery (%s); %d pano(s) were left "
+                   "unattempted and nothing was ledgered for them, so they retry next run. No ledger repair "
+                   "is needed. Check this host for a rate limit before the next run; %s."
+                   % (last_pushback, sum(unattempted[s] for s in refused), latch_said))
         logging.error("%s", summary)
         print(summary)
 
@@ -929,7 +1039,8 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     @param store_settings A store_sftp.StoreSettings to run in store mode (#30): the image phase becomes
         pull_panos_from_store, the reservation is not taken, and the depth phase never contacts Google - it
         is (0, 0, 0, 0), or pull_depth_from_store when with_depth is set. The row's layout is unchanged.
-    @return The set of sources whose breaker tripped this run (#113), empty when none did - or
+    @return The set of sources whose breaker tripped this run - #113's, or 'gsv' for Google's push-back
+        (#162) - empty when none did - or
         store_sftp.STORE_SOURCE_NAME when a store-mode session failed (#30), the same alarm for the same
         reason: the run stopped trusting where its imagery comes from. It rides back rather than into
         log.csv: the row's fields are counts of work, parsed by position, and an alarm is not one - the exit
@@ -1005,7 +1116,9 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
                                               run_start_monotonic=run_start_monotonic,
                                               max_runtime_minutes=image_max_runtime,
                                               tripped_sources=tripped_sources,
-                                              stop_reasons=stop_reasons)
+                                              stop_reasons=stop_reasons,
+                                              block_latch_path=depth_block_latch,
+                                              pace_state_path=depth_pace_state)
         im_end_monotonic = time.monotonic()
         fields += [im_res[0], im_res[1], im_res[2], im_res[3], im_res[4],
                    _duration_minutes(xml_end_monotonic, im_end_monotonic)]
