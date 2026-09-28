@@ -29,24 +29,28 @@ branch = True
 # carve-out all read as dead code and the number sends you off writing tests that already exist.
 parallel = True
 
+# Every pattern is anchored to the same root as `source`, for the same reason: coverage anchors a relative
+# omit pattern to the process's CWD, so in a child running from tmp_path a bare `tests/*` means
+# `<tmp_path>/tests/*` and excludes nothing of ours. That gap stayed latent until a child loaded
+# tests/conftest.py from tmp_path and CI started averaging conftest in (#171 review: 99.46% -> 98.07%).
 omit =
-    tests/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/tests/*
     # Study/report tooling: a large body of frozen one-off analysis, densely tested in its own right
     # (tests/test_*_study.py, test_*_census.py, ...). Measuring it here would let the nightly scraper's
     # number move several points without anyone seeing it.
-    reports/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/reports/*
     # A 2022 one-off from the depth-endpoint outage whose module scope opens files and writes CSVs at
     # import. It cannot be imported, let alone measured.
-    flag_panos/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/flag_panos/*
     # Builds the README's hero figure (assets/make_banner.py). Tooling about the repo rather than part
     # of the scraper, tested in its own right by tests/test_make_banner.py, and averaging it in would
     # move the production number for a reason no operator cares about.
-    assets/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/assets/*
     # Agent worktrees live under .claude/worktrees/<branch>/ inside the primary checkout - without this a
     # `pytest --cov` run from there would walk a full second copy of the repo.
-    .claude/*
-    venv/*
-    .venv/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/.claude/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/venv/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/.venv/*
 
 [report]
 show_missing = True
