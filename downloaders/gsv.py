@@ -110,6 +110,16 @@ def _get_response(url, session, stream=False):
                            stream=stream)
     if not stream:
         return response
+    # The streamed path is the two probes (resolve_zoom_and_dims, frame_covers_pano), and both read a black
+    # body as a verdict: "retired" (ledgered downloaded=0, never re-asked) and "the frame covers the pano".
+    # Google answers both of those with a black 200, so only a 200 is evidence (#166 option b, the #99 rule).
+    # `== 200`, not raise_for_status(): a 206 or a final 3xx is no more evidence than a 403. The raise is
+    # transient wherever it lands. 429/5xx should normally not reach here, since the adapter's Retry owns
+    # them and an exhausted retry raises; if one does, this raises it like any other non-200.
+    if response.status_code != 200:
+        response.close()     # close it; nothing will read this body
+        raise requests.HTTPError('cbk probe answered %s, not 200: %s' % (response.status_code, url),
+                                 response=response)
     return response.raw
 
 
@@ -509,8 +519,9 @@ def resolve_zoom_and_dims(pano_info):
 
     None is a PERMANENT verdict about the pano, and covers both of its causes: no reported dimensions (there
     is no other source for them, so asking again tomorrow asks the same question), and a black tile at both
-    zoom 5 and zoom 3, which is what Google answers for a pano id it no longer serves. Neither is a transient
-    condition, so callers ledger it rather than retrying. A network failure here still RAISES, and stays
+    zoom 5 and zoom 3 ON 200 RESPONSES, which is what Google answers for a pano id it no longer serves. Neither
+    is a transient condition, so callers ledger it rather than retrying. A probe answered with any status but
+    200 RAISES requests.HTTPError, whatever its body (#166 option b), and so does a network failure; both stay
     transient.
 
     Costs up to two HTTP requests, and none at all when the dimensions are missing.
@@ -532,6 +543,10 @@ def resolve_zoom_and_dims(pano_info):
     # nothing.
     if final_image_width is None or final_image_height is None:
         return None
+
+    # The reported width is Google's own number and is in hand before any request, so the #121 tripwire runs
+    # here: a probe that then fails transiently must not swallow the warning. An observation, never a gate.
+    common.warn_if_wider_than_viewer_ceiling(pano_id, final_image_width, 'gsv')
 
     # Session scoped to the zoom/dimension probes; the tile fan-out uses its own aiohttp session. This runs
     # once per pano, so leaving it unclosed would pile up connection pools until GC (#51).
@@ -584,7 +599,9 @@ def frame_covers_pano(pano_id, width, height, zoom):
     would proceed. That is why the x probe is taken on the grid's middle row rather than on row 0. Row 0 is
     the zenith cap - the one strip of a panorama where a uniformly black real tile is plausible - while the
     middle row is horizon-adjacent imagery, which never is. The y probe lands on ground rows for the same
-    reason. Both probes must come back blank for the frame to pass.
+    reason. Both probes must come back blank for the frame to pass. A probe answered with any status but 200
+    raises requests.HTTPError rather than reading as blank (#166 option b): before that, a 403 or 404 with a
+    black body was exactly this acceptance case.
     """
     tiles_x, tiles_y = _tile_grid(width, height, zoom)
     with _request_session() as session:

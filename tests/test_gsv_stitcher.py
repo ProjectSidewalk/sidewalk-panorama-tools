@@ -1,6 +1,7 @@
 """Tests for the GSV tile stitcher: grid arithmetic (#44), failed-tile handling (#45), stitch geometry,
 and the atomic image save. Network-free throughout - tile downloads and the zoom probes are stubbed at the
-gsv module boundary."""
+gsv module boundary, except in the #166 probe-status classes (TestAPermanentVerdictNeedsA200,
+TestTheFrameProbeNeedsA200), which stub below it at the transport adapter so the real _get_response runs."""
 
 import asyncio
 import collections
@@ -14,7 +15,8 @@ import numpy as np
 import pytest
 import requests
 from PIL import Image
-from requests.adapters import HTTPAdapter
+from requests.adapters import BaseAdapter, HTTPAdapter
+from requests.structures import CaseInsensitiveDict
 
 from downloaders import gsv
 from downloaders.common import DownloadResult
@@ -1369,3 +1371,198 @@ class TestRequestSessionCannotHangForever:
         adapter.send('request', timeout=None)
         assert captured['timeout'] is not None
         assert captured['timeout'] > 0
+
+
+# --- the probes' status rule, through the real _get_response and a real requests.Session (#166) -----------
+
+class _CannedBody(BytesIO):
+    """`Response.raw` for a canned answer. BytesIO already gives Image.open its read/seek and records
+    `closed`; release_conn is the other half of what Response.close() calls on a real urllib3 body, so it is
+    recorded too - the point of closing on the raising path is that the pooled connection goes back."""
+
+    def __init__(self, data):
+        super().__init__(data)
+        self.released = False
+
+    def release_conn(self):
+        self.released = True
+
+
+class _CannedCbkAdapter(BaseAdapter):
+    """A transport adapter that answers every request from `answer(url) -> (status, body bytes)`.
+
+    Mounted on a REAL requests.Session, so the whole of Session.send - hooks, cookie extraction, the
+    redirect walk, the stream handling - runs exactly as it does against Google, and the only thing stubbed
+    is the socket. Everything else in this file stubs _get_response itself, which is why none of it can see
+    a status: this adapter is what does.
+    """
+
+    def __init__(self, answer):
+        super().__init__()
+        self.answer = answer
+        self.served = []
+
+    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+        status, body = self.answer(request.url)
+        response = requests.Response()
+        response.status_code = status
+        response.reason = 'canned'
+        response.url = request.url
+        response.request = request
+        response.headers = CaseInsensitiveDict({'Content-Type': 'image/jpeg'})
+        response.raw = _CannedBody(body)
+        self.served.append(response)
+        return response
+
+    def close(self):
+        pass
+
+
+def canned_cbk(monkeypatch, answer):
+    """Route gsv's probe session through a _CannedCbkAdapter; returns the adapter, whose `served` lists
+    every Response handed back, in order."""
+    adapter = _CannedCbkAdapter(answer)
+
+    def session():
+        s = requests.Session()
+        s.mount('https://', adapter)
+        s.mount('http://', adapter)
+        return s
+
+    monkeypatch.setattr(gsv, '_request_session', session)
+    return adapter
+
+
+def cbk_query(url, key):
+    """One integer query parameter of a cbk URL - zoom, x or y."""
+    return int(url.split('&%s=' % key)[1].split('&')[0])
+
+
+# The committed bytes of a genuine out-of-range CBK answer, and a solid tile standing in for imagery.
+BLACK_BODY = fixture_bytes('z3_blank_out_of_range.jpg')
+IMAGERY_BODY = jpeg_bytes(RED, (16, 16))
+
+# Statuses a 200-rule must refuse and the retry policy hands back as a body. The four 4xx are the ones
+# #166 names; 206 and 304 are the reason the rule is `== 200` and not raise_for_status(), which passes both.
+NON_200_STATUSES = [403, 404, 401, 410, 206, 304]
+
+
+class TestAPermanentVerdictNeedsA200:
+    """#166 option (b). resolve_zoom_and_dims' None is ledgered as a permanent downloaded=0, and it used to
+    rest on two tiles decoding to exact black whatever status carried them. A 403 or 404 whose body happened
+    to be a black JPEG was therefore a verdict that the pano is retired, written once and never re-asked.
+
+    The rule is now "200 or raise" in _get_response, the one helper both probes ride. A raise is transient
+    everywhere it lands: the image loop counts a failure and ledgers nothing, and refetch_panos counts a
+    transient failure. Only the direction of error changes - a permanent verdict can become a retry, never
+    the reverse.
+    """
+
+    PANO = 'statusPanoAAAAAAAAAAA'
+
+    def pano_info(self):
+        return {'pano_id': self.PANO, 'width': 1024, 'height': 512}
+
+    def by_zoom(self, monkeypatch, answers):
+        """Answer the zoom probe by zoom level: answers = {3: (status, body), 5: (status, body)}."""
+        return canned_cbk(monkeypatch, lambda url: answers[cbk_query(url, 'zoom')])
+
+    def test_two_200_black_tiles_are_still_the_permanent_verdict(self, monkeypatch):
+        """The half of the rule that must NOT move: Google answers a retired id with a black 200, and that
+        stays a None. Pinned through the real session, not assumed from the stubbed tests above."""
+        adapter = self.by_zoom(monkeypatch, {3: (200, BLACK_BODY), 5: (200, BLACK_BODY)})
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) is None
+        assert [cbk_query(r.url, 'zoom') for r in adapter.served] == [3, 5]
+
+    def test_200_imagery_resolves_to_zoom_5(self, monkeypatch):
+        self.by_zoom(monkeypatch, {3: (200, IMAGERY_BODY), 5: (200, IMAGERY_BODY)})
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) == (1024, 512, 5)
+
+    @pytest.mark.parametrize('status', NON_200_STATUSES)
+    def test_a_black_body_under_any_other_status_raises(self, monkeypatch, status):
+        self.by_zoom(monkeypatch, {3: (status, BLACK_BODY), 5: (status, BLACK_BODY)})
+
+        with pytest.raises(requests.HTTPError) as caught:
+            gsv.resolve_zoom_and_dims(self.pano_info())
+
+        assert caught.value.response.status_code == status
+        assert 'panoid=%s' % self.PANO in str(caught.value), 'the error must name the URL it refused'
+
+    @pytest.mark.parametrize('statuses', [(200, 403), (403, 200)], ids=['z3-200,z5-403', 'z3-403,z5-200'])
+    def test_either_probes_status_counts(self, monkeypatch, statuses):
+        """Both tiles found the verdict, so both need the 200. Black at both zooms, so the stake is exactly
+        the permanent None."""
+        z3, z5 = statuses
+        self.by_zoom(monkeypatch, {3: (z3, BLACK_BODY), 5: (z5, BLACK_BODY)})
+
+        with pytest.raises(requests.HTTPError):
+            gsv.resolve_zoom_and_dims(self.pano_info())
+
+    def test_the_refused_response_is_closed_so_its_connection_goes_back(self, monkeypatch):
+        adapter = self.by_zoom(monkeypatch, {3: (403, BLACK_BODY), 5: (403, BLACK_BODY)})
+
+        with pytest.raises(requests.HTTPError):
+            gsv.resolve_zoom_and_dims(self.pano_info())
+
+        refused = adapter.served[-1]
+        assert refused.raw.closed
+        assert refused.raw.released
+
+    def test_download_single_pano_raises_instead_of_returning_the_permanent_failure(self, tmp_path,
+                                                                                  monkeypatch):
+        """DownloadResult.failure is what the image loop writes as downloaded=0 and never re-asks. A raise
+        is one counted failure with no ledger row, so tomorrow's run asks again."""
+        self.by_zoom(monkeypatch, {3: (403, BLACK_BODY), 5: (403, BLACK_BODY)})
+
+        def no_fan_out(tiles):
+            raise AssertionError('a refused probe must not reach the tile fan-out')
+
+        monkeypatch.setattr(gsv, '_download_tiles', no_fan_out)
+
+        with pytest.raises(requests.HTTPError):
+            gsv.download_single_pano(str(tmp_path), self.pano_info())
+
+        assert not os.path.exists(os.path.join(str(tmp_path), self.PANO[:2], self.PANO + '.jpg'))
+
+
+class TestTheFrameProbeNeedsA200:
+    """frame_covers_pano's documented failure direction is ACCEPTANCE: a probe that reads as exact black
+    passes the frame, and refetch_panos then spends ~512 requests on a grid nothing confirmed. A non-200
+    black body was that case exactly. It now raises, and never returns True."""
+
+    PANO = 'statusPanoAAAAAAAAAAA'
+
+    @pytest.mark.parametrize('status', NON_200_STATUSES)
+    def test_a_black_body_under_any_other_status_raises(self, monkeypatch, status):
+        canned_cbk(monkeypatch, lambda url: (status, BLACK_BODY))
+
+        with pytest.raises(requests.HTTPError) as caught:
+            gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
+
+        assert caught.value.response.status_code == status
+        assert 'panoid=%s' % self.PANO in str(caught.value), 'the error must name the URL it refused'
+
+    @pytest.mark.parametrize('refused', [(26, 6), (0, 13)], ids=['x-probe', 'y-probe'])
+    def test_either_probes_status_counts(self, monkeypatch, refused):
+        canned_cbk(monkeypatch, lambda url: (403 if (cbk_query(url, 'x'), cbk_query(url, 'y')) == refused
+                                             else 200, BLACK_BODY))
+
+        with pytest.raises(requests.HTTPError):
+            gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
+
+    def test_two_200_black_edges_still_cover_the_frame(self, monkeypatch):
+        adapter = canned_cbk(monkeypatch, lambda url: (200, BLACK_BODY))
+
+        assert gsv.frame_covers_pano(self.PANO, 13312, 6656, 5) is True
+        assert [(cbk_query(r.url, 'x'), cbk_query(r.url, 'y')) for r in adapter.served] == [(26, 6), (0, 13)]
+
+    def test_the_refused_response_is_closed(self, monkeypatch):
+        adapter = canned_cbk(monkeypatch, lambda url: (404, BLACK_BODY))
+
+        with pytest.raises(requests.HTTPError):
+            gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
+
+        assert adapter.served[-1].raw.closed
+        assert adapter.served[-1].raw.released

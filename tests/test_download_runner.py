@@ -34,6 +34,7 @@ import pytest
 
 from conftest import posix_only
 from test_gsv_stitcher import probe_retry_error
+from test_gsv_stitcher import BLACK_BODY as CBK_BLACK_BODY, canned_cbk
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER = os.path.join(REPO_ROOT, 'DownloadRunner.py')
@@ -1888,6 +1889,57 @@ class TestAPanoramaxVerdictReachesTheLedgerThroughTheRealDispatcher:
         assert requested == sorted([self.ENVELOPE_200, self.UNREACHABLE]), \
             'only the two unledgered conditions come back; the six decided panos cost nothing'
         assert os.listdir(storage / self.FLAT[:2]) == [], 'and no flat photograph was ever stored'
+
+
+class TestAGsvProbeRefusedWithABlackBodyReachesNoLedgerRow:
+    """#166 option (b), composed through the real image loop: the GSV counterpart of the two classes above.
+
+    test_gsv_stitcher pins that a non-200 probe RAISES, and the loop's except block pins that a raise leaves
+    no row - two halves, composition inferred, which is the shape this file's dispatcher classes exist to
+    close. Without this class, a loop that ledgered an HTTPError from gsv as downloaded=0 survived the whole
+    suite. Driven through the real dispatcher, gsv.download_single_pano and a real requests.Session; only the
+    socket is canned (test_gsv_stitcher.canned_cbk).
+    """
+
+    PANO = 'gsvRefusedAAAAAAAAAAAA'
+
+    def panos(self):
+        return [{'pano_id': self.PANO, 'source': 'gsv', 'width': 1024, 'height': 512}]
+
+    def test_a_403_black_probe_is_counted_unledgered_and_asked_again(self, monkeypatch, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        adapter = canned_cbk(monkeypatch, lambda url: (403, CBK_BLACK_BODY))
+
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert result == (0, 0, 1, 0, 1), '(success, fallback_success, fail, skipped, total)'
+        assert ledger_verdict_rows(storage) == [], 'a refused probe is a condition of the run, not a verdict'
+        first_run_requests = len(adapter.served)
+        assert first_run_requests > 0
+
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert result == (0, 0, 1, 0, 1)
+        assert len(adapter.served) > first_run_requests, 'the unledgered pano must be asked again next run'
+        assert ledger_verdict_rows(storage) == []
+
+    def test_control_two_200_black_probes_are_the_permanent_verdict(self, monkeypatch, tmp_path):
+        """The same bytes under a 200 are Google's answer for a retired id, and must still write the 0-row -
+        so the test above measures the status, not the body."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        adapter = canned_cbk(monkeypatch, lambda url: (200, CBK_BLACK_BODY))
+
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert result == (0, 0, 1, 0, 1)
+        assert ledger_verdict_rows(storage) == ['%s,0' % self.PANO]
+        first_run_requests = len(adapter.served)
+
+        DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert len(adapter.served) == first_run_requests, 'a ledgered verdict is never re-asked'
 
 
 class TestPanoramaxNeedsNoCredentialToBeSupported:

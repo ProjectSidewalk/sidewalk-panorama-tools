@@ -32,7 +32,8 @@ directory it likes, and a relative path scatters every per-pano failure detail s
 > **Switched off 2026-09-09.** `WRITE_DISPLAY_COPIES` in `downloaders/common.py` is `False`, so neither
 > downloader writes a display copy any more. Two writers remain, both narrow: `downscale_panos.py`, which
 > only runs when a person runs it, and `refetch_panos.py`, which **refreshes a copy already on the store
-> after a swap but never creates one** ([why](#a-repaired-panoramas-copy-is-refreshed-never-created)).
+> after a swap but never creates one**, and deletes it if that refresh fails
+> ([why](#a-repaired-panoramas-copy-is-refreshed-never-created)).
 > **Why the feature is off**, and why the code is kept rather than reverted, is
 > [directly below](#why-it-is-off-2026-09-09). Read that before turning it back on.
 
@@ -76,8 +77,89 @@ full raster" half of #115's rationale is retired too.
 every 8192-class GPU — every Mali-G710-era Android, which is most of the non-Apple fleet — stops rendering
 stored panoramas natively, and the affected population jumps from ~2% of mobile to most of Android. **This
 repo is the only place that sees GSV's reported frame width at the moment it changes**
-(`downloaders/gsv.py::resolve_zoom_and_dims`, tracked by #121). So the switch stays one line away rather
-than in the history.
+(`downloaders/gsv.py::resolve_zoom_and_dims`), and it now says so when it does — see
+[the width tripwire](#the-width-tripwire) below. So the switch stays one line away rather than in the history.
+
+#### The width tripwire
+
+[#121](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/121). Every downloader warns when a
+source hands it a panorama **wider than `VIEWER_MAX_PANO_WIDTH` (16384)** in `downloaders/common.py`. It should
+never fire: 16384 is GSV's widest frame today and the fleet's normal, so 16384 itself is silent and 16385 is the
+first width that warns.
+
+* **Where it looks.** GSV: in `resolve_zoom_and_dims`, on the width `/adminapi/panos` reports, before any request
+  is spent, so a probe that then fails cannot swallow it (`refetch_panos.py` goes through the same seam, so a
+  repair pass warns on a stored frame that wide too — but there the line lands in that pass's **`refetch.log`**
+  and its stdout, not in `scrape.log`, and keeps the `IMAGEDOWNLOAD:` prefix in the middle of the pass's
+  `REFETCH:` narrative, so grep a refetched store's `refetch.log*` as well). Mapillary and Panoramax: on the downloaded JPEG's own
+  header, after the file is in place — the width of the file actually stored, which is what a viewer is
+  handed, rather than anything either source's metadata says.
+* **Never a gate.** It does not refuse, alter or delay a download and writes nothing to the store.
+* **Both channels, one line per wide pano**, each carrying the whole message: `IMAGEDOWNLOAD: <source> pano
+  <id> is <width> px wide, over the viewer ceiling of 16384 (#121) …` in that city's `scrape.log` at
+  `WARNING` (`refetch.log` for a repair pass, above), and the same text after `IMAGEDOWNLOAD: WARNING -` on
+  stdout. The line's own remedy is deliberately only a pointer — verify the width, then budget the disk
+  before any sweep, and read **When it fires** below — because the steps end in a fleet-wide sweep and
+  a line acted on alone would skip the budget. No once-per-run latch, deliberately:
+  stdout already carries one `Processing pano` line per pano attempted, and the alarm wrapper
+  [cuts the middle](#hearing-about-a-bad-night) of a long night's output, where a single announcement is the
+  line most likely to be lost.
+* **It alarms once per host, then only warns** (decided on
+  [#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153), 2026-09-26). Production runs the
+  queue under `cron_notify.py --only-on-failure`, so a warning alone reaches no one on a night that exits 0.
+  Failing *every* run that sees a wide frame would reach someone, and then keep the city red every night after,
+  since Google does not un-widen, hiding any real failure behind a known one. So the **first** `DownloadRunner`
+  run on a host to see a frame over the ceiling prints `WIDTH ALARM (#121): …` on both channels, creates a
+  latch file and **exits 1**, so the queue books a failed city and the alarm is delivered. Every later run finds
+  the latch and prints only `… already alarmed on this host (latch <path>), so not failing the run.`
+
+  * **The latch** is `sidewalk-width-ceiling-alarmed` in the system temp directory, or `--width-alarm-latch
+    PATH`. It is on local disk, beside the depth block latch, because a wider frame is a fact about Google
+    rather than one city: a per-city latch would alarm once per city. Its content is the UTC time of the first
+    sighting, and it is never rewritten.
+  * **Delete it to re-arm** — after acting on an alarm, say, so the next change reaches you too.
+  * **A latch that cannot be written fails every run** that sees a wide frame, with the path in `scrape.log`:
+    a latch nobody can write must not swallow the one alarm it exists for.
+  * `refetch_panos.py` warns through the same seam but never arms the latch or changes its exit code; a repair
+    pass is run by someone watching it.
+
+  The per-pano lines are still there afterwards, so to find which stores have seen one:
+
+  ```bash
+  grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*
+  ```
+
+  (the `*` after `.log` takes in the rotated `.1`–`.3` files; `-s` quiets a store with no `refetch.log`).
+* **Not a `log.csv` column, and so not a log-analyzer rule — on purpose, not an oversight.** `log.csv` is a
+  fixed set of positional fields that the analyzer and other tooling read by position, and #121 asks for any
+  persisted width to be proposed there first. The [log analyzer](log-analyzer.md) reads nothing but `log.csv`,
+  so without a column there is nothing for a rule to read. Don't file the missing rule as a gap; propose the
+  column.
+* **Why 16384, and why it is not `2 × DOWNSCALED_MAX_WIDTH`** although it equals that today: the ceiling is
+  what 8192-class GPUs can texture (2 × 8192, [above](#why-it-is-off-2026-09-09)); the display-copy cap is how
+  wide a copy to write, a separate choice that can be lowered to save disk without changing what any device
+  renders. A test pins that the ceiling is not written in terms of the cap.
+
+**When it fires.** First check it is real: the width is in the line, and `jpeg_dimensions` on the stored file
+confirms it. Then:
+
+1. Set `WRITE_DISPLAY_COPIES = True` in `downloaders/common.py`. It is a code change on purpose, and
+   `TestTheSwitch::test_the_shipped_default_is_off` pins the shipped `False`, so that test changes in the same
+   commit, saying why. **The downloaders' hook has no floor:** from then on every newly downloaded panorama
+   wider than `DOWNSCALED_MAX_WIDTH` (8192) gets a copy, not only the ones over the ceiling, so new scrapes
+   grow the store at the full +63% below even though step 2 does not.
+2. Run `python3 downscale_panos.py <storage-dir> --min-width 16384 --dry-run`, then again without `--dry-run`,
+   on each affected store ([by hand](#running-the-sweep-by-hand)). That writes copies for the frames **over
+   the ceiling only**, the ones 8192-class GPUs cannot render, and reports every other panorama over the cap
+   as `under --min-width` without touching or even reading its copy ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)).
+   Only if you mean to restore copies for everything over the cap as well, run it again without
+   `--min-width` — and **budget the disk before you do:** that sweep writes a copy for every panorama wider
+   than `DOWNSCALED_MAX_WIDTH` (8192), which is nearly every modern panorama, so it is the fleet-wide +63%
+   below, not a copy of the new frames alone.
+3. Tell the web app's maintainers: the on-demand downscale
+   ([SidewalkWebpage#5256](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5256)) absorbs a wider
+   frame silently at a cost per view, and its `pano.downscaled.max-width` has to agree with
+   `DOWNSCALED_MAX_WIDTH` for it to find the copies.
 
 #### Running the sweep by hand
 
@@ -85,7 +167,19 @@ than in the history.
 python3 downscale_panos.py <storage-dir> --dry-run          # count the missing copies, write nothing
 python3 downscale_panos.py <storage-dir>                    # write them
 python3 downscale_panos.py <storage-dir> --max-runtime 240  # a nightly-sized slice; the rest report as unreached
+python3 downscale_panos.py <storage-dir> --min-width 16384 --dry-run  # only frames over the viewer ceiling (#121)
 ```
+
+`--min-width PX` ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)) limits the
+sweep to panoramas **wider than** `PX`: one over the cap but at or below it is counted as `under --min-width`
+and its copy is never read, so it is reported neither as written nor as already having a copy, whatever is on
+disk. A stale copy under the floor is therefore left as it is; run without `--min-width` to refresh it.
+`16384` — `VIEWER_MAX_PANO_WIDTH`, and GSV's widest frame today — is the value it exists for: the
+[width tripwire](#the-width-tripwire)'s remedy, which should touch only what the viewer fleet cannot render.
+A value at or below `--max-width` is refused, since it would filter nothing and quietly be the full sweep.
+Every panorama the run examines lands in exactly one of written, under the cap, already had a copy, failed and
+under `--min-width`; `unreached` is the part the runtime budget never examined. The summary line always ends
+`…, N unreached, N under --min-width.`, as `0` when the option is not given.
 
 **Budget the disk first, per city.** A display copy is not a thumbnail: measured on the committed
 `samples/sample_pano.jpg` (13312 × 6656, 6.08 MB), the 8192-wide copy is **3.82 MB — 63% of the native file**
@@ -126,16 +220,27 @@ over it: the panorama is already on disk at that point, and re-fetching it would
 work that has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
 `refetch_log.csv`.
 
-> ⚠ **If that rewrite fails, the sweep cannot repair it — delete the sidecar first.**
-> `scrape.log` gets one `display copy not rewritten` line and the swap is ledgered `replaced` regardless.
-> But `sidecar_is_current` judges from dimensions alone (a decode per panorama is the whole cost the sweep
-> exists to avoid), and every gate in `refetch_panos` refuses a swap that changes the frame — so the stale
-> copy has *exactly* the expected dimensions and every later sweep reports it `current`, writing nothing.
-> `rm` the named `.w8192.jpg`, then run `downscale_panos.py`, which will see it absent and cut a fresh one.
+**If that rewrite fails, the copy is deleted (#122), and the next sweep repairs it — whenever one is run.**
+Leaving it would be the one
+outcome nothing could ever repair: the write is atomic, so a failed rewrite leaves the *old* copy intact, and
+`sidecar_is_current` judges from dimensions alone (a decode per panorama is the whole cost the sweep exists
+to avoid) while every gate in `refetch_panos` refuses a swap that changes the frame — so that old copy would
+have *exactly* the expected dimensions, and every later sweep would report it `current` and write nothing. A
+*missing* copy is what the sweep fills: the next `downscale_panos.py` run sees it absent and cuts a fresh one
+from the repaired panorama, and until then the web app serves the native file, which is correct, just larger.
+**Nothing schedules that sweep** — it runs only when a person [runs it](#running-the-sweep-by-hand) — so the
+copy stays missing until someone does; that is a correct state, not one that repairs itself. The swap is
+ledgered `replaced` either way, and `refetch.log` gets one `WARNING` line saying the copy was deleted.
+Only that one file goes — the exact `.w<cap>.jpg` for the current cap, never the panorama, a copy at
+another cap, or anything else in the shard — and only after a swap has landed, never on a refusal.
+
+> **The one case that needs a person:** if the delete *also* fails, the stale copy is back to reading as
+> `current` for ever. That is reported on stdout as well as in `refetch.log` (at `ERROR`), naming the file: delete it by
+> hand, then run `downscale_panos.py`.
 
 **Copies already on a store are left alone.** They cost disk and nothing else: every walker excludes them by
 name, so a sidecar can never be mistaken for a panorama, and the web app serves whichever of the two it
-finds. Removing them is an operator decision, not something any tool here does.
+finds. Removing them is an operator decision; the only copy any tool here deletes is the stale one above.
 
 ## The store is an archive, not a cache
 
@@ -189,8 +294,9 @@ permanent.** Transient failures leave no row and retry automatically on the next
 
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano. A permanent verdict, one per source:
-  * **GSV** — no imagery at any zoom, or unknowable dimensions. No breaker entry, deliberately: a retired
-    GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4% of a large city's rows.
+  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200), or unknowable dimensions. No
+    breaker entry, deliberately: a retired GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4%
+    of a large city's rows.
   * **Mapillary** — a 404, or a record that names the image and carries no original-resolution rendition.
     No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured 2026-09-06 — so the
     record with no rendition is the one that fires in practice, and three of them in a row stop the run
@@ -202,10 +308,12 @@ permanent.** Transient failures leave no row and retry automatically on the next
     status code or a missing key, *and* three in a row trip the same breaker: two of the three are
     wholesale failures wearing a per-pano face, so the affirmation and the breaker are both wanted here.
 
-  A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
-  (code 190 / `OAuthException`), a body that does not name the image, an image body that is not a JPEG, a
-  Panoramax 404 *without* the catalog's body, a malformed or empty assets block, and a redirect off a published `hd`
-  href are none of them verdicts and leave no row.
+  A GSV probe answered with anything but 200, even with a black body
+  ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)), a Mapillary error envelope
+  on a 200, a 404 whose envelope carries the auth signature (code 190 / `OAuthException`), a body that does
+  not name the image, an image body that is not a JPEG, a Panoramax 404 *without* the catalog's body, a
+  malformed or empty assets block, and a redirect off a published `hd` href are none of them verdicts and
+  leave no row.
 * **no row** — never attempted, the last attempt failed transiently (a network blip, a failed tile, a full
   store), or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both
   the withheld tripping verdict and every pano skipped after it). Retried next run.
@@ -331,7 +439,9 @@ store is a scrape-time archive and Google re-serves panos larger, so a grid size
 file can be too small for what Google now holds. That fetch does not return a smaller version of the pano —
 it returns the **top-left 81% of it**, at exactly the stored file's dimensions, with no undersized tile and
 no black anywhere. Nothing downstream could ever see it. Two requests, spent before the 512-tile fan-out,
-rule it out.
+rule it out. A probe answered with anything but 200 raises, so the pano counts as a transient failure rather
+than as a frame that covers; before [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166),
+a 403 or 404 with a black body passed it.
 
 | Outcome | Meaning | Requests |
 |---|---|---|
@@ -384,7 +494,7 @@ the pano stops at `dims_changed` rather than being silently re-framed, because c
 moves every label's pixel coordinates relative to the image.
 
 **Replacing a pano does not refresh crops already cut from it.** [Existing crops are the cropper's resume
-marker and are never re-cut](cropper.md#outcomes-exit-code-and-re-runs), so after a pass every crop cut from a `replaced` pano's
+marker and are not re-cut without `--force`](cropper.md#outcomes-exit-code-and-re-runs), so after a pass every crop cut from a `replaced` pano's
 polar band is still the half-resolution one, and nothing on disk says so. The ledger is the list: delete the
 crops of every pano with a `replaced` row (`grep ,replaced refetch_log.csv`) and re-run the cropper to pick the
 repair up. The crops are the point of the pass, so plan that step with it.
@@ -843,4 +953,20 @@ because of.
   ([When Google pushes back](#when-google-pushes-back-on-the-image-phase)). `Backing off _fetch_tile` lines no
   longer appear at all since #162 (`backoff` logs nothing now); historical ones in rotated logs are the
   evidence of how often tiles were refused before.
+- `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
+  tripwire](#the-width-tripwire): a source now serves panoramas wider than 8192-class GPUs can render. It never
+  fails a night and is never mailed on a clean one, so this grep is the only place it surfaces — and it runs
+  only when someone runs it, here or under [routine checks](#routine-checks). A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
 - The analyzer's fleet block, for the checks it encodes.
+
+### Routine checks
+
+The alarm carries only a nonzero exit, so some things that matter never reach anyone on a night that exits 0.
+**Nothing runs these, and no schedule is set for them** — they are what to look at whenever someone looks at
+the fleet, beyond the analyzer:
+
+- `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
+  tripwire](#the-width-tripwire); it is never mailed on a clean night, so this grep is the only place it
+  surfaces. A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
+- `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
+  [only there](#hearing-about-a-bad-night).
