@@ -505,7 +505,8 @@ def read_run_conditions(path):
         lacks the key.)
       - a `conditions` value that is not a list of objects each carrying a string `code`: one
         CONDITION_UNREADABLE, never "none".
-      - an unknown code: kept, so a runner newer than this queue can still fail the night.
+      - an unknown code: kept, so a runner newer than this queue can still fail the night - with its
+        whitespace collapsed to single spaces, and a code that is only whitespace unreadable.
 
     Example::
 
@@ -521,9 +522,11 @@ def read_run_conditions(path):
         return ()
     listed = reported['conditions']
     if not isinstance(listed, list) or not all(
-            isinstance(c, dict) and isinstance(c.get('code'), str) and c['code'] for c in listed):
+            isinstance(c, dict) and isinstance(c.get('code'), str) and c['code'].split() for c in listed):
         return (Condition(CONDITION_UNREADABLE, 'conditions: %s' % (json.dumps(listed)[:200],)),)
-    return tuple(Condition(c['code'], str(c.get('detail') or '')) for c in listed)
+    # The code is collapsed as the detail is (note_condition): a newer runner's code is used as sent, and a
+    # newline in it would split its summary line and drop the tail out of `grep ERROR` (#174 final review).
+    return tuple(Condition(' '.join(c['code'].split()), str(c.get('detail') or '')) for c in listed)
 
 
 def _city_budget(city_max_runtime, remaining_minutes):

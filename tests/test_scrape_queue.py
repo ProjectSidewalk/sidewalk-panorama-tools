@@ -1106,11 +1106,19 @@ class TestAStopDuringTheGraceStillKillsTheCity:
         monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
         proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1])
         killed_when_logged = []
+        killed_when_printed = []
 
         class Witness(logging.Handler):
             def emit(self, record):
                 killed_when_logged.append(proc.killed)
 
+        def witnessed_print(*args, **kwargs):
+            # stdout is the other channel (the cron_notify pipe), and a write there can block too, so the
+            # print is watched the same way the log handler is (#174 final review NIT 1).
+            killed_when_printed.append(proc.killed)
+            print(*args, **kwargs)
+
+        monkeypatch.setattr(scrape_queue, 'print', witnessed_print, raising=False)
         witness = Witness(level=logging.ERROR)
         logging.getLogger().addHandler(witness)
         try:
@@ -1120,6 +1128,7 @@ class TestAStopDuringTheGraceStillKillsTheCity:
             logging.getLogger().removeHandler(witness)
 
         assert killed_when_logged and all(killed_when_logged), 'logged before the kill'
+        assert killed_when_printed and all(killed_when_printed), 'printed before the kill'
         assert any('alpha-aa' in r.getMessage() and 'kill' in r.getMessage() for r in caplog.records)
         assert '[queue] alpha-aa: queue stopping; killing the city' in capsys.readouterr().out
 
@@ -1961,7 +1970,8 @@ class TestReadingTheRunConditions:
         assert scrape_queue.read_run_conditions(path) == ()
 
     @pytest.mark.parametrize('conditions', ['depth-refused', {'code': 'depth-refused'}, [['depth-refused']],
-                                            [{'detail': 'no code'}], [{'code': 7}], [{'code': ''}], None])
+                                            [{'detail': 'no code'}], [{'code': 7}], [{'code': ''}], [{'code': ' \n '}],
+                                            None])
     def test_a_present_but_malformed_list_is_itself_a_condition(self, tmp_path, conditions):
         """A check that did not run has not passed: a summary saying something unreadable about conditions
         must not read as "none"."""
@@ -1976,6 +1986,13 @@ class TestReadingTheRunConditions:
         path = self.write(tmp_path, {'conditions': [{'code': 'something-new', 'detail': 'x'}]})
 
         assert [c.code for c in scrape_queue.read_run_conditions(path)] == ['something-new']
+
+    def test_whitespace_in_a_code_is_collapsed_so_it_cannot_split_a_summary_line(self, tmp_path):
+        """The detail is collapsed at both ends; a newer runner's code is used as sent, so a newline in it
+        would drop the tail of its ERROR line to a line of its own (#174 final review NIT 2)."""
+        path = self.write(tmp_path, {'conditions': [{'code': ' foo\nbar\t', 'detail': 'x'}]})
+
+        assert [c.code for c in scrape_queue.read_run_conditions(path)] == ['foo bar']
 
     def test_a_missing_detail_is_an_empty_string(self, tmp_path):
         path = self.write(tmp_path, {'conditions': [{'code': 'depth-refused'}]})
