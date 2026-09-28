@@ -492,6 +492,10 @@ def test_live_dropping_fover_changed_nothing_else():
     assert describe(3, 0, 0) == ((512, 512), False), 'the zoom-3 probe tile changed'
     assert describe(5, 0, 0, target='_qVKgG3dGOoClMQI6QgVRg') == ((512, 512), True), \
         'a retired pano no longer answers with a black tile'
+    # Zoom 3 is the FIRST probe production sends for a retired pano (resolve_zoom_and_dims), so the 200 has to
+    # hold there too; only the blackness is asserted, since the tile's size at zoom 3 is not what is pinned.
+    assert describe(3, 0, 0, target='_qVKgG3dGOoClMQI6QgVRg')[1], \
+        'a retired pano no longer answers its zoom-3 probe with a black tile'
 
 
 @live_only

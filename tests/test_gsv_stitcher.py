@@ -1,6 +1,7 @@
 """Tests for the GSV tile stitcher: grid arithmetic (#44), failed-tile handling (#45), stitch geometry,
 and the atomic image save. Network-free throughout - tile downloads and the zoom probes are stubbed at the
-gsv module boundary."""
+gsv module boundary, except in the #166 probe-status classes (TestAPermanentVerdictNeedsA200,
+TestTheFrameProbeNeedsA200), which stub below it at the transport adapter so the real _get_response runs."""
 
 import asyncio
 import logging

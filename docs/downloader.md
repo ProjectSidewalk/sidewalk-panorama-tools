@@ -504,9 +504,8 @@ the failure-only alarm delivers it once; a latch file then keeps later runs to a
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
 `cbk?output=tile` endpoint into one equirectangular JPEG: it determines a working zoom level (5 preferred,
 falling back to 3 — a fully black tile at both, on a 200, means there is no imagery; see below), fans the
-tiles out concurrently
-with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the server's width/height, and
-upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
+tiles out concurrently with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the server's
+width/height, and upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
 [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
 
 **What the ledger learns from GSV.** Two answers are permanent and write a `downloaded=0` row: a pano with no
