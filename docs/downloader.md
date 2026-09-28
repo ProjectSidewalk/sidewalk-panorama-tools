@@ -678,7 +678,7 @@ requests per refused 16384-wide pano, which is a soft refusal being escalated by
 |---|---|---|
 | HTTP 429 or 403, or a landing URL (or redirect hop) on Google's `/sorry/` or `consent.google.com` interstitial, whatever status the interstitial answers with | never | yes |
 | any other 4xx except 408 (404 included) | no | no — an ordinary failure, retried next run |
-| 5xx, 408, a timeout, a connection error, a non-JPEG body | yes: up to 10 tries, each wait capped at 32 s, and no retry once 120 s have passed since the tile was first requested (time queued behind the other tiles does not count) | no |
+| 5xx, 408, a timeout, a connection error, a non-JPEG body | yes: up to 10 tries, each wait capped at 32 s, and no retry once the tile has spent 120 s of its own time: time waiting for a download slot does not count, whether before its first request or before a retry, while the requests themselves and the waits between retries do | no |
 
 The interstitial check is the depth phase's rule carried over by analogy; no CBK interstitial has been
 observed. Nothing that used to succeed on a retry is lost by not retrying a 4xx: every retired pano measured

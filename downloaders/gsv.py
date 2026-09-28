@@ -157,8 +157,9 @@ _TILE_RETRY_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError)
 #   * any other 4xx except 408 is this pano's problem, not weather: not retried (_tile_error_is_final), and
 #     not push-back either. Every retired pano measured answers 200 with an all-black body, never a 4xx.
 #   * 5xx, 408, timeouts, connection errors and a wrong Content-Type are retried, TILE_MAX_TRIES times, each
-#     wait capped at TILE_RETRY_MAX_WAIT seconds, and no retry once TILE_RETRY_MAX_SECONDS have passed since the
-#     tile's FIRST REQUEST (not since its task started - see _tile_retry_budget_spent).
+#     wait capped at TILE_RETRY_MAX_WAIT seconds, and no retry once the tile has spent TILE_RETRY_MAX_SECONDS
+#     of its own time - since its first attempt, less every wait for a fan-out slot, on retries too (see
+#     _tile_retry_budget_spent).
 # The two limits are read at call time (see _tile_retry_waits and the decorator), so a test can zero them.
 TILE_PUSHBACK_STATUSES = frozenset((403, 429))
 TILE_MAX_TRIES = 10
@@ -210,30 +211,48 @@ def _tile_error_is_final(e):
     return isinstance(e, aiohttp.ClientResponseError) and 400 <= e.status < 500 and e.status != 408
 
 
-# When this tile task first sent its request: (tile, time.monotonic()). A context variable because every tile is
-# its own task (ensure_future copies the context), so each task gets its own value, and backoff's retries run in
-# that same task and see it. Keyed on the tile as well, so a task that ever fetched two tiles in turn could not
-# carry one tile's clock into the other's budget.
-_TILE_FIRST_SENT = contextvars.ContextVar('_TILE_FIRST_SENT', default=None)
+class _TileClock:
+    """One tile's retry-budget clock: when its first attempt began, and how long it has since queued for a slot."""
+
+    __slots__ = ('tile', 'started', 'slot_wait')
+
+    def __init__(self, tile):
+        self.tile = tile
+        self.started = time.monotonic()
+        self.slot_wait = 0.0
 
 
-def _mark_tile_sent(tile):
-    first = _TILE_FIRST_SENT.get()
-    if first is None or first[0] != tile:
-        _TILE_FIRST_SENT.set((tile, time.monotonic()))
+# This task's _TileClock. A context variable because every tile is its own task (ensure_future copies the
+# context), so each task gets its own value, and backoff's retries run in that same task and see it. The clock
+# names its tile, so a task that ever fetched two DIFFERENT tiles in turn starts a fresh clock for the second
+# rather than carrying the first one's into its budget.
+_TILE_CLOCK = contextvars.ContextVar('_TILE_CLOCK', default=None)
+
+
+def _tile_clock(tile):
+    """This task's clock for `tile`, started now if the task has none for it yet."""
+    clock = _TILE_CLOCK.get()
+    if clock is None or clock.tile != tile:
+        clock = _TileClock(tile)
+        _TILE_CLOCK.set(clock)
+    return clock
 
 
 def _tile_retry_budget_spent():
-    """True once TILE_RETRY_MAX_SECONDS have passed since this tile's first request (#172 review, ops 2).
+    """True once this tile has spent TILE_RETRY_MAX_SECONDS of its OWN time (#172 review, ops 2; final MINOR 1).
 
-    Not backoff's max_time, whose clock starts when the decorated call does: all 512 tile tasks start at t=0 and
-    then queue for a fan-out slot, so on a slow fan-out the queue alone spent the late tiles' budget and they
-    lost their retries exactly when retries mattered. Checked after each failed attempt, like max_time, so the
-    last wait may overshoot the budget by up to one capped wait; a single attempt is bounded separately, by
-    aiohttp's own per-request timeout.
+    Its own time is the time since its first attempt began, less every wait for a fan-out slot - the first one
+    and every retry's. Not backoff's max_time, whose clock starts when the decorated call does: all 512 tile
+    tasks start at t=0 and then queue for a slot, so on a slow fan-out the queue alone spent the late tiles'
+    budget. Excluding only the first wait was not enough either: each retry queues again, behind every tile
+    not yet started (the Semaphore wakes in order), so an EARLY tile that failed lost its retries instead -
+    at 512 tiles, 8 slots and 2 s a tile, one re-queue is ~128 s against a 120 s budget. What is left counts:
+    the requests themselves and backoff's waits between them. Checked after each failed attempt, like
+    max_time, so the last wait may overshoot by up to one capped wait; a single attempt is bounded
+    separately, by aiohttp's own per-request timeout.
     """
-    first = _TILE_FIRST_SENT.get()
-    return first is not None and time.monotonic() - first[1] >= TILE_RETRY_MAX_SECONDS
+    clock = _TILE_CLOCK.get()
+    return clock is not None and time.monotonic() - clock.started - clock.slot_wait >= TILE_RETRY_MAX_SECONDS
 
 
 def _tile_should_give_up(e):
@@ -352,15 +371,17 @@ async def _fetch_tile(session, tile):
     pano's fan-out (_TILE_FANOUT set) the first refusal also abandons every tile not yet requested.
     """
     fanout = _TILE_FANOUT.get()
+    clock = _tile_clock(tile)
     if fanout is None or fanout.slot is None:
-        _mark_tile_sent(tile)
         return await _request_tile(session, tile)
+    queued_at = time.monotonic()
     async with fanout.slot:
+        # Every wait for a slot is the fan-out's time, not this tile's (_tile_retry_budget_spent).
+        clock.slot_wait += time.monotonic() - queued_at
         # After taking the slot, never before: see _TileFanOut.
         if fanout.refused is not None:
             raise _TileAbandonedError('tile (%d, %d) not requested: %s' % (tile[0], tile[1], fanout.refused))
         fanout.requests += 1
-        _mark_tile_sent(tile)
         try:
             return await _request_tile(session, tile)
         except TilePushbackError as e:
@@ -402,8 +423,8 @@ async def _request_tile(session, tile):
 # logger=None: backoff's own handlers wrote one INFO line per retry and one ERROR per give-up - 5,120 lines
 # for one refused pano. Capping the 'backoff' logger at WARNING would still have left the 512 ERROR lines, so
 # the decorator logs nothing and each pano owns its one line (fetch_pano_image, or the image loop for a
-# refusal). The time budget is in the giveup predicate, not max_time, so it is measured from the tile's first
-# request rather than from when its task started queueing (_tile_retry_budget_spent), and read at call time.
+# refusal). The time budget is in the giveup predicate, not max_time, so it can leave out every wait for a
+# fan-out slot, first request and retries alike (_tile_retry_budget_spent), and is read at call time.
 _download_tile = backoff.on_exception(_tile_retry_waits, _TILE_RETRY_ERRORS, max_tries=TILE_MAX_TRIES,
                                       giveup=_tile_should_give_up,
                                       on_backoff=_count_tile_retry, logger=None)(_fetch_tile)

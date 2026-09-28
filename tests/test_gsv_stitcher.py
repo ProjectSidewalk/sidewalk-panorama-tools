@@ -1416,19 +1416,26 @@ class TestARefusedTileAbandonsThePano:
         assert [r.getMessage() for r in caplog.records if r.name != 'asyncio'] == [], \
             'a refused pano owns no line of its own, however its fan-out also failed'
 
-    def test_time_queued_for_a_slot_does_not_spend_a_tiles_retry_budget(self, monkeypatch, fake_aiohttp):
+    @pytest.mark.parametrize('failing', [pytest.param('&x=7&y=3&', id='last-tile'),
+                                         pytest.param('&x=0&y=0&', id='first-tile')])
+    def test_time_queued_for_a_slot_does_not_spend_a_tiles_retry_budget(self, monkeypatch, fake_aiohttp, failing):
         """#172 review (ops 2). All tile tasks start at t=0 and queue for a slot, so a retry budget measured
         from task start was spent by the queue: on a slow fan-out the late tiles lost their retries exactly
-        when they mattered, and one 5xx twice on a late tile failed a whole pano. The budget is measured from
-        the tile's first request instead. Scaled down: 32 tiles one at a time at 30 ms each put the last tile's
-        first request ~1 s in, against a 0.5 s budget it then needs two retries of."""
+        when they mattered, and one 5xx twice on a late tile failed a whole pano. Scaled down: 32 tiles one at a
+        time at 30 ms each put the last tile's first request ~1 s in, against a 0.5 s budget it then needs two
+        retries of.
+
+        The first-tile variant is the final review's MINOR 1: excluding only the wait before a tile's FIRST
+        request moved the failure from late tiles to early ones, because each retry queues for a slot again,
+        behind every tile not yet started (~0.9 s here), and that wait was still inside the budget. Every slot
+        wait is excluded now, on retries too."""
         monkeypatch.setattr(gsv, 'thread_count', 1)
         monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
         monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.5)
         body = jpeg_bytes(RED)
 
         def answer(url, attempt):
-            if '&x=7&y=3&' in url and attempt <= 2:
+            if failing in url and attempt <= 2:
                 return 503
             return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
 
@@ -1436,7 +1443,7 @@ class TestARefusedTileAbandonsThePano:
 
         stitched = gsv.fetch_pano_image('queuedPanoAAAAAAAAAAAA', 4096, 2048, 3)
 
-        assert session.requests == 32 + 2, 'the late tile kept both of its retries'
+        assert session.requests == 32 + 2, 'the failing tile kept both of its retries'
         assert stitched.image.size == (4096, 2048)
 
     def test_the_budget_still_stops_a_tile_that_keeps_failing(self, monkeypatch, fake_aiohttp):
