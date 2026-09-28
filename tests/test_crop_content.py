@@ -166,18 +166,44 @@ class TestAMostlyBlackWindowIsWithheld:
         assert sentence in printed
         assert sentence in caplog.text
 
+    def test_a_run_that_is_all_black_content_raises_no_systemic_alarm(self, crop_runner, tmp_path, capsys,
+                                                                      caplog):
+        """D2: black_content is not an error, so it must not feed the #136 alarm either. That alarm tells
+        the operator to check the label metadata's shape, which for one bad pano is the wrong cause
+        (#170 review, mutant M29). Every label withheld is the case where folding it in would fire."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_banded_pano(store)
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [band_label(1, IN_BAND_Y), band_label(2, IN_BAND_Y + 50),
+                                    band_label(3, 1023)])
+
+        with caplog.at_level(logging.WARNING):
+            assert crop_runner.main(['--city', CITY, '-f', str(csv_file), '-s', str(store),
+                                     '-o', str(out)]) == 0
+
+        printed = capsys.readouterr().out
+        assert '3 labels were withheld because more than 50% of their cut window was black' in printed
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in printed
+        assert crop_runner.SYSTEMIC_FAILURE_BANNER not in caplog.text
+
     def test_the_verdict_is_strictly_more_than_the_fraction(self, crop_runner, tmp_path):
-        """Exactly at the limit is written; one row more is not. In memory, so the fractions are exact
-        rather than JPEG-rounded. Kills `>=` and any other comparator."""
+        """Exactly at the limit is written; ONE PIXEL more is not. In memory, so the fractions are exact
+        rather than JPEG-rounded. One row more would be 0.5 + 1/64 on this 96x64 window, which cannot tell
+        `> 0.5` from a loosened `> 0.51` (#170 review, mutant M02); one pixel is 0.5 + 1/6144, so any
+        comparison looser than ~0.50016 fails here, as does `>=`."""
         size = (2048, 1024)
         box = crop_runner.compute_crop_box(
             LABEL_X, CLEAN_Y, crop_runner.crop_window_width(CLEAN_Y, size[0], size[1]), size[0], size[1])
         bottom = box.top + box.height
         at_limit = bottom - int(box.height * crop_runner.CROP_MAX_BLACK_FRACTION)
+        assert (bottom - at_limit) * 2 == box.height, 'the half must be a whole number of rows'
+        assert box.left + box.width <= size[0], 'the window must not wrap the seam'
 
-        def pano_black_from(row):
+        def pano_black_from(row, extra_pixel=False):
             image = Image.new('RGB', size, GREY)
             image.paste((0, 0, 0), (0, row, size[0], size[1]))
+            if extra_pixel:
+                image.putpixel((box.left + box.width // 2, row - 1), (0, 0, 0))
             return image
 
         written = tmp_path / 'written.jpg'
@@ -186,8 +212,9 @@ class TestAMostlyBlackWindowIsWithheld:
 
         withheld = tmp_path / 'withheld.jpg'
         with pytest.raises(crop_runner.CropWindowMostlyBlackError) as e:
-            crop_runner.make_single_crop(pano_black_from(at_limit - 1), LABEL_X, CLEAN_Y, str(withheld))
-        assert e.value.fraction > crop_runner.CROP_MAX_BLACK_FRACTION
+            crop_runner.make_single_crop(pano_black_from(at_limit, extra_pixel=True), LABEL_X, CLEAN_Y,
+                                         str(withheld))
+        assert e.value.fraction == pytest.approx(0.5 + 1 / (box.width * box.height))
         assert e.value.box == box
         assert not withheld.exists()
         assert not os.path.exists(str(withheld) + '.part')
@@ -649,7 +676,8 @@ class TestTheJsonIntakeDedupesOnTheIdTheLoopFilesUnder:
     def test_spellings_of_one_id_are_one_label(self, crop_runner):
         rows = crop_runner.json_to_list([label_row(label_id=1, pano_x=100), label_row(label_id='1', pano_x=200),
                                          label_row(label_id=1.0, pano_x=300),
-                                         label_row(label_id=' 1', pano_x=400)])
+                                         label_row(label_id=' 1', pano_x=400),
+                                         label_row(label_id='01', pano_x=500)])
         assert len(rows) == 1 and rows[0]['pano_x'] == 100
 
     def test_under_force_one_id_is_cut_once(self, crop_runner, tmp_path):
