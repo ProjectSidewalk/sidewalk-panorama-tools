@@ -612,6 +612,11 @@ Field 14 includes `unavailable` — a permanent, expected, non-actionable outcom
 show large failure numbers that are entirely normal. The success/failure/unavailable split goes to stdout and
 `scrape.log`; the row has no separate column for it.
 
+Its size is not a signal; **a night on which it is the only outcome is.** The fleet saves about 60% of its
+requests on a healthy night (63.8% over the week to 2026-09-27; per city anywhere from 35% to 100%), so several nights of requests with field 13 at `0` is an outage, and the
+[log analyzer](log-analyzer.md#checks) reports it — see
+[When the depth phase saves nothing](#when-the-depth-phase-saves-nothing).
+
 ### Reading the backfill from the row
 
 **`depth_total` (field 16) is not the resolved count.** It is success + failed + skipped, and `depth_fail`
@@ -664,9 +669,10 @@ city stays `ok`, but the queue exits 1 and the night's message carries one line 
 
 | what you see | code in the night's message | what happened | what to do |
 |---|---|---|---|
-| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | `depth-stood-down` | An earlier run on this host was blocked, and the **block latch** is still fresh. If an `IMAGEDOWNLOAD: WARNING - Google refused a photometa request` line comes before it in the same output, *this* run was refused: that is the next-but-one row. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. It alarms even on a night nothing was refused, because the latch outlives the window: a stand-down at 19:00 is a refusal the queue never saw (a manual backfill, say). |
+| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | `depth-stood-down` | An earlier run on this host was blocked, and the **block latch** is still fresh. If an `IMAGEDOWNLOAD: WARNING - Google refused a photometa request` line comes before it in the same output, *this* run was refused: that is the third row, not this one. Every city skips depth at **zero requests** until it expires (6 h). GSV images still download meanwhile, but on probation (one refused pano stops them) and with every zoom from the tile probe rather than photometa. | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. It alarms even on a night nothing was refused, because the latch outlives the window: a stand-down at 19:00 is a refusal the queue never saw (a manual backfill, say). |
 | `WARNING - the depth phase stopped early because Google stopped answering` | `depth-refused` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
-| `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | `depth-stood-down` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. | As the row above: check for a rate limit before the next night. |
+| `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | `depth-stood-down` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. If the line says the latch *could not be written*, nothing else on this host stands down for it. A 5xx storm on photometa is not this row: it reads `photometa did not answer` and latches nothing. | As the row above: check for a rate limit before the next night. |
+| `WARNING - Google refused 3 GSV panos in a row (HTTP 429)` earlier in the same run, then the latch line above | `depth-stood-down` | The **image phase's** push-back breaker tripped and set the latch itself ([below](#when-google-pushes-back-on-the-image-phase)). Unlike the other rows the city does not stay `ok`: the trip puts `gsv` in the tripped set, so it exits 1 and is booked `failed`. | As for the row above: the same host, the same refusal, seen from the tile endpoint instead. |
 | `WARNING - the depth phase stopped early after 25 consecutive failures (…)` | `depth-breaker` | 25 transient failures in a row. The breakdown in brackets says whether they were the store or the network. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. |
 | `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened. The phase sat the run out rather than re-request the whole corpus against a sick store. | Check the mount and the file's permissions. |
 | `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt` into `.venv` (see [Deploying](#deploying)). |
@@ -703,6 +709,52 @@ remembers nothing.
 panorama is retried on the next run. See
 [Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers).
 
+## When the depth phase saves nothing
+
+A phase that makes requests and saves none of them looks, from the stall check, like a phase that is
+working: a failed request is still a request. The [log analyzer](log-analyzer.md#checks) therefore watches
+**saves** separately ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)), and
+reports a city whose phase has asked at least 10 times on its last 3 *requesting* nights and saved nothing. A
+night with no row, or a stand-down's five zeros, is not counted, so a `--skip-depth` rollback followed by one
+bad night does not fire. It has two arms, and `log.csv` can only tell them apart across two runs, because an
+`unavailable` verdict is ledgered at once and comes back as the next run's skip (field 15) while a transient
+failure never does:
+
+| what you see | what happened | what to do |
+|---|---|---|
+| 🟡 `Depth phase saved nothing on the last N nights it made requests … retry` | Every request failed **transiently**: the consecutive-failure breaker (network, a full or unmounted store), Google refusing requests, or a payload the decoder chokes on. Nothing was ledgered. | Read the `DEPTHDOWNLOAD` lines in `scrape.log` for the cause. No panos are lost; they retry once it is fixed. |
+| 🔴 `Depth phase saved nothing … and is writing panos off` | The ledger grew by at least half of the failures: they are being written as **`unavailable`**, which is permanent. Measured shape: upstream drift (a `streetlevel` or depth-payload change) that makes every pano's depth read as absent, so the whole corpus is written off at ~1,900 panos a night while the stats line shows a healthy rate. | Stop it tonight, then scrub the ledger — below. |
+
+**Scrubbing the ledger after a write-off.** A false `unavailable` row costs that pano its depth for ever (it
+is never re-requested); removing a true one costs one request. So err towards removing.
+
+1. **Stop the depth phase:** put `--skip-depth` back after the `--` in the cron line
+   ([Rolling back](#rolling-back-smallest-blast-radius-first)). If a queue is running, let it finish or stop it
+   the way that section describes.
+2. **Copy the ledger first**: `cp -p depth_log.csv depth_log.csv.bak-$(date +%F)` in the city's store
+   directory.
+3. **Find the last save.** Nothing was saved during the barren span, so its rows are the file's tail:
+
+   `awk -F, '{ sub(/\r$/, "") } $2 == "saved" { n = NR } END { print (n ? n : 1) }' depth_log.csv`
+
+   prints the line number of the last `saved` row (or `1`, the header, if the city never saved), and
+   everything after it is the span's `unavailable` rows — the false ones, plus at most a few genuine verdicts
+   from the night the drift began. **`depth_log.csv` has CRLF line endings** (`csv.writer`'s default; unlike
+   the image ledger, the depth ledger does not override it, and production files are all CRLF, so it stays
+   that way). That is why this is not a `grep ',saved$'`: on Linux `$` does not match before the `\r`, so the
+   grep finds nothing on the box — while Git Bash on Windows strips the CR and matches, so a dry run on a
+   desktop passes. `tests/test_depth_phase.py` runs this exact line against a ledger the depth phase wrote.
+4. **Truncate after that line**: `head -n <line> depth_log.csv > depth_log.csv.new && mv depth_log.csv.new
+   depth_log.csv`. Before the `mv`, check the line count it drops: about the CRITICAL's written-off figure
+   plus the newest run's field 14, whose verdicts the report could not see yet.
+5. **Fix the cause, then do one hand run** of that city (`scrape_queue.py … --only <city_id>`) and read its
+   `DEPTHDOWNLOAD: Completed …` line: it should be saving again before `--skip-depth` comes off the cron line.
+
+Repeat 2–4 for every city the report flags; drift hits the whole fleet at once, so expect all of them. A
+small city can be written off entirely in one night — its phase then walks its whole list, which the analyzer
+cannot tell from a finished backfill — so after drift, check every city's `depth_log.csv` for a tail of
+`unavailable` rows since the date the large cities name, not only the flagged ones.
+
 ## When the image phase stops trusting a source
 
 A `downloaded=0` row is permanent and is only undone by hand-editing `pano_id_log.csv` on the store, so the
@@ -738,8 +790,10 @@ Only the tripped source stops: a city carrying both GSV and Mapillary panos keep
 is unchanged — its fields are counts of work and the breaker is not one of them, so stdout, `scrape.log`
 and the exit code are where this lives.
 
-GSV has no breaker, deliberately: 7.9–8.4% of a large GSV city's ledger is a permanent verdict (retired
-imagery), so three in a row is routine there rather than evidence — about every 1,700 panos at 8.4%. The
+GSV has no *permanent-verdict* breaker, deliberately: 7.9–8.4% of a large GSV city's ledger is a permanent
+verdict (retired imagery), so three in a row is routine there rather than evidence — about every 1,700 panos
+at 8.4%. (It has a different one, for Google refusing the host:
+[When Google pushes back on the image phase](#when-google-pushes-back-on-the-image-phase).) The
 table is per source, in `DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`; a source with no entry is
 unlimited, so **a new source declares its own threshold or gets no breaker at all**.
 
@@ -757,6 +811,65 @@ forever, because a transient is never ledgered and so is a candidate again the n
 shuffled among the live panos, would reset the count constantly — the run would write false permanent rows
 for most of the live panos and might never trip. A raise is not evidence that the source is answering
 honestly; it is no evidence about the source at all.
+
+## When Google pushes back on the image phase
+
+A tile answered HTTP 429 or 403, or landed on Google's `/sorry/` or consent interstitial (whatever status
+the interstitial itself answered with), is **push-back**, not a transient ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)). It is never
+retried, the rest of that pano's tiles are abandoned (at most `thread_count` requests were in flight), and
+the pano gets exactly one line in `scrape.log`:
+
+```
+IMAGEDOWNLOAD: Failed to download pano <id> (HTTP 429): refused by Google: tile (3, 1) answered HTTP 429; 8 of
+512 tile requests made, the rest abandoned
+```
+
+The zoom probe, which every GSV pano meets first, reads the same way. A probe answered 403 (which since
+[#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166) raises rather than handing back a body) is `(HTTP 403)`; one
+whose retry policy gave up on 429s is `(HTTP 429)`, with urllib3's message after it; one that landed on the
+interstitial, at any status, is `(interstitial)`. A probe that gave up on 5xx **without** an interstitial
+anywhere in its path does **not** count: that is Google being ill, not Google refusing us, and latching the
+fleet over an outage would stand every city's depth down for six hours. Neither does any other non-200
+(404, 410): it stays an ordinary failure, retried next run.
+
+Three refused GSV panos in a row stop GSV images for the rest of that run:
+
+```
+IMAGEDOWNLOAD: WARNING - Google refused 3 GSV panos in a row (HTTP 429). Stopping GSV images for this run.
+Block latch /tmp/sidewalk-depth-blocked written, so the depth phase stands down too.
+IMAGEDOWNLOAD: WARNING - Google pushed back on GSV imagery (HTTP 429); 4210 pano(s) were left unattempted and
+nothing was ledgered for them, so they retry next run. No ledger repair is needed. Check this host for a rate
+limit before the next run; the depth phase stands down while the block latch /tmp/sidewalk-depth-blocked is fresh.
+```
+
+What that means, and how it differs from [the #113 breaker](#when-the-image-phase-stops-trusting-a-source):
+
+- **No ledger repair.** A push-back is never a verdict, so nothing was ledgered for the refused panos and
+  nothing is withheld. The trip costs zero false rows.
+- **The city is booked `failed`** — the run exits 1 through the same tripped-sources channel — and its run
+  summary says `image_stop: blocked`, so `scrape_queue` does not spend an extra pass on it. A budget stop
+  later in the same run (another source's pano reaching `--max-runtime`) does not overwrite it.
+- **Depth stands down too.** The trip writes the block latch and forfeits the depth pace this host had
+  earned, because tiles and photometa leave the same IP: the same run's depth phase, and every city after it
+  for 6 hours, skips depth at zero requests ([above](#when-the-depth-phase-stands-itself-down)). If the latch
+  cannot be written (its directory is gone, the disk is full), both lines say `could not be written` instead,
+  and nothing else stands down: not this run's depth phase, and not the next city.
+- **A fresh latch means probation, not a stand-down.** Any image phase starting while the latch is fresh
+  (whoever wrote it) prints `GSV images run on probation - one refused pano stops them` and runs normally; the
+  first refused GSV pano trips the breaker instead of the third. Images are never skipped on the latch alone —
+  the depth phase writes it after a single photometa refusal, and that must not stop every city's images.
+- **Only a GSV success resets the count.** A timeout, a 404, a skip, a permanent verdict and any other
+  source's outcome neither count nor reset. Other sources keep downloading after a GSV trip.
+
+**What to do.** Look for a rate limit or a captcha on this host's IP before the next night. The count per
+city is `grep -cE "Failed to download pano \S+ \((HTTP [0-9]+|interstitial)\)" */scrape.log`.
+
+**403 is push-back by analogy, not by measurement.** The retained `scrape.log*` files (2026-09-27, each city's
+last ~40 MB) hold no tile 403 and no tile 429 at all, only 55 retried 503s, every one of which recovered; so
+the classification rests on how the depth endpoint behaves, not on data from this one. If the same pano id
+keeps turning up as `(HTTP 403)` night after night, rather than many ids in one burst, 403 is a per-pano
+answer, not a refusal, and should leave `TILE_PUSHBACK_STATUSES`: under a fresh latch one such pano near the
+head of the shuffled list would trip probation and rewrite the latch every night.
 
 ## What healthy looks like
 
@@ -891,7 +1004,11 @@ dropped mid-night.
    [cross-checks the manifest](downloader.md#the-manifest-is-cross-checked-against-the-fleet) — any city
    still missing a row, or listed under the wrong id, is named and the dry run exits 1. A private deployment
    that is deliberately not scraped here gets a `#city_id,fqdn` row instead, once.
-3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it.
+3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it — and `CropRunner.py`
+   refuses `--city` for it (exit 2), since that roster is what it checks the name of a crop store against
+   ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)). A `#` row there means
+   two things at once: the analyzer stops monitoring the city, **and** `CropRunner` stops accepting it. So
+   do not comment a city out of `cities.csv` to quiet the analyzer if its crops are still wanted.
 4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
 
 ### Hearing about a bad night
@@ -987,7 +1104,13 @@ because of.
   a push-back from Google would be the first sign the pacer's persisted standing is too aggressive. The reason
   in parentheses matters: `(network failure)` and `(unexpected failure)` are the loop's own arms, one timeout
   anywhere in 52 cities writes one, and neither touches the persisted standing. `Google is refusing requests` in
-  any `scrape.log` is the stand-down itself.
+  any `scrape.log` is the stand-down itself. That grep is the **depth** phase's pacer only; the image phase
+  has its own line below.
+- `grep -hE "Failed to download pano \S+ \((HTTP [0-9]+|interstitial)\)" */scrape.log` prints nothing — a
+  line there is Google refusing a tile or a zoom probe
+  ([When Google pushes back](#when-google-pushes-back-on-the-image-phase)). `Backing off _fetch_tile` lines no
+  longer appear at all since #162 (`backoff` logs nothing now); historical ones in rotated logs are the
+  evidence of how often tiles were refused before.
 - `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
   tripwire](#the-width-tripwire): a source now serves panoramas wider than 8192-class GPUs can render. It never
   fails a night and is never mailed on a clean one, so this grep is the only place it surfaces — and it runs

@@ -28,7 +28,7 @@ if REPO_ROOT not in sys.path:
 # is what makes pytest apply them here.
 from test_crop_runner import (  # noqa: F401
     PANO_SIZE, _isolate_logging_state, block_scandir, crop_path, crop_runner, label_row, put_pano,
-    reconciles, write_labels_csv)
+    city_store, reconciles, tree_snapshot, write_labels_csv)
 
 
 MALFORMED_PREFIX = 'Skipping malformed label row'
@@ -199,7 +199,7 @@ class TestThePerLabelWarningsAreCappedPerRun:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 18, 'success': 3, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 5, 'out_of_frame': 4, 'shifted_vertically': 0,
-                          'errors': 6, 'recut': 0, 'stale_kept': 0}
+                          'errors': 6, 'recut': 0, 'stale_kept': 0, 'black_content': 0}
         assert reconciles(counts)
 
     def test_stdout_is_untouched_by_the_cap(self, crop_runner, tmp_path, capsys, monkeypatch):
@@ -248,7 +248,7 @@ class TestThePerLabelWarningsAreCappedPerRun:
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, bad_rows(crop_runner.LOG_WARNINGS_PER_KIND + 5))
         assert crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store), '-o', str(out)]) == 1
-        logged = io.open(os.path.join(str(out), 'crop.log'), encoding='utf-8').read().splitlines()
+        logged = io.open(os.path.join(str(city_store(out)), 'crop.log'), encoding='utf-8').read().splitlines()
         assert crop_runner.SYSTEMIC_FAILURE_BANNER in logged[-1]
         # ...and the suppression total is in the log, ahead of it.
         assert any(line.split(':', 2)[-1].startswith('Suppressed 5 ') for line in logged[:-1])
@@ -426,7 +426,7 @@ class TestTheProvenanceManifest:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 7, 'success': 1, 'skipped_existing': 1, 'missing_pano': 1,
                           'dims_mismatch': 1, 'out_of_frame': 1, 'shifted_vertically': 0, 'errors': 2,
-                          'recut': 0, 'stale_kept': 0}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0}
         assert list(manifest_by_label(out, crop_runner)) == ['1']
 
     def test_a_recut_crop_gets_a_second_row_and_the_last_names_the_current_rule(
@@ -578,7 +578,7 @@ class TestAFailedAppendDoesNotLoseTheCrop:
             counts = crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
         assert counts == {'total': 2, 'success': 2, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 0,
-                          'recut': 0, 'stale_kept': 0}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0}
         assert reconciles(counts)
         assert os.path.exists(crop_path(out, 1, 1)) and os.path.exists(crop_path(out, 1, 2))
         # Both channels: the per-label reason in crop.log, the number where the operator reads.
@@ -1534,3 +1534,125 @@ class TestTheProvenanceColumnsAreOptionalOnEveryIntake:
         assert counts['success'] == 1
         row = manifest_by_label(out, crop_runner)[first['label_id']]
         assert (row['source'], row['copyright'], row['license']) == ('', '', '')
+
+
+# ---------------------------------------------------------------------------
+# #159 step 1: a manifest written before rows carried a city is set aside, never appended to
+# ---------------------------------------------------------------------------
+
+PRE_CITY_HEADER = b'label_id,pano_id,source,copyright,license,crop_rule_version\n'
+PRE_CITY_MANIFEST = PRE_CITY_HEADER + b'7,testpano0001,gsv,,,v2\n8,testpano0001,gsv,"Doe, J",,v2\n'
+
+
+class TestAPreCityManifestIsSetAsideNotAppendedTo:
+    """The manifest used to be (label_id, pano_id, source, copyright, license, crop_rule_version). When
+    `city` became its first column, the open kept any file with content and wrote a header only into an
+    empty one - so the first run over an older manifest appended seven-field rows under a six-field
+    header, and every column read shifted by one with nothing raised. The writer now checks the header it
+    is about to append under. The older file is moved aside whole (its rows name no city, and a root cut
+    before #159 may hold more than one city's, so nothing can honestly prefix them), a fresh manifest is
+    started, and any header it does not recognise stops the run before a crop is cut."""
+
+    def old_store(self, crop_runner, tmp_path, content=PRE_CITY_MANIFEST):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        write_crop_file(out, 1, 7)
+        write_crop_file(out, 1, 8)
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'wb') as f:
+            f.write(content)
+        return store, out
+
+    def aside(self, crop_runner, out):
+        return os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST_PRE_CITY)
+
+    def test_the_old_file_is_moved_aside_byte_for_byte(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        counts = crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out),
+                                                city='seattle-wa')
+        assert counts['success'] == 1
+        assert crop_runner.PROVENANCE_MANIFEST_PRE_CITY == 'crop_provenance.pre-city.csv'
+        with open(self.aside(crop_runner, out), 'rb') as f:
+            assert f.read() == PRE_CITY_MANIFEST
+
+    def test_the_new_manifest_holds_only_rows_with_the_new_header(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out), city='seattle-wa')
+        assert manifest_rows(out, crop_runner) == [
+            list(crop_runner.PROVENANCE_COLUMNS),
+            ['seattle-wa', '1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]]
+
+    def test_the_marker_records_the_set_aside_file_and_a_known_gap(self, crop_runner, tmp_path):
+        """The fresh manifest has no row for the crops cut under the old one, so it is not whole - the
+        existing rule for a manifest started over a store that already holds crops."""
+        store, out = self.old_store(crop_runner, tmp_path)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        marker = read_marker(out, crop_runner)
+        assert marker['provenance_manifest_pre_city'] == crop_runner.PROVENANCE_MANIFEST_PRE_CITY
+        assert marker['provenance_manifest_no_known_gap'] is False
+
+    def test_later_runs_keep_the_record(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        os.rename(self.aside(crop_runner, out), os.path.join(str(out), 'archived.csv'))
+        crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out), city='seattle-wa')
+        assert read_marker(out, crop_runner)['provenance_manifest_pre_city'] == \
+            crop_runner.PROVENANCE_MANIFEST_PRE_CITY
+
+    def test_a_store_that_never_had_one_records_none(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        assert read_marker(out, crop_runner)['provenance_manifest_pre_city'] is None
+        assert not os.path.exists(self.aside(crop_runner, out))
+
+    def test_an_existing_set_aside_file_is_never_replaced(self, crop_runner, tmp_path):
+        """Both files are left byte for byte and nothing is cut: a second pre-city manifest where one was
+        already set aside is for a person to look at, not for this tool to pick a winner."""
+        store, out = self.old_store(crop_runner, tmp_path)
+        with open(self.aside(crop_runner, out), 'wb') as f:
+            f.write(PRE_CITY_HEADER + b'1,earlier,gsv,,,v2\n')
+        before = tree_snapshot(out)
+        with pytest.raises(crop_runner.ProvenanceManifestHeaderError):
+            crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        assert tree_snapshot(out) == before
+
+    @pytest.mark.parametrize('content', [
+        b'pano_id,label_id\n1,2\n',
+        b'city,label_id,pano_id,source,copyright,license\nseattle-wa,1,p,,,\n',
+        PRE_CITY_HEADER.replace(b'\n', b',extra\n'),
+        # The right names in the wrong order are a different file: rows appended under either would read
+        # with columns swapped, so neither is taken for the header it resembles.
+        b'label_id,city,pano_id,source,copyright,license,crop_rule_version\nseattle-wa,1,p,,,,v2\n',
+        b'pano_id,label_id,source,copyright,license,crop_rule_version\np,1,,,,v2\n',
+    ], ids=['unrelated', 'a-column-short', 'a-column-long', 'current-columns-permuted',
+            'pre-city-columns-permuted'])
+    def test_any_other_header_stops_the_run_before_anything_is_written(self, crop_runner, tmp_path,
+                                                                      content):
+        store, out = self.old_store(crop_runner, tmp_path, content=content)
+        before = tree_snapshot(out)
+        with pytest.raises(crop_runner.ProvenanceManifestHeaderError) as e:
+            crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        assert crop_runner.PROVENANCE_MANIFEST in str(e.value)
+        assert tree_snapshot(out) == before
+
+    def test_the_current_header_is_appended_to_as_before(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out), city='seattle-wa')
+        assert row_ids(out, crop_runner) == ['1', '2']
+        assert not os.path.exists(self.aside(crop_runner, out))
+
+    def test_main_refuses_on_both_channels_with_exit_3(self, crop_runner, tmp_path, capsys, caplog):
+        store, out = self.old_store(crop_runner, tmp_path, content=b'pano_id,label_id\n1,2\n')
+        root = tmp_path / 'root'
+        root.mkdir()
+        os.rename(str(out), str(city_store(root)))
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row(label_id=1)])
+        code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store),
+                                 '-o', str(root)])
+        assert code == crop_runner.EXIT_REFUSED_DESTINATION
+        assert crop_runner.PROVENANCE_MANIFEST in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and crop_runner.PROVENANCE_MANIFEST in r.getMessage()
+                   for r in caplog.records)

@@ -96,18 +96,40 @@ splits into a row for `laurens-ia`) would silence the very city it is about.
 | 🔴 CRITICAL | Log download failed, or the file is missing/empty/unparseable |
 | 🔴 CRITICAL | Last log entry is more than `--stale-days` days old (default 3) |
 | 🟡 WARNING | `image_fail` growing by ≥20/day (7-night average) — new panos failing. Averaged over calendar **nights**, not rows: the queue's extra passes put more than one row on a night |
-| 🟡 WARNING | Zero new images for 30 consecutive **nights**, after a period that had some (regression) |
-| 🟡 WARNING | A recent **image phase** took >3× the historical median, with the median floored at `LONG_RUN_MIN_MEDIAN` minutes before the multiplier. Read from `image_minutes` directly: a mature city's image phase is a ledger read while depth spends the whole slot, so an unfloored median is 0 and the rule could never fire |
+| 🟡 WARNING | Zero new images for 30 consecutive **nights**, after a period that had some (regression), **and there was work** ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)): the image-eligible corpus (field 5) grew by at least 3 from the last night before the window to the newest night in it, or field 5 − field 11 on the newest row — eligible panos the image phase never attempted — is at least 3. That difference is a lower bound, loose by the ledger rows no longer in the list: it was −1 in 50 of 56 cities on 2026-09-27 (so 4 real unattempted panos to fire) and −1,460 in chicago-il, where only the growth arm can. A blank field 5 is unknown rather than zero, and fires as before; so is a written 0, because field 5 is the image list's length and an empty pano-list answer writes 0 there (a 0 on the baseline night would otherwise read as the whole corpus arriving, and a month of empty answers as a flat corpus). A mature city with nothing new is silent: three of the 26 warnings on 2026-09-19 were exactly that. Field 11 alone is not evidence — it counts *attempts*, so a starved image phase does not grow it |
+| 🟡 WARNING | A recent **image phase** took >3× the historical median, with the median floored at `LONG_RUN_MIN_MEDIAN` minutes before the multiplier. Read from `image_minutes` directly: a mature city's image phase is a ledger read while depth spends the whole slot, so an unfloored median is 0 and the rule could never fire. **What it can see:** inside the [queue](downloader.md#nightly-deployment) a hung image phase is killed at its slot plus `--kill-grace`, which leaves `image_minutes` blank, so this rule never sees it (the ended-early rule below does, at ≥3 of the last 7 runs — a single killed night is below that and goes unreported). It fires on legitimate long phases, such as a city's first scrape (laurens-ia, 83 min, 2026-09-17), and on hand runs without `--max-runtime` |
 | 🟡 WARNING | ≥3 of the last 7 runs ended early (blank columns) |
 | 🟡 WARNING | Two runs **overlapped**: one started before the previous one's recorded end — two processes racing on one city's ledgers. Same-day runs alone are not reported; the queue's extra passes produce them by design |
 | 🟡 WARNING | **Depth backfill stalled**: no depth request on the last 3 calendar nights while panos remain unresolved. The message names the *candidates* rather than asserting a cause, because the row cannot tell them apart: a phase that accounted for panos but made no requests is either out of budget or unable to write the ledger (which returns `(0, 0, skipped, skipped)`, not five zeros), and a phase that accounted for nothing is `--skip-depth`, a block latch, `streetlevel` missing, a crash before the phase, or a fresh city whose image phase spent the budget |
+| 🔴 CRITICAL | **Depth phase saved nothing and is writing panos off**: the WARNING below, and the ledger grew by at least half of the failures before the newest run — they are coming back as `unavailable` rows, which are never re-requested. That is upstream drift (a depth payload `streetlevel` can no longer read), and every night it runs costs those panos their depth until the ledger is scrubbed: see [When the depth phase saves nothing](ops.md#when-the-depth-phase-saves-nothing) |
+| 🟡 WARNING | **Depth phase saved nothing** on the last 3 nights it made requests (nights with no row, or a stand-down's five zeros, are not counted — they are no evidence either way) despite ≥10 requests, with panos unresolved and the newest requesting run stopping short of its list ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)). The stall rule above counts *requests*, and a failed request is a request, so a phase whose every attempt fails used to read as healthy. The failures are transient: less than half came back as ledger skips, so the panos retry. A city whose last few panos fail every night walks its whole list (field 16 = field 19) and is not reported: that is the ordinary end of a backfill. Once requests stop altogether the night is the stall rule's, so one outage is never reported twice |
 | 🟡 WARNING | **The newest GSV corpus size is not believable** — a `0` in field 19, which is what an empty or source-less `/adminapi/panos` answer writes. The backfill is measured against the newest earlier row instead, rather than the city silently dropping out of the report |
-| 🟡 WARNING | **Rows that are not runs** — a field count that is neither 18 nor 19, i.e. a torn or corrupted write. Every count in such a row is shifted, so it is left out of every figure rather than read as a run (a file holding nothing else is CRITICAL, and says so) |
+| 🟡 WARNING | **Rows that are not runs**, from the last 7 days — a field count that is neither 18 nor 19, i.e. a torn or corrupted write. Every count in such a row is shifted, so it is left out of every figure rather than read as a run (a file holding nothing else is CRITICAL, and says so). Dated by the row's own field 1, which is written first and so survives a tear; a row whose stamp did not survive whole counts as recent, because that is exactly what tonight's tear can look like. "Whole" means the full `YYYY-MM-DD HH:MM:SS`: a date parser accepts a prefix, and would read `2026-09-2` as 2 September |
+| 🔵 INFO | **Historical rows that are not runs** — the same, when every such row is older than 7 days: one line with the total and the newest date, recorded rather than alerted ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)). On 2026-09-19, 20 of the morning's 26 warnings were torn rows dated 2022 to 2026-05, which nothing on the current build wrote |
 
-Thresholds are module constants near the top of `analyze.py`.
+Thresholds are module constants near the top of `analyze.py`. A city whose findings are all INFO prints the
+blue icon and counts as OK.
 
 A healthy mature city looks like: `image_success` small or zero most days, stable `image_fail`,
 `image_skip ≈ image_total`.
+
+### What `log.csv` cannot show
+
+**A steady set of panos failing the image phase transiently every night goes unreported once it has been
+steady for a week.** Field 9 mixes the
+permanent failures already ledgered, tonight's permanent ones and tonight's transient ones, so a transient set
+of constant size T adds T to every night's figure and the night-to-night change the growing-failures check
+reads is about zero. The one exception is onset: the night T first appears, field 9 jumps by T, and the
+growing-failures check averages that jump over 7 nights, so a set of T ≥ 140 (7 × its threshold of 20) is
+flagged for up to a week — mislabelled as `new permanent failures/day`, but flagged. A smaller set is never
+reported, and a larger one stops being reported after the week. Field 5 − field 11 does not see it either, because those panos *are* attempted and field
+11 counts attempts. Measured: 30 nights of 200 transient failures each, no downloads and a flat corpus
+return no finding. **This is a gap #163 opened, not one it found:** before it, the zero-new-images check
+fired on exactly that city after 30 nights, because it asked for no evidence of work. The evidence gate
+cannot tell this city from a mature one with nothing new to fetch (field 5 flat, field 5 − field 11 = 0 in
+both), and silencing the second is what the gate is for. Detecting it would need the runner to write tonight's transient count as a field 20 — and `LOG_COLUMNS` here
+and `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` move together, which a test asserts. The depth phase does not
+have this blind spot: a phase that requests and saves nothing is reported above.
 
 ## The depth backfill
 
@@ -118,10 +140,17 @@ Every city's stats line carries a depth clause once its `log.csv` has a row with
 depth 1,753/183,680 (1.0%) · +590 panos/night · ~308 nights left
 depth complete (2,709)
 depth not started (0/5,381)
+depth 27,001/100,000 (27.0%) · +1,889 panos/night · ~39 nights left · nothing saved in 10 requesting nights
 ```
 
-and the report ends with the fleet's block — resolved out of eligible, panos resolved and requests made per
-night, how many cities are complete or stalled, and the three cities with the longest road ahead. That last
+The last line is a phase that is asking and saving nothing (the CRITICAL above): its ledger is growing by
+every failure, so the rate and the ETA beside it are counting `unavailable` verdicts, not depth. The trailing
+clause is there so the line cannot read as a healthy backfill. It counts the nights that made requests, the
+same number the WARNING and CRITICAL lead with, not the calendar nights since the last save.
+
+The report ends with the fleet's block — resolved out of eligible, panos resolved and requests made per
+night, how many cities are complete, stalled or saving nothing, and the three cities with the longest road
+ahead. That last
 line is the operational number: the fleet finishes when its slowest city does, and a fleet *average* (the
 47-night estimate that sized the current slots) hid a tail more than ten times longer.
 

@@ -11,9 +11,11 @@ jobs:
     # Matches the production baseline: Ubuntu 22.04 / Python 3.10. Installing requirements.txt here also verifies that
     # streetlevel's dependency tree still pip-installs cleanly on that baseline.
     runs-on: ubuntu-22.04
-    # The suite takes ~7 minutes. Without a cap a test that hangs rather than fails (an extra-pass regression
-    # did, #174 review) holds the runner for GitHub's 6-hour default before anyone sees a red X.
-    timeout-minutes: 30
+    # GitHub's default is 6 hours, so a hung subprocess or a test waiting on a lock would hold the check (and
+    # a runner) that long before failing. Measured 2026-09-27: the job takes 5.5-6.5 minutes end to end
+    # (runs 36270192977 and 36337717048), most of it the pip install; pytest itself ~2m45s. 20 is ~3x that -
+    # room for a slow runner or a cold pip resolve - while still failing a hang in minutes, not hours (#165).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,7 +26,14 @@ jobs:
       # Bare --cov takes its source and omissions from .coveragerc, so there is one place to change them.
       # skip-covered keeps the (already -v, 1400-test) log readable; the step summary below is not skipped,
       # so the PR view still shows every file including the ones at 100%.
-      - run: python -m pytest tests -v --cov --cov-report=term-missing:skip-covered
+      # SIDEWALK_REQUIRE_STREETLEVEL turns tests/test_streetlevel_api.py's importorskip into a hard import
+      # (#165): requirements.txt installs streetlevel here, so a missing transitive dependency must fail the
+      # run rather than skip every contract test behind a green check. --continue-on-collection-errors because
+      # that failure is a collection error, and pytest's default on one is to run nothing else: the run still
+      # exits nonzero, but with every other test's result instead of "1 error" (#171 review).
+      - run: python -m pytest tests -v --continue-on-collection-errors --cov --cov-report=term-missing:skip-covered
+        env:
+          SIDEWALK_REQUIRE_STREETLEVEL: '1'
       # always(), so a run that trips the fail_under gate still shows WHERE it lost coverage rather than
       # just failing. --fail-under=0 because the pytest step above is the gate; this step only reports.
       - name: Coverage summary

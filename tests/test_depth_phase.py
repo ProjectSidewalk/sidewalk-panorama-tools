@@ -3,6 +3,10 @@
 import csv
 import logging
 import os
+import re
+import shlex
+import shutil
+import subprocess
 import sys
 import time
 from types import SimpleNamespace
@@ -771,3 +775,54 @@ class TestTheDepthPhaseNotesItsConditions:
 
         assert stop_reasons['depth_stop'] == gsv.DEPTH_STOP_MAX_RUNTIME
         assert condition_codes(stop_reasons) == []
+
+
+OPS_MD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', 'ops.md')
+
+
+@pytest.mark.skipif(shutil.which('awk') is None, reason='the recipe is an awk one-liner; CI has awk')
+@pytest.mark.parametrize('line_ending', ['as written', 'LF'])
+def test_the_ledger_scrub_recipe_finds_the_last_save_in_the_ledger_this_writer_writes(
+        tmp_path, fake_streetview, line_ending):
+    """docs/ops.md's scrub recipe (rule 10's CRITICAL, #163) must find the last `saved` row in the file this
+    module actually writes. It said `grep -n ',saved$'`, but csv.writer's default lineterminator is CRLF and
+    the depth ledger does not override it (the image ledger does), so on the Linux box `$` never matched
+    before the CR and step 3 printed nothing - on the one night the recipe is needed. Git Bash's grep
+    strips the CR, so a dry run on a Windows desktop passed. The ledger's line endings are NOT to be changed:
+    every production depth_log.csv is already CRLF. So the recipe is run here, verbatim from the page, against
+    a ledger written by download_depth_maps itself - and against an LF copy, in case one is ever normalised."""
+    with open(OPS_MD, encoding='utf-8') as f:
+        commands = re.findall(r"`(awk -F, [^`]*depth_log\.csv)`", f.read())
+    assert len(commands) == 1, commands
+
+    storage = str(tmp_path)
+    saved_ids = {'aa0001', 'aa0002', 'aa0003'}
+    fake_streetview.find_panorama_by_id = (
+        lambda pano_id, **kwargs: make_pano(default_depth_array()) if pano_id in saved_ids else None)
+    gsv.download_depth_maps(storage, pano_infos(*sorted(saved_ids)))                  # the healthy nights
+    gsv.download_depth_maps(storage, pano_infos(*['bb%04d' % i for i in range(5)]))  # the barren span
+    ledger = os.path.join(storage, gsv.DEPTH_LOG_FILENAME)
+    with open(ledger, 'rb') as f:
+        raw = f.read()
+    assert raw.count(b'\r\n') == 9, raw  # the premise: header + 3 saved + 5 unavailable, all CRLF
+    if line_ending == 'LF':
+        with open(ledger, 'wb') as f:
+            f.write(raw.replace(b'\r\n', b'\n'))
+
+    out = subprocess.run(shlex.split(commands[0]), cwd=storage, capture_output=True, text=True, check=True)
+
+    assert out.stdout.strip() == '4', out  # line 1 is the header, lines 2-4 the saves
+
+
+@pytest.mark.skipif(shutil.which('awk') is None, reason='the recipe is an awk one-liner; CI has awk')
+def test_the_ledger_scrub_recipe_keeps_the_header_when_nothing_was_ever_saved(tmp_path, fake_streetview):
+    """A small city can be written off entirely. The recipe must then name line 1 (keep the header), not print
+    nothing - `head -n` with no number is an error, and one with 0 would delete the header."""
+    with open(OPS_MD, encoding='utf-8') as f:
+        command = re.findall(r"`(awk -F, [^`]*depth_log\.csv)`", f.read())[0]
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: None
+    gsv.download_depth_maps(str(tmp_path), pano_infos('bb0001', 'bb0002'))
+
+    out = subprocess.run(shlex.split(command), cwd=str(tmp_path), capture_output=True, text=True, check=True)
+
+    assert out.stdout.strip() == '1', out

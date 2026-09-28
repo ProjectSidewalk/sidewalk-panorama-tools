@@ -448,7 +448,7 @@ silenced by it.
 | `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
 | `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
 | `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |
-| `images-no-success` | No image attempt this run was answered, and either at least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) raised or the phase's budget ran out with only raises behind it *and* those raises took at least `IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS` (60 s) each on average (a blackholed network takes ~3.5 min per raise; a mature city's few slow perennial raisers filling the share are not an outage) — the network, the store, or a bug. Old `downloaded=0` rows in the ledger are not attempts and do not count, and a GSV [frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) is Google answering, so it counts as an answer although it is not ledgered. The detail reads `N attempts raised, 0 answered, S s per raise` on both arms, so the queue's summary line carries the duration the thresholds are sized against | the errors in the city's `scrape.log` |
+| `images-no-success` | No image attempt this run was answered, and either at least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) raised or the phase's budget ran out with only raises behind it *and* those raises took at least `IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS` (60 s) each on average (a blackholed network takes ~3.5 min per raise; a mature city's few slow perennial raisers filling the share are not an outage) — the network, the store, or a bug. Old `downloaded=0` rows in the ledger are not attempts and do not count, and a GSV [frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) is Google answering, so it counts as an answer although it is not ledgered. A GSV push-back (a refused tile, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) counts as a raise; a push-back *trip* records `image_stop: blocked`, which the budget arm does not read as a budget stop, and already fails the city through its own exit 1. The detail reads `N attempts raised, 0 answered, S s per raise` on both arms, so the queue's summary line carries the duration the thresholds are sized against | the errors in the city's `scrape.log` |
 | `pano-list-empty` | The pano list was empty as served (a list the source filter emptied is that filter's condition instead) for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
 | `no-run-summary` | *(the queue's own)* An `ok` run left no readable run summary, so its conditions are unknown — a check that did not run has not passed. Also what an operator's own `--run-summary-file` after `--` produces, so do not pass one through the queue | [Extra passes](#extra-passes) |
 | `conditions-unreadable` | *(the queue's own)* The summary's `conditions` was present but not a list of objects with a non-blank string `code`. (An unknown code is kept, with its whitespace collapsed to single spaces, so a newer runner can still fail the night on one line.) | — |
@@ -487,8 +487,9 @@ Three rules that are load-bearing:
   exhausted its own list exits at minute ~6.4 of 12 — so the city that most needed the leftover window was
   the one denied it.
 
-  The other depth stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
-  collapsed into "stopped early": `blocked` means the host is standing down for six hours and a re-run would
+  The other stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
+  collapsed into "stopped early": `blocked` (from either phase — the image phase reports it when Google's
+  push-back stopped GSV, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) means the host is standing down for six hours and a re-run would
   spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again, and
   `max-requests` is a per-process cap the operator asked for, which re-running would silently multiply. If no
   summary arrives at all the queue falls back to the old elapsed-time rule, which is at least a *necessary*
@@ -548,7 +549,8 @@ The queue is a driver, not a replacement for the runner. A single city is still 
 * **Give it the venv interpreter by absolute path.** Cron's `PATH` is minimal, and `source activate` buys
   nothing a direct path doesn't.
 * **The exit code is the run's own**, so the queue — and the night's message — can read it. `SIGTERM` becomes exit
-  143 *after* the `finally` that writes the `log.csv` row, so stopping a run still leaves evidence.
+  143 *after* the `finally` that writes the `log.csv` row, so stopping a run still leaves evidence. A tripped
+  image breaker — #113's, or GSV's push-back breaker — is exit 1.
 * **Nothing is written relative to the CWD.** `scrape.log` and `log.csv` both land in `<storage-dir>`.
 * **Sizing:** `--max-runtime` is the slot, `--min-depth-runtime 60` reserves the tail for depth. Overlapping
   city runs share Google's patience — see the per-process caveat in
@@ -714,6 +716,35 @@ counted as fallback successes; a city's `log.csv` field 8 can therefore drop whi
 amount. The tile-resolution history is written up in
 [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
 
+The tile retry policy distinguishes Google refusing us from the network misbehaving (#162). Until then every
+tile error — a 429 and a 403 included — was retried 10 times with uncapped exponential backoff: 5,120
+requests per refused 16384-wide pano, which is a soft refusal being escalated by the client. Now:
+
+| Tile answer | Retried? | Push-back? |
+|---|---|---|
+| HTTP 429 or 403, or a landing URL (or redirect hop) on Google's `/sorry/` or `consent.google.com` interstitial, whatever status the interstitial answers with | never | yes |
+| any other 4xx except 408 (404 included) | no | no — an ordinary failure, retried next run |
+| 5xx, 408, a timeout, a connection error, a non-JPEG body | yes: up to 10 tries, each wait capped at 32 s, and no retry once the tile has spent 120 s of its own time: time waiting for a download slot does not count, whether before its first request or before a retry, while the requests themselves and the waits between retries do | no |
+
+The interstitial check is the depth phase's rule carried over by analogy; no CBK interstitial has been
+observed. Nothing that used to succeed on a retry is lost by not retrying a 4xx: every retired pano measured
+answers 200 with an all-black body, not an error status. The 120 s is checked after each failed try, so the
+last wait can run past it by up to one 32 s wait, and a single try is bounded separately, by aiohttp's default
+300 s per-request timeout.
+
+A refusal also **abandons the rest of that pano's fan-out**: the tiles already in flight (at most
+`thread_count`, 8 by default) finish, and no further tile is requested. An ordinary failure does not abandon
+anything — the other tiles still complete, as they always have. Each pano leaves at most one line in
+`scrape.log` about its tiles:
+
+| Pano | `scrape.log` |
+|---|---|
+| refused | one ERROR from the image loop: `Failed to download pano <id> (HTTP 429): refused by Google: tile (x, y) answered HTTP 429; 8 of 512 tile requests made, the rest abandoned` |
+| failed after retries | one ERROR, `N/M tiles failed after K tile retries; first failure: ...`, plus the loop's usual line |
+| succeeded after retries | one INFO, `stitched after K tile retries` |
+
+`backoff` itself logs nothing any more. Capping its logger at WARNING would not have been enough: its
+per-retry lines are INFO but its per-tile give-up line is ERROR, 512 of them for a pano whose every tile failed.
 **What the ledger learns from GSV.** Two answers are permanent and write a `downloaded=0` row: a pano with no
 reported width/height (decided before any request), and no imagery at either zoom, which means **both** zoom
 probes came back **200** with a fully black tile (Google's answer for a pano id it has retired). Photometa
@@ -722,9 +753,11 @@ never writes that row on its own: when it says a pano is gone, the probe is aske
 status on a probe — 403, 404, 410, a 206, a final 3xx — raises, even when its body is a black JPEG: the pano
 counts as tonight's failure, gets no ledger row, and is asked again next run. 429 and 5xx should normally not
 get that far, since the retry policy owns them and an exhausted retry raises; one that did would raise here
-like any other non-200. The same rule covers the frame check past the grid (`frame_covers_pano`) — run
-nightly on the probe path, and by `refetch_panos.py` for every pano — where a non-200 black edge tile used
-to read as "the frame covers the pano" ([#166]).
+like any other non-200. A probe that raises with 403 or 429, or that landed on Google's interstitial (a 200
+captcha page included), is also **push-back** and counts towards [the push-back
+breaker](ops.md#when-google-pushes-back-on-the-image-phase); every other status is an ordinary failure. The same rule covers the frame check past the grid
+(`frame_covers_pano`) — run nightly on the probe path, and by `refetch_panos.py` for every pano — where a non-200
+black edge tile used to read as "the frame covers the pano" ([#166]).
 
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution
@@ -796,6 +829,11 @@ view other than 360 is refused one at a time, but **323 of the 1,000 pictures in
 shape one federated instance wide. If either ever goes wrong the candidates are shuffled, so the breaker
 trips within about ninety panos on the first night and the night's message says so — instead of the city writing itself
 off a third at a time, silently and permanently.
+
+**GSV has a different breaker, for Google refusing the host** ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)).
+Three consecutive GSV panos refused with a 429/403 or an interstitial (on a tile, or on the zoom probe) stop GSV images for the run, leave nothing ledgered, write the depth block latch, and exit nonzero. It is
+not an entry in the table above and counts nothing the table counts; what it does and what to do about it are
+in [Ops → When Google pushes back on the image phase](ops.md#when-google-pushes-back-on-the-image-phase).
 
 Only a **success** resets the count — not a transient failure, and not a skip. See
 [ops.md](ops.md#when-the-image-phase-stops-trusting-a-source) for why that distinction is the whole

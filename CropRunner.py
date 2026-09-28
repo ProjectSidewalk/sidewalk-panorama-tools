@@ -30,7 +30,7 @@ from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from downloaders.common import atomic_output_path, raise_decompression_bomb_ceiling  # noqa: F401
+from downloaders.common import atomic_output_path, black_fraction, raise_decompression_bomb_ceiling  # noqa: F401
 
 # raise_decompression_bomb_ceiling is imported, not defined here, and re-exported under this module's name so
 # `CropRunner.raise_decompression_bomb_ceiling()` keeps working for reports/scripts/annotation_tiles.py and
@@ -38,8 +38,10 @@ from downloaders.common import atomic_output_path, raise_decompression_bomb_ceil
 # for the Mapillary display copy and CropRunner stopped being the only entry point that opens a 134 MP file.
 
 # What the crop loop actually reads off every label row. Only the CSV intake enforces them up front (a
-# header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake keeps
-# whatever the payload had, and bulk_extract_crops counts a row missing any of them as one bad label.
+# header typo is one error naming the file, not a KeyError 200k labels in); the JSON/server intake passes
+# every element of the array through as it came - json_to_list indexes nothing (#164) - and
+# bulk_extract_crops counts a row missing any of them, or an element that is not an object at all, as one
+# bad label.
 REQUIRED_LABEL_COLUMNS = ('pano_id', 'pano_x', 'pano_y', 'label_id')
 
 # The label's type arrives under one of two names, and a row needs exactly one of them (#123).
@@ -138,15 +140,24 @@ CROP_MAX_STORED_WIDTH = 1440
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
 
-# How far below -o refuse_production_crop_store looks. Two, because the production store's root keeps
-# its captures two directories down (<city-id>/<LabelType>/crop_<id>.png) - so pointing -o at the root,
-# at one city, or at one label type directory are all within reach - and no further, because each level
-# is a directory listing and the store is a network mount.
+# How far below the directory it is given refuse_production_crop_store looks. Two, because the production
+# store's root keeps its captures two directories down (<city-id>/<LabelType>/crop_<id>.png) - so pointing
+# -o at the root, at one city, or at one label type directory are all within reach - and no further,
+# because each level is a directory listing and the store is a network mount. main() calls it on -o AND
+# on the city store <-o>/<city>/ (#159): from -o a production city directory sits at depth 1, where the
+# LabelType-name signal is not read, so one whose type directories are still empty is caught only there.
 PRODUCTION_STORE_SCAN_DEPTH = 2
 
 # main()'s exit status when it refuses the destination. Not 1, which means "some labels errored, and the
 # next run retries them": this run never looked at a label, and re-running it changes nothing.
 EXIT_REFUSED_DESTINATION = 3
+
+# The fleet's city roster, which --city must name an active row of (#159): --city is a directory name under
+# -o, so a well-formed typo would quietly open a new, empty store beside the real one. Read as a FILE with
+# csv, never by importing log_analyzer (which imports pandas - no production module may), and never copied
+# into a constant here, which would drift from the roster the analyzer and docs/ops.md keep. Read at parse
+# time, so tests can point it elsewhere.
+CITIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'log_analyzer', 'cities.csv')
 
 # The per-crop provenance manifest (#111), beside the marker: one row per crop, appended as it lands. A
 # crop is a bare JPEG and every consumer of this store is an ML dataset, so where its pixels came from -
@@ -162,6 +173,12 @@ PROVENANCE_MANIFEST = 'crop_provenance.csv'
 PROVENANCE_FIELDS = ('source', 'copyright', 'license')
 
 PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+
+# The manifest's header before rows carried a city (#159 step 1), and where a manifest still under it is
+# moved so the city-bearing rows never land beneath it. See set_aside_pre_city_manifest.
+PRE_CITY_PROVENANCE_COLUMNS = ('label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+PROVENANCE_MANIFEST_PRE_CITY = 'crop_provenance.pre-city.csv'
+MANIFEST_PRE_CITY = 'provenance_manifest_pre_city'
 
 # crop_rule.json's answer to "may the manifest be read as covering every crop here?" (#153 M3). Named for
 # what it records - that no run has KNOWN of a crop without a row - because that is all a marker can
@@ -190,13 +207,34 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 # bulk_extract_crops' counts, beside 'total'. Every label lands in exactly one DISJOINT_OUTCOMES bucket, so
 # those sum to total on every path; a COUNT_ANNOTATIONS entry qualifies a label already in one of them and
 # is deliberately outside that sum - shifted_vertically and recut annotate a success, stale_kept a label
-# under --force that left an old crop in place because the run never reached its write: a dims_mismatch or
-# out_of_frame skip (#153 m2), a missing_pano, or the errors of a pano that cannot be opened (#153 final
-# F3). A new key goes in exactly one of the two, and tests/test_crop_runner.py asserts the dict holds
-# nothing else.
+# under --force that left an old crop in place because the run did not write it: a dims_mismatch or
+# out_of_frame skip (#153 m2), a missing_pano, the errors of a pano that cannot be opened (#153 final
+# F3) or decoded, or a black_content withhold (#164). A new key goes in exactly one of the two, and
+# tests/test_crop_runner.py asserts the dict holds nothing else. black_content is disjoint, not an
+# annotation: a withheld label is not a success, and like dims_mismatch it is something the run refused
+# to trust rather than an error it made.
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch', 'out_of_frame',
-                     'errors')
+                     'black_content', 'errors')
 COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
+
+# The content check (#164): a cut window more than this fraction exactly-black (luma 0) is not written and
+# is counted black_content. The #47 guarantee is about geometry - no crop contains synthetic black the
+# cropper made - and says nothing about black the STORED pano already holds: a stitch that ran past what
+# Google serves (#156's D4 shape, ~34% black along its right and bottom 19%) or a pre-#68 fallback. Those
+# pass the stitcher's own guard (gsv.STITCH_MAX_BLACK_FRACTION, also 0.5 but of the whole pano), so a
+# label inside the band was cut as a black crop and counted success.
+#
+# Why 0.5, measured on a 2048x1024 grey pano with its bottom 30% black, JPEG q95: a label at y=512 cuts
+# 0.000 black, 650 -> 0.241, 700 -> 0.452, 716 -> 0.499, 730 -> 0.540, 900 (window shifted) -> 0.900.
+# Inside a large black JPEG region luma is exactly 0, and ringing is confined to the rows next to the
+# edge, so a label inside a band whose window is NOT shifted gives at least half black rows. A SHIFTED
+# window gives the band's depth over the window's height instead, wherever the label sits: at the nadir
+# the window is a third of the pano tall, so a bottom band is caught only when it is deeper than H/6
+# (16.7%; the D4 band is 18.75%, 0.56 black), and a thinner one is written as success, up to half black
+# (tests pin both; the table is in docs/cropper.md). A window more black than imagery is not imagery. Exact zero over half a
+# window is also not a night scene or a black car: JPEG noise keeps those off 0. The strict `>` matches
+# the stitcher; a label within the ringing margin of a band edge (y=716 above) is written, knowingly.
+CROP_MAX_BLACK_FRACTION = 0.5
 
 # ---------------------------------------------------------------------------
 # Bounding crop.log under a systemic fault (#139). The crop loop logs one WARNING per failed label, which
@@ -208,9 +246,10 @@ COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
 # one is what actually bounds the file, since even a 100-byte line times 260,000 is 26 MB.
 #
 # Lines of one KIND (a malformed row, a failed write, an unopenable pano, a dims mismatch, a label out
-# of frame, an unrecorded provenance row) logged per run before the rest are suppressed. Per kind, not
-# shared, so a flood of one cannot silence the first lines of another, which may be the actual cause.
-# Six kinds x 100 lines x ~300 B stays under 1 MB, a tenth of one rotation segment. Suppression is of
+# of frame, a mostly black window, an unrecorded provenance row) logged per run before the rest are
+# suppressed. Per kind, not shared, so a flood of one cannot silence the first lines of another, which
+# may be the actual cause. Seven kinds x 100 lines x ~300 B is ~210 KB, a fiftieth of one rotation
+# segment. Suppression is of
 # LINES only: every label is still counted, which is what the summary, the #136 alarm and the exit
 # code read.
 LOG_WARNINGS_PER_KIND = 100
@@ -228,12 +267,48 @@ LOG_ID_MAX_CHARS = 60
 _CITY_ID = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*')
 
 
+def known_city_ids(path):
+    """The active city_ids in a cities.csv-shaped roster: every non-blank city_id not commented out with '#'.
+
+    To log_analyzer a '#' row means "not monitored"; here it means "not croppable". The two agree today
+    (every '#' row is a deployment not scraped here, so it has no panos to crop), which is why one roster
+    serves both - but commenting a city out to quiet the analyzer also stops it being cropped
+    (docs/ops.md, Adding a city).
+
+    :raises OSError: if the file cannot be read.
+    :raises ValueError: if it has no city_id column.
+    """
+    with open(path, encoding='utf-8', newline='') as f:
+        reader = csv.DictReader(f)
+        if 'city_id' not in (reader.fieldnames or ()):
+            raise ValueError("no city_id column")
+        ids = set()
+        for row in reader:
+            city = (row.get('city_id') or '').strip()
+            if city and not city.startswith('#'):
+                ids.add(city)
+        return ids
+
+
 def city_id(value):
     """argparse type for --city. Strict, because the city is compared as a string - a city spelled two ways
-    would be two cities - and because #159 makes it a path component."""
+    would be two cities - and because it is a path component (#159): <crop-dir>/<city>/.
+
+    Well-formed first, then an active row of CITIES_FILE, read now. A roster that cannot be read fails
+    closed (exit 2 naming it): accepting every well-formed name there is exactly the typo gap this closes."""
     if not _CITY_ID.fullmatch(value):
         raise argparse.ArgumentTypeError("%r is not a city_id: lowercase letters and digits joined by single "
                                          "hyphens, as in log_analyzer/cities.csv (seattle-wa, cdmx)" % value)
+    try:
+        known = known_city_ids(CITIES_FILE)
+    except (OSError, ValueError, csv.Error) as e:
+        raise argparse.ArgumentTypeError("cannot read the city roster %s (%s), so cannot confirm %r is a city; "
+                                         "nothing has been written" % (CITIES_FILE, e, value))
+    if value not in known:
+        raise argparse.ArgumentTypeError(
+            "%r is not an active city in %s. --city names the crop store's directory, so a misspelling would "
+            "start a new store; a city missing from the roster is added there first (docs/ops.md, Adding a "
+            "city, step 3)" % (value, CITIES_FILE))
     return value
 
 
@@ -246,9 +321,9 @@ def build_parser():
     # Docker container's scratch path - and the container runs DownloadRunner, not this script. A forgotten
     # flag should name itself, not quietly put an ML training corpus somewhere nobody thinks to look.
     parser.add_argument('-s', required=True, help='pano_storage_directory - path to directory containing panoramas downloaded using DownloadRunner.py')
-    parser.add_argument('-o', required=True, help='crop_output_directory - path to location for saving the crops')
+    parser.add_argument('-o', required=True, help='crop_output_directory - the root holding one crop store per city; this run writes into <crop-dir>/<city>/ only (#159)')
     parser.add_argument('--mark-label', action='store_true', help='Draw a dot at the label position in every crop. Debugging aid - deliberately OFF by default, because these crops are ML training data and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.')
-    parser.add_argument('--city', required=True, type=city_id, help="The city_id these labels belong to (seattle-wa, cdmx - log_analyzer/cities.csv). Required: label_id restarts at 1 in every deployment, so crops are only unique per city. The first run records it in crop_rule.json, and a run naming a different city is refused before anything is cut, so no city can overwrite another city's crops (#159). Recorded on every provenance row.")
+    parser.add_argument('--city', required=True, type=city_id, help="The city_id these labels belong to (seattle-wa, cdmx): an active row of log_analyzer/cities.csv, read at startup. Required: label_id restarts at 1 in every deployment, so crops are only unique per city. The first run records it in crop_rule.json, and a run naming a different city is refused before anything is cut, so no city can overwrite another city's crops (#159). Recorded on every provenance row.")
     parser.add_argument('--force', action='store_true', help='Re-cut a label whose crop already exists instead of skipping it (#83) - the repair for a store cut under an older sizing rule. Each crop is replaced atomically, so a failed write leaves the old one in place. For the ML crop store this tool writes ONLY; a destination that looks like the production canvas-capture store is refused either way.')
     return parser
 
@@ -333,13 +408,45 @@ def fetch_label_ids_csv(metadata_csv_path):
     return labels
 
 
-def json_to_list(jsondata):
+def _label_id_key(raw):
+    """The dedupe key for a JSON row's label_id: the int the crop loop will file its crop under, or None.
+
+    The loop names a crop int(row['label_id']), so the key is that same int(): 1, "1", 1.0 and " 1" are one
+    label, as are "07" and 7. Deduping on the raw value let 1 and "1" both through, and under --force both
+    re-cut the same file (#164). None means "no usable id" - absent, null, blank, or something int() refuses
+    - and such rows are never deduped against each other: each is its own bad label, counted once by the
+    loop, and collapsing two would hide one.
+    """
+    if _absent(raw):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def json_to_list(jsondata, source=None):
     """
     Transforms json like object to a list of dict to be read in bulk_extract_crops() to crop panos with label metadata
     :param jsondata: json object containing label ids and their associated properties
+    :param source: the file path or URL it came from, named in the refusal below
     :return: A list of dicts containing the following metadata: label_id, pano_id, label_type, agree_count,
     disagree_count, unsure_count, pano_width, pano_height, pano_x, pano_y, canvas_width, canvas_height, canvas_x,
     canvas_y, zoom, heading, pitch, camera_heading, camera_pitch, camera_roll
+    :raises ValueError: the top level is not an array. A 200 carrying an error object would otherwise be
+        iterated as its keys; one error naming the source, like the CSV intake's header check, is the
+        honest answer.
+
+    Nothing here indexes a row (#164): every element is passed through, and the crop loop counts one that
+    is not an object, or lacks a field it needs, as one malformed row - the CSV intake's behaviour. Rows are
+    deduped on _label_id_key, the int the loop files under. Two ways this differs from the CSV intake, left
+    alone on purpose: that one dedupes on the raw cell ('7' and '07' stay distinct and both file as 7.jpg),
+    and it collapses repeated blank or unparseable label_id cells into one.
+
+    The dedupe keeps the FIRST row with a key, whether or not that row is usable, so a malformed row shadows
+    a good one sharing its int: [{"label_id": 7, "pano_x": "bad"}, {"label_id": "7", ...}] is one error and
+    no crop. Before #164 the raw keys 7 and "7" were distinct and the good row was cut; keep-first on a bad
+    first row was already the rule for identical raw keys, so this only widens it (#170 review).
 
     Measured against sidewalk-sea 2026-09-18 (#123): `label_type` is a name and replaced the older
     `label_type_id`; `unsure_count` was documented here as `notsure_count`; `camera_roll` is served and
@@ -347,13 +454,19 @@ def json_to_list(jsondata):
     a column by that name. Nor does it send `copyright` or `license`; the provenance manifest (#111)
     copies all three when a row carries them and writes them empty otherwise.
     """
+    if not isinstance(jsondata, list):
+        raise ValueError("%s: expected a JSON array of label rows, got %s: %s"
+                         % (source or 'label metadata', type(jsondata).__name__,
+                            _clip(repr(jsondata), LOG_ROW_REPR_MAX_CHARS)))
     unique_label_ids = set()
     label_info = []
 
     for value in jsondata:
-        label_id = value["label_id"]
-        if label_id not in unique_label_ids:
-            unique_label_ids.add(label_id)
+        key = _label_id_key(value.get('label_id') if isinstance(value, dict) else None)
+        if key is None:
+            label_info.append(value)
+        elif key not in unique_label_ids:
+            unique_label_ids.add(key)
             label_info.append(value)
         else:
             print("Duplicate label ID")
@@ -368,7 +481,7 @@ def fetch_cvMetadata_from_file(metadata_json_path):
     """
     with open(metadata_json_path) as json_file:
         json_meta = json.load(json_file)
-    return json_to_list(json_meta)
+    return json_to_list(json_meta, source=metadata_json_path)
 
 
 def fetch_cvMetadata_from_server(server_fqdn):
@@ -388,12 +501,17 @@ def fetch_cvMetadata_from_server(server_fqdn):
             response = session.get(url, timeout=(30, 600))
             response.raise_for_status()
             jsondata = response.json()
+        # Inside the try (#164): a 200 whose body is not an array - an error object, say - is a failed
+        # fetch like any other, not a traceback.
+        return json_to_list(jsondata, source=url)
     except requests.exceptions.RequestException as e:
         logging.error('Fetching cvMetadata from %s failed: %s', url, e)
         print("Cannot fetch metadata from webserver. Check log file.")
         sys.exit(1)
-
-    return json_to_list(jsondata)
+    except ValueError as e:
+        logging.error('cvMetadata from %s is not usable: %s', url, e)
+        print("The webserver's metadata is not a list of labels. Check log file.")
+        sys.exit(1)
 
 
 def _absent(value):
@@ -724,13 +842,15 @@ class CropStoreCityError(Exception):
 def check_store_city(destination_dir, city):
     """Refuse a crop store recorded as another city's, before anything in it is touched (#153, for #159).
 
-    Crops are <label_type_id>/<label_id>.jpg and label_id restarts at 1 in every deployment, so two cities
-    sharing one -o collide on file names. Without --force the second city's label finds the first city's crop
-    and counts it skipped_existing - wrong data reported as a success. With --force it REPLACES the first
-    city's crop, and nothing records that it happened. #159 moves crops under <crop-dir>/<city>/; until then
-    this is what keeps one city out of another's store.
+    Crops are <label_type_id>/<label_id>.jpg inside a store and label_id restarts at 1 in every deployment,
+    so two cities in one store collide on file names. Without --force the second city's label finds the
+    first city's crop and counts it skipped_existing - wrong data reported as a success. With --force it
+    REPLACES the first city's crop, and nothing records that it happened. #159 gives every city its own
+    store, <crop-dir>/<city>/, which main() composes from --city; this is what still catches a store under
+    the wrong name - one renamed or copied into another city's directory - and a caller below main() that
+    hands bulk_extract_crops another city's store.
 
-    Passes when there is nothing to disagree with: no -o yet, no crop_rule.json yet, or a marker written
+    Passes when there is nothing to disagree with: no store yet, no crop_rule.json yet, or a marker written
     before the city was recorded (the run then adopts `city` - write_rule_marker records it). Refuses when
     the recorded city differs, and when a marker exists but cannot be read or holds a city that is not a
     string: "unreadable" is not "no city", and adopting there would hand the store to whichever city ran
@@ -795,6 +915,14 @@ def _is_numeric_name(name):
     return name.isascii() and name.isdigit()
 
 
+def _is_label_type_shard(name):
+    """A directory name this tool writes a shard under: str(label_type_id) for a type the enum has. Narrower
+    than _is_numeric_name, which stays the scanners' test - a root holds no all-digit directory of its own
+    either way - but the migrator moves only these, so a '2024' of figures or a hand-made '01' is never
+    filed into a city's store as if it were crops (#159 review)."""
+    return _is_numeric_name(name) and name == str(int(name)) and int(name) in LABEL_TYPE_NAMES_BY_ID
+
+
 def _is_canvas_capture(name):
     """crop_<labelId>.png, the production store's file name. Our own crop_rule.json shares the prefix,
     which is why the extension is part of the test and the prefix alone is not."""
@@ -809,8 +937,16 @@ def refuse_production_crop_store(destination_dir):
     the label cards and the social preview from `<root>/<city-id>/<LabelType>/crop_<labelId>.png`: a
     canvas capture the BROWSER took at label time - the annotator's own viewport, zoom and the imagery
     Google served that day. It is not a function of anything we still hold, so none of it can be
-    regenerated and a deleted one is gone. This tool writes `<crop-dir>/<label_type_id>/<label_id>.jpg`,
-    cut from the pano store and reproducible at will. #83's scope comment has the full comparison.
+    regenerated and a deleted one is gone. This tool writes `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`
+    (#159), cut from the pano store and reproducible at will. #83's scope comment has the full comparison.
+
+    Since #159 both layouts are city-first, so depth no longer separates them; the names do. Ours has
+    all-digit type directories and <label_id>.jpg files, theirs LabelType-named directories and
+    crop_<labelId>.png files. Scanned from -o, our city directories sit at depth 1 and their numeric
+    shards are skipped, so a formula root passes; a production root is caught by its captures at depth 2.
+    The one shape the root-level scan misses is a production city directory whose LabelType directories
+    are still EMPTY - the name signal is read at depth 0 only - which is why main() scans the city store
+    as well.
 
     The two layouts happen to be disjoint on every name component - a type NAME against a numeric id,
     a `crop_` prefix, .png against .jpg - so CropRunner pointed at the production store could not
@@ -848,7 +984,8 @@ def refuse_production_crop_store(destination_dir):
     yet has nothing in it to protect and passes.
 
     Called before ANYTHING is written: by bulk_extract_crops before it creates the destination or
-    writes the rule marker, and by main() before it creates -o or opens crop.log inside it.
+    writes the rule marker, and by main() - on -o and again on <-o>/<city>/ - before it creates the store
+    or opens crop.log inside it.
     """
     pending = [(destination_dir, 0)]
     while pending:
@@ -884,8 +1021,8 @@ def refuse_production_crop_store(destination_dir):
                 "Refusing to write crops into %s: it holds %s, the layout of the production crop "
                 "store SidewalkWebpage serves (<city-id>/<LabelType>/crop_<labelId>.png). Those "
                 "are canvas captures taken at label time and cannot be regenerated. CropRunner "
-                "writes <label_type_id>/<label_id>.jpg - point -o at a formula crop store, or at a "
-                "new directory." % (destination_dir, found))
+                "writes <crop-dir>/<city>/<label_type_id>/<label_id>.jpg - point -o at a root of "
+                "formula crop stores, or at a new directory." % (destination_dir, found))
 
 def _store_holds_crops(destination_dir):
     """True if any label-type shard (<destination_dir>/<digits>/) holds a crop (a *.jpg).
@@ -923,8 +1060,189 @@ def _store_holds_crops(destination_dir):
     return False
 
 
+class LegacyCropStoreError(Exception):
+    """-o is a crop store in the pre-#159 flat layout, not a root of per-city stores. See
+    refuse_legacy_crop_root."""
+
+
+# The store-level files a pre-#159 store keeps directly in -o. Any one of them there means -o IS a store.
+# crop.log alone is not a signal: it is what any directory a run was pointed at could hold, and a root
+# never writes one of its own - but the migrator moves it with the rest.
+LEGACY_ROOT_FILES = (CROP_RULE_MARKER, PROVENANCE_MANIFEST, PROVENANCE_MANIFEST_PRE_CITY)
+
+
+# The kinds of hit legacy_layout_signal reports. Only the first two make -o a pre-#159 store; the third is a
+# directory a person put there, which the migrator leaves, so its remedy is different (final review M1).
+LEGACY_LABEL_TYPE_DIRECTORY = 'label_type_directory'
+LEGACY_STORE_FILE = 'store_file'
+LEGACY_STRAY_DIGIT_DIRECTORY = 'stray_digit_directory'
+
+LegacySignal = collections.namedtuple('LegacySignal', ['kind', 'description'])
+
+
+def legacy_layout_signal(crop_dir):
+    """What marks crop_dir as a pre-#159 flat store - a LegacySignal(kind, description) - or None.
+
+    One listing of crop_dir, stopping at the first hit: an all-digit directory (a label-type shard - a
+    root under the new layout holds only city directories, and no city_id is all digits, which
+    tests/test_crop_store_layout.py pins against log_analyzer/cities.csv) or a LEGACY_ROOT_FILES file.
+    An all-digit directory that is not a label type's (_is_label_type_shard) is still a signal, but of its
+    own kind, LEGACY_STRAY_DIGIT_DIRECTORY: the migrator leaves it where it is, so a person has to move it.
+    A crop_dir that does not exist yet holds nothing and gives no signal.
+    """
+    try:
+        with os.scandir(crop_dir) as listing:
+            for entry in listing:
+                if entry.is_dir():
+                    if _is_label_type_shard(entry.name):
+                        return LegacySignal(LEGACY_LABEL_TYPE_DIRECTORY,
+                                            "a label-type directory, %s" % entry.path)
+                    if _is_numeric_name(entry.name):
+                        return LegacySignal(LEGACY_STRAY_DIGIT_DIRECTORY,
+                                            "an all-digit directory that is not a label type, %s" % entry.path)
+                elif entry.name in LEGACY_ROOT_FILES:
+                    return LegacySignal(LEGACY_STORE_FILE, "a crop store's own file, %s" % entry.path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return None
+
+
+def city_named_directory(path, city):
+    """The directory `path` names, if that directory is named `city` - so already <crop-dir>/<city>/ for -o
+    its parent - else None.
+
+    Compared after normalising (a trailing slash's basename is '', and 'x/1/..' is 'x') and again after
+    resolving links, so `-o /srv/crops/current` pointing at seattle-wa/ counts. The spelled path wins when
+    both match, so the parent named back to the operator is the one they typed.
+    """
+    normalized = os.path.normpath(os.path.abspath(path))
+    if os.path.basename(normalized) == city:
+        return normalized
+    resolved = os.path.realpath(normalized)
+    if os.path.basename(resolved) == city:
+        return resolved
+    return None
+
+
+def refuse_legacy_crop_root(crop_dir, city):
+    """Raise LegacyCropStoreError if crop_dir is a pre-#159 flat store rather than a root of city stores.
+
+    Before #159, -o WAS the store: <crop-dir>/<label_type_id>/<label_id>.jpg, with crop_rule.json and
+    crop_provenance.csv beside the shards. Taking such a directory as a root would start <crop-dir>/<city>/
+    beside the old shards and cut every crop again - two copies of one city's store, with nothing to say
+    which is current, and whatever other city's crops the flat store mixed in left where they were. So it
+    is refused, --force included, and the message says what to run: migrate_crop_store.py, which moves
+    the store under <city>/ without replacing anything, or - when -o is already named for the city, the
+    README's form - nothing at all, since pointing -o at the parent makes it <crop-dir>/<city>/ as it is.
+
+    A half-migrated root (some shards moved, some not) is refused too, correctly: a person decides each
+    collision the migrator left, and cropping into the half that moved would hide the rest.
+
+    Called by main() before the city store is created or crop.log opened, so the refusal writes nothing.
+    """
+    signal = legacy_layout_signal(crop_dir)
+    if signal is None:
+        return
+    found = signal.description
+    if signal.kind == LEGACY_STRAY_DIGIT_DIRECTORY:
+        # Not evidence of a flat store: a root of city stores cannot hold it either (no city_id is all
+        # digits), but the migrator leaves it where it is, so offering the migrator would end in LEFT and
+        # exit 1 with nothing moved. The scan stops at the first hit, so whether the root is ALSO a pre-#159
+        # store is not known yet; the re-run says, with its own remedy.
+        raise LegacyCropStoreError(
+            "%s holds %s. Since #159, -o holds only one store per city and no city_id is all digits, so the run "
+            "refuses it; migrate_crop_store.py leaves such a directory where it is, so move it out of -o by "
+            "hand, then re-run - if -o is also a flat crop store from before #159, the re-run says how to "
+            "move that. Nothing has been written." % (crop_dir, found))
+    command = "python3 migrate_crop_store.py %s --city %s --dry-run" % (crop_dir, city)
+    named_for_city = city_named_directory(crop_dir, city)
+    if named_for_city is not None:
+        # The migrator is deliberately not offered here: it refuses a root named for --city (it would nest
+        # the store as <city>/<city>/), and on a store several cities were cut into it would file every
+        # crop under this one - it cannot tell one city's crop from another's.
+        raise LegacyCropStoreError(
+            "%s looks like %s's crop store already - it is named for the city and holds %s. Since #159, -o is "
+            "the directory that HOLDS one store per city, so point -o at its parent, %s, and nothing moves. "
+            "(If more than one city was ever cut into it, no tool here can separate them: see docs/cropper.md, "
+            "One store, one city.) Nothing has been written." % (crop_dir, city, found,
+                                                                   os.path.dirname(named_for_city)))
+    raise LegacyCropStoreError(
+        "%s holds %s: it is a crop store in the layout before #159, when -o was the store, not a root that "
+        "holds one store per city (<crop-dir>/<city>/<label_type_id>/<label_id>.jpg). Cropping here would "
+        "start a second copy of the store beside it. Move it into place first - it moves files, never "
+        "replaces one, and lists anything it cannot move: `%s`, then the same without --dry-run. It files "
+        "every crop under --city, so run it only on a store that holds %s's crops alone; for one that more "
+        "than one city was cut into, see docs/cropper.md, One store, one city. Nothing has been written."
+        % (crop_dir, found, command, city))
+
+
+class ProvenanceManifestHeaderError(Exception):
+    """The provenance manifest on disk carries a header this run must not append under. See
+    set_aside_pre_city_manifest."""
+
+
+# How much of the manifest's first line is read to judge its header. Either header is under 80 bytes; a
+# first line longer than this is not one of them.
+_MANIFEST_HEADER_READ_LIMIT = 4096
+
+
+def set_aside_pre_city_manifest(destination_dir):
+    """Check the manifest's header before anything is appended under it, and move a pre-city one aside.
+
+    ProvenanceManifest writes a header only into an EMPTY file, so it trusts whatever header a non-empty
+    one carries. When `city` became the first column (#153's stopgap for #159) that trust was wrong for
+    every manifest already on disk: seven-field rows appended under the six-field header read with every
+    column shifted by one, and nothing raised. So:
+
+    * the current header (or no file, or an empty one, or a torn header with no newline at all - the
+      manifest's own open rewrites that) passes untouched;
+    * the pre-city header (PRE_CITY_PROVENANCE_COLUMNS) is MOVED, whole, to PROVENANCE_MANIFEST_PRE_CITY,
+      and the run then starts a fresh manifest. Its rows are never rewritten or given a city: a root cut
+      before #159 may hold more than one city's crops, and a city written onto those rows would be a guess;
+    * anything else raises ProvenanceManifestHeaderError, and so does a pre-city manifest when the
+      set-aside name is already taken - never replaced, since that would lose the older file.
+
+    Called before write_rule_marker, which then finds no manifest and records a known gap if the store
+    holds crops - which it will, since the set-aside rows described crops that are still on disk.
+
+    :return: PROVENANCE_MANIFEST_PRE_CITY if a manifest was moved aside, else None.
+    :raises ProvenanceManifestHeaderError: before anything is written.
+    """
+    path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
+    try:
+        with open(path, 'rb') as f:
+            first_line = f.readline(_MANIFEST_HEADER_READ_LIMIT)
+    except OSError:
+        # Absent: nothing to check. Unreadable: ProvenanceManifest's own open raises on it just after the
+        # marker is written, before any crop - the existing failure for a store that cannot record provenance.
+        return None
+    if first_line == _csv_line(PROVENANCE_COLUMNS):
+        return None
+    if not first_line.endswith(b'\n') and len(first_line) < _MANIFEST_HEADER_READ_LIMIT:
+        # Empty, or a header torn before its newline: nothing after it can be a row, and the open cuts it.
+        return None
+    if first_line != _csv_line(PRE_CITY_PROVENANCE_COLUMNS):
+        raise ProvenanceManifestHeaderError(
+            "%s begins with a header this run does not recognise (%r; expected %s). Appending under it "
+            "would misfile every column, so nothing has been cut. Move the file aside or restore it, then "
+            "re-run." % (path, first_line[:200], ','.join(PROVENANCE_COLUMNS)))
+    aside = os.path.join(destination_dir, PROVENANCE_MANIFEST_PRE_CITY)
+    if os.path.lexists(aside):
+        raise ProvenanceManifestHeaderError(
+            "%s still has the header written before rows carried a city, and %s already exists, so it "
+            "cannot be set aside without replacing that file. Nothing has been cut. Merge or rename one of "
+            "the two by hand, then re-run." % (path, aside))
+    os.rename(path, aside)
+    message = ("%s had the header written before rows carried a city; moved it, unchanged, to %s and "
+               "started a new manifest. Crops listed only in the old file have no row in the new one."
+               % (path, PROVENANCE_MANIFEST_PRE_CITY))
+    print(message)
+    logging.warning('%s', message)
+    return PROVENANCE_MANIFEST_PRE_CITY
+
+
 class ProvenanceManifest:
-    """<crop-dir>/crop_provenance.csv, appended one row per crop as it lands (#111).
+    """<crop-dir>/<city>/crop_provenance.csv, appended one row per crop as it lands (#111).
 
     The contract is the two nightly ledgers' (DownloadRunner's pano_id_log.csv, gsv's depth_log.csv): one
     handle held for the run and a row on disk per item, so a run killed at any point leaves a truthful
@@ -1142,6 +1460,10 @@ def write_rule_marker(destination_dir, force=False, city=None):
     previous = marker.get('crop_rule_version')
     if city is None and isinstance(marker.get('city'), str):
         city = marker['city']
+    # Named once a pre-city manifest has been set aside (#159 step 1), and carried forward after that.
+    pre_city = marker.get(MANIFEST_PRE_CITY)
+    if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST_PRE_CITY)):
+        pre_city = PROVENANCE_MANIFEST_PRE_CITY
 
     if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST)):
         manifest_started_under = marker.get('provenance_manifest_started_under')
@@ -1179,7 +1501,8 @@ def write_rule_marker(destination_dir, force=False, city=None):
                        'previous_crop_rule_version': previous,
                        'provenance_manifest': PROVENANCE_MANIFEST,
                        'provenance_manifest_started_under': manifest_started_under,
-                       MANIFEST_NO_KNOWN_GAP: no_known_gap},
+                       MANIFEST_NO_KNOWN_GAP: no_known_gap,
+                       MANIFEST_PRE_CITY: pre_city},
                       f, indent=1, sort_keys=True)
     return previous
 
@@ -1216,12 +1539,32 @@ def _record_manifest_gap(destination_dir):
             json.dump(marker, f, indent=1, sort_keys=True)
 
 
+class CropWindowMostlyBlackError(Exception):
+    """The window about to be written is more than CROP_MAX_BLACK_FRACTION exactly-black (#164).
+
+    Raised by make_single_crop before anything is written; bulk_extract_crops counts it black_content.
+    `fraction` is the measured share, `box` the CropBox that was cut."""
+
+    def __init__(self, fraction, box):
+        super().__init__("%.1f%% of the cut window is black (limit %.0f%%)"
+                         % (100 * fraction, 100 * CROP_MAX_BLACK_FRACTION))
+        self.fraction = fraction
+        self.box = box
+
+
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     """
     Makes a crop around the object of interest and saves it atomically.
 
     Geometry per compute_crop_box: x wraps at the equirectangular seam, y clamps by shifting, so the
     crop is real imagery edge to edge (#47).
+
+    Geometry is not content (#164): a window can be edge to edge inside the pano and still be black,
+    because the STORED pano holds black where Google served nothing. So the window is judged as
+    extract_crop returns it - before the storage downscale and before the mark - and if more than
+    CROP_MAX_BLACK_FRACTION of it is exactly black, CropWindowMostlyBlackError is raised and nothing is
+    written. This runs only on a crop about to be written: bulk_extract_crops never reaches here for a
+    crop already on disk without --force, so crops cut before the check are never re-judged.
 
     :param pano: an open PIL.Image, or a path to one. bulk_extract_crops opens each pano once and passes
                  the image (a 13312x6656 pano is ~250 MB decoded and a 16384x8192 one 384 MB; re-opening
@@ -1232,6 +1575,7 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     :param draw_mark: if a dot should be drawn at the label position in the crop
     :return: the CropBox that was cut, so the caller can count a de-centred (shifted) crop without
              recomputing the geometry.
+    :raises CropWindowMostlyBlackError: the window is mostly black; nothing was written.
     """
     close_after = False
     if not hasattr(pano, 'crop'):
@@ -1242,7 +1586,11 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
 
         box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_width, pano_height),
                                pano_width, pano_height)
-        cropped = downscale_for_storage(extract_crop(pano, box.left, box.top, box.width, box.height))
+        window = extract_crop(pano, box.left, box.top, box.width, box.height)
+        fraction = black_fraction(window)
+        if fraction > CROP_MAX_BLACK_FRACTION:
+            raise CropWindowMostlyBlackError(fraction, box)
+        cropped = downscale_for_storage(window)
 
         if draw_mark:
             # Draw on the crop, never the source pano: the pano image is shared by every label on it, so a
@@ -1439,9 +1787,16 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                        city=None):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
+    destination_dir is ONE city's store - main() passes <crop-dir>/<city>/ (#159) - and `city` is that
+    city, recorded in its marker and on every manifest row. A caller below main() hands a store directly.
+
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
     pano, malformed row, or failed write is counted as an error and logged; both leave the remaining labels
-    running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). That includes the
+    running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). A pano whose header
+    opens but whose body cannot be decoded is decoded once, lazily, by the first label that reaches the
+    write; that label and every later one that reaches the write is an error, with one crop.log line for
+    the pano (#164). Labels a preflight or skipped_existing decides never need the body, so their buckets
+    do not depend on where they sit in the list. That includes the
     output side: a full store or a read-only mount is one counted error per label, not an exception out of
     this function with the counts lost. Crops on disk are the resume marker: existing ones are counted as
     skipped_existing and everything failed here is simply re-attempted on the next run.
@@ -1456,16 +1811,18 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     :return: counts dict. The disjoint outcomes reconcile, including on re-runs:
 
-                 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + errors
-                     == total
+                 success + skipped_existing + missing_pano + dims_mismatch + out_of_frame
+                     + black_content + errors == total
 
-             Those six are DISJOINT_OUTCOMES. The COUNT_ANNOTATIONS are NOT among them:
+             Those seven are DISJOINT_OUTCOMES. black_content (#164) is a label whose cut window was more
+             than CROP_MAX_BLACK_FRACTION exactly-black: nothing is written and it is not an error, so
+             a re-run cuts it once the pano is repaired. The COUNT_ANNOTATIONS are NOT among them:
              shifted_vertically annotates a success whose window had to move to stay inside the pano, so
              the crop exists but the label is off-centre in it; recut annotates a success that replaced a
              crop already on disk (force=True only); stale_kept annotates a label, under force=True,
-             that the run skipped before its write - a dims_mismatch or out_of_frame skip, a missing_pano,
-             or an error because its pano could not be opened - and whose crop was already on disk, which
-             therefore stays as whatever rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
+             that the run did not write - a dims_mismatch or out_of_frame skip, a missing_pano, a
+             black_content withhold, or an error because its pano could not be opened or decoded - and whose crop
+             was already on disk, which therefore stays as whatever rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
              went stale before; tests/test_crop_runner.py asserts the sum, and the key set, from the dict
              rather than from this docstring.
 
@@ -1485,6 +1842,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     # Before any crop is cut, so a run that dies partway still leaves the store saying what it holds.
     os.makedirs(destination_dir, exist_ok=True)
+    # Before the marker, so a refusal leaves it untouched, and so the marker sees the manifest it will
+    # actually be appending to (#159 step 1).
+    set_aside_pre_city_manifest(destination_dir)
     write_rule_marker(destination_dir, force=force, city=city)
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
@@ -1502,6 +1862,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
     manifest = ProvenanceManifest(destination_dir, city)
     unrecorded = 0
+    # The stale_kept labels the content check withheld, for the stale_kept summary's addendum (#164).
+    stale_black_content = 0
     close_failure = None
     try:
         for row in labels_to_crop:
@@ -1526,7 +1888,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     raise ValueError("non-finite label position (%r, %r)" % (row['pano_x'], row['pano_y']))
                 meta_dims = _metadata_dims(row)
                 provenance = tuple(_provenance_value(row.get(field)) for field in PROVENANCE_FIELDS)
-            except (KeyError, TypeError, ValueError) as e:
+            # OverflowError: json.load reads 1e999 and Infinity as float('inf'), and int() of that raises
+            # OverflowError rather than ValueError - uncaught, it ended the whole run (#170 review).
+            except (KeyError, TypeError, ValueError, OverflowError) as e:
                 counts['errors'] += 1
                 # Named fields first, then the reason and the row clipped: a whole row repr'd is ~300-500 B,
                 # and it was 260,000 of those that flooded crop.log (#139). The count above is not
@@ -1568,6 +1932,15 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             # stopped closing anything while requirements.txt still allows the older Pillow where it did.
             # close() is what actually releases the decoded buffer, which is the whole cost decode-once
             # accepts (~250 MB for a 13312x6656 pano, 384 MB for a 16384x8192 one).
+            #
+            # Decoding stays lazy (#164): the preflights and skipped_existing read only the header, so a
+            # finished store never decodes a pano. The first label that reaches the write decodes it; if
+            # that fails - a truncated body behind a good header - the failure is remembered and the pano
+            # is never decoded again. Pillow keeps im.tile after a failed load, so every crop() used to
+            # re-decode the whole file and log a crop_failed line per label.
+            decoded = False
+            decode_error = None
+            undecodable = 0
             try:
                 for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                     processed += 1
@@ -1618,6 +1991,21 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     if existed and not force:
                         counts['skipped_existing'] += 1
                         continue
+                    if not decoded and decode_error is None:
+                        try:
+                            pano.load()
+                            decoded = True
+                        except Exception as e:
+                            decode_error = e
+                    if decode_error is not None:
+                        # One counted error per label, like a pano that cannot be opened, but one crop.log
+                        # line for the pano (after this loop), not one per label - so a truncated pano
+                        # with many labels cannot spend the crop_failed budget real write failures need.
+                        counts['errors'] += 1
+                        undecodable += 1
+                        if force and existed:
+                            counts['stale_kept'] += 1
+                        continue
                     try:
                         # Once per label type, not per label: exist_ok still costs a stat, and over sshfs
                         # that is a network round trip for each of a city's ~400k labels. Inside the try
@@ -1628,6 +2016,19 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                             made_dirs.add(destination_folder)
                         box = make_single_crop(pano, pano_x, pano_y, crop_destination,
                                                draw_mark=mark_label)
+                    except CropWindowMostlyBlackError as e:
+                        # Not an error (#164): the pano on disk holds black where imagery should be, and
+                        # nothing was written, so a re-run cuts this label once the pano is repaired.
+                        # Under --force an old crop stays exactly as it was, like a preflight skip.
+                        counts['black_content'] += 1
+                        if force and existed:
+                            counts['stale_kept'] += 1
+                            stale_black_content += 1
+                        budget.warning('black_content', "Label %d on pano %s: %.0f%% of the cut window is "
+                                       "black (limit %.0f%%); not written - the pano on disk holds black "
+                                       "where imagery should be", label_id, pano_id, 100 * e.fraction,
+                                       100 * CROP_MAX_BLACK_FRACTION)
+                        continue
                     except Exception as e:
                         counts['errors'] += 1
                         budget.warning('crop_failed', "Failed to crop label %d on pano %s: %s",
@@ -1658,6 +2059,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                                      label_id, pano_id, box.top,
                                      abs(int(pano_y - box.top - box.height / 2)))
                     logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
+                if undecodable:
+                    # The cannot_open kind, since it is the same fault one step later: the header opened,
+                    # the body did not. "decode", not "open", in the text, so the two stay tellable apart.
+                    budget.warning('cannot_open', "Skipped %d labels on pano %s: cannot decode %s (%s); "
+                                   "counted as errors without decoding it again per label",
+                                   undecodable, pano_id, pano_img_path, decode_error)
             finally:
                 pano.close()
     finally:
@@ -1694,9 +2101,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     print("Crop sizing rule %s (recorded in %s)." % (CROP_RULE_VERSION, CROP_RULE_MARKER))
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
           "%d skipped on a metadata/image dimension mismatch, %d skipped for a label position outside "
-          "the image, %d errors, of %d labels total."
+          "the image, %d withheld for a mostly black window, %d errors, of %d labels total."
           % (counts['success'], counts['skipped_existing'], counts['missing_pano'],
-             counts['dims_mismatch'], counts['out_of_frame'], counts['errors'], counts['total']))
+             counts['dims_mismatch'], counts['out_of_frame'], counts['black_content'], counts['errors'],
+             counts['total']))
     if counts['shifted_vertically']:
         print("%d of those crops were shifted to stay inside the pano, so their label is not at the "
               "crop's centre." % counts['shifted_vertically'])
@@ -1713,6 +2121,22 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                    "crop.log's dims_mismatch, out_of_frame and cannot_open lines (up to %d of each) and its "
                    "missing-pano lines include them, without marking which kept an old crop."
                    % (counts['stale_kept'], CROP_RULE_MARKER, CROP_RULE_VERSION, LOG_WARNINGS_PER_KIND))
+        if stale_black_content:
+            # Appended, never rewording the sentence above: the content check reaches the write and then
+            # declines it, so "skipped by a preflight" does not describe these (#164).
+            message += (" %d of them were withheld by the content check (black_content) rather than skipped "
+                        "by a preflight; crop.log's black_content lines (up to %d) include them."
+                        % (stale_black_content, LOG_WARNINGS_PER_KIND))
+        logging.warning('%s', message)
+        print(message)
+    if counts['black_content']:
+        # Both channels (#164): black_content is not an error, so the exit code stays 0, and a run that
+        # withheld every label would otherwise complete silently - the #101 shape.
+        message = ("%d labels were withheld because more than %.0f%% of their cut window was black "
+                   "(black_content): the pano on disk holds black where imagery should be (a stitch that ran "
+                   "past what Google serves - #156 - or a pre-#68 fallback). Nothing was written for them, so "
+                   "a re-run cuts them once the pano is re-downloaded; crop.log names up to %d of them."
+                   % (counts['black_content'], 100 * CROP_MAX_BLACK_FRACTION, LOG_WARNINGS_PER_KIND))
         logging.warning('%s', message)
         print(message)
 
@@ -1753,7 +2177,8 @@ def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destinati
     """Load the label metadata and extract every crop - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, and logging; this seam takes plain arguments so tests can
-    drive the real intake -> crop loop in-process (the #52.1 shape).
+    drive the real intake -> crop loop in-process (the #52.1 shape). crop_destination_path is one city's
+    store, <crop-dir>/<city>/, which main() composes from -o and --city (#159).
     """
     print("Cropping labels")
     label_infos = load_label_metadata(sidewalk_server_fqdn, label_metadata_file)
@@ -1771,7 +2196,9 @@ def main(argv=None):
              both channels, nothing cut); EXIT_REFUSED_DESTINATION if -o looks like the production
              crop store, or holds a directory the guard cannot list, or is recorded as another
              city's store or has a crop_rule.json that cannot say whose (nothing is created or written,
-             crop.log included). 1 is deliberately not keyed
+             crop.log included), or is a pre-#159 flat store rather than a root of per-city stores
+             (refuse_legacy_crop_root); EXIT_REFUSED_DESTINATION too for a crop_provenance.csv whose header
+             this run cannot append under (after crop.log opens, before any crop). 1 is deliberately not keyed
              on "did every label produce a crop": missing panos are the normal state of a city whose
              scrape is still catching up, while `errors` only ever counts things that should not have
              happened - a corrupt pano, a malformed row, a failed write - so it is the half worth
@@ -1788,29 +2215,52 @@ def main(argv=None):
         print("CropRunner: %s" % e)
         logging.error('%s', e)
         return EXIT_REFUSED_DESTINATION
-    # Same place, same rule: another city's store is refused before anything - crop.log included - is
-    # written into it (#159).
+    # -o is a root holding one store per city (#159): label_id restarts in every deployment, so a crop's
+    # file name is unique only inside its city's directory. Everything below - the marker, the manifest,
+    # crop.log and the crops - is this city's store, never the root.
+    # A pre-#159 flat store at -o is not a root: refused before the city store is created inside it.
     try:
-        check_store_city(args.o, args.city)
+        refuse_legacy_crop_root(args.o, args.city)
+    except LegacyCropStoreError as e:
+        print("CropRunner: %s" % e)
+        logging.error('%s', e)
+        return EXIT_REFUSED_DESTINATION
+
+    store = os.path.join(args.o, args.city)
+
+    # Again at the store (#159). Both layouts are city-first, so from -o the scan reaches a production city
+    # directory only at depth 1, where the LabelType-name signal is not read: one whose type directories
+    # are still empty passes the root-level scan, and crop.log would be the first file written into it.
+    try:
+        refuse_production_crop_store(store)
+    except ProductionCropStoreError as e:
+        print("CropRunner: %s" % e)
+        logging.error('%s', e)
+        return EXIT_REFUSED_DESTINATION
+
+    # Same place, same rule: a store recorded as another city's (renamed or copied into this name) is
+    # refused before anything - crop.log included - is written into it.
+    try:
+        check_store_city(store, args.city)
     except CropStoreCityError as e:
         print("CropRunner: %s" % e)
         logging.error('%s', e)
         return EXIT_REFUSED_DESTINATION
 
     # exist_ok: a re-run, or an operator pre-creating the dir, races on the exists check. Note this is not
-    # a claim that two CropRunners may share an output dir: crops are written through a fixed
+    # a claim that two CropRunners may share a store: crops are written through a fixed
     # <label_id>.jpg.part, so concurrent runs over the same labels would fight over that temp path.
-    os.makedirs(args.o, exist_ok=True)
+    os.makedirs(store, exist_ok=True)
 
     # crop.log lives next to the crops it describes, NOT the CWD (which under cron is wherever the process
-    # happened to start - the DownloadRunner #49 lesson).
-    configure_logging(os.path.join(args.o, 'crop.log'))
+    # happened to start - the DownloadRunner #49 lesson), and in the city's store, not the root.
+    configure_logging(os.path.join(store, 'crop.log'))
 
     raise_decompression_bomb_ceiling()
 
     try:
         counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
-                     crop_destination_path=args.o, mark_label=args.mark_label, force=args.force,
+                     crop_destination_path=store, mark_label=args.mark_label, force=args.force,
                      city=args.city)
     except CropStoreUnlistableError as e:
         # Both channels, and into crop.log, which is configured by now: as a traceback it reached stderr
@@ -1819,6 +2269,12 @@ def main(argv=None):
         logging.error('%s', e)
         print("CropRunner: %s" % e)
         return 1
+    except ProvenanceManifestHeaderError as e:
+        # A verdict about the store, reached before any crop was cut: re-running changes nothing until a
+        # person moves the file, so it is a refusal (3), not a label error (1).
+        logging.error('%s', e)
+        print("CropRunner: %s" % e)
+        return EXIT_REFUSED_DESTINATION
     return 1 if counts['errors'] else 0
 
 

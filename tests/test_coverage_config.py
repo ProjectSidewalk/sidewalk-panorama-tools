@@ -32,6 +32,7 @@ PRODUCTION_MODULES = {
     'downscale_panos.py',
     'log_analyzer/analyze.py',
     'log_analyzer/roster.py',
+    'migrate_crop_store.py',
     'migrate_depth_artifacts.py',
     'refetch_panos.py',
     'scrape_queue.py',
@@ -49,9 +50,21 @@ def cfg():
     return parser
 
 
-def omit_patterns(cfg):
+# Every omit pattern is written under the same root as `source`, so it means the same directory in a child
+# running from tmp_path as in the parent (see test_every_omit_pattern_is_anchored_the_way_source_is).
+OMIT_ROOT = '${SIDEWALK_COVERAGE_ROOT-.}'
+
+
+def raw_omit_patterns(cfg):
     return [line.strip() for line in cfg['run']['omit'].splitlines()
             if line.strip() and not line.strip().startswith('#')]
+
+
+def omit_patterns(cfg):
+    """The omit patterns as repo-relative globs: the anchor stripped, which is what it expands to in the
+    parent (`.`) and, relative to REPO_ROOT, in every child."""
+    prefix = OMIT_ROOT + '/'
+    return [p[len(prefix):] if p.startswith(prefix) else p for p in raw_omit_patterns(cfg)]
 
 
 def is_omitted(relpath, patterns):
@@ -127,6 +140,18 @@ class TestTheSettingsThatMakeSubprocessCoverageWork:
         assert source == '${SIDEWALK_COVERAGE_ROOT-.}', (
             f'source is {source!r}. A bare "." silently measures tmp_path in every test subprocess; see '
             'pytest_configure in tests/conftest.py.')
+
+    def test_every_omit_pattern_is_anchored_the_way_source_is(self, cfg):
+        """The same CWD problem, for `omit`: coverage anchors a relative omit pattern to the process's CWD,
+        so in a child spawned with cwd=tmp_path a bare `tests/*` means `<tmp_path>/tests/*`, and a repo file
+        outside the production tree that the child imports gets measured. Not hypothetical (#171 review):
+        test_suite_isolation's writer child loads tests/conftest.py from cwd=tmp_path, and CI's figure fell
+        from 99.46% to 98.07% - 0.07 above the gate - on a conftest row nobody chose to measure.
+        """
+        unanchored = [p for p in raw_omit_patterns(cfg) if not p.startswith(OMIT_ROOT + '/')]
+        assert not unanchored, (
+            f'omit patterns not anchored to {OMIT_ROOT}: {unanchored}. A relative pattern stops excluding '
+            'anything in a child whose CWD is not the repo root; see pytest_configure in tests/conftest.py.')
 
     def test_branch_coverage_is_on(self, cfg):
         """The finding that motivated the gate was an `if` that only ever went one way - three of the log
