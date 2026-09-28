@@ -36,6 +36,7 @@ import argparse
 import csv
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -205,6 +206,9 @@ def download_log(city_id: str, dest: Path, sftp: dict) -> bool:
 # Parsing
 # ---------------------------------------------------------------------------
 
+_FULL_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")   # rule 9's datable torn-row stamp
+
+
 def read_log(log_path: Path) -> pd.DataFrame:
     """Read a log.csv into a sorted DataFrame with LOG_COLUMNS, header row optional.
 
@@ -246,8 +250,12 @@ def read_log(log_path: Path) -> pd.DataFrame:
     malformed = sum(1 for row in rows if len(row) not in LOG_ROW_WIDTHS)
     # Field 1 of a torn row is still trusted for one thing: dating it, so rule 9 can tell tonight's tear from
     # one years old (#163). The stamp is written first and a tear is at the tail, so the stamp is the part
-    # that survives; a tear that did cut it parses as NaT, and rule 9 counts that as recent.
-    torn_starts = [row[0] for row in rows if len(row) not in LOG_ROW_WIDTHS]
+    # that survives; a tear that did cut it parses as NaT, and rule 9 counts that as recent. ISO8601 accepts
+    # a PREFIX, though - `2026` parses as 2026-01-01 and `2026-09-2` as 2026-09-02 - so a stamp cut inside
+    # its first 19 bytes would be dated months back and filed as history. Only a stamp carrying the whole
+    # `YYYY-MM-DD HH:MM:SS` is trusted; anything shorter is undatable (#169 review).
+    torn_starts = [row[0] if _FULL_STAMP.match(row[0]) else None
+                   for row in rows if len(row) not in LOG_ROW_WIDTHS]
     rows = [(row + [""] * width)[:width] for row in rows if len(row) in LOG_ROW_WIDTHS]
 
     # dtype=object, so pandas does not get to pick a string dtype whose missing-value semantics differ across

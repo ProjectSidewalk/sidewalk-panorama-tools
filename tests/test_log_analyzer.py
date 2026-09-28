@@ -1939,6 +1939,23 @@ class TestOnlyARecentTornRowIsNews:
         assert [i['level'] for i in found] == ['WARNING'], found
         assert 'no readable timestamp' in found[0]['msg']
 
+    @pytest.mark.parametrize('cut', ['2026', '2026-09', '2026-09-2', '2026-09-27', '2026-09-27 06:0'])
+    def test_a_stamp_cut_short_is_undatable_not_history(self, tmp_path, cut):
+        """ISO8601 accepts a prefix: `2026` parses as 2026-01-01 and `2026-09-2` as 2026-09-02, so tonight's
+        row cut inside its first bytes was dated months back and filed as history. Only a stamp that carries
+        the whole `YYYY-MM-DD HH:MM:SS` is trusted for a date (#169 review)."""
+        found = self.rule_9(tmp_path, [cut] + recent_rows(3))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'no readable timestamp' in found[0]['msg']
+
+    def test_a_stamp_cut_after_the_seconds_still_dates_the_row(self, tmp_path):
+        """The fraction and the offset are past what the window needs, so a cut there still reads as history."""
+        found = self.rule_9(tmp_path, ['2024-04-27 06:00:05.58'] + recent_rows(3))
+
+        assert [i['level'] for i in found] == ['INFO'], found
+        assert 'newest dated 2024-04-27' in found[0]['msg']
+
     def test_one_recent_among_old_is_one_warning(self, tmp_path):
         rows = [torn(days_ago(400)), torn(days_ago(200))] + recent_rows(3) + [torn(days_ago(0))]
 
