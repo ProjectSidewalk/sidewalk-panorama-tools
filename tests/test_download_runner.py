@@ -2279,7 +2279,7 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
             assert 'false downloaded=0 rows in pano_id_log.csv' in channel
 
     def test_the_summary_counts_the_panos_the_breaker_actually_dropped(self, monkeypatch, tmp_path, capsys):
-        """Without this, deleting `breaker_skipped += 1` leaves the operator line reading a constant
+        """Without this, deleting `unattempted[source] += 1` leaves the operator line reading a constant
         "0 pano(s) were left unattempted" - which is the number they would use to decide whether the next
         run has anything to pick up."""
         storage = tmp_path / 'storage'
@@ -2372,11 +2372,13 @@ class _PushbackHarness:
         return ledger_verdict_rows(self.storage, sort=False)
 
 
-class TestAPushbackTripIsNotAlsoImagesNoSuccess(_PushbackHarness):
+class TestAPushbackTripAndImagesNoSuccess(_PushbackHarness):
     """Cross-PR note 4 (#174 final review), now that #172 is on master. A push-back is counted as RAISED for
-    images-no-success - it is Google refusing this host, not an answer about any pano - so what keeps a
-    trip from being reported a second time as images-no-success is the budget arm's `== STOP_MAX_RUNTIME`:
-    a trip records `blocked`, already exits the city 1 through tripped_sources, and writes the latch."""
+    images-no-success - it is Google refusing this host, not an answer about any pano. The BUDGET arm never
+    fires on a trip: a trip records `blocked`, and that arm reads only `max-runtime`. The COUNT arm can: a
+    transient does not reset the push-back count, so enough network raises between refusals reach the
+    minimum before the trip, and then both are reported. That is kept on purpose - those raises were real,
+    and the city is booked failed through tripped_sources either way (verifier, 674bde9)."""
 
     def slow(self, monkeypatch, verdicts, minutes_per_attempt):
         """drive()'s download_pano, but each attempt costs `minutes_per_attempt` on a fake monotonic clock, so
@@ -2390,7 +2392,7 @@ class TestAPushbackTripIsNotAlsoImagesNoSuccess(_PushbackHarness):
             return answer(storage_path, pano_info)
         return fake
 
-    def test_a_real_trip_records_blocked_and_not_images_no_success(self, monkeypatch):
+    def test_a_real_trip_does_not_fire_the_budget_arm(self, monkeypatch):
         panos = self.gsv_panos(5)
         verdicts = {p['pano_id']: self.P for p in panos}
         fake = self.slow(monkeypatch, verdicts, 5.0)
@@ -2405,6 +2407,19 @@ class TestAPushbackTripIsNotAlsoImagesNoSuccess(_PushbackHarness):
         assert stop_reasons['image_stop'] == DownloadRunner.STOP_BLOCKED, 'the case under test: a real trip'
         assert tripped == {'gsv'}
         assert stop_reasons.get('conditions', []) == []
+
+    def test_a_trip_after_enough_raises_also_reports_it_through_the_count_arm(self, monkeypatch):
+        """The verifier's sequence at the shipped constants: refusal, refusal, 8 network errors, refusal. The
+        third refusal trips GSV; the eleven raises with nothing answered are the count arm's condition too."""
+        panos = self.gsv_panos(11)
+        order = [self.P, self.P] + [RuntimeError('network')] * 8 + [self.P]
+        verdicts = {p['pano_id']: v for p, v in zip(panos, order)}
+
+        _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert len(calls) == 11 and tripped == {'gsv'} and stop_reasons['image_stop'] == 'blocked'
+        assert stop_reasons['conditions'] == [{'code': DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
+                                               'detail': '11 attempts raised, 0 answered, 0 s per raise'}]
 
     def test_pushbacks_below_a_trip_count_as_raises(self, monkeypatch):
         """Pins the decision: two refusals (no trip) beside eight network raises, nothing answered, are ten
@@ -3192,7 +3207,10 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
         answer = scripted_download_pano(verdicts)
 
         def slow(storage_path, pano_info):
-            clock[0] += minutes_per_attempt * 60.0
+            # A dict gives each pano its own duration, for the tests that tell a mean from a max.
+            minutes = (minutes_per_attempt[pano_info['pano_id']] if isinstance(minutes_per_attempt, dict)
+                       else minutes_per_attempt)
+            clock[0] += minutes * 60.0
             return answer(storage_path, pano_info)
 
         monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
@@ -3251,14 +3269,17 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
 
         assert summary_codes(tmp_path) == []
 
-    def test_a_frame_disagreement_does_not_forgive_real_raises(self, monkeypatch, tmp_path):
-        """It is an answer, so it does block the condition - the rule is 'none was answered'. Pinned so the
-        exemption stays that narrow: the ten transient raises beside no frame refusal still fire."""
+    def test_a_frame_disagreement_among_real_raises_is_an_answer(self, monkeypatch, tmp_path):
+        """It is an ANSWER, not merely "not a raise": the rule is "none was answered", so one frame refusal
+        beside ten transient raises blocks the condition. A frame refusal excluded from both counters would
+        leave those ten raises firing it (the verifier's M12 on 674bde9)."""
         monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        verdicts = self.verdicts(raised=10)
+        verdicts['framePano'] = downloaders.gsv.FrameDisagreementError('frame disagreement')
 
-        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=10))
+        call_main_scripted(monkeypatch, tmp_path, verdicts)
 
-        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+        assert summary_codes(tmp_path) == []
 
     def test_slow_perennial_raisers_that_fill_the_budget_are_not(self, monkeypatch, tmp_path):
         """The #174 final review's false alarm: a mature city served nothing new, whose never-ledgered
@@ -3278,6 +3299,19 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
 
         assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
         assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+    def test_the_gate_is_the_mean_so_one_slow_raise_among_fast_ones_is_not(self, monkeypatch, tmp_path):
+        """One 100 s raise and eight 33 s ones fill the 6-minute share: mean 40 s, max 100 s. "One slow raise
+        is not an outage" is exactly what a max-based gate would break (the verifier's M3 on 674bde9)."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        verdicts = self.verdicts(raised=10)     # the tenth is never reached: the share ends after nine
+        minutes = {p: 33.0 / 60 for p in verdicts}
+        minutes['raisedPano000'] = 100.0 / 60
+
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, verdicts, minutes, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME, 'the case under test'
+        assert summary['conditions'] == []
 
     def test_the_gate_sits_at_the_mean_raise_duration(self, monkeypatch, tmp_path):
         """Pins the boundary rather than two points far either side of it: a mean exactly at

@@ -679,9 +679,12 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 frame_refused = False
 
             # A push-back (#162) counts as RAISED: it is Google refusing this host, not an answer about any
-            # pano, so a night of refusals and network errors with nothing answered is still no success. A
-            # trip does not also report images-no-success: it records image_stop='blocked', which the budget
-            # arm's `== STOP_MAX_RUNTIME` excludes, and it already exits the city 1 through `tripped`.
+            # pano, so a night of refusals and network errors with nothing answered is still no success. The
+            # BUDGET arm never fires on a trip: a trip records image_stop='blocked', which its
+            # `== STOP_MAX_RUNTIME` excludes. The COUNT arm can - a transient does not reset the push-back
+            # count, so enough network raises between refusals reach the minimum before the trip - and then
+            # both are reported, deliberately: those raises were real, and the trip books the city failed
+            # through `tripped` either way.
             if result_code is None and not frame_refused:
                 raised += 1
                 raise_seconds += time.monotonic() - attempt_start
