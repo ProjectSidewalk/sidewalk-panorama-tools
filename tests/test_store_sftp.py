@@ -16,6 +16,7 @@ and fail here, where a patched `run` would have recorded whatever it was given.
 tests/test_download_runner.py imports write_fake_sftp and the fixtures' helpers from here.
 """
 
+import errno
 import inspect
 import importlib.util
 import io
@@ -751,6 +752,15 @@ class TestPullBatch:
         outcome = self.pull(make_settings(base, tmp_path), storage, ['zzzzzz'])
         assert (storage / 'zz').is_dir()
         assert outcome == {'zzzzzz': PullOutcome.unplaced}
+
+    def test_a_shard_dir_chmod_the_filesystem_does_not_support_is_not_fatal(self, tmp_path, monkeypatch):
+        """A local store on a mount that refuses mode bits (ENOTSUP, not EPERM) must still get its shard dir."""
+        def unsupported(path, mode):
+            raise OSError(errno.ENOTSUP, 'Operation not supported')
+
+        monkeypatch.setattr(store_sftp.os, 'chmod', unsupported)
+        store_sftp.ensure_shard_dir(tmp_path / 'local', 'zzzzzz')
+        assert (tmp_path / 'local' / 'zz').is_dir()
 
     def test_no_session_is_opened_for_an_empty_batch(self, tmp_path, monkeypatch):
         record = write_fake_sftp(tmp_path, monkeypatch)

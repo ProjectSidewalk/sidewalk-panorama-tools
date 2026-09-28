@@ -454,8 +454,10 @@ def ensure_shard_dir(storage_path, pano_id):
         os.makedirs(destination_dir, exist_ok=True)
         try:
             os.chmod(destination_dir, 0o775 | stat.S_ISGID)
-        except PermissionError:
-            pass  # lost the race to another user's process; their dir, their modes
+        except OSError:
+            # EPERM: lost the race to another user's process; their dir, their modes. ENOTSUP and kin: a
+            # filesystem that keeps no mode bits. Either way the dir exists, which is all the get needs.
+            pass
 
 
 def _remove_quietly(path):
