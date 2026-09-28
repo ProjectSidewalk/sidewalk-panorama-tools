@@ -28,8 +28,10 @@ jobs:
       # so the PR view still shows every file including the ones at 100%.
       # SIDEWALK_REQUIRE_STREETLEVEL turns tests/test_streetlevel_api.py's importorskip into a hard import
       # (#165): requirements.txt installs streetlevel here, so a missing transitive dependency must fail the
-      # run rather than skip every contract test behind a green check.
-      - run: python -m pytest tests -v --cov --cov-report=term-missing:skip-covered
+      # run rather than skip every contract test behind a green check. --continue-on-collection-errors because
+      # that failure is a collection error, and pytest's default on one is to run nothing else: the run still
+      # exits nonzero, but with every other test's result instead of "1 error" (#171 review).
+      - run: python -m pytest tests -v --continue-on-collection-errors --cov --cov-report=term-missing:skip-covered
         env:
           SIDEWALK_REQUIRE_STREETLEVEL: '1'
       # always(), so a run that trips the fail_under gate still shows WHERE it lost coverage rather than

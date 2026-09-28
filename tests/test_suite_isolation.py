@@ -356,6 +356,14 @@ class TestTheWorkflowRequiresIt:
         assert "SIDEWALK_REQUIRE_STREETLEVEL: '1'" in following, \
             'the CI pytest step must set SIDEWALK_REQUIRE_STREETLEVEL (#165)'
 
+    def test_a_collection_error_does_not_stop_the_rest_of_the_suite(self):
+        """Under the variable a broken streetlevel is a collection error, and pytest's default on any
+        collection error is to run nothing at all: every PR would show "1 error" and none of the ~3,400
+        other results until someone pinned around it (#171 review). The run must still fail - it does,
+        a collection error exits nonzero with or without the flag - but with the rest of the signal kept."""
+        step = next(line for line in self._text().splitlines() if 'python -m pytest tests' in line)
+        assert '--continue-on-collection-errors' in step
+
     def test_the_job_has_a_timeout(self):
         """GitHub's default is six hours of a held runner for one hung test."""
         assert any(line.strip().startswith('timeout-minutes:') for line in self._text().splitlines())
