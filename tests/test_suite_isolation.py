@@ -32,16 +32,53 @@ def _write(path, text):
         f.write(text)
 
 
-def _remove_probe(path, remove_cache_dir):
+def _remove_probe(path, cache_dir, remove_cache_dir):
     """Remove one file this module wrote into the study cache and, if the test created the cache dir, that
-    dir too - but only once it is empty. Never a tree: see test_a_run_that_writes_into_the_study_cache_fails."""
+    dir too - but only once it is empty. Never a tree: see test_a_run_that_writes_into_the_study_cache_fails.
+    The cache dir is a parameter so TestTheProbeCleanup can pin this against a tmp_path stand-in."""
     if os.path.exists(path):
         os.remove(path)
     if remove_cache_dir:
         try:
-            os.rmdir(conftest.STUDY_CACHE)
+            os.rmdir(cache_dir)
         except OSError:
             pass  # not empty (someone else's write landed in it), or already gone
+
+
+class TestTheProbeCleanup:
+    """The end-to-end guard test below writes into the real study cache, so its cleanup is pinned here
+    against a stand-in, in every state. Driven only through that test, the cleanup's two halves were pinned
+    on CI alone or not at all: with a real cache already present (a dev box), the test never asks for the
+    dir to go, so a whole-tree rmtree there is never reached; and a leftover EMPTY dir is invisible to the
+    session guard, which stamps files, and to git, which ignores empty dirs (#171 final review, NIT 2)."""
+
+    def _cache_with(self, tmp_path, *names):
+        cache = tmp_path / '.cache'
+        cache.mkdir()
+        for name in names:
+            (cache / name).write_text('x')
+        return cache
+
+    def test_a_dir_it_created_goes_once_the_probe_leaves_it_empty(self, tmp_path):
+        cache = self._cache_with(tmp_path, 'probe.txt')
+        _remove_probe(str(cache / 'probe.txt'), str(cache), remove_cache_dir=True)
+        assert not cache.exists()
+
+    def test_a_dir_it_created_stays_while_someone_elses_file_is_in_it(self, tmp_path):
+        """Independent of whether the real cache existed: this is the whole-tree rmtree's failure shape."""
+        cache = self._cache_with(tmp_path, 'probe.txt', 'bystander.csv')
+        _remove_probe(str(cache / 'probe.txt'), str(cache), remove_cache_dir=True)
+        assert sorted(os.listdir(cache)) == ['bystander.csv']
+
+    def test_a_dir_it_did_not_create_stays_even_when_empty(self, tmp_path):
+        cache = self._cache_with(tmp_path, 'probe.txt')
+        _remove_probe(str(cache / 'probe.txt'), str(cache), remove_cache_dir=False)
+        assert cache.is_dir() and os.listdir(cache) == []
+
+    def test_a_probe_that_is_already_gone_is_not_an_error(self, tmp_path):
+        cache = self._cache_with(tmp_path)
+        _remove_probe(str(cache / 'probe.txt'), str(cache), remove_cache_dir=True)
+        assert not cache.exists()
 
 
 class TestTreeChanges:
@@ -140,10 +177,10 @@ class TestTreeChanges:
                      '-p', 'conftest', '--rootdir', str(tmp_path)],
                     cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120)
             finally:
-                _remove_probe(probe, not cache_existed)
+                _remove_probe(probe, conftest.STUDY_CACHE, not cache_existed)
             assert os.path.exists(bystander), 'the probe cleanup deleted a file it did not create'
         finally:
-            _remove_probe(bystander, not cache_existed)
+            _remove_probe(bystander, conftest.STUDY_CACHE, not cache_existed)
         output = result.stdout + result.stderr
         assert result.returncode != 0, output
         assert 'created: ' + probe_rel in output, output
