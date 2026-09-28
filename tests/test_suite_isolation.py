@@ -216,6 +216,49 @@ class TestChildrenGetASessionTempDir:
         assert not session_dir.exists()
         assert conftest.CHILD_TEMP_DIR is None
 
+# --- the next pytest's removals are errors now, not a warnings-summary line ----------------------------------
+
+_INSTANCE_METHOD_CLASS_FIXTURE = '''import pytest
+
+
+class TestShape:
+    @pytest.fixture(scope='class')
+    def value(self):
+        return 1
+
+    def test_uses_it(self, value):
+        assert value == 1
+'''
+
+
+class TestTheNextPytestsRemovalsAreErrors:
+    """fcadac1 made eight class-scoped instance-method fixtures classmethods, the shape pytest 10 removes (D3:
+    no `pytest<10` bound). Nothing kept a ninth from arriving as one line in a warnings summary until pytest 10
+    broke every PR at once, so conftest escalates the warning (#171 review)."""
+
+    def test_conftest_escalates_it(self, pytestconfig):
+        if not hasattr(pytest, 'PytestRemovedIn10Warning'):
+            pytest.skip('this pytest has no PytestRemovedIn10Warning to escalate')
+        assert 'error::pytest.PytestRemovedIn10Warning' in pytestconfig.getini('filterwarnings')
+
+    def test_an_instance_method_class_fixture_fails_the_run(self, tmp_path):
+        if not hasattr(pytest, 'PytestRemovedIn10Warning'):
+            pytest.skip('this pytest has no PytestRemovedIn10Warning to escalate')
+        target = tmp_path / 'test_instance_method_fixture.py'
+        target.write_text(_INSTANCE_METHOD_CLASS_FIXTURE)
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+            p for p in (os.path.join(REPO_ROOT, 'tests'), os.environ.get('PYTHONPATH')) if p))
+        for name in ('COVERAGE_PROCESS_START', 'COVERAGE_FILE', 'SIDEWALK_COVERAGE_ROOT'):
+            env.pop(name, None)
+        result = subprocess.run(
+            [sys.executable, '-m', 'pytest', str(target), '-q', '-p', 'no:cacheprovider', '-p', 'conftest',
+             '--rootdir', str(tmp_path)],
+            cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120)
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, output
+        assert 'PytestRemovedIn10Warning' in output, output
+
+
 # --- a broken streetlevel fails CI instead of skipping -------------------------------------------------------
 
 SIMULATED = "No module named 'pyproj' (simulated for #165)"

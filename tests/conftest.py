@@ -245,6 +245,12 @@ def pytest_configure(config):
     data file instead of adding to it.
     """
     _give_children_a_session_temp_dir()
+    # The next pytest's removals as errors, so a class-scoped instance-method fixture (fcadac1) or any other
+    # removed-in-10 shape fails the PR that adds it rather than every PR on the day pytest 10 lands (#165,
+    # D3: no upper bound). Guarded, not an ini line or a CI `-W`: under the pytest>=7 floor the class may not
+    # exist yet, and after 10 it may not exist any more, and naming an unknown class is a usage error.
+    if hasattr(pytest, 'PytestRemovedIn10Warning'):
+        config.addinivalue_line('filterwarnings', 'error::pytest.PytestRemovedIn10Warning')
     if os.environ.get('COVERAGE_PROCESS_START'):
         return
     try:
