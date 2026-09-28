@@ -32,7 +32,8 @@ directory it likes, and a relative path scatters every per-pano failure detail s
 > **Switched off 2026-09-09.** `WRITE_DISPLAY_COPIES` in `downloaders/common.py` is `False`, so neither
 > downloader writes a display copy any more. Two writers remain, both narrow: `downscale_panos.py`, which
 > only runs when a person runs it, and `refetch_panos.py`, which **refreshes a copy already on the store
-> after a swap but never creates one** ([why](#a-repaired-panoramas-copy-is-refreshed-never-created)).
+> after a swap but never creates one**, and deletes it if that refresh fails
+> ([why](#a-repaired-panoramas-copy-is-refreshed-never-created)).
 > **Why the feature is off**, and why the code is kept rather than reverted, is
 > [directly below](#why-it-is-off-2026-09-09). Read that before turning it back on.
 
@@ -76,8 +77,89 @@ full raster" half of #115's rationale is retired too.
 every 8192-class GPU — every Mali-G710-era Android, which is most of the non-Apple fleet — stops rendering
 stored panoramas natively, and the affected population jumps from ~2% of mobile to most of Android. **This
 repo is the only place that sees GSV's reported frame width at the moment it changes**
-(`downloaders/gsv.py::resolve_zoom_and_dims`, tracked by #121). So the switch stays one line away rather
-than in the history.
+(`downloaders/gsv.py::resolve_frame`), and it now says so when it does — see
+[the width tripwire](#the-width-tripwire) below. So the switch stays one line away rather than in the history.
+
+#### The width tripwire
+
+[#121](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/121). Every downloader warns when a
+source hands it a panorama **wider than `VIEWER_MAX_PANO_WIDTH` (16384)** in `downloaders/common.py`. It should
+never fire: 16384 is GSV's widest frame today and the fleet's normal, so 16384 itself is silent and 16385 is the
+first width that warns.
+
+* **Where it looks.** GSV: in `resolve_frame`, on the width `/adminapi/panos` reports, before any request
+  is spent, so a photometa request or probe that then fails cannot swallow it (`refetch_panos.py` reaches it through `resolve_zoom_and_dims`, so a
+  repair pass warns on a stored frame that wide too — but there the line lands in that pass's **`refetch.log`**
+  and its stdout, not in `scrape.log`, and keeps the `IMAGEDOWNLOAD:` prefix in the middle of the pass's
+  `REFETCH:` narrative, so grep a refetched store's `refetch.log*` as well). Mapillary and Panoramax: on the downloaded JPEG's own
+  header, after the file is in place — the width of the file actually stored, which is what a viewer is
+  handed, rather than anything either source's metadata says.
+* **Never a gate.** It does not refuse, alter or delay a download and writes nothing to the store.
+* **Both channels, one line per wide pano**, each carrying the whole message: `IMAGEDOWNLOAD: <source> pano
+  <id> is <width> px wide, over the viewer ceiling of 16384 (#121) …` in that city's `scrape.log` at
+  `WARNING` (`refetch.log` for a repair pass, above), and the same text after `IMAGEDOWNLOAD: WARNING -` on
+  stdout. The line's own remedy is deliberately only a pointer — verify the width, then budget the disk
+  before any sweep, and read **When it fires** below — because the steps end in a fleet-wide sweep and
+  a line acted on alone would skip the budget. No once-per-run latch, deliberately:
+  stdout already carries one `Processing pano` line per pano attempted, and the alarm wrapper
+  [cuts the middle](#hearing-about-a-bad-night) of a long night's output, where a single announcement is the
+  line most likely to be lost.
+* **It alarms once per host, then only warns** (decided on
+  [#153](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/153), 2026-09-26). Production runs the
+  queue under `cron_notify.py --only-on-failure`, so a warning alone reaches no one on a night that exits 0.
+  Failing *every* run that sees a wide frame would reach someone, and then keep the city red every night after,
+  since Google does not un-widen, hiding any real failure behind a known one. So the **first** `DownloadRunner`
+  run on a host to see a frame over the ceiling prints `WIDTH ALARM (#121): …` on both channels, creates a
+  latch file and **exits 1**, so the queue books a failed city and the alarm is delivered. Every later run finds
+  the latch and prints only `… already alarmed on this host (latch <path>), so not failing the run.`
+
+  * **The latch** is `sidewalk-width-ceiling-alarmed` in the system temp directory, or `--width-alarm-latch
+    PATH`. It is on local disk, beside the depth block latch, because a wider frame is a fact about Google
+    rather than one city: a per-city latch would alarm once per city. Its content is the UTC time of the first
+    sighting, and it is never rewritten.
+  * **Delete it to re-arm** — after acting on an alarm, say, so the next change reaches you too.
+  * **A latch that cannot be written fails every run** that sees a wide frame, with the path in `scrape.log`:
+    a latch nobody can write must not swallow the one alarm it exists for.
+  * `refetch_panos.py` warns through the same seam but never arms the latch or changes its exit code; a repair
+    pass is run by someone watching it.
+
+  The per-pano lines are still there afterwards, so to find which stores have seen one:
+
+  ```bash
+  grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*
+  ```
+
+  (the `*` after `.log` takes in the rotated `.1`–`.3` files; `-s` quiets a store with no `refetch.log`).
+* **Not a `log.csv` column, and so not a log-analyzer rule — on purpose, not an oversight.** `log.csv` is a
+  fixed set of positional fields that the analyzer and other tooling read by position, and #121 asks for any
+  persisted width to be proposed there first. The [log analyzer](log-analyzer.md) reads nothing but `log.csv`,
+  so without a column there is nothing for a rule to read. Don't file the missing rule as a gap; propose the
+  column.
+* **Why 16384, and why it is not `2 × DOWNSCALED_MAX_WIDTH`** although it equals that today: the ceiling is
+  what 8192-class GPUs can texture (2 × 8192, [above](#why-it-is-off-2026-09-09)); the display-copy cap is how
+  wide a copy to write, a separate choice that can be lowered to save disk without changing what any device
+  renders. A test pins that the ceiling is not written in terms of the cap.
+
+**When it fires.** First check it is real: the width is in the line, and `jpeg_dimensions` on the stored file
+confirms it. Then:
+
+1. Set `WRITE_DISPLAY_COPIES = True` in `downloaders/common.py`. It is a code change on purpose, and
+   `TestTheSwitch::test_the_shipped_default_is_off` pins the shipped `False`, so that test changes in the same
+   commit, saying why. **The downloaders' hook has no floor:** from then on every newly downloaded panorama
+   wider than `DOWNSCALED_MAX_WIDTH` (8192) gets a copy, not only the ones over the ceiling, so new scrapes
+   grow the store at the full +63% below even though step 2 does not.
+2. Run `python3 downscale_panos.py <storage-dir> --min-width 16384 --dry-run`, then again without `--dry-run`,
+   on each affected store ([by hand](#running-the-sweep-by-hand)). That writes copies for the frames **over
+   the ceiling only**, the ones 8192-class GPUs cannot render, and reports every other panorama over the cap
+   as `under --min-width` without touching or even reading its copy ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)).
+   Only if you mean to restore copies for everything over the cap as well, run it again without
+   `--min-width` — and **budget the disk before you do:** that sweep writes a copy for every panorama wider
+   than `DOWNSCALED_MAX_WIDTH` (8192), which is nearly every modern panorama, so it is the fleet-wide +63%
+   below, not a copy of the new frames alone.
+3. Tell the web app's maintainers: the on-demand downscale
+   ([SidewalkWebpage#5256](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5256)) absorbs a wider
+   frame silently at a cost per view, and its `pano.downscaled.max-width` has to agree with
+   `DOWNSCALED_MAX_WIDTH` for it to find the copies.
 
 #### Running the sweep by hand
 
@@ -85,7 +167,19 @@ than in the history.
 python3 downscale_panos.py <storage-dir> --dry-run          # count the missing copies, write nothing
 python3 downscale_panos.py <storage-dir>                    # write them
 python3 downscale_panos.py <storage-dir> --max-runtime 240  # a nightly-sized slice; the rest report as unreached
+python3 downscale_panos.py <storage-dir> --min-width 16384 --dry-run  # only frames over the viewer ceiling (#121)
 ```
+
+`--min-width PX` ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)) limits the
+sweep to panoramas **wider than** `PX`: one over the cap but at or below it is counted as `under --min-width`
+and its copy is never read, so it is reported neither as written nor as already having a copy, whatever is on
+disk. A stale copy under the floor is therefore left as it is; run without `--min-width` to refresh it.
+`16384` — `VIEWER_MAX_PANO_WIDTH`, and GSV's widest frame today — is the value it exists for: the
+[width tripwire](#the-width-tripwire)'s remedy, which should touch only what the viewer fleet cannot render.
+A value at or below `--max-width` is refused, since it would filter nothing and quietly be the full sweep.
+Every panorama the run examines lands in exactly one of written, under the cap, already had a copy, failed and
+under `--min-width`; `unreached` is the part the runtime budget never examined. The summary line always ends
+`…, N unreached, N under --min-width.`, as `0` when the option is not given.
 
 **Budget the disk first, per city.** A display copy is not a thumbnail: measured on the committed
 `samples/sample_pano.jpg` (13312 × 6656, 6.08 MB), the 8192-wide copy is **3.82 MB — 63% of the native file**
@@ -126,16 +220,27 @@ over it: the panorama is already on disk at that point, and re-fetching it would
 work that has landed. Crops are the artifact that is still *not* refreshed — see the `replaced` rows in
 `refetch_log.csv`.
 
-> ⚠ **If that rewrite fails, the sweep cannot repair it — delete the sidecar first.**
-> `scrape.log` gets one `display copy not rewritten` line and the swap is ledgered `replaced` regardless.
-> But `sidecar_is_current` judges from dimensions alone (a decode per panorama is the whole cost the sweep
-> exists to avoid), and every gate in `refetch_panos` refuses a swap that changes the frame — so the stale
-> copy has *exactly* the expected dimensions and every later sweep reports it `current`, writing nothing.
-> `rm` the named `.w8192.jpg`, then run `downscale_panos.py`, which will see it absent and cut a fresh one.
+**If that rewrite fails, the copy is deleted (#122), and the next sweep repairs it — whenever one is run.**
+Leaving it would be the one
+outcome nothing could ever repair: the write is atomic, so a failed rewrite leaves the *old* copy intact, and
+`sidecar_is_current` judges from dimensions alone (a decode per panorama is the whole cost the sweep exists
+to avoid) while every gate in `refetch_panos` refuses a swap that changes the frame — so that old copy would
+have *exactly* the expected dimensions, and every later sweep would report it `current` and write nothing. A
+*missing* copy is what the sweep fills: the next `downscale_panos.py` run sees it absent and cuts a fresh one
+from the repaired panorama, and until then the web app serves the native file, which is correct, just larger.
+**Nothing schedules that sweep** — it runs only when a person [runs it](#running-the-sweep-by-hand) — so the
+copy stays missing until someone does; that is a correct state, not one that repairs itself. The swap is
+ledgered `replaced` either way, and `refetch.log` gets one `WARNING` line saying the copy was deleted.
+Only that one file goes — the exact `.w<cap>.jpg` for the current cap, never the panorama, a copy at
+another cap, or anything else in the shard — and only after a swap has landed, never on a refusal.
+
+> **The one case that needs a person:** if the delete *also* fails, the stale copy is back to reading as
+> `current` for ever. That is reported on stdout as well as in `refetch.log` (at `ERROR`), naming the file: delete it by
+> hand, then run `downscale_panos.py`.
 
 **Copies already on a store are left alone.** They cost disk and nothing else: every walker excludes them by
 name, so a sidecar can never be mistaken for a panorama, and the web app serves whichever of the two it
-finds. Removing them is an operator decision, not something any tool here does.
+finds. Removing them is an operator decision; the only copy any tool here deletes is the stale one above.
 
 ## The store is an archive, not a cache
 
@@ -189,8 +294,9 @@ permanent.** Transient failures leave no row and retry automatically on the next
 
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano. A permanent verdict, one per source:
-  * **GSV** — no imagery at any zoom, or unknowable dimensions. No breaker entry, deliberately: a retired
-    GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4% of a large city's rows.
+  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200), or unknowable dimensions. No
+    breaker entry, deliberately: a retired GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4%
+    of a large city's rows.
   * **Mapillary** — a 404, or a record that names the image and carries no original-resolution rendition.
     No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured 2026-09-06 — so the
     record with no rendition is the one that fires in practice, and three of them in a row stop the run
@@ -202,10 +308,12 @@ permanent.** Transient failures leave no row and retry automatically on the next
     status code or a missing key, *and* three in a row trip the same breaker: two of the three are
     wholesale failures wearing a per-pano face, so the affirmation and the breaker are both wanted here.
 
-  A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
-  (code 190 / `OAuthException`), a body that does not name the image, an image body that is not a JPEG, a
-  Panoramax 404 *without* the catalog's body, a malformed or empty assets block, and a redirect off a published `hd`
-  href are none of them verdicts and leave no row.
+  A GSV probe answered with anything but 200, even with a black body
+  ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)), a Mapillary error envelope
+  on a 200, a 404 whose envelope carries the auth signature (code 190 / `OAuthException`), a body that does
+  not name the image, an image body that is not a JPEG, a Panoramax 404 *without* the catalog's body, a
+  malformed or empty assets block, and a redirect off a published `hd` href are none of them verdicts and
+  leave no row.
 * **no row** — never attempted, the last attempt failed transiently (a network blip, a failed tile, a full
   store), or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both
   the withheld tripping verdict and every pano skipped after it). Retried next run.
@@ -213,6 +321,12 @@ permanent.** Transient failures leave no row and retry automatically on the next
 Deleting `0` rows, or the whole file, is the manual force-retry lever; existing `.jpg`s are simply
 re-registered as skipped rather than re-downloaded — with a **blank** `fetched_at`, because the ledger has
 no evidence of when they were fetched (next section).
+
+A [store-mode pull](downloader.md#pulling-from-the-project-sidewalk-pano-store) (`--from-store`) writes only
+`1` rows, each with a blank `fetched_at`. A pano the store does not hold tonight may be scraped tomorrow, so
+its absence is never a verdict: it is counted in field 9 for that run, left unledgered, and retried next run.
+It writes nothing to `depth_log.csv` either — a pulled `.depth.npz` is ledgered `saved` by the next scrape's
+depth phase, which finds it on disk, at zero requests.
 
 ### `fetched_at`, and the two row widths
 
@@ -331,7 +445,9 @@ store is a scrape-time archive and Google re-serves panos larger, so a grid size
 file can be too small for what Google now holds. That fetch does not return a smaller version of the pano —
 it returns the **top-left 81% of it**, at exactly the stored file's dimensions, with no undersized tile and
 no black anywhere. Nothing downstream could ever see it. Two requests, spent before the 512-tile fan-out,
-rule it out.
+rule it out. A probe answered with anything but 200 raises, so the pano counts as a transient failure rather
+than as a frame that covers; before [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166),
+a 403 or 404 with a black body passed it.
 
 | Outcome | Meaning | Requests |
 |---|---|---|
@@ -384,7 +500,7 @@ the pano stops at `dims_changed` rather than being silently re-framed, because c
 moves every label's pixel coordinates relative to the image.
 
 **Replacing a pano does not refresh crops already cut from it.** [Existing crops are the cropper's resume
-marker and are never re-cut](cropper.md#outcomes-exit-code-and-re-runs), so after a pass every crop cut from a `replaced` pano's
+marker and are not re-cut without `--force`](cropper.md#outcomes-exit-code-and-re-runs), so after a pass every crop cut from a `replaced` pano's
 polar band is still the half-resolution one, and nothing on disk says so. The ledger is the list: delete the
 crops of every pano with a `replaced` row (`grep ,replaced refetch_log.csv`) and re-run the cropper to pick the
 repair up. The crops are the point of the pass, so plan that step with it.
@@ -449,7 +565,7 @@ deployed has 18 fields, and the analyzer reads them with the last one blank.
 | 5 | metadata total processed | count of image-eligible panos (stub) |
 | 6 | metadata phase duration | effectively `0` (stub) |
 | 7 | image successes | |
-| 8 | image fallback successes | downloaded, but at a fallback resolution — only zoom 3 was available for a frame whose reported dimensions need zoom 5, so the stitch was upscaled to reach them. Real imagery, materially less of it. **Not** simply "downloaded at zoom 3": an old pano whose own max zoom is 3 is at its native resolution and counts in field 7. Was a constant `0` before [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) because nothing ever returned the verdict, so runs before that show every fallback inside field 7 |
+| 8 | image fallback successes | downloaded, but at a fallback resolution — only a lower level was available (zoom 3, or since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) zoom 4) for a frame whose reported dimensions need a higher one, so the stitch was upscaled to reach them. Real imagery, materially less of it. **Not** simply "downloaded at zoom 3": an old pano whose own max zoom is 3 is at its native resolution and counts in field 7. Was a constant `0` before [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) because nothing ever returned the verdict, so runs before that show every fallback inside field 7 |
 | 9 | image failures | includes prior runs' permanent failures, seeded from `pano_id_log.csv`; a transient failure is not ledgered, so it is counted again if it fails again next run |
 | 10 | image skipped | includes panos already downloaded on previous runs, seeded likewise |
 | 11 | image total processed | sum of fields 7–10 |
@@ -496,6 +612,11 @@ Field 14 includes `unavailable` — a permanent, expected, non-actionable outcom
 show large failure numbers that are entirely normal. The success/failure/unavailable split goes to stdout and
 `scrape.log`; the row has no separate column for it.
 
+Its size is not a signal; **a night on which it is the only outcome is.** The fleet saves about 60% of its
+requests on a healthy night (63.8% over the week to 2026-09-27; per city anywhere from 35% to 100%), so several nights of requests with field 13 at `0` is an outage, and the
+[log analyzer](log-analyzer.md#checks) reports it — see
+[When the depth phase saves nothing](#when-the-depth-phase-saves-nothing).
+
 ### Reading the backfill from the row
 
 **`depth_total` (field 16) is not the resolved count.** It is success + failed + skipped, and `depth_fail`
@@ -526,21 +647,33 @@ Two shapes to read carefully:
   the ledger and made no requests. The row cannot distinguish that from running out of budget, which is why
   the analyzer names both candidates instead of asserting one.
 
+## A GSV pano refused for a frame disagreement
+
+Since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) the image phase refuses a GSV
+pano whose app-reported `width`/`height` is not a frame Google serves, rather than stitching the top-left
+corner of a larger one. Each refusal is one stdout `WARNING` and one `scrape.log` `ERROR`, both containing
+`frame disagreement`; it is counted in `log.csv` field 9, never ledgered, and retried every run. Field 9 is
+seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. The
+remedy is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what
+Google serves now. The stdout line reaches no one on a night that exits 0 (see
+[Hearing about a bad night](#hearing-about-a-bad-night)).
+
 ## When the depth phase stands itself down
 
-Two mechanisms stop depth without stopping the run, and they look identical from `log.csv` (all five depth
-columns are `0`), so read stdout or `scrape.log` rather than the row:
+Two mechanisms stop depth without stopping the run, and the first has two sources. All of them look identical
+from `log.csv` (all five depth columns are `0`), so read stdout or `scrape.log` rather than the row:
 
 | what you see | what happened | what to do |
 |---|---|---|
-| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
+| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. If an `IMAGEDOWNLOAD: WARNING - Google refused a photometa request` line comes before it in the same output, *this* run was refused: that is the third row, not this one. Every city skips depth at **zero requests** until it expires (6 h). | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
 | `WARNING - the depth phase stopped early because Google stopped answering` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
+| `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. | As the row above: check for a rate limit before the next night. |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
 with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
-moves it. To clear one by hand, delete the file; a missing, unparseable or implausibly future-dated latch
-all mean "not blocked", because a latch nobody can read must never be able to stand the whole fleet's depth
-phase down indefinitely.
+moves it, for both phases. To clear one by hand, delete the file; a missing, unparseable or implausibly
+future-dated latch all mean "not blocked", because a latch nobody can read must never be able to stand the
+whole fleet's depth phase down indefinitely.
 
 Beside the **default** latch lives the pacer's **earned standing** (`sidewalk-depth-pace`,
 `--depth-pace-state PATH` moves it — the two paths are independent, so moving the latch alone leaves this
@@ -548,7 +681,9 @@ file in the temp directory): the request interval and clean streak the last run 
 the next run opens at instead of ramping down from `depth_start_interval` again. Deleting it costs one ramp
 (~1,400 requests); an unreadable, `NaN`, or day-old file is ignored the same way, and so is one nothing can
 parse at all. It never holds a value slower than the opening interval, so it cannot be used to slow the
-fleet down, only to keep the speed it has already earned. Only Google's own push-back forfeits it — a
+fleet down, only to keep the speed it has already earned. Only Google's own push-back or refusal forfeits it
+(since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) including a photometa
+refusal met by the image phase) — a
 local network blip or one malformed pano slows the running phase down and leaves the file alone, the same
 rule the latch follows when it declines to blame a full disk on Google — and a phase that made no
 requests writes nothing.
@@ -565,6 +700,52 @@ remembers nothing.
 **Do not read a stood-down phase as lost work.** Nothing is ledgered on either path, so every unresolved
 panorama is retried on the next run. See
 [Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers).
+
+## When the depth phase saves nothing
+
+A phase that makes requests and saves none of them looks, from the stall check, like a phase that is
+working: a failed request is still a request. The [log analyzer](log-analyzer.md#checks) therefore watches
+**saves** separately ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)), and
+reports a city whose phase has asked at least 10 times on its last 3 *requesting* nights and saved nothing. A
+night with no row, or a stand-down's five zeros, is not counted, so a `--skip-depth` rollback followed by one
+bad night does not fire. It has two arms, and `log.csv` can only tell them apart across two runs, because an
+`unavailable` verdict is ledgered at once and comes back as the next run's skip (field 15) while a transient
+failure never does:
+
+| what you see | what happened | what to do |
+|---|---|---|
+| 🟡 `Depth phase saved nothing on the last N nights it made requests … retry` | Every request failed **transiently**: the consecutive-failure breaker (network, a full or unmounted store), Google refusing requests, or a payload the decoder chokes on. Nothing was ledgered. | Read the `DEPTHDOWNLOAD` lines in `scrape.log` for the cause. No panos are lost; they retry once it is fixed. |
+| 🔴 `Depth phase saved nothing … and is writing panos off` | The ledger grew by at least half of the failures: they are being written as **`unavailable`**, which is permanent. Measured shape: upstream drift (a `streetlevel` or depth-payload change) that makes every pano's depth read as absent, so the whole corpus is written off at ~1,900 panos a night while the stats line shows a healthy rate. | Stop it tonight, then scrub the ledger — below. |
+
+**Scrubbing the ledger after a write-off.** A false `unavailable` row costs that pano its depth for ever (it
+is never re-requested); removing a true one costs one request. So err towards removing.
+
+1. **Stop the depth phase:** put `--skip-depth` back after the `--` in the cron line
+   ([Rolling back](#rolling-back-smallest-blast-radius-first)). If a queue is running, let it finish or stop it
+   the way that section describes.
+2. **Copy the ledger first**: `cp -p depth_log.csv depth_log.csv.bak-$(date +%F)` in the city's store
+   directory.
+3. **Find the last save.** Nothing was saved during the barren span, so its rows are the file's tail:
+
+   `awk -F, '{ sub(/\r$/, "") } $2 == "saved" { n = NR } END { print (n ? n : 1) }' depth_log.csv`
+
+   prints the line number of the last `saved` row (or `1`, the header, if the city never saved), and
+   everything after it is the span's `unavailable` rows — the false ones, plus at most a few genuine verdicts
+   from the night the drift began. **`depth_log.csv` has CRLF line endings** (`csv.writer`'s default; unlike
+   the image ledger, the depth ledger does not override it, and production files are all CRLF, so it stays
+   that way). That is why this is not a `grep ',saved$'`: on Linux `$` does not match before the `\r`, so the
+   grep finds nothing on the box — while Git Bash on Windows strips the CR and matches, so a dry run on a
+   desktop passes. `tests/test_depth_phase.py` runs this exact line against a ledger the depth phase wrote.
+4. **Truncate after that line**: `head -n <line> depth_log.csv > depth_log.csv.new && mv depth_log.csv.new
+   depth_log.csv`. Before the `mv`, check the line count it drops: about the CRITICAL's written-off figure
+   plus the newest run's field 14, whose verdicts the report could not see yet.
+5. **Fix the cause, then do one hand run** of that city (`scrape_queue.py … --only <city_id>`) and read its
+   `DEPTHDOWNLOAD: Completed …` line: it should be saving again before `--skip-depth` comes off the cron line.
+
+Repeat 2–4 for every city the report flags; drift hits the whole fleet at once, so expect all of them. A
+small city can be written off entirely in one night — its phase then walks its whole list, which the analyzer
+cannot tell from a finished backfill — so after drift, check every city's `depth_log.csv` for a tail of
+`unavailable` rows since the date the large cities name, not only the flagged ones.
 
 ## When the image phase stops trusting a source
 
@@ -701,7 +882,11 @@ previous deploy's changes again.
    [cross-checks the manifest](downloader.md#the-manifest-is-cross-checked-against-the-fleet) — any city
    still missing a row, or listed under the wrong id, is named and the dry run exits 1. A private deployment
    that is deliberately not scraped here gets a `#city_id,fqdn` row instead, once.
-3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it.
+3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it — and `CropRunner.py`
+   refuses `--city` for it (exit 2), since that roster is what it checks the name of a crop store against
+   ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)). A `#` row there means
+   two things at once: the analyzer stops monitoring the city, **and** `CropRunner` stops accepting it. So
+   do not comment a city out of `cities.csv` to quiet the analyzer if its crops are still wanted.
 4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
 
 ### Hearing about a bad night
@@ -748,10 +933,25 @@ cron_notify.py --name scrape-queue --only-on-failure --log /home/ubuntu/cron_not
   [rollback lever 5](#rolling-back-smallest-blast-radius-first) — because the wrapper forwards a SIGTERM it
   receives to the queue exactly once, so signalling both delivers two.
 
-**Verify any change to this the way `BASH_ENV` was:** a throwaway cron line one minute out,
-`cron_notify.py --sink '<the same sink>' -- false`, a message with `exit 1` in the subject arrives, delete the
-line. Record the date it was proven in the private runbook; a channel nobody has seen deliver is the one this
-section exists because of.
+**Verify any change to this the way `BASH_ENV` was:** a throwaway line in the same crontab (so it inherits
+`SHELL` and `BASH_ENV`), one minute out, with the sink copied from the nightly line:
+
+```cron
+<M> <H> * * *  /srv/sidewalk-panorama-tools/.venv/bin/python /srv/sidewalk-panorama-tools/cron_notify.py --name probe --only-on-failure --log /home/ubuntu/cron_notify_probe.log --sink '<the same sink>' -- false
+```
+
+A message with `probe: exit 1` in the subject arrives and `tail -1 ~/cron_notify_probe.log` says
+`published`; delete the line. **`--only-on-failure` is not optional in the probe.** Without it the wrapper
+is under cron's rule — deliver when the command *printed* something — and `false` prints nothing, so the sink
+is never called and no message can arrive *whether or not the channel works*: the probe fails every time and
+points at the delivery, while the log says `nothing to publish`. The first recipe here omitted it, and on
+2026-09-19 the probe was run that way twice and the channel suspected before anyone read the decision in
+`main()`. `--log` is there so a probe whose publish fails still leaves `sink failed` (or `sink could not
+start`) somewhere; stderr under cron goes to the same nowhere this section is about. It is a file of its own
+because the log line carries no job name: in `~/cron_notify.log` a probe's `exit 1 published` would read as
+a failed night, and would be the `tail -1` [the morning check](#the-morning-after-a-deploy) reads. Record the
+date it was proven in the private runbook; a channel nobody has seen deliver is the one this section exists
+because of.
 
 ### The morning after a deploy
 
@@ -770,4 +970,20 @@ section exists because of.
   in parentheses matters: `(network failure)` and `(unexpected failure)` are the loop's own arms, one timeout
   anywhere in 52 cities writes one, and neither touches the persisted standing. `Google is refusing requests` in
   any `scrape.log` is the stand-down itself.
+- `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
+  tripwire](#the-width-tripwire): a source now serves panoramas wider than 8192-class GPUs can render. It never
+  fails a night and is never mailed on a clean one, so this grep is the only place it surfaces — and it runs
+  only when someone runs it, here or under [routine checks](#routine-checks). A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
 - The analyzer's fleet block, for the checks it encodes.
+
+### Routine checks
+
+The alarm carries only a nonzero exit, so some things that matter never reach anyone on a night that exits 0.
+**Nothing runs these, and no schedule is set for them** — they are what to look at whenever someone looks at
+the fleet, beyond the analyzer:
+
+- `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
+  tripwire](#the-width-tripwire); it is never mailed on a clean night, so this grep is the only place it
+  surfaces. A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
+- `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
+  [only there](#hearing-about-a-bad-night).

@@ -2,9 +2,12 @@ import contextlib
 import enum
 import errno
 import importlib
+import logging
 import os
 import re
 import struct
+import tempfile
+from datetime import datetime, timezone
 
 import requests
 from PIL import Image
@@ -171,6 +174,26 @@ def raise_decompression_bomb_ceiling():
     """
     if Image.MAX_IMAGE_PIXELS is not None and Image.MAX_IMAGE_PIXELS < MAX_PANO_PIXELS:
         Image.MAX_IMAGE_PIXELS = MAX_PANO_PIXELS
+
+
+def black_fraction(image):
+    """Exact fraction of black pixels in the frame, via the luma histogram.
+
+    Counted over every pixel rather than a downsampled probe, and by histogram rather than a numpy array so
+    it stays a C-level pass with no numpy RGB copy of the frame. It still makes one single-band L copy, which
+    for a whole 16384x8192 frame is 134 MB; on a cut window it is a few MB. Both alternatives to an exact count
+    are wrong in a way that matters here: an averaging downscale blends a black region into its neighbours
+    and reports "slightly dark" for a frame that is three-quarters missing, while a NEAREST probe aliases on
+    exactly the sort of regular black/imagery pattern a tiling bug produces.
+
+    One primitive, three callers: gsv's stitch guard (as gsv._black_fraction), refetch_panos' too_black
+    gate, and CropRunner's black_content check on a cut window (#164). It lives here beside the other
+    shared image primitives, which is where a caller outside gsv.py looks for it. That is the whole reason:
+    it is NOT an import boundary, since downloaders/__init__.py imports gsv, so any import from this
+    package - CropRunner's included - loads gsv, config.py, aiohttp and numpy anyway (#170 review).
+    """
+    luma = image.convert('L')
+    return luma.histogram()[0] / float(luma.width * luma.height)
 
 
 class DownloadResult(enum.Enum):
@@ -364,6 +387,112 @@ def write_downscaled_sidecar_from_file(pano_path, max_width=None, quality=None):
         image.draft('RGB', size)
         image.load()
         return _write_reduced(image, size, downscaled_sidecar_path(pano_path, max_width), quality)
+
+
+#: The widest panorama the viewer fleet renders natively (#121). Pannellum uploads an equirectangular image as
+#: two half-width textures, so a device's ceiling is 2 x its MAX_TEXTURE_SIZE; the 8192-class GPUs (a Pixel 7
+#: Pro's Mali-G710, measured, and most of the non-Apple fleet with it) therefore stop at 16384 - which is
+#: exactly GSV's widest frame today. GSV has widened once already (13312 -> 16384), so the margin is zero.
+#:
+#: Written from the device's number, NOT as 2 * DOWNSCALED_MAX_WIDTH, although it equals that today and #115's
+#: cap was set from the same 8192. The two are different facts: the cap is how wide a copy to write, a choice
+#: that can be lowered to save disk, and the ceiling is what the devices can texture, which lowering the cap
+#: does not change. Derived from the cap, the tripwire would silently move with it. A test pins that it is not.
+VIEWER_MAX_PANO_WIDTH = 2 * 8192
+
+
+def warn_if_wider_than_viewer_ceiling(pano_id, width, source):
+    """Warn, on both channels, when a source reports a frame wider than VIEWER_MAX_PANO_WIDTH (#121).
+
+    A tripwire, never a gate: it does not refuse, alter or delay the download, and it writes nothing to the
+    store (in particular it is not a caller of the sidecar primitives above). It should never fire. The day
+    it does, the 8192-class devices can no longer render newly stored panoramas natively, and this repo is
+    the only place that sees the width at the moment it changes.
+
+    `logging.warning` for scrape.log, which is what is still there next week, and `print` for stdout, which is
+    what the alarm wrapper delivers - the repo's rule for a warning that matters. Both, once per wide pano,
+    deliberately with no once-per-run latch: the stdout narrative is already one `Processing pano` line per
+    pano attempted, so this adds at most one line per NEW pano on the nights it fires; the alarm wrapper cuts
+    the middle of a long night's output, so a lone announcement is the line most likely to be cut; and a
+    latch would be process-global mutable state for every test to reset. Each line therefore carries the
+    whole message, including a pointer to the remedy (not the remedy itself - #153 m6, see the message).
+
+    Every firing also bumps a process-wide count (ceiling_sightings), which is how DownloadRunner.main()
+    decides whether tonight is the one run that fails so the alarm is delivered (arm_width_alarm). A count,
+    not a flag, so a caller reads the DIFFERENCE across its own run and needs nothing reset between runs.
+
+    Usage, where a downloader has just learned the frame's width::
+
+        warn_if_wider_than_viewer_ceiling(pano_id, width, 'gsv')
+
+    @param width  An int. Callers coerce first: '9000' > '16384' as strings.
+    @return Whether it fired.
+    """
+    global _ceiling_sightings
+    if width <= VIEWER_MAX_PANO_WIDTH:
+        return False
+    _ceiling_sightings += 1
+    # The remedy is deliberately a pointer, not the steps (#153 m6): the line is written to be acted on alone,
+    # and the steps end in a fleet-wide +63% sweep whose disk budget the runbook puts first.
+    message = ("%s pano %s is %d px wide, over the viewer ceiling of %d (#121); 8192-class GPUs cannot "
+               "render it natively. Verify the stored file's width, then budget the disk before any sweep: "
+               "the remedy writes a copy of nearly every panorama on the store, not only this one. See "
+               "docs/ops.md, 'The width tripwire'."
+               % (source, pano_id, width, VIEWER_MAX_PANO_WIDTH))
+    logging.warning("IMAGEDOWNLOAD: %s", message)
+    print("IMAGEDOWNLOAD: WARNING - %s" % message)
+    return True
+
+
+# How many frames wider than the ceiling this process has seen. Only ever read as a difference across one run,
+# so it is never reset - see warn_if_wider_than_viewer_ceiling.
+_ceiling_sightings = 0
+
+
+def ceiling_sightings():
+    """How many times warn_if_wider_than_viewer_ceiling has fired in this process (#121)."""
+    return _ceiling_sightings
+
+
+# Where the one-time width alarm (#121) is remembered. LOCAL disk, beside the depth block latch, and for the same
+# reason: a wider frame is a fact about Google, not about one city, and the storage dir a run is handed belongs
+# to one city - a latch there would alarm once per city, up to 53 times for one event.
+WIDTH_ALARM_LATCH_FILENAME = 'sidewalk-width-ceiling-alarmed'
+
+
+def default_width_alarm_latch_path():
+    return os.path.join(tempfile.gettempdir(), WIDTH_ALARM_LATCH_FILENAME)
+
+
+def arm_width_alarm(path):
+    """Record that a human has been told the ceiling was crossed; return whether THIS call is the telling.
+
+    The tripwire only warns, and the queue's alarm wrapper delivers only failures, so a warning alone reaches
+    no one. Failing every run that sees a wide frame would reach someone and then keep the city red for good,
+    because Google does not un-widen - hiding every real failure behind a known one. So the first sighting on
+    a host creates this file and that run fails; later runs find it and only warn. Deleting it re-arms.
+
+    Created exclusively and never rewritten, so its content stays the date of the FIRST sighting. A path that
+    cannot be written resolves towards alarming (True, with the path logged): a latch nobody can write must
+    not swallow the one alarm it exists to deliver. The cost is an alarm every night until the path is fixed.
+
+    Usage, after a run whose sighting count went up::
+
+        if arm_width_alarm(latch_path):
+            ...fail this run...
+
+    @return True when this call created the latch, or could not write it; False when it was already there.
+    """
+    try:
+        with open(path, 'x') as f:
+            f.write(datetime.now(timezone.utc).isoformat() + chr(10))
+        return True
+    except FileExistsError:
+        return False
+    except OSError as e:
+        logging.error("IMAGEDOWNLOAD: could not write the width-alarm latch %s (%s); every run that sees a "
+                      "frame over the viewer ceiling will fail until it can be written", path, e)
+        return True
 
 
 def retrying_session():

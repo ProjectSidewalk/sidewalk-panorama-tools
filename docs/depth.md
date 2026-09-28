@@ -115,7 +115,9 @@ Any store scraped before the [#58](https://github.com/ProjectSidewalk/sidewalk-p
 holds x-mirrored artifacts, and the scraper will never correct them on its own — existing artifacts are never
 re-fetched or rewritten. `migrate_depth_artifacts.py` fixes them offline: it scans a storage root, flips every
 artifact whose `format_version` is missing or below 2, and stamps it, leaving v2 artifacts byte-for-byte
-untouched. It is idempotent, so re-running on a healthy store is a no-op.
+untouched. It is idempotent, so re-running on a healthy store is a no-op. The production store has never
+needed it, since it held no depth artifacts at all before the v3 writer's first run (below). The script stays
+as a safety net for dev and test stores.
 
 ```bash
 python3 migrate_depth_artifacts.py /path/to/storage --dry-run   # count pre-v2 artifacts, change nothing
@@ -124,9 +126,16 @@ python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them i
 
 There is **no offline migration from v2 to v3**: the plane fields v3 adds were never stored by the v2 writer,
 so they can only come from a re-fetch. A v2 artifact reaches v3 by deleting the artifact *and* its
-`depth_log.csv` row, which makes the next run re-request it. (Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)
-dev and test runs ever produced a v2 artifact — no production store has run the depth phase.) The plane fields
-cost roughly 10–30 KB per pano on top of v2's 50–200 KB.
+`depth_log.csv` row, which makes the next run re-request it. The plane fields cost roughly 10–30 KB per pano
+on top of v2's 50–200 KB.
+
+Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56) dev and test runs ever
+produced a v2 artifact. The depth phase's first production run was a 500-pano `west-chester-pa` canary on
+2026-09-06, the day it went live fleet-wide ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)).
+Before it the store held **zero** `depth_log.csv` files and **zero** `.depth.npz` artifacts, the scraper host
+had just been pulled to `master`, and the canary's artifacts read back as `format_version` 3, so every artifact
+the production store holds is v3. That rests on the store, not on the v3 writer's 2026-08-07 merge date: as
+late as 2026-08-29 production was still running a build older than that merge.
 
 ## Runtime budget
 
@@ -227,6 +236,15 @@ fan-out — and on top of that:
   * **Every ambiguous latch resolves towards scraping.** Missing, unparseable, or dated implausibly far in the
     future all mean "not blocked" — a latch nobody can read must never be able to stand the whole fleet's
     depth phase down indefinitely.
+  * **The image phase shares it ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)).**
+    Since #74 the image phase makes one photometa request per *new* GSV pano, without the depth payload, to
+    read the pano's zoom levels instead of probing two tiles. It reads the latch before each such request and
+    skips photometa while one is fresh (falling back to the tile probe), and a refusal met there writes the
+    latch itself — so the depth phase later in the same run stands down at zero requests — and forfeits the
+    pacer's earned standing, as a depth-phase refusal does. The image phase shares the latch, **not the
+    pacer**: a new pano's photometa request is normally followed by a 28–512-tile fan-out, so it runs far
+    below the depth phase's opening rate. A refused pano has no fan-out, but refusals are expected at close to
+    zero a night. `--depth-block-latch` moves the latch for both phases.
 * **Sizing, and the thing that actually decided it.** A photometa request measures **0.077 s median** from
   the production box, so the raw request cost of the 1,433,104-pano corpus is nothing like the "inherently
   multi-month job" this page used to claim — and that claim was the stated reason for leaving pacing off.
@@ -270,7 +288,9 @@ fan-out — and on top of that:
   normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; the row has no
   separate column for it. What the row does carry, since [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124), is the **corpus size** (field 19), so
   the [log analyzer](log-analyzer.md#the-depth-backfill) can report how far along each city is and when it
-  will finish.
+  will finish. Its *size* is not a signal, but a phase whose requests are **all** failures is: the analyzer
+  reports several nights of requests with no save, and at CRITICAL when those failures are being ledgered as
+  `unavailable` — see [When the depth phase saves nothing](ops.md#when-the-depth-phase-saves-nothing).
 * **Storage or ledger write failures** (a full or unmounted store) are treated as transient per-pano failures
   and retried next run — the phase deliberately never lets them escape.
 

@@ -388,25 +388,32 @@ LIVE_PANOS = [('Seattle 2022', 'Svz6_7CwyijJ6RgjWROnCw', 16384, 8192),
               ('DC 2007 (four zoom levels)', 'TEKYJ5O1xd0OZ_YqF0lFRA', 3328, 1664)]
 
 
-def _live_get(session, url, tries=5):
+def _live_get(session, url, tries=5, require_200=False):
     """Retry until the response decodes. CBK intermittently answers with a non-image body; production rides
     that out with backoff (_TILE_RETRY_ERRORS), so a live check that fails on the first dropped response is
-    testing the network, not the endpoint's behaviour."""
+    testing the network, not the endpoint's behaviour.
+
+    `require_200` asserts the status of the response that decoded. The probes read a black body as a verdict
+    only on a 200 (#166 option b), so the answers that verdict rests on must keep arriving as 200s."""
     import time
 
     for attempt in range(tries):
-        body = session.get(url, headers=gsv._random_header(), timeout=30).content
+        response = session.get(url, headers=gsv._random_header(), timeout=30)
+        body = response.content
         try:
             Image.open(BytesIO(body)).size
-            return body
         except Exception:
             time.sleep(0.5 * (attempt + 1))
+            continue
+        if require_200:
+            assert response.status_code == 200, 'answered %s, not 200: %s' % (response.status_code, url)
+        return body
     raise AssertionError('no decodable response after %d tries: %s' % (tries, url))
 
 
-def _live_tile(session, pano, zoom, x, y, extra=''):
+def _live_tile(session, pano, zoom, x, y, extra='', require_200=False):
     return _live_get(session, '%s%s&zoom=%d&x=%d&y=%d&panoid=%s'
-                     % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano))
+                     % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano), require_200=require_200)
 
 
 @live_only
@@ -467,14 +474,16 @@ def test_live_cbk_without_fover_is_byte_identical_to_the_modern_endpoint():
 @live_only
 def test_live_dropping_fover_changed_nothing_else():
     """The side-effect check. The zoom probe and _reject_mostly_black_stitch both depend on out-of-range and
-    dead-pano requests answering with a black JPEG rather than an error."""
+    dead-pano requests answering with a black JPEG rather than an error - and, since #166 option (b), with a
+    200: a black body under any other status raises. If Google ever answered these with a 404 and a black
+    JPEG, every retirement would become a nightly retry and nothing else in the suite would fail."""
     import requests
 
     pano = LIVE_PANOS[0][1]
     session = requests.Session()
 
     def describe(zoom, x, y, target=None):
-        body = _live_tile(session, target or pano, zoom, x, y)
+        body = _live_tile(session, target or pano, zoom, x, y, require_200=True)
         image = Image.open(BytesIO(body))
         return image.size, image.convert('L').getextrema() == (0, 0)
 
@@ -483,6 +492,10 @@ def test_live_dropping_fover_changed_nothing_else():
     assert describe(3, 0, 0) == ((512, 512), False), 'the zoom-3 probe tile changed'
     assert describe(5, 0, 0, target='_qVKgG3dGOoClMQI6QgVRg') == ((512, 512), True), \
         'a retired pano no longer answers with a black tile'
+    # Zoom 3 is the FIRST probe production sends for a retired pano (resolve_zoom_and_dims), so the 200 has to
+    # hold there too; only the blackness is asserted, since the tile's size at zoom 3 is not what is pinned.
+    assert describe(3, 0, 0, target='_qVKgG3dGOoClMQI6QgVRg')[1], \
+        'a retired pano no longer answers its zoom-3 probe with a black tile'
 
 
 @live_only
@@ -544,3 +557,30 @@ def test_live_frame_probe_agrees_with_the_real_grid(label, pano_id, width, heigh
     if (width, height) == (16384, 8192):
         assert gsv.frame_covers_pano(pano_id, 13312, 6656, zoom) is False, \
             '%s: a short grid must be caught, or a re-fetch silently crops it' % label
+
+
+# The OBSERVED_PHOTOMETA row each live pano should still match (#74). Sydney 2014 is a different pano from the
+# table's Sydney row, but the same six-level 13312 series.
+LIVE_PHOTOMETA_ROWS = {'Svz6_7CwyijJ6RgjWROnCw': 'Seattle 2022-09', 'cFou_FaIrbvqN0kcS5QuxA': 'Sydney 2014-11',
+                       'TEKYJ5O1xd0OZ_YqF0lFRA': 'DC-hist 2007-11'}
+
+
+@live_only
+@pytest.mark.parametrize('label,pano_id,width,height', LIVE_PANOS)
+def test_live_photometa_levels_match_the_observed_table(label, pano_id, width, height):
+    """The image phase's zoom decision (#74) against Google: one photometa request per pano, without depth.
+
+    Its levels must still be the OBSERVED_PHOTOMETA series the offline tests are written against, top level
+    equal to the app's frame, 512 px tiles - and choose_zoom must land on the top level, consistently. If this
+    fails, the offline table is stale and so is every test driven by it."""
+    pytest.importorskip('streetlevel.streetview.api')
+    from test_gsv_stitcher import OBSERVED_PHOTOMETA    # lazily: that module imports this one
+
+    with gsv._depth_session() as session:
+        levels = gsv._fetch_image_levels(pano_id, session)
+
+    assert levels is not None, '%s: photometa says not found' % label
+    assert tuple(levels.tile_size) == (512, 512)
+    assert [tuple(s) for s in levels.sizes] == dict(OBSERVED_PHOTOMETA)[LIVE_PHOTOMETA_ROWS[pano_id]], label
+    assert tuple(levels.sizes[-1]) == (width, height)
+    assert gsv.choose_zoom(levels.sizes, width, height) == (len(levels.sizes) - 1, True)

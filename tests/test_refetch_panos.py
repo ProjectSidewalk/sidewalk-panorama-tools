@@ -4,7 +4,8 @@ The property this file exists to hold is narrow and load-bearing: **the stored p
 path but `replaced`**. About half of the labelled panoramas in the store no longer exist at Google, so
 for a large share of any work-list the file on disk is the only copy there will ever be, and a repair
 tool that can lose one is worse than no repair tool. So every refusal is asserted byte-for-byte against
-the original, not merely by its return value.
+the original, not merely by its return value. Since #122 the display copy beside it is held to the same
+rule: the only path that may delete one is a failed rewrite after a swap has landed.
 
 Network-free: the three gsv seams (#73's extraction) are stubbed, which is what they were extracted for.
 The one place real bytes are used is the recovery measurement, which is pinned against the committed
@@ -13,6 +14,7 @@ The one place real bytes are used is the recovery measurement, which is pinned a
 
 import csv
 import gzip
+import io
 import json
 import logging
 import os
@@ -31,6 +33,7 @@ for _p in (REPO_ROOT, SCRIPTS):
 import downscale_panos  # noqa: E402
 import refetch_panos as rp  # noqa: E402
 from downloaders import common, gsv  # noqa: E402
+from test_gsv_stitcher import BLACK_BODY, IMAGERY_BODY, canned_cbk, cbk_query  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
 
@@ -319,11 +322,30 @@ class TestDecideWithoutFetching:
 class TestRefetchPanoRefusals:
     """Every refusal must leave the stored bytes exactly as they were. Asserted on the bytes, not the
     return value: a gate that returns the right word while having already overwritten the file is the
-    failure this tool cannot have."""
+    failure this tool cannot have.
+
+    The display copy beside the panorama is held to the same standard (#122). _refresh_display_copy can now
+    DELETE it, on the one path where a rewrite failed after a landed swap, and a delete that leaked onto a
+    refusal path would take a copy of imagery the tool had just decided to keep. So run() seeds one at the
+    production cap and every refusal asserts it survived, byte for byte, beside the panorama.
+    """
+
+    def seed_sidecar(self, pano_path):
+        """A display copy at the production cap, beside the panorama. Its content is arbitrary: the tests
+        only compare it with itself."""
+        self.sidecar = common.downscaled_sidecar_path(pano_path)
+        Image.new('RGB', (16, 8), (200, 20, 20)).save(self.sidecar, 'JPEG')
+        self.sidecar_before = open(self.sidecar, 'rb').read()
+
+    def assert_sidecar_survived(self):
+        assert os.path.exists(self.sidecar), 'a refusal deleted the display copy'
+        assert open(self.sidecar, 'rb').read() == self.sidecar_before
 
     def run(self, tmp_path, monkeypatch, resolve=None, fetch=None, max_black=rp.MAX_BLACK_FRACTION,
-            covers=True):
+            covers=True, with_sidecar=True):
         path = store_with_pano(tmp_path)
+        if with_sidecar:
+            self.seed_sidecar(path)
         before = open(path, 'rb').read()
         stub_seams(monkeypatch, resolve=resolve, fetch=fetch, covers=covers)
         outcome = rp.refetch_pano(str(tmp_path), {'pano_id': PANO}, Z5_DIMS, max_black, False, [])
@@ -335,6 +357,7 @@ class TestRefetchPanoRefusals:
 
         assert outcome == 'gone'
         assert after == before
+        self.assert_sidecar_survived()
 
     def test_a_pano_google_now_serves_larger_is_refused_before_the_fan_out(self, tmp_path, monkeypatch):
         """The only silent-corruption path in the tool, and the one gate that can see it.
@@ -352,6 +375,7 @@ class TestRefetchPanoRefusals:
 
         assert outcome == 'frame_grew'
         assert after == before
+        self.assert_sidecar_survived()
         assert fetched == [], 'the frame probe must run before the 512-tile fan-out'
 
     def test_a_fallback_zoom_is_refused_because_swapping_would_be_a_downgrade(self, tmp_path, monkeypatch):
@@ -361,6 +385,7 @@ class TestRefetchPanoRefusals:
 
         assert outcome == 'upscaled'
         assert after == before
+        self.assert_sidecar_survived()
 
     def test_an_undersized_tile_means_there_is_nothing_to_gain(self, tmp_path, monkeypatch):
         outcome, before, after, _shard = self.run(
@@ -369,6 +394,7 @@ class TestRefetchPanoRefusals:
 
         assert outcome == 'undersized'
         assert after == before
+        self.assert_sidecar_survived()
 
     def test_a_black_bordered_stitch_is_refused(self, tmp_path, monkeypatch):
         """A reported frame larger than what Google serves fills the out-of-range tiles with black. At
@@ -382,9 +408,12 @@ class TestRefetchPanoRefusals:
 
         assert outcome == 'too_black'
         assert after == before
+        self.assert_sidecar_survived()
 
     def test_a_clean_stitch_is_swapped_in(self, tmp_path, monkeypatch):
-        outcome, before, after, shard = self.run(tmp_path, monkeypatch)
+        # No copy seeded: rewriting one from a 13312-wide frame is a real resize, and
+        # TestTheDisplayCopyFollowsTheSwap owns that path at a cheap cap.
+        outcome, before, after, shard = self.run(tmp_path, monkeypatch, with_sidecar=False)
 
         assert outcome == 'replaced'
         assert after != before
@@ -402,6 +431,7 @@ class TestRefetchPanoRefusals:
         mutant, i.e. against a tool that truncates a panorama Google may no longer have.
         """
         path = store_with_pano(tmp_path)
+        self.seed_sidecar(path)
         before = open(path, 'rb').read()
 
         def half_written_save(target, *args, **kwargs):
@@ -422,6 +452,9 @@ class TestRefetchPanoRefusals:
 
         assert open(path, 'rb').read() == before
         assert list((tmp_path / PANO[:2]).glob('*.part')) == []
+        # A save that raises never reaches the copy: neither its rewrite nor, on the rewrite's failure,
+        # its delete may run ahead of the panorama landing.
+        self.assert_sidecar_survived()
 
     def test_the_gates_run_before_any_write_even_when_several_would_fire(self, tmp_path, monkeypatch):
         """Ordering: upscaled is reported ahead of undersized because it is the more damaging swap, but the
@@ -432,6 +465,76 @@ class TestRefetchPanoRefusals:
 
         assert outcome == 'upscaled'
         assert after == before
+        self.assert_sidecar_survived()
+
+
+class TestRefetchKeepsItsPre74Decisions:
+    """#74 moved the nightly zoom onto photometa's reported levels. refetch_panos must not follow it there by
+    accident (#74 review item 2): through photometa, both cases below turn from a refusal into a swap, on the
+    tool whose refusals are the feature. So resolve_zoom_and_dims stays on the probe, and this runs through
+    the REAL gsv seams - only photometa, CBK and the tile fan-out are faked - which is what the stubbed-seam
+    tests above cannot see. Whether refetch should adopt photometa's decisions is a separate decision."""
+
+    S16 = [(512 * 2 ** k, 256 * 2 ** k) for k in range(6)]
+    S5 = [(336 * 2 ** k, 168 * 2 ** k) for k in range(5)]     # a five-level pano, 5376x2688 at the top
+
+    def run(self, tmp_path, monkeypatch, stored, sizes):
+        path = store_with_pano(tmp_path, dims=stored)
+        before = open(path, 'rb').read()
+        grey, black = _jpeg((90, 90, 90), 512), _jpeg((0, 0, 0), 16)
+        asked = []
+
+        def photometa(pano_id, session):
+            # Answers correctly, so a refetch that asked it would get a consistent native zoom and swap.
+            asked.append(pano_id)
+            return gsv.ImageLevels(list(sizes), (512, 512))
+
+        def cbk(url, session, stream=False):
+            query = dict(part.split('=', 1) for part in url.split('?', 1)[1].split('&'))
+            zoom, x, y = int(query['zoom']), int(query['x']), int(query['y'])
+            inside = zoom < len(sizes) and x * 512 < sizes[zoom][0] and y * 512 < sizes[zoom][1]
+            return io.BytesIO(grey if inside else black)
+
+        async def tiles(requested):
+            return [(x, y, grey) for x, y, _url in requested]
+
+        monkeypatch.setattr(gsv, '_fetch_image_levels', photometa)
+        monkeypatch.setattr(gsv, '_get_response', cbk)
+        monkeypatch.setattr(gsv, '_download_tiles', tiles)
+        outcome = rp.refetch_pano(str(tmp_path), {'pano_id': PANO}, stored, rp.MAX_BLACK_FRACTION, False, [])
+        return outcome, before, open(path, 'rb').read(), asked
+
+    def test_a_stored_frame_smaller_than_google_serves_is_still_frame_grew(self, tmp_path, monkeypatch):
+        """8192x4096 stored, 16384 served: photometa would pick a native zoom 4 and swap."""
+        outcome, before, after, asked = self.run(tmp_path, monkeypatch, (8192, 4096), self.S16)
+
+        assert outcome == 'frame_grew'
+        assert after == before
+        assert asked == []
+
+    def test_a_five_level_pano_is_still_upscaled(self, tmp_path, monkeypatch):
+        """5376x2688, max zoom 4: the probe finds zoom 5 black and zoom 3 live, so the stitch is an upscale."""
+        outcome, before, after, asked = self.run(tmp_path, monkeypatch, (5376, 2688), self.S5)
+
+        assert outcome == 'upscaled'
+        assert after == before
+        assert asked == []
+
+    def test_refetch_never_reads_or_writes_the_block_latch(self, tmp_path, monkeypatch):
+        """A refusal met by refetch would otherwise write the shared latch and stand the nightly depth phase
+        down; and a fresh latch must not change what refetch asks."""
+        monkeypatch.setattr(gsv, '_block_latch_age_hours', lambda path: pytest.fail('refetch read the latch'))
+        monkeypatch.setattr(gsv, '_write_block_latch', lambda path: pytest.fail('refetch wrote the latch'))
+
+        outcome, _before, _after, asked = self.run(tmp_path, monkeypatch, (8192, 4096), self.S16)
+
+        assert outcome == 'frame_grew' and asked == []
+
+
+def _jpeg(color, size):
+    buf = io.BytesIO()
+    Image.new('RGB', (size, size), color).save(buf, 'jpeg')
+    return buf.getvalue()
 
 
 # --- the run loop ---------------------------------------------------------------------------------------
@@ -1257,6 +1360,12 @@ class TestTheDisplayCopyFollowsTheSwap:
     asymmetry is deliberate and is what the first three tests pin: the switch says stop making a new
     artifact, not start lying in the one already on the store. Do-nothing here would re-introduce the
     staleness the paragraph above describes, by choice, on precisely the panoramas this pass rewrites.
+
+    A REWRITE THAT FAILS DELETES THE COPY (#122), for the same reason: the old copy would be stale at exactly
+    the right size, while a missing one is what the sweep fills. That delete is the tool's one destructive
+    step outside the swap, so it gets the battery's treatment - the refusal tests here and in
+    TestRefetchPanoRefusals assert the copy survives every other path byte for byte, and the failed-rewrite
+    tests assert the panorama and every bystander in the shard do.
     """
 
     CAP = 1024
@@ -1385,28 +1494,182 @@ class TestTheDisplayCopyFollowsTheSwap:
         assert open(sidecar, 'rb').read() == before
         assert open(pano, 'rb').read() == pano_before
 
-    def test_a_copy_that_cannot_be_written_does_not_undo_the_swap(self, tmp_path, monkeypatch, small_cap,
-                                                                  caplog):
-        """Never fatal, and for a sharper reason than in the downloaders: the swap has ALREADY landed.
+    # --- a rewrite that fails after the swap has landed (#122) ---------------------------------------------
 
-        Raising would leave the panorama unledgered, so the next run would spend another ~512 tile requests
-        redoing a replacement that is on disk. A stale copy the sweep can heal is much the cheaper failure.
-        """
-        pano, sidecar = self.store(tmp_path)
+    OTHER = PANO[:2] + 'otherPanoBBBBBBBBBB'   # a second panorama in the same shard
 
+    def plant_bystanders(self, tmp_path, pano):
+        """Everything in the shard the #122 delete must NOT touch, with its bytes: the panorama itself is
+        checked separately (its bytes legitimately change - it was just replaced)."""
+        shard = tmp_path / PANO[:2]
+        other = str(shard / (self.OTHER + '.jpg'))
+        Image.new('RGB', (self.DIMS[0] // 64, self.DIMS[1] // 64), (1, 2, 3)).save(other, 'JPEG')
+        paths = [
+            common.downscaled_sidecar_path(pano, self.CAP // 2),     # this panorama's copy at ANOTHER cap
+            other,                                                    # a neighbour's panorama ...
+            self.sidecar_path(other),                                 # ... and its copy at THIS cap
+            str(shard / (PANO + '.depth.npz')),                       # this panorama's depth artifact
+        ]
+        for i, path in enumerate(paths[2:], start=2):
+            with open(path, 'wb') as f:
+                f.write(b'bystander %d' % i)
+        Image.new('RGB', (self.CAP // 2, self.CAP // 4), (4, 5, 6)).save(paths[0], 'JPEG')
+        return {path: open(path, 'rb').read() for path in paths}
+
+    def refuse_rewrite(self, monkeypatch):
         def refuse(image, pano_path, max_width=None, quality=None):
             raise OSError(28, 'No space left on device')
 
         monkeypatch.setattr(rp, 'write_downscaled_sidecar', refuse)
+
+    def assert_pano_shows_new_imagery(self, pano):
+        with Image.open(pano) as new_pano:
+            assert new_pano.size == self.DIMS
+            assert new_pano.getpixel((self.DIMS[0] // 2, self.DIMS[1] // 2)) == pytest.approx(self.NEW, abs=8)
+
+    def test_a_copy_that_cannot_be_rewritten_is_deleted_and_the_swap_stands(self, tmp_path, monkeypatch,
+                                                                            small_cap, caplog, capsys):
+        """#122. Leaving the old copy is the one outcome nothing can ever repair: it has EXACTLY the
+        dimensions the sweep expects, so sidecar_is_current reads it as current for ever and the viewer
+        serves the imagery this pass replaced. Deleting it leaves a state the next sweep repairs, whenever one
+        is run; until then the web app serves the native file.
+
+        Still never fatal - the swap has landed, and raising would leave the panorama unledgered at ~512 tile
+        requests to redo. The log line now reports a delete, not an instruction to `rm` by hand; and it goes
+        to the log only, at WARNING, because the store is in a state the next sweep repairs and nothing is
+        left for a person to do beyond running one (the docstring argues the channel and the level).
+
+        Kills: no delete at all (the copy survives); a delete aimed at the panorama's path (the panorama is
+        gone); a delete at a different cap (this cap's copy survives, or the .w512 bystander dies); a glob
+        over the shard (a bystander dies); the delete logged at ERROR (#153 m7).
+        """
+        pano, sidecar = self.store(tmp_path)
+        bystanders = self.plant_bystanders(tmp_path, pano)
+        self.refuse_rewrite(monkeypatch)
+
+        with caplog.at_level(logging.WARNING):
+            outcome = self.swap(tmp_path, monkeypatch)
+
+        assert outcome == 'replaced'
+        self.assert_pano_shows_new_imagery(pano)           # the replacement really is on disk, untouched
+        assert not os.path.exists(sidecar), 'a stale copy at the expected size is permanent; it must go'
+        for path, before in bystanders.items():
+            assert open(path, 'rb').read() == before, path
+        assert sorted(os.listdir(tmp_path / PANO[:2])) == sorted(
+            [PANO + '.jpg'] + [os.path.basename(p) for p in bystanders])
+        (deleted,) = [r for r in caplog.records if 'deleted' in r.getMessage()]
+        assert deleted.levelno == logging.WARNING
+        assert 'downscale_panos.py' in deleted.getMessage() and PANO in deleted.getMessage()
+        assert 'display copy' not in capsys.readouterr().out
+
+    def test_after_the_delete_the_next_sweep_recreates_the_copy_from_the_NEW_imagery(
+            self, tmp_path, monkeypatch, small_cap):
+        """The reason to delete rather than leave: the failure becomes repairable by the next sweep, whenever
+        one is run (nothing schedules it). Before #122 the same
+        sequence ended with the sweep reporting the stale copy `current` and writing nothing, for ever."""
+        pano, sidecar = self.store(tmp_path)
+        self.refuse_rewrite(monkeypatch)
+        assert self.swap(tmp_path, monkeypatch) == 'replaced'
+
+        # The sweep writes through its own primitive (write_downscaled_sidecar_from_file), which the refusal
+        # above never touched: the store "has space again".
+        summary = downscale_panos.downscale_store(str(tmp_path), max_width=self.CAP)
+
+        assert summary.written == 1
+        self.assert_copy_shows(sidecar, self.NEW)
+
+    def test_a_delete_that_also_fails_is_reported_on_both_channels_and_is_still_not_fatal(
+            self, tmp_path, monkeypatch, small_cap, caplog, capsys):
+        """The one case that still needs a person: the rewrite failed AND the stale copy could not be
+        removed, so it is back to reading as current for ever. Both channels, naming the file - stdout for
+        whoever is running the pass, the log for next week. Returning `replaced` regardless is the point:
+        the swap landed and must be ledgered.
+
+        Kills: a delete that lets its own exception escape (the swap would go unledgered); this case logged
+        at WARNING along with the successful delete (#153 m7 - only the self-repairing case is demoted).
+        """
+        pano, sidecar = self.store(tmp_path)
+        self.refuse_rewrite(monkeypatch)
+        real_remove = os.remove
+
+        def locked(path, *args, **kwargs):
+            if os.path.abspath(path) == os.path.abspath(sidecar):
+                raise PermissionError(13, 'Permission denied', path)
+            return real_remove(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, 'remove', locked)
         with caplog.at_level(logging.ERROR):
             outcome = self.swap(tmp_path, monkeypatch)
 
         assert outcome == 'replaced'
-        with Image.open(pano) as new_pano:
-            assert new_pano.size == self.DIMS      # the replacement really is on disk
-        self.assert_copy_shows(sidecar, self.OLD)  # and the copy is merely stale, not corrupt
-        assert 'display copy not rewritten' in caplog.text
-        assert PANO in caplog.text
+        self.assert_pano_shows_new_imagery(pano)
+        self.assert_copy_shows(sidecar, self.OLD)           # still there, and still stale
+        out = capsys.readouterr().out
+        (record,) = [r for r in caplog.records if os.path.basename(sidecar) in r.getMessage()]
+        assert record.levelno == logging.ERROR
+        assert os.path.basename(sidecar) in out
+        assert 'downscale_panos.py' in out
+
+    def test_a_failed_write_with_no_copy_to_replace_deletes_nothing(self, tmp_path, monkeypatch, small_cap,
+                                                                     copies_on, caplog):
+        """Switch on, no copy on the store, and the first write fails: there is nothing stale, so nothing to
+        delete, and the missing copy is exactly what the sweep fills. Logged, not fatal, shard unchanged.
+
+        Logged at WARNING, like the successful delete (#153 final F7): both are states the next sweep
+        repairs, and ERROR is kept for the one a person has to clear."""
+        pano, sidecar = self.store(tmp_path, with_sidecar=False)
+        bystanders = self.plant_bystanders(tmp_path, pano)
+        self.refuse_rewrite(monkeypatch)
+
+        with caplog.at_level(logging.WARNING):
+            assert self.swap(tmp_path, monkeypatch) == 'replaced'
+
+        assert not os.path.exists(sidecar)
+        for path, before in bystanders.items():
+            assert open(path, 'rb').read() == before, path
+        (record,) = [r for r in caplog.records if 'display copy not written' in r.getMessage()]
+        assert record.levelno == logging.WARNING
+
+    @pytest.mark.parametrize('outcome', ['absent', 'unreadable', 'not_affected', 'already_clean',
+                                         'dims_changed', 'transient'])
+    def test_no_zero_request_decision_or_transient_failure_touches_the_copy(self, tmp_path, monkeypatch,
+                                                                            small_cap, outcome):
+        """The refusals that never reach refetch_pano's gates, driven through the real run loop, with every
+        write set to fail so that any path which reached the refresh would take the DELETE branch. The
+        five fetch-side refusals are pinned by test_every_refusal_leaves_the_copy_byte_for_byte_alone and
+        TestRefetchPanoRefusals."""
+        record = {'pano_id': PANO}
+        fixed_after = rp._parse_fixed_after(rp.DEFAULT_FIXED_AFTER)
+        if outcome == 'absent':
+            (tmp_path / PANO[:2]).mkdir()
+            pano = str(tmp_path / PANO[:2] / (PANO + '.jpg'))
+            Image.new('RGB', (self.CAP, self.CAP // 2), self.OLD).save(self.sidecar_path(pano), 'JPEG')
+            sidecar = self.sidecar_path(pano)
+        elif outcome == 'not_affected':
+            pano, sidecar = self.store(tmp_path, dims=(3328, 1664))
+        else:
+            pano, sidecar = self.store(tmp_path, dims=Z5_DIMS)
+        if outcome == 'unreadable':
+            with open(pano, 'wb') as f:
+                f.write(b'not a jpeg at all')
+        elif outcome == 'already_clean':
+            fixed_after = rp._parse_fixed_after('2025-01-01')
+        elif outcome == 'dims_changed':
+            record = {'pano_id': PANO, 'width': 16384, 'height': 8192}
+        before = open(sidecar, 'rb').read()
+
+        self.refuse_rewrite(monkeypatch)
+        monkeypatch.setattr(os, 'remove', lambda *a, **k: pytest.fail('nothing may be deleted here'))
+        if outcome == 'transient':
+            def fail(*args, **kwargs):
+                raise OSError('network blip')
+            stub_seams(monkeypatch, fetch=fail)
+        else:
+            no_seams(monkeypatch)
+        counts = rp.refetch_store(str(tmp_path), [record], fixed_after=fixed_after)
+
+        assert counts['transient_failures' if outcome == 'transient' else outcome] == 1
+        assert open(sidecar, 'rb').read() == before
 
     def test_the_copy_is_not_written_when_the_panorama_save_fails(self, tmp_path, monkeypatch, small_cap):
         """Ordering, and the only way to see it: fail the PANORAMA's save while letting the copy's succeed.
@@ -1464,3 +1727,69 @@ class TestTheDisplayCopyFollowsTheSwap:
         assert downscale_panos.sidecar_is_current(pano, self.DIMS, self.CAP) is True
         self.assert_copy_shows(sidecar, self.NEW)
         assert downscale_panos.downscale_store(str(tmp_path), max_width=self.CAP).written == 0
+
+
+class TestARefusedProbeIsTransient:
+    """#166 option (b), composed: the two probes now raise on any status but 200, and refetch_store must
+    count that as a transient failure - unledgered, file untouched, pass carrying on - rather than as `gone`
+    (a probe refused at resolve) or as a frame that covers (a probe refused at the edge, which used to let
+    the fan-out run on a grid nothing confirmed).
+
+    Driven through the REAL resolve_zoom_and_dims and frame_covers_pano and a real requests.Session; only
+    the socket is canned (test_gsv_stitcher.canned_cbk). The first pano in each test is refused, the second
+    is a genuine 200 retirement, so the same pass shows both the transient and the permanent path.
+    """
+
+    REFUSED = 'aaRefusedAAAAAAAAAAA'
+    RETIRED = 'bbRetiredBBBBBBBBBBB'
+
+    def ledger_rows(self, tmp_path):
+        with open(str(tmp_path / rp.LEDGER_FILENAME), newline='') as f:
+            return list(csv.reader(f))
+
+    def run(self, tmp_path, monkeypatch, answer):
+        refused_path = store_with_pano(tmp_path, self.REFUSED)
+        store_with_pano(tmp_path, self.RETIRED)
+        before = open(refused_path, 'rb').read()
+        canned_cbk(monkeypatch, answer)
+
+        fetched = []
+
+        def recording_fetch(pano_id, width, height, zoom):
+            fetched.append(pano_id)
+            return gsv.StitchedPano(Image.new('RGB', (width, height), (10, 200, 10)), 0, False)
+
+        monkeypatch.setattr(gsv, 'fetch_pano_image', recording_fetch)
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': self.REFUSED}, {'pano_id': self.RETIRED}])
+        return counts, fetched, before, open(refused_path, 'rb').read()
+
+    def test_a_refused_zoom_probe_is_not_gone(self, tmp_path, monkeypatch):
+        def answer(url):
+            return (403 if self.REFUSED in url else 200), BLACK_BODY
+
+        counts, fetched, before, after = self.run(tmp_path, monkeypatch, answer)
+
+        assert counts['transient_failures'] == 1
+        assert counts['gone'] == 1                        # the 200 retirement, still permanent
+        assert self.ledger_rows(tmp_path) == [['pano_id', 'status'], [self.RETIRED, 'gone']]
+        assert fetched == []
+        assert after == before
+
+    def test_a_refused_frame_probe_does_not_pass_the_frame(self, tmp_path, monkeypatch):
+        """The acceptance-direction hole. Before #166 (b) the 403 black edges read as "covers", the fan-out
+        ran, and the stored panorama was replaced on a grid nothing had confirmed."""
+        def answer(url):
+            if self.RETIRED in url:
+                return 200, BLACK_BODY
+            if (cbk_query(url, 'x'), cbk_query(url, 'y')) == (0, 0):
+                return 200, IMAGERY_BODY                  # the zoom probe: imagery, so zoom 5
+            return 403, BLACK_BODY                        # the frame probe's edge tiles
+
+        counts, fetched, before, after = self.run(tmp_path, monkeypatch, answer)
+
+        assert counts['transient_failures'] == 1
+        assert counts['replaced'] == 0
+        assert counts['gone'] == 1
+        assert self.ledger_rows(tmp_path) == [['pano_id', 'status'], [self.RETIRED, 'gone']]
+        assert fetched == []
+        assert after == before
