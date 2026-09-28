@@ -22,6 +22,7 @@ from urllib3.util.retry import Retry
 from downloaders import DownloadResult, download_pano, gsv, mapillary, store_sftp
 from downloaders import common
 from downloaders.common import raise_decompression_bomb_ceiling
+from downloaders.common import note_condition
 
 
 def _reservation_minutes(value):
@@ -45,6 +46,56 @@ def _reservation_minutes(value):
 # other by tests: a rename in one alone would silently turn every city into "finished" and leave the
 # night's leftover window unspent.
 STOP_MAX_RUNTIME = 'max-runtime'
+
+# Run conditions (#161): shapes this runner calls a failure of the night without changing its own exit code.
+# Each is noted into the run summary's `conditions` list (downloaders.common.note_condition) and scrape_queue
+# books it against the night, which is what makes cron_notify --only-on-failure deliver it. The depth phase's
+# five are gsv.DEPTH_CONDITIONS; scrape_queue.CONDITION_LABELS repeats the whole vocabulary and a test pins it.
+CONDITION_MAPILLARY_TOKEN = 'mapillary-token-missing'
+CONDITION_UNSUPPORTED_SOURCE = 'unsupported-source'
+CONDITION_PANO_LIST_EMPTY = 'pano-list-empty'
+CONDITION_IMAGES_NO_SUCCESS = 'images-no-success'
+CONDITION_PANO_SCHEMA_DRIFT = 'pano-schema-drift'
+RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
+    CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
+    CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT})
+
+# `images-no-success` needs at least this many raised attempts and not one answer - or a budget stop with
+# nothing but raises behind it (see download_panorama_images). A floor, because one or two transient
+# failures on a mature city whose only candidates are perennial raisers is an ordinary night; ten raises and
+# nothing else is a run that could not download anything. `raised` and `answered` are this run's attempts
+# only: fail_count is seeded from the ledger's downloaded=0 rows, so seattle's Final result line reads
+# "0 success ... 14603 failed" on a night it attempted nothing (fields 7-11 `0,0,14603,169325,183928`
+# against 183,927 served, 2026-09), and keying on it would alarm every mature city nightly.
+# Measured for the #174 review: richmond-va 1 raise and bayonne-fr 0 in their current scrape.logs.
+# TODO(#161): the GSV fleet is not yet measured - GSV perennial raisers (a stitch persistently >50% black
+# raises every night) are the likelier population; `grep -c "IMAGEDOWNLOAD: Failed to download pano"
+# /mnt/panostore/*/scrape.log` on the box closes it - together with each raise's `--- N seconds ---` line,
+# which sizes IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS below (#174 final review).
+IMAGE_NO_SUCCESS_MIN_RAISED = 10
+
+# The budget arm of `images-no-success` also needs the raises to have taken at least this long ON AVERAGE
+# (#174 final review). The arm exists for a blackholed network, where each pano's first request rides
+# _request_session's five retries at a 30 s timeout - ~3.5 minutes per raise - so the budget goes after two or
+# three. Without a duration gate it fired after ONE raise of any length, so a mature city whose few perennial
+# raisers each spend most of a minute in tile retries, and fill the 6-minute image share between them, would
+# alarm every night: fewer than ten raises, and a max-runtime stop. 60 s is under a third of the blackhole's
+# cost and above what the review expects of a slow single pano; it is the reviewer's figure, not a
+# measurement, and the mean is written into the condition's detail on both arms so the floor measurement
+# (the TODO above) can read it off the queue's summary line.
+IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS = 60.0
+
+# The keys every /adminapi/panos record must carry, and the fraction of records lacking one that makes the
+# list a schema drift rather than a few odd rows (D8, #161). A missing width or height makes
+# gsv.resolve_zoom_and_dims return None before any request, which download_single_pano turns into a
+# PERMANENT failure verdict - so a renamed field would write off every new GSV pano in one night, fleet-wide.
+# A missing KEY counts and a blank VALUE (None) does not - but over /adminapi/panos the two are one shape:
+# the endpoint serialises the dims with Play's writeNullable, which OMITS the key for a null (seattle served
+# 106 of 183,927 records that way, 2026-09). Only the -c intake produces a blank value. So per record a null
+# cannot be told from a rename, and the FRACTION is what separates a few dimensionless panos from a schema.
+# `pano_id` is belt-and-braces: _normalize_pano_records has already dropped every record without one (D9).
+INTAKE_REQUIRED_KEYS = ('pano_id', 'source', 'width', 'height')
+INTAKE_SCHEMA_MIN_FRACTION = 0.9
 
 
 def build_parser():
@@ -299,10 +350,14 @@ def select_image_panos(pano_infos, include_all_panos):
     return [p for p in pano_infos if p.get('has_labels', True)]
 
 
-def filter_supported_sources(pano_infos, require_credentials=True):
+def filter_supported_sources(pano_infos, conditions=None, require_credentials=True):
     """
     Drop panos we can't download in this run, preserving the server's ordering, with a one-time warning per
     reason.
+
+    `conditions`, when given, is the run summary the warnings are also noted into as run conditions (#161):
+    a skipped pano is not ledgered, which is right, and was also silent - so richmond-va's 9,229 Mapillary
+    panos dropped every night for want of a token would have exited 0.
 
     Supported sources: gsv, panoramax, and mapillary when MAPILLARY_ACCESS_TOKEN is set. Filtered-out panos
     are NOT written to pano_id_log.csv, so a later run with the token / updated code can still pick them up.
@@ -343,11 +398,17 @@ def filter_supported_sources(pano_infos, require_credentials=True):
                             source_counts['mapillary'], mapillary.TOKEN_ENV_VAR)
             print("WARNING: %d Mapillary panos skipped — set %s to download them"
                   % (source_counts['mapillary'], mapillary.TOKEN_ENV_VAR))
+            note_condition(conditions, CONDITION_MAPILLARY_TOKEN, '%d Mapillary panos skipped; %s is not set'
+                           % (source_counts['mapillary'], mapillary.TOKEN_ENV_VAR))
 
+    unsupported = []
     for source, count in source_counts.items():
         if source not in known:
             logging.warning("%d panos with unsupported source %r skipped", count, source)
             print("WARNING: %d panos with unsupported source %r skipped" % (count, source))
+            unsupported.append('%d with source %r' % (count, source))
+    if unsupported:
+        note_condition(conditions, CONDITION_UNSUPPORTED_SOURCE, 'skipped: ' + ', '.join(unsupported))
 
     return [p for p in pano_infos if p.get('source') in supported]
 
@@ -549,6 +610,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                      "stops them)", latch_path, latched_hours)
         print("IMAGEDOWNLOAD: Google refused this host %.1f hours ago (latch %s); GSV images run on "
               "probation - one refused pano stops them." % (latched_hours, latch_path))
+    # For `images-no-success` (#161): attempts the source answered with a verdict, and attempts that raised.
+    # A skip is neither - it never contacted the source.
+    answered, raised = 0, 0
+    raise_seconds = 0.0     # monotonic seconds spent in attempts that raised, for the budget arm's duration gate
 
     with ledger, gsv.scoped_image_host_state(latch_path, pace_state_path):
         for pano_info in candidates:
@@ -578,6 +643,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                         stop_reasons['image_stop'] = STOP_MAX_RUNTIME
                     break
             start_time = time.time()
+            attempt_start = time.monotonic()
             print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
             pushback = None
             try:
@@ -600,6 +666,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 fail_count += 1
                 downloaded = None
                 result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
+                frame_refused = isinstance(e, gsv.FrameDisagreementError)
                 pushback = gsv.pushback_reason(e) if source == 'gsv' else None
                 if pushback is not None:
                     # The ONE line a refused pano gets (#162): fetch_pano_image raises a refusal without
@@ -608,6 +675,25 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                                   pano_id, pushback, str(e))
                 else:
                     logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
+            else:
+                frame_refused = False
+
+            # A push-back (#162) counts as RAISED: it is Google refusing this host, not an answer about any
+            # pano, so a night of refusals and network errors with nothing answered is still no success. The
+            # BUDGET arm never fires on a trip: a trip records image_stop='blocked', which its
+            # `== STOP_MAX_RUNTIME` excludes. The COUNT arm can - a transient does not reset the push-back
+            # count, so enough network raises between refusals reach the minimum before the trip - and then
+            # both are reported, deliberately: those raises were real, and the trip books the city failed
+            # through `tripped` either way.
+            if result_code is None and not frame_refused:
+                raised += 1
+                raise_seconds += time.monotonic() - attempt_start
+            elif result_code != DownloadResult.skipped:
+                # A frame disagreement (#74) is unledgered like a raise, but it is Google ANSWERING - the pano
+                # has its own WARNING and an app-side remedy - so for `images-no-success` it is an answer: ten
+                # of them on a mature city served nothing new would otherwise alarm nightly at "the network,
+                # the store, or a bug" (#174 final review, cross-PR note 3).
+                answered += 1
 
             limit = MAX_CONSECUTIVE_PERMANENT_FAILURES.get(source)
             if limit is not None:
@@ -727,6 +813,28 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                    % (last_pushback, sum(unattempted[s] for s in refused), latch_said))
         logging.error("%s", summary)
         print(summary)
+
+    mean_raise_seconds = raise_seconds / raised if raised else 0.0
+    budget_spent_on_raises = (raised >= 1 and mean_raise_seconds >= IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS
+                              and stop_reasons is not None
+                              and stop_reasons.get('image_stop') == STOP_MAX_RUNTIME)
+    if answered == 0 and (raised >= IMAGE_NO_SUCCESS_MIN_RAISED or budget_spent_on_raises):
+        # Every attempt raised and none was answered: the network, the store or a bug, not the panos. A
+        # transient is never ledgered, so without this the only trace is one ERROR per pano in scrape.log and
+        # a log.csv row that looks like a quiet night's retries (#161).
+        #
+        # The budget arm is the outage the minimum cannot see: when packets to Google are DROPPED rather than
+        # refused, each pano's first request rides _request_session's five retries at a 30 s timeout, ~3.5
+        # minutes per raise, so a 6-minute image share ends on max-runtime after two or three - never ten. A
+        # phase whose whole budget went on raises is the same fact the minimum stands in for - but only when
+        # the raises took the blackhole's minutes each, IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS: a mature city's
+        # few slow perennial raisers can fill the share too, and one slow raise is not an outage (#174 review).
+        message = ("IMAGEDOWNLOAD: WARNING - all %d attempted panos raised and none was answered; nothing was "
+                   "ledgered, so they retry next run. Look at the errors in scrape.log." % (raised,))
+        logging.error("%s", message)
+        print(message)
+        note_condition(stop_reasons, CONDITION_IMAGES_NO_SUCCESS,
+                       '%d attempts raised, 0 answered, %.0f s per raise' % (raised, mean_raise_seconds))
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -1162,16 +1270,68 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     return tripped_sources
 
 
+def _store_has_history(storage_location):
+    """Whether this store has scraped before: either ledger holds at least one row past its header.
+
+    Reads at most two lines of each. A header alone is what any run leaves behind - the image phase creates
+    pano_id_log.csv with one even over an empty list - so it is not history. An unreadable ledger is not
+    evidence either way and reads as no history: the depth phase reports an unusable ledger itself.
+    """
+    for name in ('pano_id_log.csv', gsv.DEPTH_LOG_FILENAME):
+        try:
+            with open(os.path.join(storage_location, name), newline='') as f:
+                f.readline()
+                if f.readline().strip():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _intake_schema_drift(pano_infos):
+    """A description of the schema drift in the fetched pano list, or None if it has none (D8, #161).
+
+    Drift is INTAKE_SCHEMA_MIN_FRACTION or more of the records lacking any INTAKE_REQUIRED_KEYS key, counted
+    per record, not per key. A key present with a blank (None) value is not drift (the -c intake's shape; the
+    webserver omits the key instead, see INTAKE_REQUIRED_KEYS). An empty list is not drift either - it has no
+    schema to have moved, and `pano-list-empty` covers it.
+
+    Example::
+
+        >>> _intake_schema_drift([{'pano_id': 'a', 'source': 'gsv', 'pano_width': 1, 'pano_height': 1}])
+        '1 of 1 records lack a required key (width: 1, height: 1)'
+    """
+    if not pano_infos:
+        return None
+    missing = {key: 0 for key in INTAKE_REQUIRED_KEYS}
+    lacking = 0
+    for record in pano_infos:
+        absent = [key for key in INTAKE_REQUIRED_KEYS if key not in record]
+        lacking += bool(absent)
+        for key in absent:
+            missing[key] += 1
+    if lacking < INTAKE_SCHEMA_MIN_FRACTION * len(pano_infos):
+        return None
+    return "%d of %d records lack a required key (%s)" % (
+        lacking, len(pano_infos), ', '.join('%s: %d' % (k, n) for k, n in missing.items() if n))
+
+
 def _write_run_summary(path, stop_reasons):
     """Write the queue's run summary, or warn and carry on.
 
     Evidence, not cargo - the same trade configure_logging makes. scrape_queue falls back to its old
     elapsed-time heuristic when no summary arrives, so a temp file that could not be written costs one
     imprecise re-run decision; raising here would cost the whole night's scrape.
+
+    `conditions` is always present, empty or not (#161): what the queue books against the night is read
+    from here, and an empty list written by a runner that checked is a different fact from an older runner
+    that never wrote the key. Copied rather than set on the caller's dict, which is the run's own record.
     """
+    payload = dict(stop_reasons)
+    payload.setdefault('conditions', [])
     try:
         with open(path, 'w') as f:
-            json.dump(stop_reasons, f, allow_nan=False)
+            json.dump(payload, f, allow_nan=False)
     except OSError as e:
         logging.warning("Could not write the run summary to %s (%s)", path, e)
         print("WARNING: could not write the run summary to %s (%s)" % (path, e))
@@ -1230,7 +1390,16 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
             pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
         else:
             pano_infos = fetch_pano_ids_from_webserver(sidewalk_server_fqdn)
-        pano_infos = filter_supported_sources(pano_infos, require_credentials=store_settings is None)
+        # Checked on the list as served, before anything filters it: a renamed `source` would otherwise be
+        # reported as an unsupported source per pano. A drifted list goes no further (below).
+        schema_drift = _intake_schema_drift(pano_infos)
+        if schema_drift is not None:
+            pano_infos = []
+        # Also read before the filter: a list the FILTER emptied (a Mapillary city without its token, a source
+        # this runner does not know) is the filter's condition, already noted by it, and not the server's.
+        served_empty = not pano_infos
+        pano_infos = filter_supported_sources(pano_infos, conditions=stop_reasons,
+                                              require_credentials=store_settings is None)
         image_pano_infos = select_image_panos(pano_infos, all_panos)
     except BaseException:
         # A crash before the scrape starts - a webserver outage being the single most likely nightly failure -
@@ -1239,6 +1408,29 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         logging.exception("Run crashed before the scrape started")
         write_log_csv_row(storage_location, [log_timestamp()])
         raise
+
+    if schema_drift is not None:
+        # The one condition that also stops work (D8, #161): scraping a list whose width/height keys moved
+        # would ledger every new GSV pano downloaded=0 PERMANENTLY, and there is no GSV breaker by design
+        # (#113). So neither phase runs and nothing is ledgered; the log.csv row records a run that started
+        # and did nothing, with every phase blank.
+        logging.error("Pano list schema drift: %s; required keys %s. Skipping both phases and ledgering "
+                      "nothing.", schema_drift, ', '.join(INTAKE_REQUIRED_KEYS))
+        print("WARNING: the pano list's schema has moved - %s. Neither phase ran and nothing was ledgered; "
+              "see docs/api-fields.md for the fields the downloader requires." % (schema_drift,))
+        note_condition(stop_reasons, CONDITION_PANO_SCHEMA_DRIFT, schema_drift)
+        write_log_csv_row(storage_location, [log_timestamp()])
+        return set()
+
+    if served_empty and _store_has_history(storage_location):
+        # An empty list for a city that has scraped before is the server (or something between us and it)
+        # failing, not the city emptying. The run continues - there is nothing to do and nothing to lose -
+        # but the night is told (#161).
+        logging.error("The pano list is empty, but this store has scraped before (%s)", storage_location)
+        print("WARNING: the pano list is empty, but this store has scraped before. Check the server's "
+              "/adminapi/panos.")
+        note_condition(stop_reasons, CONDITION_PANO_LIST_EMPTY,
+                       'no panos served for a store with ledger history')
 
     # Uncomment this to test on a smaller subset of the pano_info.
     # import random

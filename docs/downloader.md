@@ -405,16 +405,54 @@ with several rows on one host does not spend the whole cap on it.
 | `--only CITY_ID` | Re-run one city through the same machinery — the lock, the budgets, the summary — rather than by hand. Repeatable. |
 | `--no-rotate` | Keep manifest order. By default the starting point rotates daily, so a night that truncates does not always drop the same tail cities. |
 | `--single-pass` | Run every city once and leave the rest of the window unused — today's behaviour before [extra passes](#extra-passes). `--only` implies it. |
-| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. |
+| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. Warns (without changing its exit code) when the [store marker](ops.md#the-store-marker) is missing, and when the cities' interpreter (`--python`) cannot import `streetlevel` — skipped when `--skip-depth` is passed through. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
 **Exit codes**, since the exit is the alert: it is the subject line of the night's message
 ([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), and it is the code cron sees: `0` every city ran and succeeded and the
 manifest names every city, `1` something failed, timed out, **was never reached**, **a city has no manifest
-row** (private or public), or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
-lock. A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
+row** (private or public), no host would serve the roster to check that, or **a city reported a
+[condition](#a-city-can-finish-ok-and-still-fail-the-night)** or was not started because the store marker
+had gone (`store_missing`, a mount that dropped mid-night), `2` usage, `3` another queue run holds the lock,
+`5` **the store marker `<store-root>/.pano-store` is missing at startup** — nothing ran and nothing was
+written ([ops: the store marker](ops.md#the-store-marker)). A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
 cities a night is the silent failure this design exists to surface. If a night's truncation is expected and
 accepted, the window is the wrong size.
+
+#### A city can finish ok and still fail the night
+
+Some nights the runner itself would call a failure end in an ordinary exit 0: Google refused the depth phase,
+the depth ledger could not be read, every Mapillary pano was dropped for want of a token. Production delivers
+only nonzero exits ([`cron_notify.py --only-on-failure`](ops.md#hearing-about-a-bad-night)), so until
+[#161](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/161) those nights reached nobody.
+
+Each such shape is now a **condition**: the runner records it in the run summary the queue already reads
+(`--run-summary-file`, [below](#extra-passes)), as `{"code": ..., "detail": ...}` in a `conditions` list that
+is always present, empty on a clean run. A condition does **not** change the city's outcome — it stays `ok`,
+keeps its place in the `N/M cities ok` count and its eligibility for an extra pass — but **any condition fails
+the night**. The runner's own exit code is unchanged. The city's line in the night's narrative carries them:
+
+```
+[queue] bravo-bb: ok (exit 0) in 11.9 min; conditions: depth-refused
+```
+
+A code the queue does not know is kept and still fails the night, so a runner newer than its queue cannot be
+silenced by it.
+
+| code | what happened | where to read more |
+|---|---|---|
+| `depth-refused` | Google refused this run's depth requests; the 6 h block latch was written | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-stood-down` | A live latch at depth-phase start; the depth phase made no request. The refusal behind it is another run's, or this run's own image phase (a photometa refusal, or a push-back trip, which also exits the city 1). GSV images are not stood down by a latch, only put on probation | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-breaker` | 25 consecutive depth failures; the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-ledger-unusable` | `depth_log.csv` could not be read or written; depth sat the run out | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
+| `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
+| `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |
+| `images-no-success` | No image attempt this run was answered, and either at least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) raised or the phase's budget ran out with only raises behind it *and* those raises took at least `IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS` (60 s) each on average (a blackholed network takes ~3.5 min per raise; a mature city's few slow perennial raisers filling the share are not an outage) — the network, the store, or a bug. Old `downloaded=0` rows in the ledger are not attempts and do not count, and a GSV [frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) is Google answering, so it counts as an answer although it is not ledgered. A GSV push-back (a refused tile, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) counts as a raise; a push-back *trip* records `image_stop: blocked`, which the budget arm does not read as a budget stop, and already fails the city through its own exit 1. The count arm still applies: ten raises with nothing answered, refusals included, are reported alongside a trip that follows them. The duration gate is the *mean*, so one slow raise among fast ones does not pass it. The detail reads `N attempts raised, 0 answered, S s per raise` on both arms, so the queue's summary line carries the duration the thresholds are sized against | the errors in the city's `scrape.log` |
+| `pano-list-empty` | The pano list was empty as served (a list the source filter emptied is that filter's condition instead) for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
+| `no-run-summary` | *(the queue's own)* An `ok` run left no readable run summary, so its conditions are unknown — a check that did not run has not passed. Also what an operator's own `--run-summary-file` after `--` produces, so do not pass one through the queue | [Extra passes](#extra-passes) |
+| `conditions-unreadable` | *(the queue's own)* The summary's `conditions` was present but not a list of objects with a non-blank string `code`. (An unknown code is kept, with its whitespace collapsed to single spaces, so a newer runner can still fail the night on one line.) | — |
+| `pano-schema-drift` | 90% or more of the pano list's records lack `pano_id`, `source`, `width` or `height` — a renamed field. **Neither phase runs and nothing is ledgered**, because scraping it would write every new GSV pano off permanently | [API fields](api-fields.md#adminapipanos--the-downloaders-pano-list) |
 
 ### Extra passes
 
@@ -435,7 +473,9 @@ Three rules that are load-bearing:
 
 * **Who has work is read from what the runner reported, not from how long the queue watched it.** The queue
   passes each city a `--run-summary-file`; `DownloadRunner` writes what stopped each phase, and a phase that
-  stopped on `max-runtime` — either phase — is one that would have kept going. Only an `ok` run qualifies: a
+  stopped on `max-runtime` — either phase — is one that would have kept going. (The same file carries the
+  run's [conditions](#a-city-can-finish-ok-and-still-fail-the-night), which decide the exit code, not who is
+  re-run.) Only an `ok` run qualifies: a
   crash says nothing about work left and re-running it is a crash loop; a timed-out city was killed past its
   budget and would be killed again. Nothing crosses nights and nothing reads the store.
 
@@ -557,6 +597,12 @@ Two things deliberately absent. `allow_other` needs `user_allow_other` in `/etc/
 **non-root** user mounts; `fusermount` skips that check for root, so a systemd unit does not need it. And
 `_netdev` is an fstab-generator directive — a native unit derives no ordering from `Options=`, so the explicit
 `After=`/`Wants=` is what actually does the work.
+
+**The queue's guard is the store marker.** `scrape_queue.py` refuses a `--store-root` without a
+`.pano-store` file in it — exit 5 at startup, `store_missing` for each city due after a mid-night drop — and the
+file lives on the remote store, so an unmounted mount point never has it
+([ops: the store marker](ops.md#the-store-marker), #161). The hardening below stays as defence in depth, and
+still matters for a hand run of `DownloadRunner.py`, which does not check the marker.
 
 **Harden the mount point itself.** This is the one failure the unit makes *more* likely rather than less:
 
@@ -800,9 +846,10 @@ Where the reason lands: the night's message carries the count (`N failed` in the
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
 `code` and `message` are in `scrape.log` on the store, one line per pano.
 
-Without the token, Mapillary panos are filtered out of the run rather than failed — **silently enough to
-miss**, so a city that should have Mapillary imagery and downloads none is the symptom of a token that never
-arrived.
+Without the token, Mapillary panos are filtered out of the run rather than failed, and not ledgered, so a
+run with the token picks them up. That used to be silent enough to miss; it is now reported as the condition
+`mapillary-token-missing` with the count, which
+[fails the night](#a-city-can-finish-ok-and-still-fail-the-night) (#161).
 
 **Under cron, keep it out of the crontab body.** `crontab -l` output lands in backups, screenshots and
 pastes, and the file itself outlives the person who wrote it. Put it in a mode-`600` file and let bash source

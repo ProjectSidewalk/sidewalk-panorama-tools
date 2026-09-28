@@ -653,22 +653,29 @@ Since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74
 pano whose app-reported `width`/`height` is not a frame Google serves, rather than stitching the top-left
 corner of a larger one. Each refusal is one stdout `WARNING` and one `scrape.log` `ERROR`, both containing
 `frame disagreement`; it is counted in `log.csv` field 9, never ledgered, and retried every run. Field 9 is
-seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. The
+seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. A
+refusal is Google answering, so it never feeds the `images-no-success` condition, however many there are. The
 remedy is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what
 Google serves now. The stdout line reaches no one on a night that exits 0 (see
 [Hearing about a bad night](#hearing-about-a-bad-night)).
 
 ## When the depth phase stands itself down
 
-Two mechanisms stop depth without stopping the run, and the first has two sources. All of them look identical
-from `log.csv` (all five depth columns are `0`), so read stdout or `scrape.log` rather than the row:
+Several things stop depth without stopping the run (the latch has two sources, the depth phase and the
+image phase), and they look identical from `log.csv` (all five depth columns are `0`), so read stdout or
+`scrape.log` rather than the row. Each one is also a
+[condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) that **fails the night** (#161): the
+city stays `ok`, but the queue exits 1 and the night's message carries one line per code.
 
-| what you see | what happened | what to do |
-|---|---|---|
-| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | An earlier run on this host was blocked, and the **block latch** is still fresh. If an `IMAGEDOWNLOAD: WARNING - Google refused a photometa request` line comes before it in the same output, *this* run was refused: that is the third row, not this one. Every city skips depth at **zero requests** until it expires (6 h). GSV images still download meanwhile, but on probation (one refused pano stops them) and with every zoom from the tile probe rather than photometa. | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. |
-| `WARNING - the depth phase stopped early because Google stopped answering` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
-| `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. If the line says the latch *could not be written*, nothing else on this host stands down for it. A 5xx storm on photometa is not this row: it reads `photometa did not answer` and latches nothing. | As the row above: check for a rate limit before the next night. |
-| `WARNING - Google refused 3 GSV panos in a row (HTTP 429)` earlier in the same run, then the latch line above | The **image phase's** push-back breaker tripped and set the latch itself ([below](#when-google-pushes-back-on-the-image-phase)). | As for the row above: the same host, the same refusal, seen from the tile endpoint instead. |
+| what you see | code in the night's message | what happened | what to do |
+|---|---|---|---|
+| `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | `depth-stood-down` | An earlier run on this host was blocked, and the **block latch** is still fresh. If an `IMAGEDOWNLOAD: WARNING - Google refused a photometa request` line comes before it in the same output, *this* run was refused: that is the third row, not this one. Every city skips depth at **zero requests** until it expires (6 h). GSV images still download meanwhile, but on probation (one refused pano stops them) and with every zoom from the tile probe rather than photometa. | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. It alarms even on a night nothing was refused, because the latch outlives the window: a stand-down at 19:00 is a refusal the queue never saw (a manual backfill, say). |
+| `WARNING - the depth phase stopped early because Google stopped answering` | `depth-refused` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
+| `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | `depth-stood-down` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. If the line says the latch *could not be written*, nothing else on this host stands down for it. A 5xx storm on photometa is not this row: it reads `photometa did not answer` and latches nothing. | As the row above: check for a rate limit before the next night. |
+| `WARNING - Google refused 3 GSV panos in a row (HTTP 429)` earlier in the same run, then the latch line above | `depth-stood-down` | The **image phase's** push-back breaker tripped and set the latch itself ([below](#when-google-pushes-back-on-the-image-phase)). Unlike the other rows the city does not stay `ok`: the trip puts `gsv` in the tripped set, so it exits 1 and is booked `failed`. | As for the row above: the same host, the same refusal, seen from the tile endpoint instead. |
+| `WARNING - the depth phase stopped early after 25 consecutive failures (…)` | `depth-breaker` | 25 transient failures in a row. The breakdown in brackets says whether they were the store or the network. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. |
+| `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened. The phase sat the run out rather than re-request the whole corpus against a sick store. | Check the mount and the file's permissions. |
+| `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt` into `.venv` (see [Deploying](#deploying)). |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
 with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
@@ -912,10 +919,62 @@ previous deploy's changes again.
   its 30th city. `streetlevel` is the exception: it is imported lazily when the depth phase starts, so a city in
   its image phase while pip rewrites the package loads whatever is half-written. If `requirements.txt` changed,
   do the install between cities (watch `scrape_queue.log` for the `ok`/`failed` line) or when the queue is idle.
+  A half-written package that raises `ImportError` now says so on stdout and fails the night as
+  `depth-unavailable` (#161) rather than skipping depth silently; one that raises something else still crashes
+  the city and books it `failed`.
+- **Create the [store marker](#the-store-marker) BEFORE pulling #161.** From that deploy on, a queue that
+  finds no `<store-root>/.pano-store` exits 5 having run nothing, so the first night after a deploy without
+  it scrapes nothing (loudly).
 - **Roll forward, never back, past 2026-09-17.** [`fetched_at`](#fetched_at-and-the-two-row-widths) widened
   `pano_id_log.csv` to three fields, and a pre-#129 reader skips every three-field row — so every permanent
   verdict recorded since that deploy is re-requested nightly, and a store that has only ever seen the new
   build parses as *empty*. Behaviour rolls back by flag (below), not by checkout.
+
+### The store marker
+
+The queue refuses to scrape a store root that does not carry the file **`<store-root>/.pano-store`** (#161).
+Before it, an sshfs mount that had dropped left an ordinary local directory at `/mnt/panostore`, and the
+queue created the store root there, every city found no ledgers, re-downloaded its corpus onto the 30 GiB
+root disk and exited 0 — the files hidden again once the mount came back. The marker lives **on the remote
+store**, so it survives remounts and is absent from the empty directory under the mount point.
+
+- **Missing at startup:** the queue prints one line on stderr naming the path and exits **5** having run
+  nothing and written nothing — not the store root, not `scrape_queue.log`, not the lock. `cron_notify`
+  passes 5 through, so the night's message says `exit 5`.
+- **Missing before a city starts** (the check repeats before every city, in every pass — sshfs can drop at
+  02:00): that city is booked `store_missing` and never started. The summary gathers them into one
+  `STORE_MISSING (store not mounted; not started): …` line, the totals line says `N not started (store not
+  mounted)`, and the night exits 1. The check is per city, so if the mount returns, later cities run.
+- `--dry-run` prints a `WARNING` when the marker is missing and keeps its exit code.
+- `DownloadRunner` does not check the marker: a hand run into an arbitrary directory is a documented use.
+
+`chown root:root` + `chmod 555` on the underlying mount point
+([downloader.md](downloader.md#if-the-pano-store-is-on-another-host)) stays as defence in depth.
+
+**Creating it** (once per store root, and once for any new store root or host):
+
+1. With the store mounted — `findmnt /mnt/panostore` shows `fuse.sshfs` — and as the cron user:
+   `printf 'Project Sidewalk pano store; see docs/ops.md#the-store-marker\n' > /mnt/panostore/.pano-store`
+2. Prove the directory *under* the mount is unmarked, without unmounting:
+   `sudo mkdir -p /tmp/under && sudo mount --bind / /tmp/under && ls -la /tmp/under/mnt/panostore` must be
+   empty. Remove a stray `.pano-store` there; if an earlier unmounted scrape left city directories or
+   ledgers there, move them aside (e.g. to `/var/tmp/under-panostore-<date>/`) rather than deleting them,
+   since they may be the only copy of that night's downloads. Before the next step, confirm the mount is
+   made by root — `systemctl cat mnt-panostore.mount` shows a system unit with no `User=` — because a
+   user-mode `fusermount` needs write access to the mount point, and after the `chmod 555` a refused remount
+   would exit 5 every night. While it is bound,
+   `sudo chown root:root /tmp/under/mnt/panostore && sudo chmod 555 /tmp/under/mnt/panostore`; then
+   `sudo umount /tmp/under`. Record the date in the private runbook.
+3. `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --dry-run`
+   prints no marker `WARNING` (and no `streetlevel is not importable` one).
+4. Optional proof of the alarm: a throwaway crontab line (same crontab, so it inherits `SHELL`/`BASH_ENV`)
+   running the queue under `cron_notify` with `--store-root /tmp/no-marker --only <city>` exits 5 before
+   running anything, a `…: exit 5 on <host>` message arrives, and `cron_notify_probe.log` says `published`.
+   Delete the line.
+
+**The morning after:** `exit 5` in `~/cron_notify.log` means the store was not mounted at 19:00
+(`systemctl status mnt-panostore.mount`, restart it, check the marker); a `STORE_MISSING` line means the mount
+dropped mid-night.
 
 ### Rolling back, smallest blast radius first
 
@@ -931,8 +990,9 @@ previous deploy's changes again.
    supervising, which in turn writes its `log.csv` row, and releases the lock. The pattern is anchored so it
    matches the queue process and **not** the [`cron_notify.py`](#hearing-about-a-bad-night) wrapper around it,
    whose own argv also contains `scrape_queue.py`: the wrapper forwards a SIGTERM it receives to the queue, so a
-   bare `pkill -f scrape_queue.py` would deliver two, and the second lands while the queue is stopping its city
-   and interrupts that stop. The store is untouched by any of this.
+   bare `pkill -f scrape_queue.py` would deliver two, and the second lands while the queue is stopping its city.
+   The queue then kills the city outright rather than orphaning it (#161), but the kill costs that city's
+   `log.csv` row, which the first SIGTERM would have written. The store is untouched by any of this.
 
 ### Adding a city
 
@@ -971,7 +1031,19 @@ cron_notify.py --name scrape-queue --only-on-failure --log /home/ubuntu/cron_not
   (decided 2026-09-18): **a message on a bad night, silence on a good one**. The subject is
   `scrape-queue: exit N on <host>`, the body is the queue's output, and a failure that printed nothing is
   still delivered with a body saying so. The cost is that a `WARNING` on a night that exited 0 is not mailed;
-  it is still in that city's `scrape.log`. The sink gets the body on stdin and in the file `$NOTIFY_BODY_FILE`
+  it is still in that city's `scrape.log`. That cost is why every shape the runner itself calls a failure —
+  a refused or stood-down depth phase, a missing Mapillary token, an empty pano list — is now a
+  [condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) that makes the night exit 1
+  (#161). The summary carries **one line per condition kind**, naming the first city and listing the rest, so
+  a refusal followed by 40 stood-down cities is two lines:
+
+  ```
+  [queue] depth-refused: Google refused the depth phase; latch written - 1 city, first chicago-il: HTTP 429 ...
+  [queue] depth-stood-down: depth stood down on the block latch - 40 cities, first columbus-oh: latch set 0.2h ago (...); also ...
+  [queue] 53/53 cities ok, 0 failed, 0 timed out, 0 not reached, conditions: depth-refused, depth-stood-down; 610.2 min total
+  ```
+
+  The first night after this lands may surface a long-standing silent condition; that is intended. The sink gets the body on stdin and in the file `$NOTIFY_BODY_FILE`
   names (`aws` reads it with `file://`, which sidesteps the 128 KB single-argument limit a `"$(cat)"` would
   hit), plus `$NOTIFY_SUBJECT` and `$NOTIFY_EXIT`.
 - **Delivery is SNS, published with the instance role** — no credential on the box, no mail-service
@@ -1025,7 +1097,8 @@ because of.
   `grep ERROR scrape_queue.log` prints nothing — a `cities missing from the manifest` or
   `manifest not cross-checked` line is the night's failure
   ([the cross-check](downloader.md#the-manifest-is-cross-checked-against-the-fleet)), whether or not the mail
-  arrived.
+  arrived. So is a line naming a condition code (`depth-refused: …`, `mapillary-token-missing: …`) —
+  [the codes table](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) says what each means.
 - `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
 - `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —
   a push-back from Google would be the first sign the pacer's persisted standing is too aggressive. The reason

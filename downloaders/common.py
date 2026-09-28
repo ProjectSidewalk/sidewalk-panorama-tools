@@ -15,6 +15,36 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 
+# The longest `detail` a run condition carries (#161). The detail is display-only - it rides into the night's
+# cron message once per condition KIND - and an exception's str can be a page of HTML.
+CONDITION_DETAIL_MAX = 300
+
+
+def note_condition(sink, code, detail):
+    """Record a run condition (#161) into the run summary `sink`: a shape the runner itself calls a failure
+    of the night without changing its own exit code, which scrape_queue reads and books against the night.
+
+    Every condition goes through here so the rules live in one place: no sink (a phase driven directly by a
+    test, or by hand) is a no-op; a code is recorded once per run and the FIRST detail wins, because the
+    queue's line names the first occurrence; the detail is one line (whitespace runs, newlines included,
+    collapse to a space, because the queue's summary line would split on a newline and drop both halves out of
+    `grep ERROR scrape_queue.log`) cut to CONDITION_DETAIL_MAX.
+
+    Example::
+
+        >>> summary = {'image_stop': None, 'depth_stop': None}
+        >>> note_condition(summary, 'depth-refused', 'HTTP 429')
+        >>> summary['conditions']
+        [{'code': 'depth-refused', 'detail': 'HTTP 429'}]
+    """
+    if sink is None:
+        return
+    conditions = sink.setdefault('conditions', [])
+    if any(c.get('code') == code for c in conditions):
+        return
+    conditions.append({'code': code, 'detail': ' '.join(str(detail).split())[:CONDITION_DETAIL_MAX]})
+
+
 class HostStateLocked(Exception):
     """Another live process on this host already holds the lock."""
 

@@ -1269,6 +1269,19 @@ DEPTH_STOP_CONSECUTIVE_FAILURES = 'consecutive-failures'
 DEPTH_STOP_MAX_RUNTIME = 'max-runtime'
 DEPTH_STOP_MAX_REQUESTS = 'max-requests'
 
+# The run conditions this phase notes into stop_reasons['conditions'] (#161): shapes that end the city's run in
+# an ordinary exit 0 but that the night must fail on, because a stopped or absent depth phase is otherwise
+# reported only in a scrape.log nobody reads unprompted. A condition says nothing about re-running - that is
+# depth_stop's job - so a refusal and a stand-down both keep depth_stop == DEPTH_STOP_BLOCKED and differ here.
+DEPTH_CONDITION_REFUSED = 'depth-refused'           # Google refused THIS run; the latch was written
+DEPTH_CONDITION_STOOD_DOWN = 'depth-stood-down'     # a live latch at phase start (another run's refusal, or this
+                                                    # run's image phase: photometa or a push-back trip); no request
+DEPTH_CONDITION_BREAKER = 'depth-breaker'           # DEPTH_MAX_CONSECUTIVE_FAILURES in a row
+DEPTH_CONDITION_LEDGER = 'depth-ledger-unusable'    # depth_log.csv could not be read, or not be written
+DEPTH_CONDITION_UNAVAILABLE = 'depth-unavailable'   # streetlevel is not importable
+DEPTH_CONDITIONS = frozenset({DEPTH_CONDITION_REFUSED, DEPTH_CONDITION_STOOD_DOWN, DEPTH_CONDITION_BREAKER,
+                              DEPTH_CONDITION_LEDGER, DEPTH_CONDITION_UNAVAILABLE})
+
 # Substrings that mark Google's "you are a robot" landing pages rather than pano metadata.
 _BLOCK_URL_MARKERS = ('/sorry/', 'consent.google.com')
 
@@ -2235,6 +2248,8 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
                                DEPTH_STOP_MAX_RUNTIME means "more time would have helped", which is why
                                the stood-down and breaker-tripped cases have to be distinguishable from it
                                rather than collapsed into "stopped early".
+                               The same dict carries the phase's run conditions (DEPTH_CONDITIONS, #161),
+                               noted through common.note_condition, which the queue books against the night.
     @return                    (success_count, fail_count, skipped_count, total_completed).
     """
     def _record(reason):
@@ -2247,6 +2262,11 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         from streetlevel import streetview  # noqa: F401
     except ImportError as e:
         logging.error("DEPTHDOWNLOAD: streetlevel is not installed (%s); skipping depth phase", str(e))
+        # Both channels (#161): this was logging-only, so the channel cron delivers said nothing at all - and
+        # a pip install half-written mid-deploy stops every city's depth phase this way.
+        print("DEPTHDOWNLOAD: WARNING - streetlevel is not importable (%s); the depth phase did not run. "
+              "Reinstall requirements.txt in this interpreter." % (e,))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_UNAVAILABLE, 'streetlevel not importable: %s' % (e,))
         _record(None)
         return 0, 0, 0, 0
 
@@ -2264,6 +2284,10 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
               "images still download while it is fresh, but on probation (one refused pano stops them, #162) "
               "and with every zoom from the tile probe rather than photometa (#74)."
               % (latched_hours, latch_path, DEPTH_BLOCK_LATCH_HOURS))
+        # A condition even when nothing was refused tonight: the latch outlives the night's window, so a
+        # stand-down at the start of one is a refusal the queue never saw (a manual backfill between nights).
+        common.note_condition(stop_reasons, DEPTH_CONDITION_STOOD_DOWN,
+                              'latch set %.1fh ago (%s)' % (latched_hours, latch_path))
         _record(DEPTH_STOP_BLOCKED)
         return 0, 0, 0, 0
 
@@ -2293,7 +2317,8 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         # Deliberately not degrading to "nothing is resolved": that would re-request the entire corpus against an
         # already-sick store. If the ledger can't be read, sit this run out.
         logging.error("DEPTHDOWNLOAD: Cannot read %s (%s); skipping the depth phase", depth_log_path, str(e))
-        print("DEPTHDOWNLOAD: Cannot read the depth ledger (%s). Skipping the depth phase." % (e))
+        print("DEPTHDOWNLOAD: WARNING - cannot read the depth ledger (%s). Skipping the depth phase." % (e))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_LEDGER, 'cannot read %s: %s' % (depth_log_path, e))
         return 0, 0, 0, 0
 
     # Partition before requesting anything. Counting the ledger skips up front keeps log.csv's 'skipped' column
@@ -2321,6 +2346,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         # WARNING token so an ops grep for storage trouble matches this at-start message the same as the
         # end-of-phase ones - a store unmounted before the run is likelier than one filling during it.
         print("DEPTHDOWNLOAD: WARNING - cannot write the depth ledger (%s). Skipping the depth phase." % (e))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_LEDGER, 'cannot write %s: %s' % (depth_log_path, e))
         return 0, 0, skipped_count, skipped_count
 
     def remember_standing():
@@ -2497,6 +2523,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early because Google stopped answering. No panos "
               "were lost (unresolved panos are retried next run), but check for a rate limit before the next "
               "run. Last error: %s" % (str(last_error)[:200],))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_REFUSED, str(last_error)[:200])
     elif stop_reason == DEPTH_STOP_CONSECUTIVE_FAILURES:
         # The breaker counts storage failures (ENOSPC/EIO on the sshfs mount) as well as network ones, so don't
         # attribute the trip to Google: break the streak down by class so the dominant cause stays visible even
@@ -2506,11 +2533,15 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
               "error: %s. No panos were lost (unresolved panos are retried next run); check whether the cause "
               "is the store (full/unmounted) or the network before the next run."
               % (consecutive_failures, breakdown, last_error))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_BREAKER,
+                              '%d consecutive failures (%s); last error: %s'
+                              % (consecutive_failures, breakdown, last_error))
     elif last_error is not None:
         # No breaker tripped, but something did fail: a budget may have stopped the run first (a shared
         # --max-runtime window is often minutes, far fewer than the breaker needs to see a streak), or the
         # failures were scattered, or a self-heal ledger write failed - which counts nowhere else. Without this
-        # arm a full store can read as a healthy, fully-backfilled city.
+        # arm a full store can read as a healthy, fully-backfilled city. Deliberately NOT a run condition
+        # (#161): a few transient failures inside a budget stop are an ordinary night.
         print("DEPTHDOWNLOAD: WARNING - the depth phase hit errors (%d success, %d failed [%d unavailable], "
               "%d skipped of %d). No panos were lost (unresolved panos are retried next run). Last error: %s"
               % (success_count, fail_count, unavailable_count, skipped_count, total_panos,

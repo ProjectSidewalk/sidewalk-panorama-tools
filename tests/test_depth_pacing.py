@@ -532,6 +532,70 @@ class TestTheDepthPhaseReportsWhyItStopped:
         assert result == (1, 0, 0, 1)
 
 
+def condition_codes(stop_reasons):
+    return [c['code'] for c in stop_reasons.get('conditions', [])]
+
+
+class TestAStoppedDepthPhaseFailsTheNight:
+    """A refusal and a stand-down both record depth_stop='blocked', and both used to exit 0 (#161).
+
+    They are two conditions, not one, because they say different things: a refusal is Google answering THIS
+    run with a wall (and writes the latch), a stand-down is this run obeying a latch some earlier run wrote -
+    possibly one the queue never saw, a manual backfill between nights. Either fails the night.
+    """
+
+    def test_a_stand_down_on_a_live_latch_is_its_own_condition(self, tmp_path, recorder):
+        latch = str(tmp_path / 'latch')
+        gsv._write_block_latch(latch)
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'), block_latch_path=latch,
+                                stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_STOOD_DOWN]
+        assert 'latch set' in stop_reasons['conditions'][0]['detail']
+
+    def test_a_refusal_is_recorded_as_a_refusal_and_nothing_else(self, tmp_path, fake_streetview):
+        def find(pano_id, **kwargs):
+            raise gsv.DepthBlockedError('redirected to https://www.google.com/sorry/index')
+
+        fake_streetview.find_panorama_by_id = find
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1', 'pano2'),
+                                block_latch_path=str(tmp_path / 'latch'), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_REFUSED]
+        assert 'google.com/sorry' in stop_reasons['conditions'][0]['detail']
+
+    def test_a_clean_phase_notes_nothing(self, tmp_path, recorder):
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'),
+                                block_latch_path=str(tmp_path / 'no-latch'), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == []
+
+    def test_a_pacing_lock_held_elsewhere_is_not_a_condition(self, tmp_path, recorder):
+        """A manual backfill beside the nightly run is a documented workflow; the locked-out phase still
+        does all its work, so there is nothing to alarm about."""
+        state = tmp_path / 'pace'
+        stop_reasons = {}
+
+        with common.exclusive_host_lock(str(state) + gsv.PACE_LOCK_SUFFIX):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'), pace_state_path=str(state),
+                                    block_latch_path=str(tmp_path / 'no-latch'), stop_reasons=stop_reasons)
+
+        assert recorder.requested == ['pano1']
+        assert condition_codes(stop_reasons) == []
+
+    def test_the_depth_codes_are_one_vocabulary(self):
+        assert gsv.DEPTH_CONDITIONS == {gsv.DEPTH_CONDITION_REFUSED, gsv.DEPTH_CONDITION_STOOD_DOWN,
+                                        gsv.DEPTH_CONDITION_BREAKER, gsv.DEPTH_CONDITION_LEDGER,
+                                        gsv.DEPTH_CONDITION_UNAVAILABLE}
+        assert len(gsv.DEPTH_CONDITIONS) == 5
+
+
 # --- The pacer's standing outlives the process (#43) --------------------------------------------------------
 #
 # Measured on the production store after three nights of the backfill: a city with a backlog gets through a

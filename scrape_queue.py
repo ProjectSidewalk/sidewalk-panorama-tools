@@ -55,7 +55,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from collections import namedtuple
+from collections import OrderedDict, namedtuple
 from contextlib import contextmanager
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -80,15 +80,33 @@ REQUIRED_CITY_COLUMNS = ('city_id', 'fqdn')
 # Lock file name, in the system temp directory. See --lock for why it is local disk and not the store.
 _DEFAULT_LOCK_NAME = 'sidewalk-scrape-queue.lock'
 
+# The store marker (#161): a file the operator creates ONCE at the root of the pano store, on the remote
+# store itself, so it is present exactly when the store is mounted - and absent from the empty directory
+# under the mount point that an unmounted sshfs leaves behind. Without it the queue used to makedirs the
+# store root and scrape every city onto the root disk, exiting 0; the files were hidden once the mount
+# returned. os.path.ismount was rejected: it passes a wrongly mounted filesystem and fails a store that is
+# a subdirectory of a mount, so it is not positive evidence of anything. See docs/ops.md, "The store marker".
+STORE_MARKER = '.pano-store'
+# The queue's exit code when the marker is missing at startup: nothing ran and nothing was written. Not 4,
+# which cron_notify owns (queue exited 0 and the sink failed); cron_notify passes 5 through.
+EXIT_STORE_NOT_MARKED = 5
+
 City = namedtuple('City', 'city_id fqdn')
 
-# outcome is one of: 'ok', 'failed', 'timed_out', 'skipped_deadline'. exit_code and seconds are None for a
+# One run condition (#161): a shape the runner calls a failure of the night without changing its exit code.
+# code is the runner's vocabulary (CONDITION_LABELS); detail is display-only.
+Condition = namedtuple('Condition', 'code detail')
+
+# outcome is one of: 'ok', 'failed', 'timed_out', 'skipped_deadline', 'store_missing' (#161: the store
+# marker was gone when the city was due, so it was never started). exit_code and seconds are None for a
 # city that never started. budget_minutes is what the city was given (None when there was no budget),
-# pass_number which pass of the night ran it (#43), and stop_reasons the run summary the runner wrote
-# (None when it wrote none); all three default so a four-field construction still works.
+# pass_number which pass of the night ran it (#43), stop_reasons the run summary the runner wrote (None when
+# it wrote none), and conditions the run conditions it reported (#161) - a separate axis from the outcome: an
+# 'ok' city with conditions is still 'ok', still counts in N/M and can still be re-run, but fails the night.
+# All four default so a four-field construction still works.
 CityResult = namedtuple('CityResult',
-                        'city_id outcome exit_code seconds budget_minutes pass_number stop_reasons',
-                        defaults=(None, 1, None))
+                        'city_id outcome exit_code seconds budget_minutes pass_number stop_reasons conditions',
+                        defaults=(None, 1, None, ()))
 
 # A city the fleet serves that the manifest does not name (#130, private cities too since #143). fqdn is the
 # host its roster url names (None when the roster publishes no url - every private city, never guessed);
@@ -115,6 +133,28 @@ STOP_MAX_RUNTIME = 'max-runtime'
 
 # Name of the per-run summary file the queue asks each city to write, inside a per-run temp directory.
 _RUN_SUMMARY_NAME = 'run_summary.json'
+
+# Every run condition the queue knows how to name (#161), in the order the summary reports them, with the
+# label its line carries. The runner's codes are DownloadRunner.RUN_CONDITIONS, repeated here rather than
+# imported for STOP_MAX_RUNTIME's reason (importing DownloadRunner pulls requests and aiohttp into a driver
+# that never touches either); a test pins the two sets together. The last two are the queue's own. An
+# unknown code is never dropped - it still fails the night, labelled by its code.
+CONDITION_NO_RUN_SUMMARY = 'no-run-summary'
+CONDITION_UNREADABLE = 'conditions-unreadable'
+CONDITION_LABELS = OrderedDict([
+    ('pano-schema-drift', 'the pano list lost a required field; nothing was scraped'),
+    ('pano-list-empty', 'empty pano list for a city that has scraped before'),
+    ('images-no-success', 'every image attempt raised; none succeeded'),
+    ('mapillary-token-missing', 'Mapillary panos skipped: MAPILLARY_ACCESS_TOKEN not set'),
+    ('unsupported-source', 'panos with an unsupported source skipped'),
+    ('depth-refused', 'Google refused the depth phase; latch written'),
+    ('depth-stood-down', 'depth stood down on the block latch'),
+    ('depth-breaker', 'depth breaker tripped'),
+    ('depth-ledger-unusable', 'depth ledger unreadable or unwritable'),
+    ('depth-unavailable', 'streetlevel not importable; no depth phase'),
+    (CONDITION_NO_RUN_SUMMARY, 'ok run left no readable run summary'),
+    (CONDITION_UNREADABLE, 'run summary conditions unreadable'),
+])
 
 # The fleet roster (#130): every deployment serves this list of every city - city_id, url, visibility - and it
 # is the same list from every host. The manifest is compared against it once a night, after the fleet has run.
@@ -167,7 +207,10 @@ def build_parser():
                              'fleet. A row whose city_id starts with # is skipped, so a city can be taken '
                              'out for a night the way a crontab line used to be commented out.')
     parser.add_argument('--store-root', required=True, metavar='DIR',
-                        help='Root of the pano store. Each city is scraped into <DIR>/<city_id>.')
+                        help='Root of the pano store. Each city is scraped into <DIR>/<city_id>. Must carry '
+                             'the store marker <DIR>/%s, created once by the operator on the mounted '
+                             'store; without it the queue exits %d and runs nothing (docs/ops.md, "The store '
+                             'marker").' % (STORE_MARKER, EXIT_STORE_NOT_MARKED))
     parser.add_argument('--max-runtime', type=_positive_minutes, default=None, metavar='MINUTES',
                         help='Stop STARTING new cities once this many minutes have elapsed. The queue window '
                              '- size it to the night, not to the work. Cities not reached are reported and '
@@ -213,6 +256,20 @@ def build_parser():
 
 def default_lock_path():
     return os.path.join(tempfile.gettempdir(), _DEFAULT_LOCK_NAME)
+
+
+def store_marker_path(store_root):
+    return os.path.join(store_root, STORE_MARKER)
+
+
+def store_is_marked(store_root):
+    """Whether the pano store is mounted, judged by its marker file (#161).
+
+    isfile, not exists: a directory by that name is not the operator's marker. And isfile returns False on
+    any OSError, which is what a dead FUSE mount answers (ENOTCONN) - so a mount that has dropped reads as
+    unmarked rather than raising.
+    """
+    return os.path.isfile(store_marker_path(store_root))
 
 
 def read_city_list(path, disabled=None):
@@ -361,6 +418,24 @@ def configure_logging(log_path):
         logging.warning("Could not open %s (%s); logging to stderr for this run", log_path, fallback_error)
 
 
+def probe_streetlevel(python_exe, timeout=60):
+    """Whether `python_exe` can import streetlevel, as (ok, detail) - the dry run's advisory probe (#161).
+
+    Run in a child process with the interpreter the cities will use, because the queue's own interpreter
+    proves nothing about theirs. Never raises: a probe that cannot run is reported as a failed probe.
+    Only a dry run calls this; on the nightly path the runner itself reports `depth-unavailable`.
+    """
+    try:
+        probe = subprocess.run([python_exe, '-c', 'from streetlevel import streetview'],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e) or type(e).__name__
+    if probe.returncode != 0:
+        lines = probe.stdout.decode('utf-8', 'replace').strip().splitlines()
+        return False, lines[-1] if lines else 'exit %d' % probe.returncode
+    return True, ''
+
+
 def strip_separator(runner_args):
     """Drop a leading '--' from the pass-through arguments.
 
@@ -417,6 +492,41 @@ def read_run_summary(path):
     if not isinstance(reported, dict) or not any(k in reported for k in ('image_stop', 'depth_stop')):
         return None
     return {key: reported.get(key) for key in ('image_stop', 'depth_stop')}
+
+
+def read_run_conditions(path):
+    """The run conditions a city reported (#161), as a tuple of Condition; () when it reported none.
+
+    Unlike read_run_summary this has no fallback to resolve doubt towards, so the rule is the other way
+    round - a check that did not run has not passed:
+
+      - no file, not JSON, not an object, or no `conditions` key: () - nothing reported. (An `ok` run with no
+        summary at all gets CONDITION_NO_RUN_SUMMARY from the caller; an older runner's summary simply
+        lacks the key.)
+      - a `conditions` value that is not a list of objects each carrying a string `code`: one
+        CONDITION_UNREADABLE, never "none".
+      - an unknown code: kept, so a runner newer than this queue can still fail the night - with its
+        whitespace collapsed to single spaces, and a code that is only whitespace unreadable.
+
+    Example::
+
+        >>> read_run_conditions('/no/such/file')
+        ()
+    """
+    try:
+        with open(path) as f:
+            reported = json.load(f)
+    except (OSError, ValueError):
+        return ()
+    if not isinstance(reported, dict) or 'conditions' not in reported:
+        return ()
+    listed = reported['conditions']
+    if not isinstance(listed, list) or not all(
+            isinstance(c, dict) and isinstance(c.get('code'), str) and c['code'].split() for c in listed):
+        return (Condition(CONDITION_UNREADABLE, 'conditions: %s' % (json.dumps(listed)[:200],)),)
+    # The code is collapsed as the detail is (note_condition): a newer runner's code is used as sent, and a
+    # newline in it would split its summary line and drop the tail out of `grep ERROR` (#174 final review).
+    return tuple(Condition(' '.join(c['code'].split()), str(c.get('detail') or '')) for c in listed)
 
 
 def _city_budget(city_max_runtime, remaining_minutes):
@@ -538,6 +648,14 @@ def stop_process(proc, city_id):
 
     But asking has to have a deadline, or a wedged process holds every city behind it for the rest of the
     night exactly as if nothing had been sent - so SIGKILL follows TERM_TO_KILL_SECONDS later.
+
+    And a stop of the QUEUE landing during that wait kills the city at once (#161). Both callers run this
+    inside an `except` handler, so a SystemExit from a SIGTERM here propagates straight out of the handler
+    where no sibling `except` can catch it: before this arm, SIGKILL was never sent, the queue exited and
+    released its lock, and tomorrow's queue ran alongside an orphaned runner. The cost is that city's
+    log.csv row, which the SIGTERM it was already sent would have written - an acceptable trade against a
+    process nothing supervises. Nothing waits after the kill, and nothing writes before it, so a third signal
+    cannot interrupt the fix.
     """
     proc.terminate()
     try:
@@ -547,6 +665,16 @@ def stop_process(proc, city_id):
         print("[queue] %s: did not stop; killing" % (city_id,))
         proc.kill()
         return proc.wait()
+    except BaseException:
+        # Kill FIRST, then say so: the log handler writes to the store, and a slow write (or a third signal
+        # landing in it) must not delay or pre-empt the kill this arm exists for.
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        logging.error("%s: the queue was stopped while waiting for the city to exit; killed it", city_id)
+        print("[queue] %s: queue stopping; killing the city" % (city_id,))
+        raise
 
 
 def run_city(city, store_root, python_exe, runner_path, city_budget_minutes, kill_grace_minutes, runner_args,
@@ -604,7 +732,9 @@ def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budge
         # than this city misbehaving. Take the city with it. An orphaned DownloadRunner keeps scraping into
         # the store with nothing supervising it, and the queue lock it was running under is released the
         # instant we die, so tomorrow's queue starts alongside it: the exact overlap the lock exists to
-        # prevent, arrived at through the one door the lock cannot watch.
+        # prevent, arrived at through the one door the lock cannot watch. A second stop landing while this
+        # waits is handled inside stop_process, which kills the city rather than orphaning it (#161) - the
+        # guarantee lives there because both of its call sites are inside an `except` handler.
         logging.error("%s: the queue is stopping; stopping the city too", city.city_id)
         print("[queue] %s: queue stopping; stopping the city too" % (city.city_id,))
         stop_process(proc, city.city_id)
@@ -613,10 +743,17 @@ def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budge
     elapsed = time.monotonic() - started
     if outcome != 'timed_out':
         outcome = 'ok' if exit_code == 0 else 'failed'
-    level = logging.INFO if outcome == 'ok' else logging.ERROR
-    logging.log(level, "%s: %s (exit %s) in %.1f min", city.city_id, outcome, exit_code, elapsed / 60.0)
-    print("[queue] %s: %s (exit %s) in %.1f min" % (city.city_id, outcome, exit_code, elapsed / 60.0))
     stop_reasons = read_run_summary(summary_path)
+    conditions = read_run_conditions(summary_path)
+    if stop_reasons is None and outcome == 'ok':
+        # Conditions ride the summary, so an ok run that left none has reported nothing - and a check that
+        # did not run has not passed (#161). Not added to a failed run, which already fails the night.
+        conditions += (Condition(CONDITION_NO_RUN_SUMMARY, 'no readable run summary from an ok run'),)
+    suffix = '' if not conditions else '; conditions: %s' % ', '.join(c.code for c in conditions)
+    level = logging.INFO if outcome == 'ok' and not conditions else logging.ERROR
+    logging.log(level, "%s: %s (exit %s) in %.1f min%s", city.city_id, outcome, exit_code, elapsed / 60.0,
+                suffix)
+    print("[queue] %s: %s (exit %s) in %.1f min%s" % (city.city_id, outcome, exit_code, elapsed / 60.0, suffix))
     if stop_reasons is None and outcome == 'ok':
         # Worth one log line and no more: the run was fine, and the elapsed-time fallback still decides.
         # NOT the signature of an old runner beside a new queue - that one refuses the flag and exits 2, so
@@ -624,12 +761,19 @@ def _run_city_with_summary(city, store_root, python_exe, runner_path, city_budge
         # stdout), or an operator's own --run-summary-file after `--` displacing the queue's.
         logging.info("%s: no run summary (could not be written, or displaced by a --run-summary-file after "
                      "--); falling back to elapsed time to decide whether it has work left", city.city_id)
-    return CityResult(city.city_id, outcome, exit_code, elapsed, stop_reasons=stop_reasons)
+    return CityResult(city.city_id, outcome, exit_code, elapsed, stop_reasons=stop_reasons, conditions=conditions)
+
+
+def _store_missing(city, budget, pass_number, results):
+    """Book a city the queue did not start because the store marker was gone (#161)."""
+    logging.error("%s: store marker missing; not started (the store is not mounted)", city.city_id)
+    print("[queue] %s: NOT STARTED - the store is not mounted (no %s)" % (city.city_id, STORE_MARKER))
+    results.append(CityResult(city.city_id, 'store_missing', None, None, budget, pass_number))
 
 
 def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runtime_minutes=None,
               city_max_runtime=None, kill_grace_minutes=DEFAULT_KILL_GRACE_MINUTES, env=None,
-              run_one=None, extra_passes=True, results=None):
+              run_one=None, extra_passes=True, results=None, store_check=None):
     """Run every city in order, then the ones that ran out of budget again while the window lasts.
 
     Returns the CityResults in the order they ran: one per city for pass 1, then one per re-run, each
@@ -646,6 +790,11 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
     spend, and without a slot there is no unit to hand out and no floor under the shares. A later pass never
     reports a city as not reached - running out of window there is the design working, not a fleet failing
     to complete - but a crash in one still fails the night, because a crash is a crash.
+
+    `store_check`, when given, is asked before EVERY city start, in every pass (#161): a store whose mount
+    drops at 02:00 must not have the cities after it scraped onto the root disk. A city due while it answers
+    False is booked 'store_missing' and never started; the check is per city, not a latch, so a mount that
+    comes back is used. 'store_missing' is not 'ok', so such a city is never re-run and fails the night.
     """
     # Resolved at CALL time, not bound as a default at definition time, so that replacing the module
     # attribute (which is how main() is driven in tests) actually takes effect.
@@ -671,6 +820,9 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
                             for c in cities[index:]]
                 break
         budget = _city_budget(city_max_runtime, remaining)
+        if store_check is not None and not store_check():
+            _store_missing(city, budget, 1, results)
+            continue
         result = run_one(city, store_root, python_exe, runner_path, budget, kill_grace_minutes, runner_args,
                          env=env)
         results.append(result._replace(budget_minutes=budget, pass_number=1))
@@ -699,6 +851,10 @@ def run_queue(cities, store_root, python_exe, runner_path, runner_args, max_runt
                              pass_number, remaining, len(working) - index)
                 break
             budget = _extra_pass_budget(city_max_runtime, remaining, len(working) - index)
+            if store_check is not None and not store_check():
+                _store_missing(city, budget, pass_number, results)
+                latest[city.city_id] = results[-1]
+                continue
             # The reservation is a SHARE of the budget, so it moves with it - otherwise an endgame pass's
             # enlarged slot goes almost entirely to the image phase (#43).
             pass_args = scale_depth_reservation(runner_args, budget, city_max_runtime)
@@ -978,10 +1134,67 @@ def manifest_report(check, advisory=False):
     return gap, status
 
 
+def conditions_report(results):
+    """The summary's lines about run conditions (#161): one per condition KIND, as [(line, logging.ERROR)].
+
+    One line per kind, never per city, because the night sends one message and a refusal followed by 40
+    stood-down cities is two facts: the line names the first city (with its pass, when not pass 1, and its
+    detail) and then lists the rest. A city is listed once per kind however many passes reported it, first
+    occurrence winning. Kinds come in CONDITION_LABELS order, then codes this queue does not know in order
+    of first appearance - kept, so a runner newer than the queue can still be heard.
+
+    ERROR, every one: these lines are why the night exits 1, and `grep ERROR scrape_queue.log` should agree.
+    So each is one line whatever the runner sent: _report maps levels by exact line, and a detail carrying a
+    newline would split its line into two that both log at INFO.
+
+    Example::
+
+        >>> r = CityResult('bravo-bb', 'ok', 0, 1.0, conditions=(Condition('depth-refused', 'HTTP 429'),))
+        >>> conditions_report([r])[0][0]
+        '[queue] depth-refused: Google refused the depth phase; latch written - 1 city, first bravo-bb: HTTP 429'
+    """
+    by_code = _conditions_by_code(results)
+    lines = []
+    for code, cities in by_code.items():
+        cities = list(cities.items())
+        first_city, (first_pass, detail) = cities[0]
+        line = "[queue] %s: %s - %d %s, first %s%s: %s" % (
+            code, CONDITION_LABELS.get(code, 'a condition this queue does not know'), len(cities),
+            'city' if len(cities) == 1 else 'cities', first_city,
+            '' if first_pass == 1 else ' in pass %d' % first_pass, ' '.join(detail.split()))
+        if len(cities) > 1:
+            line += '; also %s' % ', '.join(city for city, _ in cities[1:])
+        lines.append((line, logging.ERROR))
+    return lines
+
+
+def _conditions_by_code(results):
+    """{code: {city_id: (first pass, detail)}} in report order - CONDITION_LABELS order, then codes this queue
+    does not know by first appearance. The one ordering conditions_report and the totals line both use."""
+    by_code = OrderedDict()
+    for r in results:
+        for condition in r.conditions:
+            cities = by_code.setdefault(condition.code, OrderedDict())
+            if r.city_id not in cities:
+                cities[r.city_id] = (r.pass_number, condition.detail)
+    ordered = [code for code in CONDITION_LABELS if code in by_code]
+    ordered += [code for code in by_code if code not in CONDITION_LABELS]
+    return OrderedDict((code, by_code[code]) for code in ordered)
+
+
 # The order the non-ok lines are printed in. stdout is what cron mails, so the two or three real crashes
 # have to appear before the twenty skipped_deadline lines rather than interleaved with them. Run order is
 # kept WITHIN an outcome, so "which city crashed first" is still readable off the list.
-_OUTCOME_ORDER = ('failed', 'timed_out', 'skipped_deadline')
+#
+# store_missing (#161) leads, as ONE grouped line: an unmounted store is one fact about the night, and every
+# city after the drop would otherwise get a line of its own.
+_OUTCOME_ORDER = ('store_missing', 'failed', 'timed_out', 'skipped_deadline')
+
+
+def _store_missing_line(runs):
+    """The one summary line for every city not started because the store was not mounted."""
+    return "[queue] STORE_MISSING (store not mounted; not started): %s" % ', '.join(
+        r.city_id if r.pass_number == 1 else '%s in pass %d' % (r.city_id, r.pass_number) for r in runs)
 
 
 def summarise(results, elapsed_minutes, manifest_check=None):
@@ -997,6 +1210,9 @@ def summarise(results, elapsed_minutes, manifest_check=None):
     city that was hard-killed: counting only pass 1 there printed "0 failed, 0 timed out" on a night that
     exited 1, contradicting both the exit code and the per-run lines immediately above it.
 
+    Run conditions (#161) follow the failures, one line per kind (conditions_report), and the totals line
+    names their kinds, since an ok city with a condition still fails the night.
+
     The cross-check follows the same two rules. Its gap lines - a missing city, or a roster nobody served -
     go ABOVE the totals with the other things that went wrong, and the totals line carries the count or says
     the check did not run, so "54/54 cities ok, 0 failed, 0 timed out, 0 not reached" is never printed above
@@ -1010,11 +1226,17 @@ def summarise(results, elapsed_minutes, manifest_check=None):
         by_outcome.setdefault(r.outcome, []).append(r)
     lines = ["", "[queue] ==== summary ===="]
     for outcome in _OUTCOME_ORDER:
+        if outcome == 'store_missing':
+            if by_outcome.get(outcome):
+                lines.append(_store_missing_line(by_outcome[outcome]))
+            continue
         for r in by_outcome.get(outcome, []):
             when = '' if r.seconds is None else ' after %.1f min' % (r.seconds / 60.0)
             code = '' if r.exit_code is None else ' (exit %d)' % r.exit_code
             which = '' if r.pass_number == 1 else ' in pass %d' % r.pass_number
             lines.append("[queue] %-24s %s%s%s%s" % (r.city_id, outcome.upper(), code, when, which))
+    condition_lines = conditions_report(results)
+    lines += [line for line, _ in condition_lines]
     lines += [line for line, _ in gap]
     n_missing = 0 if manifest_check is None else len(manifest_check.unlisted)
     if manifest_check is not None and manifest_check.roster_host is None:
@@ -1022,11 +1244,17 @@ def summarise(results, elapsed_minutes, manifest_check=None):
     else:
         missing = ('' if not n_missing else ', %d %s missing from the manifest'
                    % (n_missing, 'city' if n_missing == 1 else 'cities'))
-    lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s; %.1f min total"
+    # The kinds, not the cities: the lines above name those, and "54/54 cities ok" must not read clean above
+    # an exit 1 that the conditions earned (#161).
+    kinds = list(_conditions_by_code(results))
+    conditions = '' if not kinds else ', conditions: %s' % ', '.join(kinds)
+    n_unmounted = len(by_outcome.get('store_missing', []))
+    unmounted = '' if not n_unmounted else ', %d not started (store not mounted)' % n_unmounted
+    lines.append("[queue] %d/%d cities ok, %d failed, %d timed out, %d not reached%s%s%s; %.1f min total"
                  % (sum(1 for r in first if r.outcome == 'ok'), len(first),
                     len(by_outcome.get('failed', [])),
                     len(by_outcome.get('timed_out', [])), len(by_outcome.get('skipped_deadline', [])),
-                    missing, elapsed_minutes))
+                    unmounted, missing, conditions, elapsed_minutes))
     passes = sorted({r.pass_number for r in results if r.pass_number > 1})
     for n in passes:
         runs = [r for r in results if r.pass_number == n]
@@ -1059,19 +1287,24 @@ def exit_code_for(results, manifest_check=None):
     three of them failing this call is a broken check (an API rename, an env proxy, a moved endpoint) rather
     than weather, and a check silently skipped every night is the failure the check exists to prevent. None
     means the check did not run (a dry run reports it its own way; a stopped queue never gets to it).
+
+    Any run condition fails the night too (#161), though it changes no city's outcome: production delivers
+    only a nonzero exit (cron_notify --only-on-failure), so a condition that did not fail the night would
+    reach nobody - which is exactly how a refused depth phase or a missing Mapillary token went unseen.
     """
     runs_ok = all(r.outcome == 'ok' for r in results)
     check_ok = (manifest_check is None
                 or (manifest_check.roster_host is not None and not manifest_check.unlisted))
-    return 0 if runs_ok and check_ok else 1
+    return 0 if runs_ok and check_ok and not any(r.conditions for r in results) else 1
 
 
 def main(argv=None):
     """Parse argv, take the lock, run the queue, print the summary; return the process exit code.
 
     Returns rather than calling sys.exit so the whole flow can be driven in-process by a test, the shape
-    analyze.py and CropRunner already use. Exit codes: 0 all cities ok, 1 something did not run or failed,
-    2 usage (argparse), 3 another queue run holds the lock.
+    analyze.py and CropRunner already use. Exit codes: 0 all cities ok, 1 something did not run or failed or
+    reported a run condition (#161), 2 usage (argparse), 3 another queue run holds the lock, 5 the store
+    marker is missing at startup (#161) - nothing ran and nothing was written.
     """
     args = build_parser().parse_args(argv)
 
@@ -1110,6 +1343,17 @@ def main(argv=None):
         if extra_passes:
             print("Then extra passes over whichever cities ran out of budget, while a slot of the window "
                   "remains - which cities, and with what budgets, cannot be shown before pass 1 has run.")
+        # Two advisory preflights (#161), like the roster below: a dry run is someone at a keyboard, and the
+        # exit code stays the plan's. The streetlevel probe runs in the interpreter the cities will use, which
+        # is the only place the answer means anything; it is skipped when depth is, since then nothing needs it.
+        if not store_is_marked(args.store_root):
+            print("[queue] WARNING: %s not found - a real run would refuse to start (exit %d). See "
+                  "docs/ops.md#the-store-marker." % (store_marker_path(args.store_root), EXIT_STORE_NOT_MARKED))
+        if '--skip-depth' not in runner_args:
+            importable, detail = probe_streetlevel(python_exe)
+            if not importable:
+                print("[queue] WARNING: streetlevel is not importable by %s (%s) - every city's depth phase "
+                      "would be skipped and fail the night as depth-unavailable." % (python_exe, detail))
         # The same cross-check the night runs (#130), so a hand-run before a launch answers "is everything
         # wired?" now rather than tomorrow morning. Printed only: no log is configured on a dry run, so
         # load_roster's INFO narration goes nowhere here (the first module-level logging call installs
@@ -1129,7 +1373,15 @@ def main(argv=None):
         print("WARNING: --max-runtime without --city-max-runtime; one slow city can hold the queue open "
               "past the window, because the window only gates STARTING a city.")
 
-    os.makedirs(args.store_root, exist_ok=True)
+    # The store marker, BEFORE configure_logging and before the lock (#161): logging would create
+    # scrape_queue.log on whatever is at the store root - the root disk, when the mount is down - and the
+    # makedirs this replaced created the store root itself. So nothing is written here, not even a log line:
+    # stderr is the one channel, and cron_notify delivers the nonzero exit.
+    if not store_is_marked(args.store_root):
+        print("ERROR: %s not found, so the pano store is not mounted (or this is not its root). Nothing was "
+              "run. If this IS the store, create the marker once - see docs/ops.md#the-store-marker."
+              % (store_marker_path(args.store_root),), file=sys.stderr)
+        return EXIT_STORE_NOT_MARKED
     configure_logging(os.path.join(args.store_root, 'scrape_queue.log'))
     # CPython dies from SIGTERM without running finally blocks. Translating it into SystemExit means the
     # stop unwinds properly: run_city stops the city it is supervising instead of orphaning it, and the lock
@@ -1152,7 +1404,7 @@ def main(argv=None):
             run_queue(ordered, args.store_root, python_exe, runner_path, runner_args,
                       max_runtime_minutes=args.max_runtime, city_max_runtime=args.city_max_runtime,
                       kill_grace_minutes=args.kill_grace, extra_passes=extra_passes,
-                      results=results)
+                      results=results, store_check=lambda: store_is_marked(args.store_root))
         # After the fleet and outside the lock (a GET needs none), against the whole manifest rather than
         # tonight's --only selection: Laurens and Bayonne launched together, and an operator re-running one
         # by hand is the moment to hear about the other. Inside the try, so a stop landing mid-fetch still
@@ -1182,13 +1434,18 @@ def main(argv=None):
 def _report(results, started_monotonic, manifest_check=None):
     """Print and log the summary, and return the exit code it implies.
 
-    Every line is logged at INFO except the cross-check's, which carry their own levels: a gap and an
-    unserved roster are the night's failure and are logged as one, so `grep ERROR scrape_queue.log` finds
-    them next week the way the mail finds them tonight.
+    Every line is logged at INFO except the cross-check's, the conditions' and the store_missing line, which
+    carry their own levels:
+    a gap, an unserved roster and a run condition are the night's failure and are logged as one, so
+    `grep ERROR scrape_queue.log` finds them next week the way the mail finds them tonight.
     """
     summary = summarise(results, (time.monotonic() - started_monotonic) / 60.0, manifest_check)
     print(summary)
     levels = {} if manifest_check is None else dict(sum(manifest_report(manifest_check), []))
+    levels.update(conditions_report(results))
+    missing_store = [r for r in results if r.outcome == 'store_missing']
+    if missing_store:
+        levels[_store_missing_line(missing_store)] = logging.ERROR
     for line in summary.splitlines():
         if line.strip():
             logging.log(levels.get(line, logging.INFO), line.replace('[queue] ', ''))

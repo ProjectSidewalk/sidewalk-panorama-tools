@@ -692,6 +692,91 @@ def test_missing_streetlevel_returns_zeros(tmp_path, monkeypatch):
     assert read_ledger(storage) is None
 
 
+# --- Conditions the depth phase notes for the queue (#161) ---------------------------------------------------
+#
+# Each of these used to end the city's run in an ordinary exit 0, so the night's only alarm never fired. They
+# ride the run summary (stop_reasons['conditions']); a condition does not change what stopped the phase.
+
+def condition_codes(stop_reasons):
+    return [c['code'] for c in stop_reasons.get('conditions', [])]
+
+
+class TestTheDepthPhaseNotesItsConditions:
+
+    def test_a_tripped_breaker_is_noted_with_its_breakdown(self, tmp_path, fake_streetview, monkeypatch):
+        monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 3)
+        fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+        monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_BREAKER]
+        assert '3 storage' in stop_reasons['conditions'][0]['detail']
+
+    def test_an_unreadable_ledger_is_noted(self, tmp_path, fake_streetview, monkeypatch):
+        def boom(path):
+            raise OSError(5, 'Input/output error')
+
+        monkeypatch.setattr(gsv, '_load_depth_log', boom)
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('aaaaaa'), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_LEDGER]
+
+    def test_an_unreadable_ledger_prints_a_warning(self, tmp_path, fake_streetview, monkeypatch, capsys):
+        """The WARNING token an ops grep for storage trouble keys on, like the unwritable arm's."""
+        def boom(path):
+            raise OSError(5, 'Input/output error')
+
+        monkeypatch.setattr(gsv, '_load_depth_log', boom)
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('aaaaaa'))
+
+        assert 'WARNING' in capsys.readouterr().out
+
+    def test_an_unwritable_ledger_is_noted(self, tmp_path, fake_streetview, monkeypatch):
+        monkeypatch.setattr(gsv.csv, 'writer', lambda *args, **kwargs: _FullDiskWriter())
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('aaaaaa'), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_LEDGER]
+
+    def test_a_missing_streetlevel_is_noted_and_said_on_both_channels(self, tmp_path, monkeypatch, capsys,
+                                                                       caplog):
+        """It was logging-only: no stdout line at all, so the one channel cron delivers carried nothing, and a
+        half-written pip install mid-deploy (docs/ops.md warns of it) would silently stop every depth phase."""
+        monkeypatch.setitem(sys.modules, 'streetlevel', None)
+        monkeypatch.delitem(sys.modules, 'streetlevel.streetview', raising=False)
+        stop_reasons = {}
+
+        with caplog.at_level(logging.ERROR):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('aaaaaa'), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_UNAVAILABLE]
+        out = capsys.readouterr().out
+        assert 'WARNING' in out and 'streetlevel' in out
+        assert any(r.levelno == logging.ERROR and 'streetlevel' in r.getMessage() for r in caplog.records)
+
+    def test_scattered_errors_before_a_budget_stop_are_not_a_condition(self, tmp_path, fake_streetview,
+                                                                       monkeypatch):
+        """The scattered-errors arm warns on stdout but is not an alarm: a few transient failures inside a
+        budget stop are an ordinary night, and alarming on them would make the alarm noise."""
+        fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+        monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+        ticks = iter(range(0, 60000, 120))
+        monkeypatch.setattr(gsv.time, 'monotonic', lambda: float(next(ticks)))
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), run_start_monotonic=0.0,
+                                max_runtime_minutes=5, stop_reasons=stop_reasons)
+
+        assert stop_reasons['depth_stop'] == gsv.DEPTH_STOP_MAX_RUNTIME
+        assert condition_codes(stop_reasons) == []
+
+
 OPS_MD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', 'ops.md')
 
 
