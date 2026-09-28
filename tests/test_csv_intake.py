@@ -627,7 +627,7 @@ class TestJsonToCsvConversion:
 # absent: both still use pandas, and both are dev/ops tools rather than production code.
 PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape_queue.py',
                       'check_cvmetadata_schema.py', 'cron_notify.py',
-                      'migrate_depth_artifacts.py', 'refetch_panos.py', 'downscale_panos.py',
+                      'migrate_crop_store.py', 'migrate_depth_artifacts.py', 'refetch_panos.py', 'downscale_panos.py',
                       'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
                       'downloaders/gsv.py', 'downloaders/mapillary.py',

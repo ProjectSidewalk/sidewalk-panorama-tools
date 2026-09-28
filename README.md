@@ -48,7 +48,7 @@ Then cut a crop for every label in that city:
 
 ```bash
 python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu --city columbus-oh \
-  -s /srv/panos/columbus-oh -o /srv/crops/columbus-oh
+  -s /srv/panos/columbus-oh -o /srv/crops
 ```
 
 The server name is any deployed city — visit one to get the dropdown listing the rest. Both tools resume:

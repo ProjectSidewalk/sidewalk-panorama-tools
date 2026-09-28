@@ -213,6 +213,32 @@ def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(common, 'default_width_alarm_latch_path', lambda: str(width_latch))
 
 
+@pytest.fixture(scope='session')
+def _fixture_city_roster(tmp_path_factory):
+    """The roster file `_isolate_city_roster` points CropRunner at - written once, since nothing writes to it."""
+    path = tmp_path_factory.mktemp('roster') / 'cities.csv'
+    path.write_text('city_id,display_name\nseattle-wa,"Seattle, WA"\nchicago-il,"Chicago, IL"\n'
+                    '#crowdstudy,not-monitored\n', encoding='utf-8')
+    return str(path)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_city_roster(request, monkeypatch, _fixture_city_roster):
+    """CropRunner reads `--city` against a fixture roster, not the committed `log_analyzer/cities.csv` (#159).
+
+    Every in-process `CropRunner.main()` and `migrate_crop_store.main()` validates `--city` against
+    `CropRunner.CITIES_FILE`. Against the real file, `#`-commenting chicago-il there - an ordinary ops edit -
+    would fail a dozen layout and recorded-city tests that are about something else. So the suite reads a
+    roster naming the two cities it crops, plus a `#` row. Tests *about* the committed file carry
+    `@pytest.mark.real_roster`; the subprocess tests read the real file anyway, which is what proves
+    production does.
+    """
+    if request.node.get_closest_marker('real_roster'):
+        return
+    import CropRunner
+    monkeypatch.setattr(CropRunner, 'CITIES_FILE', _fixture_city_roster)
+
+
 # Set by pytest_configure: the temp directory every child process of this session resolves as its own.
 CHILD_TEMP_DIR = None
 _TEMP_VARS = ('TMPDIR', 'TEMP', 'TMP')
@@ -256,7 +282,7 @@ def pytest_unconfigure(config):
 
 
 def pytest_configure(config):
-    """Give children a session temp dir (above), then extend coverage into them (#57).
+    """Register the suite's markers, give children a session temp dir (above), then extend coverage into them (#57).
 
     The runners are driven as real subprocesses - `main()`, the argparse `type=` validators, the budget
     carve-out prints and both `__main__` guards only ever execute in a child - so without this the coverage
@@ -271,6 +297,8 @@ def pytest_configure(config):
     `parallel = True` in .coveragerc is the other half: without it each child would overwrite the parent's
     data file instead of adding to it.
     """
+    config.addinivalue_line('markers', 'real_roster: read the committed log_analyzer/cities.csv rather than '
+                                       "the fixture roster (_isolate_city_roster)")
     _give_children_a_session_temp_dir()
     # The next pytest's removals as errors, so a class-scoped instance-method fixture (fcadac1) or any other
     # removed-in-10 shape fails the PR that adds it rather than every PR on the day pytest 10 lands (#165, D3: no
