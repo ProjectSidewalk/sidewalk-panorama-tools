@@ -180,14 +180,17 @@ def black_fraction(image):
     """Exact fraction of black pixels in the frame, via the luma histogram.
 
     Counted over every pixel rather than a downsampled probe, and by histogram rather than a numpy array so
-    it stays a C-level pass with no second copy of a 16384x8192 frame. Both alternatives to an exact count
+    it stays a C-level pass with no numpy RGB copy of the frame. It still makes one single-band L copy, which
+    for a whole 16384x8192 frame is 134 MB; on a cut window it is a few MB. Both alternatives to an exact count
     are wrong in a way that matters here: an averaging downscale blends a black region into its neighbours
     and reports "slightly dark" for a frame that is three-quarters missing, while a NEAREST probe aliases on
     exactly the sort of regular black/imagery pattern a tiling bug produces.
 
     One primitive, three callers: gsv's stitch guard (as gsv._black_fraction), refetch_panos' too_black
-    gate, and CropRunner's black_content check on a cut window (#164). It lives here rather than in gsv.py
-    because CropRunner must not import gsv - that pulls in config.py, aiohttp and numpy for one histogram.
+    gate, and CropRunner's black_content check on a cut window (#164). It lives here beside the other
+    shared image primitives, which is where a caller outside gsv.py looks for it. That is the whole reason:
+    it is NOT an import boundary, since downloaders/__init__.py imports gsv, so any import from this
+    package - CropRunner's included - loads gsv, config.py, aiohttp and numpy anyway (#170 review).
     """
     luma = image.convert('L')
     return luma.histogram()[0] / float(luma.width * luma.height)
