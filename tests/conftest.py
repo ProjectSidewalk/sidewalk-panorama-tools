@@ -53,6 +53,22 @@ def _isolate_process_state():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_ssh_config(monkeypatch, tmp_path_factory):
+    """Keep store mode's `ssh -G <host>` lookup (#30) from reading this machine's ~/.ssh/config.
+
+    A failed store session resolves the host through ssh's config to learn what else to redact, and would
+    otherwise pick up the developer's or the CI runner's own config - the local login name and port 22 then
+    get redacted out of expected messages, differently on every machine. Pointing the command at a binary
+    that does not exist takes the lookup's own tolerate-and-continue path; the tests that are ABOUT the
+    lookup point it at a stand-in of their own.
+    """
+    from downloaders import store_sftp
+
+    missing = tmp_path_factory.mktemp('no-ssh') / 'ssh-not-installed'
+    monkeypatch.setattr(store_sftp, 'SSH_CONFIG_COMMAND', [str(missing), '-G'])
+
+
+@pytest.fixture(autouse=True)
 def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     """Keep the depth phase's three HOST-level side effects (#43) out of the suite.
 
