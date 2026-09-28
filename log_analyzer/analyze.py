@@ -387,15 +387,22 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
             # field 5 - field 11 on the newest row carrying both (a lower bound on eligible panos never
             # attempted) is at least the minimum. A corpus nobody wrote (field 5 blank) is unknown, not
             # zero, and keeps the old behaviour: fire.
-            xml_by_night = df.groupby("date")["xml_total"].last()   # last() skips NaN
+            #
+            # A written 0 is unknown too. Field 5 is len(image_pano_infos) with no empty-list guard, so an empty
+            # /adminapi/panos answer writes a plausible 0 - the value corpus_size refuses in field 19 for the
+            # same reason. Taken at face value it read a 0 on the baseline night as `1,000 new panos`, and a
+            # month of empty answers as a flat corpus with nothing to fetch; for a Mapillary- or Panoramax-only
+            # city (field 19 legitimately 0) nothing else would report the second (#169 review).
+            xml_total = df["xml_total"].where(df["xml_total"] > 0)
+            xml_by_night = xml_total.groupby(df["date"]).last()   # last() skips NaN
             before = xml_by_night.iloc[:-ZERO_PROGRESS_DAYS].dropna()
             during = xml_by_night.tail(ZERO_PROGRESS_DAYS).dropna()
             growth = None if before.empty or during.empty else int(during.iloc[-1] - before.iloc[-1])
-            both = df[df["xml_total"].notna() & df["image_total"].notna()]
+            both = df[xml_total.notna() & df["image_total"].notna()]
             backlog = int(both["xml_total"].iloc[-1] - both["image_total"].iloc[-1]) if not both.empty else None
             evidence = []
             if growth is None:
-                evidence.append("the image-eligible corpus size is unknown (field 5 blank)")
+                evidence.append("the image-eligible corpus size is unknown (field 5 blank or 0)")
             elif growth >= ZERO_PROGRESS_MIN_NEW_WORK:
                 evidence.append(f"{growth:,} new image-eligible panos (field 5, "
                                 f"{int(before.iloc[-1]):,} → {int(during.iloc[-1]):,})")

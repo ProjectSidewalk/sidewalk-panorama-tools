@@ -366,7 +366,7 @@ def daily_rows(count, offset=0, **overrides):
 
 
 def zero_progress_rows(total=130, quiet_tail=30, success=5, new_panos=3, not_attempted=0, step_days_ago=None,
-                       corpus_known=True):
+                       corpus_known=True, empty_list_ages=(), recent_not_attempted=None):
     """A history that downloaded `success` images a day and then stopped `quiet_tail` days ago.
 
     `total` must exceed ZERO_PROGRESS_DAYS + ZERO_PROGRESS_LOOKBACK for check 3 to look at all - the rule
@@ -377,14 +377,20 @@ def zero_progress_rows(total=130, quiet_tail=30, success=5, new_panos=3, not_att
     quiet tail. The default 3 is ZERO_PROGRESS_MIN_NEW_WORK, written as a literal so this helper still loads
     against a module that predates the constant. `not_attempted` holds field 11 (`image_total`, what the image
     phase has attempted) that far below field 5. `corpus_known=False` leaves field 5 blank on every row.
+    `empty_list_ages` are the rows (by age in days) whose pano-list fetch came back empty: field 5 is a written
+    0 there, which is `len(image_pano_infos)` of an empty answer. `recent_not_attempted=(n, value)` overrides
+    `not_attempted` on the newest n rows only, so the backlog can differ between the oldest and newest rows.
     """
     step_days_ago = quiet_tail // 2 if step_days_ago is None else step_days_ago
     rows = []
     for i in range(total):
         age = total - 1 - i
         corpus = 1000 + (new_panos if age <= step_days_ago else 0)
+        gap = (recent_not_attempted[1] if recent_not_attempted and age < recent_not_attempted[0]
+               else not_attempted)
+        written = 0 if age in empty_list_ages else corpus
         rows.append(make_row(days_ago(age), image_success=(0 if i >= total - quiet_tail else success),
-                             xml_total=corpus if corpus_known else '', image_total=corpus - not_attempted))
+                             xml_total=written if corpus_known else '', image_total=corpus - gap))
     return rows
 
 
@@ -463,6 +469,39 @@ class TestRule3AsksWhetherThereWasWork:
         found = self.rule_3(tmp_path, zero_progress_rows(step_days_ago=analyze.ZERO_PROGRESS_DAYS - 1))
 
         assert [i['level'] for i in found] == ['WARNING'], found
+
+    def test_an_empty_list_on_the_baseline_night_is_not_growth(self, tmp_path):
+        """Field 5 is len(image_pano_infos), and an empty /adminapi/panos answer writes a plausible 0 there - the
+        value corpus_size already refuses in field 19. Read as a real corpus on the last night before the
+        window, it made a mature city with nothing new report `1,000 new image-eligible panos (0 → 1,000)`."""
+        rows = zero_progress_rows(new_panos=0, empty_list_ages=(analyze.ZERO_PROGRESS_DAYS,))
+
+        assert self.rule_3(tmp_path, rows) == []
+
+    def test_a_month_of_empty_lists_is_unknown_not_quiet(self, tmp_path):
+        """Every night in the window got an empty pano list. For a Mapillary- or Panoramax-only city (field 19
+        legitimately 0) nothing else reports that, so rule 3 must read the 0s as unknown and fire as before,
+        not as a flat corpus with nothing to fetch."""
+        rows = zero_progress_rows(new_panos=0, empty_list_ages=range(analyze.ZERO_PROGRESS_DAYS))
+
+        found = self.rule_3(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'unknown' in found[0]['msg']
+
+    def test_the_backlog_is_read_on_the_newest_row(self, tmp_path):
+        """A gap that opened recently is work, however the oldest rows looked."""
+        found = self.rule_3(tmp_path, zero_progress_rows(new_panos=0, recent_not_attempted=(5, 3)))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert '3 eligible panos never attempted' in found[0]['msg']
+
+    def test_an_old_backlog_since_closed_is_not_work(self, tmp_path):
+        """The image phase caught up long ago (a first scrape's gap), and today every eligible pano has been
+        attempted: nothing to fetch, so a mature city stays quiet."""
+        rows = zero_progress_rows(new_panos=0, not_attempted=50, recent_not_attempted=(60, 0))
+
+        assert self.rule_3(tmp_path, rows) == []
 
     def test_an_unknown_corpus_keeps_the_old_behaviour(self, tmp_path):
         """Blank is not 0: a field 5 nobody wrote says nothing about the work, so the rule fires as before."""
