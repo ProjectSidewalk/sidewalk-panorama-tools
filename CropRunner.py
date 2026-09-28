@@ -410,7 +410,13 @@ def request_session():
 def fetch_label_ids_csv(metadata_csv_path):
     """
     Reads metadata from a csv. Useful for old csv formats of cvMetadata such as cv-metadata-seattle.csv.
-    Dedupes on label_id, keeping the first row per id.
+    Dedupes on _label_id_key, keeping the first row per key - the same key json_to_list uses, the int the
+    crop loop files under, so '7', '07' and ' 7' are one label and a row with no usable label_id (blank, or
+    anything int() refuses) is never collapsed into another. Deduping on the raw cell let '7' and '07' both
+    through to one <type>/7.jpg, cut twice under --force with two provenance rows (#170 ops-4). This is not
+    the inference #72 removed: int() is applied explicitly to one column for the key only, and the row keeps
+    its raw str. As in json_to_list, keep-first holds whether or not the first row is usable, so a malformed
+    '7' row shadows a good '07' one (ops-7).
 
     Read with csv, not pandas (#72), so no field's type depends on what the values happen to look like -
     the inference that gave an all-numeric (Mapillary) pano_id column int64 and crashed every pano_id[:2]
@@ -440,16 +446,17 @@ def fetch_label_ids_csv(metadata_csv_path):
             # Surplus fields land under the key None. pandas did something worse with the same input -
             # it consumed the first column as the frame's index, shifting every field by one.
             label = {key: value for key, value in row.items() if key is not None}
-            label_id = label.get('label_id')
-            if label_id in unique_label_ids:
-                continue
-            unique_label_ids.add(label_id)
+            key = _label_id_key(label.get('label_id'))
+            if key is not None:
+                if key in unique_label_ids:
+                    continue
+                unique_label_ids.add(key)
             labels.append(label)
     return labels
 
 
 def _label_id_key(raw):
-    """The dedupe key for a JSON row's label_id: the int the crop loop will file its crop under, or None.
+    """The dedupe key for a row's label_id, in both intakes: the int the crop loop will file its crop under, or None.
 
     The loop names a crop int(row['label_id']), so the key is that same int(): 1, "1", 1.0 and " 1" are one
     label, as are "07" and 7. Deduping on the raw value let 1 and "1" both through, and under --force both
@@ -479,9 +486,7 @@ def json_to_list(jsondata, source=None):
 
     Nothing here indexes a row (#164): every element is passed through, and the crop loop counts one that
     is not an object, or lacks a field it needs, as one malformed row - the CSV intake's behaviour. Rows are
-    deduped on _label_id_key, the int the loop files under. Two ways this differs from the CSV intake, left
-    alone on purpose: that one dedupes on the raw cell ('7' and '07' stay distinct and both file as 7.jpg),
-    and it collapses repeated blank or unparseable label_id cells into one.
+    deduped on _label_id_key, the int the loop files under - the CSV intake's key too since #170 ops-4.
 
     The dedupe keeps the FIRST row with a key, whether or not that row is usable, so a malformed row shadows
     a good one sharing its int: [{"label_id": 7, "pano_x": "bad"}, {"label_id": "7", ...}] is one error and

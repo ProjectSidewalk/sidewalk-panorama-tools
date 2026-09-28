@@ -406,17 +406,46 @@ class TestLabelCsvIntake:
         assert len(labels) == 1
         assert labels[0]['pano_x'] == '100'
 
-    def test_label_ids_differing_only_by_a_leading_zero_stay_distinct(self, tmp_path):
-        """Pins the CSV intake's raw-cell dedupe: '7' and '07' are two labels. That is the #72 fix for
-        pandas' drop_duplicates, which deduped on the inferred int64 - but both rows still file as
-        <type>/7.jpg, which is exactly the collision #164 closed for the JSON intake by keying on int().
-        D9 of #170 leaves this divergence in place on purpose; whether the CSV intake should key on int()
-        too is an open decision, and this test flips if it does."""
+    def test_label_ids_differing_only_by_a_leading_zero_are_one_label(self, tmp_path):
+        """'7' and '07' both file as <type>/7.jpg, so they are one label, and the first row is kept.
+        Deduping on the raw cell let both through: without --force the second read as skipped_existing
+        against the first one's crop, and under --force one file was cut twice with two provenance rows -
+        the collision #164 closed for the JSON intake. The CSV intake now keys on the same
+        _label_id_key (#170 ops-4, option b). That is not the type inference #72 removed: int() is applied
+        explicitly to one column, and the row itself still carries the raw str."""
         path = write_label_csv(tmp_path,
-                               LABEL_HEADER + label_csv_row(label_id='7')
-                               + label_csv_row(label_id='07'))
+                               LABEL_HEADER + label_csv_row(label_id='7', pano_x='100')
+                               + label_csv_row(label_id='07', pano_x='210'))
 
-        assert len(CropRunner.fetch_label_ids_csv(path)) == 2
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert len(labels) == 1
+        assert labels[0]['label_id'] == '7'
+        assert labels[0]['pano_x'] == '100'
+
+    def test_a_padded_label_id_is_the_same_label(self, tmp_path):
+        """int(' 7') is 7, and the loop files the crop under that int, so padding is not a new label."""
+        path = write_label_csv(tmp_path,
+                               LABEL_HEADER + label_csv_row(label_id='07')
+                               + label_csv_row(label_id=' 7') + label_csv_row(label_id='8'))
+
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert [row['label_id'] for row in labels] == ['07', '8']
+
+    @pytest.mark.parametrize('bad', ['', 'abc', '1.5'])
+    def test_rows_with_no_usable_label_id_are_never_collapsed(self, tmp_path, bad):
+        """A blank or unparseable label_id keys None, and None is never deduped: each such row is its own
+        bad label, counted once by the crop loop. Deduping on the raw cell collapsed repeated ones into a
+        single error, which hid all but the first. Blank cells still arrive as '' (not None) - #72."""
+        path = write_label_csv(tmp_path,
+                               LABEL_HEADER + label_csv_row(label_id=bad, pano_x='100')
+                               + label_csv_row(label_id=bad, pano_x='210'))
+
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert [row['label_id'] for row in labels] == [bad, bad]
+        assert [row['pano_x'] for row in labels] == ['100', '210']
 
     def test_the_real_sample_file_parses(self, tmp_path):
         """samples/metadata-seattle.csv is the documented -f example: the old export's width/height
