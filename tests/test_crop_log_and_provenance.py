@@ -410,10 +410,11 @@ class TestTheProvenanceManifest:
         write_crop_file(out, 1, 6)
         real = crop_runner.make_single_crop
 
-        def fail_label_7(pano, pano_x, pano_y, output_filename, draw_mark=False):
+        def fail_label_7(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '7.jpg':
                 raise OSError('No space left on device')
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', fail_label_7)
         labels = [labelled(1, source='gsv'),
@@ -437,12 +438,13 @@ class TestTheProvenanceManifest:
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out))
-        monkeypatch.setattr(crop_runner, 'CROP_RULE_VERSION', 'v3-test')
+        # The rule the run cuts with is --sizing-rule now (#32), not the module default, so the second
+        # run selects v3 rather than patching CROP_RULE_VERSION (which the rule's default args bind).
         counts = crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out),
-                                                force=True)
+                                                force=True, sizing_rule='v3')
         assert counts['recut'] == 1
         rows = [row for row in manifest_rows(out, crop_runner)[1:] if row[1] == '1']
-        assert [row[-1] for row in rows] == ['v2', 'v3-test']
+        assert [row[-1] for row in rows] == ['v2', 'v3']
 
     def test_a_manifest_that_cannot_be_opened_raises_before_any_crop(self, crop_runner, tmp_path,
                                                                      monkeypatch):
@@ -472,10 +474,11 @@ class TestTheProvenanceManifest:
         real = crop_runner.make_single_crop
         seen = []
 
-        def spy(pano, pano_x, pano_y, output_filename, draw_mark=False):
+        def spy(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '2.jpg':
                 seen.append(manifest_rows(out, crop_runner))
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', spy)
         crop_runner.bulk_extract_crops([labelled(1, source='gsv'), labelled(2, source='gsv')],
@@ -493,10 +496,11 @@ class TestTheProvenanceManifest:
         put_pano(store, 'testpano0001')
         real = crop_runner.make_single_crop
 
-        def killed_at_3(pano, pano_x, pano_y, output_filename, draw_mark=False):
+        def killed_at_3(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '3.jpg':
                 raise KeyboardInterrupt
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         labels = [labelled(i, source='gsv') for i in range(1, 5)]
         monkeypatch.setattr(crop_runner, 'make_single_crop', killed_at_3)
@@ -790,10 +794,11 @@ class TestAFailingManifestCannotTakeTheSummaryDown:
         faults = RawWriterFaults(crop_runner, monkeypatch)
         real = crop_runner.make_single_crop
 
-        def killed_at_2(pano, pano_x, pano_y, output_filename, draw_mark=False):
+        def killed_at_2(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '2.jpg':
                 raise KeyboardInterrupt
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', killed_at_2)
         with pytest.raises(KeyboardInterrupt):
@@ -1070,14 +1075,13 @@ class TestTheMarkerSaysWhetherTheManifestHasAKnownGap:
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
-        monkeypatch.setattr(crop_runner, 'CROP_RULE_VERSION', 'v3-test')
-        crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out))
+        crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out), sizing_rule='v3')
         marker = read_marker(out, crop_runner)
-        assert marker['crop_rule_version'] == 'v3-test'
+        assert marker['crop_rule_version'] == 'v3'
         assert marker['provenance_manifest_started_under'] == 'v2'
         # ...while each row still says which rule cut its own crop.
         rows = manifest_by_label(out, crop_runner)
-        assert rows['1']['crop_rule_version'] == 'v2' and rows['2']['crop_rule_version'] == 'v3-test'
+        assert rows['1']['crop_rule_version'] == 'v2' and rows['2']['crop_rule_version'] == 'v3'
 
     def test_a_manifest_the_marker_knows_nothing_about_is_unknown_not_complete(self, crop_runner,
                                                                               tmp_path):
@@ -1095,12 +1099,14 @@ class TestTheMarkerSaysWhetherTheManifestHasAKnownGap:
     def test_a_marker_that_is_json_but_not_an_object_is_rewritten(self, crop_runner, tmp_path):
         """Reading more than one key out of the marker means reading it as a dict. Valid JSON that is
         not an object (a hand edit, a truncation that happens to parse) used to die on `.get` with an
-        AttributeError the OSError/ValueError guard does not catch; it is provenance, not a lock."""
+        AttributeError the OSError/ValueError guard does not catch; it is provenance, not a lock. It
+        is not a FRESH store either (#157): the prior rule is returned and recorded as 'unknown', and the
+        bytes are kept aside (tests/test_crop_runner.py::TestTheMarkerKeepsItsHistory)."""
         out = tmp_path / 'crops'
         os.makedirs(str(out))
         with open(os.path.join(str(out), crop_runner.CROP_RULE_MARKER), 'w') as f:
             f.write('[1, 2]')
-        assert crop_runner.write_rule_marker(str(out)) is None
+        assert crop_runner.write_rule_marker(str(out)) == 'unknown'
         assert read_marker(out, crop_runner)['crop_rule_version'] == crop_runner.CROP_RULE_VERSION
 
     def test_a_deleted_manifest_is_restarted_as_partial(self, crop_runner, tmp_path):
@@ -1393,10 +1399,11 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 2)
         real = crop_runner.make_single_crop
 
-        def killed_at_2(pano, pano_x, pano_y, output_filename, draw_mark=False):
+        def killed_at_2(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=None):
             if os.path.basename(output_filename) == '2.jpg':
                 raise KeyboardInterrupt
-            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark)
+            return real(pano, pano_x, pano_y, output_filename, draw_mark=draw_mark,
+                        sizing_rule=sizing_rule or crop_runner.CROP_RULE_VERSION)
 
         monkeypatch.setattr(crop_runner, 'make_single_crop', killed_at_2)
         with pytest.raises(KeyboardInterrupt):
