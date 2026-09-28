@@ -32,6 +32,7 @@ for _p in (REPO_ROOT, SCRIPTS):
 import downscale_panos  # noqa: E402
 import refetch_panos as rp  # noqa: E402
 from downloaders import common, gsv  # noqa: E402
+from test_gsv_stitcher import BLACK_BODY, IMAGERY_BODY, canned_cbk, cbk_query  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
 
@@ -1677,7 +1678,6 @@ class TestARefusedProbeIsTransient:
             return list(csv.reader(f))
 
     def run(self, tmp_path, monkeypatch, answer):
-        from test_gsv_stitcher import canned_cbk
         refused_path = store_with_pano(tmp_path, self.REFUSED)
         store_with_pano(tmp_path, self.RETIRED)
         before = open(refused_path, 'rb').read()
@@ -1694,8 +1694,6 @@ class TestARefusedProbeIsTransient:
         return counts, fetched, before, open(refused_path, 'rb').read()
 
     def test_a_refused_zoom_probe_is_not_gone(self, tmp_path, monkeypatch):
-        from test_gsv_stitcher import BLACK_BODY
-
         def answer(url):
             return (403 if self.REFUSED in url else 200), BLACK_BODY
 
@@ -1710,8 +1708,6 @@ class TestARefusedProbeIsTransient:
     def test_a_refused_frame_probe_does_not_pass_the_frame(self, tmp_path, monkeypatch):
         """The acceptance-direction hole. Before #166 (b) the 403 black edges read as "covers", the fan-out
         ran, and the stored panorama was replaced on a grid nothing had confirmed."""
-        from test_gsv_stitcher import BLACK_BODY, IMAGERY_BODY, cbk_query
-
         def answer(url):
             if self.RETIRED in url:
                 return 200, BLACK_BODY

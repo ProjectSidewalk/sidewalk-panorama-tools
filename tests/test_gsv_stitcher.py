@@ -1237,8 +1237,11 @@ class TestTheFrameProbeNeedsA200:
     def test_a_black_body_under_any_other_status_raises(self, monkeypatch, status):
         canned_cbk(monkeypatch, lambda url: (status, BLACK_BODY))
 
-        with pytest.raises(requests.HTTPError):
+        with pytest.raises(requests.HTTPError) as caught:
             gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
+
+        assert caught.value.response.status_code == status
+        assert 'panoid=%s' % self.PANO in str(caught.value), 'the error must name the URL it refused'
 
     @pytest.mark.parametrize('refused', [(26, 6), (0, 13)], ids=['x-probe', 'y-probe'])
     def test_either_probes_status_counts(self, monkeypatch, refused):

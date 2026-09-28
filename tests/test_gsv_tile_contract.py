@@ -388,25 +388,32 @@ LIVE_PANOS = [('Seattle 2022', 'Svz6_7CwyijJ6RgjWROnCw', 16384, 8192),
               ('DC 2007 (four zoom levels)', 'TEKYJ5O1xd0OZ_YqF0lFRA', 3328, 1664)]
 
 
-def _live_get(session, url, tries=5):
+def _live_get(session, url, tries=5, require_200=False):
     """Retry until the response decodes. CBK intermittently answers with a non-image body; production rides
     that out with backoff (_TILE_RETRY_ERRORS), so a live check that fails on the first dropped response is
-    testing the network, not the endpoint's behaviour."""
+    testing the network, not the endpoint's behaviour.
+
+    `require_200` asserts the status of the response that decoded. The probes read a black body as a verdict
+    only on a 200 (#166 option b), so the answers that verdict rests on must keep arriving as 200s."""
     import time
 
     for attempt in range(tries):
-        body = session.get(url, headers=gsv._random_header(), timeout=30).content
+        response = session.get(url, headers=gsv._random_header(), timeout=30)
+        body = response.content
         try:
             Image.open(BytesIO(body)).size
-            return body
         except Exception:
             time.sleep(0.5 * (attempt + 1))
+            continue
+        if require_200:
+            assert response.status_code == 200, 'answered %s, not 200: %s' % (response.status_code, url)
+        return body
     raise AssertionError('no decodable response after %d tries: %s' % (tries, url))
 
 
-def _live_tile(session, pano, zoom, x, y, extra=''):
+def _live_tile(session, pano, zoom, x, y, extra='', require_200=False):
     return _live_get(session, '%s%s&zoom=%d&x=%d&y=%d&panoid=%s'
-                     % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano))
+                     % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano), require_200=require_200)
 
 
 @live_only
@@ -467,14 +474,16 @@ def test_live_cbk_without_fover_is_byte_identical_to_the_modern_endpoint():
 @live_only
 def test_live_dropping_fover_changed_nothing_else():
     """The side-effect check. The zoom probe and _reject_mostly_black_stitch both depend on out-of-range and
-    dead-pano requests answering with a black JPEG rather than an error."""
+    dead-pano requests answering with a black JPEG rather than an error - and, since #166 option (b), with a
+    200: a black body under any other status raises. If Google ever answered these with a 404 and a black
+    JPEG, every retirement would become a nightly retry and nothing else in the suite would fail."""
     import requests
 
     pano = LIVE_PANOS[0][1]
     session = requests.Session()
 
     def describe(zoom, x, y, target=None):
-        body = _live_tile(session, target or pano, zoom, x, y)
+        body = _live_tile(session, target or pano, zoom, x, y, require_200=True)
         image = Image.open(BytesIO(body))
         return image.size, image.convert('L').getextrema() == (0, 0)
 
