@@ -32,6 +32,7 @@ for _p in (REPO_ROOT, SCRIPTS):
 import downscale_panos  # noqa: E402
 import refetch_panos as rp  # noqa: E402
 from downloaders import common, gsv  # noqa: E402
+from test_gsv_stitcher import BLACK_BODY, IMAGERY_BODY, canned_cbk, cbk_query  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
 
@@ -1656,3 +1657,69 @@ class TestTheDisplayCopyFollowsTheSwap:
         assert downscale_panos.sidecar_is_current(pano, self.DIMS, self.CAP) is True
         self.assert_copy_shows(sidecar, self.NEW)
         assert downscale_panos.downscale_store(str(tmp_path), max_width=self.CAP).written == 0
+
+
+class TestARefusedProbeIsTransient:
+    """#166 option (b), composed: the two probes now raise on any status but 200, and refetch_store must
+    count that as a transient failure - unledgered, file untouched, pass carrying on - rather than as `gone`
+    (a probe refused at resolve) or as a frame that covers (a probe refused at the edge, which used to let
+    the fan-out run on a grid nothing confirmed).
+
+    Driven through the REAL resolve_zoom_and_dims and frame_covers_pano and a real requests.Session; only
+    the socket is canned (test_gsv_stitcher.canned_cbk). The first pano in each test is refused, the second
+    is a genuine 200 retirement, so the same pass shows both the transient and the permanent path.
+    """
+
+    REFUSED = 'aaRefusedAAAAAAAAAAA'
+    RETIRED = 'bbRetiredBBBBBBBBBBB'
+
+    def ledger_rows(self, tmp_path):
+        with open(str(tmp_path / rp.LEDGER_FILENAME), newline='') as f:
+            return list(csv.reader(f))
+
+    def run(self, tmp_path, monkeypatch, answer):
+        refused_path = store_with_pano(tmp_path, self.REFUSED)
+        store_with_pano(tmp_path, self.RETIRED)
+        before = open(refused_path, 'rb').read()
+        canned_cbk(monkeypatch, answer)
+
+        fetched = []
+
+        def recording_fetch(pano_id, width, height, zoom):
+            fetched.append(pano_id)
+            return gsv.StitchedPano(Image.new('RGB', (width, height), (10, 200, 10)), 0, False)
+
+        monkeypatch.setattr(gsv, 'fetch_pano_image', recording_fetch)
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': self.REFUSED}, {'pano_id': self.RETIRED}])
+        return counts, fetched, before, open(refused_path, 'rb').read()
+
+    def test_a_refused_zoom_probe_is_not_gone(self, tmp_path, monkeypatch):
+        def answer(url):
+            return (403 if self.REFUSED in url else 200), BLACK_BODY
+
+        counts, fetched, before, after = self.run(tmp_path, monkeypatch, answer)
+
+        assert counts['transient_failures'] == 1
+        assert counts['gone'] == 1                        # the 200 retirement, still permanent
+        assert self.ledger_rows(tmp_path) == [['pano_id', 'status'], [self.RETIRED, 'gone']]
+        assert fetched == []
+        assert after == before
+
+    def test_a_refused_frame_probe_does_not_pass_the_frame(self, tmp_path, monkeypatch):
+        """The acceptance-direction hole. Before #166 (b) the 403 black edges read as "covers", the fan-out
+        ran, and the stored panorama was replaced on a grid nothing had confirmed."""
+        def answer(url):
+            if self.RETIRED in url:
+                return 200, BLACK_BODY
+            if (cbk_query(url, 'x'), cbk_query(url, 'y')) == (0, 0):
+                return 200, IMAGERY_BODY                  # the zoom probe: imagery, so zoom 5
+            return 403, BLACK_BODY                        # the frame probe's edge tiles
+
+        counts, fetched, before, after = self.run(tmp_path, monkeypatch, answer)
+
+        assert counts['transient_failures'] == 1
+        assert counts['replaced'] == 0
+        assert counts['gone'] == 1
+        assert self.ledger_rows(tmp_path) == [['pano_id', 'status'], [self.RETIRED, 'gone']]
+        assert fetched == []
+        assert after == before
