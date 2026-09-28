@@ -503,7 +503,8 @@ the failure-only alarm delivers it once; a latch file then keeps later runs to a
 
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
 `cbk?output=tile` endpoint into one equirectangular JPEG: it determines a working zoom level (5 preferred,
-falling back to 3 — a fully black tile at both means there is no imagery), fans the tiles out concurrently
+falling back to 3 — a fully black tile at both, on a 200, means there is no imagery; see below), fans the
+tiles out concurrently
 with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the server's width/height, and
 upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
 [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
@@ -512,8 +513,9 @@ upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
 reported width/height (decided before any request), and no imagery at either zoom, which means **both** zoom
 probes came back **200** with a fully black tile (Google's answer for a pano id it has retired). Any other
 status on a probe — 403, 404, 410, a 206, a final 3xx — raises, even when its body is a black JPEG: the pano
-counts as tonight's failure, gets no ledger row, and is asked again next run. 429 and 5xx never get that far;
-the retry policy owns them and an exhausted retry raises too. The same rule covers `refetch_panos.py`'s frame
+counts as tonight's failure, gets no ledger row, and is asked again next run. 429 and 5xx should normally not
+get that far, since the retry policy owns them and an exhausted retry raises; one that did would raise here
+like any other non-200. The same rule covers `refetch_panos.py`'s frame
 probe, where a non-200 black edge tile used to read as "the frame covers the pano" ([#166]).
 
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
