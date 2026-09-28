@@ -221,22 +221,26 @@ class TestChildrenGetASessionTempDir:
 SIMULATED = "No module named 'pyproj' (simulated for #165)"
 
 
-def _run_contract_module(tmp_path, *, shadow, require):
+def _run_contract_module(tmp_path, *, shadow, require, error='ModuleNotFoundError'):
     """Run tests/test_streetlevel_api.py in a child pytest and return (returncode, output, junit root or None).
 
     shadow: put a `streetlevel` package first on the child's path that raises ModuleNotFoundError for a
     transitive dependency - what an unpinned pyproj/scipy/CoordinatesConverter that failed to install, or was
     dropped from streetlevel's own requirements, produces. ModuleNotFoundError specifically, because it is the
     case importorskip still skips: since pytest 9 a plain ImportError (a wheel that installed but will not
-    load) propagates as a collection error on its own, measured 2026-09-27 on pytest 9.1.1.
+    load) propagates as a collection error on its own, measured 2026-09-27 on pytest 9.1.1. `error` switches
+    the shadow to that plain ImportError, for the case where the variable must not turn it into a skip.
+
+    require: the variable's value in the child, or None for unset (it is popped either way first, since CI
+    sets it in this process's environment).
     """
     env = dict(os.environ)
     env.pop('SIDEWALK_REQUIRE_STREETLEVEL', None)
-    if require:
-        env['SIDEWALK_REQUIRE_STREETLEVEL'] = '1'
+    if require is not None:
+        env['SIDEWALK_REQUIRE_STREETLEVEL'] = require
     if shadow:
         _write(str(tmp_path / 'shadow' / 'streetlevel' / '__init__.py'),
-               f'raise ModuleNotFoundError({SIMULATED!r}, name="pyproj")\n')
+               f'raise {error}({SIMULATED!r}, name="pyproj")\n')
         env['PYTHONPATH'] = os.pathsep.join(p for p in (str(tmp_path / 'shadow'), env.get('PYTHONPATH')) if p)
     junit = tmp_path / 'junit.xml'
     result = subprocess.run(
@@ -251,18 +255,28 @@ def _run_contract_module(tmp_path, *, shadow, require):
 
 class TestStreetlevelMustImportWhenRequired:
 
-    def test_without_the_variable_a_broken_import_skips_the_module(self, tmp_path):
-        """The dev-box behaviour, kept: a machine without a compiler for pyfrpc still runs the suite."""
-        code, output, root = _run_contract_module(tmp_path, shadow=True, require=False)
+    @pytest.mark.parametrize('require', [None, '', '0'], ids=['unset', 'empty', 'zero'])
+    def test_without_the_variable_a_broken_import_skips_the_module(self, tmp_path, require):
+        """The dev-box behaviour, kept: a machine without a compiler for pyfrpc still runs the suite. Empty
+        and `0` are off, as D6 says."""
+        code, output, root = _run_contract_module(tmp_path, shadow=True, require=require)
         # 5 is pytest's "no tests collected": a module-level skip leaves the child with nothing to run. In a
         # whole-suite run the other modules still run and the exit is 0 - the silence #165 is about.
         assert code in (0, 5), output
         assert root is not None and int(root.get('tests')) == int(root.get('skipped')), output
 
-    def test_with_the_variable_a_broken_import_fails_the_run(self, tmp_path):
-        """The CI behaviour: the same ImportError is now a collection error carrying its real message."""
-        code, output, _ = _run_contract_module(tmp_path, shadow=True, require=True)
+    @pytest.mark.parametrize('require', ['1', 'true'])
+    def test_with_the_variable_a_broken_import_fails_the_run(self, tmp_path, require):
+        """The CI behaviour: the same ImportError is now a collection error carrying its real message. Any
+        value but empty or `0` turns it on (D6), so a workflow writing `true` is not silently off."""
+        code, output, _ = _run_contract_module(tmp_path, shadow=True, require=require)
         assert code not in (0, 5), output  # a collection error, not a pass or a quiet skip
+        assert SIMULATED in output
+
+    def test_with_the_variable_a_plain_import_error_still_fails_the_run(self, tmp_path):
+        """D5's other half: a wheel that installed but will not load. The switch must not soften it."""
+        code, output, _ = _run_contract_module(tmp_path, shadow=True, require='1', error='ImportError')
+        assert code not in (0, 5), output
         assert SIMULATED in output
 
     def test_with_the_variable_the_contract_tests_are_collected_and_run(self, tmp_path):
@@ -274,7 +288,7 @@ class TestStreetlevelMustImportWhenRequired:
             if os.environ.get('SIDEWALK_REQUIRE_STREETLEVEL', '') not in ('', '0'):
                 raise
             pytest.skip('streetlevel is not importable here, and this run does not require it')
-        code, output, root = _run_contract_module(tmp_path, shadow=False, require=True)
+        code, output, root = _run_contract_module(tmp_path, shadow=False, require='1')
         assert code == 0, output
         assert root is not None, output
         assert int(root.get('tests')) >= 10, output
