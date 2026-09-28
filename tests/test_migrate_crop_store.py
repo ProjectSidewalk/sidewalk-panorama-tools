@@ -245,7 +245,8 @@ class TestFilesystemErrorsAreCountedNotRaised:
         assert read_bytes(root / CITY / '1' / '1.jpg') == b'1/1.jpg'
         assert read_bytes(root / CITY / '2' / '3.jpg') == b'2/3.jpg'
 
-    def test_a_shard_that_cannot_be_counted_under_dry_run_is_still_a_predicted_move(self, tmp_path, monkeypatch, capsys):
+    def test_a_shard_that_cannot_be_counted_under_dry_run_is_still_a_predicted_move(self, tmp_path, monkeypatch,
+                                                                                      capsys):
         root = flat_store(tmp_path / 'crops')
         real_listdir = os.listdir
 

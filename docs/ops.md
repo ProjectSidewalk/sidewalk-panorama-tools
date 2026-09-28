@@ -793,7 +793,9 @@ previous deploy's changes again.
    that is deliberately not scraped here gets a `#city_id,fqdn` row instead, once.
 3. Add the same `city_id` to `log_analyzer/cities.csv`, or the analyzer never looks at it — and `CropRunner.py`
    refuses `--city` for it (exit 2), since that roster is what it checks the name of a crop store against
-   ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)).
+   ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)). A `#` row there means
+   two things at once: the analyzer stops monitoring the city, **and** `CropRunner` stops accepting it. So
+   do not comment a city out of `cities.csv` to quiet the analyzer if its crops are still wanted.
 4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
 
 ### Hearing about a bad night

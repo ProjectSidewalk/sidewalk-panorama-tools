@@ -244,8 +244,12 @@ _CITY_ID = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*')
 
 
 def known_city_ids(path):
-    """The active city_ids in a cities.csv-shaped roster: every non-blank city_id not commented out with '#'
-    (a deployment deliberately not scraped here, so it has no panos to crop).
+    """The active city_ids in a cities.csv-shaped roster: every non-blank city_id not commented out with '#'.
+
+    To log_analyzer a '#' row means "not monitored"; here it means "not croppable". The two agree today
+    (every '#' row is a deployment not scraped here, so it has no panos to crop), which is why one roster
+    serves both - but commenting a city out to quiet the analyzer also stops it being cropped
+    (docs/ops.md, Adding a city).
 
     :raises OSError: if the file cannot be read.
     :raises ValueError: if it has no city_id column.
