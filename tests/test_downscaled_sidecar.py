@@ -745,6 +745,25 @@ class TestTheMinWidthFilter:
         # Naming both values: the usage line argparse prints for ANY error already carries both flag names.
         assert '--min-width %d is at or below --max-width %d' % (min_width, CAP) in capsys.readouterr().err
 
+    def test_a_refused_floor_writes_nothing_even_without_dry_run(self, tmp_path, capsys):
+        """The refusal exists to stop the fleet-wide sweep, so it has to come BEFORE the sweep. Every case above
+        passes --dry-run, which writes nothing either way, so a refusal moved below downscale_store() - the whole
+        +63% written, then exit 2 - passed all of them (#176 review)."""
+        store = self.seed(tmp_path)
+
+        def listing():
+            return {os.path.join(d, f): os.path.getmtime(os.path.join(d, f))
+                    for d, _, files in os.walk(store) for f in files}
+        before = listing()
+
+        with pytest.raises(SystemExit) as exit_info:
+            downscale_panos.main([store, '--max-width', str(CAP), '--min-width', str(CAP)])
+
+        assert exit_info.value.code == 2
+        assert listing() == before
+        assert not os.path.exists(self.sidecar(store, 'bb/bbBetweenNoCopyAAAA.jpg'))
+        assert 'Wrote' not in capsys.readouterr().out
+
     def test_a_floor_over_the_cap_is_accepted_and_main_reports_the_bucket(self, tmp_path, monkeypatch, capsys):
         store = self.seed(tmp_path)
         monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
