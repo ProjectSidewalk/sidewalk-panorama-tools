@@ -108,6 +108,16 @@ def _get_response(url, session, stream=False):
                            stream=stream)
     if not stream:
         return response
+    # The streamed path is the two probes (_probe_zoom, frame_covers_pano), and both read a black
+    # body as a verdict: "retired" (ledgered downloaded=0, never re-asked) and "the frame covers the pano".
+    # Google answers both of those with a black 200, so only a 200 is evidence (#166 option b, the #99 rule).
+    # `== 200`, not raise_for_status(): a 206 or a final 3xx is no more evidence than a 403. The raise is
+    # transient wherever it lands. 429/5xx should normally not reach here, since the adapter's Retry owns
+    # them and an exhausted retry raises; if one does, this raises it like any other non-200.
+    if response.status_code != 200:
+        response.close()     # close it; nothing will read this body
+        raise requests.HTTPError('cbk probe answered %s, not 200: %s' % (response.status_code, url),
+                                 response=response)
     return response.raw
 
 
@@ -425,6 +435,8 @@ def _probe_zoom(pano_id):
 
     Kept verbatim as the fallback - for every photometa failure, for a fresh block latch, and for photometa's
     "not found" - and so still the only evidence a PERMANENT None verdict may rest on (see resolve_frame).
+    Only a 200 is that evidence: _get_response raises requests.HTTPError, closing the response first, on any
+    other status (#166 option b), so a 403 or 404 with a black body is a transient failure, never None.
     """
     # Session scoped to the zoom probes; the tile fan-out uses its own aiohttp session. This runs once per
     # pano, so leaving it unclosed would pile up connection pools until GC (#51).
@@ -591,9 +603,11 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
 
     None is a PERMANENT verdict about the pano, and covers both of its causes: no reported dimensions (there
     is no other source for them, so asking again tomorrow asks the same question), and a black tile at both
-    zoom 5 and zoom 3, which is what Google answers for a pano id it no longer serves. Neither is a transient
-    condition, so callers ledger it rather than retrying. A network failure in the probe still RAISES, and
-    stays transient.
+    zoom 5 and zoom 3 ON 200 RESPONSES, which is what Google answers for a pano id it no longer serves. Neither
+    is a transient condition, so callers ledger it rather than retrying. A probe answered with any status but
+    200 RAISES requests.HTTPError, whatever its body (#166 option b), and so does a network failure; both stay
+    transient. Photometa never founds a None on its own (step 3), so the 200 rule is the whole of what a
+    permanent GSV verdict rests on, on either arm.
 
     The decision (#74):
       1. No dims: None, at zero requests.
@@ -705,7 +719,9 @@ def frame_covers_pano(pano_id, width, height, zoom):
     would proceed. That is why the x probe is taken on the grid's middle row rather than on row 0. Row 0 is
     the zenith cap - the one strip of a panorama where a uniformly black real tile is plausible - while the
     middle row is horizon-adjacent imagery, which never is. The y probe lands on ground rows for the same
-    reason. Both probes must come back blank for the frame to pass.
+    reason. Both probes must come back blank for the frame to pass. A probe answered with any status but 200
+    raises requests.HTTPError rather than reading as blank (#166 option b): before that, a 403 or 404 with a
+    black body was exactly this acceptance case.
     """
     tiles_x, tiles_y = _tile_grid(width, height, zoom)
     with _request_session() as session:

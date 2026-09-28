@@ -511,8 +511,8 @@ would save the top-left corner of a larger pano at the app's exact dimensions, w
 show it.
 
 If photometa is unavailable, or says the pano is gone, the older two-tile probe picks the zoom instead (a
-fully black tile at both zoom 5 and zoom 3 means there is no imagery — still the only evidence a permanent
-"no imagery" verdict rests on). The probe cannot tell a frame from a crop, so on that path two more tiles —
+fully black tile at both zoom 5 and zoom 3, **on a 200**, means there is no imagery — still the only evidence
+a permanent "no imagery" verdict rests on; see below). The probe cannot tell a frame from a crop, so on that path two more tiles —
 the ones just past the frame's grid — are checked before the fan-out, and imagery there is the same refusal.
 That check guards only a frame **smaller** than Google serves. A frame **larger** than Google serves (an app
 frame of 16384×8192 on a pano served at 13312×6656) has nothing past its grid, so it passes; about a third of
@@ -548,6 +548,18 @@ as plain successes. The probe could only answer zoom 5 or 3, so where it answere
 counted as fallback successes; a city's `log.csv` field 8 can therefore drop while field 7 rises by the same
 amount. The tile-resolution history is written up in
 [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
+
+**What the ledger learns from GSV.** Two answers are permanent and write a `downloaded=0` row: a pano with no
+reported width/height (decided before any request), and no imagery at either zoom, which means **both** zoom
+probes came back **200** with a fully black tile (Google's answer for a pano id it has retired). Photometa
+never writes that row on its own: when it says a pano is gone, the probe is asked anyway, and only its two
+200s make the verdict. A photometa refusal of the frame (`frame disagreement`, above) is not a verdict either. Any other
+status on a probe — 403, 404, 410, a 206, a final 3xx — raises, even when its body is a black JPEG: the pano
+counts as tonight's failure, gets no ledger row, and is asked again next run. 429 and 5xx should normally not
+get that far, since the retry policy owns them and an exhausted retry raises; one that did would raise here
+like any other non-200. The same rule covers the frame check past the grid (`frame_covers_pano`) — run
+nightly on the probe path, and by `refetch_panos.py` for every pano — where a non-200 black edge tile used
+to read as "the frame covers the pano" ([#166]).
 
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution
@@ -625,6 +637,7 @@ Only a **success** resets the count — not a transient failure, and not a skip.
 difference between a breaker that fires and one that cannot.
 
 [#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
+[#166]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166
 
 Where the reason lands: the night's message carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
