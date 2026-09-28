@@ -1066,7 +1066,8 @@ class TestTheZoomTableMatchesTheReport:
     check that caught two hand-typed counts in the Mapillary census."""
 
     @pytest.fixture(scope='class')
-    def report_text(self):
+    @classmethod
+    def report_text(cls):
         path = os.path.join(REPO_ROOT, 'reports', '2026-08-11-offaxis-covariate.md')
         with open(path, encoding='utf-8') as f:
             return f.read()

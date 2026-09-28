@@ -11,19 +11,31 @@ photometa response and parses the fields it needs in-repo - the parse half's ung
 api.find_panorama_by_id, the photometa response shape, and the depth decode's column order.
 
 Skipped when streetlevel isn't installed -- its pyfrpc dependency needs a compiler, so a dev box without one can
-still run the rest of the suite.
+still run the rest of the suite. Unless SIDEWALK_REQUIRE_STREETLEVEL is set (anything but empty or `0`), which
+CI does: there the import is a hard one, so a module missing anywhere in streetlevel's transitive tree (pyproj,
+scipy, bd09convertor, CoordinatesConverter - unpinned, and unused by the scraper) is a collection error that
+fails the run with the real message, rather than ten quiet skips and a green check (#165). importorskip
+skips only on ModuleNotFoundError since pytest 9 - a plain ImportError already errors - so an absent
+dependency is exactly the case the variable exists for. tests/test_suite_isolation.py pins both behaviours.
 """
 
 import dataclasses
+import importlib
 import inspect
+import os
 
 import numpy as np
 import pytest
 
-panorama = pytest.importorskip('streetlevel.streetview.panorama',
-                               reason='streetlevel not installed (pyfrpc needs a compiler); CI installs it')
-streetview = pytest.importorskip('streetlevel.streetview')
-api = pytest.importorskip('streetlevel.streetview.api')
+if os.environ.get('SIDEWALK_REQUIRE_STREETLEVEL', '') not in ('', '0'):
+    panorama = importlib.import_module('streetlevel.streetview.panorama')
+    streetview = importlib.import_module('streetlevel.streetview')
+    api = importlib.import_module('streetlevel.streetview.api')
+else:
+    panorama = pytest.importorskip('streetlevel.streetview.panorama',
+                                   reason='streetlevel not installed (pyfrpc needs a compiler); CI installs it')
+    streetview = pytest.importorskip('streetlevel.streetview')
+    api = pytest.importorskip('streetlevel.streetview.api')
 
 from conftest import encode_depth_payload  # noqa: E402
 from downloaders import gsv  # noqa: E402
