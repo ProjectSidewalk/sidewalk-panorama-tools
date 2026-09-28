@@ -506,6 +506,47 @@ class TestALegacyFlatRootIsRefused:
         assert listed == ['.']
 
 
+class TestCityNamedDirectory:
+    """Which directory city_named_directory names back. os.path.realpath is patched to stand in for a link,
+    so these run where symlinks cannot be made (the real-link tests above skip on Windows)."""
+
+    @staticmethod
+    def resolving(monkeypatch, crop_runner, mapping):
+        real = os.path.realpath
+
+        def fake(path, *args, **kwargs):
+            return mapping.get(os.path.normpath(path), real(path, *args, **kwargs))
+
+        monkeypatch.setattr(crop_runner.os.path, 'realpath', fake)
+
+    def test_the_spelled_path_wins_when_both_names_match(self, crop_runner, tmp_path, monkeypatch):
+        """-o /srv/crops/seattle-wa, a link to /mnt/b/seattle-wa: the parent named back to the operator is
+        the one they typed (final review M2). Checking the resolved path first names /mnt/b."""
+        spelled = os.path.normpath(str(tmp_path / 'srv' / SEATTLE))
+        resolved = os.path.normpath(str(tmp_path / 'mnt' / SEATTLE))
+        self.resolving(monkeypatch, crop_runner, {spelled: resolved})
+        assert crop_runner.city_named_directory(spelled, SEATTLE) == spelled
+
+    def test_a_link_named_otherwise_names_its_target(self, crop_runner, tmp_path, monkeypatch):
+        spelled = os.path.normpath(str(tmp_path / 'srv' / 'current'))
+        resolved = os.path.normpath(str(tmp_path / 'mnt' / SEATTLE))
+        self.resolving(monkeypatch, crop_runner, {spelled: resolved})
+        assert crop_runner.city_named_directory(spelled, SEATTLE) == resolved
+
+    def test_a_trailing_slash_on_a_city_named_link_to_another_name_still_counts(self, crop_runner, tmp_path,
+                                                                                 monkeypatch):
+        """The spelled name is compared after normpath, not raw: a raw basename of 'seattle-wa/' is '', and
+        the realpath fallback cannot rescue it when the link's target is named otherwise (final review N3)."""
+        spelled = os.path.normpath(str(tmp_path / 'srv' / SEATTLE))
+        self.resolving(monkeypatch, crop_runner, {spelled: os.path.normpath(str(tmp_path / 'mnt' / 'b'))})
+        assert crop_runner.city_named_directory(spelled + os.sep, SEATTLE) == spelled
+
+    def test_neither_name_matching_is_none(self, crop_runner, tmp_path, monkeypatch):
+        spelled = os.path.normpath(str(tmp_path / 'srv' / 'current'))
+        self.resolving(monkeypatch, crop_runner, {spelled: os.path.normpath(str(tmp_path / 'mnt' / 'b'))})
+        assert crop_runner.city_named_directory(spelled, SEATTLE) is None
+
+
 class TestAFlatStoreAlreadyNamedForItsCityNeedsNoMove:
     """Case A of the production migration: a pre-#159 store at <X>/<city_id>/ - the form the README always
     showed - is already <crop-dir>/<city>/ for -o <X>. It adopts the city, and nothing is re-cut."""

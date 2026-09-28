@@ -251,8 +251,10 @@ def main(argv=None):
         logging.error('%s', e)
         return CropRunner.EXIT_REFUSED_DESTINATION
     except OSError as e:
-        # crop_dir itself could not be listed. Whatever moved before that is in place; the marker moves
-        # last, so CropRunner still refuses the root and a re-run picks up the rest.
+        # Anything OSError-shaped that escaped migrate_store: crop_dir's first listing, _store_files' second
+        # listing of it, or any other filesystem error not already counted as FAILED inside the sweep. The
+        # remedy is the same for all of them. Whatever moved before that is in place; the marker moves last,
+        # so CropRunner still refuses the root and a re-run picks up the rest.
         message = ("migrate_crop_store: stopped - %s. Anything listed above as moved is in place; re-run "
                    "once %s can be listed." % (e, args.crop_dir))
         print(message)
