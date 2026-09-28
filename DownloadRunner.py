@@ -59,10 +59,17 @@ RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
     CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
     CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT})
 
-# `images-no-success` needs at least this many raised attempts and not one answer. A floor, because one or
-# two transient failures on a mature city whose only candidates are perennial raisers is an ordinary night;
-# ten raises and nothing else is a run that could not download anything. TODO(#161): confirm against the
-# production scrape.logs that no mature city's nightly candidate set is ten or more perennial raisers.
+# `images-no-success` needs at least this many raised attempts and not one answer - or a budget stop with
+# nothing but raises behind it (see download_panorama_images). A floor, because one or two transient
+# failures on a mature city whose only candidates are perennial raisers is an ordinary night; ten raises and
+# nothing else is a run that could not download anything. `raised` and `answered` are this run's attempts
+# only: fail_count is seeded from the ledger's downloaded=0 rows, so seattle's Final result line reads
+# "0 success ... 14603 failed" on a night it attempted nothing (fields 7-11 `0,0,14603,169325,183928`
+# against 183,927 served, 2026-09), and keying on it would alarm every mature city nightly.
+# Measured for the #174 review: richmond-va 1 raise and bayonne-fr 0 in their current scrape.logs.
+# TODO(#161): the GSV fleet is not yet measured - GSV perennial raisers (a stitch persistently >50% black
+# raises every night) are the likelier population; `grep -c "IMAGEDOWNLOAD: Failed to download pano"
+# /mnt/panostore/*/scrape.log` on the box closes it.
 IMAGE_NO_SUCCESS_MIN_RAISED = 10
 
 # The keys every /adminapi/panos record must carry, and the fraction of records lacking one that makes the
@@ -619,10 +626,18 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         logging.error("%s", summary)
         print(summary)
 
-    if raised >= IMAGE_NO_SUCCESS_MIN_RAISED and answered == 0:
+    budget_spent_on_raises = (raised >= 1 and stop_reasons is not None
+                              and stop_reasons.get('image_stop') == STOP_MAX_RUNTIME)
+    if answered == 0 and (raised >= IMAGE_NO_SUCCESS_MIN_RAISED or budget_spent_on_raises):
         # Every attempt raised and none was answered: the network, the store or a bug, not the panos. A
         # transient is never ledgered, so without this the only trace is one ERROR per pano in scrape.log and
         # a log.csv row that looks like a quiet night's retries (#161).
+        #
+        # The budget arm is the outage the minimum cannot see: when packets to Google are DROPPED rather than
+        # refused, each pano's first request rides _request_session's five retries at a 30 s timeout, ~3.5
+        # minutes per raise, so a 6-minute image share ends on max-runtime after two or three - never ten. A
+        # phase whose whole budget went on raises is the same fact the minimum stands in for, and a mature
+        # city's few perennial raisers finish in seconds without reaching the budget (#174 review).
         message = ("IMAGEDOWNLOAD: WARNING - all %d attempted panos raised and none was answered; nothing was "
                    "ledgered, so they retry next run. Look at the errors in scrape.log." % (raised,))
         logging.error("%s", message)

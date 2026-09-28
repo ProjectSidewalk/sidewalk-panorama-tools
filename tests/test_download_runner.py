@@ -2619,6 +2619,95 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
 
         assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
 
+    def test_it_goes_to_scrape_log_as_well_as_stdout(self, monkeypatch, tmp_path, caplog):
+        """Two channels (CLAUDE.md): stdout is what cron mails tonight, scrape.log is what is still there
+        next week - and the per-pano ERRORs it points at are only in the second."""
+        with caplog.at_level(logging.ERROR):
+            call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3))
+
+        assert any(r.levelno == logging.ERROR and 'none was answered' in r.getMessage() for r in caplog.records)
+
+    def seed_failed_ledger(self, tmp_path, count):
+        storage = tmp_path / 'storage'
+        storage.mkdir(exist_ok=True)
+        ids = ['retiredPano%03d' % i for i in range(count)]
+        (storage / 'pano_id_log.csv').write_text(
+            'pano_id,downloaded,fetched_at\n' + ''.join('%s,0,\n' % p for p in ids))
+        return ids
+
+    def test_permanent_verdicts_already_in_the_ledger_are_not_this_run(self, monkeypatch, tmp_path):
+        """The production shape: a mature city is served nothing new, and its Final result line reads
+        "0 success ... N failed" because fail_count is SEEDED from the ledger's downloaded=0 rows (seattle,
+        2026-09: 14,603 failed, 0 answered, every night). Those are old answers counted at zero requests; a
+        condition keyed on fail_count would alarm every mature city every night."""
+        ids = self.seed_failed_ledger(tmp_path, DownloadRunner.IMAGE_NO_SUCCESS_MIN_RAISED)
+
+        call_main_scripted(monkeypatch, tmp_path, {p: downloaders.DownloadResult.failure for p in ids})
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_raise_on_top_of_a_failed_ledger_is_still_below_the_minimum(self, monkeypatch, tmp_path):
+        ids = self.seed_failed_ledger(tmp_path, DownloadRunner.IMAGE_NO_SUCCESS_MIN_RAISED)
+        verdicts = {p: downloaders.DownloadResult.failure for p in ids}
+        verdicts['newPano'] = RuntimeError('one transient')
+
+        call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert summary_codes(tmp_path) == []
+
+    def run_on_a_clock(self, monkeypatch, tmp_path, verdicts, minutes_per_attempt, max_runtime):
+        """call_main_scripted with a fake monotonic clock that each attempt advances - the shape of a
+        blackholed network, where one pano takes minutes to raise."""
+        clock = [1000.0]
+        answer = scripted_download_pano(verdicts)
+
+        def slow(storage_path, pano_info):
+            clock[0] += minutes_per_attempt * 60.0
+            return answer(storage_path, pano_info)
+
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        rows = ''.join('%s,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % p for p in verdicts)
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + rows)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', slow)
+        monkeypatch.chdir(tmp_path)
+        DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+                             '--skip-depth', '--max-runtime', str(max_runtime),
+                             '--run-summary-file', str(tmp_path / 'summary.json')])
+        with open(tmp_path / 'summary.json') as f:
+            return json.load(f)
+
+    def test_a_budget_spent_entirely_on_raises_is_a_condition_below_the_minimum(self, monkeypatch, tmp_path):
+        """A dropped-packet outage: each pano's first request rides the session's 5 retries at a 30 s
+        timeout, ~3.5 min per raise, so a 6-minute image share ends on max-runtime after two or three raises
+        - never the minimum. The whole budget going on raises is the same fact the minimum is a proxy for."""
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=5), 3.5, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME, 'the case under test'
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+    def test_a_budget_stop_with_an_answer_is_not(self, monkeypatch, tmp_path):
+        verdicts = dict(self.verdicts(success=1), **self.verdicts(raised=5))
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, verdicts, 3.5, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+        assert summary['conditions'] == []
+
+    def test_a_budget_stop_before_any_attempt_is_not(self, monkeypatch, tmp_path):
+        """A zero image share (the depth reservation took it all) attempted nothing, so says nothing."""
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=5), 3.5, 0)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+        assert summary['conditions'] == []
+
+    def test_raises_below_the_minimum_that_finish_the_list_are_not(self, monkeypatch, tmp_path):
+        """A mature city's handful of perennial raisers finishes in seconds and never hits the budget."""
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=2), 0.01, 6)
+
+        assert summary['image_stop'] is None
+        assert summary['conditions'] == []
+
 
 class TestAPanoListWhoseSchemaMovedIsNotScraped:
     """D8 (#161): the one condition that also stops work.

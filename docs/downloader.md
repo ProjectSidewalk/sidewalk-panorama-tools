@@ -330,7 +330,7 @@ silenced by it.
 | `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
 | `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
 | `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |
-| `images-no-success` | At least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) image attempts raised and none was answered — the network, the store, or a bug | the errors in the city's `scrape.log` |
+| `images-no-success` | No image attempt this run was answered, and either at least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) raised or the phase's budget ran out with only raises behind it (a blackholed network takes minutes per raise) — the network, the store, or a bug. Old `downloaded=0` rows in the ledger are not attempts and do not count | the errors in the city's `scrape.log` |
 | `pano-list-empty` | The pano list was empty for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
 | `no-run-summary` | *(the queue's own)* An `ok` run left no readable run summary, so its conditions are unknown — a check that did not run has not passed. Also what an operator's own `--run-summary-file` after `--` produces, so do not pass one through the queue | [Extra passes](#extra-passes) |
 | `conditions-unreadable` | *(the queue's own)* The summary's `conditions` was present but not a list of objects with a string `code` | — |
