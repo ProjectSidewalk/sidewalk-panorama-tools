@@ -518,11 +518,13 @@ requests per refused 16384-wide pano, which is a soft refusal being escalated by
 |---|---|---|
 | HTTP 429 or 403, or a landing URL (or redirect hop) on Google's `/sorry/` or `consent.google.com` interstitial, whatever status the interstitial answers with | never | yes |
 | any other 4xx except 408 (404 included) | no | no — an ordinary failure, retried next run |
-| 5xx, 408, a timeout, a connection error, a non-JPEG body | yes: up to 10 tries, each wait capped at 32 s, 120 s per tile in all | no |
+| 5xx, 408, a timeout, a connection error, a non-JPEG body | yes: up to 10 tries, each wait capped at 32 s, and no retry once 120 s have passed since the tile was first requested (time queued behind the other tiles does not count) | no |
 
 The interstitial check is the depth phase's rule carried over by analogy; no CBK interstitial has been
 observed. Nothing that used to succeed on a retry is lost by not retrying a 4xx: every retired pano measured
-answers 200 with an all-black body, not an error status.
+answers 200 with an all-black body, not an error status. The 120 s is checked after each failed try, so the
+last wait can run past it by up to one 32 s wait, and a single try is bounded separately, by aiohttp's default
+300 s per-request timeout.
 
 A refusal also **abandons the rest of that pano's fan-out**: the tiles already in flight (at most
 `thread_count`, 8 by default) finish, and no further tile is requested. An ordinary failure does not abandon

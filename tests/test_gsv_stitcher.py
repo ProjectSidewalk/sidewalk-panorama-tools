@@ -265,25 +265,28 @@ class _StatusSession:
 
     `await_first` yields to the loop before answering, so a fan-out's concurrent requests are genuinely in
     flight together - without it every request completes inside its own task's first step and nothing that
-    depends on concurrency (the abandonment's slot check) is exercised at all.
+    depends on concurrency (the abandonment's slot check) is exercised at all. `delay` makes each answer take
+    that many real seconds, for what depends on time spent queued behind the fan-out's slots.
     """
 
-    def __init__(self, status=None, await_first=False, answer=None):
+    def __init__(self, status=None, await_first=False, answer=None, delay=0):
         self.requests = 0
         self.attempts = collections.Counter()
         self._answer = answer if answer is not None else (lambda url, attempt: status)
         self._await_first = await_first
+        self._delay = delay
 
     def get(self, url, **kwargs):
         self.requests += 1
         self.attempts[url] += 1
         outcome = self._answer(url, self.attempts[url])
         await_first = self._await_first
+        delay = self._delay
 
         class _Ctx:
             async def __aenter__(self):
-                if await_first:
-                    await asyncio.sleep(0)
+                if await_first or delay:
+                    await asyncio.sleep(delay)
                 if isinstance(outcome, int):
                     raise aiohttp.ClientResponseError(SimpleNamespace(real_url='https://tile.invalid'), (),
                                                       status=outcome, message='x')
@@ -356,8 +359,9 @@ class TestATileRefusalIsNotRetried:
         assert [r for r in caplog.records if r.name == 'backoff'] == []
 
     def test_the_total_retry_time_is_bounded(self, monkeypatch):
-        """max_time is wired: with no seconds left, the first 503 is the last request. Without it, one bad
-        tile could sleep ~4 minutes (expo to 256 s, uncapped) while the rest of the fan-out waits."""
+        """The time budget is wired: with no seconds left, the first 503 is the last request. Without it, one
+        bad tile could sleep ~4 minutes (expo to 256 s, uncapped) while the rest of the fan-out waits. (It is
+        in the giveup predicate rather than backoff's max_time - see the queued-for-a-slot test.)"""
         monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0)
         session = _StatusSession(503)
 
@@ -1316,6 +1320,41 @@ class TestARefusedTileAbandonsThePano:
         assert len(lines) == 1
         assert '2/2 tiles failed' in lines[0]
         assert 'after %d tile retries' % (2 * (gsv.TILE_MAX_TRIES - 1)) in lines[0]
+
+    def test_time_queued_for_a_slot_does_not_spend_a_tiles_retry_budget(self, monkeypatch, fake_aiohttp):
+        """#172 review (ops 2). All tile tasks start at t=0 and queue for a slot, so a retry budget measured
+        from task start was spent by the queue: on a slow fan-out the late tiles lost their retries exactly
+        when they mattered, and one 5xx twice on a late tile failed a whole pano. The budget is measured from
+        the tile's first request instead. Scaled down: 32 tiles one at a time at 30 ms each put the last tile's
+        first request ~1 s in, against a 0.5 s budget it then needs two retries of."""
+        monkeypatch.setattr(gsv, 'thread_count', 1)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.5)
+        body = jpeg_bytes(RED)
+
+        def answer(url, attempt):
+            if '&x=7&y=3&' in url and attempt <= 2:
+                return 503
+            return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
+
+        session = fake_aiohttp['session'] = _StatusSession(answer=answer, delay=0.03)
+
+        stitched = gsv.fetch_pano_image('queuedPanoAAAAAAAAAAAA', 4096, 2048, 3)
+
+        assert session.requests == 32 + 2, 'the late tile kept both of its retries'
+        assert stitched.image.size == (4096, 2048)
+
+    def test_the_budget_still_stops_a_tile_that_keeps_failing(self, monkeypatch, fake_aiohttp):
+        """The other half: time spent retrying, as opposed to queueing, is still bounded. Every answer takes
+        30 ms against a 0.1 s budget, so the tile stops after a handful of tries, well short of TILE_MAX_TRIES."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.1)
+        session = fake_aiohttp['session'] = _StatusSession(503, delay=0.03)
+
+        with pytest.raises(aiohttp.ClientResponseError):
+            gsv.fetch_pano_image('failingPanoAAAAAAAAAAA', 512, 256, 0)
+
+        assert 2 <= session.requests < gsv.TILE_MAX_TRIES
 
     def test_the_fan_out_state_does_not_outlive_the_pano(self, fake_aiohttp):
         fake_aiohttp['session'] = _StatusSession(429, await_first=True)

@@ -157,7 +157,8 @@ _TILE_RETRY_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError)
 #   * any other 4xx except 408 is this pano's problem, not weather: not retried (_tile_error_is_final), and
 #     not push-back either. Every retired pano measured answers 200 with an all-black body, never a 4xx.
 #   * 5xx, 408, timeouts, connection errors and a wrong Content-Type are retried, TILE_MAX_TRIES times, each
-#     wait capped at TILE_RETRY_MAX_WAIT seconds and the whole tile at TILE_RETRY_MAX_SECONDS.
+#     wait capped at TILE_RETRY_MAX_WAIT seconds, and no retry once TILE_RETRY_MAX_SECONDS have passed since the
+#     tile's FIRST REQUEST (not since its task started - see _tile_retry_budget_spent).
 # The two limits are read at call time (see _tile_retry_waits and the decorator), so a test can zero them.
 TILE_PUSHBACK_STATUSES = frozenset((403, 429))
 TILE_MAX_TRIES = 10
@@ -207,6 +208,37 @@ def _tile_error_is_final(e):
     _fetch_tile has already turned them into TilePushbackError, which the decorator does not catch.
     """
     return isinstance(e, aiohttp.ClientResponseError) and 400 <= e.status < 500 and e.status != 408
+
+
+# When this tile task first sent its request: (tile, time.monotonic()). A context variable because every tile is
+# its own task (ensure_future copies the context), so each task gets its own value, and backoff's retries run in
+# that same task and see it. Keyed on the tile as well, so a task that ever fetched two tiles in turn could not
+# carry one tile's clock into the other's budget.
+_TILE_FIRST_SENT = contextvars.ContextVar('_TILE_FIRST_SENT', default=None)
+
+
+def _mark_tile_sent(tile):
+    first = _TILE_FIRST_SENT.get()
+    if first is None or first[0] != tile:
+        _TILE_FIRST_SENT.set((tile, time.monotonic()))
+
+
+def _tile_retry_budget_spent():
+    """True once TILE_RETRY_MAX_SECONDS have passed since this tile's first request (#172 review, ops 2).
+
+    Not backoff's max_time, whose clock starts when the decorated call does: all 512 tile tasks start at t=0 and
+    then queue for a fan-out slot, so on a slow fan-out the queue alone spent the late tiles' budget and they
+    lost their retries exactly when retries mattered. Checked after each failed attempt, like max_time, so the
+    last wait may overshoot the budget by up to one capped wait; a single attempt is bounded separately, by
+    aiohttp's own per-request timeout.
+    """
+    first = _TILE_FIRST_SENT.get()
+    return first is not None and time.monotonic() - first[1] >= TILE_RETRY_MAX_SECONDS
+
+
+def _tile_should_give_up(e):
+    """backoff's giveup predicate: the error will not get better by asking again, or the tile is out of time."""
+    return _tile_error_is_final(e) or _tile_retry_budget_spent()
 
 
 def _tile_retry_waits():
@@ -321,12 +353,14 @@ async def _fetch_tile(session, tile):
     """
     fanout = _TILE_FANOUT.get()
     if fanout is None or fanout.slot is None:
+        _mark_tile_sent(tile)
         return await _request_tile(session, tile)
     async with fanout.slot:
         # After taking the slot, never before: see _TileFanOut.
         if fanout.refused is not None:
             raise _TileAbandonedError('tile (%d, %d) not requested: %s' % (tile[0], tile[1], fanout.refused))
         fanout.requests += 1
+        _mark_tile_sent(tile)
         try:
             return await _request_tile(session, tile)
         except TilePushbackError as e:
@@ -368,9 +402,10 @@ async def _request_tile(session, tile):
 # logger=None: backoff's own handlers wrote one INFO line per retry and one ERROR per give-up - 5,120 lines
 # for one refused pano. Capping the 'backoff' logger at WARNING would still have left the 512 ERROR lines, so
 # the decorator logs nothing and each pano owns its one line (fetch_pano_image, or the image loop for a
-# refusal). max_time is a callable so the bound is read per tile, not frozen at import.
+# refusal). The time budget is in the giveup predicate, not max_time, so it is measured from the tile's first
+# request rather than from when its task started queueing (_tile_retry_budget_spent), and read at call time.
 _download_tile = backoff.on_exception(_tile_retry_waits, _TILE_RETRY_ERRORS, max_tries=TILE_MAX_TRIES,
-                                      max_time=lambda: TILE_RETRY_MAX_SECONDS, giveup=_tile_error_is_final,
+                                      giveup=_tile_should_give_up,
                                       on_backoff=_count_tile_retry, logger=None)(_fetch_tile)
 
 
