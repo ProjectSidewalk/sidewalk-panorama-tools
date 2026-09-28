@@ -7,6 +7,7 @@ import asyncio
 import collections
 import logging
 import os
+import time
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -331,10 +332,11 @@ class TestATileRefusalIsNotRetried:
 
         assert session.requests == 1
 
-    def test_a_404_is_not_retried_either_but_stays_an_ordinary_failure(self):
+    def test_a_404_is_not_retried_either_but_stays_an_ordinary_failure(self, monkeypatch):
         """A 404 is not push-back - it says nothing about this host - but ten more asks will not make the
         tile exist. Every retired pano measured answers 200 with a black body, not a 4xx, so nothing that
         used to succeed on a retry is lost."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
         session = _StatusSession(404)
 
         with pytest.raises(aiohttp.ClientResponseError) as excinfo:
@@ -372,9 +374,10 @@ class TestATileRefusalIsNotRetried:
 
     @pytest.mark.parametrize('landing', ['https://www.google.com/sorry/index?continue=x',
                                          'https://consent.google.com/ml?continue=x'])
-    def test_a_200_that_landed_on_an_interstitial_is_pushback(self, landing):
+    def test_a_200_that_landed_on_an_interstitial_is_pushback(self, landing, monkeypatch):
         """The depth phase's _raise_if_blocked rule, carried over by analogy - NOT measured on CBK. A
         captcha page would also fail the Content-Type check, but as a retried ClientResponseError."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
         response = _FakeResponse(headers={'Content-Type': 'text/html'}, url=landing)
         session = _StatusSession(answer=lambda url, attempt: response)
 
@@ -442,6 +445,22 @@ class TestATileRefusalIsNotRetried:
     def test_the_give_up_rule(self, error, final):
         """The retry policy as a table, so a change to it is a change to this test rather than a surprise."""
         assert gsv._tile_error_is_final(error) is final
+
+    def test_the_documented_bounds(self):
+        """docs/downloader.md's retry table quotes these three numbers; the other tests read them back, so
+        without this a change to any of them would pass silently."""
+        assert (gsv.TILE_MAX_TRIES, gsv.TILE_RETRY_MAX_WAIT, gsv.TILE_RETRY_MAX_SECONDS) == (10, 32, 120)
+
+    def test_the_wait_cap_is_read_when_a_tile_starts_retrying(self, monkeypatch):
+        """What _tile_retry_waits exists for: `backoff.expo(max_value=32)` frozen at import would ignore the
+        patch, and every test that zeroes the cap would sleep real seconds instead (#172 tests review, G09)."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        waits = gsv._tile_retry_waits()
+        drawn = [next(waits) for _ in range(6)]
+
+        # backoff 2.x's expo yields None first (it is primed with send(None)); 1.x's does not.
+        assert [w for w in drawn if w is not None] == [0] * len([w for w in drawn if w is not None])
+        assert any(w is not None for w in drawn)
 
     def test_the_retrying_variant_still_wraps_the_bare_fetch(self):
         """Every stub in this file and in test_image_downloaders.py patches one of these two names; a
@@ -1321,6 +1340,32 @@ class TestARefusedTileAbandonsThePano:
         assert '2/2 tiles failed' in lines[0]
         assert 'after %d tile retries' % (2 * (gsv.TILE_MAX_TRIES - 1)) in lines[0]
 
+    def test_a_refusal_is_found_behind_an_earlier_ordinary_failure(self, monkeypatch, fake_aiohttp, caplog):
+        """Push-back that starts in a mildly degraded fan-out (#172 tests review 2, mutant G18). Tile (0, 0)
+        503s once; before its retry, tile (5, 0) is refused, so the retry is abandoned - and an abandoned
+        tile sorts FIRST in grid order. Reading only the first failed cell would book the pano as an
+        ordinary failure with an ERROR line, and the breaker would never count it."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        body = jpeg_bytes(RED)
+
+        def answer(url, attempt):
+            if '&x=0&y=0&' in url and attempt == 1:
+                return 503
+            if '&x=5&y=0&' in url:
+                return 429
+            return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
+
+        fake_aiohttp['session'] = _StatusSession(await_first=True, answer=answer)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(gsv.TilePushbackError) as excinfo:
+                gsv.fetch_pano_image('mixedPanoAAAAAAAAAAAAA', 4096, 2048, 3)
+
+        assert (excinfo.value.x, excinfo.value.y) == (5, 0)
+        assert gsv.pushback_reason(excinfo.value) == 'HTTP 429'
+        assert [r.getMessage() for r in caplog.records if r.name != 'asyncio'] == [], \
+            'a refused pano owns no line of its own, however its fan-out also failed'
+
     def test_time_queued_for_a_slot_does_not_spend_a_tiles_retry_budget(self, monkeypatch, fake_aiohttp):
         """#172 review (ops 2). All tile tasks start at t=0 and queue for a slot, so a retry budget measured
         from task start was spent by the queue: on a slow fan-out the late tiles lost their retries exactly
@@ -1454,6 +1499,43 @@ class TestPushbackReason:
     ])
     def test_the_table(self, error, reason):
         assert gsv.pushback_reason(error) == reason
+
+
+class TestTheImagePhasesLatchHelpers:
+    """fresh_block_latch_hours and record_google_refusal (#162), below the image loop that calls them."""
+
+    def write_latch(self, path, hours_ago):
+        path.write_text(repr(time.time() - hours_ago * 3600.0))
+
+    @pytest.mark.parametrize('hours_ago, fresh', [(5.9, True), (6.1, False)])
+    def test_freshness_ends_at_the_depth_phases_six_hours(self, tmp_path, hours_ago, fresh):
+        """The boundary, not just 0.5 h and 7 h: probation must end when the depth stand-down does."""
+        latch = tmp_path / 'latch'
+        self.write_latch(latch, hours_ago)
+
+        age = gsv.fresh_block_latch_hours(str(latch))
+
+        assert (age is not None) is fresh
+        if fresh:
+            assert age == pytest.approx(hours_ago, abs=0.01)
+
+    def test_record_google_refusal_never_raises_even_if_the_forfeit_does(self, tmp_path, monkeypatch, caplog):
+        """The backstop for the invariant: the run has already been refused, and losing the log.csv row over
+        the pace bookkeeping would be the wrong trade. The latch is written first and still counts."""
+        def boom(self):
+            raise RuntimeError('pace file exploded')
+
+        monkeypatch.setattr(gsv.DepthPacer, 'forfeit', boom)
+        latch = tmp_path / 'latch'
+
+        with caplog.at_level(logging.ERROR):
+            written = gsv.record_google_refusal(str(latch), str(tmp_path / 'pace'))
+
+        assert written is True and latch.exists()
+        assert any('could not forfeit the depth pace' in r.getMessage() for r in caplog.records)
+
+    def test_record_google_refusal_reports_a_latch_it_could_not_write(self, tmp_path):
+        assert gsv.record_google_refusal(str(tmp_path / 'missing' / 'latch'), str(tmp_path / 'pace')) is False
 
 
 class TestAnEmptyFanOutStillHasACellSize:
