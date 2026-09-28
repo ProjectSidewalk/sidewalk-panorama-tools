@@ -120,11 +120,13 @@ class TestADryRunWritesNothing:
     def test_it_predicts_what_a_real_run_does(self, tmp_path, capsys):
         root = flat_store(tmp_path / 'crops')
         plant(root, CITY + '/1/1.jpg', data=b'already here')
+        plant(root, '1/extra/a.jpg')
         predicted = migrate(root, dry_run=True)
         printed = capsys.readouterr().out
         assert 'Would move directory %s -> %s (1 files)' % (os.path.join(str(root), '2'),
                                                               os.path.join(str(root), CITY, '2')) in printed
         assert 'COLLISION' in printed
+        assert predicted.left == 1 and predicted.collisions == 1
         assert predicted == migrate(root)
 
 
@@ -159,6 +161,31 @@ class TestItIsResumable:
         assert summary.collisions == 0 and summary.failed == 0
         assert contents(root) == before
         assert sorted(os.listdir(str(root))) == [CITY]
+
+    def test_a_run_killed_just_before_the_marker_moves_leaves_the_root_refused_and_is_finished(
+            self, crop_runner, tmp_path, monkeypatch):
+        """D7's point, end to end: everything else has moved, the marker has not, and CropRunner still
+        refuses the root until the next run finishes."""
+        root = flat_store(tmp_path / 'crops')
+        plant(root, 'crop_provenance.csv')
+        plant(root, 'crop_rule.json', data=b'{}')
+        before = contents(root)
+        real_rename = os.rename
+
+        def killed_at_the_marker(src, dst):
+            if os.path.basename(src) == 'crop_rule.json':
+                raise KeyboardInterrupt
+            return real_rename(src, dst)
+
+        monkeypatch.setattr(migrate_crop_store.os, 'rename', killed_at_the_marker)
+        with pytest.raises(KeyboardInterrupt):
+            migrate(root)
+        assert sorted(os.listdir(str(root))) == sorted([CITY, 'crop_rule.json'])
+        assert crop_runner.legacy_layout_signal(str(root)) is not None
+        monkeypatch.setattr(migrate_crop_store.os, 'rename', real_rename)
+        assert migrate(root).store_files_moved == 1
+        assert crop_runner.legacy_layout_signal(str(root)) is None
+        assert contents(root) == before
 
 
 # ---------------------------------------------------------------------------
@@ -371,8 +398,9 @@ class TestTheCommandLine:
 
         monkeypatch.setattr(migrate_crop_store.os, 'rename', fail_one)
         assert run_main(root) == 1
-        assert (root / '1' / '1.jpg').is_file()
-        assert (root / CITY / '1' / '2.jpg').is_file() and (root / CITY / '2' / '3.jpg').is_file()
+        assert read_bytes(root / '1' / '1.jpg') == b'1/1.jpg'
+        assert read_bytes(root / CITY / '1' / '2.jpg') == b'1/2.jpg'
+        assert read_bytes(root / CITY / '2' / '3.jpg') == b'2/3.jpg'
         assert '1 failed' in capsys.readouterr().out
 
     @pytest.mark.parametrize('argv', [[], ['--city', 'seattle-wa'], ['X', '--city', 'Seattle'],
@@ -434,7 +462,8 @@ class TestTheCommandLine:
 
         monkeypatch.setattr(migrate_crop_store.os, 'rename', fail_shard_1)
         assert run_main(root) == 1
-        assert (root / '1' / '1.jpg').is_file() and (root / CITY / '2' / '3.jpg').is_file()
+        assert read_bytes(root / '1' / '1.jpg') == b'1/1.jpg'
+        assert read_bytes(root / CITY / '2' / '3.jpg') == b'2/3.jpg'
         printed = capsys.readouterr().out
         assert 'FAILED %s' % os.path.join(str(root), '1') in printed and '1 failed' in printed
 

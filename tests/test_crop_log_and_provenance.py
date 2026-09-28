@@ -1620,7 +1620,12 @@ class TestAPreCityManifestIsSetAsideNotAppendedTo:
         b'pano_id,label_id\n1,2\n',
         b'city,label_id,pano_id,source,copyright,license\nseattle-wa,1,p,,,\n',
         PRE_CITY_HEADER.replace(b'\n', b',extra\n'),
-    ], ids=['unrelated', 'a-column-short', 'a-column-long'])
+        # The right names in the wrong order are a different file: rows appended under either would read
+        # with columns swapped, so neither is taken for the header it resembles.
+        b'label_id,city,pano_id,source,copyright,license,crop_rule_version\nseattle-wa,1,p,,,,v2\n',
+        b'pano_id,label_id,source,copyright,license,crop_rule_version\np,1,,,,v2\n',
+    ], ids=['unrelated', 'a-column-short', 'a-column-long', 'current-columns-permuted',
+            'pre-city-columns-permuted'])
     def test_any_other_header_stops_the_run_before_anything_is_written(self, crop_runner, tmp_path,
                                                                       content):
         store, out = self.old_store(crop_runner, tmp_path, content=content)

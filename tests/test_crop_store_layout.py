@@ -86,10 +86,17 @@ class TestTheCityIsOneTheFleetKnows:
         write_cities(roster, [('atlantis-ga', 'Atlantis, GA')])
         assert parse(crop_runner, 'atlantis-ga').city == 'atlantis-ga'
 
-    def test_a_malformed_city_is_refused_before_the_roster_is_read(self, crop_runner, roster, monkeypatch):
-        monkeypatch.setattr(crop_runner, 'CITIES_FILE', str(roster) + '.missing')
-        with pytest.raises(SystemExit):
+    def test_a_malformed_city_is_refused_before_the_roster_is_read(self, crop_runner, roster, monkeypatch,
+                                                                     capsys):
+        """The regex is the answer for a malformed name, whatever state the roster is in: the message is
+        the spelling rule, not a roster read failure."""
+        missing = str(roster) + '.missing'
+        monkeypatch.setattr(crop_runner, 'CITIES_FILE', missing)
+        with pytest.raises(SystemExit) as e:
             parse(crop_runner, 'Seattle')
+        assert e.value.code == 2
+        err = capsys.readouterr().err
+        assert 'is not a city_id' in err and missing not in err
 
     @pytest.mark.parametrize('content', [None, 'name,display_name\nseattle-wa,x\n'],
                              ids=['missing', 'no-city_id-column'])
@@ -349,6 +356,7 @@ LEGACY_SHAPES = {
     'a-shard': ['1/5.jpg'],
     'only-the-marker': ['crop_rule.json'],
     'only-the-manifest': ['crop_provenance.csv'],
+    'only-the-pre-city-manifest': ['crop_provenance.pre-city.csv'],
     'half-migrated': ['seattle-wa/1/1.jpg', '2/3.jpg'],
 }
 
@@ -382,12 +390,13 @@ class TestALegacyFlatRootIsRefused:
         assert command in printed and os.path.join(str(out), '1') in printed
         assert any(r.levelno == logging.ERROR and command in r.getMessage() for r in caplog.records)
 
+    @pytest.mark.parametrize('trailing', ['', os.sep], ids=['plain', 'trailing-slash'])
     def test_a_store_already_named_for_its_city_is_told_to_point_at_the_parent(self, crop_runner, tmp_path,
-                                                                                 capsys):
+                                                                                 capsys, trailing):
         """-o /srv/crops/seattle-wa --city seattle-wa: nothing needs to move, only -o."""
         out = tmp_path / 'crops' / SEATTLE
         plant(out, '1/5.jpg')
-        city_run(crop_runner, tmp_path, out, SEATTLE)
+        city_run(crop_runner, tmp_path, str(out) + trailing, SEATTLE)
         printed = capsys.readouterr().out
         assert 'point -o at its parent' in printed and str(out.parent) in printed
 
@@ -410,6 +419,25 @@ class TestALegacyFlatRootIsRefused:
 
     def test_a_missing_root_is_no_signal(self, crop_runner, tmp_path):
         assert crop_runner.legacy_layout_signal(str(tmp_path / 'not-yet')) is None
+
+    def test_the_signal_lists_the_root_once_and_never_a_shard(self, crop_runner, tmp_path, monkeypatch):
+        """One listing of -o: a shard of a flat store holds ~400k crops over sshfs, and nothing about the
+        answer needs its contents."""
+        out = tmp_path / 'crops'
+        for relpath in ('1/5.jpg', '2/6.jpg', CHICAGO + '/1/1.jpg'):
+            plant(out, relpath)
+        listed = []
+        real_scandir = os.scandir
+
+        def recording_scandir(path='.'):
+            listed.append(os.path.relpath(str(path), str(out)))
+            return real_scandir(path)
+
+        monkeypatch.setattr(crop_runner.os, 'scandir', recording_scandir)
+        monkeypatch.setattr(crop_runner.os, 'listdir', lambda *a: pytest.fail('listdir called'))
+        monkeypatch.setattr(crop_runner.os, 'walk', lambda *a, **k: pytest.fail('walk called'))
+        assert crop_runner.legacy_layout_signal(str(out)) is not None
+        assert listed == ['.']
 
 
 class TestAFlatStoreAlreadyNamedForItsCityNeedsNoMove:
