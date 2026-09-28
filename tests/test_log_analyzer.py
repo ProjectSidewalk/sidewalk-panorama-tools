@@ -1922,6 +1922,17 @@ class TestOnlyARecentTornRowIsNews:
         assert [i['level'] for i in found] == ['INFO'], found
         assert 'newest dated 2024-04-27' in found[0]['msg']
 
+    def test_the_info_line_carries_the_total_and_the_newest_date(self, tmp_path):
+        """Three old rows with the newest in the middle of the file: the line counts all three and names the
+        newest, so neither the recent count nor the oldest, first or last row's date can stand in."""
+        rows = ['2022-03-01 06:00:00', '2024-04-27 06:00:05.587071', '2023-06-15 06:00:00'] + recent_rows(3)
+
+        found = self.rule_9(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['INFO'], found
+        assert '3 historical row(s)' in found[0]['msg']
+        assert 'newest dated 2024-04-27' in found[0]['msg']
+
     @pytest.mark.parametrize('age_hours, level', [(7 * 24 + 12, 'INFO'), (6 * 24 + 12, 'WARNING')])
     def test_the_window_is_seven_days(self, tmp_path, age_hours, level):
         assert analyze.MALFORMED_RECENT_DAYS == 7
