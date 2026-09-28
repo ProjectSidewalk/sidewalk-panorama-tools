@@ -627,7 +627,7 @@ PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape
                       'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
                       'downloaders/gsv.py', 'downloaders/mapillary.py',
-                      'downloaders/panoramax.py']
+                      'downloaders/panoramax.py', 'downloaders/store_sftp.py']
 
 
 def imported_names(source):
