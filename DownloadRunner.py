@@ -611,12 +611,19 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 fail_count += 1
                 downloaded = None
                 result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
+                frame_refused = isinstance(e, gsv.FrameDisagreementError)
                 logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
+            else:
+                frame_refused = False
 
-            if result_code is None:
+            if result_code is None and not frame_refused:
                 raised += 1
                 raise_seconds += time.monotonic() - attempt_start
             elif result_code != DownloadResult.skipped:
+                # A frame disagreement (#74) is unledgered like a raise, but it is Google ANSWERING - the pano
+                # has its own WARNING and an app-side remedy - so for `images-no-success` it is an answer: ten
+                # of them on a mature city served nothing new would otherwise alarm nightly at "the network,
+                # the store, or a bug" (#174 final review, cross-PR note 3).
                 answered += 1
 
             limit = MAX_CONSECUTIVE_PERMANENT_FAILURES.get(source)

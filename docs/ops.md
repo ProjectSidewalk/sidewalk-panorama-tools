@@ -648,7 +648,8 @@ Since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74
 pano whose app-reported `width`/`height` is not a frame Google serves, rather than stitching the top-left
 corner of a larger one. Each refusal is one stdout `WARNING` and one `scrape.log` `ERROR`, both containing
 `frame disagreement`; it is counted in `log.csv` field 9, never ledgered, and retried every run. Field 9 is
-seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. The
+seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. A
+refusal is Google answering, so it never feeds the `images-no-success` condition, however many there are. The
 remedy is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what
 Google serves now. The stdout line reaches no one on a night that exits 0 (see
 [Hearing about a bad night](#hearing-about-a-bad-night)).

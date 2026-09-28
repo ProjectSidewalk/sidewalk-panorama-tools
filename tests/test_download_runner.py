@@ -2750,6 +2750,28 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
         assert summary['image_stop'] is None
         assert summary['conditions'] == []
 
+    def test_a_frame_disagreement_is_an_answer_not_a_raise(self, monkeypatch, tmp_path):
+        """Cross-PR note 3 (#174 final review), live since #156 merged: a pano whose app frame is not one
+        Google serves raises FrameDisagreementError every night, unledgered. Google DID answer - the pano has
+        its own WARNING and its remedy is an app-side gsv_data refresh - so a mature city with ten of them
+        and nothing new must not report images-no-success, which points at the network, the store or a bug."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        verdicts = {'framePano%03d' % i: downloaders.gsv.FrameDisagreementError('frame disagreement')
+                    for i in range(10)}
+
+        call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_frame_disagreement_does_not_forgive_real_raises(self, monkeypatch, tmp_path):
+        """It is an answer, so it does block the condition - the rule is 'none was answered'. Pinned so the
+        exemption stays that narrow: the ten transient raises beside no frame refusal still fire."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=10))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
     def test_a_stop_that_is_not_the_budget_does_not_arm_it(self, monkeypatch, tmp_path):
         """Cross-PR note 4 (#174 final review): #172 gives the image phase a second stop, a push-back trip
         recorded as `blocked`, which is already its own condition. The budget arm is keyed on
