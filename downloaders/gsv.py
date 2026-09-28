@@ -120,6 +120,12 @@ def _get_response(url, session, stream=False):
         response.close()     # close it; nothing will read this body
         raise requests.HTTPError('cbk probe answered %s, not 200: %s' % (response.status_code, url),
                                  response=response)
+    # A 200 that landed on Google's interstitial is a captcha page, not a tile: raised with its Response, so
+    # pushback_reason reads it as the refusal it is rather than PIL failing on HTML (#162).
+    landing_url = _interstitial_url(_requests_response_urls(response))
+    if landing_url is not None:
+        response.close()
+        raise requests.HTTPError('cbk probe landed on %s: %s' % (landing_url, url), response=response)
     return response.raw
 
 
@@ -350,6 +356,12 @@ async def _request_tile(session, tile):
     except aiohttp.ClientResponseError as e:
         if e.status in TILE_PUSHBACK_STATUSES:
             raise TilePushbackError(e.status, x, y) from e
+        # The session raises for any non-2xx landing while the request is being ENTERED, so the in-context
+        # check above only ever sees a 2xx one. An interstitial served as 503 (or anything else) lands here,
+        # and without this it would be retried: 10 tries x (redirect + landing) per tile (#172 review).
+        landing_url = _interstitial_url(_aiohttp_error_urls(e))
+        if landing_url is not None:
+            raise TilePushbackError(e.status, x, y, landing_url=landing_url) from e
         raise
 
 
@@ -696,15 +708,22 @@ def pushback_reason(exc):
     """'HTTP 429' / 'HTTP 403' / 'interstitial' when `exc` is Google refusing this host; None otherwise (#162).
 
     What the image loop's push-back breaker counts, so the line is drawn at GOOGLE'S OWN refusal and never at
-    this box's network: a timeout, a reset, a DNS failure is weather. Two shapes qualify:
+    this box's network: a timeout, a reset, a DNS failure is weather. Three shapes qualify:
 
-    * TilePushbackError - a tile answered 429/403 or landed on an interstitial.
+    * TilePushbackError - a tile answered 429/403 or landed on an interstitial, whatever status it wore.
     * requests' RetryError from the zoom probe, whose urllib3 policy retries 429 and 5xx and gives up with
-      'too many N error responses'. It counts ONLY when N is in TILE_PUSHBACK_STATUSES. A 5xx storm exhausting
-      the policy is Google being ill, not Google refusing us - and a trip writes the fleet-wide block latch,
-      so reading an outage as a refusal would stand every city's depth phase down for six hours. (The depth
-      phase's own `except (DepthBlockedError, RetryError)` is broader; its latch predates this breaker.) A
-      RetryError whose status cannot be read is None for the same reason.
+      'too many N error responses'. It counts ONLY when N is in TILE_PUSHBACK_STATUSES - in practice 429,
+      since 403 is not in the forcelist and so never exhausts it (the 403 half is for the day it is). A 5xx
+      storm exhausting the policy is Google being ill, not Google refusing us - and a trip writes the
+      fleet-wide block latch, so reading an outage as a refusal would stand every city's depth phase down for
+      six hours. (The depth phase's own `except (DepthBlockedError, RetryError)` is broader; its latch
+      predates this breaker.) A RetryError whose status cannot be read is None for the same reason. One that
+      gave up ON Google's interstitial (its message names the /sorry/ path or the consent host) is
+      'interstitial' whatever its status: the landing is the refusal, and a 503 captcha page is not an outage.
+    * requests' HTTPError from the zoom probe, which since #166 raises for any status but 200 and carries
+      the Response. 403 is not in the retry policy's forcelist, so THIS is the shape a probe 403 arrives in:
+      it counts when the status is in TILE_PUSHBACK_STATUSES, or when the landing or any redirect hop
+      carries an interstitial marker. Any other status (404, 410, a 5xx the adapter handed back) is None.
 
     Everything else - a tile 404 or 5xx, a mostly-black stitch, an OSError from the store - is None.
     """
@@ -714,7 +733,45 @@ def pushback_reason(exc):
         match = _RETRY_STATUS_RE.search(str(exc))
         if match and int(match.group(1)) in TILE_PUSHBACK_STATUSES:
             return 'HTTP %s' % (match.group(1),)
+        if _interstitial_url([str(exc)]) is not None:
+            return 'interstitial'
+        return None
+    if isinstance(exc, requests.HTTPError):
+        response = exc.response
+        if response is None:
+            return None
+        if response.status_code in TILE_PUSHBACK_STATUSES:
+            return 'HTTP %d' % (response.status_code,)
+        if _interstitial_url(_requests_response_urls(response)) is not None:
+            return 'interstitial'
     return None
+
+
+def _interstitial_url(urls):
+    """The first of `urls` that carries one of Google's interstitial markers, or None. Read at call time."""
+    for url in urls:
+        if any(marker in url for marker in _BLOCK_URL_MARKERS):
+            return url
+    return None
+
+
+def _aiohttp_error_urls(e):
+    """Every URL a tile's ClientResponseError can name: the landing, each redirect hop, and each hop's
+    Location. Defensive about shape, because a test double (or a Content-Type failure) may carry less."""
+    urls = [str(getattr(getattr(e, 'request_info', None), 'real_url', '') or '')]
+    for hop in getattr(e, 'history', None) or ():
+        urls.append(str(getattr(hop, 'url', '') or ''))
+        urls.append(str((getattr(hop, 'headers', None) or {}).get('Location', '') or ''))
+    return urls
+
+
+def _requests_response_urls(response):
+    """The same for a requests Response: the landing, each redirect hop, and each hop's Location."""
+    urls = [str(response.url or '')]
+    for hop in response.history or ():
+        urls.append(str(hop.url or ''))
+        urls.append(str(hop.headers.get('Location', '') or ''))
+    return urls
 
 
 def _write_display_copy(image, out_image_name, pano_id):

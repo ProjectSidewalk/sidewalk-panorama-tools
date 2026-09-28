@@ -516,7 +516,7 @@ requests per refused 16384-wide pano, which is a soft refusal being escalated by
 
 | Tile answer | Retried? | Push-back? |
 |---|---|---|
-| HTTP 429 or 403, or a landing URL on Google's `/sorry/` or `consent.google.com` interstitial | never | yes |
+| HTTP 429 or 403, or a landing URL (or redirect hop) on Google's `/sorry/` or `consent.google.com` interstitial, whatever status the interstitial answers with | never | yes |
 | any other 4xx except 408 (404 included) | no | no — an ordinary failure, retried next run |
 | 5xx, 408, a timeout, a connection error, a non-JPEG body | yes: up to 10 tries, each wait capped at 32 s, 120 s per tile in all | no |
 
@@ -543,7 +543,9 @@ probes came back **200** with a fully black tile (Google's answer for a pano id 
 status on a probe — 403, 404, 410, a 206, a final 3xx — raises, even when its body is a black JPEG: the pano
 counts as tonight's failure, gets no ledger row, and is asked again next run. 429 and 5xx should normally not
 get that far, since the retry policy owns them and an exhausted retry raises; one that did would raise here
-like any other non-200. The same rule covers `refetch_panos.py`'s frame
+like any other non-200. A probe that raises with 403 or 429, or that landed on Google's interstitial (a 200
+captcha page included), is also **push-back** and counts towards [the push-back
+breaker](ops.md#when-google-pushes-back-on-the-image-phase); every other status is an ordinary failure. The same rule covers `refetch_panos.py`'s frame
 probe, where a non-200 black edge tile used to read as "the frame covers the pano" ([#166]).
 
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
@@ -618,8 +620,7 @@ trips within about ninety panos on the first night and the night's message says 
 off a third at a time, silently and permanently.
 
 **GSV has a different breaker, for Google refusing the host** ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)).
-Three consecutive GSV panos refused with a 429/403 (a tile, an interstitial, or a zoom probe that gave up on
-429s) stop GSV images for the run, leave nothing ledgered, write the depth block latch, and exit nonzero. It is
+Three consecutive GSV panos refused with a 429/403 or an interstitial (on a tile, or on the zoom probe) stop GSV images for the run, leave nothing ledgered, write the depth block latch, and exit nonzero. It is
 not an entry in the table above and counts nothing the table counts; what it does and what to do about it are
 in [Ops → When Google pushes back on the image phase](ops.md#when-google-pushes-back-on-the-image-phase).
 

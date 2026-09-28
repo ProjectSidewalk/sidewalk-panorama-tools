@@ -259,7 +259,8 @@ class _StatusSession:
 
     An int answer is raised as the ClientResponseError that aiohttp's `raise_for_status=True` raises on
     entering the request context - which is where the real one comes from, and the contract test pins that
-    the fan-out opens its session with that flag. Anything else is returned as the response. `requests`
+    the fan-out opens its session with that flag. An exception instance is raised as it is (a ClientResponseError
+    carrying a redirect's landing URL, say); anything else is returned as the response. `requests`
     counts every request made, which is the number this whole issue (#162) is about.
 
     `await_first` yields to the loop before answering, so a fan-out's concurrent requests are genuinely in
@@ -286,6 +287,8 @@ class _StatusSession:
                 if isinstance(outcome, int):
                     raise aiohttp.ClientResponseError(SimpleNamespace(real_url='https://tile.invalid'), (),
                                                       status=outcome, message='x')
+                if isinstance(outcome, BaseException):
+                    raise outcome
                 return outcome
 
             async def __aexit__(self, *exc):
@@ -376,6 +379,51 @@ class TestATileRefusalIsNotRetried:
 
         assert session.requests == 1
         assert excinfo.value.landing_url == landing
+        # The one scrape.log line the image loop writes carries this text, so it must name the landing.
+        assert 'landed on %s' % landing in str(excinfo.value)
+
+    @pytest.mark.parametrize('status', [503, 500, 404, 302])
+    @pytest.mark.parametrize('real_url, history', [
+        # The landing itself carries the marker - what raise_for_status reports for a redirect chain that
+        # ends on the interstitial.
+        ('https://www.google.com/sorry/index?continue=x', ()),
+        ('https://consent.google.com/ml?continue=x', ()),
+        # Only a hop does: the Location on the way there, with the landing somewhere unremarkable.
+        ('https://tile.invalid/elsewhere',
+         (SimpleNamespace(url='https://tile.invalid/cbk', headers={'Location': 'https://www.google.com/sorry/x'}),)),
+    ])
+    def test_an_interstitial_landing_is_pushback_whatever_its_status(self, status, real_url, history,
+                                                                      monkeypatch):
+        """#172 review (ops 1): the session raises for any non-2xx landing before the in-context URL check
+        can see it, so a /sorry/ page served as 503 used to be RETRIED - 10 tries x (redirect + landing)
+        per tile, ~10,240 requests for a pano whose block began mid-fan-out. The marker is the refusal,
+        whatever status the page wears; a 429/403 landing was already push-back by its status."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
+        error = aiohttp.ClientResponseError(SimpleNamespace(real_url=real_url), history, status=status,
+                                            message='x')
+        session = _StatusSession(answer=lambda url, attempt: error)
+
+        with pytest.raises(gsv.TilePushbackError) as excinfo:
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+        assert gsv.pushback_reason(excinfo.value) == 'interstitial'
+        assert excinfo.value.status == status
+
+    def test_a_plain_503_with_no_marker_anywhere_is_still_weather(self, monkeypatch):
+        """The control for the test above: the same error without a marker keeps its retries."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        error = aiohttp.ClientResponseError(
+            SimpleNamespace(real_url='https://tile.invalid/cbk'),
+            (SimpleNamespace(url='https://tile.invalid/a', headers={'Location': 'https://tile.invalid/cbk'}),),
+            status=503, message='x')
+        session = _StatusSession(answer=lambda url, attempt: error)
+
+        with pytest.raises(aiohttp.ClientResponseError) as excinfo:
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert not isinstance(excinfo.value, gsv.TilePushbackError)
+        assert session.requests == gsv.TILE_MAX_TRIES
 
     @pytest.mark.parametrize('error, final', [
         (aiohttp.ClientResponseError(None, (), status=404), True),
@@ -1290,6 +1338,33 @@ def probe_retry_error(status_code):
             status_code=status_code))))
 
 
+def probe_retry_error_at(url, status_code=503, host='www.google.com'):
+    """The RetryError requests raises when the probe's redirect ended on `url` and urllib3 gave up there."""
+    from urllib3.exceptions import MaxRetryError, ResponseError
+    from urllib3 import HTTPSConnectionPool
+    return requests.exceptions.RetryError(MaxRetryError(
+        HTTPSConnectionPool(host), url, ResponseError(ResponseError.SPECIFIC_ERROR.format(
+            status_code=status_code))))
+
+
+def probe_http_error(status_code, url='https://maps.google.com/cbk?output=tile&zoom=3', history=()):
+    """The HTTPError _get_response raises for a non-200 probe (#166), carrying the Response it closed."""
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = url
+    response.history = list(history)
+    return requests.HTTPError('cbk probe answered %s, not 200: %s' % (status_code, url), response=response)
+
+
+def redirect_hop(location, url='https://maps.google.com/cbk?output=tile&zoom=3'):
+    """One entry of requests' Response.history: the 302 the Session followed on the way to the landing."""
+    hop = requests.Response()
+    hop.status_code = 302
+    hop.url = url
+    hop.headers = CaseInsensitiveDict({'Location': location})
+    return hop
+
+
 class TestPushbackReason:
     """gsv.pushback_reason: what the image loop's breaker counts (#162, plan D2).
 
@@ -1308,6 +1383,25 @@ class TestPushbackReason:
         (probe_retry_error(503), None),
         (probe_retry_error(500), None),
         (requests.exceptions.RetryError('no status in this one'), None),
+        # An interstitial landing is the refusal whatever status it wears - D1's third push-back shape - so
+        # a 5xx RetryError that ended on one is NOT the amendment's weather. The URL is the evidence.
+        (probe_retry_error_at('/sorry/index?continue=x'), 'interstitial'),
+        (probe_retry_error_at('/ml?continue=x', host='consent.google.com'), 'interstitial'),
+        (probe_retry_error_at('/cbk?output=tile&zoom=3', host='maps.google.com'), None),
+        # After #166 a probe answered anything but 200 raises HTTPError carrying its Response. 403 is not in
+        # the retry policy's forcelist, so this is the ONLY shape a probe 403 arrives in; 429 normally
+        # exhausts the policy into a RetryError, but reads the same way if it ever lands here.
+        (probe_http_error(403), 'HTTP 403'),
+        (probe_http_error(429), 'HTTP 429'),
+        (probe_http_error(404), None),
+        (probe_http_error(410), None),
+        (probe_http_error(503), None),
+        (probe_http_error(206), None),
+        (requests.HTTPError('no response attached'), None),
+        (probe_http_error(503, url='https://www.google.com/sorry/index?continue=x'), 'interstitial'),
+        (probe_http_error(200, url='https://consent.google.com/ml?continue=x'), 'interstitial'),
+        (probe_http_error(404, history=[redirect_hop('https://www.google.com/sorry/index')]), 'interstitial'),
+        (probe_http_error(404, history=[redirect_hop('https://maps.google.com/cbk?b')]), None),
         (asyncio.TimeoutError(), None),
         (aiohttp.ClientConnectionError('reset'), None),
         (requests.exceptions.ConnectionError('dns'), None),
@@ -1403,13 +1497,15 @@ class _CannedCbkAdapter(BaseAdapter):
         self.served = []
 
     def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
-        status, body = self.answer(request.url)
+        # (status, body) or (status, body, headers): a Location header makes the real Session walk a
+        # redirect, which is how a landing on Google's interstitial is modelled (#162).
+        status, body, *extra = self.answer(request.url)
         response = requests.Response()
         response.status_code = status
         response.reason = 'canned'
         response.url = request.url
         response.request = request
-        response.headers = CaseInsensitiveDict({'Content-Type': 'image/jpeg'})
+        response.headers = CaseInsensitiveDict({'Content-Type': 'image/jpeg', **(extra[0] if extra else {})})
         response.raw = _CannedBody(body)
         self.served.append(response)
         return response
@@ -1525,6 +1621,67 @@ class TestAPermanentVerdictNeedsA200:
             gsv.download_single_pano(str(tmp_path), self.pano_info())
 
         assert not os.path.exists(os.path.join(str(tmp_path), self.PANO[:2], self.PANO + '.jpg'))
+
+
+class TestARefusedProbeIsPushback:
+    """#162 after #166: the zoom probe is the first request every GSV pano makes, so a host-wide block is met
+    there first - and since #166 a non-200 probe raises HTTPError instead of handing back a body. Through the
+    real _get_response and a real requests.Session (only the socket is canned), what pushback_reason makes
+    of each refusal shape. A pure-403 block used to be an ordinary failure here that the breaker never saw.
+    """
+
+    PANO = 'probePushbackAAAAAAAA'
+    SORRY = 'https://www.google.com/sorry/index?continue=x'
+
+    def pano_info(self):
+        return {'pano_id': self.PANO, 'width': 1024, 'height': 512}
+
+    def refused(self, monkeypatch, answer):
+        adapter = canned_cbk(monkeypatch, answer)
+        with pytest.raises(requests.RequestException) as caught:
+            gsv.resolve_zoom_and_dims(self.pano_info())
+        return adapter, caught.value
+
+    def test_a_403_probe_is_pushback(self, monkeypatch):
+        _, error = self.refused(monkeypatch, lambda url: (403, BLACK_BODY))
+
+        assert isinstance(error, requests.HTTPError)
+        assert gsv.pushback_reason(error) == 'HTTP 403'
+
+    @pytest.mark.parametrize('status', [404, 410, 503])
+    def test_another_status_is_not(self, monkeypatch, status):
+        """503 here is the canned adapter handing it straight back; in production the retry policy owns it
+        and gives up with a RetryError, which the amendment reads as weather too."""
+        _, error = self.refused(monkeypatch, lambda url: (status, BLACK_BODY))
+
+        assert gsv.pushback_reason(error) is None
+
+    @pytest.mark.parametrize('landing_status', [503, 404, 200])
+    def test_a_redirect_onto_the_interstitial_is_pushback_whatever_it_answers(self, monkeypatch, landing_status):
+        """The 200 case never raised at all before: a captcha page is a 200, so the probe handed its HTML to
+        PIL and the pano failed as an unreadable image. The landing URL is the refusal, as on the tile path."""
+        def answer(url):
+            if '/sorry/' in url:
+                return landing_status, b'<html>unusual traffic</html>', {'Content-Type': 'text/html'}
+            return 302, b'', {'Location': self.SORRY}
+
+        adapter, error = self.refused(monkeypatch, answer)
+
+        assert isinstance(error, requests.HTTPError)
+        assert gsv.pushback_reason(error) == 'interstitial'
+        assert [r.status_code for r in adapter.served] == [302, landing_status], 'one probe, never retried'
+        assert adapter.served[-1].raw.closed, 'the landing is closed, like any refused probe'
+
+    def test_control_a_redirect_that_lands_on_imagery_is_fine(self, monkeypatch):
+        """So the test above measures the marker, not the redirect."""
+        def answer(url):
+            if 'moved' in url:
+                return 200, IMAGERY_BODY
+            return 302, b'', {'Location': url.replace('/cbk', '/moved')}
+
+        canned_cbk(monkeypatch, answer)
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) == (1024, 512, 5)
 
 
 class TestTheFrameProbeNeedsA200:

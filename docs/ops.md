@@ -736,8 +736,8 @@ honestly; it is no evidence about the source at all.
 
 ## When Google pushes back on the image phase
 
-A tile answered HTTP 429 or 403, or landed on Google's `/sorry/` or consent interstitial, is **push-back**,
-not a transient ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)). It is never
+A tile answered HTTP 429 or 403, or landed on Google's `/sorry/` or consent interstitial (whatever status
+the interstitial itself answered with), is **push-back**, not a transient ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)). It is never
 retried, the rest of that pano's tiles are abandoned (at most `thread_count` requests were in flight), and
 the pano gets exactly one line in `scrape.log`:
 
@@ -746,9 +746,13 @@ IMAGEDOWNLOAD: Failed to download pano <id> (HTTP 429): refused by Google: tile 
 512 tile requests made, the rest abandoned
 ```
 
-A zoom probe whose retry policy gave up on 429s reads the same way, `(HTTP 429)`, with urllib3's message
-after it. A probe that gave up on 5xx does **not**: that is Google being ill, not Google refusing us, and
-latching the fleet over an outage would stand every city's depth down for six hours.
+The zoom probe, which every GSV pano meets first, reads the same way. A probe answered 403 (which since
+[#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166) raises rather than handing back a body) is `(HTTP 403)`; one
+whose retry policy gave up on 429s is `(HTTP 429)`, with urllib3's message after it; one that landed on the
+interstitial, at any status, is `(interstitial)`. A probe that gave up on 5xx **without** an interstitial
+anywhere in its path does **not** count: that is Google being ill, not Google refusing us, and latching the
+fleet over an outage would stand every city's depth down for six hours. Neither does any other non-200
+(404, 410): it stays an ordinary failure, retried next run.
 
 Three refused GSV panos in a row stop GSV images for the rest of that run:
 
@@ -778,10 +782,6 @@ What that means, and how it differs from [the #113 breaker](#when-the-image-phas
 
 **What to do.** Look for a rate limit or a captcha on this host's IP before the next night. The count per
 city is `grep -cE "Failed to download pano \S+ \((HTTP [0-9]+|interstitial)\)" */scrape.log`.
-
-One gap is known and documented rather than closed: the zoom probe does not check its response status, so a
-403 there (which urllib3 does not retry) arrives as an unreadable image or a black-tile permanent verdict,
-not as push-back. A pure-403 block met at the probe first is therefore not recognised by this breaker.
 
 ## What healthy looks like
 

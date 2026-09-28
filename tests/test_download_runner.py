@@ -1941,6 +1941,30 @@ class TestAGsvProbeRefusedWithABlackBodyReachesNoLedgerRow:
 
         assert len(adapter.served) == first_run_requests, 'a ledgered verdict is never re-asked'
 
+    def test_a_pure_403_block_at_the_probe_trips_the_pushback_breaker(self, monkeypatch, tmp_path):
+        """#162 composed with #166: every GSV pano meets the probe first, so this is where a host-wide 403
+        block arrives - as the HTTPError #166 raises. It used to be an ordinary failure per pano, so the
+        breaker never counted it and the city tried every GSV pano and exited 0."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        latch = tmp_path / 'latch'
+        adapter = canned_cbk(monkeypatch, lambda url: (403, CBK_BLACK_BODY))
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        panos = [{'pano_id': 'gsvRefused%dAAAAAAAAAAA' % n, 'source': 'gsv', 'width': 1024, 'height': 512}
+                 for n in range(5)]
+        tripped, stop_reasons = set(), {'image_stop': None, 'depth_stop': None}
+
+        result = DownloadRunner.download_panorama_images(
+            str(storage), panos, tripped_sources=tripped, stop_reasons=stop_reasons,
+            block_latch_path=str(latch), pace_state_path=str(tmp_path / 'pace'))
+
+        assert tripped == {'gsv'}
+        assert stop_reasons['image_stop'] == 'blocked'
+        assert result == (0, 0, 3, 0, 3), 'three refused panos, then the rest left unattempted'
+        assert len(adapter.served) == 3, 'one refused zoom-3 probe per pano, and nothing after the trip'
+        assert latch.exists()
+        assert ledger_verdict_rows(storage) == []
+
 
 class TestPanoramaxNeedsNoCredentialToBeSupported:
     """#110: the word `panoramax` in filter_supported_sources is the whole of what stands between Bayonne
