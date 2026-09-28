@@ -594,8 +594,9 @@ reported an abnormally long run on the same night, with nothing actually wrong.
 ### Blank fields mark a crashed or stopped run
 
 A run that crashes — or is stopped — still appends a full 19-field row: every phase that completed keeps its
-real counts, and every field from the first unfinished phase onward is blank. Visibly missing data, never a
-fabricated `0`. A row that is only a timestamp means the run died before scraping started, most likely because
+real counts, and every phase field from the first unfinished phase onward is blank. Field 19, the corpus size,
+is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Visibly
+missing data, never a fabricated `0`. A row that is only a timestamp means the run died before scraping started, most likely because
 the pano-list fetch against the webserver failed.
 
 Blanks are new as of [#49](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/49) — historical

@@ -42,7 +42,7 @@ In [#39](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/39) w
 downloader — the `cbk?output=xml` endpoint it relied on died in 2022 — and the `decode_depthmap` binary. Depth
 maps now come from the `streetlevel` library instead; see [Depth maps](depth.md).
 
-The XML phase's *columns* survive in `log.csv` as a fixed-value stub, so that positions 7–18 never shift under
+The XML phase's *columns* survive in `log.csv` as a fixed-value stub, so that positions 7–19 never shift under
 the log analyzer. See [Ops → The `log.csv` columns](ops.md#the-logcsv-columns).
 
 The *reader* outlived the writer by a release. `download_single_pano` still parsed any `<pano_id>.xml` left on
