@@ -11,7 +11,6 @@ pinned here against the failure it exists for:
 """
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +29,18 @@ def _write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
         f.write(text)
+
+
+def _remove_probe(path, remove_cache_dir):
+    """Remove one file this module wrote into the study cache and, if the test created the cache dir, that
+    dir too - but only once it is empty. Never a tree: see test_a_run_that_writes_into_the_study_cache_fails."""
+    if os.path.exists(path):
+        os.remove(path)
+    if remove_cache_dir:
+        try:
+            os.rmdir(conftest.STUDY_CACHE)
+        except OSError:
+            pass  # not empty (someone else's write landed in it), or already gone
 
 
 class TestTreeChanges:
@@ -83,28 +94,43 @@ class TestTreeChanges:
         comparison; only this catches the fixture itself being disabled, unwired or never asserting.
 
         The probe is removed in `finally`, before this run's own guard looks - it is the one sanctioned
-        write into the repo in the suite, and it lasts a few seconds."""
-        probe_rel = os.path.join('reports', 'scripts', '.cache', f'_suite_isolation_probe_{os.getpid()}.txt')
+        write into the repo in the suite, and it lasts a few seconds. The cleanup removes exactly the probe,
+        and the cache dir only if that leaves it empty: anything else in there during the window (a
+        fetch_rawlabels.py download started in the same checkout, another session's probe) is someone
+        else's, and a whole-tree rmtree would delete it with the parent's guard comparing "no cache" against
+        "no cache" and seeing nothing (#171 review). The child plants a bystander file to stand in for that
+        writer, and it must survive the cleanup.
+
+        The child is not measured: it runs from tmp_path and has no production code in it, and a measured
+        child here is what put tests/conftest.py into CI's coverage figure (#171 review; .coveragerc's omit
+        patterns are now anchored too, so this is belt and braces)."""
+        cache_rel = os.path.join('reports', 'scripts', '.cache')
+        probe_rel = os.path.join(cache_rel, f'_suite_isolation_probe_{os.getpid()}.txt')
         probe = os.path.join(REPO_ROOT, probe_rel)
+        bystander = os.path.join(REPO_ROOT, cache_rel, f'_suite_isolation_bystander_{os.getpid()}.txt')
         cache_existed = os.path.isdir(conftest.STUDY_CACHE)
         writer = tmp_path / 'test_writes_into_the_repo.py'
         writer.write_text(
             'import os\n\n'
             'def test_writes():\n'
             f'    os.makedirs(os.path.dirname({probe!r}), exist_ok=True)\n'
-            f'    open({probe!r}, "w").write("x")\n')
+            f'    open({probe!r}, "w").write("x")\n'
+            f'    open({bystander!r}, "w").write("someone else\'s")\n')
         env = dict(os.environ, PYTHONPATH=os.pathsep.join(
             p for p in (os.path.join(REPO_ROOT, 'tests'), os.environ.get('PYTHONPATH')) if p))
+        for name in ('COVERAGE_PROCESS_START', 'COVERAGE_FILE', 'SIDEWALK_COVERAGE_ROOT'):
+            env.pop(name, None)
         try:
-            result = subprocess.run(
-                [sys.executable, '-m', 'pytest', str(writer), '-q', '-p', 'no:cacheprovider', '-p', 'conftest',
-                 '--rootdir', str(tmp_path)],
-                cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120)
+            try:
+                result = subprocess.run(
+                    [sys.executable, '-m', 'pytest', str(writer), '-q', '-p', 'no:cacheprovider',
+                     '-p', 'conftest', '--rootdir', str(tmp_path)],
+                    cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120)
+            finally:
+                _remove_probe(probe, not cache_existed)
+            assert os.path.exists(bystander), 'the probe cleanup deleted a file it did not create'
         finally:
-            if os.path.exists(probe):
-                os.remove(probe)
-            if not cache_existed:
-                shutil.rmtree(conftest.STUDY_CACHE, ignore_errors=True)
+            _remove_probe(bystander, not cache_existed)
         output = result.stdout + result.stderr
         assert result.returncode != 0, output
         assert 'created: ' + probe_rel in output, output
