@@ -97,9 +97,9 @@ never replaces**:
   crop — unless `<crop-dir>/<city>/<label_type_id>/` already exists (a run under the new layout, or a
   migration that died partway). Then it moves file by file, and **a file already at the destination is a
   collision: counted, listed as `COLLISION <src> -> <dst>`, and both are left exactly where they are.** A
-  directory inside a type directory is left and listed; a type directory is removed only once empty. A
-  type directory is one named for a label type's id (`1`–`10`); any other all-digit directory is left and
-  listed.
+  directory or symlink inside a type directory is left and listed; a type directory is removed only once
+  empty. A type directory is one named for a label type's id (`1`–`10`); any other all-digit directory,
+  and a type directory that is itself a symlink, is left and listed.
 * Then the store's own files, each the same way: `crop.log` and its rotated `crop.log.<n>`,
   `crop_provenance.pre-city.csv`, `crop_provenance.csv`, and `crop_rule.json` **last**, so a run that dies
   partway leaves the root still marked as a flat store. Nothing is rewritten: the old manifest's rows keep
@@ -116,9 +116,11 @@ never replaces**:
 It prints `N type directories moved whole, F files moved one by one, K store files moved, C collisions left
 in place, L left for a person, E failed` (each "would be" under `--dry-run`), then the next CropRunner
 command and a reminder for consumers. It exits **0** when the store is migrated or there was nothing to move,
-**1** when anything was left where it was — a collision, a directory inside a type directory, an all-digit
-directory that is not a type directory, a failed rename, predicted ones included under `--dry-run` — since CropRunner keeps refusing the root until each is
-settled by hand, **2** on a usage error (a `crop-dir` that does not exist included), and **3** on a refusal.
+**1** when anything was left where it was — a collision, a directory or symlink left in place, an all-digit
+directory that is not a type directory, a listing, rename or `rmdir` that failed (each one `FAILED` line,
+and the sweep goes on; a root that stops being listable ends the run with a message rather than a
+traceback), predicted ones included under `--dry-run` — since CropRunner keeps refusing the root until each
+is settled by hand, **2** on a usage error (a `crop-dir` that does not exist included), and **3** on a refusal.
 It is idempotent and resumable: re-running it after a partial run, or after settling collisions, finishes
 the job. **Run one migrator per store at a time**, and not while a CropRunner is cutting into it.
 

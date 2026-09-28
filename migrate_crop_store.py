@@ -50,14 +50,17 @@ def _root_directories(crop_dir):
     """The all-digit directories directly under crop_dir, in a stable order, split into (shards, left).
 
     shards are the label-type directories this tool moves (CropRunner._is_label_type_shard). left maps
-    every other all-digit directory to why it stays: its name is no label type's (a '2024' of figures, a
-    hand-made '01'). Other names are not this tool's and are not returned at all."""
+    every other all-digit directory to why it stays: one whose name is no label type's (a '2024' of
+    figures, a hand-made '01'), or a symlink, which moved one level deeper would dangle if relative and
+    which this tool never makes. Other names are not this tool's and are not returned at all."""
     shards, left = [], {}
     with os.scandir(crop_dir) as listing:
         for entry in listing:
             if not CropRunner._is_numeric_name(entry.name) or not entry.is_dir():
                 continue
-            if CropRunner._is_label_type_shard(entry.name):
+            if entry.is_symlink():
+                left[entry.name] = "a symlink, which this tool never writes"
+            elif CropRunner._is_label_type_shard(entry.name):
                 shards.append(entry.name)
             else:
                 left[entry.name] = "an all-digit directory that is not a label type"
@@ -117,11 +120,13 @@ def migrate_store(crop_dir, city, dry_run=False):
 
     Everything else at the root - other cities' stores, notes, figures - is left alone, and so is any
     all-digit directory that is not a label type's, counted as left since CropRunner still refuses the root
-    while it is there.
+    while it is there. A listing, move or rmdir that fails is counted as failed and the sweep goes on; only
+    a failure to list crop_dir itself raises.
 
     :return: MigrationSummary. Under dry_run every count is a prediction and nothing is written.
     :raises RootIsACityStoreError, CropRunner.ProductionCropStoreError, CropRunner.CropStoreCityError: with
         nothing touched.
+    :raises OSError: if crop_dir itself cannot be listed.
     """
     named_for_city = CropRunner.city_named_directory(crop_dir, city)
     if named_for_city is not None:
@@ -148,7 +153,13 @@ def migrate_store(crop_dir, city, dry_run=False):
         if not os.path.lexists(destination):
             # One rename for the whole shard - over sshfs, one round trip instead of one per crop.
             if dry_run:
-                print("Would move directory %s -> %s (%d files)" % (source, destination, len(os.listdir(source))))
+                # The count is for the reader only: the real run's one rename never lists the shard, so a
+                # shard that cannot be listed is still a predicted move, not a predicted failure.
+                try:
+                    count = "%d files" % len(os.listdir(source))
+                except OSError as e:
+                    count = "files uncounted: cannot list it: %s" % e
+                print("Would move directory %s -> %s (%s)" % (source, destination, count))
                 counts['dirs_moved'] += 1
                 continue
             try:
@@ -164,18 +175,28 @@ def migrate_store(crop_dir, city, dry_run=False):
 
         # The destination shard exists (a CropRunner run under #159, or an earlier partial migration):
         # file by file, never over a file already there.
-        with os.scandir(source) as listing:
-            entries = sorted(listing, key=lambda entry: entry.name)
+        try:
+            with os.scandir(source) as listing:
+                entries = sorted(listing, key=lambda entry: entry.name)
+        except OSError as e:
+            counts['failed'] += 1
+            print("FAILED %s: cannot list it: %s" % (source, e))
+            continue
         for entry in entries:
-            if entry.is_dir():
+            if entry.is_symlink() or entry.is_dir():
                 counts['left'] += 1
-                print("LEFT %s: a directory inside a label-type shard, which this tool never writes; not "
-                      "moved" % entry.path)
+                print("LEFT %s: a %s inside a label-type shard, which this tool never writes; not moved"
+                      % (entry.path, 'symlink' if entry.is_symlink() else 'directory'))
                 continue
             _move_file(entry.path, os.path.join(destination, entry.name), dry_run, counts, 'files_moved')
         # Only once empty: a collision or a left directory keeps the shard, and its crops, where they are.
-        if not dry_run and not os.listdir(source):
-            os.rmdir(source)
+        if not dry_run:
+            try:
+                if not os.listdir(source):
+                    os.rmdir(source)
+            except OSError as e:
+                counts['failed'] += 1
+                print("FAILED %s: cannot remove the emptied directory: %s" % (source, e))
 
     for name in _store_files(crop_dir):
         _move_file(os.path.join(crop_dir, name), os.path.join(store, name), dry_run, counts, 'store_files_moved',
@@ -211,12 +232,12 @@ def summary_line(summary, dry_run):
 
 def main(argv=None):
     """:return: 0 when the store is migrated (or there was nothing to move); 1 when anything was left where it
-             was - a collision, a directory inside a shard, an all-digit directory that is not a label type,
-             a failed rename - predicted ones included under
-             --dry-run, since CropRunner keeps refusing the root until a person settles each; 2 on a usage
-             error, a crop dir that does not exist included; 3 when the root is refused - it is already named
-             for --city, it looks like the production canvas-capture store, or its crop_rule.json (or
-             <city>/'s) records another city or cannot be read - with nothing touched."""
+             was - a collision, a directory or symlink inside a shard, an all-digit directory that is not a
+             label type, a failed listing, rename or rmdir, or a root that stopped being listable - predicted
+             ones included under --dry-run, since CropRunner keeps refusing the root until a person settles
+             each; 2 on a usage error, a crop dir that does not exist included; 3 when the root is refused -
+             it is already named for --city, it looks like the production canvas-capture store, or its
+             crop_rule.json (or <city>/'s) records another city or cannot be read - with nothing touched."""
     parser = build_parser()
     args = parser.parse_args(argv)
     if not os.path.isdir(args.crop_dir):
@@ -229,6 +250,14 @@ def main(argv=None):
         print("migrate_crop_store: %s" % e)
         logging.error('%s', e)
         return CropRunner.EXIT_REFUSED_DESTINATION
+    except OSError as e:
+        # crop_dir itself could not be listed. Whatever moved before that is in place; the marker moves
+        # last, so CropRunner still refuses the root and a re-run picks up the rest.
+        message = ("migrate_crop_store: stopped - %s. Anything listed above as moved is in place; re-run "
+                   "once %s can be listed." % (e, args.crop_dir))
+        print(message)
+        logging.error('%s', message)
+        return 1
     print(summary_line(summary, args.dry_run))
     if summary.dirs_moved or summary.files_moved or summary.store_files_moved:
         # It cannot tell one city's crop from another's: said on both channels, whenever anything moves or

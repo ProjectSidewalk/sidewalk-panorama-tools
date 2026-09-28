@@ -202,6 +202,108 @@ class TestItIsResumable:
         assert contents(root) == before
 
 
+def _symlink_or_skip(target, link):
+    try:
+        os.symlink(str(target), str(link), target_is_directory=os.path.isdir(str(target)))
+    except (OSError, NotImplementedError) as e:
+        pytest.skip('cannot create a symlink here: %s' % e)
+
+
+class TestFilesystemErrorsAreCountedNotRaised:
+    """Only the renames were guarded: a listing or rmdir that failed (a permission error over sshfs, a file
+    landing in a shard between listdir and rmdir) ended the run with a traceback, no summary and no exit
+    contract. Each is now one FAILED line, counted, and the sweep goes on."""
+
+    def test_a_shard_that_cannot_be_listed(self, tmp_path, monkeypatch, capsys):
+        root = flat_store(tmp_path / 'crops')
+        plant(root, CITY + '/1/9.jpg')
+        real_scandir = os.scandir
+
+        def unlistable_shard_1(path='.'):
+            if os.path.normpath(str(path)) == os.path.join(str(root), '1'):
+                raise PermissionError(13, 'Permission denied', str(path))
+            return real_scandir(path)
+
+        monkeypatch.setattr(migrate_crop_store.os, 'scandir', unlistable_shard_1)
+        assert run_main(root) == 1
+        printed = capsys.readouterr().out
+        assert 'FAILED %s' % os.path.join(str(root), '1') in printed and '1 failed' in printed
+        assert read_bytes(root / CITY / '2' / '3.jpg') == b'2/3.jpg'
+        assert read_bytes(root / '1' / '1.jpg') == b'1/1.jpg'
+
+    def test_a_shard_that_cannot_be_removed_once_empty(self, tmp_path, monkeypatch, capsys):
+        root = flat_store(tmp_path / 'crops')
+        plant(root, CITY + '/1/9.jpg')
+
+        def no_rmdir(path):
+            raise PermissionError(13, 'Permission denied', path)
+
+        monkeypatch.setattr(migrate_crop_store.os, 'rmdir', no_rmdir)
+        assert run_main(root) == 1
+        printed = capsys.readouterr().out
+        assert '1 failed' in printed and 'FAILED' in printed
+        assert read_bytes(root / CITY / '1' / '1.jpg') == b'1/1.jpg'
+        assert read_bytes(root / CITY / '2' / '3.jpg') == b'2/3.jpg'
+
+    def test_a_shard_that_cannot_be_counted_under_dry_run_is_still_a_predicted_move(self, tmp_path, monkeypatch, capsys):
+        root = flat_store(tmp_path / 'crops')
+        real_listdir = os.listdir
+
+        def unlistable(path='.'):
+            if os.path.basename(os.path.normpath(str(path))) == '1':
+                raise PermissionError(13, 'Permission denied', str(path))
+            return real_listdir(path)
+
+        monkeypatch.setattr(migrate_crop_store.os, 'listdir', unlistable)
+        before = tree_snapshot(root)
+        predicted = migrate(root, dry_run=True)
+        assert tree_snapshot(root) == before
+        printed = capsys.readouterr().out
+        assert 'Would move directory %s' % os.path.join(str(root), '1') in printed and 'uncounted' in printed
+        # The real run's one rename never lists the shard, so the prediction is a move, not a failure.
+        monkeypatch.setattr(migrate_crop_store.os, 'listdir', real_listdir)
+        assert predicted == migrate(root)
+
+    def test_a_root_that_cannot_be_listed_is_exit_1_on_both_channels(self, tmp_path, monkeypatch, capsys,
+                                                                     caplog):
+        """The production guard lists the root first and refuses one it cannot list, so this is the listing
+        failing after the guard's succeeded (an sshfs hiccup): the guard is stubbed to let it through."""
+        import logging
+        root = flat_store(tmp_path / 'crops')
+
+        def unlistable(path='.'):
+            raise PermissionError(13, 'Permission denied', str(path))
+
+        monkeypatch.setattr(migrate_crop_store.CropRunner, 'refuse_production_crop_store', lambda crop_dir: None)
+        monkeypatch.setattr(migrate_crop_store.os, 'scandir', unlistable)
+        with caplog.at_level(logging.ERROR):
+            assert run_main(root) == 1
+        assert 'Permission denied' in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and 'Permission denied' in r.getMessage() for r in caplog.records)
+
+    def test_a_shard_that_is_a_symlink_is_left(self, tmp_path, capsys):
+        """A relative link moved one level deeper dangles, and following one moves files out of wherever it
+        points. Either way it is not something this tool made."""
+        root = flat_store(tmp_path / 'crops')
+        elsewhere = tmp_path / 'elsewhere' / '3'
+        plant(elsewhere.parent, '3/7.jpg')
+        _symlink_or_skip(elsewhere, root / '3')
+        summary = migrate(root)
+        assert os.path.islink(str(root / '3')) and read_bytes(elsewhere / '7.jpg') == b'3/7.jpg'
+        assert summary.left == 1
+        assert 'LEFT %s' % os.path.join(str(root), '3') in capsys.readouterr().out
+
+    def test_a_symlinked_entry_inside_a_shard_is_left(self, tmp_path, capsys):
+        root = flat_store(tmp_path / 'crops')
+        plant(root, CITY + '/1/9.jpg')
+        target = plant(tmp_path, 'elsewhere/4.jpg')
+        _symlink_or_skip(target, root / '1' / '4.jpg')
+        summary = migrate(root)
+        assert os.path.islink(str(root / '1' / '4.jpg')) and not (root / CITY / '1' / '4.jpg').exists()
+        assert read_bytes(root / CITY / '1' / '1.jpg') == b'1/1.jpg'
+        assert summary.left == 1
+
+
 # ---------------------------------------------------------------------------
 # The store's own files, and whose store it is
 # ---------------------------------------------------------------------------
