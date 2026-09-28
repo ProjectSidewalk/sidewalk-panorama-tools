@@ -2326,9 +2326,18 @@ class TestAStoreThatGoesAwayMidNight:
             return scrape_queue.CityResult(city.city_id, 'ok', 0, budget * 60.0,
                                            stop_reasons={'image_stop': 'max-runtime', 'depth_stop': None})
 
+        checks = []
+
+        def store_check():
+            # Capped too: a booked store_missing city spends no clock, so a queue that kept re-queueing one
+            # would spin here without ever calling run_one.
+            checks.append(mounted[0])
+            if len(checks) > 8:
+                raise AssertionError('kept re-checking a city booked store_missing: %d checks' % len(checks))
+            return mounted[0]
+
         results = scrape_queue.run_queue(cities, 'store', 'py', 'runner', [], max_runtime_minutes=600,
-                                         city_max_runtime=12, run_one=run_one,
-                                         store_check=lambda: mounted[0])
+                                         city_max_runtime=12, run_one=run_one, store_check=store_check)
 
         assert ran == ['alpha', 'bravo'], 'no extra pass may start a city on an unmounted store'
         assert [(r.city_id, r.outcome, r.pass_number) for r in results][2:] == [
