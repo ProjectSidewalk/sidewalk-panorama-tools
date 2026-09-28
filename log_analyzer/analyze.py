@@ -547,8 +547,13 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     if progress and progress["barren"]:
         asked = progress["unsaved_request_nights"]
         since = progress["unsaved_nights"]
-        nights = f"on the last {asked} nights it made requests" + (
-            f", over {since} nights since the last save" if since != asked else "")
+        # A city that never saved has no `last save` to count from: unsaved_nights is then the log's span + 1,
+        # so name the span and say there was no save rather than citing one (#169 final review).
+        if progress["ever_saved"]:
+            tail = f", over {since} nights since the last save" if since != asked else ""
+        else:
+            tail = (f", over {since} nights" if since != asked else "") + ", with no save in the log"
+        nights = f"on the last {asked} nights it made requests{tail}"
         share = progress["unavailable_share"]
         if share >= DEPTH_UNAVAILABLE_SHARE:
             issues.append({
@@ -721,7 +726,8 @@ def depth_progress(df: pd.DataFrame):
       unsaved_request_nights
                    the dates after that one on which the phase made at least one request: the nights that
                    asked and saved nothing. What rule 10 counts - a night with no row or a stand-down row is
-                   no evidence the phase is failing.
+                   no evidence the phase is failing. Also the stats line's count, so the two agree.
+      ever_saved   whether the log holds any save at all; without one rule 10 names no `last save`.
       written_off  what the ledger (skip + success) gained between the first and the newest row of that span
                    that made requests, floored at 0 (a corpus can shrink). The `unavailable` verdicts, read
                    back one run late.
@@ -823,6 +829,7 @@ def depth_progress(df: pd.DataFrame):
         "unsaved_nights": unsaved_nights,
         "unsaved_requests": unsaved_requests,
         "unsaved_request_nights": unsaved_request_nights,
+        "ever_saved": last_save is not None,
         "written_off": written_off,
         "failed_before_newest": failed_before_newest,
         "unavailable_share": unavailable_share,
@@ -848,7 +855,10 @@ def depth_status(progress) -> str:
     # numbers differ by the whole failure count.
     # A barren phase says so here too: in the drift shape the ledger grows by every failure, so the rate and
     # the ETA beside it are counting `unavailable` verdicts and read as a healthy backfill (#163).
-    barren = f" · nothing saved in {progress['unsaved_nights']} nights" if progress["barren"] else ""
+    # Counted in nights that made requests, the WARNING's own count - not unsaved_nights, the calendar span,
+    # which on a gappy log is a different number for the same fact (#169 final review).
+    barren = (f" · nothing saved in {progress['unsaved_request_nights']} requesting nights"
+              if progress["barren"] else "")
     return (f"depth {progress['resolved']:,}/{progress['eligible']:,} ({pct:.1f}%) · "
             f"+{progress['nightly_resolved']:,.0f} panos/night · {eta}{barren}")
 

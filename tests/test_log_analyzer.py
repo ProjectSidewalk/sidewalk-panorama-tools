@@ -498,6 +498,16 @@ class TestRule3AsksWhetherThereWasWork:
         assert [i['level'] for i in found] == ['WARNING'], found
         assert '3 eligible panos never attempted' in found[0]['msg']
 
+    def test_an_empty_list_on_the_newest_night_does_not_hide_the_backlog(self, tmp_path):
+        """The backlog half of the written-0 fix. A starved city with 500 eligible panos never attempted gets an
+        empty /adminapi/panos answer on its newest night, so field 5 is 0 there. Read at face value the backlog
+        is 0 - field 11, negative, and with a flat corpus rule 3 is silent; the 0 is unknown, so the backlog is
+        read on the newest row that knows its corpus (#169 final review)."""
+        found = self.rule_3(tmp_path, zero_progress_rows(new_panos=0, not_attempted=500, empty_list_ages=(0,)))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert '500 eligible panos never attempted' in found[0]['msg']
+
     def test_an_old_backlog_since_closed_is_not_work(self, tmp_path):
         """The image phase caught up long ago (a first scrape's gap), and today every eligible pano has been
         attempted: nothing to fetch, so a mature city stays quiet."""
@@ -1436,6 +1446,37 @@ class TestADepthPhaseThatSavesNothingIsFlagged:
 
         assert [i['level'] for i in found] == ['WARNING'], found
         assert 'on the last 3 nights' in found[0]['msg']
+        assert 'with no save in the log' in found[0]['msg']
+
+    def test_a_city_that_never_saved_does_not_cite_a_last_save(self, tmp_path):
+        """Failing nights 4, 2 and 0 nights ago and no save anywhere in the log: there is no `last save` to
+        count from, so the message says so rather than naming one (#169 final review)."""
+        rows = saving_nothing(1, newest=4) + saving_nothing(1, newest=2) + saving_nothing(1)
+
+        found = self.barren(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'on the last 3 nights it made requests, over 5 nights, with no save in the log' in found[0]['msg']
+        assert 'since the last save' not in found[0]['msg']
+
+    def test_three_passes_on_one_failing_night_are_one_night(self, tmp_path):
+        """The queue can give a city several passes a night (#43). A one-night outage that fails all three is
+        one failing night - what DEPTH_BARREN_NIGHTS forgives - not three: the count is of DATES, not rows,
+        the same row-versus-night mistake rules 2, 3 and 6 were fixed for (#169 final review)."""
+        rows = [depth_rows(1, 5000, 0, 590)] + saving_nothing(1) * 3
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_the_stats_line_counts_the_nights_that_asked(self, tmp_path):
+        """The stats line and the WARNING give one number: nights that made requests, not calendar nights since
+        the save - on a gappy log those differ (here 3 against 8), and two lines disagreeing about one fact
+        invite someone to 'fix' the wrong one (#169 final review)."""
+        rows = ([depth_rows(8, 5000, 0, 590)] + saving_nothing(1, newest=6) + saving_nothing(1, newest=3)
+                + saving_nothing(1))
+
+        stats = analyze.city_stats(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert 'nothing saved in 3 requesting nights' in stats, stats
 
     def test_the_measured_drift_is_critical(self, tmp_path):
         """Upstream drift made every pano's depth None, so every request became an `unavailable` verdict:
@@ -1448,7 +1489,7 @@ class TestADepthPhaseThatSavesNothingIsFlagged:
         assert [i['level'] for i in found] == ['CRITICAL'], found
         assert '17,001' in found[0]['msg']
         assert 'unavailable' in found[0]['msg']
-        assert 'nothing saved in 10 nights' in analyze.city_stats(analyze.read_log(log))
+        assert 'nothing saved in 10 requesting nights' in analyze.city_stats(analyze.read_log(log))
 
     @staticmethod
     def half_ledgered(skips):
