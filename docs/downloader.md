@@ -442,7 +442,7 @@ silenced by it.
 | code | what happened | where to read more |
 |---|---|---|
 | `depth-refused` | Google refused this run's depth requests; the 6 h block latch was written | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
-| `depth-stood-down` | A live latch from an earlier refusal; the depth phase made no request | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-stood-down` | A live latch at depth-phase start; the depth phase made no request. The refusal behind it is another run's, or this run's own image phase (a photometa refusal, or a push-back trip, which also exits the city 1). GSV images are not stood down by a latch, only put on probation | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-breaker` | 25 consecutive depth failures; the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-ledger-unusable` | `depth_log.csv` could not be read or written; depth sat the run out | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |

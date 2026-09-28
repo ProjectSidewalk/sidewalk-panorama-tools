@@ -1274,7 +1274,8 @@ DEPTH_STOP_MAX_REQUESTS = 'max-requests'
 # reported only in a scrape.log nobody reads unprompted. A condition says nothing about re-running - that is
 # depth_stop's job - so a refusal and a stand-down both keep depth_stop == DEPTH_STOP_BLOCKED and differ here.
 DEPTH_CONDITION_REFUSED = 'depth-refused'           # Google refused THIS run; the latch was written
-DEPTH_CONDITION_STOOD_DOWN = 'depth-stood-down'     # a live latch from an earlier refusal; no request made
+DEPTH_CONDITION_STOOD_DOWN = 'depth-stood-down'     # a live latch at phase start (another run's refusal, or this
+                                                    # run's image phase: photometa or a push-back trip); no request
 DEPTH_CONDITION_BREAKER = 'depth-breaker'           # DEPTH_MAX_CONSECUTIVE_FAILURES in a row
 DEPTH_CONDITION_LEDGER = 'depth-ledger-unusable'    # depth_log.csv could not be read, or not be written
 DEPTH_CONDITION_UNAVAILABLE = 'depth-unavailable'   # streetlevel is not importable
