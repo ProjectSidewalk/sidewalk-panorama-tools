@@ -40,6 +40,10 @@ Download a city's panoramas and depth maps into `/srv/panos/columbus-oh`:
 python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbus-oh
 ```
 
+Collaborators the Project Sidewalk team has issued SFTP credentials can copy already-scraped panoramas instead
+of downloading them — see [Pulling from the Project Sidewalk pano store](docs/downloader.md#pulling-from-the-project-sidewalk-pano-store).
+Without that flag, the default is to download from the imagery provider yourself.
+
 Then cut a crop for every label in that city:
 
 ```bash
@@ -62,7 +66,7 @@ for the nightly cron form.
 
 | | |
 |---|---|
-| [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, and the nightly queue |
+| [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, the nightly queue, and pulling from the pano store |
 | [Cropper](docs/cropper.md) | Crop geometry, the two preflights, outcome taxonomy, and what to know before training on the crops |
 | [Depth maps](docs/depth.md) | The `.npz` artifact format, the plane fields, migration — and **what the depth product is and isn't** |
 | [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 19-column `log.csv`, how a crashed run reads, and operating the production host (deploy, rollback, adding a city) |
