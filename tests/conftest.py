@@ -95,6 +95,10 @@ def _the_suite_leaves_the_repo_as_it_found_it():
     last - read the message, not that test's name, for the culprit's trail. Found by audit rather than by a
     failure: tests/test_fetch_rawlabels.py wrote an 11-byte richmond.csv into the real Mapillary study cache
     on every run, and nothing in the suite could see it.
+
+    Editing the checkout while the suite runs trips it too, and that includes the few seconds of each child
+    pytest loaded with `-p conftest` (test_suite_isolation.py): the child runs this same guard against the
+    real checkout, so an edit then fails the child and reads as that parent test failing.
     """
     yield from guard_the_tree(snapshot_tree_state)
 
@@ -219,10 +223,11 @@ def _give_children_a_session_temp_dir():
     """Point spawned children's temp directory at a fresh per-session one (#165).
 
     gsv's depth block latch and pacing state, common's width-alarm latch (#121) and scrape_queue's lock all
-    default to tempfile.gettempdir(), deliberately - each is a fact about the host. _isolate_depth_host_state redirects them in THIS process,
-    but monkeypatching does not cross a process boundary, so the runner tests that spawn DownloadRunner.py
-    were taking the host's real pacing lock and reading its real latch. The children inherit os.environ
-    (every spawn helper passes `dict(os.environ, ...)`), and tempfile reads TMPDIR, TEMP, TMP in that order.
+    default to tempfile.gettempdir(), deliberately - each is a fact about the host. _isolate_depth_host_state
+    redirects them in THIS process, but monkeypatching does not cross a process boundary, so the runner tests that
+    spawn DownloadRunner.py were taking the host's real pacing lock and reading its real latch. The children
+    inherit os.environ (every spawn helper passes `dict(os.environ, ...)`), and tempfile reads TMPDIR, TEMP, TMP
+    in that order.
 
     gettempdir() is called first on purpose: it caches the host's directory in this process before the
     variables change, so pytest's own tmp_path stays where it always was - and survives the rmtree of the
@@ -268,9 +273,12 @@ def pytest_configure(config):
     """
     _give_children_a_session_temp_dir()
     # The next pytest's removals as errors, so a class-scoped instance-method fixture (fcadac1) or any other
-    # removed-in-10 shape fails the PR that adds it rather than every PR on the day pytest 10 lands (#165,
-    # D3: no upper bound). Guarded, not an ini line or a CI `-W`: under the pytest>=7 floor the class may not
-    # exist yet, and after 10 it may not exist any more, and naming an unknown class is a usage error.
+    # removed-in-10 shape fails the PR that adds it rather than every PR on the day pytest 10 lands (#165, D3: no
+    # upper bound). The price of D3 is the other direction: CI installs the latest pytest, so a new 9.x that
+    # deprecates a shape already in the suite fails every open PR the day it ships. That is the intended early
+    # warning - it arrives with the reason in the error, instead of as a summary line. Guarded, not an ini line or
+    # a CI `-W`: under the pytest>=7 floor the class may not exist yet, and after 10 it may not exist any more,
+    # and naming an unknown class is a usage error.
     if hasattr(pytest, 'PytestRemovedIn10Warning'):
         config.addinivalue_line('filterwarnings', 'error::pytest.PytestRemovedIn10Warning')
     if os.environ.get('COVERAGE_PROCESS_START'):

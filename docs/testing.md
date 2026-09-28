@@ -83,24 +83,27 @@ instead of skipping all ten contract tests behind a green check
 turns it on. CI also passes `--continue-on-collection-errors`, because that failure is a collection error and
 pytest's default on one is to run nothing else; the run still exits nonzero, with every other result kept.
 
-**The suite is also isolated from the machine it runs on, and held to the next pytest**, in three ways `tests/conftest.py` sets up and
-`tests/test_suite_isolation.py` pins (#165):
+**The suite is also isolated from the machine it runs on, and held to the next pytest**, in three ways
+`tests/conftest.py` sets up and `tests/test_suite_isolation.py` pins (#165):
 
 - A session-scoped check fails the run if it changed the repo — `git status`, plus the gitignored
-  `reports/scripts/.cache/` stamped file by file, since git cannot see it and the fetcher never replaces a
-  file already there. It exists because one test wrote a fake one-label `richmond.csv` into the real Mapillary
-  study cache on every run. The failure is reported at the teardown of whichever test ran last; the message
-  names the files. Editing the checkout while the suite runs trips it too. It reports and does not undo, so a
-  write is reported **once**: the next run takes the tree as it finds it for its baseline and passes, and the
-  named paths have to be removed by hand.
+  `reports/scripts/.cache/` stamped file by file, since git cannot see it and the fetcher never replaces a file
+  already there. It exists because one test wrote a fake one-label `richmond.csv` into the real Mapillary study
+  cache on every run. The failure is reported at the teardown of whichever test ran last; the message names the
+  files. Editing the checkout while the suite runs trips it too, including during the child pytests that load
+  the real `conftest.py`, where the edit fails the child and reads as that parent test failing. It reports and
+  does not undo, so a write is reported **once**: the next run takes the tree as it finds it for its baseline
+  and passes, and the named paths have to be removed by hand.
 - Every spawned child gets a per-session temp directory (`TMPDIR`/`TEMP`/`TMP`), so the subprocess runner
   tests never take the host's real depth pacing lock, read its real block latch, arm its real width-alarm
   latch (#121, which fails a host's first sighting and only warns after) or take `scrape_queue`'s lock —
   monkeypatching does not reach a child. The pytest process itself keeps the host temp dir, and the session
   dir is removed at exit.
-- `PytestRemovedIn10Warning` is an error, added to `filterwarnings` by `conftest.py` when the running pytest
-  has the class, so a shape pytest 10 removes fails the PR that adds it rather than every PR on the day
-  pytest 10 lands. There is deliberately no `pytest<10` bound.
+- `PytestRemovedIn10Warning` is an error, added to `filterwarnings` by `conftest.py` when the running pytest has
+  the class, so a shape pytest 10 removes fails the PR that adds it rather than every PR on the day pytest 10
+  lands. There is deliberately no `pytest<10` bound, and the price runs the other way: CI installs the latest
+  pytest, so a new 9.x that deprecates a shape already in the suite fails every open PR the day it ships. That
+  is the intended early warning, arriving with its reason in the error rather than as a summary line.
 
 **Live re-checks against external services sit behind an opt-in env var**, so CI stays offline while the
 capture scripts that produced `tests/fixtures/` remain runnable on demand.
