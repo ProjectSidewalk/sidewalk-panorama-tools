@@ -13,7 +13,8 @@ Consumer requirements and the open geometry questions are tracked in
 ## Usage
 
 ```bash
-python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force]
+python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force] \
+    [--sizing-rule {v2,v3}]
 ```
 
 | Flag | What it does |
@@ -25,6 +26,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `--city <city_id>` | **Required.** The city the labels belong to: an active (not `#`-commented) `city_id` row of `log_analyzer/cities.csv` (`seattle-wa`, `cdmx`), read when the flag is parsed. Anything else — a misspelling, a retired city, an unreadable roster — is exit 2, since the city names a directory and a typo would start a new store; add a missing city to the roster first ([Adding a city](ops.md#adding-a-city), step 3). Names the store, `<crop-dir>/<city>/`; recorded in its `crop_rule.json` and on every provenance row — see [One store, one city](#one-store-one-city). |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
 | `--force` | Re-cut a label whose crop already exists instead of skipping it — the repair for a store cut under an older rule. Off by default. See [Re-cutting a store](#re-cutting-a-store-with---force). |
+| `--sizing-rule {v2,v3}` | Which crop sizing rule to cut with. **`v2` is the default**, and has been since [#88](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/88) (stores cut before it are v1, [#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)); `v3` is opt-in — see [Sizing rule v3](#sizing-rule-v3-opt-in). Recorded in `crop_rule.json` and on every provenance row either way. |
 
 Example:
 
@@ -222,15 +224,75 @@ tightest crops. Every v2 constant is one measured number:
 [reports/2026-08-19-crop-sizing-v2.md](../reports/2026-08-19-crop-sizing-v2.md).
 
 **Which rule cut a store is recorded in `<crop-dir>/<city>/crop_rule.json` — check it before training on a
-directory.** `write_rule_marker()` writes `CROP_RULE_VERSION` plus every constant before anything is cut, and
-*warns* rather than refusing when the marker disagrees with the running rule. A mixed store is the ordinary
+directory.** `write_rule_marker()` writes the rule the run selected (`crop_rule_version`), its
+`distance_estimator`, and every rule's constants before anything is cut, and *warns* — on stdout and in
+`crop.log` — rather than refusing when the marker disagrees with the rule this run selected, or, under the
+same rule id, when a constant that rule reads has changed (a refit v3 would still call itself v3). A mixed store is the ordinary
 result of changing the rule: existing crops are the resume marker and are not re-cut by default, so running
 v2 over a v1 store leaves square v1 crops accreting 3:2 ones beside them. `--force` re-cuts every label the run
 reaches under the running rule ([below](#re-cutting-a-store-with---force)); note that the marker is rewritten
-at the *start* of the run, so a forced run that is interrupted leaves a store the marker describes as all-v2
-while part of it is still v1 — finish the run before training on it. The warning says which case it is: without `--force` it
-reports a store left holding both geometries and names `--force` as the remedy; under `--force` it says this
+at the *start* of the run, so a forced run that is interrupted leaves a store the marker names as the new rule
+while part of it is still the old one — finish the run before training on it. The warning says which case it is: without `--force` it
+says the old crops keep their geometry beside this run's and names `--force` as the remedy; under `--force` it says this
 run is re-cutting every label it reaches and that the marker already names the new rule.
+
+The marker's history is **sticky**: `rules_seen` lists every rule the store has been run under, in order of
+first use, and `constants_seen` every value each rule's constants have had. Both are only ever appended to,
+and the warnings fire on *every* run whose rule or constants are not the only ones the store has seen — not
+just the first. That matters for v2 and v3 in particular, because both cut 3:2 crops, so a mixed store is
+indistinguishable on disk and the marker is the only evidence. The warning is written before any crop is cut,
+so it says what the store holds and what any crop this run cuts will be, not that this run added anything. A
+marker that exists but cannot be read (bad JSON, a malformed history, or a rule field that is not a string,
+a number or null) is warned about, recorded as `unknown` (for good, in `rules_seen`), and
+kept beside the new one as `crop_rule.json.unreadable-<UTC timestamp>`; its city and manifest keys are
+carried forward. (A marker that is not a JSON object at all is refused before this, by
+[the city check](#one-store-one-city), since it cannot say whose store it is. Only the rule's own fields
+are type-checked: `provenance_manifest_no_known_gap` is a JSON bool by design.) Getting one geometry throughout means
+re-cutting the store under one rule's constants ([`--force`](#re-cutting-a-store-with---force)), and a
+forced pass does **not** clear the history: like `provenance_manifest_no_known_gap`, nothing in the marker
+can tell that it reached every crop. **The reset:** once the whole store has been re-cut under one rule,
+remove `rules_seen`, `constants_seen` and `previous_crop_rule_version` from `crop_rule.json` — never a
+crop — and the next run records only its own rule. The plain-run warning names this reset as well as
+`--force`, since after a whole forced re-cut it still fires and another forced pass would not quiet it. Remove those three keys rather than deleting the file:
+the file also holds the store's `city` and the manifest's gap record, and a deleted marker turns that
+record into `null` (unknown) for good. Do it only after a *whole* re-cut: over a store that still holds
+crops from another rule, it makes a mixed store read as a clean one.
+
+### Sizing rule v3 (opt-in)
+
+`--sizing-rule v3` ([#32](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/32)) replaces the
+2013 linear distance with the lle #3 calibrated one, and the power law with the geometry it approximates.
+Three named steps, composed in `crop_window_fov_deg()`:
+
+1. `label_depression_deg(pano_y, pano_height)` — the label's angle below the horizon, through the elevation
+   primitive. A #54 tilt correction, once measured, is an addend here and nowhere else.
+2. `blend_distance_m(depression)` — `h / tan(depression)` for depressions of 11.25° and steeper; between the
+   horizon and 11.25°, the straight line matching the cotangent's value and slope at 11.25°; `h = 2.3412 m`.
+   It saturates at 23.85 m at the horizon, so a label above the horizon gets the horizon's window. It is
+   clipped to [0, 50 m], but the 50 m cap is inert under the blend (it tops out at 23.85 m); it matters only
+   to the depth-distance spec it was copied from.
+3. `geometric_window_fov_deg(distance)` — `2·atan(W / 2d)` with `W = V3_CONTEXT_WIDTH_M = 5.8 m`, clamped to
+   v2's 8°–90°. It takes metres, so a measured distance (the depth artifact) would plug in unchanged.
+
+Everything downstream — 3:2, the seam, the shift, the 1440 px storage cap — is v2's. Two consequences of the
+constants: **the 8° floor is unreachable** (the horizon window is 13.87°), and **the 90° cap binds from 38.91°**
+of depression rather than v2's 26.55°. `W` is the one fitted number, chosen to give v2's median fill on the
+same 658 gold aprons; the three distance constants are a transcribed copy of
+`reports/scripts/pov_replay.py`'s, pinned equal by `TestBlendDistanceMatchesTheStudyPort`.
+
+Measured in [reports/2026-09-26-crop-sizing-v3.md](../reports/2026-09-26-crop-sizing-v3.md): at the same
+median crop, v3's fill is less dispersed and its window tracks the apron better in every city — but it
+moves about 40% of the 658 gold ramps' windows by more than 10%. (The report also sets out the minimal
+alternative, the blend distance fed into v2's power law, which trades the other way on several columns;
+the choice is decision D7 on [#157](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/157) and
+the report's §4, not a settled result.) **The default stays v2**: existing crops are re-cut
+only under `--force`, so flipping it on a store cut under v2 would mix the geometries unless every store is
+re-cut whole ([#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)). Until that is
+decided, run v3 into a fresh `-o`, or over a v2 store only with `--force`; `crop_rule.json` warns if you
+mix them, and on every run after. If the default does flip, fold it into the recrop campaign
+[#84](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/84) coordinates rather than
+re-cutting the stores a second time on its own. [The content check](#the-content-check-black_content)
+judges v3's window exactly as it does v2's.
 
 The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top, width, height, shifted)`:
 
@@ -330,27 +392,30 @@ a training directory with a clean summary.
 is counted `black_content`.
 
 **Why 0.5.** Measured on a 2048×1024 grey pano whose bottom 30% is black, JPEG q95, with the real window
-geometry:
+geometry of each sizing rule (the v2 column is the one the threshold was chosen on; v3, `--sizing-rule v3`,
+was measured on the same fixture when the two met, and cuts a narrower window at every one of these rows but
+the shifted one):
 
-| Label y | Black share of the window |
-|---|---|
-| 512 (horizon) | 0.000 |
-| 650 | 0.241 |
-| 700 | 0.452 |
-| 716 | 0.499 |
-| 730 | 0.540 |
-| 900 (window shifted up) | 0.900 |
+| Label y | Black share of the window, v2 | v3 |
+|---|---|---|
+| 512 (horizon) | 0.000 | 0.000 |
+| 650 | 0.241 | 0.199 |
+| 700 | 0.452 | 0.441 |
+| 716 | 0.499 | 0.498 |
+| 730 | 0.540 | 0.540 |
+| 900 (window shifted up) | 0.900 | 0.900 |
 
 Inside a large black JPEG region luma is exactly 0, and the codec's ringing is confined to the rows next to
 the edge, so a label inside a band whose window is *not* shifted gets at least half black rows (the rows
-from the label down to the window's bottom edge). A window more black than imagery is not imagery. The other
+from the label down to the window's bottom edge) — a property of a centred window, so it holds under either
+rule. A window more black than imagery is not imagery. The other
 direction holds too: exact zero over half a window is not a night scene or a black car, because JPEG noise
 keeps those off 0 (a band of `(1, 1, 1)` is written). Two consequences are accepted knowingly: a label within
 the ringing margin of a band's edge (y=716 above) is written, and so is a partly black crop under half
-(y=650, 24% black).
+(y=650, 24% black under v2, 20% under v3).
 
-**A bottom band is caught only when it is deeper than a sixth of the pano.** Near the nadir the window is
-clamped at `CROP_MAX_FOV_DEG` (90° wide, so at 3:2 it spans 60° of elevation, a third of the pano's height)
+**A bottom band is caught only when it is deeper than a sixth of the pano — under either rule.** Near the
+nadir the window is clamped at `CROP_MAX_FOV_DEG` (90° wide, so at 3:2 it spans 60° of elevation, a third of the pano's height)
 and shifted up to end at the bottom row, so every label in the lower sixth gets the *same* window, and its
 black share is the band's depth over that window's height — wherever in the band the label sits. The check therefore withholds labels in a
 bottom band only when the band is deeper than half the nadir window: **H/6, 16.7% of the pano's height**
@@ -365,9 +430,14 @@ JPEG q75, labels just inside the band, mid-band and on the bottom row, all three
 | 18% | 0.535 | withheld |
 | 18.75% (#156's D4 shape) | 0.562 | withheld |
 
+The table is v2's, and v3's is the same: v3's window reaches `CROP_MAX_FOV_DEG` from 38.9° of depression,
+and the window starts shifting at about 60° under both rules, so the nadir window is the *same box* under
+either (measured identical, and the in-memory test is parametrised over both rules and asserts it).
+
 So the D4 bottom band clears the limit by about six points, while a thinner band — a pre-#68 fallback or any
 other reported/served ratio under ~1/6 — is written as `success` with up to half of each crop black. Two tests
-pin this against the geometry, in memory at the exact row and on a stored JPEG either side of a sixth. A
+pin this against the geometry, in memory at the exact row and on a stored JPEG either side of a sixth, each
+under both rules. A
 right-hand band has the analogous edge case at the seam: the window wraps to imagery from the left edge, so a
 label on the last column of a band gets about half black (0.510 measured at 19%, withheld by a hair). A
 consumer who wants those crops out too filters below 0.5 (see
@@ -575,6 +645,10 @@ guard refuses with or without `--force`.
   (black_content) rather than skipped by a preflight`.
 * **It re-cuts the labels you hand it, not the directory.** A crop on disk whose label is absent from the
   metadata (deleted upstream, or outside a `-f` subset) is left alone.
+* **It does not clear the rule history.** `crop_rule.json`'s `rules_seen` keeps every rule the store was
+  ever run under, so the mixed-store warning repeats after a whole re-cut. Once the whole store has been
+  re-cut under one rule, remove the three history keys ([the reset](#crop-geometry)), or the marker keeps
+  warning about the rule the replaced crops were cut under.
 
 ## What a crop store holds
 

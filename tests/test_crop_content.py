@@ -371,20 +371,27 @@ class TestAMostlyBlackWindowIsWithheld:
         assert counts['black_content'] == 2
         assert find_crop(out, 2) is None and find_crop(out, 3) is None
 
+    @pytest.mark.parametrize('rule', ['v2', 'v3'])
     def test_at_the_nadir_a_bottom_band_is_caught_only_deeper_than_a_sixth_of_the_pano(self, crop_runner,
-                                                                                         tmp_path):
+                                                                                         tmp_path, rule):
         """KNOWN LIMIT, tied to the geometry that sets it. Near the nadir the window is clamped at
         CROP_MAX_FOV_DEG (90 deg wide, so at 3:2 it spans 60 deg of elevation, a third of the pano's height)
         and shifted up to end at the bottom row, so a label anywhere in the lower sixth gets the SAME window -
         and its black share is the band's depth over that window's height, wherever in the band the label sits. The check
         therefore sees a bottom band only when it is deeper than CROP_MAX_BLACK_FRACTION of that window:
         H/6, 16.7%. The D4 bottom band (18.75%) clears it by a few points; a thinner band is written as
-        success, 29-45% black at 10-15% deep. In memory, so the rows are exact."""
+        success, 29-45% black at 10-15% deep. In memory, so the rows are exact.
+
+        The same H/6 under rule v3 (#32): its window reaches CROP_MAX_FOV_DEG from ~39 deg of depression
+        and shifts from ~60 deg under both rules, so the nadir window is the SAME box and the limit is
+        one figure for both rules."""
         size = (2048, 1024)
         width, height = size
         y = height - 1
-        box = crop_runner.compute_crop_box(LABEL_X, y, crop_runner.crop_window_width(y, width, height),
+        box = crop_runner.compute_crop_box(LABEL_X, y, crop_runner.crop_window_width(y, width, height, rule),
                                            width, height)
+        assert box == crop_runner.compute_crop_box(LABEL_X, y, crop_runner.crop_window_width(y, width, height),
+                                                   width, height)
         assert box.shifted and box.top + box.height == height
         assert box.height == pytest.approx(height / 3, abs=1)
         # The deepest bottom band the check lets through, in rows: half the nadir window.
@@ -399,21 +406,22 @@ class TestAMostlyBlackWindowIsWithheld:
         for label_y in (height - limit_rows + 1, height - limit_rows // 2, height - 1):
             written = tmp_path / ('written-%d.jpg' % label_y)
             assert crop_runner.make_single_crop(pano_with_bottom_band(limit_rows), LABEL_X, label_y,
-                                                str(written)) == box
+                                                str(written), sizing_rule=rule) == box
             assert written.exists()
             with pytest.raises(crop_runner.CropWindowMostlyBlackError):
                 crop_runner.make_single_crop(pano_with_bottom_band(limit_rows + 1), LABEL_X, label_y,
-                                             str(tmp_path / ('withheld-%d.jpg' % label_y)))
+                                             str(tmp_path / ('withheld-%d.jpg' % label_y)), sizing_rule=rule)
 
+    @pytest.mark.parametrize('rule', ['v2', 'v3'])
     @pytest.mark.parametrize('depth, withheld', [(0.15, False), (0.19, True)])
-    def test_a_stored_bottom_band_either_side_of_a_sixth(self, crop_runner, tmp_path, depth, withheld):
+    def test_a_stored_bottom_band_either_side_of_a_sixth(self, crop_runner, tmp_path, depth, withheld, rule):
         """The same limit on a stored JPEG pano, every label inside the band: all written at 15% deep
         (each window ~44% black), all withheld at 19% (the D4 shape's depth)."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_banded_pano(store, bottom=depth)
         band_top = 1024 - int(round(1024 * depth))
         labels = [band_label(1, band_top + 10), band_label(2, (band_top + 1024) // 2), band_label(3, 1023)]
-        counts = run(crop_runner, labels, store, out)
+        counts = run(crop_runner, labels, store, out, sizing_rule=rule)
         if withheld:
             assert counts['black_content'] == 3 and counts['success'] == 0
         else:
@@ -432,6 +440,83 @@ class TestAMostlyBlackWindowIsWithheld:
         copies that can drift."""
         from downloaders import gsv
         assert crop_runner.black_fraction is common.black_fraction is gsv._black_fraction
+
+
+class TestTheCheckRunsUnderEveryRule:
+    """#170 meets #157: the content check sits between extract_crop and downscale_for_storage for EVERY
+    sizing rule, not only the default. A v3 window is a different box from v2's at the same label, so a
+    check wired to the default path alone would let a v3 run write black crops as success."""
+
+    def test_a_mostly_black_v3_window_is_withheld_as_black_content(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_banded_pano(store)
+        labels = [band_label(1, CLEAN_Y), band_label(2, IN_BAND_Y), band_label(3, PARTLY_Y)]
+
+        counts = run(crop_runner, labels, store, out, sizing_rule='v3')
+
+        assert counts['success'] == 2 and counts['black_content'] == 1 and counts['errors'] == 0
+        assert reconciles(counts)
+        assert find_crop(out, 2) is None
+        # And what was written is v3's window, so the run above really cut under v3.
+        v3_width = crop_runner.compute_crop_box(
+            LABEL_X, PARTLY_Y, crop_runner.crop_window_width(PARTLY_Y, 2048, 1024, 'v3'), 2048, 1024).width
+        with Image.open(find_crop(out, 3)) as crop:
+            assert crop.size[0] == v3_width
+        assert not _rglob(out, '*.part')
+        assert provenance_ids(out) == {'1', '3'}
+        with open(_rglob(out, 'crop_provenance.csv')[0], newline='', encoding='utf-8') as f:
+            assert {row['crop_rule_version'] for row in csv.DictReader(f)} == {'v3'}
+
+    def test_make_single_crop_withholds_a_v3_window_and_writes_nothing(self, crop_runner, tmp_path):
+        """In memory, so the share is exact: everything from just above the v3 window's middle row down
+        is black, so that window is just over half black. The error carries v3's box, not v2's."""
+        size = (2048, 1024)
+        width, height = size
+        v3_box = crop_runner.compute_crop_box(
+            LABEL_X, PARTLY_Y, crop_runner.crop_window_width(PARTLY_Y, width, height, 'v3'), width, height)
+        v2_box = crop_runner.compute_crop_box(
+            LABEL_X, PARTLY_Y, crop_runner.crop_window_width(PARTLY_Y, width, height), width, height)
+        assert v3_box != v2_box and not v3_box.shifted
+        pano = Image.new('RGB', size, GREY)
+        pano.paste((0, 0, 0), (0, v3_box.top + v3_box.height // 2 - 1, width, height))
+        withheld = tmp_path / 'withheld.jpg'
+        with pytest.raises(crop_runner.CropWindowMostlyBlackError) as e:
+            crop_runner.make_single_crop(pano, LABEL_X, PARTLY_Y, str(withheld), sizing_rule='v3')
+        assert e.value.box == v3_box
+        assert e.value.fraction > crop_runner.CROP_MAX_BLACK_FRACTION
+        assert not withheld.exists() and not os.path.exists(str(withheld) + '.part')
+
+    def test_it_judges_the_raw_v3_window_before_the_downscale(self, crop_runner, tmp_path, monkeypatch):
+        """The v3 twin of test_it_measures_the_raw_cut_window, with the storage cap forced low so the
+        downscale really resizes: what is judged is v3's native window, once, before the downscale."""
+        monkeypatch.setattr(crop_runner, 'CROP_MAX_STORED_WIDTH', 40)
+        size = (2048, 1024)
+        pano = Image.new('RGB', size)
+        pano.putdata([((x * 7) % 256, (y * 3) % 256, (x + y) % 256)
+                      for y in range(size[1]) for x in range(size[0])])
+        seen, order = [], []
+        real_fraction, real_downscale = crop_runner.black_fraction, crop_runner.downscale_for_storage
+
+        def spy(image):
+            seen.append(image.copy())
+            order.append('check')
+            return real_fraction(image)
+
+        def downscale(image):
+            order.append('downscale')
+            return real_downscale(image)
+
+        monkeypatch.setattr(crop_runner, 'black_fraction', spy)
+        monkeypatch.setattr(crop_runner, 'downscale_for_storage', downscale)
+        box = crop_runner.make_single_crop(pano, LABEL_X, PARTLY_Y, str(tmp_path / 'c.jpg'), sizing_rule='v3')
+
+        assert order == ['check', 'downscale']
+        assert box.width == crop_runner.compute_crop_box(
+            LABEL_X, PARTLY_Y, crop_runner.crop_window_width(PARTLY_Y, size[0], size[1], 'v3'),
+            size[0], size[1]).width
+        assert seen[0].size == (box.width, box.height)
+        assert seen[0].tobytes() == crop_runner.extract_crop(pano, box.left, box.top, box.width,
+                                                             box.height).tobytes()
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ are the seams, and `python3 CropRunner.py ...` behaviour lives under the __main_
 import argparse
 import collections
 import csv
+import datetime
 import io
 import json
 import logging
@@ -84,7 +85,15 @@ CropBox = collections.namedtuple('CropBox', ['left', 'top', 'width', 'height', '
 # Which sizing rule cut a crop store. Stamped into the run summary because crops are derived data with
 # no other provenance on disk: a store cut under one rule and topped up under another is otherwise
 # indistinguishable from a consistent one, and every consumer here trains on whole directories.
+#
+# This is the DEFAULT rule, and it stays v2 until switching is decided deliberately: v3 moves ~40% of the
+# 658 gold ramps' windows by more than 10%, so flipping it means re-cutting every store whole (--force,
+# #83), which belongs in the #84 recrop campaign. --sizing-rule selects between the rules below.
 CROP_RULE_VERSION = 'v2'
+CROP_RULE_VERSIONS = ('v2', 'v3')
+
+# Which distance estimator each rule sizes from; recorded in crop_rule.json beside the version.
+CROP_RULE_DISTANCE_ESTIMATOR = {'v2': 'linear-2013', 'v3': 'lle3-cotangent-blend'}
 
 # ---------------------------------------------------------------------------
 # Sizing rule v2. Measured, not guessed - see reports/2026-08-19-crop-sizing-v2.md for the four-city
@@ -136,6 +145,29 @@ CROP_ASPECT_W_OVER_H = 1.5
 # Nothing in this repo takes that path today; the server-side CropService in SidewalkWebpage#4865 is
 # what will, which is why 1440 is the number and not something arbitrary.
 CROP_MAX_STORED_WIDTH = 1440
+
+# ---------------------------------------------------------------------------
+# Sizing rule v3 (opt-in, #32): the window is the angle a fixed span of world subtends at the label's
+# distance, and the distance comes from the lle #3 cotangent blend instead of the 2013 linear line.
+# See reports/2026-09-26-crop-sizing-v3.md. The clamps, the 3:2 shape and the storage cap are v2's.
+#
+# The lle #3 Stage 4 calibration (label-latlng-estimation data/modern-truth-summary.json ->
+# final_coefficients), transcribed. reports/scripts/pov_replay.py carries the same three numbers and
+# tests/test_crop_runner.py::TestBlendDistanceMatchesTheStudyPort pins the two equal on a grid.
+# Production code must not import reports/scripts, which is why this is a copy and not an import.
+V3_CAMERA_HEIGHT_M = 2.341219672825709
+V3_BLEND_DEG = 11.25
+V3_DIST_CAP_M = 50.0
+
+# Frontal width of world, in metres, the window spans at the label's distance. The one fitted v3
+# constant: the value whose pooled median fill on the 658 gold aprons equals rule v2's, so the two
+# rules are compared at the same median crop and differ only in how the window tracks depression.
+# Deliberately not CROP_SIZE_SCALE x an object width: two multiplicative constants are one degree of
+# freedom, and 2 atan(W / 2d) is exact where scaling an angle is only its small-angle approximation.
+# Fit 2026-09-26 (reports/data/2026-09-26-crop-sizing-v3.json -> selection.matched_context_width_m;
+# the planning pilot's 5.8 reproduced exactly). The band-centre criterion (fill p50 nearest 0.36)
+# gives 6.0; the report says why the matched value is the one shipped.
+V3_CONTEXT_WIDTH_M = 5.8
 
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
@@ -224,12 +256,14 @@ COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
 # pass the stitcher's own guard (gsv.STITCH_MAX_BLACK_FRACTION, also 0.5 but of the whole pano), so a
 # label inside the band was cut as a black crop and counted success.
 #
-# Why 0.5, measured on a 2048x1024 grey pano with its bottom 30% black, JPEG q95: a label at y=512 cuts
-# 0.000 black, 650 -> 0.241, 700 -> 0.452, 716 -> 0.499, 730 -> 0.540, 900 (window shifted) -> 0.900.
+# Why 0.5, measured on a 2048x1024 grey pano with its bottom 30% black, JPEG q95: under rule v2 a label at
+# y=512 cuts 0.000 black, 650 -> 0.241, 700 -> 0.452, 716 -> 0.499, 730 -> 0.540, 900 (window shifted) ->
+# 0.900; under v3 (#32), whose windows are narrower there, 0.000, 0.199, 0.441, 0.498, 0.540, 0.900.
 # Inside a large black JPEG region luma is exactly 0, and ringing is confined to the rows next to the
 # edge, so a label inside a band whose window is NOT shifted gives at least half black rows. A SHIFTED
 # window gives the band's depth over the window's height instead, wherever the label sits: at the nadir
-# the window is a third of the pano tall, so a bottom band is caught only when it is deeper than H/6
+# the window is a third of the pano tall under BOTH rules (v3 hits the same CROP_MAX_FOV_DEG ceiling from
+# ~39 deg of depression, and the shift starts at ~60 deg), so a bottom band is caught only when deeper than H/6
 # (16.7%; the D4 band is 18.75%, 0.56 black), and a thinner one is written as success, up to half black
 # (tests pin both; the table is in docs/cropper.md). A window more black than imagery is not imagery. Exact zero over half a
 # window is also not a night scene or a black car: JPEG noise keeps those off 0. The strict `>` matches
@@ -325,6 +359,12 @@ def build_parser():
     parser.add_argument('--mark-label', action='store_true', help='Draw a dot at the label position in every crop. Debugging aid - deliberately OFF by default, because these crops are ML training data and a synthetic marker painted over the feature of interest is exactly what a model would learn instead of the feature.')
     parser.add_argument('--city', required=True, type=city_id, help="The city_id these labels belong to (seattle-wa, cdmx): an active row of log_analyzer/cities.csv, read at startup. Required: label_id restarts at 1 in every deployment, so crops are only unique per city. The first run records it in crop_rule.json, and a run naming a different city is refused before anything is cut, so no city can overwrite another city's crops (#159). Recorded on every provenance row.")
     parser.add_argument('--force', action='store_true', help='Re-cut a label whose crop already exists instead of skipping it (#83) - the repair for a store cut under an older sizing rule. Each crop is replaced atomically, so a failed write leaves the old one in place. For the ML crop store this tool writes ONLY; a destination that looks like the production canvas-capture store is refused either way.')
+    parser.add_argument('--sizing-rule', choices=CROP_RULE_VERSIONS, default=CROP_RULE_VERSION,
+                        help='Which crop sizing rule to cut with. v2 is the default, and has been since #88 (stores '
+                             'cut before that are v1, #83). v3 sizes from the lle #3 cotangent distance instead of '
+                             'the 2013 linear one (#32); it moves ~40%% of the 658 gold ramps\' windows by more '
+                             'than 10%%, so a store cut under v2 should be re-cut whole with --force, not topped up. '
+                             'Recorded in crop_rule.json and on every provenance row either way.')
     return parser
 
 
@@ -680,8 +720,80 @@ def predict_crop_size(pano_y, pano_height):
     return _reference_crop_size(ref_offset) * (pano_height / V1_REF_HEIGHT)
 
 
-def crop_window_fov_deg(pano_y, pano_height):
+def label_depression_deg(pano_y, pano_height):
+    """Depression of the labelled pixel below the horizon, in degrees, positive down (0 at the horizon).
+
+    The one place a stored pano_y becomes an angle under rule v3. A #54 tilt correction, once measured,
+    is an addend to this value and nowhere else: blend_distance_m and geometric_window_fov_deg take the
+    corrected angle unchanged. Exact for a gravity-aligned equirectangular pano, and resolution-free
+    because it goes through the elevation primitive.
+
+    >>> label_depression_deg(512, 1024)
+    0.0
+    """
+    return elevation_px_to_deg(pano_y - pano_height / 2.0, pano_height)
+
+
+def blend_distance_m(depression_deg, camera_height_m=None, blend_deg=V3_BLEND_DEG,
+                     cap_m=V3_DIST_CAP_M):
+    """Camera-to-label ground distance in metres: the lle #3 horizon-saturating cotangent blend.
+
+    At depressions of `blend_deg` or more (the 11.25-degree ray and every steeper one, nearer the
+    camera) it is plain trigonometry, camera_height / tan(depression). At shallower depressions - towards
+    the horizon, where the cotangent diverges and a degree of click noise is metres of distance - it is
+    the straight line matching the cotangent's value AND slope at the blend point, so the curve is smooth
+    there and saturates at the horizon (23.85 m with the shipped calibration) rather than diverging. A
+    label above the horizon gets the horizon's distance. Clipped to [0, cap_m]; with the shipped
+    calibration the 50 m cap never binds, since the blend tops out at the horizon's 23.85 m.
+
+    A scalar port of reports/scripts/pov_replay.predict_blend_distance, pinned equal to it by a test. The
+    tail's slope is written with math.radians(1.0) - d(cot)/d(degree) - rather than a literal, because
+    the equirectangular constants are allowed in this module only inside the four unit primitives.
+
+    `camera_height_m=None` means V3_CAMERA_HEIGHT_M, read at call time rather than bound at definition,
+    so a test that patches the module constant reaches this function.
+
+    >>> round(blend_distance_m(45.0), 3)
+    2.341
+    """
+    camera_height_m = V3_CAMERA_HEIGHT_M if camera_height_m is None else camera_height_m
+    a_rad = math.radians(blend_deg)
+    if depression_deg >= blend_deg:
+        distance = camera_height_m / math.tan(math.radians(depression_deg))
+    else:
+        value_at_blend = camera_height_m / math.tan(a_rad)
+        slope = -camera_height_m * math.radians(1.0) / math.sin(a_rad) ** 2
+        distance = value_at_blend + slope * (max(depression_deg, 0.0) - blend_deg)
+    return min(max(distance, 0.0), cap_m)
+
+
+def geometric_window_fov_deg(distance_m, context_width_m=None):
+    """Rule v3's window: the angle a `context_width_m` frontal span of world subtends at `distance_m`.
+
+    2 atan(W / 2d), clamped to [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG]; a distance of zero or less (the label
+    is under the camera) is the ceiling. Takes a DISTANCE, not a pixel, so a measured distance - the depth
+    artifact is the #32 follow-up - plugs in here without touching anything else.
+
+    Two consequences of the shipped constants, pinned by tests: the floor is unreachable (the horizon
+    saturates the distance, so the narrowest window is the horizon's), and the ceiling binds exactly
+    where the distance falls to W / 2. `context_width_m=None` means V3_CONTEXT_WIDTH_M, read at call time
+    (as blend_distance_m reads its camera height) so a patched module constant reaches it.
+    """
+    context_width_m = V3_CONTEXT_WIDTH_M if context_width_m is None else context_width_m
+    if distance_m <= 0:
+        return CROP_MAX_FOV_DEG
+    deg = math.degrees(2.0 * math.atan(context_width_m / (2.0 * distance_m)))
+    return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
+
+
+def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION):
     """The sizing rule as what it actually is: an ANGLE. Degrees of the sphere the window spans.
+
+    `sizing_rule` selects between the rules in CROP_RULE_VERSIONS; an unknown one is a ValueError.
+
+    Rule v3 (opt-in, #32) is three named steps - label_depression_deg, blend_distance_m,
+    geometric_window_fov_deg - composed here and nowhere else; a test pins the composition so a refactor
+    that fuses them cannot land silently. Everything below describes rule v2, the default.
 
     Two steps, each one measured number from reports/2026-08-19-crop-sizing-v2.md:
 
@@ -704,12 +816,16 @@ def crop_window_fov_deg(pano_y, pano_height):
 
     :return: the window's angular span in degrees, in [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG].
     """
-    deg = elevation_px_to_deg(predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE, pano_height)
-    return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
+    if sizing_rule == 'v2':
+        deg = elevation_px_to_deg(predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE, pano_height)
+        return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
+    if sizing_rule == 'v3':
+        return geometric_window_fov_deg(blend_distance_m(label_depression_deg(pano_y, pano_height)))
+    raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
 
 
-def crop_window_width(pano_y, pano_width, pano_height):
-    """The window width rule v2 actually cuts, in native pixels: crop_window_fov_deg as an azimuthal span.
+def crop_window_width(pano_y, pano_width, pano_height, sizing_rule=CROP_RULE_VERSION):
+    """The window width the selected rule cuts, in native pixels: crop_window_fov_deg as an azimuthal span.
 
     A width is horizontal, so the conversion is azimuth_deg_to_px against pano_width. The elevation
     form gives the same number on a 2:1 pano and half of it on a square one - the axis slip the unit
@@ -723,7 +839,7 @@ def crop_window_width(pano_y, pano_width, pano_height):
     because that is a property of the image rather than of the rule, and keeping it there means the
     reported window is the one that was cut.
     """
-    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height), pano_width)
+    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height, sizing_rule), pano_width)
 
 
 def compute_crop_box(pano_x, pano_y, crop_width, pano_width, pano_height):
@@ -1280,10 +1396,13 @@ class ProvenanceManifest:
     of the loop - bulk_extract_crops counts it - because by then the crop is already on disk.
     """
 
-    def __init__(self, destination_dir, city=None):
+    def __init__(self, destination_dir, city=None, sizing_rule=CROP_RULE_VERSION):
         # The city goes on every row, so manifests concatenated across cities keep (city, label_id) as the key:
         # label_id alone restarts in every deployment. Empty only for a caller below main() that has none.
         self.city = '' if city is None else city
+        # And the rule that cut the row's crop - the one THIS run cuts with (--sizing-rule, #32), not the
+        # module default, since a v3 run's crops are not v2's.
+        self.sizing_rule = sizing_rule
         self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
         self._file = None
         self.torn_rows_cut = int(self._open(first=True))
@@ -1330,7 +1449,7 @@ class ProvenanceManifest:
         tear left by the run's LAST append used to be cut by the next run's first open and reported as a
         previous run killed mid-append, about a row this run had already reported as unrecorded. The
         reopen is best-effort: if it fails, the handle stays dropped and the next call reopens instead."""
-        line = _csv_line((self.city, label_id, pano_id) + tuple(provenance) + (CROP_RULE_VERSION,))
+        line = _csv_line((self.city, label_id, pano_id) + tuple(provenance) + (self.sizing_rule,))
         if self._file is None:
             self._open()
         try:
@@ -1407,8 +1526,42 @@ def _provenance_value(value):
     return str(value)
 
 
-def write_rule_marker(destination_dir, force=False, city=None):
+# Which recorded constants each rule actually reads, for write_rule_marker's same-id check. v3 does not
+# use CROP_SIZE_SCALE and v2 uses none of the v3_* numbers, so a change to those is not a mixed store.
+RULE_MARKER_CONSTANT_KEYS = {
+    'v2': ('crop_size_scale', 'crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h',
+           'crop_max_stored_width'),
+    'v3': ('crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h', 'crop_max_stored_width',
+           'v3_camera_height_m', 'v3_blend_deg', 'v3_dist_cap_m', 'v3_context_width_m'),
+}
+
+
+# The marker fields _read_rule_marker type-checks: the rule ids and every recorded constant.
+RULE_MARKER_SCALAR_KEYS = ('crop_rule_version', 'previous_crop_rule_version', 'distance_estimator') + tuple(
+    sorted(set(key for keys in RULE_MARKER_CONSTANT_KEYS.values() for key in keys)))
+
+
+def _rule_constants():
+    """Every sizing constant, as crop_rule.json records it. Read at call time, not import time."""
+    return {'crop_size_scale': CROP_SIZE_SCALE,
+            'crop_min_fov_deg': CROP_MIN_FOV_DEG,
+            'crop_max_fov_deg': CROP_MAX_FOV_DEG,
+            'crop_aspect_w_over_h': CROP_ASPECT_W_OVER_H,
+            'crop_max_stored_width': CROP_MAX_STORED_WIDTH,
+            'v3_camera_height_m': V3_CAMERA_HEIGHT_M,
+            'v3_blend_deg': V3_BLEND_DEG,
+            'v3_dist_cap_m': V3_DIST_CAP_M,
+            'v3_context_width_m': V3_CONTEXT_WIDTH_M}
+
+
+def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_RULE_VERSION):
     """Record which sizing rule cut this crop store, in the store, and warn if it disagrees.
+
+    `sizing_rule` is the rule THIS run cuts with, and it is what the marker records and what the
+    disagreement check compares - not the module default, which says nothing about a --sizing-rule v3 run.
+    Every rule's constants are written whichever one is selected, so the schema is one superset that
+    older readers keep working on. Under the SAME rule id it also compares the constants that rule
+    reads against the recorded ones and warns naming each that moved: a refit v3 still calls itself v3.
 
     A crop directory is derived data with no other provenance: a JPEG does not say what geometry
     produced it, and existing crops are the resume marker so they are not re-cut without --force. That
@@ -1426,6 +1579,23 @@ def write_rule_marker(destination_dir, force=False, city=None):
     running rule, and the marker is rewritten now, at the start, so the store is not one geometry until
     the run finishes (and not even then for a label it skips - see bulk_extract_crops' stale_kept). A
     forced run used to be told to re-run with --force, and then report its own re-cuts.
+
+    The history is STICKY (#157 review item 1). `rules_seen` lists every rule the store has been run
+    under, in order of first use, and `constants_seen` every value each rule's constants have had; both
+    are only ever appended to. A v2/v3 mix is 3:2 on both sides, so nothing on disk but this file can
+    tell it apart from a clean store - and before these two keys, one warned run was enough to lose it:
+    the rewrite named the new rule, and the next run compared against that and said nothing. So the
+    warnings fire on every run whose rule or constants are not the only ones the store has seen, a
+    --force run included: like the manifest flag below, a forced pass cannot tell from here that it
+    reached every crop, so nothing it does clears the history. docs/cropper.md gives the manual reset.
+
+    A marker that exists but cannot be read is provenance destroyed, not a fresh store: it is warned
+    about on both channels, recorded as `unknown` (for good, in `rules_seen`), and its bytes are kept
+    beside it as `crop_rule.json.unreadable-<UTC timestamp>` rather than overwritten. Under main() a
+    marker that is not a JSON object never gets here - check_store_city refuses it, since it cannot say
+    whose store it is - so what reaches this path there is an object whose rule fields are malformed.
+    Its city and manifest keys are still carried forward: they are check_store_city's and the manifest's
+    to judge, not the rule history's.
 
     It also says whether the provenance manifest (#111) has a KNOWN gap (MANIFEST_NO_KNOWN_GAP). The rule
     version cannot answer that - a v2 store cropped before the manifest existed and one cropped after both
@@ -1446,9 +1616,13 @@ def write_rule_marker(destination_dir, force=False, city=None):
     different one). `city` None - a caller below main() that has none to give - carries the recorded city
     forward rather than erasing it, since erasing it would re-open the store to the next city.
 
-    :return: the rule version already on disk, or None if this is a fresh store.
+    :return: the rule version already on disk; 'unknown' if a marker exists but cannot be read; None
+             if this is a fresh store.
     """
+    if sizing_rule not in CROP_RULE_VERSIONS:
+        raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
     path = os.path.join(destination_dir, CROP_RULE_MARKER)
+    # The raw object, for the keys that are not the rule history's: the city, and the manifest's record.
     marker = {}
     try:
         with open(path, encoding='utf-8') as f:
@@ -1457,7 +1631,6 @@ def write_rule_marker(destination_dir, force=False, city=None):
         pass
     if not isinstance(marker, dict):
         marker = {}
-    previous = marker.get('crop_rule_version')
     if city is None and isinstance(marker.get('city'), str):
         city = marker['city']
     # Named once a pre-city manifest has been set aside (#159 step 1), and carried forward after that.
@@ -1469,42 +1642,164 @@ def write_rule_marker(destination_dir, force=False, city=None):
         manifest_started_under = marker.get('provenance_manifest_started_under')
         no_known_gap = marker.get(MANIFEST_NO_KNOWN_GAP)
     else:
-        manifest_started_under = CROP_RULE_VERSION
+        manifest_started_under = sizing_rule
         no_known_gap = not _store_holds_crops(destination_dir)
 
-    if previous is not None and previous != CROP_RULE_VERSION and force:
-        message = ("Crop store %s was cut under sizing rule %s and this run uses %s. This run is "
-                   "re-cutting every label it reaches under %s (--force), and %s is rewritten now to name "
-                   "%s: until the run finishes, crops it has not reached are still %s, so finish the run "
-                   "before training on the store."
-                   % (destination_dir, previous, CROP_RULE_VERSION, CROP_RULE_VERSION, CROP_RULE_MARKER,
-                      CROP_RULE_VERSION, previous))
+    running = _rule_constants()
+    recorded, unreadable = _read_rule_marker(path)
+    if unreadable:
+        kept = _keep_unreadable_marker(path)
+        message = ("Crop store %s has a %s that could not be read, so the rule its existing crops were "
+                   "cut under is unknown; it is recorded as 'unknown'%s. Check the store before "
+                   "training on it." % (destination_dir, CROP_RULE_MARKER,
+                                        ' and the unreadable file kept as %s' % kept if kept else ''))
         print(message)
         logging.warning(message)
-    elif previous is not None and previous != CROP_RULE_VERSION:
-        message = ("Crop store %s was cut under sizing rule %s and this run uses %s. Existing crops "
-                   "are re-cut only under --force, so without it this store now holds both "
-                   "geometries; re-run with --force to re-cut it under %s."
-                   % (destination_dir, previous, CROP_RULE_VERSION, CROP_RULE_VERSION))
+        previous, rules_seen, constants_seen = 'unknown', ['unknown'], {}
+    else:
+        previous = recorded.get('crop_rule_version')
+        rules_seen, constants_seen = _marker_history(recorded)
+
+    # The remedy depends on --force (#153 m3): without it the store stays mixed and the remedy is a forced
+    # run; with it, this run is the remedy, and the store is not one rule until it finishes. The plain form
+    # also names the manual reset: the history is sticky through --force, so after a whole forced re-cut
+    # this warning still fires, and "re-run with --force" alone is a loop no forced pass can leave.
+    reset = (" rules_seen only grows, so a store since re-cut whole under %s (--force) reads the same way and "
+             "the marker cannot tell: once a whole-city re-cut is done, remove rules_seen, constants_seen and "
+             "previous_crop_rule_version from %s (docs/cropper.md, 'The reset')." % (sizing_rule,
+                                                                                    CROP_RULE_MARKER))
+    others = [rule for rule in rules_seen if rule != sizing_rule]
+    if others and not unreadable:
+        mixed = ("Crop store %s was cut under sizing rule %s and this run uses %s (%s rules_seen: %s). "
+                 % (destination_dir, ' and '.join(others), sizing_rule, CROP_RULE_MARKER,
+                    ', '.join(rules_seen)))
+        if force:
+            message = mixed + ("This run is re-cutting every label it reaches under %s (--force), and %s is "
+                               "rewritten now to name %s: until the run finishes, crops it has not reached "
+                               "are still %s, so finish the run before training on the store."
+                               % (sizing_rule, CROP_RULE_MARKER, sizing_rule, ' or '.join(others)))
+        else:
+            message = mixed + ("Existing crops are re-cut only under --force, so without it the ones cut "
+                               "under %s keep that geometry and any crop this run cuts is %s beside them. "
+                               "To make the store one rule it has to be re-cut under this run's constants: "
+                               "re-run with --force." % (' and '.join(others), sizing_rule) + reset)
         print(message)
         logging.warning(message)
+
+    # Same rule id, and a rule is only as fixed as its constants: a refit v3 still calls itself v3.
+    # Only the constants THIS rule reads are compared, and only values the store has recorded - a marker
+    # from before the constants were written is silent rather than a false alarm.
+    seen_for_rule = constants_seen.get(sizing_rule, {})
+    changed = ['%s=%r and this run uses %r' % (key, value, running[key])
+               for key in RULE_MARKER_CONSTANT_KEYS[sizing_rule]
+               for value in seen_for_rule.get(key, [])
+               if value != running[key]]
+    if changed:
+        mixed = "Crop store %s was cut under sizing rule %s with %s. " % (destination_dir, sizing_rule,
+                                                                          '; '.join(changed))
+        if force:
+            message = mixed + ("This run is re-cutting every label it reaches with this run's (--force): "
+                               "until the run finishes, crops it has not reached keep the other value, so "
+                               "finish the run before training on the store.")
+        else:
+            message = mixed + ("Existing crops are re-cut only under --force, so the ones cut under the "
+                               "other value keep it and any crop this run cuts uses this run's. To make the "
+                               "store one rule it has to be re-cut under this run's constants: re-run "
+                               "with --force." + reset)
+        print(message)
+        logging.warning(message)
+
+    if sizing_rule not in rules_seen:
+        rules_seen.append(sizing_rule)
+    for key in RULE_MARKER_CONSTANT_KEYS[sizing_rule]:
+        values = constants_seen.setdefault(sizing_rule, {}).setdefault(key, [])
+        if running[key] not in values:
+            values.append(running[key])
 
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
-            json.dump({'crop_rule_version': CROP_RULE_VERSION,
-                       'city': city,
-                       'crop_size_scale': CROP_SIZE_SCALE,
-                       'crop_min_fov_deg': CROP_MIN_FOV_DEG,
-                       'crop_max_fov_deg': CROP_MAX_FOV_DEG,
-                       'crop_aspect_w_over_h': CROP_ASPECT_W_OVER_H,
-                       'crop_max_stored_width': CROP_MAX_STORED_WIDTH,
-                       'previous_crop_rule_version': previous,
-                       'provenance_manifest': PROVENANCE_MANIFEST,
-                       'provenance_manifest_started_under': manifest_started_under,
-                       MANIFEST_NO_KNOWN_GAP: no_known_gap,
-                       MANIFEST_PRE_CITY: pre_city},
+            json.dump(dict(running,
+                           crop_rule_version=sizing_rule,
+                           distance_estimator=CROP_RULE_DISTANCE_ESTIMATOR[sizing_rule],
+                           previous_crop_rule_version=previous,
+                           rules_seen=rules_seen,
+                           constants_seen=constants_seen,
+                           city=city,
+                           provenance_manifest=PROVENANCE_MANIFEST,
+                           provenance_manifest_started_under=manifest_started_under,
+                           **{MANIFEST_NO_KNOWN_GAP: no_known_gap, MANIFEST_PRE_CITY: pre_city}),
                       f, indent=1, sort_keys=True)
     return previous
+
+
+def _read_rule_marker(path):
+    """(marker dict, unreadable?) for crop_rule.json. Absent is ({}, False); present but not a marker
+    this code can read - bad JSON, not an object, a malformed history, or a rule field
+    (RULE_MARKER_SCALAR_KEYS) that is not a string, a number or null (a rule id of [] would otherwise
+    raise TypeError looking up its constants) - is ({}, True).
+
+    Only the rule's own fields are type-checked. The marker also carries #111's and #159's keys, and
+    one of them, MANIFEST_NO_KNOWN_GAP, is a JSON bool by design: checking every field, as this did
+    before the two met, called every marker a manifest-era run had written unreadable."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            recorded = json.load(f)
+    except FileNotFoundError:
+        return {}, False
+    except (OSError, ValueError):
+        return {}, True
+    if not isinstance(recorded, dict):
+        return {}, True
+    rules_seen = recorded.get('rules_seen', [])
+    constants_seen = recorded.get('constants_seen', {})
+    if not (isinstance(rules_seen, list) and all(isinstance(rule, str) for rule in rules_seen)
+            and isinstance(constants_seen, dict)
+            and all(isinstance(keys, dict) and all(isinstance(values, list) for values in keys.values())
+                    for keys in constants_seen.values())):
+        return {}, True
+    if not all(value is None or (isinstance(value, (str, int, float)) and not isinstance(value, bool))
+               for key, value in recorded.items() if key in RULE_MARKER_SCALAR_KEYS):
+        return {}, True
+    return recorded, False
+
+
+def _marker_history(recorded):
+    """The store's (rules_seen, constants_seen), seeded from what the marker names at top level.
+
+    The top-level keys are the LAST run's rule and constants, so they belong to the history whatever it
+    says: that seeds a marker written before the history existed (whose crop_rule_version and
+    previous_crop_rule_version are all it can say), and it means a hand-edited constant is compared.
+    """
+    rules_seen = list(recorded.get('rules_seen', []))
+    constants_seen = {rule: {key: list(values) for key, values in keys.items()}
+                      for rule, keys in recorded.get('constants_seen', {}).items()}
+    for rule in (recorded.get('previous_crop_rule_version'), recorded.get('crop_rule_version')):
+        if isinstance(rule, str) and rule not in rules_seen:
+            rules_seen.append(rule)
+    last = recorded.get('crop_rule_version')
+    for key in RULE_MARKER_CONSTANT_KEYS.get(last, ()):
+        if key in recorded:
+            values = constants_seen.setdefault(last, {}).setdefault(key, [])
+            if recorded[key] not in values:
+                values.append(recorded[key])
+    return rules_seen, constants_seen
+
+
+def _keep_unreadable_marker(path):
+    """Move an unreadable marker aside as `<path>.unreadable-<UTC timestamp>`; return the new name, or
+    None if it could not be moved (the rewrite that follows then replaces it, as it always did)."""
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    kept = '%s.unreadable-%s' % (path, stamp)
+    suffix = 0
+    while os.path.exists(kept):
+        suffix += 1
+        kept = '%s.unreadable-%s-%d' % (path, stamp, suffix)
+    try:
+        os.replace(path, kept)
+    except OSError as e:
+        logging.warning("Could not keep unreadable %s aside: %s", path, e)
+        return None
+    return os.path.basename(kept)
 
 
 def _record_manifest_gap(destination_dir):
@@ -1552,7 +1847,7 @@ class CropWindowMostlyBlackError(Exception):
         self.box = box
 
 
-def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
+def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=CROP_RULE_VERSION):
     """
     Makes a crop around the object of interest and saves it atomically.
 
@@ -1573,6 +1868,8 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     :param pano_y: y-pixel of label on the GSV image
     :param output_filename: name of file for saving
     :param draw_mark: if a dot should be drawn at the label position in the crop
+    :param sizing_rule: which rule in CROP_RULE_VERSIONS sizes the window (default v2). The content check
+                        below runs on the window whichever rule sized it.
     :return: the CropBox that was cut, so the caller can count a de-centred (shifted) crop without
              recomputing the geometry.
     :raises CropWindowMostlyBlackError: the window is mostly black; nothing was written.
@@ -1584,7 +1881,8 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False):
     try:
         pano_width, pano_height = pano.size
 
-        box = compute_crop_box(pano_x, pano_y, crop_window_width(pano_y, pano_width, pano_height),
+        box = compute_crop_box(pano_x, pano_y,
+                               crop_window_width(pano_y, pano_width, pano_height, sizing_rule),
                                pano_width, pano_height)
         window = extract_crop(pano, box.left, box.top, box.width, box.height)
         fraction = black_fraction(window)
@@ -1784,7 +2082,7 @@ class WarningBudget:
 
 
 def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False, force=False,
-                       city=None):
+                       city=None, sizing_rule=CROP_RULE_VERSION):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
     destination_dir is ONE city's store - main() passes <crop-dir>/<city>/ (#159) - and `city` is that
@@ -1830,6 +2128,11 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
              That is a second READING of these numbers and adds no bucket of its own - which is what
              keeps the invariant above out of its way.
     """
+    # Once, up front: an unknown rule is the caller's mistake, not a per-label fault, and it must fail
+    # before the marker below records a rule nothing was cut under.
+    if sizing_rule not in CROP_RULE_VERSIONS:
+        raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
+
     counts = dict.fromkeys(DISJOINT_OUTCOMES + COUNT_ANNOTATIONS, 0)
     counts['total'] = len(labels_to_crop)
 
@@ -1845,7 +2148,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Before the marker, so a refusal leaves it untouched, and so the marker sees the manifest it will
     # actually be appending to (#159 step 1).
     set_aside_pre_city_manifest(destination_dir)
-    write_rule_marker(destination_dir, force=force, city=city)
+    write_rule_marker(destination_dir, force=force, city=city, sizing_rule=sizing_rule)
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
@@ -1860,7 +2163,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Every per-label warning below goes through this, so a systemic fault cannot flood crop.log (#139).
     budget = WarningBudget()
     # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
-    manifest = ProvenanceManifest(destination_dir, city)
+    manifest = ProvenanceManifest(destination_dir, city, sizing_rule)
     unrecorded = 0
     # The stale_kept labels the content check withheld, for the stale_kept summary's addendum (#164).
     stale_black_content = 0
@@ -2015,7 +2318,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                             os.makedirs(destination_folder, exist_ok=True)
                             made_dirs.add(destination_folder)
                         box = make_single_crop(pano, pano_x, pano_y, crop_destination,
-                                               draw_mark=mark_label)
+                                               draw_mark=mark_label, sizing_rule=sizing_rule)
                     except CropWindowMostlyBlackError as e:
                         # Not an error (#164): the pano on disk holds black where imagery should be, and
                         # nothing was written, so a re-run cuts this label once the pano is repaired.
@@ -2098,7 +2401,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Echoed here as well as written to <crop-dir>/crop_rule.json, because the summary is what an
     # operator reads and the marker is what a consumer reads. The marker is the one that matters: a
     # line of stdout scrolls past on a cron run, and a crop store carries no other provenance.
-    print("Crop sizing rule %s (recorded in %s)." % (CROP_RULE_VERSION, CROP_RULE_MARKER))
+    print("Crop sizing rule %s (recorded in %s)." % (sizing_rule, CROP_RULE_MARKER))
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
           "%d skipped on a metadata/image dimension mismatch, %d skipped for a label position outside "
           "the image, %d withheld for a mostly black window, %d errors, of %d labels total."
@@ -2120,7 +2423,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                    "neither re-cut nor removed and stays as whatever rule cut it, while %s says %s. "
                    "crop.log's dims_mismatch, out_of_frame and cannot_open lines (up to %d of each) and its "
                    "missing-pano lines include them, without marking which kept an old crop."
-                   % (counts['stale_kept'], CROP_RULE_MARKER, CROP_RULE_VERSION, LOG_WARNINGS_PER_KIND))
+                   % (counts['stale_kept'], CROP_RULE_MARKER, sizing_rule, LOG_WARNINGS_PER_KIND))
         if stale_black_content:
             # Appended, never rewording the sentence above: the content check reaches the write and then
             # declines it, so "skipped by a preflight" does not describe these (#164).
@@ -2173,7 +2476,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
 
 def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destination_path, mark_label=False,
-        force=False, city=None):
+        force=False, city=None, sizing_rule=CROP_RULE_VERSION):
     """Load the label metadata and extract every crop - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, and logging; this seam takes plain arguments so tests can
@@ -2183,7 +2486,7 @@ def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destinati
     print("Cropping labels")
     label_infos = load_label_metadata(sidewalk_server_fqdn, label_metadata_file)
     return bulk_extract_crops(label_infos, gsv_pano_path, crop_destination_path, mark_label=mark_label,
-                              force=force, city=city)
+                              force=force, city=city, sizing_rule=sizing_rule)
 
 
 def main(argv=None):
@@ -2261,7 +2564,7 @@ def main(argv=None):
     try:
         counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
                      crop_destination_path=store, mark_label=args.mark_label, force=args.force,
-                     city=args.city)
+                     city=args.city, sizing_rule=args.sizing_rule)
     except CropStoreUnlistableError as e:
         # Both channels, and into crop.log, which is configured by now: as a traceback it reached stderr
         # only (#153 final F6). Exit 1, not EXIT_REFUSED_DESTINATION - nothing judged -o to be the
