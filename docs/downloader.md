@@ -70,6 +70,7 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--max-depth-requests N` | Stop the depth phase after N metadata requests. Useful for throttling the initial backfill. |
 | `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
 | `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back **from Google** or a refusal resets it, a local failure does not, a phase that made no requests writes nothing, and a day-old file is ignored. The phase holds `<PATH>.lock` while it runs, so a second concurrent phase paces itself from scratch. Defaults to a file beside the *default* block latch; `--depth-block-latch` does not move it. |
+| `--width-alarm-latch PATH` | Where this host remembers it has already alarmed on a frame wider than the viewer ceiling (#121). The first run to see one exits 1; later runs find this file and only warn; delete it to re-arm. Defaults to a file in the system temp directory — local disk, because a wider frame is a fact about Google, not one city. See [Operations](ops.md#the-width-tripwire). |
 | `--run-summary-file PATH` | Write a small JSON object (`image_stop`, `depth_stop`) naming what stopped each phase. `scrape_queue` passes this and reads it back to decide which cities still have work; nothing else reads it, and without the flag nothing is written. No default, deliberately — a default path would write into whatever CWD cron started in. |
 
 Budgets are measured with `time.monotonic()`, never the wall clock, so an NTP step or a DST transition cannot
@@ -493,12 +494,28 @@ live in [`downloaders/`](../downloaders). Three sources are supported: `gsv` and
 and are deliberately **not** written to `pano_id_log.csv`, so a later run (or a later release) can still
 pick them up.
 
+All three sources also carry the **width tripwire**: a panorama wider than 16384 px — the widest an
+8192-class GPU can render — gets an `over the viewer ceiling` warning in `scrape.log` and on stdout, and is
+downloaded exactly as it would have been otherwise. The **first** run on a host to see one also exits 1, so
+the failure-only alarm delivers it once; a latch file then keeps later runs to a warning (see
+`--width-alarm-latch`). What it means, the latch, and what to do are in
+[Operations](ops.md#the-width-tripwire).
+
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
 `cbk?output=tile` endpoint into one equirectangular JPEG: it determines a working zoom level (5 preferred,
-falling back to 3 — a fully black tile at both means there is no imagery), fans the tiles out concurrently
-with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the server's width/height, and
-upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
+falling back to 3 — a fully black tile at both, on a 200, means there is no imagery; see below), fans the
+tiles out concurrently with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the server's
+width/height, and upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
 [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
+
+**What the ledger learns from GSV.** Two answers are permanent and write a `downloaded=0` row: a pano with no
+reported width/height (decided before any request), and no imagery at either zoom, which means **both** zoom
+probes came back **200** with a fully black tile (Google's answer for a pano id it has retired). Any other
+status on a probe — 403, 404, 410, a 206, a final 3xx — raises, even when its body is a black JPEG: the pano
+counts as tonight's failure, gets no ledger row, and is asked again next run. 429 and 5xx should normally not
+get that far, since the retry policy owns them and an exhausted retry raises; one that did would raise here
+like any other non-200. The same rule covers `refetch_panos.py`'s frame
+probe, where a non-200 black edge tile used to read as "the frame covers the pano" ([#166]).
 
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution
@@ -576,6 +593,7 @@ Only a **success** resets the count — not a transient failure, and not a skip.
 difference between a breaker that fires and one that cannot.
 
 [#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
+[#166]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166
 
 Where the reason lands: the night's message carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
