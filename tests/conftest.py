@@ -196,8 +196,8 @@ _prior_temp_env = {}
 def _give_children_a_session_temp_dir():
     """Point spawned children's temp directory at a fresh per-session one (#165).
 
-    gsv's depth block latch and pacing state and scrape_queue's lock all default to tempfile.gettempdir(),
-    deliberately - each is a fact about the host. _isolate_depth_host_state redirects them in THIS process,
+    gsv's depth block latch and pacing state, common's width-alarm latch (#121) and scrape_queue's lock all
+    default to tempfile.gettempdir(), deliberately - each is a fact about the host. _isolate_depth_host_state redirects them in THIS process,
     but monkeypatching does not cross a process boundary, so the runner tests that spawn DownloadRunner.py
     were taking the host's real pacing lock and reading its real latch. The children inherit os.environ
     (every spawn helper passes `dict(os.environ, ...)`), and tempfile reads TMPDIR, TEMP, TMP in that order.

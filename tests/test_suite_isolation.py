@@ -1,11 +1,12 @@
 """Pins the suite's own isolation from the machine it runs on (#165).
 
-Three guards live in tests/conftest.py and none of them is exercised by any production test, so each is
-pinned here against the failure it exists for:
+Four guards live in tests/conftest.py (and the workflow) and none of them is exercised by any production
+test, so each is pinned here against the failure it exists for:
 
 * the session-end check that the run left the repo - including the gitignored study cache - unchanged;
 * the per-session temp directory every spawned child inherits, so a subprocess runner test never takes the
   host's real pacing lock or reads its real depth block latch;
+* PytestRemovedIn10Warning as an error, so the next removal fails the PR that adds it;
 * SIDEWALK_REQUIRE_STREETLEVEL, which CI sets so a broken streetlevel import fails the run instead of
   quietly skipping every contract test in tests/test_streetlevel_api.py.
 """
