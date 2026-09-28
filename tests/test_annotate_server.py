@@ -471,7 +471,6 @@ class TestThePageItself:
     rewritten for back-navigation."""
 
     @pytest.fixture(scope='class')
-
     @classmethod
     def script(cls):
         page = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

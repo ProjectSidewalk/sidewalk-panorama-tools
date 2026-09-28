@@ -217,7 +217,6 @@ class TestSection5TheTilePair:
     """The one section whose artifact is the committed bytes themselves; every figure is recomputed here."""
 
     @pytest.fixture(scope='class')
-
     @classmethod
     def tiles(cls):
         A = lambda im: np.asarray(im, dtype=np.float32)  # noqa: E731

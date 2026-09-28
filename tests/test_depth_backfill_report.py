@@ -334,14 +334,12 @@ class TestTheCommittedArtifactIsWhatTheScriptProduces:
 class TestTheReportMatchesTheArtifact:
 
     @pytest.fixture(scope='class')
-
     @classmethod
     def report(cls):
         with open(REPORT, encoding='utf8') as f:
             return f.read()
 
     @pytest.fixture(scope='class')
-
     @classmethod
     def fleet(cls):
         with open(JSON) as f:
