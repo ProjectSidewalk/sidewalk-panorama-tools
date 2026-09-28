@@ -393,8 +393,10 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
             # "field 11 did not grow" is silent on precisely the regression this rule exists for. Two arms:
             # field 5 grew from the last logged night before the window to the newest night in it, or
             # field 5 - field 11 on the newest row carrying both (a lower bound on eligible panos never
-            # attempted) is at least the minimum. A corpus nobody wrote (field 5 blank) is unknown, not
-            # zero, and keeps the old behaviour: fire.
+            # attempted) is at least the minimum. The bound is loose by the ledger rows no longer in the list:
+            # 5 - 11 was -1 in 50 of 56 cities on 2026-09-27, so the arm needs 4 real unattempted panos
+            # there, and -1,460 in chicago-il, where only the growth arm can fire. A corpus nobody wrote
+            # (field 5 blank) is unknown, not zero, and keeps the old behaviour: fire.
             #
             # A written 0 is unknown too. Field 5 is len(image_pano_infos) with no empty-list guard, so an empty
             # /adminapi/panos answer writes a plausible 0 - the value corpus_size refuses in field 19 for the
