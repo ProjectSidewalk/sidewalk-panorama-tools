@@ -256,9 +256,9 @@ the ringing margin of a band's edge (y=716 above) is written, and so is a partly
 (y=650, 24% black).
 
 **A bottom band is caught only when it is deeper than a sixth of the pano.** Near the nadir the window is
-clamped at `CROP_MAX_FOV_DEG` (90° of elevation, a third of the pano's height) and shifted up to end at the
-bottom row, so every label in the lower sixth gets the *same* window, and its black share is the band's depth
-over that window's height — wherever in the band the label sits. The check therefore withholds labels in a
+clamped at `CROP_MAX_FOV_DEG` (90° wide, so at 3:2 it spans 60° of elevation, a third of the pano's height)
+and shifted up to end at the bottom row, so every label in the lower sixth gets the *same* window, and its
+black share is the band's depth over that window's height — wherever in the band the label sits. The check therefore withholds labels in a
 bottom band only when the band is deeper than half the nadir window: **H/6, 16.7% of the pano's height**
 (a few rows more on a JPEG, where the edge's ringing rows are not exactly 0). Measured on a 2048×1024 pano,
 JPEG q75, labels just inside the band, mid-band and on the bottom row, all three giving the same share:

@@ -374,9 +374,9 @@ class TestAMostlyBlackWindowIsWithheld:
     def test_at_the_nadir_a_bottom_band_is_caught_only_deeper_than_a_sixth_of_the_pano(self, crop_runner,
                                                                                          tmp_path):
         """KNOWN LIMIT, tied to the geometry that sets it. Near the nadir the window is clamped at
-        CROP_MAX_FOV_DEG (90 deg of elevation, a third of the pano's height) and shifted up to end at the
-        bottom row, so a label anywhere in the lower sixth gets the SAME window - and its black share is
-        the band's depth over that window's height, wherever in the band the label sits. The check
+        CROP_MAX_FOV_DEG (90 deg wide, so at 3:2 it spans 60 deg of elevation, a third of the pano's height)
+        and shifted up to end at the bottom row, so a label anywhere in the lower sixth gets the SAME window -
+        and its black share is the band's depth over that window's height, wherever in the band the label sits. The check
         therefore sees a bottom band only when it is deeper than CROP_MAX_BLACK_FRACTION of that window:
         H/6, 16.7%. The D4 bottom band (18.75%) clears it by a few points; a thinner band is written as
         success, 29-45% black at 10-15% deep. In memory, so the rows are exact."""
