@@ -1013,6 +1013,23 @@ def legacy_layout_signal(crop_dir):
     return None
 
 
+def city_named_directory(path, city):
+    """The directory `path` names, if that directory is named `city` - so already <crop-dir>/<city>/ for -o
+    its parent - else None.
+
+    Compared after normalising (a trailing slash's basename is '', and 'x/1/..' is 'x') and again after
+    resolving links, so `-o /srv/crops/current` pointing at seattle-wa/ counts. The spelled path wins when
+    both match, so the parent named back to the operator is the one they typed.
+    """
+    normalized = os.path.normpath(os.path.abspath(path))
+    if os.path.basename(normalized) == city:
+        return normalized
+    resolved = os.path.realpath(normalized)
+    if os.path.basename(resolved) == city:
+        return resolved
+    return None
+
+
 def refuse_legacy_crop_root(crop_dir, city):
     """Raise LegacyCropStoreError if crop_dir is a pre-#159 flat store rather than a root of city stores.
 
@@ -1033,19 +1050,25 @@ def refuse_legacy_crop_root(crop_dir, city):
     if found is None:
         return
     command = "python3 migrate_crop_store.py %s --city %s --dry-run" % (crop_dir, city)
-    normalized = os.path.normpath(os.path.abspath(crop_dir))
-    if os.path.basename(normalized) == city:
+    named_for_city = city_named_directory(crop_dir, city)
+    if named_for_city is not None:
+        # The migrator is deliberately not offered here: it refuses a root named for --city (it would nest
+        # the store as <city>/<city>/), and on a store several cities were cut into it would file every
+        # crop under this one - it cannot tell one city's crop from another's.
         raise LegacyCropStoreError(
             "%s looks like %s's crop store already - it is named for the city and holds %s. Since #159, -o is "
             "the directory that HOLDS one store per city, so point -o at its parent, %s, and nothing moves. "
-            "(If it holds more than one city's crops, `%s` sorts that out instead.) Nothing has been written."
-            % (crop_dir, city, found, os.path.dirname(normalized), command))
+            "(If more than one city was ever cut into it, no tool here can separate them: see docs/cropper.md, "
+            "One store, one city.) Nothing has been written." % (crop_dir, city, found,
+                                                                   os.path.dirname(named_for_city)))
     raise LegacyCropStoreError(
         "%s holds %s: it is a crop store in the layout before #159, when -o was the store, not a root that "
         "holds one store per city (<crop-dir>/<city>/<label_type_id>/<label_id>.jpg). Cropping here would "
         "start a second copy of the store beside it. Move it into place first - it moves files, never "
-        "replaces one, and lists anything it cannot move: `%s`, then the same without --dry-run. Nothing has "
-        "been written." % (crop_dir, found, command))
+        "replaces one, and lists anything it cannot move: `%s`, then the same without --dry-run. It files "
+        "every crop under --city, so run it only on a store that holds %s's crops alone; for one that more "
+        "than one city was cut into, see docs/cropper.md, One store, one city. Nothing has been written."
+        % (crop_dir, found, command, city))
 
 
 class ProvenanceManifestHeaderError(Exception):

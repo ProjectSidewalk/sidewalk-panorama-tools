@@ -388,17 +388,35 @@ class TestALegacyFlatRootIsRefused:
         printed = capsys.readouterr().out
         command = 'python3 migrate_crop_store.py %s --city %s --dry-run' % (out, SEATTLE)
         assert command in printed and os.path.join(str(out), '1') in printed
+        assert 'more than one city' in printed and 'docs/cropper.md' in printed
         assert any(r.levelno == logging.ERROR and command in r.getMessage() for r in caplog.records)
 
     @pytest.mark.parametrize('trailing', ['', os.sep], ids=['plain', 'trailing-slash'])
     def test_a_store_already_named_for_its_city_is_told_to_point_at_the_parent(self, crop_runner, tmp_path,
                                                                                  capsys, trailing):
-        """-o /srv/crops/seattle-wa --city seattle-wa: nothing needs to move, only -o."""
+        """-o /srv/crops/seattle-wa --city seattle-wa: nothing needs to move, only -o. And the migrator is
+        NOT offered: run on this root it would nest the store as seattle-wa/seattle-wa/, and on a store
+        several cities were cut into it would file them all under one (it now refuses the first)."""
         out = tmp_path / 'crops' / SEATTLE
         plant(out, '1/5.jpg')
         city_run(crop_runner, tmp_path, str(out) + trailing, SEATTLE)
         printed = capsys.readouterr().out
         assert 'point -o at its parent' in printed and str(out.parent) in printed
+        assert 'migrate_crop_store' not in printed and 'more than one city' in printed
+
+    def test_a_link_named_otherwise_to_the_citys_store_is_told_the_real_parent(self, crop_runner, tmp_path,
+                                                                                capsys):
+        """-o /srv/crops/current -> seattle-wa: the name the operator typed is not the city, the store is."""
+        real = tmp_path / 'crops' / SEATTLE
+        plant(real, '1/5.jpg')
+        link = tmp_path / 'crops' / 'current'
+        try:
+            os.symlink(str(real), str(link), target_is_directory=True)
+        except (OSError, NotImplementedError) as e:
+            pytest.skip('cannot create a directory symlink here: %s' % e)
+        city_run(crop_runner, tmp_path, link, SEATTLE)
+        printed = capsys.readouterr().out
+        assert 'point -o at its parent' in printed and 'migrate_crop_store' not in printed
 
     def test_the_parent_remedy_is_not_offered_to_any_other_root(self, crop_runner, tmp_path, capsys):
         out = tmp_path / 'crops'

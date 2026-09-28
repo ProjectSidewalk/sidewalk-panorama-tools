@@ -15,6 +15,11 @@ every byte of the store's record ends up either in its place under <crop-dir>/<c
 is idempotent and resumable - a second run, or one after a run that died partway, finishes the job and
 touches nothing else - and --dry-run writes nothing at all. One migrator per store at a time.
 
+It cannot tell one city's crop from another's: every crop it moves is filed under --city, and it says so on
+both channels. A flat store that more than one city was cut into is not a job for it - see docs/cropper.md,
+One store, one city. A crop-dir already named for --city needs no move at all (point CropRunner's -o at
+its parent), and is refused.
+
 Like the depth migrator (migrate_depth_artifacts.py) this exists because nothing else ever revisits what is
 on disk: CropRunner's resume marker is the crop file, so a store left in the old layout stays there.
 """
@@ -34,6 +39,11 @@ MigrationSummary = collections.namedtuple(
 
 # crop.log's rotated segments, as logging.handlers.RotatingFileHandler names them.
 _ROTATED_LOG = re.compile(r'crop\.log\.\d+')
+
+
+class RootIsACityStoreError(Exception):
+    """crop_dir is already named for --city: it is <crop-dir>/<city>/ for -o its parent, and nothing needs
+    to move. Migrating it would nest the store as <city>/<city>/."""
 
 
 def _shards(crop_dir):
@@ -86,11 +96,26 @@ def migrate_store(crop_dir, city, dry_run=False):
     collision #159 exists to end, made permanent. A marker with no city - every store cut before #153's
     stopgap - passes, and CropRunner adopts the city on its next run.
 
+    Refuses, too, a crop_dir already named for `city` (or a link to one): it is <crop-dir>/<city>/ for -o
+    its parent as it stands, and moving it under itself would nest it as <city>/<city>/.
+
+    It cannot tell one city's crop from another's. Every crop it moves is filed under `city`, so a flat
+    store that more than one city was cut into must not be given to it (docs/cropper.md, One store, one
+    city).
+
     Everything else at the root - other cities' stores, notes, figures - is left alone.
 
     :return: MigrationSummary. Under dry_run every count is a prediction and nothing is written.
-    :raises CropRunner.ProductionCropStoreError, CropRunner.CropStoreCityError: with nothing touched.
+    :raises RootIsACityStoreError, CropRunner.ProductionCropStoreError, CropRunner.CropStoreCityError: with
+        nothing touched.
     """
+    named_for_city = CropRunner.city_named_directory(crop_dir, city)
+    if named_for_city is not None:
+        raise RootIsACityStoreError(
+            "%s is already named for %s: it is that city's store for CropRunner -o %s as it stands, so nothing "
+            "needs to move - point CropRunner's -o at the parent. Migrating it would nest it as %s. Nothing "
+            "has been touched." % (crop_dir, city, os.path.dirname(named_for_city),
+                                   os.path.join(named_for_city, city)))
     CropRunner.refuse_production_crop_store(crop_dir)
     store = os.path.join(crop_dir, city)
     CropRunner.check_store_city(crop_dir, city)
@@ -169,22 +194,31 @@ def main(argv=None):
     """:return: 0 when the store is migrated (or there was nothing to move); 1 when anything was left where it
              was - a collision, a directory inside a shard, a failed rename - predicted ones included under
              --dry-run, since CropRunner keeps refusing the root until a person settles each; 2 on a usage
-             error, a crop dir that does not exist included; 3 when the root is refused - it looks like the
-             production canvas-capture store, or its crop_rule.json (or <city>/'s) records another city or
-             cannot be read - with nothing touched."""
+             error, a crop dir that does not exist included; 3 when the root is refused - it is already named
+             for --city, it looks like the production canvas-capture store, or its crop_rule.json (or
+             <city>/'s) records another city or cannot be read - with nothing touched."""
     parser = build_parser()
     args = parser.parse_args(argv)
     if not os.path.isdir(args.crop_dir):
         parser.error("%s is not a directory" % args.crop_dir)
     try:
         summary = migrate_store(args.crop_dir, args.city, dry_run=args.dry_run)
-    except (CropRunner.ProductionCropStoreError, CropRunner.CropStoreCityError) as e:
+    except (RootIsACityStoreError, CropRunner.ProductionCropStoreError, CropRunner.CropStoreCityError) as e:
         # Both channels, CropRunner's pattern: logging is not configured, so this reaches stderr through the
         # root logger's last-resort handler.
         print("migrate_crop_store: %s" % e)
         logging.error('%s', e)
         return CropRunner.EXIT_REFUSED_DESTINATION
     print(summary_line(summary, args.dry_run))
+    if summary.dirs_moved or summary.files_moved or summary.store_files_moved:
+        # It cannot tell one city's crop from another's: said on both channels, whenever anything moves or
+        # would, so the dry run an operator reads first carries it.
+        attribution = ("Every crop %s is attributed to %s by this move; this tool cannot check that. A flat "
+                       "store that more than one city was cut into must not be migrated: see docs/cropper.md, "
+                       "One store, one city."
+                       % ('listed above as would-be-moved' if args.dry_run else 'moved above', args.city))
+        print(attribution)
+        logging.warning('%s', attribution)
     incomplete = summary.collisions or summary.failed or summary.left
     if incomplete:
         print("Everything listed above is still where it was. CropRunner refuses %s until the root holds no "

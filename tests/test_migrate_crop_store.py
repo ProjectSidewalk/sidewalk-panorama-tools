@@ -292,6 +292,64 @@ class TestTheCityIsChecked:
         assert {k: v for k, v in tree_snapshot(root).items() if k.startswith('chicago-il')} == before
 
 
+class TestARootAlreadyNamedForTheCityIsRefused:
+    """`migrate_crop_store.py /srv/crops/seattle-wa --city seattle-wa` would move the store to
+    /srv/crops/seattle-wa/seattle-wa/ and exit 0; CropRunner on /srv/crops would then take
+    /srv/crops/seattle-wa as a store with no marker and no shards and cut every crop again beside the
+    nested copy. Such a root is already <crop-dir>/<city>/ for -o its parent, so nothing needs to move."""
+
+    @pytest.mark.parametrize('spelling', ['plain', 'trailing-slash', 'dot-segment'])
+    def test_it_is_exit_3_with_nothing_touched(self, tmp_path, capsys, spelling):
+        root = flat_store(tmp_path / 'crops' / CITY)
+        plant(root, 'crop_rule.json', data=b'{}')
+        arg = {'plain': str(root), 'trailing-slash': str(root) + os.sep,
+               'dot-segment': os.path.join(str(root), '1', '..')}[spelling]
+        before = tree_snapshot(tmp_path / 'crops')
+        assert migrate_crop_store.main([arg, '--city', CITY]) == 3
+        assert tree_snapshot(tmp_path / 'crops') == before
+        printed = capsys.readouterr().out
+        assert 'parent' in printed and str(tmp_path / 'crops') in printed
+
+    def test_a_link_to_a_store_named_for_the_city_is_refused_too(self, tmp_path):
+        root = flat_store(tmp_path / 'crops' / CITY)
+        link = tmp_path / 'crops' / 'current'
+        try:
+            os.symlink(str(root), str(link), target_is_directory=True)
+        except (OSError, NotImplementedError) as e:
+            pytest.skip('cannot create a directory symlink here: %s' % e)
+        before = tree_snapshot(tmp_path / 'crops' / CITY)
+        with pytest.raises(migrate_crop_store.RootIsACityStoreError):
+            migrate_crop_store.migrate_store(str(link), CITY)
+        assert tree_snapshot(tmp_path / 'crops' / CITY) == before
+
+    def test_a_root_named_for_another_city_is_not_this_refusal(self, tmp_path):
+        """Only --city's own name: /srv/crops/chicago-il --city seattle-wa is a different question."""
+        root = flat_store(tmp_path / 'crops' / 'chicago-il')
+        assert migrate_crop_store.migrate_store(str(root), CITY).dirs_moved == 2
+
+
+class TestItSaysWhoseCropsItAssumesTheyAre:
+    """The migrator cannot tell one city's crop from another's: a flat store two cities were cut into is
+    filed whole under --city. It says so, on both channels, whenever it moves (or would move) anything."""
+
+    @pytest.mark.parametrize('extra', [(), ('--dry-run',)], ids=['real', 'dry-run'])
+    def test_the_attribution_is_said_on_both_channels(self, tmp_path, capsys, caplog, extra):
+        import logging
+        root = flat_store(tmp_path / 'crops')
+        with caplog.at_level(logging.WARNING):
+            run_main(root, *extra)
+        printed = capsys.readouterr().out
+        assert 'attribute' in printed and 'more than one city' in printed
+        assert any(r.levelno == logging.WARNING and CITY in r.getMessage() and 'more than one city'
+                   in r.getMessage() for r in caplog.records)
+
+    def test_nothing_to_move_says_nothing_about_it(self, tmp_path, capsys):
+        root = tmp_path / 'crops'
+        root.mkdir()
+        run_main(root)
+        assert 'more than one city' not in capsys.readouterr().out
+
+
 class TestCropRunnerTakesTheMigratedStore:
     def test_end_to_end_every_crop_is_skipped_not_recut(self, crop_runner, tmp_path, monkeypatch):
         """A store cut before #159, migrated, then cropped: CropRunner accepts the root, adopts the city

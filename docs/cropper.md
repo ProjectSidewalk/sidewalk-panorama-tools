@@ -61,14 +61,21 @@ shards. If `-o` directly holds an all-digit directory, a `crop_rule.json`, a `cr
 what it found and the command to run next — cropping there would start a second copy of the city's store
 beside the old shards and cut every crop again. A root that holds city stores, notes, figures or a stray
 `crop.log` passes. A half-migrated root is refused too, until every collision the migrator listed is
-settled by hand. There are two ways out:
+settled by hand. There are three ways out:
 
 * **The store is already named for its city** (`-o /srv/crops/columbus-oh --city columbus-oh`, the form the
-  README always showed): nothing moves. The message says so first — point `-o` at the parent,
-  `/srv/crops`, and the store is `<crop-dir>/<city>/` as it stands; it adopts the city on its next run and
-  nothing is re-cut.
-* **Anything else** — a flat store not named for its city, or one `-o` several cities were cut into:
+  README always showed, or a link to such a directory): nothing moves. The message says so — point `-o` at
+  the parent, `/srv/crops`, and the store is `<crop-dir>/<city>/` as it stands; it adopts the city on its
+  next run and nothing is re-cut. The migrator is not offered here, and refuses such a root: it would nest
+  the store as `columbus-oh/columbus-oh/`.
+* **A flat store holding one city's crops, not named for it**:
   [move it with `migrate_crop_store.py`](#moving-a-pre-159-store) first.
+* **A flat store that more than one city was cut into cannot be migrated by any tool here.** Nothing on
+  disk says which crop is whose — the crop files are named for `label_id` alone, and a marker written
+  before #153 records no city — so the migrator would file every crop under the one `--city` it is given,
+  and that city's next run would count the other city's crops as its own `skipped_existing`. Set the store
+  aside instead (rename it; never delete it) and re-cut each city into a fresh root, or separate it by
+  hand: the old manifest's `pano_id` column, checked against each city's pano store, is the evidence.
 
 ### Moving a pre-#159 store
 
@@ -78,7 +85,11 @@ python3 migrate_crop_store.py <crop-dir> --city <city_id>             # then for
 ```
 
 `<crop-dir>` is the directory that was `-o` before #159; it stays `-o` afterwards, now holding
-`<crop-dir>/<city>/`. The migrator **moves, never copies, and never replaces**:
+`<crop-dir>/<city>/`. **It cannot tell one city's crop from another's**: every crop it moves is filed
+under `--city`, and it says so on stdout and stderr whenever it moves (or, under `--dry-run`, would move)
+anything. Give it only a store known to hold that one city's crops — see
+[the ways out above](#one-store-one-city) for one that does not. The migrator **moves, never copies, and
+never replaces**:
 
 * Each label-type directory moves whole — one rename, which over sshfs is one round trip rather than one per
   crop — unless `<crop-dir>/<city>/<label_type_id>/` already exists (a run under the new layout, or a
@@ -91,7 +102,8 @@ python3 migrate_crop_store.py <crop-dir> --city <city_id>             # then for
   no city, and CropRunner's next run [sets it aside](#the-provenance-manifest-crop_provenancecsv) and
   starts a fresh one.
 * Everything else at the root — another city's store, notes, figures — is not touched.
-* Before anything moves it refuses (exit **3**) a root that looks like the production canvas-capture store,
+* Before anything moves it refuses (exit **3**) a root already named for `--city` (or a link to one — point
+  CropRunner's `-o` at its parent instead), a root that looks like the production canvas-capture store,
   and a root or `<city>/` whose `crop_rule.json` names another city or cannot be read: moving Chicago's
   store into `seattle-wa/` would make the collision this layout ends permanent. A marker with no city — any
   store cut before the city was recorded — passes, and CropRunner adopts the city on its next run. `--city`
