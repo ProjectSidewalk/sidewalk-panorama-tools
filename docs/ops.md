@@ -822,7 +822,12 @@ store**, so it survives remounts and is absent from the empty directory under th
    `printf 'Project Sidewalk pano store; see docs/ops.md#the-store-marker\n' > /mnt/panostore/.pano-store`
 2. Prove the directory *under* the mount is unmarked, without unmounting:
    `sudo mkdir -p /tmp/under && sudo mount --bind / /tmp/under && ls -la /tmp/under/mnt/panostore` must be
-   empty (remove a stray `.pano-store` there). While it is bound,
+   empty. Remove a stray `.pano-store` there; if an earlier unmounted scrape left city directories or
+   ledgers there, move them aside (e.g. to `/var/tmp/under-panostore-<date>/`) rather than deleting them,
+   since they may be the only copy of that night's downloads. Before the next step, confirm the mount is
+   made by root — `systemctl cat mnt-panostore.mount` shows a system unit with no `User=` — because a
+   user-mode `fusermount` needs write access to the mount point, and after the `chmod 555` a refused remount
+   would exit 5 every night. While it is bound,
    `sudo chown root:root /tmp/under/mnt/panostore && sudo chmod 555 /tmp/under/mnt/panostore`; then
    `sudo umount /tmp/under`. Record the date in the private runbook.
 3. `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --dry-run`
