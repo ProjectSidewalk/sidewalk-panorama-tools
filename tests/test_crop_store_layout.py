@@ -428,6 +428,26 @@ class TestALegacyFlatRootIsRefused:
         printed = capsys.readouterr().out
         assert 'point -o at its parent' in printed and 'migrate_crop_store' not in printed
 
+    @pytest.mark.parametrize('with_store', [False, True], ids=['stray-only', 'beside-a-city-store'])
+    def test_a_stray_all_digit_directory_is_told_to_move_it_and_nothing_else(self, crop_runner, tmp_path,
+                                                                              capsys, caplog, with_store):
+        """A new-layout root holding a `2024/` is not a pre-#159 store, and the migrator would only list it
+        as LEFT and exit 1 (final review M1). So the refusal names the directory and says to move it out by
+        hand - never that -o is a flat store, and never the migrator command."""
+        import logging
+        out = tmp_path / 'crops'
+        if with_store:
+            plant(out, SEATTLE + '/1/1.jpg')
+        plant(out, '2024/notes.txt')
+        with caplog.at_level(logging.ERROR):
+            assert city_run(crop_runner, tmp_path, out, SEATTLE) == crop_runner.EXIT_REFUSED_DESTINATION
+        printed = capsys.readouterr().out
+        assert os.path.join(str(out), '2024') in printed and 'move it out of -o by hand' in printed
+        assert 'then re-run' in printed
+        assert 'layout before #159' not in printed and '--dry-run' not in printed
+        assert any(r.levelno == logging.ERROR and 'move it out of -o by hand' in r.getMessage()
+                   for r in caplog.records)
+
     def test_the_parent_remedy_is_not_offered_to_any_other_root(self, crop_runner, tmp_path, capsys):
         out = tmp_path / 'crops'
         plant(out, '1/5.jpg')
@@ -455,14 +475,16 @@ class TestALegacyFlatRootIsRefused:
         out = tmp_path / 'crops'
         plant(out, name + '/notes.txt')
         found = crop_runner.legacy_layout_signal(str(out))
-        assert 'not a label type' in found and os.path.join(str(out), name) in found
+        assert found.kind == crop_runner.LEGACY_STRAY_DIGIT_DIRECTORY
+        assert 'not a label type' in found.description and os.path.join(str(out), name) in found.description
 
     @pytest.mark.parametrize('type_id', ['1', '10'])
     def test_a_label_type_directory_is_named_as_one(self, crop_runner, tmp_path, type_id):
         out = tmp_path / 'crops'
         plant(out, type_id + '/5.jpg')
         found = crop_runner.legacy_layout_signal(str(out))
-        assert found.startswith('a label-type directory') and 'not a label type' not in found
+        assert found.kind == crop_runner.LEGACY_LABEL_TYPE_DIRECTORY
+        assert found.description.startswith('a label-type directory') and 'not a label type' not in found.description
 
     def test_the_signal_lists_the_root_once_and_never_a_shard(self, crop_runner, tmp_path, monkeypatch):
         """One listing of -o: a shard of a flat store holds ~400k crops over sshfs, and nothing about the

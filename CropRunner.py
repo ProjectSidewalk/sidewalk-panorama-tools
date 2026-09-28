@@ -1071,14 +1071,23 @@ class LegacyCropStoreError(Exception):
 LEGACY_ROOT_FILES = (CROP_RULE_MARKER, PROVENANCE_MANIFEST, PROVENANCE_MANIFEST_PRE_CITY)
 
 
+# The kinds of hit legacy_layout_signal reports. Only the first two make -o a pre-#159 store; the third is a
+# directory a person put there, which the migrator leaves, so its remedy is different (final review M1).
+LEGACY_LABEL_TYPE_DIRECTORY = 'label_type_directory'
+LEGACY_STORE_FILE = 'store_file'
+LEGACY_STRAY_DIGIT_DIRECTORY = 'stray_digit_directory'
+
+LegacySignal = collections.namedtuple('LegacySignal', ['kind', 'description'])
+
+
 def legacy_layout_signal(crop_dir):
-    """What marks crop_dir as a pre-#159 flat store, or None.
+    """What marks crop_dir as a pre-#159 flat store - a LegacySignal(kind, description) - or None.
 
     One listing of crop_dir, stopping at the first hit: an all-digit directory (a label-type shard - a
     root under the new layout holds only city directories, and no city_id is all digits, which
     tests/test_crop_store_layout.py pins against log_analyzer/cities.csv) or a LEGACY_ROOT_FILES file.
-    An all-digit directory that is not a label type's (_is_label_type_shard) is still a signal, but is
-    named as such: the migrator leaves it where it is, so a person has to move it.
+    An all-digit directory that is not a label type's (_is_label_type_shard) is still a signal, but of its
+    own kind, LEGACY_STRAY_DIGIT_DIRECTORY: the migrator leaves it where it is, so a person has to move it.
     A crop_dir that does not exist yet holds nothing and gives no signal.
     """
     try:
@@ -1086,12 +1095,13 @@ def legacy_layout_signal(crop_dir):
             for entry in listing:
                 if entry.is_dir():
                     if _is_label_type_shard(entry.name):
-                        return "a label-type directory, %s" % entry.path
+                        return LegacySignal(LEGACY_LABEL_TYPE_DIRECTORY,
+                                            "a label-type directory, %s" % entry.path)
                     if _is_numeric_name(entry.name):
-                        return ("an all-digit directory that is not a label type, %s (migrate_crop_store.py "
-                                "leaves it where it is: move it out of -o by hand)" % entry.path)
+                        return LegacySignal(LEGACY_STRAY_DIGIT_DIRECTORY,
+                                            "an all-digit directory that is not a label type, %s" % entry.path)
                 elif entry.name in LEGACY_ROOT_FILES:
-                    return "a crop store's own file, %s" % entry.path
+                    return LegacySignal(LEGACY_STORE_FILE, "a crop store's own file, %s" % entry.path)
     except (FileNotFoundError, NotADirectoryError):
         return None
     return None
@@ -1130,9 +1140,20 @@ def refuse_legacy_crop_root(crop_dir, city):
 
     Called by main() before the city store is created or crop.log opened, so the refusal writes nothing.
     """
-    found = legacy_layout_signal(crop_dir)
-    if found is None:
+    signal = legacy_layout_signal(crop_dir)
+    if signal is None:
         return
+    found = signal.description
+    if signal.kind == LEGACY_STRAY_DIGIT_DIRECTORY:
+        # Not evidence of a flat store: a root of city stores cannot hold it either (no city_id is all
+        # digits), but the migrator leaves it where it is, so offering the migrator would end in LEFT and
+        # exit 1 with nothing moved. The scan stops at the first hit, so whether the root is ALSO a pre-#159
+        # store is not known yet; the re-run says, with its own remedy.
+        raise LegacyCropStoreError(
+            "%s holds %s. Since #159, -o holds only one store per city and no city_id is all digits, so the run "
+            "refuses it; migrate_crop_store.py leaves such a directory where it is, so move it out of -o by "
+            "hand, then re-run - if -o is also a flat crop store from before #159, the re-run says how to "
+            "move that. Nothing has been written." % (crop_dir, found))
     command = "python3 migrate_crop_store.py %s --city %s --dry-run" % (crop_dir, city)
     named_for_city = city_named_directory(crop_dir, city)
     if named_for_city is not None:

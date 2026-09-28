@@ -259,7 +259,8 @@ def main(argv=None):
         logging.error('%s', message)
         return 1
     print(summary_line(summary, args.dry_run))
-    if summary.dirs_moved or summary.files_moved or summary.store_files_moved:
+    moved = summary.dirs_moved or summary.files_moved or summary.store_files_moved
+    if moved:
         # It cannot tell one city's crop from another's: said on both channels, whenever anything moves or
         # would, so the dry run an operator reads first carries it.
         attribution = ("Every crop %s is attributed to %s by this move; this tool cannot check that. A flat "
@@ -271,15 +272,18 @@ def main(argv=None):
     incomplete = summary.collisions or summary.failed or summary.left
     if incomplete:
         print("Everything listed above is still where it was. CropRunner refuses %s until the root holds no "
-              "label-type directory or store file of its own: settle each by hand, then re-run this."
-              % args.crop_dir)
+              "label-type directory, all-digit directory or store file of its own: settle each by hand, then "
+              "re-run this." % args.crop_dir)
     elif not args.dry_run:
         print("Next: python3 CropRunner.py (-d <fqdn> | -f <file>) -s <pano-dir> -o %s --city %s"
               % (args.crop_dir, args.city))
-    print("Consumers that read %s must now read %s, or glob %s and key on (city, label_id)."
-          % (os.path.join(args.crop_dir, '<label_type_id>'),
-             os.path.join(args.crop_dir, args.city, '<label_type_id>'),
-             os.path.join(args.crop_dir, '*', '<label_type_id>')))
+    if moved:
+        # Only when a layout change happened or would: after a run that moved nothing, the root's consumers
+        # have nothing new to re-point at.
+        print("Consumers that read %s must now read %s, or glob %s and key on (city, label_id)."
+              % (os.path.join(args.crop_dir, '<label_type_id>'),
+                 os.path.join(args.crop_dir, args.city, '<label_type_id>'),
+                 os.path.join(args.crop_dir, '*', '<label_type_id>')))
     return 1 if incomplete else 0
 
 

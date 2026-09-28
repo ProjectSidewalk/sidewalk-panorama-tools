@@ -533,6 +533,24 @@ class TestTheCommandLine:
         assert '-o %s --city %s' % (root, CITY) in printed
         assert os.path.join(str(root), CITY, '<label_type_id>') in printed
 
+    def test_a_root_where_nothing_moves_names_what_blocks_it_and_warns_no_consumer(self, tmp_path, capsys):
+        """A new-layout root with a stray `2024/`: the migrator leaves it and exits 1. Its closing line must
+        name that directory kind as what CropRunner still refuses, and must not tell consumers to re-point
+        at a layout nothing was moved into (final review M1)."""
+        root = tmp_path / 'crops'
+        plant(root, CITY + '/1/1.jpg')
+        plant(root, '2024/notes.txt')
+        assert run_main(root) == 1
+        printed = capsys.readouterr().out
+        closing = [line for line in printed.splitlines() if line.startswith('Everything listed above')]
+        assert len(closing) == 1 and 'all-digit directory' in closing[0]
+        assert 'Consumers' not in printed
+
+    def test_a_predicted_move_still_warns_consumers_under_dry_run(self, tmp_path, capsys):
+        root = flat_store(tmp_path / 'crops')
+        run_main(root, '--dry-run')
+        assert 'Consumers' in capsys.readouterr().out
+
     def test_nothing_to_do_is_exit_0(self, tmp_path):
         root = tmp_path / 'crops'
         root.mkdir()

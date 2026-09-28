@@ -62,8 +62,9 @@ what it found and the command to run next — cropping there would start a secon
 beside the old shards and cut every crop again. A root that holds city stores, notes, figures or a stray
 `crop.log` passes. A half-migrated root is refused too, until every collision the migrator listed is
 settled by hand. An all-digit directory that is not a label type's (a `2024/` of figures, a hand-made
-`01/`) is refused too, and named as such: the migrator leaves it where it is, so a person moves it out of
-`-o`. There are three ways out:
+`01/`) is refused too, with a message of its own: it is not evidence of a flat store and the migrator
+leaves it where it is, so the message says only to move it out of `-o` by hand and re-run (the re-run
+names the migrator if `-o` is a flat store as well). There are three ways out:
 
 * **The store is already named for its city** (`-o /srv/crops/columbus-oh --city columbus-oh`, the form the
   README always showed, or a link to such a directory): nothing moves. The message says so — point `-o` at
@@ -115,7 +116,9 @@ never replaces**:
 
 It prints `N type directories moved whole, F files moved one by one, K store files moved, C collisions left
 in place, L left for a person, E failed` (each "would be" under `--dry-run`), then the next CropRunner
-command and a reminder for consumers. It exits **0** when the store is migrated or there was nothing to move,
+command and, when anything moved or would, a reminder for consumers. When it leaves anything, its last
+line says CropRunner refuses the root until it holds no label-type directory, all-digit directory or store
+file of its own. It exits **0** when the store is migrated or there was nothing to move,
 **1** when anything was left where it was — a collision, a directory or symlink left in place, an all-digit
 directory that is not a type directory, a listing, rename or `rmdir` that failed (each one `FAILED` line,
 and the sweep goes on; a root that stops being listable ends the run with a message rather than a
