@@ -68,6 +68,20 @@ OBSERVED_MAPILLARY_NOT_FOUND_2026_09_06 = {
 GSV_PANO = {'pano_id': 'gsvPanoIdAAAAAAAAAAAAA', 'source': 'gsv', 'width': 512, 'height': 512}
 
 
+def photometa_unavailable(pano_id, session):
+    """gsv._fetch_image_levels stand-in (#74): photometa down, so the zoom comes from the two-tile probe."""
+    raise downloaders.gsv.DepthPayloadError('stubbed: this test drives the probe path')
+
+
+def probe_serving(tile):
+    """gsv._get_response stand-in for the probe arm: `tile` at the probe's own (0, 0), black everywhere else.
+
+    Black past the grid is what Google answers for a pano that IS the app's frame, and it is what the probe
+    arm's frame check (gsv.frame_covers_pano, #74 review item 1) looks for before the fan-out."""
+    black = jpeg_bytes(0)
+    return lambda url, session, stream=False: io.BytesIO(tile if '&x=0&y=0&' in url else black)
+
+
 def jpeg_bytes(shade):
     buf = io.BytesIO()
     Image.new('RGB', (512, 512), (shade, shade, shade)).save(buf, 'jpeg')
@@ -750,8 +764,10 @@ class TestGsvAtomicSave:
         break this helper too.
         """
         tile = jpeg_bytes(120)
-        monkeypatch.setattr(downloaders.gsv, '_get_response',
-                            lambda url, session, stream=False: io.BytesIO(tile))
+        monkeypatch.setattr(downloaders.gsv, '_get_response', probe_serving(tile))
+        # Photometa is asked first since #74; making it unavailable routes this onto the probe above, and
+        # keeps a real request (streetlevel is installed in CI) out of the suite.
+        monkeypatch.setattr(downloaders.gsv, '_fetch_image_levels', photometa_unavailable)
 
         # The fan-out hands back (x, y, jpeg_bytes) per tile, one entry per requested grid position
         # (#44/#45 replaced the old ['<x> <y>', bytes] pairs). Stubbing _download_tiles rather than
@@ -924,8 +940,8 @@ class TestALostShardDirRaceDoesNotFailThePano:
 
     def test_gsv_still_downloads(self, monkeypatch, tmp_path):
         tile = jpeg_bytes(120)
-        monkeypatch.setattr(downloaders.gsv, '_get_response',
-                            lambda url, session, stream=False: io.BytesIO(tile))
+        monkeypatch.setattr(downloaders.gsv, '_get_response', probe_serving(tile))
+        monkeypatch.setattr(downloaders.gsv, '_fetch_image_levels', photometa_unavailable)
 
         async def fake_download_tiles(tiles):
             return [(x, y, tile) for x, y, _url in tiles]

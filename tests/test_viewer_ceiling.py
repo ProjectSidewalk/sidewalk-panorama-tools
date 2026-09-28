@@ -256,6 +256,34 @@ class TestGsvWiring:
 
         assert len(tripwire_records(caplog)) == fires
 
+    def test_the_nightly_photometa_path_warns_before_its_request(self, monkeypatch, caplog, capsys):
+        """The nightly downloader reaches the tripwire through resolve_frame's photometa arm, not the
+        resolve_zoom_and_dims wrapper - which since #74 is the probe-only seam refetch composes. Every test
+        above goes through the wrapper, so without this one the call could move back into it (where it would
+        fire only for refetch) with the suite green. The warning must also land before photometa is asked,
+        for the same reason the probe test above gives."""
+        sizes = [gsv._dims_at_zoom(WIDE, 8192, k) for k in range(gsv._pano_max_zoom(WIDE) + 1)]
+        seen_before_request = []
+
+        def fake_fetch_image_levels(pano_id, session):
+            seen_before_request.append(len(tripwire_records(caplog)))
+            return gsv.ImageLevels(sizes, (gsv.TILE_SIZE, gsv.TILE_SIZE))
+
+        def no_probe(*args, **kwargs):
+            raise AssertionError('photometa answered, so the probe must not run')
+
+        monkeypatch.setattr(gsv, '_fetch_image_levels', fake_fetch_image_levels)
+        monkeypatch.setattr(gsv, '_get_response', no_probe)
+
+        with caplog.at_level(logging.WARNING):
+            frame = gsv.resolve_frame({'pano_id': self.PANO_ID, 'width': WIDE, 'height': 8192})
+
+        assert frame.evidence == 'photometa' and frame.consistent and (frame.width, frame.height) == (WIDE, 8192)
+        assert seen_before_request == [1]
+        (record,) = tripwire_records(caplog)
+        assert self.PANO_ID in record.getMessage() and 'gsv' in record.getMessage()
+        assert len(tripwire_lines(capsys.readouterr().out)) == 1
+
 
 @pytest.fixture
 def mapillary_token(monkeypatch):
