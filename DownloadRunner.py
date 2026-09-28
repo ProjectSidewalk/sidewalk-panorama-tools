@@ -70,8 +70,20 @@ RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
 # Measured for the #174 review: richmond-va 1 raise and bayonne-fr 0 in their current scrape.logs.
 # TODO(#161): the GSV fleet is not yet measured - GSV perennial raisers (a stitch persistently >50% black
 # raises every night) are the likelier population; `grep -c "IMAGEDOWNLOAD: Failed to download pano"
-# /mnt/panostore/*/scrape.log` on the box closes it.
+# /mnt/panostore/*/scrape.log` on the box closes it - together with each raise's `--- N seconds ---` line,
+# which sizes IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS below (#174 final review).
 IMAGE_NO_SUCCESS_MIN_RAISED = 10
+
+# The budget arm of `images-no-success` also needs the raises to have taken at least this long ON AVERAGE
+# (#174 final review). The arm exists for a blackholed network, where each pano's first request rides
+# _request_session's five retries at a 30 s timeout - ~3.5 minutes per raise - so the budget goes after two or
+# three. Without a duration gate it fired after ONE raise of any length, so a mature city whose few perennial
+# raisers each spend most of a minute in tile retries, and fill the 6-minute image share between them, would
+# alarm every night: fewer than ten raises, and a max-runtime stop. 60 s is under a third of the blackhole's
+# cost and above what the review expects of a slow single pano; it is the reviewer's figure, not a
+# measurement, and the mean is written into the condition's detail on both arms so the floor measurement
+# (the TODO above) can read it off the queue's summary line.
+IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS = 60.0
 
 # The keys every /adminapi/panos record must carry, and the fraction of records lacking one that makes the
 # list a schema drift rather than a few odd rows (D8, #161). A missing width or height makes
@@ -549,6 +561,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # For `images-no-success` (#161): attempts the source answered with a verdict, and attempts that raised.
     # A skip is neither - it never contacted the source.
     answered, raised = 0, 0
+    raise_seconds = 0.0     # monotonic seconds spent in attempts that raised, for the budget arm's duration gate
 
     with ledger:
         for pano_info in candidates:
@@ -576,6 +589,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                         stop_reasons['image_stop'] = STOP_MAX_RUNTIME
                     break
             start_time = time.time()
+            attempt_start = time.monotonic()
             print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
             try:
                 result_code = download_pano(storage_path, pano_info)
@@ -601,6 +615,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
 
             if result_code is None:
                 raised += 1
+                raise_seconds += time.monotonic() - attempt_start
             elif result_code != DownloadResult.skipped:
                 answered += 1
 
@@ -675,7 +690,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         logging.error("%s", summary)
         print(summary)
 
-    budget_spent_on_raises = (raised >= 1 and stop_reasons is not None
+    mean_raise_seconds = raise_seconds / raised if raised else 0.0
+    budget_spent_on_raises = (raised >= 1 and mean_raise_seconds >= IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS
+                              and stop_reasons is not None
                               and stop_reasons.get('image_stop') == STOP_MAX_RUNTIME)
     if answered == 0 and (raised >= IMAGE_NO_SUCCESS_MIN_RAISED or budget_spent_on_raises):
         # Every attempt raised and none was answered: the network, the store or a bug, not the panos. A
@@ -685,14 +702,15 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         # The budget arm is the outage the minimum cannot see: when packets to Google are DROPPED rather than
         # refused, each pano's first request rides _request_session's five retries at a 30 s timeout, ~3.5
         # minutes per raise, so a 6-minute image share ends on max-runtime after two or three - never ten. A
-        # phase whose whole budget went on raises is the same fact the minimum stands in for, and a mature
-        # city's few perennial raisers finish in seconds without reaching the budget (#174 review).
+        # phase whose whole budget went on raises is the same fact the minimum stands in for - but only when
+        # the raises took the blackhole's minutes each, IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS: a mature city's
+        # few slow perennial raisers can fill the share too, and one slow raise is not an outage (#174 review).
         message = ("IMAGEDOWNLOAD: WARNING - all %d attempted panos raised and none was answered; nothing was "
                    "ledgered, so they retry next run. Look at the errors in scrape.log." % (raised,))
         logging.error("%s", message)
         print(message)
         note_condition(stop_reasons, CONDITION_IMAGES_NO_SUCCESS,
-                       '%d attempts raised, 0 answered' % (raised,))
+                       '%d attempts raised, 0 answered, %.0f s per raise' % (raised, mean_raise_seconds))
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",

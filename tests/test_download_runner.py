@@ -13,6 +13,7 @@ functions directly with plain arguments.
 
 import ast
 import json
+import itertools
 import logging
 import logging.handlers
 import os
@@ -2748,6 +2749,70 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
 
         assert summary['image_stop'] is None
         assert summary['conditions'] == []
+
+    def test_a_stop_that_is_not_the_budget_does_not_arm_it(self, monkeypatch, tmp_path):
+        """Cross-PR note 4 (#174 final review): #172 gives the image phase a second stop, a push-back trip
+        recorded as `blocked`, which is already its own condition. The budget arm is keyed on
+        `== STOP_MAX_RUNTIME` so that trip is not reported a second time as images-no-success. Nothing on this
+        branch can set `blocked`, so it is seeded here, standing in for the trip; the end-to-end version (a
+        real push-back trip with raises and no answer) belongs to #172's merge."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', scripted_download_pano(self.verdicts(raised=3)))
+        infos = [{'pano_id': p, 'source': 'gsv'} for p in self.verdicts(raised=3)]
+        stop_reasons = {'image_stop': downloaders.gsv.DEPTH_STOP_BLOCKED, 'depth_stop': None, 'conditions': []}
+        ticks = itertools.count()                 # every reading ten minutes on: the duration gate is met
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: 600.0 * next(ticks))
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        DownloadRunner.download_panorama_images(str(storage), infos, stop_reasons=stop_reasons)
+
+        assert stop_reasons['conditions'] == []
+
+    def test_slow_perennial_raisers_that_fill_the_budget_are_not(self, monkeypatch, tmp_path):
+        """The #174 final review's false alarm: a mature city served nothing new, whose never-ledgered
+        candidates are a few panos that each spend most of a minute in tile retries before raising. At the
+        real minimum they fill a 6-minute share on max-runtime every night with fewer than ten raises; one
+        slow raise is not a blackhole, so the budget arm must need the blackhole's minutes-per-raise too."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=9), 0.75, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME, 'the case under test'
+        assert summary['conditions'] == []
+
+    def test_a_blackhole_at_the_real_minimum_is_still_a_condition(self, monkeypatch, tmp_path):
+        """The same city with packets dropped: ~3.5 min per raise, two raises, and the budget is gone."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=9), 3.5, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+    def test_the_gate_sits_at_the_mean_raise_duration(self, monkeypatch, tmp_path):
+        """Pins the boundary rather than two points far either side of it: a mean exactly at
+        IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS fires, one just under it does not."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        floor_minutes = DownloadRunner.IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS / 60.0
+        (tmp_path / 'at').mkdir()
+        (tmp_path / 'under').mkdir()
+        at = self.run_on_a_clock(monkeypatch, tmp_path / 'at', self.verdicts(raised=9), floor_minutes, 6)
+        under = self.run_on_a_clock(monkeypatch, tmp_path / 'under', self.verdicts(raised=9),
+                                    floor_minutes * 0.99, 6)
+
+        assert [c['code'] for c in at['conditions']] == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+        assert under['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME and under['conditions'] == []
+
+    @pytest.mark.parametrize('minutes_per_attempt, max_runtime, raised', [(3.5, 6, 5), (0.01, 6, 3)])
+    def test_the_detail_carries_the_seconds_per_raise(self, monkeypatch, tmp_path, minutes_per_attempt,
+                                                      max_runtime, raised):
+        """Both arms: the floor measurement (the TODO at IMAGE_NO_SUCCESS_MIN_RAISED) needs the duration of
+        the raises as well as their count, and the queue's summary line is where it is read."""
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=raised), minutes_per_attempt,
+                                      max_runtime)
+
+        [condition] = summary['conditions']
+        expected = '%.0f s per raise' % (minutes_per_attempt * 60.0)
+        assert expected in condition['detail'], condition['detail']
 
 
 class TestAPanoListWhoseSchemaMovedIsNotScraped:
