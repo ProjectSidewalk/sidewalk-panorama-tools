@@ -1517,7 +1517,12 @@ class TestADepthPhaseThatSavesNothingIsFlagged:
         assert self.issues(tmp_path, rows) == []
 
     def test_the_fleet_block_counts_a_city_saving_nothing(self, tmp_path, monkeypatch, capsys):
-        run_main(tmp_path, monkeypatch, '--no-download', logs=[('seattle-wa', saving_nothing(10))])
+        """Beside a healthy backfilling city - work left, requests last night - so a count of every city that
+        is merely asking cannot pass for a count of the one that saves nothing."""
+        healthy = [depth_rows(9 - i, 5000, 590 + 100 * i, 100) for i in range(10)]
+
+        run_main(tmp_path, monkeypatch, '--no-download', cities=TWO_CITIES,
+                 logs=[('seattle-wa', saving_nothing(10)), ('newberg-or', healthy)])
 
         assert '0 stalled · 1 saving nothing' in squash(capsys.readouterr().out)
 
