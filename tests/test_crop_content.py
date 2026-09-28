@@ -636,6 +636,17 @@ class TestTheJsonIntakeCountsABadRowAsOneBadLabel:
             crop_runner.fetch_cvMetadata_from_file(path)
         assert 'JSON array' in str(e.value)
 
+    def test_through_main_a_non_array_file_propagates_before_any_crop(self, crop_runner, tmp_path):
+        """What docs/cropper.md says -f does with a non-array file: main()'s exceptions-propagate contract,
+        so a traceback naming the file (exit 1), the same as a file that is not valid JSON, and nothing
+        cut. Unlike -d, which catches it and exits 1 cleanly (#170 review)."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        path = write_json(tmp_path / 'labels.json', {'error': 'not a list'})
+        with pytest.raises(ValueError, match=re.escape(path)):
+            crop_runner.main(['--city', CITY, '-f', path, '-s', str(store), '-o', str(out)])
+        assert not _rglob(out, '*.jpg')
+
     def test_the_server_path_refuses_a_non_array_and_exits_one(self, crop_runner, monkeypatch, caplog):
         class FakeResponse:
             def raise_for_status(self):

@@ -392,6 +392,11 @@ def json_to_list(jsondata, source=None):
     alone on purpose: that one dedupes on the raw cell ('7' and '07' stay distinct and both file as 7.jpg),
     and it collapses repeated blank or unparseable label_id cells into one.
 
+    The dedupe keeps the FIRST row with a key, whether or not that row is usable, so a malformed row shadows
+    a good one sharing its int: [{"label_id": 7, "pano_x": "bad"}, {"label_id": "7", ...}] is one error and
+    no crop. Before #164 the raw keys 7 and "7" were distinct and the good row was cut; keep-first on a bad
+    first row was already the rule for identical raw keys, so this only widens it (#170 review).
+
     Measured against sidewalk-sea 2026-09-18 (#123): `label_type` is a name and replaced the older
     `label_type_id`; `unsure_count` was documented here as `notsure_count`; `camera_roll` is served and
     was undocumented; `source` is NOT sent by this endpoint, despite the older exports in samples/ having
