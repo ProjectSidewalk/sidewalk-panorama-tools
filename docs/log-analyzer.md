@@ -119,8 +119,11 @@ A healthy mature city looks like: `image_success` small or zero most days, stabl
 permanent failures already ledgered, tonight's permanent ones and tonight's transient ones, so a transient set
 of constant size T adds T to every night's figure and the night-to-night change the growing-failures check
 reads is about zero. Field 5 − field 11 does not see it either, because those panos *are* attempted and field
-11 counts attempts. Measured: 20 nights of 200 transient failures each and no downloads returned no finding.
-Detecting it would need the runner to write tonight's transient count as a field 20 — and `LOG_COLUMNS` here
+11 counts attempts. Measured: 30 nights of 200 transient failures each, no downloads and a flat corpus
+return no finding. **This is a gap #163 opened, not one it found:** before it, the zero-new-images check
+fired on exactly that city after 30 nights, because it asked for no evidence of work. The evidence gate
+cannot tell this city from a mature one with nothing new to fetch (field 5 flat, field 5 − field 11 = 0 in
+both), and silencing the second is what the gate is for. Detecting it would need the runner to write tonight's transient count as a field 20 — and `LOG_COLUMNS` here
 and `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` move together, which a test asserts. The depth phase does not
 have this blind spot: a phase that requests and saves nothing is reported above.
 

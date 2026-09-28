@@ -366,7 +366,7 @@ def daily_rows(count, offset=0, **overrides):
 
 
 def zero_progress_rows(total=130, quiet_tail=30, success=5, new_panos=3, not_attempted=0, step_days_ago=None,
-                       corpus_known=True, empty_list_ages=(), recent_not_attempted=None):
+                       corpus_known=True, empty_list_ages=(), recent_not_attempted=None, image_fail=(0, 0)):
     """A history that downloaded `success` images a day and then stopped `quiet_tail` days ago.
 
     `total` must exceed ZERO_PROGRESS_DAYS + ZERO_PROGRESS_LOOKBACK for check 3 to look at all - the rule
@@ -380,6 +380,7 @@ def zero_progress_rows(total=130, quiet_tail=30, success=5, new_panos=3, not_att
     `empty_list_ages` are the rows (by age in days) whose pano-list fetch came back empty: field 5 is a written
     0 there, which is `len(image_pano_infos)` of an empty answer. `recent_not_attempted=(n, value)` overrides
     `not_attempted` on the newest n rows only, so the backlog can differ between the oldest and newest rows.
+    `image_fail=(before, during)` is field 9 before and during the quiet tail.
     """
     step_days_ago = quiet_tail // 2 if step_days_ago is None else step_days_ago
     rows = []
@@ -389,7 +390,8 @@ def zero_progress_rows(total=130, quiet_tail=30, success=5, new_panos=3, not_att
         gap = (recent_not_attempted[1] if recent_not_attempted and age < recent_not_attempted[0]
                else not_attempted)
         written = 0 if age in empty_list_ages else corpus
-        rows.append(make_row(days_ago(age), image_success=(0 if i >= total - quiet_tail else success),
+        quiet = i >= total - quiet_tail
+        rows.append(make_row(days_ago(age), image_success=(0 if quiet else success), image_fail=image_fail[quiet],
                              xml_total=written if corpus_known else '', image_total=corpus - gap))
     return rows
 
@@ -509,6 +511,17 @@ class TestRule3AsksWhetherThereWasWork:
 
         assert [i['level'] for i in found] == ['WARNING'], found
         assert 'unknown' in found[0]['msg']
+
+    def test_a_steady_transient_set_is_the_trade_the_gate_makes(self, tmp_path):
+        """docs/log-analyzer.md, "What `log.csv` cannot show": 30 nights of 200 panos failing transiently, no
+        downloads, a flat corpus. The ungated rule fired here; the gate cannot tell this city from a mature one
+        with nothing new (field 5 flat, every eligible pano attempted), so it is silent. Pinned so the docs'
+        claim is a measurement - if a runner-side transient count (open item 3) ever lands, this test is the
+        one that should change."""
+        # 50 ledgered permanent verdicts every night, plus 200 transient failures every night of the tail.
+        rows = zero_progress_rows(new_panos=0, quiet_tail=analyze.ZERO_PROGRESS_DAYS, image_fail=(50, 250))
+
+        assert self.rule_3(tmp_path, rows) == []
 
 
 class TestAnAbnormallyLongRunIsFlagged:
