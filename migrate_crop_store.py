@@ -46,10 +46,22 @@ class RootIsACityStoreError(Exception):
     to move. Migrating it would nest the store as <city>/<city>/."""
 
 
-def _shards(crop_dir):
-    """The label-type shards directly under crop_dir, in a stable order."""
+def _root_directories(crop_dir):
+    """The all-digit directories directly under crop_dir, in a stable order, split into (shards, left).
+
+    shards are the label-type directories this tool moves (CropRunner._is_label_type_shard). left maps
+    every other all-digit directory to why it stays: its name is no label type's (a '2024' of figures, a
+    hand-made '01'). Other names are not this tool's and are not returned at all."""
+    shards, left = [], {}
     with os.scandir(crop_dir) as listing:
-        return sorted(entry.name for entry in listing if entry.is_dir() and CropRunner._is_numeric_name(entry.name))
+        for entry in listing:
+            if not CropRunner._is_numeric_name(entry.name) or not entry.is_dir():
+                continue
+            if CropRunner._is_label_type_shard(entry.name):
+                shards.append(entry.name)
+            else:
+                left[entry.name] = "an all-digit directory that is not a label type"
+    return sorted(shards), dict(sorted(left.items()))
 
 
 def _store_files(crop_dir):
@@ -103,7 +115,9 @@ def migrate_store(crop_dir, city, dry_run=False):
     store that more than one city was cut into must not be given to it (docs/cropper.md, One store, one
     city).
 
-    Everything else at the root - other cities' stores, notes, figures - is left alone.
+    Everything else at the root - other cities' stores, notes, figures - is left alone, and so is any
+    all-digit directory that is not a label type's, counted as left since CropRunner still refuses the root
+    while it is there.
 
     :return: MigrationSummary. Under dry_run every count is a prediction and nothing is written.
     :raises RootIsACityStoreError, CropRunner.ProductionCropStoreError, CropRunner.CropStoreCityError: with
@@ -123,7 +137,12 @@ def migrate_store(crop_dir, city, dry_run=False):
 
     counts = dict.fromkeys(MigrationSummary._fields, 0)
 
-    for name in _shards(crop_dir):
+    shards, left = _root_directories(crop_dir)
+    for name, why in left.items():
+        counts['left'] += 1
+        print("LEFT %s: %s; not moved" % (os.path.join(crop_dir, name), why))
+
+    for name in shards:
         source = os.path.join(crop_dir, name)
         destination = os.path.join(store, name)
         if not os.path.lexists(destination):
@@ -192,7 +211,8 @@ def summary_line(summary, dry_run):
 
 def main(argv=None):
     """:return: 0 when the store is migrated (or there was nothing to move); 1 when anything was left where it
-             was - a collision, a directory inside a shard, a failed rename - predicted ones included under
+             was - a collision, a directory inside a shard, an all-digit directory that is not a label type,
+             a failed rename - predicted ones included under
              --dry-run, since CropRunner keeps refusing the root until a person settles each; 2 on a usage
              error, a crop dir that does not exist included; 3 when the root is refused - it is already named
              for --city, it looks like the production canvas-capture store, or its crop_rule.json (or

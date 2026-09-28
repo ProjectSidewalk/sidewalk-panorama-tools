@@ -61,7 +61,9 @@ shards. If `-o` directly holds an all-digit directory, a `crop_rule.json`, a `cr
 what it found and the command to run next — cropping there would start a second copy of the city's store
 beside the old shards and cut every crop again. A root that holds city stores, notes, figures or a stray
 `crop.log` passes. A half-migrated root is refused too, until every collision the migrator listed is
-settled by hand. There are three ways out:
+settled by hand. An all-digit directory that is not a label type's (a `2024/` of figures, a hand-made
+`01/`) is refused too, and named as such: the migrator leaves it where it is, so a person moves it out of
+`-o`. There are three ways out:
 
 * **The store is already named for its city** (`-o /srv/crops/columbus-oh --city columbus-oh`, the form the
   README always showed, or a link to such a directory): nothing moves. The message says so — point `-o` at
@@ -95,7 +97,9 @@ never replaces**:
   crop — unless `<crop-dir>/<city>/<label_type_id>/` already exists (a run under the new layout, or a
   migration that died partway). Then it moves file by file, and **a file already at the destination is a
   collision: counted, listed as `COLLISION <src> -> <dst>`, and both are left exactly where they are.** A
-  directory inside a type directory is left and listed; a type directory is removed only once empty.
+  directory inside a type directory is left and listed; a type directory is removed only once empty. A
+  type directory is one named for a label type's id (`1`–`10`); any other all-digit directory is left and
+  listed.
 * Then the store's own files, each the same way: `crop.log` and its rotated `crop.log.<n>`,
   `crop_provenance.pre-city.csv`, `crop_provenance.csv`, and `crop_rule.json` **last**, so a run that dies
   partway leaves the root still marked as a flat store. Nothing is rewritten: the old manifest's rows keep
@@ -112,8 +116,8 @@ never replaces**:
 It prints `N type directories moved whole, F files moved one by one, K store files moved, C collisions left
 in place, L left for a person, E failed` (each "would be" under `--dry-run`), then the next CropRunner
 command and a reminder for consumers. It exits **0** when the store is migrated or there was nothing to move,
-**1** when anything was left where it was — a collision, a directory inside a type directory, a failed
-rename, predicted ones included under `--dry-run` — since CropRunner keeps refusing the root until each is
+**1** when anything was left where it was — a collision, a directory inside a type directory, an all-digit
+directory that is not a type directory, a failed rename, predicted ones included under `--dry-run` — since CropRunner keeps refusing the root until each is
 settled by hand, **2** on a usage error (a `crop-dir` that does not exist included), and **3** on a refusal.
 It is idempotent and resumable: re-running it after a partial run, or after settling collisions, finishes
 the job. **Run one migrator per store at a time**, and not while a CropRunner is cutting into it.

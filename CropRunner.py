@@ -844,6 +844,14 @@ def _is_numeric_name(name):
     return name.isascii() and name.isdigit()
 
 
+def _is_label_type_shard(name):
+    """A directory name this tool writes a shard under: str(label_type_id) for a type the enum has. Narrower
+    than _is_numeric_name, which stays the scanners' test - a root holds no all-digit directory of its own
+    either way - but the migrator moves only these, so a '2024' of figures or a hand-made '01' is never
+    filed into a city's store as if it were crops (#159 review)."""
+    return _is_numeric_name(name) and name == str(int(name)) and int(name) in LABEL_TYPE_NAMES_BY_ID
+
+
 def _is_canvas_capture(name):
     """crop_<labelId>.png, the production store's file name. Our own crop_rule.json shares the prefix,
     which is why the extension is part of the test and the prefix alone is not."""
@@ -998,14 +1006,19 @@ def legacy_layout_signal(crop_dir):
     One listing of crop_dir, stopping at the first hit: an all-digit directory (a label-type shard - a
     root under the new layout holds only city directories, and no city_id is all digits, which
     tests/test_crop_store_layout.py pins against log_analyzer/cities.csv) or a LEGACY_ROOT_FILES file.
+    An all-digit directory that is not a label type's (_is_label_type_shard) is still a signal, but is
+    named as such: the migrator leaves it where it is, so a person has to move it.
     A crop_dir that does not exist yet holds nothing and gives no signal.
     """
     try:
         with os.scandir(crop_dir) as listing:
             for entry in listing:
                 if entry.is_dir():
-                    if _is_numeric_name(entry.name):
+                    if _is_label_type_shard(entry.name):
                         return "a label-type directory, %s" % entry.path
+                    if _is_numeric_name(entry.name):
+                        return ("an all-digit directory that is not a label type, %s (migrate_crop_store.py "
+                                "leaves it where it is: move it out of -o by hand)" % entry.path)
                 elif entry.name in LEGACY_ROOT_FILES:
                     return "a crop store's own file, %s" % entry.path
     except (FileNotFoundError, NotADirectoryError):

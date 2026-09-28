@@ -357,6 +357,7 @@ LEGACY_SHAPES = {
     'only-the-marker': ['crop_rule.json'],
     'only-the-manifest': ['crop_provenance.csv'],
     'only-the-pre-city-manifest': ['crop_provenance.pre-city.csv'],
+    'an-all-digit-directory-that-is-no-label-type': ['2024/notes.txt'],
     'half-migrated': ['seattle-wa/1/1.jpg', '2/3.jpg'],
 }
 
@@ -437,6 +438,22 @@ class TestALegacyFlatRootIsRefused:
 
     def test_a_missing_root_is_no_signal(self, crop_runner, tmp_path):
         assert crop_runner.legacy_layout_signal(str(tmp_path / 'not-yet')) is None
+
+    @pytest.mark.parametrize('name', ['2024', '01', '11'])
+    def test_an_all_digit_directory_that_is_no_label_type_is_named_as_such(self, crop_runner, tmp_path, name):
+        """Still refused - a root of city stores holds no all-digit directory either way - but the migrator
+        leaves it where it is, so the message says it is for a person to move."""
+        out = tmp_path / 'crops'
+        plant(out, name + '/notes.txt')
+        found = crop_runner.legacy_layout_signal(str(out))
+        assert 'not a label type' in found and os.path.join(str(out), name) in found
+
+    @pytest.mark.parametrize('type_id', ['1', '10'])
+    def test_a_label_type_directory_is_named_as_one(self, crop_runner, tmp_path, type_id):
+        out = tmp_path / 'crops'
+        plant(out, type_id + '/5.jpg')
+        found = crop_runner.legacy_layout_signal(str(out))
+        assert found.startswith('a label-type directory') and 'not a label type' not in found
 
     def test_the_signal_lists_the_root_once_and_never_a_shard(self, crop_runner, tmp_path, monkeypatch):
         """One listing of -o: a shard of a flat store holds ~400k crops over sshfs, and nothing about the

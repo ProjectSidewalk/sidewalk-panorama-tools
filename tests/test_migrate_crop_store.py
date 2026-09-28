@@ -94,6 +94,19 @@ class TestTheShardsMove:
         assert summary.left == 1
         assert os.path.join(str(root), '1', 'extra') in capsys.readouterr().out
 
+    @pytest.mark.parametrize('name', ['2024', '01', '11', '0'])
+    def test_an_all_digit_directory_that_is_no_label_type_is_left_and_listed(self, tmp_path, capsys, name):
+        """A shard is named str(label_type_id) for a type in LABEL_TYPE_IDS_BY_NAME; any other all-digit
+        directory (a year's figures, a hand-made '01') is not this tool's, and a person decides."""
+        root = flat_store(tmp_path / 'crops')
+        plant(root, name + '/notes.txt')
+        summary = migrate(root)
+        assert read_bytes(root / name / 'notes.txt') == (name + '/notes.txt').encode('utf-8')
+        assert not (root / CITY / name).exists()
+        assert summary.left == 1 and summary.dirs_moved == 2
+        printed = capsys.readouterr().out
+        assert 'LEFT %s' % os.path.join(str(root), name) in printed and 'not a label type' in printed
+
     def test_directories_that_are_not_shards_are_not_touched(self, tmp_path):
         root = flat_store(tmp_path / 'crops')
         plant(root, 'chicago-il/1/1.jpg')
@@ -121,12 +134,13 @@ class TestADryRunWritesNothing:
         root = flat_store(tmp_path / 'crops')
         plant(root, CITY + '/1/1.jpg', data=b'already here')
         plant(root, '1/extra/a.jpg')
+        plant(root, '2024/notes.txt')
         predicted = migrate(root, dry_run=True)
         printed = capsys.readouterr().out
         assert 'Would move directory %s -> %s (1 files)' % (os.path.join(str(root), '2'),
                                                               os.path.join(str(root), CITY, '2')) in printed
         assert 'COLLISION' in printed
-        assert predicted.left == 1 and predicted.collisions == 1
+        assert predicted.left == 2 and predicted.collisions == 1
         assert predicted == migrate(root)
 
 
