@@ -492,7 +492,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         as tripped_sources, and the depth phase fills 'depth_stop' in the same dict. scrape_queue reads it
         to decide who still has work (#43); nothing here or in log.csv depends on it.
     @param block_latch_path, pace_state_path Where a push-back trip writes the block latch and forfeits the
-        depth pace (gsv.record_google_refusal); None means the host defaults, as for the depth phase.
+        depth pace (gsv.record_google_refusal). None falls through gsv.image_host_state_paths - the module
+        paths DownloadRunner.run sets, then the host defaults - and photometa's refusals (#74) are held to the
+        same pair for the loop's duration, so the two can never write different files.
     """
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
@@ -527,7 +529,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # refusal rather than by permanent verdicts - keeps #113's repair advice out of its summary.
     consecutive_pushback = 0
     refused = set()
-    latch_path = gsv.default_block_latch_path() if block_latch_path is None else block_latch_path
+    # One resolution order for both halves of the phase that touch this host's standing (#172 final review,
+    # cross-PR item 4): the breaker uses these, and the loop below scopes photometa's module paths to them.
+    latch_path, pace_state_path = gsv.image_host_state_paths(block_latch_path, pace_state_path)
     last_pushback = None
     latch_written = False
     # Probation, not a stand-down (#162 D5). A fresh latch means Google refused this host recently - maybe the
@@ -546,7 +550,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         print("IMAGEDOWNLOAD: Google refused this host %.1f hours ago (latch %s); GSV images run on "
               "probation - one refused pano stops them." % (latched_hours, latch_path))
 
-    with ledger:
+    with ledger, gsv.scoped_image_host_state(latch_path, pace_state_path):
         for pano_info in candidates:
             pano_id = pano_info['pano_id']
             # candidates is already filtered against the ledger; this still catches a duplicate id surviving

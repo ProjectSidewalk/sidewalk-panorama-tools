@@ -914,3 +914,125 @@ class TestNoPerPanoWarningOnAFallbackRun:
         download_all(tmp_path, 3, 'refusedQuietPano')
 
         assert capsys.readouterr().out.count('WARNING') == 1
+
+
+class TestOnlyGooglesRefusalLatchesFromPhotometa:
+    """#172 final review, cross-PR items 1-3: the photometa arm latched on ANY RetryError. The photometa session's
+    forcelist is [429, 500, 502, 503, 504], so a 5xx storm ends in exactly that exception - and a latch stands
+    every city's depth phase down for six hours and puts every city's GSV images on probation. The line is
+    gsv.pushback_reason's, the one the image loop's push-back breaker draws (D2): 5xx is weather."""
+
+    @pytest.mark.parametrize('status', [500, 503, 504])
+    def test_a_5xx_retry_error_is_an_ordinary_failure_and_never_latches(self, monkeypatch, capsys, status):
+        from test_gsv_stitcher import probe_retry_error
+        gsv._write_pace_state(gsv.default_pace_state_path(), 0.25, 150)
+        recorded = []
+        monkeypatch.setattr(gsv, 'record_google_refusal', lambda *a, **k: recorded.append(a) or True)
+        stub_photometa(monkeypatch, error=probe_retry_error(status))
+        count_probes(monkeypatch, 5)
+
+        frame = gsv.resolve_frame(pano_info(1024, 512))
+
+        assert frame == gsv.ResolvedFrame(1024, 512, 5, True, None, 'probe'), 'the probe still answers'
+        assert gsv._block_latch_age_hours(gsv.default_block_latch_path()) is None
+        assert recorded == [], 'no refusal is recorded for weather'
+        assert gsv._load_pace_state(gsv.default_pace_state_path())[1] == 150, 'the earned pace survives'
+        assert gsv._photometa_run.consecutive_failures == 1
+        assert not gsv._photometa_run.given_up, 'one 5xx is one of PHOTOMETA_MAX_CONSECUTIVE_FAILURES'
+        out = capsys.readouterr().out
+        assert 'refused' not in out and 'photometa did not answer' in out
+
+    @pytest.mark.parametrize('error', ['retry429', 'blocked'])
+    def test_a_refusal_still_latches_through_record_google_refusal(self, monkeypatch, tmp_path, error):
+        from test_gsv_stitcher import probe_retry_error
+        exc = probe_retry_error(429) if error == 'retry429' else gsv.DepthBlockedError('HTTP 403')
+        latch, pace = str(tmp_path / 'latch'), str(tmp_path / 'pace')
+        monkeypatch.setattr(gsv, 'image_pace_state_path', pace)
+        calls = []
+        real = gsv.record_google_refusal
+        monkeypatch.setattr(gsv, 'record_google_refusal', lambda *a: calls.append(a) or real(*a))
+        stub_photometa(monkeypatch, error=exc)
+        count_probes(monkeypatch, 5)
+
+        gsv.resolve_frame(pano_info(1024, 512), block_latch_path=latch)
+
+        assert calls == [(latch, pace)], "the one refusal bookkeeper, with this run's two paths"
+        assert gsv._block_latch_age_hours(latch) is not None
+        assert gsv._photometa_run.given_up
+
+    def test_three_5xx_storms_give_photometa_up_for_the_run_without_latching(self, tmp_path, monkeypatch):
+        from test_gsv_stitcher import probe_retry_error
+        asked = stub_photometa(monkeypatch, error=probe_retry_error(503))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+
+        download_all(tmp_path, 5, 'stormPano')
+
+        assert len(asked) == gsv.PHOTOMETA_MAX_CONSECUTIVE_FAILURES
+        assert gsv._block_latch_age_hours(gsv.default_block_latch_path()) is None
+
+    def test_an_unwritable_latch_is_said_not_claimed(self, monkeypatch, capsys, caplog, tmp_path):
+        """Item 3: the WARNING used to promise the depth phase would stand down whatever the latch write did."""
+        latch = str(tmp_path / 'no-such-dir' / 'latch')
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+
+        with caplog.at_level(logging.ERROR):
+            gsv.resolve_frame(pano_info(1024, 512), block_latch_path=latch)
+
+        out = capsys.readouterr().out
+        assert 'WARNING - Google refused a photometa request' in out
+        assert 'will stand down' not in out
+        assert 'could not be written' in out
+        refusal = [r.getMessage() for r in caplog.records if 'refused the photometa request' in r.getMessage()]
+        assert refusal and all('could not be written' in m for m in refusal)
+
+    def test_a_written_latch_still_says_the_depth_phase_stands_down(self, monkeypatch, capsys, tmp_path):
+        latch = str(tmp_path / 'latch')
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+
+        gsv.resolve_frame(pano_info(1024, 512), block_latch_path=latch)
+
+        out = capsys.readouterr().out
+        assert 'the depth phase will stand down' in out and latch in out
+
+
+class TestTheTwoLatchPlumbingsAgree:
+    """#172 final review, cross-PR item 4: one latch path set two ways - download_panorama_images' own
+    block_latch_path (the push-back breaker's) and gsv.image_block_latch_path (photometa's, since download_pano
+    carries no path). DownloadRunner.run sets both from --depth-block-latch, but nothing held a direct caller of
+    download_panorama_images to it: photometa's refusal landed in one file and the breaker's probation read
+    another."""
+
+    def test_a_photometa_refusal_lands_on_the_path_the_image_phase_was_given(self, tmp_path, monkeypatch):
+        import DownloadRunner
+        given_latch, given_pace = tmp_path / 'given-latch', tmp_path / 'given-pace'
+        module_latch, module_pace = tmp_path / 'module-latch', tmp_path / 'module-pace'
+        monkeypatch.setattr(gsv, 'image_block_latch_path', str(module_latch))
+        monkeypatch.setattr(gsv, 'image_pace_state_path', str(module_pace))
+        stub_photometa(monkeypatch, error=gsv.DepthBlockedError('HTTP 403'))
+        count_probes(monkeypatch, 5)
+        red_tiles(monkeypatch)
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        DownloadRunner.download_panorama_images(
+            str(storage), [dict(pano_info(1024, 512), source='gsv')],
+            block_latch_path=str(given_latch), pace_state_path=str(given_pace))
+
+        assert gsv._block_latch_age_hours(str(given_latch)) is not None
+        assert given_pace.exists()
+        assert not module_latch.exists() and not module_pace.exists()
+        assert (gsv.image_block_latch_path, gsv.image_pace_state_path) == (str(module_latch), str(module_pace)), \
+            'scoped to the call, and restored after it'
+
+    def test_with_no_path_given_both_read_the_module_paths(self, tmp_path, monkeypatch):
+        """The fallback order is one definition: explicit, then the module paths run() sets, then the default."""
+        module_latch = tmp_path / 'module-latch'
+        monkeypatch.setattr(gsv, 'image_block_latch_path', str(module_latch))
+        monkeypatch.setattr(gsv, 'image_pace_state_path', None)
+        assert gsv.image_host_state_paths() == (str(module_latch), gsv.default_pace_state_path())
+        assert gsv.image_host_state_paths('x', 'y') == ('x', 'y')
+        monkeypatch.setattr(gsv, 'image_block_latch_path', None)
+        assert gsv.image_host_state_paths() == (gsv.default_block_latch_path(), gsv.default_pace_state_path())

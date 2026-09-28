@@ -676,6 +676,38 @@ image_block_latch_path = None
 image_pace_state_path = None
 
 
+def image_host_state_paths(block_latch_path=None, pace_state_path=None):
+    """(latch path, pace-state path) the image phase uses: explicit, else the module paths, else the host default.
+
+    The ONE resolution order, used by both halves of the image phase that touch this host's standing - photometa
+    (resolve_frame, which download_pano gives no path) and the push-back breaker (DownloadRunner's
+    download_panorama_images, which scopes the module paths to its answer for the loop). Two orders written
+    twice is how the two would come to read and write different files (#172 final review, cross-PR item 4).
+    Resolved at call time, so the suite's isolation of the defaults applies.
+    """
+    latch = block_latch_path if block_latch_path is not None else (
+        image_block_latch_path if image_block_latch_path is not None else default_block_latch_path())
+    pace = pace_state_path if pace_state_path is not None else (
+        image_pace_state_path if image_pace_state_path is not None else default_pace_state_path())
+    return latch, pace
+
+
+@contextlib.contextmanager
+def scoped_image_host_state(block_latch_path, pace_state_path):
+    """Point the module paths photometa reads at this pair for the duration, then put them back.
+
+    download_panorama_images wraps its loop in this, so a caller that hands it explicit paths gets photometa's
+    refusals written there too, not to whatever the module paths happened to be (#172 final review, item 4).
+    """
+    global image_block_latch_path, image_pace_state_path
+    saved = image_block_latch_path, image_pace_state_path
+    image_block_latch_path, image_pace_state_path = block_latch_path, pace_state_path
+    try:
+        yield
+    finally:
+        image_block_latch_path, image_pace_state_path = saved
+
+
 class _PhotometaRunMemory:
     """What this process has learned about photometa's health for the image phase (#74 review items 4, 10).
 
@@ -712,28 +744,16 @@ def _announce_probe_fallback(message):
     print("IMAGEDOWNLOAD: %s" % message)
 
 
-def _forfeit_depth_standing():
-    """Google refused this host: whatever depth pace an earlier run earned, the next depth phase opens careful.
-
-    The same forfeit a depth-phase refusal makes (DepthPacer.forfeit), and for the same reason (#74 review
-    item 7, shipped default D6): the latch expires after DEPTH_BLOCK_LATCH_HOURS but the earned pace outlives
-    it by DEPTH_PACE_STATE_HOURS, so without this the first depth phase after an image-phase refusal could
-    open at the floor on a host Google refused six hours earlier. Not under the pacing lock: nothing in this
-    process holds it yet, and a concurrent depth phase that later overwrites this has earned its own standing
-    since. Never raises (_write_pace_state never does).
-    """
-    path = default_pace_state_path() if image_pace_state_path is None else image_pace_state_path
-    DepthPacer(state_path=path).forfeit()
-
-
 def _photometa_levels(pano_id, latch_path):
     """ImageLevels, None (photometa: not found), or _PHOTOMETA_UNANSWERED. Never raises.
 
     The image phase shares the depth phase's block latch - the FILE, not the pacer (#74). A fresh latch means
-    this host was refused recently, so photometa is not asked at all. A refusal met here writes the latch, so
+    this host was refused recently, so photometa is not asked at all.     A refusal met here writes the latch, so
     every later pano this run reads it and skips photometa too (which is why the refusal WARNING prints once
     per run), the depth phase later in the run stands itself down at zero requests, and the earned depth pace
-    is forfeited. There is no pacer: one request per NEW pano, each followed by a 28-512 tile fan-out, is
+    is forfeited - both through record_google_refusal, the image breaker's own bookkeeper (#162). A refusal is
+    what pushback_reason calls one, or a DepthBlockedError: a 5xx storm exhausting the retry policy is a
+    RetryError too, and is weather, not a refusal (#172 final review) - it takes the ordinary-failure arm. There is no pacer: one request per NEW pano, each followed by a 28-512 tile fan-out, is
     already slower than the depth phase's own opening interval.
 
     After PHOTOMETA_MAX_CONSECUTIVE_FAILURES failures in a row that are not refusals, or after one refusal
@@ -761,38 +781,61 @@ def _photometa_levels(pano_id, latch_path):
         # _raise_if_blocked hook that turns an interstitial into DepthBlockedError.
         with _depth_session() as session:
             levels = _fetch_image_levels(pano_id, session)
-    except (DepthBlockedError, requests.exceptions.RetryError) as e:
-        _write_block_latch(latch_path)
-        _forfeit_depth_standing()
-        # In-process too: the latch write above never raises, so it may have left no file behind.
-        _photometa_run.given_up = True
-        _photometa_run.announced = True
-        logging.error("IMAGEDOWNLOAD: pano %s: Google refused the photometa request (%s); latching %s and "
-                      "taking the zoom from the tile probe for the next %g hours, on every city this host runs",
-                      pano_id, str(e)[:200], latch_path, DEPTH_BLOCK_LATCH_HOURS)
-        print("IMAGEDOWNLOAD: WARNING - Google refused a photometa request (%s). The zoom probe is used for the "
-              "next %g hours, on every city this host runs, and the depth phase will stand down (latch %s)."
-              % (str(e)[:200], DEPTH_BLOCK_LATCH_HOURS, latch_path))
-        return _PHOTOMETA_UNANSWERED
     except Exception as e:
-        # Deliberately broad: a network blip, a non-JSON body (ValueError), an envelope that is not photometa's
-        # (DepthPayloadError), streetlevel missing (ImportError), or a shape nobody has seen yet. Every one of
-        # them costs this pano the probe's four requests, never the pano itself - the probe is what answered
-        # before #74. Per-pano detail to scrape.log; the first one this run is also announced on stdout.
-        _photometa_run.consecutive_failures += 1
-        logging.warning("IMAGEDOWNLOAD: pano %s: photometa unavailable (%r); zoom from the tile probe",
-                        pano_id, e)
-        _announce_probe_fallback(
-            "WARNING - photometa did not answer for pano %s (%s); the zoom comes from the tile probe, with its "
-            "frame check, for every pano photometa cannot answer, and after %d failures in a row photometa is "
-            "not asked again this run" % (pano_id, repr(e)[:200], PHOTOMETA_MAX_CONSECUTIVE_FAILURES))
-        if _photometa_run.consecutive_failures >= PHOTOMETA_MAX_CONSECUTIVE_FAILURES:
-            _photometa_run.given_up = True
-            logging.warning("IMAGEDOWNLOAD: photometa failed %d times in a row; not asked again this run",
-                            _photometa_run.consecutive_failures)
+        # Deliberately broad, and then split on ONE predicate: Google refusing this host (pushback_reason's
+        # line, the same the image loop's breaker draws, or the hook's DepthBlockedError) latches; everything
+        # else - a network blip, a 5xx storm's RetryError, a non-JSON body (ValueError), an envelope that is not
+        # photometa's (DepthPayloadError), streetlevel missing (ImportError), or a shape nobody has seen yet -
+        # costs this pano the probe's four requests, never the pano itself, and never the fleet's standing.
+        if isinstance(e, DepthBlockedError) or pushback_reason(e) is not None:
+            _photometa_refused(pano_id, latch_path, e)
+        else:
+            _photometa_failed(pano_id, e)
         return _PHOTOMETA_UNANSWERED
     _photometa_run.consecutive_failures = 0
     return levels
+
+
+def _photometa_refused(pano_id, latch_path, e):
+    """Google refused the photometa request: latch, forfeit the pace, give photometa up, say so on both channels.
+
+    Worded from record_google_refusal's return value, since the latch write never raises: a latch that did not
+    land stands neither this run's depth phase nor any later city down, and the WARNING must not claim it does.
+    """
+    _latch, pace_path = image_host_state_paths(latch_path)
+    written = record_google_refusal(latch_path, pace_path)
+    # In-process too: the latch write never raises, so it may have left no file behind.
+    _photometa_run.given_up = True
+    _photometa_run.announced = True
+    if written:
+        latch_said = "the depth phase will stand down (latch %s)" % (latch_path,)
+    else:
+        latch_said = ("the block latch %s could not be written, so neither this run's depth phase nor a later "
+                      "city will know" % (latch_path,))
+    # The same reach on both channels: the latch is what carries the refusal past this run.
+    reach = ("the next %g hours, on every city this host runs" % DEPTH_BLOCK_LATCH_HOURS
+             if written else "the rest of this run")
+    logging.error("IMAGEDOWNLOAD: pano %s: Google refused the photometa request (%s); taking the zoom from the "
+                  "tile probe for %s; %s", pano_id, str(e)[:200], reach, latch_said)
+    print("IMAGEDOWNLOAD: WARNING - Google refused a photometa request (%s). The zoom probe is used for %s, "
+          "and %s." % (str(e)[:200], reach, latch_said))
+
+
+def _photometa_failed(pano_id, e):
+    """Photometa did not answer, and it was not a refusal: count it, and give photometa up after three in a row.
+
+    Per-pano detail to scrape.log; the first one this run is also announced on stdout.
+    """
+    _photometa_run.consecutive_failures += 1
+    logging.warning("IMAGEDOWNLOAD: pano %s: photometa unavailable (%r); zoom from the tile probe", pano_id, e)
+    _announce_probe_fallback(
+        "WARNING - photometa did not answer for pano %s (%s); the zoom comes from the tile probe, with its "
+        "frame check, for every pano photometa cannot answer, and after %d failures in a row photometa is "
+        "not asked again this run" % (pano_id, repr(e)[:200], PHOTOMETA_MAX_CONSECUTIVE_FAILURES))
+    if _photometa_run.consecutive_failures >= PHOTOMETA_MAX_CONSECUTIVE_FAILURES:
+        _photometa_run.given_up = True
+        logging.warning("IMAGEDOWNLOAD: photometa failed %d times in a row; not asked again this run",
+                        _photometa_run.consecutive_failures)
 
 
 def resolve_frame(pano_info, block_latch_path=None, photometa=True):
@@ -853,8 +896,7 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     common.warn_if_wider_than_viewer_ceiling(pano_id, width, 'gsv')
 
     if photometa:
-        latch_path = block_latch_path if block_latch_path is not None else (
-            image_block_latch_path if image_block_latch_path is not None else default_block_latch_path())
+        latch_path, _pace_path = image_host_state_paths(block_latch_path)
         levels = _photometa_levels(pano_id, latch_path)
     else:
         levels = _PHOTOMETA_UNANSWERED
@@ -1021,8 +1063,8 @@ def pushback_reason(exc):
       since 403 is not in the forcelist and so never exhausts it (the 403 half is for the day it is). A 5xx
       storm exhausting the policy is Google being ill, not Google refusing us - and a trip writes the
       fleet-wide block latch, so reading an outage as a refusal would stand every city's depth phase down for
-      six hours. (The depth phase's own `except (DepthBlockedError, RetryError)` is broader; its latch
-      predates this breaker.) A RetryError whose status cannot be read is None for the same reason. One that
+      six hours. The image phase's photometa arm (#74) latches on this same line; the depth phase's own
+      `except (DepthBlockedError, RetryError)` is broader, and its latch predates this breaker (a follow-up). A RetryError whose status cannot be read is None for the same reason. One that
       gave up ON Google's interstitial (its message names the /sorry/ path or the consent host) is
       'interstitial' whatever its status: the landing is the refusal, and a 503 captcha page is not an outage.
     * requests' HTTPError from the zoom probe, which since #166 raises for any status but 200 and carries

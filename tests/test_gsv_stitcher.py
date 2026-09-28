@@ -1544,6 +1544,8 @@ class TestPushbackReason:
         (aiohttp.ClientResponseError(None, (), status=429), None),   # never reaches here raw; not ours to read
         (gsv.StitchedPanoMostlyBlackError('black'), None),
         (gsv._TileAbandonedError('abandoned'), None),
+        # A frame refusal is about the pano, not the host (#74): transient, never Google refusing us.
+        (gsv.FrameDisagreementError('pano x: frame disagreement: levels do not admit 13312x6656'), None),
         (OSError('disk full'), None),
         (ValueError('bug'), None),
     ])

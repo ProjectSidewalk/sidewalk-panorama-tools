@@ -228,7 +228,8 @@ fan-out — and on top of that:
   the endpoint that just refused us, which is how a soft refusal is escalated into a ban that stops the image
   phase too (tiles leave the same IP). So a blocked stop writes a timestamp file, and any depth phase starting
   within `DEPTH_BLOCK_LATCH_HOURS` (6) skips itself entirely, at zero requests, with a `WARNING` on stdout.
-  * **Only Google's refusal latches: a depth blocked stop, or the image phase's push-back breaker.** The
+  * **Only Google's refusal latches: a depth blocked stop, the image phase's push-back breaker, or a photometa
+    refusal in the image phase.** The
     circuit breaker counts storage failures too, and a full disk says nothing about Google. The image phase
     writes the same latch (and forfeits the earned pace) when three GSV panos in a row are refused with a
     429/403 ([#162](ops.md#when-google-pushes-back-on-the-image-phase)): tiles and photometa leave the same IP,
@@ -247,10 +248,15 @@ fan-out — and on top of that:
     read the pano's zoom levels instead of probing two tiles. It reads the latch before each such request and
     skips photometa while one is fresh (falling back to the tile probe), and a refusal met there writes the
     latch itself — so the depth phase later in the same run stands down at zero requests — and forfeits the
-    pacer's earned standing, as a depth-phase refusal does. The image phase shares the latch, **not the
+    pacer's earned standing, as a depth-phase refusal does. A *refusal* is drawn on the push-back breaker's
+    line: a 429 or 403, an interstitial, or the session hook's `DepthBlockedError`. A 5xx storm that exhausts
+    the photometa session's retry policy is weather, not a refusal: it counts as an ordinary photometa failure
+    (three in a row and photometa is not asked again that run) and latches nothing. Both image-phase writers
+    go through `gsv.record_google_refusal`, and the WARNING says whether the latch was actually written. The image phase shares the latch, **not the
     pacer**: a new pano's photometa request is normally followed by a 28–512-tile fan-out, so it runs far
     below the depth phase's opening rate. A refused pano has no fan-out, but refusals are expected at close to
-    zero a night. `--depth-block-latch` moves the latch for both phases.
+    zero a night. `--depth-block-latch` moves the latch for both phases, and within the image phase photometa
+    and the push-back breaker are held to the same path (`gsv.image_host_state_paths`).
 * **Sizing, and the thing that actually decided it.** A photometa request measures **0.077 s median** from
   the production box, so the raw request cost of the 1,433,104-pano corpus is nothing like the "inherently
   multi-month job" this page used to claim — and that claim was the stated reason for leaving pacing off.
