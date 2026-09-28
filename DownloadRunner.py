@@ -457,6 +457,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     refused = set()
     latch_path = gsv.default_block_latch_path() if block_latch_path is None else block_latch_path
     last_pushback = None
+    latch_written = False
     # Probation, not a stand-down (#162 D5). A fresh latch means Google refused this host recently - maybe the
     # depth phase, after a SINGLE photometa refusal from another endpoint - so the first refusal of our own is
     # believed. Standing images down on read would let one interstitial stop the whole fleet's images for six
@@ -521,7 +522,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                     # Recorded only HERE, where the phase actually gave up with panos still in its list -
                     # not wherever --max-runtime is merely set. A city that finished its list inside the
                     # budget must report no stop at all, or the queue re-runs it for nothing.
-                    if stop_reasons is not None:
+                    # Never over 'blocked': in a mixed-source city a GSV trip can come first, and it is the
+                    # stop the queue must read - it re-runs a 'max-runtime' city, not a blocked one.
+                    if stop_reasons is not None and stop_reasons.get('image_stop') is None:
                         stop_reasons['image_stop'] = STOP_MAX_RUNTIME
                     break
             start_time = time.time()
@@ -606,17 +609,24 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                         refused.add(source)
                         if stop_reasons is not None:
                             stop_reasons['image_stop'] = STOP_BLOCKED
-                        gsv.record_google_refusal(latch_path, pace_state_path)
+                        latch_written = gsv.record_google_refusal(latch_path, pace_state_path)
                         # Both channels: stdout is what the night's message carries, scrape.log what is
-                        # still there next week.
+                        # still there next week. Worded from what record_google_refusal reports, because it
+                        # never raises: a latch it could not write stands nothing down, here or in any later
+                        # city, and saying otherwise would hide exactly that.
+                        if latch_written:
+                            latch_said = ("Block latch %s written, so the depth phase stands down too"
+                                          % (latch_path,))
+                        else:
+                            latch_said = ("Block latch %s could not be written, so neither this run's depth "
+                                          "phase nor a later city will know" % (latch_path,))
                         logging.error("IMAGEDOWNLOAD: Google refused %d consecutive GSV panos (%s). Stopping "
                                       "GSV images for the rest of this run; its remaining panos are left "
-                                      "unattempted and retry next run. Block latch %s written, so the depth "
-                                      "phase stands down too (#162).", consecutive_pushback, pushback,
-                                      latch_path)
+                                      "unattempted and retry next run. %s (#162).", consecutive_pushback,
+                                      pushback, latch_said)
                         print("IMAGEDOWNLOAD: WARNING - Google refused %d GSV panos in a row (%s). Stopping GSV "
-                              "images for this run; block latch %s written."
-                              % (consecutive_pushback, pushback, latch_path))
+                              "images for this run. %s."
+                              % (consecutive_pushback, pushback, latch_said))
                 elif result_code in (DownloadResult.success, DownloadResult.fallback_success):
                     consecutive_pushback = 0
             total_completed = success_count + fallback_success_count + fail_count + skipped_count
@@ -658,11 +668,15 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         print(summary)
     if refused:
         # Not #113's summary: a push-back trip ledgered nothing false, so there is no repair to point at.
+        if latch_written:
+            latch_said = "the depth phase stands down while the block latch %s is fresh" % (latch_path,)
+        else:
+            latch_said = ("the block latch %s could not be written, so nothing else on this host will stand "
+                          "down for it" % (latch_path,))
         summary = ("IMAGEDOWNLOAD: WARNING - Google pushed back on GSV imagery (%s); %d pano(s) were left "
                    "unattempted and nothing was ledgered for them, so they retry next run. No ledger repair "
-                   "is needed. Check this host for a rate limit before the next run; the depth phase stands "
-                   "down while the block latch %s is fresh."
-                   % (last_pushback, sum(unattempted[s] for s in refused), latch_path))
+                   "is needed. Check this host for a rate limit before the next run; %s."
+                   % (last_pushback, sum(unattempted[s] for s in refused), latch_said))
         logging.error("%s", summary)
         print(summary)
 

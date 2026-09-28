@@ -757,8 +757,8 @@ fleet over an outage would stand every city's depth down for six hours. Neither 
 Three refused GSV panos in a row stop GSV images for the rest of that run:
 
 ```
-IMAGEDOWNLOAD: WARNING - Google refused 3 GSV panos in a row (HTTP 429). Stopping GSV images for this run;
-block latch /tmp/sidewalk-depth-blocked written.
+IMAGEDOWNLOAD: WARNING - Google refused 3 GSV panos in a row (HTTP 429). Stopping GSV images for this run.
+Block latch /tmp/sidewalk-depth-blocked written, so the depth phase stands down too.
 IMAGEDOWNLOAD: WARNING - Google pushed back on GSV imagery (HTTP 429); 4210 pano(s) were left unattempted and
 nothing was ledgered for them, so they retry next run. No ledger repair is needed. Check this host for a rate
 limit before the next run; the depth phase stands down while the block latch /tmp/sidewalk-depth-blocked is fresh.
@@ -769,10 +769,13 @@ What that means, and how it differs from [the #113 breaker](#when-the-image-phas
 - **No ledger repair.** A push-back is never a verdict, so nothing was ledgered for the refused panos and
   nothing is withheld. The trip costs zero false rows.
 - **The city is booked `failed`** — the run exits 1 through the same tripped-sources channel — and its run
-  summary says `image_stop: blocked`, so `scrape_queue` does not spend an extra pass on it.
+  summary says `image_stop: blocked`, so `scrape_queue` does not spend an extra pass on it. A budget stop
+  later in the same run (another source's pano reaching `--max-runtime`) does not overwrite it.
 - **Depth stands down too.** The trip writes the block latch and forfeits the depth pace this host had
   earned, because tiles and photometa leave the same IP: the same run's depth phase, and every city after it
-  for 6 hours, skips depth at zero requests ([above](#when-the-depth-phase-stands-itself-down)).
+  for 6 hours, skips depth at zero requests ([above](#when-the-depth-phase-stands-itself-down)). If the latch
+  cannot be written (its directory is gone, the disk is full), both lines say `could not be written` instead,
+  and nothing else stands down: not this run's depth phase, and not the next city.
 - **A fresh latch means probation, not a stand-down.** Any image phase starting while the latch is fresh
   (whoever wrote it) prints `GSV images run on probation - one refused pano stops them` and runs normally; the
   first refused GSV pano trips the breaker instead of the third. Images are never skipped on the latch alone —
@@ -782,6 +785,13 @@ What that means, and how it differs from [the #113 breaker](#when-the-image-phas
 
 **What to do.** Look for a rate limit or a captcha on this host's IP before the next night. The count per
 city is `grep -cE "Failed to download pano \S+ \((HTTP [0-9]+|interstitial)\)" */scrape.log`.
+
+**403 is push-back by analogy, not by measurement.** The retained `scrape.log*` files (2026-09-27, each city's
+last ~40 MB) hold no tile 403 and no tile 429 at all, only 55 retried 503s, every one of which recovered; so
+the classification rests on how the depth endpoint behaves, not on data from this one. If the same pano id
+keeps turning up as `(HTTP 403)` night after night, rather than many ids in one burst, 403 is a per-pano
+answer, not a refusal, and should leave `TILE_PUSHBACK_STATUSES`: under a fresh latch one such pano near the
+head of the shuffled list would trip probation and rewrite the latch every night.
 
 ## What healthy looks like
 

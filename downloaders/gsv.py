@@ -1252,6 +1252,7 @@ def _write_block_latch(path):
 
     Never raises: this is called on a path where the run has already been refused, and forfeiting the log.csv
     evidence row over a latch we could not write would trade a real diagnostic for a small optimisation.
+    Returns whether the latch landed, so a caller can say so rather than claim it (#172 review).
     """
     try:
         with open(path, 'w') as f:
@@ -1261,6 +1262,8 @@ def _write_block_latch(path):
     except OSError as e:
         logging.error("DEPTHDOWNLOAD: could not write the block latch %s (%s); the next city will "
                       "rediscover the block itself", path, str(e))
+        return False
+    return True
 
 
 def record_google_refusal(block_latch_path=None, pace_state_path=None):
@@ -1271,8 +1274,11 @@ def record_google_refusal(block_latch_path=None, pace_state_path=None):
     pace this host has earned, the other half of what a refusal costs. Never raises: the run has already been
     refused, and losing the log.csv evidence row over this bookkeeping would be the wrong trade. Each path
     resolves to its host default when not given, at call time (so the suite's isolation applies).
+
+    Returns whether the latch was written - the one outcome the caller's messages depend on: a latch that did
+    not land stands neither this run's depth phase nor any later city down.
     """
-    _write_block_latch(default_block_latch_path() if block_latch_path is None else block_latch_path)
+    written = _write_block_latch(default_block_latch_path() if block_latch_path is None else block_latch_path)
     try:
         DepthPacer(state_path=default_pace_state_path() if pace_state_path is None else pace_state_path).forfeit()
     except Exception as e:
@@ -1280,6 +1286,7 @@ def record_google_refusal(block_latch_path=None, pace_state_path=None):
         # invariant, not an expected path.
         logging.error("IMAGEDOWNLOAD: could not forfeit the depth pace (%r); the next depth phase may open "
                       "at an interval this host has not earned back", e)
+    return written
 
 
 def default_pace_state_path():

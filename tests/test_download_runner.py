@@ -2526,8 +2526,83 @@ class TestGoogleRefusingGsvImagesStopsThePhase(_PushbackHarness):
         stdout = capsys.readouterr().out
         assert 'WARNING' in stdout and str(self.latch) in stdout
         assert '3 pano(s) were left unattempted' in stdout
+        # The per-trip line itself, which docs/ops.md quotes: the end-of-phase summary shares every token
+        # above, so without this a deleted trip print went unnoticed (#172 tests review, mutant D14).
+        assert 'WARNING - Google refused 3 GSV panos in a row (HTTP 429)' in stdout
         for channel in (stdout, '\n'.join(logged)):
             assert 'false downloaded=0 rows' not in channel, 'a push-back trip writes no rows to repair'
+
+    def test_two_breakers_in_one_run_each_count_only_their_own_unattempted(self, monkeypatch, capsys):
+        """A mixed-source city whose Mapillary token dies the night Google pushes back: #113 trips on
+        Mapillary and the push-back breaker on GSV. Each summary must count only its own source's unattempted
+        panos - #113's tells the operator how many to repair, and must not inflate it with GSV's."""
+        mly = downloaders.DownloadResult.failure
+        order = (['mly-0', 'mly-1', 'mly-2', 'gsv-0', 'gsv-1', 'gsv-2']
+                 + ['mly-3', 'gsv-3', 'mly-4', 'gsv-4', 'gsv-5', 'gsv-6'])
+        panos = [{'pano_id': i, 'source': 'mapillary' if i.startswith('mly') else 'gsv'} for i in order]
+        verdicts = {i: (mly if i.startswith('mly') else self.P) for i in order}
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == order[:6]
+        assert tripped == {'mapillary', 'gsv'}
+        stdout = capsys.readouterr().out
+        assert 'breaker tripped for mapillary; 2 pano(s) were left unattempted' in stdout
+        assert 'Google pushed back on GSV imagery (HTTP 429); 4 pano(s) were left unattempted' in stdout
+
+    def test_a_budget_stop_after_the_trip_does_not_overwrite_blocked(self, monkeypatch):
+        """#172 review (ops 6): after a GSV trip, a Mapillary pano later in the same list can reach the
+        budget check. 'blocked' is the stop that happened first and the one scrape_queue must read."""
+        clock = {'t': 0.0}
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock['t'])
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        panos = self.gsv_panos(3) + [{'pano_id': 'mly-0', 'source': 'mapillary'}]
+        verdicts = {p['pano_id']: self.P for p in panos[:3]}
+        verdicts['mly-0'] = downloaders.DownloadResult.success
+        scripted = scripted_download_pano(verdicts)
+
+        def download_pano(storage_path, pano_info):
+            if pano_info['pano_id'] == 'gsv-2':
+                clock['t'] = 3600.0     # the budget runs out while the tripping pano is in flight
+            return scripted(storage_path, pano_info)
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', download_pano)
+        tripped, stop_reasons = set(), {'image_stop': None, 'depth_stop': None}
+
+        DownloadRunner.download_panorama_images(
+            str(self.storage), panos, run_start_monotonic=0.0, max_runtime_minutes=1,
+            tripped_sources=tripped, stop_reasons=stop_reasons,
+            block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+
+        assert tripped == {'gsv'}
+        assert stop_reasons['image_stop'] == 'blocked'
+
+    def test_an_unwritable_latch_is_said_on_both_channels_not_claimed_written(self, monkeypatch, capsys,
+                                                                               caplog):
+        """#172 tests review 7. record_google_refusal never raises, by design - but the loop then announced
+        'block latch ... written' and 'the depth phase stands down', neither of which was true: the same run's
+        depth phase and every later city go ahead. The trip itself is unaffected."""
+        latch = self.storage / 'no-such-dir' / 'latch'
+        panos = self.gsv_panos(4)
+        calls, tripped, stop_reasons = [], set(), {'image_stop': None, 'depth_stop': None}
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano',
+                            scripted_download_pano({p['pano_id']: self.P for p in panos}, calls))
+
+        with caplog.at_level(logging.INFO):
+            DownloadRunner.download_panorama_images(
+                str(self.storage), panos, tripped_sources=tripped, stop_reasons=stop_reasons,
+                block_latch_path=str(latch), pace_state_path=str(self.pace))
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2'] and tripped == {'gsv'}
+        assert stop_reasons['image_stop'] == 'blocked'
+        assert not latch.exists()
+        stdout = capsys.readouterr().out
+        logged = '\n'.join(r.getMessage() for r in caplog.records if r.name != 'asyncio')
+        for channel in (stdout, logged):
+            assert 'written' not in channel.replace('could not be written', ''), channel
+            assert 'stands down' not in channel, 'nothing will stand down on a latch that is not there'
+            assert 'could not be written' in channel
 
     def test_the_real_fan_out_spends_at_most_one_slot_of_requests_per_refused_pano(self, monkeypatch, caplog):
         """The whole issue in one number, through the REAL gsv.fetch_pano_image under a 429 on every tile:
@@ -2623,6 +2698,20 @@ class TestAFreshLatchPutsGsvImagesOnProbation(_PushbackHarness):
         assert len(notice) == 1 and str(self.latch) in notice[0]
         assert 'probation' in capsys.readouterr().out
 
+    def test_a_city_with_no_gsv_panos_announces_no_probation(self, monkeypatch, capsys, caplog):
+        """D9: a Mapillary- or Panoramax-only city has nothing of Google's to put on probation, so a fresh
+        latch (written by some other city's run) must not produce a notice about it."""
+        self.write_latch(0.5)
+        panos = [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(3)]
+
+        with caplog.at_level(logging.DEBUG):
+            _, calls, tripped, _ = self.drive(
+                monkeypatch, panos, {p['pano_id']: downloaders.DownloadResult.success for p in panos})
+
+        assert len(calls) == 3 and tripped == set()
+        assert 'probation' not in capsys.readouterr().out
+        assert not any('probation' in r.getMessage() for r in caplog.records)
+
     def test_main_end_to_end_exits_1_and_both_phases_report_blocked(self, monkeypatch, tmp_path,
                                                                    fake_streetview):
         """The whole contract in one process: the image phase's trip writes the latch, the SAME run's depth
@@ -2632,6 +2721,11 @@ class TestAFreshLatchPutsGsvImagesOnProbation(_PushbackHarness):
         csv_path.write_text(CSV_HEADER + ''.join(
             'gsv-%d,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % n for n in range(4)))
         summary = tmp_path / 'summary.json'
+        # Earned standing in --depth-pace-state, so the forfeit's destination is observable (the conftest
+        # zeroes the opening interval, which would make a forfeited file and an untouched one read the same).
+        monkeypatch.setattr(self.gsv, 'depth_start_interval', 1.0)
+        monkeypatch.setattr(self.gsv, 'depth_min_request_interval', 0.25)
+        self.gsv._write_pace_state(str(self.pace), 0.25, 50)
         monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
         monkeypatch.setattr(DownloadRunner, 'download_pano',
                             scripted_download_pano({'gsv-%d' % n: self.P for n in range(4)}))
@@ -2645,6 +2739,10 @@ class TestAFreshLatchPutsGsvImagesOnProbation(_PushbackHarness):
         assert code == 1
         with open(summary) as f:
             assert json.load(f) == {'image_stop': 'blocked', 'depth_stop': 'blocked'}
+        with open(self.pace) as f:
+            pace = json.load(f)
+        assert (pace['interval'], pace['clean_streak']) == (1.0, 0), \
+            'the forfeit must land in the --depth-pace-state file, not the host default'
 
 
 class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
