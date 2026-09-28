@@ -255,6 +255,18 @@ class TestTileRetryErrors:
             assert not issubclass(exc, gsv._TILE_RETRY_ERRORS), exc
 
 
+def _slow_slots(monkeypatch):
+    """Make every fan-out slot acquisition take a measurable 20 ms, so a slot wait is never exactly 0.0."""
+    real = asyncio.Semaphore
+
+    class _SlowSemaphore(real):
+        async def acquire(self):
+            await asyncio.sleep(0.02)
+            return await super().acquire()
+
+    monkeypatch.setattr(gsv.asyncio, 'Semaphore', _SlowSemaphore)
+
+
 class _StatusSession:
     """A ClientSession stand-in whose every tile answers `status`, or whatever `answer(url, attempt)` says.
 
@@ -1428,10 +1440,15 @@ class TestARefusedTileAbandonsThePano:
         The first-tile variant is the final review's MINOR 1: excluding only the wait before a tile's FIRST
         request moved the failure from late tiles to early ones, because each retry queues for a slot again,
         behind every tile not yet started (~0.9 s here), and that wait was still inside the budget. Every slot
-        wait is excluded now, on retries too."""
+        wait is excluded now, on retries too.
+
+        Every acquisition waits a measurable 20 ms (_slow_slots), so no slot wait is ever exactly 0.0. Without
+        it the first tile's first wait IS 0.0 on Windows, whose monotonic clock ticks every 15.6 ms, and an
+        implementation counting only "while slot_wait == 0" passed there (#172 verification, MINOR 2)."""
         monkeypatch.setattr(gsv, 'thread_count', 1)
         monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
         monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.5)
+        _slow_slots(monkeypatch)
         body = jpeg_bytes(RED)
 
         def answer(url, attempt):
@@ -1457,6 +1474,30 @@ class TestARefusedTileAbandonsThePano:
             gsv.fetch_pano_image('failingPanoAAAAAAAAAAA', 512, 256, 0)
 
         assert 2 <= session.requests < gsv.TILE_MAX_TRIES
+
+    def test_the_budget_still_stops_a_queued_tile_that_keeps_failing(self, monkeypatch, fake_aiohttp):
+        """The same bound for a tile that QUEUED (#172 verification, MINOR 1). With one tile and no queue,
+        slot_wait is 0 and any over-exclusion is invisible: counting each wait twice passed the whole suite,
+        and would give every queued, persistently failing tile TILE_MAX_TRIES tries in a 5xx storm. Here the
+        last of 32 tiles queues ~0.9 s before its first request and then always 503s at 30 ms an answer
+        against a 0.1 s budget, so only its own ~0.1 s of retrying may count."""
+        monkeypatch.setattr(gsv, 'thread_count', 1)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.1)
+        body = jpeg_bytes(RED)
+
+        def answer(url, attempt):
+            if '&x=7&y=3&' in url:
+                return 503
+            return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
+
+        session = fake_aiohttp['session'] = _StatusSession(answer=answer, delay=0.03)
+
+        with pytest.raises(aiohttp.ClientResponseError):
+            gsv.fetch_pano_image('queuedFailPanoAAAAAAAA', 4096, 2048, 3)
+
+        tries = session.requests - 31
+        assert 2 <= tries < gsv.TILE_MAX_TRIES - 3, 'the queue must not buy the failing tile extra retries'
 
     def test_the_fan_out_state_does_not_outlive_the_pano(self, fake_aiohttp):
         fake_aiohttp['session'] = _StatusSession(429, await_first=True)

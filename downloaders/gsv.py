@@ -769,13 +769,20 @@ def _photometa_levels(pano_id, latch_path):
     """ImageLevels, None (photometa: not found), or _PHOTOMETA_UNANSWERED. Never raises.
 
     The image phase shares the depth phase's block latch - the FILE, not the pacer (#74). A fresh latch means
-    this host was refused recently, so photometa is not asked at all.     A refusal met here writes the latch, so
+    this host was refused recently, so photometa is not asked at all. A refusal met here writes the latch, so
     every later pano this run reads it and skips photometa too (which is why the refusal WARNING prints once
     per run), the depth phase later in the run stands itself down at zero requests, and the earned depth pace
-    is forfeited - both through record_google_refusal, the image breaker's own bookkeeper (#162). A refusal is
-    what pushback_reason calls one, or a DepthBlockedError: a 5xx storm exhausting the retry policy is a
-    RetryError too, and is weather, not a refusal (#172 final review) - it takes the ordinary-failure arm. There is no pacer: one request per NEW pano, each followed by a 28-512 tile fan-out, is
-    already slower than the depth phase's own opening interval.
+    is forfeited - both through record_google_refusal, the image breaker's own bookkeeper (#162).
+
+    A refusal is what pushback_reason calls one, or a DepthBlockedError: a 5xx storm exhausting the retry
+    policy is a RetryError too, and is weather, not a refusal (#172 final review) - it takes the
+    ordinary-failure arm. In practice a photometa 403 (or an interstitial) arrives as DepthBlockedError, because
+    the session's _raise_if_blocked hook raises it before streetlevel sees the body, and a 429 arrives as a
+    RetryError, since 429 is in the forcelist; streetlevel never calls raise_for_status, so pushback_reason's
+    HTTPError leg is not reached from here.
+
+    There is no pacer: one request per NEW pano, each followed by a 28-512 tile fan-out, is already slower
+    than the depth phase's own opening interval.
 
     After PHOTOMETA_MAX_CONSECUTIVE_FAILURES failures in a row that are not refusals, or after one refusal
     (whether or not the latch could be written), photometa is not asked again this run (_PhotometaRunMemory).
@@ -885,7 +892,7 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     probe requests under a fresh latch, and nothing at all when the dimensions are missing.
 
     @param block_latch_path Where Google's refusals are remembered; None is image_block_latch_path, which
-                            DownloadRunner.main sets from --depth-block-latch, else the host default the depth
+                            DownloadRunner.run sets from --depth-block-latch, else the host default the depth
                             phase also uses (default_block_latch_path) - plan decision D3, threaded through in
                             review item 6 so the two phases can never read different latches.
     @param photometa        False skips step 2 entirely: the probe answers, at zero photometa requests and
@@ -1085,9 +1092,10 @@ def pushback_reason(exc):
       storm exhausting the policy is Google being ill, not Google refusing us - and a trip writes the
       fleet-wide block latch, so reading an outage as a refusal would stand every city's depth phase down for
       six hours. The image phase's photometa arm (#74) latches on this same line; the depth phase's own
-      `except (DepthBlockedError, RetryError)` is broader, and its latch predates this breaker (a follow-up). A RetryError whose status cannot be read is None for the same reason. One that
-      gave up ON Google's interstitial (its message names the /sorry/ path or the consent host) is
-      'interstitial' whatever its status: the landing is the refusal, and a 503 captcha page is not an outage.
+      `except (DepthBlockedError, RetryError)` is broader, and its latch predates this breaker (a
+      follow-up). A RetryError whose status cannot be read is None for the same reason. One that gave up
+      ON Google's interstitial (its message names the /sorry/ path or the consent host) is 'interstitial'
+      whatever its status: the landing is the refusal, and a 503 captcha page is not an outage.
     * requests' HTTPError from the zoom probe, which since #166 raises for any status but 200 and carries
       the Response. 403 is not in the retry policy's forcelist, so THIS is the shape a probe 403 arrives in:
       it counts when the status is in TILE_PUSHBACK_STATUSES, or when the landing or any redirect hop

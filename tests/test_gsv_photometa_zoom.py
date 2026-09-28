@@ -1036,3 +1036,26 @@ class TestTheTwoLatchPlumbingsAgree:
         assert gsv.image_host_state_paths('x', 'y') == ('x', 'y')
         monkeypatch.setattr(gsv, 'image_block_latch_path', None)
         assert gsv.image_host_state_paths() == (gsv.default_block_latch_path(), gsv.default_pace_state_path())
+
+    def test_the_scope_is_restored_when_the_loop_raises(self, tmp_path, monkeypatch):
+        """#172 verification NIT 1: the docstring promises a restore on every exit, and SIGTERM arrives in the
+        loop as SystemExit(143) (#49). Without the try/finally the module paths would keep the call's pair."""
+        import DownloadRunner
+        module_latch, module_pace = str(tmp_path / 'module-latch'), str(tmp_path / 'module-pace')
+        monkeypatch.setattr(gsv, 'image_block_latch_path', module_latch)
+        monkeypatch.setattr(gsv, 'image_pace_state_path', module_pace)
+
+        def stopped(storage_path, pano_info):
+            assert gsv.image_block_latch_path == str(tmp_path / 'given-latch'), 'scoped inside the loop'
+            raise SystemExit(143)
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', stopped)
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        with pytest.raises(SystemExit):
+            DownloadRunner.download_panorama_images(
+                str(storage), [dict(pano_info(1024, 512), source='gsv')],
+                block_latch_path=str(tmp_path / 'given-latch'), pace_state_path=str(tmp_path / 'given-pace'))
+
+        assert (gsv.image_block_latch_path, gsv.image_pace_state_path) == (module_latch, module_pace)
