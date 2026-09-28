@@ -115,10 +115,14 @@ A healthy mature city looks like: `image_success` small or zero most days, stabl
 
 ### What `log.csv` cannot show
 
-**A steady set of panos failing the image phase transiently every night is invisible.** Field 9 mixes the
+**A steady set of panos failing the image phase transiently every night goes unreported once it has been
+steady for a week.** Field 9 mixes the
 permanent failures already ledgered, tonight's permanent ones and tonight's transient ones, so a transient set
 of constant size T adds T to every night's figure and the night-to-night change the growing-failures check
-reads is about zero. Field 5 − field 11 does not see it either, because those panos *are* attempted and field
+reads is about zero. The one exception is onset: the night T first appears, field 9 jumps by T, and the
+growing-failures check averages that jump over 7 nights, so a set of T ≥ 140 (7 × its threshold of 20) is
+flagged for up to a week — mislabelled as `new permanent failures/day`, but flagged. A smaller set is never
+reported, and a larger one stops being reported after the week. Field 5 − field 11 does not see it either, because those panos *are* attempted and field
 11 counts attempts. Measured: 30 nights of 200 transient failures each, no downloads and a flat corpus
 return no finding. **This is a gap #163 opened, not one it found:** before it, the zero-new-images check
 fired on exactly that city after 30 nights, because it asked for no evidence of work. The evidence gate
@@ -136,12 +140,13 @@ Every city's stats line carries a depth clause once its `log.csv` has a row with
 depth 1,753/183,680 (1.0%) · +590 panos/night · ~308 nights left
 depth complete (2,709)
 depth not started (0/5,381)
-depth 27,001/100,000 (27.0%) · +1,889 panos/night · ~39 nights left · nothing saved in 10 nights
+depth 27,001/100,000 (27.0%) · +1,889 panos/night · ~39 nights left · nothing saved in 10 requesting nights
 ```
 
 The last line is a phase that is asking and saving nothing (the CRITICAL above): its ledger is growing by
 every failure, so the rate and the ETA beside it are counting `unavailable` verdicts, not depth. The trailing
-clause is there so the line cannot read as a healthy backfill.
+clause is there so the line cannot read as a healthy backfill. It counts the nights that made requests, the
+same number the WARNING and CRITICAL lead with, not the calendar nights since the last save.
 
 The report ends with the fleet's block — resolved out of eligible, panos resolved and requests made per
 night, how many cities are complete, stalled or saving nothing, and the three cities with the longest road
