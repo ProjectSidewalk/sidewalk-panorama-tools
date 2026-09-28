@@ -294,8 +294,9 @@ permanent.** Transient failures leave no row and retry automatically on the next
 
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano. A permanent verdict, one per source:
-  * **GSV** — no imagery at any zoom, or unknowable dimensions. No breaker entry, deliberately: a retired
-    GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4% of a large city's rows.
+  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200), or unknowable dimensions. No
+    breaker entry, deliberately: a retired GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4%
+    of a large city's rows.
   * **Mapillary** — a 404, or a record that names the image and carries no original-resolution rendition.
     No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured 2026-09-06 — so the
     record with no rendition is the one that fires in practice, and three of them in a row stop the run
@@ -307,10 +308,12 @@ permanent.** Transient failures leave no row and retry automatically on the next
     status code or a missing key, *and* three in a row trip the same breaker: two of the three are
     wholesale failures wearing a per-pano face, so the affirmation and the breaker are both wanted here.
 
-  A Mapillary error envelope on a 200, a 404 whose envelope carries the auth signature
-  (code 190 / `OAuthException`), a body that does not name the image, an image body that is not a JPEG, a
-  Panoramax 404 *without* the catalog's body, a malformed or empty assets block, and a redirect off a published `hd`
-  href are none of them verdicts and leave no row.
+  A GSV probe answered with anything but 200, even with a black body
+  ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)), a Mapillary error envelope
+  on a 200, a 404 whose envelope carries the auth signature (code 190 / `OAuthException`), a body that does
+  not name the image, an image body that is not a JPEG, a Panoramax 404 *without* the catalog's body, a
+  malformed or empty assets block, and a redirect off a published `hd` href are none of them verdicts and
+  leave no row.
 * **no row** — never attempted, the last attempt failed transiently (a network blip, a failed tile, a full
   store), or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both
   the withheld tripping verdict and every pano skipped after it). Retried next run.
@@ -436,7 +439,9 @@ store is a scrape-time archive and Google re-serves panos larger, so a grid size
 file can be too small for what Google now holds. That fetch does not return a smaller version of the pano —
 it returns the **top-left 81% of it**, at exactly the stored file's dimensions, with no undersized tile and
 no black anywhere. Nothing downstream could ever see it. Two requests, spent before the 512-tile fan-out,
-rule it out.
+rule it out. A probe answered with anything but 200 raises, so the pano counts as a transient failure rather
+than as a frame that covers; before [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166),
+a 403 or 404 with a black body passed it.
 
 | Outcome | Meaning | Requests |
 |---|---|---|
