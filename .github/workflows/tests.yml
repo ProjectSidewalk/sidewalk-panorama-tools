@@ -11,6 +11,9 @@ jobs:
     # Matches the production baseline: Ubuntu 22.04 / Python 3.10. Installing requirements.txt here also verifies that
     # streetlevel's dependency tree still pip-installs cleanly on that baseline.
     runs-on: ubuntu-22.04
+    # The suite takes ~7 minutes. Without a cap a test that hangs rather than fails (an extra-pass regression
+    # did, #174 review) holds the runner for GitHub's 6-hour default before anyone sees a red X.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

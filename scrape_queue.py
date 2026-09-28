@@ -651,7 +651,8 @@ def stop_process(proc, city_id):
     where no sibling `except` can catch it: before this arm, SIGKILL was never sent, the queue exited and
     released its lock, and tomorrow's queue ran alongside an orphaned runner. The cost is that city's
     log.csv row, which the SIGTERM it was already sent would have written - an acceptable trade against a
-    process nothing supervises. Nothing waits after the kill, so a third signal cannot interrupt the fix.
+    process nothing supervises. Nothing waits after the kill, and nothing writes before it, so a third signal
+    cannot interrupt the fix.
     """
     proc.terminate()
     try:
@@ -662,12 +663,14 @@ def stop_process(proc, city_id):
         proc.kill()
         return proc.wait()
     except BaseException:
-        logging.error("%s: the queue was stopped while waiting for the city to exit; killing it", city_id)
-        print("[queue] %s: queue stopping; killing the city" % (city_id,))
+        # Kill FIRST, then say so: the log handler writes to the store, and a slow write (or a third signal
+        # landing in it) must not delay or pre-empt the kill this arm exists for.
         try:
             proc.kill()
         except OSError:
             pass
+        logging.error("%s: the queue was stopped while waiting for the city to exit; killed it", city_id)
+        print("[queue] %s: queue stopping; killing the city" % (city_id,))
         raise
 
 

@@ -9,7 +9,10 @@ python3 -m pytest tests --cov --cov-report=term-missing
 ```
 
 CI runs exactly this on Ubuntu 22.04 / Python 3.10 for every push to `master` and every pull request
-([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)). There is no linter configured.
+([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)), with a 30-minute job timeout so a test
+that hangs instead of failing is a red X rather than a runner held for six hours. There is no pytest timeout,
+so a test that loops on an unbounded clock (an instant stand-in `run_one` under a real window) must bound it
+itself: a `FakeClock` the stand-in advances, or a call cap that raises. There is no linter configured.
 
 ## Coverage
 

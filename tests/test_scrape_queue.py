@@ -1100,6 +1100,45 @@ class TestAStopDuringTheGraceStillKillsTheCity:
 
         assert proc.waits_after_kill == 0
 
+    def test_the_kill_comes_before_any_io_and_is_said_on_both_channels(self, monkeypatch, capsys, caplog):
+        """The log handler writes to the store (sshfs); a slow or hung write, or a third signal landing in
+        it, must not delay or pre-empt the kill this arm exists for."""
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1])
+        killed_when_logged = []
+
+        class Witness(logging.Handler):
+            def emit(self, record):
+                killed_when_logged.append(proc.killed)
+
+        witness = Witness(level=logging.ERROR)
+        logging.getLogger().addHandler(witness)
+        try:
+            with caplog.at_level(logging.ERROR), pytest.raises(SystemExit):
+                scrape_queue.stop_process(proc, 'alpha-aa')
+        finally:
+            logging.getLogger().removeHandler(witness)
+
+        assert killed_when_logged and all(killed_when_logged), 'logged before the kill'
+        assert any('alpha-aa' in r.getMessage() and 'kill' in r.getMessage() for r in caplog.records)
+        assert '[queue] alpha-aa: queue stopping; killing the city' in capsys.readouterr().out
+
+    def test_a_city_already_gone_is_not_an_error_and_the_stop_still_propagates(self, monkeypatch):
+        """kill() on a child that exited between the wait and the kill raises ProcessLookupError on some
+        platforms; the exception that leaves must be the queue's own stop, carrying its 143."""
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1])
+
+        def gone():
+            raise ProcessLookupError(3, 'No such process')
+
+        proc.kill = gone
+
+        with pytest.raises(SystemExit) as exc:
+            scrape_queue.stop_process(proc, 'alpha-aa')
+
+        assert exc.value.code == 143
+
     def run_city_with(self, monkeypatch, tmp_path, proc, budget):
         monkeypatch.setattr(scrape_queue.subprocess, 'Popen', lambda *a, **k: proc)
         monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
@@ -2034,8 +2073,9 @@ class TestAnyConditionFailsTheNight:
 
     def test_the_label_table_is_the_runners_vocabulary(self):
         """Repeated in scrape_queue rather than imported (importing DownloadRunner pulls requests and
-        aiohttp into a driver that never touches either), so this is what keeps the two in step."""
-        DownloadRunner = pytest.importorskip('DownloadRunner')
+        aiohttp into a driver that never touches either), so this is what keeps the two in step. A plain
+        import, not importorskip: a DownloadRunner that cannot import must fail this pin, not skip it."""
+        import DownloadRunner
         assert set(scrape_queue.CONDITION_LABELS) == (DownloadRunner.RUN_CONDITIONS
                                                       | {'no-run-summary', 'conditions-unreadable'})
 
@@ -2145,6 +2185,40 @@ class TestTheSummaryReportsOneLinePerConditionKind:
         assert re.search(r' ERROR bravo-bb: ok \(exit 0\).*; conditions: depth-refused', log), log
 
 
+class TestAConditionIsNotAnOutcome:
+    """D1: a city with conditions stays `ok` on every axis but the exit code - so a backlog city whose depth
+    phase stood down still gets the leftover window (the #43 regression a condition must not cause), and its
+    host still counts as seen up for the roster check."""
+
+    def test_a_backlog_city_with_a_condition_is_still_re_run(self, monkeypatch):
+        clock = FakeClock()
+        monkeypatch.setattr(scrape_queue, 'time', clock)
+        calls = []
+
+        def run_one(city, store_root, python_exe, runner_path, budget, *a, **k):
+            calls.append(city.city_id)
+            clock.now += budget * 60.0
+            backlog = city.city_id == 'alpha' and calls.count('alpha') == 1
+            return scrape_queue.CityResult(
+                city.city_id, 'ok', 0, budget * 60.0,
+                stop_reasons={'image_stop': 'max-runtime' if backlog else None, 'depth_stop': 'blocked'},
+                conditions=(scrape_queue.Condition('depth-stood-down', 'latch set 1.0h ago'),))
+
+        results = scrape_queue.run_queue([scrape_queue.City('alpha', 'ha'), scrape_queue.City('bravo', 'hb')],
+                                         '/store', 'py', 'r.py', [], max_runtime_minutes=100,
+                                         city_max_runtime=12, run_one=run_one)
+
+        assert calls == ['alpha', 'bravo', 'alpha'], 'the image backlog earns pass 2 whatever the conditions'
+        assert [r.pass_number for r in results] == [1, 1, 2]
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_a_conditioned_ok_city_still_counts_as_its_host_seen_up(self):
+        manifest = cities(('a', 'ha'), ('b', 'hb'))
+        results = [result('a'), conditioned('b', 'depth-refused')]
+
+        assert scrape_queue.roster_hosts(manifest, results) == ['hb', 'ha']
+
+
 # --- The store marker (#161) ----------------------------------------------------------------------------------
 #
 # An unmounted or wrongly mounted store used to be scraped into: main() ran os.makedirs(store_root) and every
@@ -2211,6 +2285,9 @@ class TestAStoreThatGoesAwayMidNight:
         grouped = [line for line in out.splitlines() if line.startswith('[queue] STORE_MISSING')]
         assert len(grouped) == 1 and 'bravo-bb' in grouped[0] and 'charlie-cc' in grouped[0], out
         assert '2 not started (store not mounted)' in out
+        # And one line per city as it happens, which is what the mail shows if the night dies before its
+        # summary.
+        assert '[queue] bravo-bb: NOT STARTED - the store is not mounted' in out
 
     def test_a_city_after_the_mount_returns_still_runs(self, tmp_path):
         """The check is per city, not a latch: a mount that comes back is used."""
@@ -2229,15 +2306,23 @@ class TestAStoreThatGoesAwayMidNight:
         assert [(r.city_id, r.outcome) for r in results] == [
             ('alpha', 'ok'), ('bravo', 'store_missing'), ('charlie', 'ok')]
 
-    def test_the_extra_passes_check_it_too_and_never_re_run_a_missing_city(self, tmp_path):
+    def test_the_extra_passes_check_it_too_and_never_re_run_a_missing_city(self, tmp_path, monkeypatch):
         cities = [scrape_queue.City(c, 'h') for c in ('alpha', 'bravo')]
         ran = []
         mounted = [True]
+        # A finite window: each run spends its budget on the clock, and a call cap raises. With an instant
+        # run_one under a real 600-minute window, a regression here re-queued both cities forever - the test
+        # hung instead of failing, and CI has no pytest timeout to turn a hang into a red X (#174 review).
+        clock = FakeClock()
+        monkeypatch.setattr(scrape_queue, 'time', clock)
 
         def run_one(city, store_root, python_exe, runner_path, budget, *a, **k):
             ran.append(city.city_id)
+            if len(ran) > 4:
+                raise AssertionError('re-ran a city on an unmounted store: %s' % ran)
             if len(ran) == 2:
                 mounted[0] = False  # the drop happens during bravo's pass-1 run
+            clock.now += budget * 60.0
             return scrape_queue.CityResult(city.city_id, 'ok', 0, budget * 60.0,
                                            stop_reasons={'image_stop': 'max-runtime', 'depth_stop': None})
 
@@ -2270,6 +2355,7 @@ class TestAStoreThatGoesAwayMidNight:
 
         log = (tmp_path / 'store' / 'scrape_queue.log').read_text()
         assert re.search(r' ERROR STORE_MISSING', log), log
+        assert re.search(r' ERROR bravo-bb: store marker missing; not started', log), log
 
 
 class TestADryRunWarnsAboutAnUnmarkedStore:
