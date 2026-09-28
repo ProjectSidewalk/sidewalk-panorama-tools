@@ -150,8 +150,8 @@ confirms it. Then:
    grow the store at the full +63% below even though step 2 does not.
 2. Run `python3 downscale_panos.py <storage-dir> --min-width 16384 --dry-run`, then again without `--dry-run`,
    on each affected store ([by hand](#running-the-sweep-by-hand)). That writes copies for the frames **over
-   the ceiling only**, the ones 8192-class GPUs cannot render, and reports every other panorama over the cap as `under --min-width` without touching or
-   even reading its copy ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)).
+   the ceiling only**, the ones 8192-class GPUs cannot render, and reports every other panorama over the cap
+   as `under --min-width` without touching or even reading its copy ([#160](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/160)).
    Only if you mean to restore copies for everything over the cap as well, run it again without
    `--min-width` — and **budget the disk before you do:** that sweep writes a copy for every panorama wider
    than `DOWNSCALED_MAX_WIDTH` (8192), which is nearly every modern panorama, so it is the fleet-wide +63%
