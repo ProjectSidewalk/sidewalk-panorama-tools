@@ -292,6 +292,18 @@ class TestTheBlockLatchIsCrossRun:
 
         assert 'WARNING' in capsys.readouterr().out
 
+    def test_the_stand_down_line_does_not_claim_images_are_unaffected(self, tmp_path, recorder, capsys):
+        """#172 / #161 cross-PR note: a fresh latch now puts GSV images on probation (#162) and off photometa
+        (#74), so "Images are unaffected" became false. The line says what the latch does to images instead."""
+        latch = str(tmp_path / 'latch')
+        gsv._write_block_latch(latch)
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'), block_latch_path=latch)
+
+        out = capsys.readouterr().out
+        assert 'unaffected' not in out
+        assert 'probation' in out and 'tile probe' in out
+
     def test_a_stale_latch_does_not_stop_the_phase(self, tmp_path, recorder):
         latch = str(tmp_path / 'latch')
         with open(latch, 'w') as f:

@@ -2259,8 +2259,10 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         logging.error("DEPTHDOWNLOAD: block latch set %.1fh ago (%s); skipping the depth phase",
                       latched_hours, latch_path)
         print("DEPTHDOWNLOAD: WARNING - Google refused this host %.1f hours ago, so the depth phase is "
-              "standing down (latch %s, held for %g hours). Images are unaffected; unresolved panos are "
-              "retried once it expires." % (latched_hours, latch_path, DEPTH_BLOCK_LATCH_HOURS))
+              "standing down (latch %s, held for %g hours); unresolved panos are retried once it expires. GSV "
+              "images still download while it is fresh, but on probation (one refused pano stops them, #162) "
+              "and with every zoom from the tile probe rather than photometa (#74)."
+              % (latched_hours, latch_path, DEPTH_BLOCK_LATCH_HOURS))
         _record(DEPTH_STOP_BLOCKED)
         return 0, 0, 0, 0
 
