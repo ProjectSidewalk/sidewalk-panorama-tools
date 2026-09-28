@@ -34,6 +34,7 @@ import ast
 import csv
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -446,6 +447,36 @@ class TestLabelCsvIntake:
 
         assert [row['label_id'] for row in labels] == [bad, bad]
         assert [row['pano_x'] for row in labels] == ['100', '210']
+
+    def test_the_rows_the_dedupe_drops_are_reported_once_on_both_channels(self, tmp_path, capsys, caplog):
+        """A dropped duplicate used to leave `total` one smaller than the file with nothing to say why - and
+        a differently spelled id ('07' after '7') is the likeliest to be a real data conflict (#183 M1). One
+        summary line, on stdout (cron mail) and in crop.log, naming the count and some example ids; never a
+        line per row, which on a duplicate-heavy file is the flood #139 bounded."""
+        path = write_label_csv(tmp_path,
+                               LABEL_HEADER + label_csv_row(label_id='7') + label_csv_row(label_id='07')
+                               + label_csv_row(label_id=' 7') + label_csv_row(label_id='8')
+                               + label_csv_row(label_id='') + label_csv_row(label_id=''))
+
+        with caplog.at_level('WARNING'):
+            labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert len(labels) == 4
+        printed = [line for line in capsys.readouterr().out.splitlines() if 'duplicate label_id' in line]
+        logged = [r.getMessage() for r in caplog.records if 'duplicate label_id' in r.getMessage()]
+        assert len(printed) == 1 and logged == printed
+        assert re.search(r'\b2 rows\b', printed[0]) and "'07'" in printed[0] and "' 7'" in printed[0]
+        assert 'labels.csv' in printed[0]
+
+    def test_a_file_with_no_duplicates_reports_none(self, tmp_path, capsys, caplog):
+        path = write_label_csv(tmp_path, LABEL_HEADER + label_csv_row(label_id='7') + label_csv_row(label_id='8')
+                               + label_csv_row(label_id='') + label_csv_row(label_id=''))
+
+        with caplog.at_level('WARNING'):
+            CropRunner.fetch_label_ids_csv(path)
+
+        assert 'duplicate' not in capsys.readouterr().out.lower()
+        assert not [r for r in caplog.records if 'duplicate' in r.getMessage().lower()]
 
     def test_the_real_sample_file_parses(self, tmp_path):
         """samples/metadata-seattle.csv is the documented -f example: the old export's width/height

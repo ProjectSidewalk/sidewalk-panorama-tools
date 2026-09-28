@@ -416,7 +416,7 @@ def fetch_label_ids_csv(metadata_csv_path):
     through to one <type>/7.jpg, cut twice under --force with two provenance rows (#170 ops-4). This is not
     the inference #72 removed: int() is applied explicitly to one column for the key only, and the row keeps
     its raw str. As in json_to_list, keep-first holds whether or not the first row is usable, so a malformed
-    '7' row shadows a good '07' one (ops-7).
+    '7' row shadows a good '07' one (ops-7). The dropped rows are reported in one line (#183 M1).
 
     Read with csv, not pandas (#72), so no field's type depends on what the values happen to look like -
     the inference that gave an all-numeric (Mapillary) pano_id column int64 and crashed every pano_id[:2]
@@ -429,6 +429,7 @@ def fetch_label_ids_csv(metadata_csv_path):
     """
     unique_label_ids = set()
     labels = []
+    dropped = []
     with open(metadata_csv_path, newline='', encoding='utf-8-sig') as csv_file:
         reader = csv.DictReader(csv_file)
         # fieldnames is None for an empty file, and `c not in None` is a TypeError.
@@ -449,9 +450,11 @@ def fetch_label_ids_csv(metadata_csv_path):
             key = _label_id_key(label.get('label_id'))
             if key is not None:
                 if key in unique_label_ids:
+                    dropped.append(label.get('label_id'))
                     continue
                 unique_label_ids.add(key)
             labels.append(label)
+    _report_dropped_duplicates(dropped, metadata_csv_path)
     return labels
 
 
@@ -470,6 +473,30 @@ def _label_id_key(raw):
         return int(raw)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+# How many of the dropped duplicates' raw ids _report_dropped_duplicates names.
+DUPLICATE_EXAMPLE_IDS = 5
+
+
+def _report_dropped_duplicates(dropped, source):
+    """One line, on stdout and in the log, for the rows an intake's dedupe dropped - or nothing if none.
+
+    A dropped row leaves `total` smaller than the file, and a differently spelled id ('07' after '7') is
+    the likeliest to be a real data conflict rather than an export artefact, so the drop must not be
+    silent (#183 M1). One summary, never a line per row: json_to_list used to print "Duplicate label ID"
+    per row on stdout only, unbounded on a duplicate-heavy payload - the flood #139 bounded in crop.log.
+    Both channels, per the print/logging rule: stdout is what cron mails tonight, the log what is there
+    next week.
+    """
+    if not dropped:
+        return
+    examples = ', '.join(_clip(repr(raw), LOG_ID_MAX_CHARS) for raw in dropped[:DUPLICATE_EXAMPLE_IDS])
+    more = ', ...' if len(dropped) > DUPLICATE_EXAMPLE_IDS else ''
+    message = ("%s: dropped %d rows as duplicate label_ids (the first row per id is kept), e.g. %s%s"
+               % (source or 'label metadata', len(dropped), examples, more))
+    logging.warning(message)
+    print(message)
 
 
 def json_to_list(jsondata, source=None):
@@ -505,6 +532,7 @@ def json_to_list(jsondata, source=None):
                             _clip(repr(jsondata), LOG_ROW_REPR_MAX_CHARS)))
     unique_label_ids = set()
     label_info = []
+    dropped = []
 
     for value in jsondata:
         key = _label_id_key(value.get('label_id') if isinstance(value, dict) else None)
@@ -514,7 +542,8 @@ def json_to_list(jsondata, source=None):
             unique_label_ids.add(key)
             label_info.append(value)
         else:
-            print("Duplicate label ID")
+            dropped.append(value.get('label_id'))
+    _report_dropped_duplicates(dropped, source)
     return label_info
 
 

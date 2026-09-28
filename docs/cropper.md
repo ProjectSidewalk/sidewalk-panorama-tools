@@ -185,7 +185,8 @@ row per id, so `7` and `07` are one label rather than two rows cut to the same `
 with two provenance rows, until
 [#170](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/170)'s follow-up). A row whose
 `label_id` is blank or not an integer is never deduplicated: each one is its own counted error. The row keeps
-its raw string; only the key is an `int`. The CSV intake reads with `csv.DictReader` rather than pandas
+its raw string; only the key is an `int`. A dropped duplicate is not in the run's `total`, so the intake says
+how many it dropped, in one line on stdout and in `crop.log` with a few example ids — never a line per row. The CSV intake reads with `csv.DictReader` rather than pandas
 ([#72](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/72)), so no field's type depends on
 what the values happen to look like — the inference that gave an all-numeric Mapillary `pano_id` column
 `int64` and crashed every shard slice. It checks the required columns up front, so a header typo is one error
