@@ -31,8 +31,9 @@ def write_cities(path, rows):
 
 @pytest.fixture
 def roster(crop_runner, tmp_path, monkeypatch):
-    """CropRunner reads its city roster from a tmp file. Semantics are tested against this, never against
-    the committed list, so adding or retiring a city cannot move these tests."""
+    """CropRunner reads its city roster from a tmp file this class can rewrite. Semantics are tested against
+    this, never against the committed list, so adding or retiring a city cannot move these tests (the
+    suite-wide tests/conftest.py _isolate_city_roster does the same for every other main() test)."""
     path = write_cities(tmp_path / 'cities.csv', [
         ('seattle-wa', 'Seattle, WA'),
         ('chicago-il', 'Chicago, IL'),
@@ -119,11 +120,19 @@ class TestTheCityIsOneTheFleetKnows:
         with open(os.path.join(REPO_ROOT, 'CropRunner.py'), encoding='utf-8') as f:
             assert 'log_analyzer' not in imported_names(f.read())
 
+    def test_every_other_test_reads_a_fixture_roster(self, crop_runner):
+        """tests/conftest.py's _isolate_city_roster: an ops edit to cities.csv cannot fail a layout test."""
+        assert os.path.normcase(os.path.abspath(crop_runner.CITIES_FILE)) != os.path.normcase(
+            os.path.join(REPO_ROOT, 'log_analyzer', 'cities.csv'))
+        assert crop_runner.known_city_ids(crop_runner.CITIES_FILE) == {SEATTLE, CHICAGO}
+
+    @pytest.mark.real_roster
     def test_the_default_roster_is_the_committed_one(self, crop_runner):
         assert os.path.normcase(os.path.abspath(crop_runner.CITIES_FILE)) == os.path.normcase(
             os.path.join(REPO_ROOT, 'log_analyzer', 'cities.csv'))
 
 
+@pytest.mark.real_roster
 class TestTheCommittedRosterIsSafeAsDirectoryNames:
     """Pins on the real file, because every active id is now a directory name under `-o`."""
 

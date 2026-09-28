@@ -76,7 +76,12 @@ class TestTheFlag:
         assert not (tmp_path / 'crops').exists()
 
     @pytest.mark.parametrize('city', ['seattle-wa', 'cdmx', 'st-louis-mo', 'new-taipei-tw'])
-    def test_a_city_id_is_accepted(self, crop_runner, city):
+    def test_a_city_id_is_accepted(self, crop_runner, tmp_path, monkeypatch, city):
+        """The spelling rule, against a roster naming all four: which cities the committed roster lists is
+        tests/test_crop_store_layout.py's business."""
+        roster = tmp_path / 'cities.csv'
+        roster.write_text('city_id\nseattle-wa\ncdmx\nst-louis-mo\nnew-taipei-tw\n', encoding='utf-8')
+        monkeypatch.setattr(crop_runner, 'CITIES_FILE', str(roster))
         assert crop_runner.build_parser().parse_args(['-f', 'x.csv', '-s', 's', '-o', 'o', '--city', city]).city == city
 
     @pytest.mark.parametrize('city', ['', 'Seattle', 'seattle wa', 'seattle_wa', '-seattle', 'seattle-',
