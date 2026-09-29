@@ -33,6 +33,9 @@ from conftest import posix_only
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Captured at import, before the autouse streetlevel_probe fixture replaces it for every test.
+REAL_PROBE = scrape_queue.probe_streetlevel
+
 # scrape_queue.main() adds a handler to the root logger and installs a SIGTERM handler, both process-wide.
 # conftest's autouse _isolate_process_state snapshots and restores exactly that around every test in the
 # suite, so this module does not carry its own copy - which is the point of it having been lifted there.
@@ -79,8 +82,20 @@ FAKE_RUNNER = textwrap.dedent('''
         summary = {'image_stop': None, 'depth_stop': None}
         if stop:
             summary['%s_stop' % stop.split(':')[0]] = stop.split(':')[1]
+        # Run conditions (#161), reported on EVERY run, as 'code=detail;code2=detail'. Empty by default,
+        # which is what DownloadRunner writes on a clean run.
+        conditions = os.environ.get('QUEUE_TEST_CONDITIONS_%s' % city.replace('-', '_').upper(),
+                                    os.environ.get('QUEUE_TEST_CONDITIONS', ''))
+        summary['conditions'] = [dict(zip(('code', 'detail'), c.split('=', 1)))
+                                 for c in conditions.split(';') if c]
         with open(target, 'w') as f:
             json.dump(summary, f)
+
+    # A stand-in for the store's mount dropping mid-night (#161): this city removes the store marker.
+    if os.environ.get('QUEUE_TEST_UNMOUNT_%s' % city.replace('-', '_').upper()):
+        marker = os.path.join(os.path.dirname(sys.argv[2]), '.pano-store')
+        if os.path.exists(marker):
+            os.remove(marker)
 
     note('END')
     sys.exit(int(os.environ.get('QUEUE_TEST_EXIT', '0')))
@@ -115,6 +130,21 @@ def _no_network(monkeypatch):
         raise urllib.error.URLError('no network in tests')
 
     monkeypatch.setattr(scrape_queue, '_open_url', refuse)
+
+
+@pytest.fixture(autouse=True)
+def streetlevel_probe(monkeypatch):
+    """A dry run probes whether the cities' interpreter can import streetlevel (#161), in a child process.
+    Stubbed for every test - answering "importable" and recording its calls - so no dry run spawns an
+    interpreter and none depends on what this machine has installed. Tests about the probe set `answer`."""
+    probe = SimpleNamespace(calls=[], answer=(True, ''))
+
+    def fake(python_exe, timeout=60):
+        probe.calls.append(python_exe)
+        return probe.answer
+
+    monkeypatch.setattr(scrape_queue, 'probe_streetlevel', fake)
+    return probe
 
 
 @pytest.fixture
@@ -687,8 +717,18 @@ class TestOnlyOneQueueRunsAtATime:
 
 # --- main() ------------------------------------------------------------------------------------------------
 
-def run_main(tmp_path, manifest, fake_runner, *extra, store=None):
-    """Drive main() with a lock private to this test.
+def mark_store(store):
+    """Create the store root and the operator's marker in it, as the deployment does once (#161)."""
+    os.makedirs(store, exist_ok=True)
+    with open(os.path.join(store, scrape_queue.STORE_MARKER), 'w') as f:
+        f.write('test store\n')
+
+
+def run_main(tmp_path, manifest, fake_runner, *extra, store=None, mark=True):
+    """Drive main() with a lock private to this test, over a store that carries its marker.
+
+    `mark` is the store marker (#161): a real store has one, created once by the operator, and a queue
+    without it refuses to start - so every test that is not about the marker gets one.
 
     The production default is one lock per HOST, which is right for production and wrong here: without this
     two pytest processes on one machine - a second run in another terminal, pytest-xdist, a CI matrix sharing
@@ -697,6 +737,8 @@ def run_main(tmp_path, manifest, fake_runner, *extra, store=None):
     it by passing its own --lock in `extra`.
     """
     store = store or str(tmp_path / 'store')
+    if mark:
+        mark_store(store)
     return scrape_queue.main(['--lock', str(tmp_path / 'test.lock'),
                               '--cities', manifest, '--store-root', store,
                               '--runner', fake_runner, '--python', sys.executable, *extra])
@@ -813,7 +855,8 @@ class TestDryRun:
         """A dry run is for reading, including while tonight's queue is running."""
         lock = str(tmp_path / 'q.lock')
         with scrape_queue.exclusive_lock(lock):
-            code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--lock', lock)
+            code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--lock', lock,
+                            mark=False)
         assert code == 0
         assert not (tmp_path / 'store').exists()
 
@@ -998,6 +1041,140 @@ class TestAStoppedQueueDoesNotOrphanTheCityItIsRunning:
         with pytest.raises(SystemExit) as exc:
             scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
                                   'py', 'runner.py', None, 1.0, [])
+        assert exc.value.code == 143
+
+
+class _StopDuringTheGraceProc(_FakeProc):
+    """A city whose wait() is interrupted by the queue's own stop - the SIGTERM a cron wrapper or an operator
+    sends, which main() translates into SystemExit(143) - on the waits listed in `interrupted_waits`
+    (1-based), and times out on the ones listed in `timeouts_on`. Counts every call, so a test can see what
+    happened after the kill as well as whether the kill happened.
+    """
+
+    def __init__(self, error, interrupted_waits, timeouts_on=()):
+        super().__init__(timeouts=0)
+        self._error = error
+        self._interrupted = set(interrupted_waits)
+        self._timeouts_on = set(timeouts_on)
+        self.waits = 0
+        self.waits_after_kill = 0
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        if self.killed:
+            self.waits_after_kill += 1
+        if self.waits in self._timeouts_on:
+            raise subprocess.TimeoutExpired('cmd', timeout)
+        if self.waits in self._interrupted:
+            raise self._error
+        return 143
+
+
+class TestAStopDuringTheGraceStillKillsTheCity:
+    """#161 (i): a stop signal landing inside stop_process's SIGTERM wait used to orphan the city.
+
+    stop_process runs inside an `except` handler at both of its call sites - the hard timeout's
+    `except subprocess.TimeoutExpired` and the queue stop's `except BaseException` - so a SystemExit raised
+    by a SIGTERM during its 30-second wait propagates straight out of the handler, which no sibling `except`
+    can catch. SIGKILL was never sent, the queue exited and released its lock, and tomorrow's queue ran
+    alongside a DownloadRunner nothing supervised. Fake procs, no signals, so it runs on Windows too.
+    """
+
+    @pytest.mark.parametrize('error', [SystemExit(143), KeyboardInterrupt()])
+    def test_a_stop_during_the_wait_kills_the_city_and_is_not_swallowed(self, monkeypatch, error):
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        proc = _StopDuringTheGraceProc(error, interrupted_waits=[1])
+
+        with pytest.raises(type(error)):
+            scrape_queue.stop_process(proc, 'alpha-aa')
+
+        assert proc.terminated and proc.killed, 'the city was left running after its stop was interrupted'
+
+    def test_the_kill_is_not_followed_by_another_wait(self, monkeypatch):
+        """A third signal must not be able to interrupt the fix: after the kill nothing waits."""
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1])
+
+        with pytest.raises(SystemExit):
+            scrape_queue.stop_process(proc, 'alpha-aa')
+
+        assert proc.waits_after_kill == 0
+
+    def test_the_kill_comes_before_any_io_and_is_said_on_both_channels(self, monkeypatch, capsys, caplog):
+        """The log handler writes to the store (sshfs); a slow or hung write, or a third signal landing in
+        it, must not delay or pre-empt the kill this arm exists for."""
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1])
+        killed_when_logged = []
+        killed_when_printed = []
+
+        class Witness(logging.Handler):
+            def emit(self, record):
+                killed_when_logged.append(proc.killed)
+
+        def witnessed_print(*args, **kwargs):
+            # stdout is the other channel (the cron_notify pipe), and a write there can block too, so the
+            # print is watched the same way the log handler is (#174 final review NIT 1).
+            killed_when_printed.append(proc.killed)
+            print(*args, **kwargs)
+
+        monkeypatch.setattr(scrape_queue, 'print', witnessed_print, raising=False)
+        witness = Witness(level=logging.ERROR)
+        logging.getLogger().addHandler(witness)
+        try:
+            with caplog.at_level(logging.ERROR), pytest.raises(SystemExit):
+                scrape_queue.stop_process(proc, 'alpha-aa')
+        finally:
+            logging.getLogger().removeHandler(witness)
+
+        assert killed_when_logged and all(killed_when_logged), 'logged before the kill'
+        assert killed_when_printed and all(killed_when_printed), 'printed before the kill'
+        assert any('alpha-aa' in r.getMessage() and 'kill' in r.getMessage() for r in caplog.records)
+        assert '[queue] alpha-aa: queue stopping; killing the city' in capsys.readouterr().out
+
+    def test_a_city_already_gone_is_not_an_error_and_the_stop_still_propagates(self, monkeypatch):
+        """kill() on a child that exited between the wait and the kill raises ProcessLookupError on some
+        platforms; the exception that leaves must be the queue's own stop, carrying its 143."""
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1])
+
+        def gone():
+            raise ProcessLookupError(3, 'No such process')
+
+        proc.kill = gone
+
+        with pytest.raises(SystemExit) as exc:
+            scrape_queue.stop_process(proc, 'alpha-aa')
+
+        assert exc.value.code == 143
+
+    def run_city_with(self, monkeypatch, tmp_path, proc, budget):
+        monkeypatch.setattr(scrape_queue.subprocess, 'Popen', lambda *a, **k: proc)
+        monkeypatch.setattr(scrape_queue, 'TERM_TO_KILL_SECONDS', 0)
+        return scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                     'py', 'runner.py', budget, 1.0, [])
+
+    def test_a_stop_during_a_timed_out_citys_grace_kills_it(self, monkeypatch, tmp_path):
+        """The timeout handler's call site: the city overran, was sent SIGTERM, and the queue itself was
+        stopped during the 30 s it was giving the city to write its log.csv row."""
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[2], timeouts_on=[1])
+
+        with pytest.raises(SystemExit) as exc:
+            self.run_city_with(monkeypatch, tmp_path, proc, budget=1.0)
+
+        assert proc.terminated and proc.killed
+        assert exc.value.code == 143, 'the queue must still exit with its own stop code'
+
+    def test_a_second_stop_during_the_queues_own_stop_kills_the_city(self, monkeypatch, tmp_path):
+        """The queue-stop handler's call site: the first SIGTERM made the queue stop the city, and a second
+        one landed while it waited - the shape cron_notify's forward-once rule exists to avoid, and the one
+        a bare `pkill -f scrape_queue.py` still produces."""
+        proc = _StopDuringTheGraceProc(SystemExit(143), interrupted_waits=[1, 2])
+
+        with pytest.raises(SystemExit) as exc:
+            self.run_city_with(monkeypatch, tmp_path, proc, budget=None)
+
+        assert proc.terminated and proc.killed
         assert exc.value.code == 143
 
 
@@ -1635,6 +1812,7 @@ class TestAStoppedQueueStillReportsWhatItDid:
             return scrape_queue.CityResult(city.city_id, 'ok', 0, 30.0)
 
         monkeypatch.setattr(scrape_queue, 'run_city', run_one)
+        mark_store(str(tmp_path / 'store'))
         with pytest.raises(KeyboardInterrupt):
             scrape_queue.main(['--lock', str(tmp_path / 'test.lock'), '--no-rotate',
                                '--cities', write_manifest(tmp_path, ['alpha-aa,h1', 'bravo-bb,h2']),
@@ -1741,6 +1919,552 @@ class TestReadingARunSummaryResolvesEveryDoubtTowardsTheFallback:
         summary = self.write(tmp_path, '{"image_stop": null, "depth_stop": null, "future_field": 7}')
 
         assert scrape_queue.read_run_summary(summary) == {'image_stop': None, 'depth_stop': None}
+
+
+# --- An ok city can still fail the night (#161) ---------------------------------------------------------------
+#
+# Production delivers only nonzero exits (cron_notify --only-on-failure), and the runner exits 0 on every shape
+# below: a refused or stood-down depth phase, a missing Mapillary token, an empty pano list... So the runner
+# reports them as CONDITIONS in the run summary, and any condition fails the night. The city's OUTCOME is not
+# touched: it stays 'ok', counts in N/M, and keeps its extra-pass eligibility.
+
+def conditioned(city_id, *codes, **kwargs):
+    return result(city_id, **kwargs)._replace(
+        conditions=tuple(scrape_queue.Condition(code, 'detail of %s' % code) for code in codes))
+
+
+class TestReadingTheRunConditions:
+
+    def write(self, tmp_path, payload):
+        path = tmp_path / 'summary.json'
+        path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+        return str(path)
+
+    def test_a_missing_file_is_no_conditions(self, tmp_path):
+        """The queue adds `no-run-summary` itself for an ok run; the reader stays a reader."""
+        assert scrape_queue.read_run_conditions(str(tmp_path / 'absent.json')) == ()
+
+    def test_a_summary_without_the_key_is_no_conditions(self, tmp_path):
+        """An older runner, from before #161. Absent is not malformed."""
+        path = self.write(tmp_path, {'image_stop': None, 'depth_stop': None})
+        assert scrape_queue.read_run_conditions(path) == ()
+
+    def test_bad_json_is_no_conditions(self, tmp_path):
+        assert scrape_queue.read_run_conditions(self.write(tmp_path, '{"conditions": [')) == ()
+
+    @pytest.mark.parametrize('payload', ['["conditions"]', '"conditions"', '7'])
+    def test_a_summary_that_is_not_an_object_is_no_conditions_and_does_not_raise(self, tmp_path, payload):
+        """No runner writes one, but `'conditions' in <list or str>` is True for these, and the lookup after
+        it would raise out of _run_city_with_summary."""
+        assert scrape_queue.read_run_conditions(self.write(tmp_path, payload)) == ()
+
+    def test_a_well_formed_list_comes_back_in_order(self, tmp_path):
+        path = self.write(tmp_path, {'image_stop': None, 'depth_stop': 'blocked', 'conditions': [
+            {'code': 'depth-refused', 'detail': 'HTTP 429'}, {'code': 'pano-list-empty', 'detail': 'x'}]})
+
+        assert scrape_queue.read_run_conditions(path) == (
+            scrape_queue.Condition('depth-refused', 'HTTP 429'), scrape_queue.Condition('pano-list-empty', 'x'))
+
+    def test_an_empty_list_is_no_conditions(self, tmp_path):
+        path = self.write(tmp_path, {'image_stop': None, 'depth_stop': None, 'conditions': []})
+        assert scrape_queue.read_run_conditions(path) == ()
+
+    @pytest.mark.parametrize('conditions', ['depth-refused', {'code': 'depth-refused'}, [['depth-refused']],
+                                            [{'detail': 'no code'}], [{'code': 7}], [{'code': ''}], [{'code': ' \n '}],
+                                            None])
+    def test_a_present_but_malformed_list_is_itself_a_condition(self, tmp_path, conditions):
+        """A check that did not run has not passed: a summary saying something unreadable about conditions
+        must not read as "none"."""
+        path = self.write(tmp_path, {'image_stop': None, 'depth_stop': None, 'conditions': conditions})
+
+        codes = [c.code for c in scrape_queue.read_run_conditions(path)]
+
+        assert codes == ['conditions-unreadable']
+
+    def test_an_unknown_code_is_kept_not_dropped(self, tmp_path):
+        """A runner newer than the queue must still be able to fail the night."""
+        path = self.write(tmp_path, {'conditions': [{'code': 'something-new', 'detail': 'x'}]})
+
+        assert [c.code for c in scrape_queue.read_run_conditions(path)] == ['something-new']
+
+    def test_whitespace_in_a_code_is_collapsed_so_it_cannot_split_a_summary_line(self, tmp_path):
+        """The detail is collapsed at both ends; a newer runner's code is used as sent, so a newline in it
+        would drop the tail of its ERROR line to a line of its own (#174 final review NIT 2)."""
+        path = self.write(tmp_path, {'conditions': [{'code': ' foo\nbar\t', 'detail': 'x'}]})
+
+        assert [c.code for c in scrape_queue.read_run_conditions(path)] == ['foo bar']
+
+    def test_a_missing_detail_is_an_empty_string(self, tmp_path):
+        path = self.write(tmp_path, {'conditions': [{'code': 'depth-refused'}]})
+
+        assert scrape_queue.read_run_conditions(path) == (scrape_queue.Condition('depth-refused', ''),)
+
+
+class TestConditionsReachTheCityResult:
+
+    def run(self, fake_runner, tmp_path):
+        return scrape_queue.run_city(scrape_queue.City('alpha-aa', 'host.invalid'), str(tmp_path / 'store'),
+                                     sys.executable, fake_runner, 12.0, 1.0, [])
+
+    def test_what_the_city_reported_lands_on_the_result(self, fake_runner, journal, tmp_path, monkeypatch,
+                                                        capsys):
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS', 'depth-refused=HTTP 429;pano-list-empty=empty')
+
+        outcome = self.run(fake_runner, tmp_path)
+
+        assert outcome.outcome == 'ok', 'a condition must not change the outcome'
+        assert [c.code for c in outcome.conditions] == ['depth-refused', 'pano-list-empty']
+        assert 'ok (exit 0)' in capsys.readouterr().out.split('conditions:')[0]
+
+    def test_the_per_city_line_names_them(self, fake_runner, journal, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS', 'depth-refused=HTTP 429')
+
+        self.run(fake_runner, tmp_path)
+
+        line = [l for l in capsys.readouterr().out.splitlines() if 'ok (exit 0)' in l][0]
+        assert line.endswith('; conditions: depth-refused')
+
+    def test_a_clean_city_has_none_and_no_suffix(self, fake_runner, journal, tmp_path, capsys):
+        outcome = self.run(fake_runner, tmp_path)
+
+        assert outcome.conditions == ()
+        assert 'conditions:' not in capsys.readouterr().out
+
+    def test_an_ok_run_with_no_summary_is_a_condition(self, journal, tmp_path):
+        """D6: conditions ride the summary, so a run that left none has reported nothing - and a check that
+        did not run has not passed."""
+        mute_runner = tmp_path / 'mute_runner.py'
+        mute_runner.write_text('import sys\nsys.exit(0)\n')
+
+        outcome = self.run(str(mute_runner), tmp_path)
+
+        assert outcome.outcome == 'ok'
+        assert [c.code for c in outcome.conditions] == ['no-run-summary']
+
+    def test_a_failed_run_with_no_summary_is_not_also_a_condition(self, journal, tmp_path):
+        """It already fails the night as `failed`; a second line about the same run is noise."""
+        crashing_runner = tmp_path / 'crashing_runner.py'
+        crashing_runner.write_text('import sys\nsys.exit(1)\n')
+
+        outcome = self.run(str(crashing_runner), tmp_path)
+
+        assert outcome.outcome == 'failed'
+        assert outcome.conditions == ()
+
+    def test_a_city_result_built_the_old_way_has_no_conditions(self):
+        assert scrape_queue.CityResult('a', 'ok', 0, 1.0).conditions == ()
+
+
+class TestAnyConditionFailsTheNight:
+
+    @pytest.mark.parametrize('code', sorted(scrape_queue.CONDITION_LABELS) + ['something-new'])
+    def test_each_code_alone_fails_an_otherwise_clean_night(self, code):
+        results = [result('alpha-aa'), conditioned('bravo-bb', code)]
+
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_a_night_with_no_conditions_is_still_zero(self):
+        assert scrape_queue.exit_code_for([result('alpha-aa'), result('bravo-bb')]) == 0
+
+    def test_a_condition_in_a_later_pass_fails_it_too(self):
+        results = [result('alpha-aa'), conditioned('alpha-aa', 'depth-breaker', pass_number=2)]
+
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_end_to_end_the_city_is_ok_and_the_night_is_not(self, tmp_path, fake_runner, journal,
+                                                            monkeypatch, fleet_in_step, capsys):
+        """fleet_in_step so the cross-check passes and the exit 1 can only be the condition's."""
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS_BRAVO_BB', 'depth-refused=HTTP 429')
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert '3/3 cities ok' in out
+        assert any(l.startswith('[queue] bravo-bb: ok (exit 0)') and l.endswith('; conditions: depth-refused')
+                   for l in out.splitlines()), out
+
+    def test_end_to_end_a_clean_fleet_is_still_zero(self, tmp_path, fake_runner, journal, fleet_in_step):
+        """Guard the guard: the fake runner writes `conditions: []` on every run, as the real one does."""
+        assert run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate') == 0
+
+    def test_the_label_table_is_the_runners_vocabulary(self):
+        """Repeated in scrape_queue rather than imported (importing DownloadRunner pulls requests and
+        aiohttp into a driver that never touches either), so this is what keeps the two in step. A plain
+        import, not importorskip: a DownloadRunner that cannot import must fail this pin, not skip it."""
+        import DownloadRunner
+        assert set(scrape_queue.CONDITION_LABELS) == (DownloadRunner.RUN_CONDITIONS
+                                                      | {'no-run-summary', 'conditions-unreadable'})
+
+
+class TestTheSummaryReportsOneLinePerConditionKind:
+    """The message is the alarm, and a refusal followed by 40 stood-down cities is two facts, not 41: one line
+    per condition KIND, naming the first city (with its pass and detail) and then listing the rest."""
+
+    def lines(self, results):
+        return [line for line, _ in scrape_queue.conditions_report(results)]
+
+    def test_a_refusal_then_forty_stand_downs_is_two_lines(self):
+        results = [conditioned('refuser', 'depth-refused')]
+        results += [conditioned('city-%02d' % n, 'depth-stood-down') for n in range(40)]
+
+        lines = self.lines(results)
+
+        assert len(lines) == 2, lines
+        assert lines[0].startswith('[queue] depth-refused:') and 'first refuser' in lines[0]
+        assert lines[1].startswith('[queue] depth-stood-down:') and '40 cities, first city-00' in lines[1]
+        assert all(('city-%02d' % n) in lines[1] for n in range(40))
+
+    def test_the_first_city_is_named_with_its_detail(self):
+        results = [conditioned('alpha', 'depth-breaker'), conditioned('bravo', 'depth-breaker')]
+
+        line = self.lines(results)[0]
+
+        assert 'first alpha: detail of depth-breaker; also bravo' in line
+
+    def test_a_city_in_two_passes_is_listed_once_with_its_first_pass(self):
+        results = [result('alpha'), conditioned('bravo', 'depth-breaker'),
+                   conditioned('alpha', 'depth-breaker', pass_number=2),
+                   conditioned('bravo', 'depth-breaker', pass_number=2)]
+
+        line = self.lines(results)[0]
+
+        assert '2 cities' in line
+        assert line.count('bravo') == 1 and line.count('alpha') == 1
+        assert 'first bravo: ' in line, 'pass 1 is the default and is not named'
+
+    def test_a_first_occurrence_in_a_later_pass_says_so(self):
+        results = [result('alpha'), conditioned('alpha', 'depth-breaker', pass_number=3)]
+
+        assert 'first alpha in pass 3:' in self.lines(results)[0]
+
+    def test_kinds_are_in_label_order_then_unknown_codes_by_first_appearance(self):
+        results = [conditioned('a', 'zzz-new'), conditioned('b', 'depth-stood-down'),
+                   conditioned('c', 'aaa-new'), conditioned('d', 'pano-schema-drift')]
+
+        codes = [line.split()[1].rstrip(':') for line in self.lines(results)]
+
+        assert codes == ['pano-schema-drift', 'depth-stood-down', 'zzz-new', 'aaa-new']
+
+    def test_every_line_is_an_error(self):
+        report = scrape_queue.conditions_report([conditioned('a', 'depth-refused')])
+        assert [level for _, level in report] == [logging.ERROR]
+
+    def test_a_multi_line_detail_still_logs_as_one_error_line(self, tmp_path, caplog):
+        """_report maps levels by exact summary line, so a detail that split the line (from any runner, not
+        only this one's note_condition) would log both halves at INFO."""
+        results = [result('bravo-bb')._replace(
+            conditions=(scrape_queue.Condition('depth-breaker', 'line one\nline two'),))]
+
+        with caplog.at_level(logging.INFO):
+            scrape_queue._report(results, time.monotonic())
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any('first bravo-bb: line one line two' in m for m in errors), errors
+        assert not any(r.getMessage() == 'line two' for r in caplog.records)
+
+    def test_an_unknown_code_with_a_space_is_named_whole_on_the_totals_line(self):
+        results = [conditioned('a', 'two words')]
+        totals = [ln for ln in scrape_queue.summarise(results, 1.0).splitlines() if 'cities ok' in ln][0]
+
+        assert 'conditions: two words;' in totals
+
+    def test_no_conditions_no_lines(self):
+        assert scrape_queue.conditions_report([result('a'), result('b')]) == []
+
+    def test_condition_lines_come_before_the_totals(self):
+        text = scrape_queue.summarise([result('a'), conditioned('b', 'depth-refused')], 1.0)
+        lines = text.splitlines()
+
+        condition = next(i for i, l in enumerate(lines) if l.startswith('[queue] depth-refused:'))
+        totals = next(i for i, l in enumerate(lines) if 'cities ok' in l)
+        assert condition < totals
+
+    def test_a_conditions_only_night_says_so_on_the_totals_line(self):
+        """The totals line must never read clean above an exit 1."""
+        results = [result('a'), conditioned('b', 'depth-refused', 'depth-breaker')]
+        totals = [ln for ln in scrape_queue.summarise(results, 1.0).splitlines() if 'cities ok' in ln][0]
+
+        assert scrape_queue.exit_code_for(results) == 1
+        assert '2/2 cities ok' in totals
+        assert 'conditions: depth-refused, depth-breaker' in totals
+
+    def test_the_queue_log_carries_them_at_error(self, tmp_path, fake_runner, journal, monkeypatch,
+                                                 fleet_in_step):
+        """`grep ERROR scrape_queue.log` has to agree with the exit code."""
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS_BRAVO_BB', 'depth-refused=HTTP 429')
+
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        log = (tmp_path / 'store' / 'scrape_queue.log').read_text()
+        assert re.search(r' ERROR depth-refused: .*first bravo-bb', log), log
+        # The per-city line too: an ok exit with a condition is still the night's failure.
+        assert re.search(r' ERROR bravo-bb: ok \(exit 0\).*; conditions: depth-refused', log), log
+
+
+class TestAConditionIsNotAnOutcome:
+    """D1: a city with conditions stays `ok` on every axis but the exit code - so a backlog city whose depth
+    phase stood down still gets the leftover window (the #43 regression a condition must not cause), and its
+    host still counts as seen up for the roster check."""
+
+    def test_a_backlog_city_with_a_condition_is_still_re_run(self, monkeypatch):
+        clock = FakeClock()
+        monkeypatch.setattr(scrape_queue, 'time', clock)
+        calls = []
+
+        def run_one(city, store_root, python_exe, runner_path, budget, *a, **k):
+            calls.append(city.city_id)
+            clock.now += budget * 60.0
+            backlog = city.city_id == 'alpha' and calls.count('alpha') == 1
+            return scrape_queue.CityResult(
+                city.city_id, 'ok', 0, budget * 60.0,
+                stop_reasons={'image_stop': 'max-runtime' if backlog else None, 'depth_stop': 'blocked'},
+                conditions=(scrape_queue.Condition('depth-stood-down', 'latch set 1.0h ago'),))
+
+        results = scrape_queue.run_queue([scrape_queue.City('alpha', 'ha'), scrape_queue.City('bravo', 'hb')],
+                                         '/store', 'py', 'r.py', [], max_runtime_minutes=100,
+                                         city_max_runtime=12, run_one=run_one)
+
+        assert calls == ['alpha', 'bravo', 'alpha'], 'the image backlog earns pass 2 whatever the conditions'
+        assert [r.pass_number for r in results] == [1, 1, 2]
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_a_conditioned_ok_city_still_counts_as_its_host_seen_up(self):
+        manifest = cities(('a', 'ha'), ('b', 'hb'))
+        results = [result('a'), conditioned('b', 'depth-refused')]
+
+        assert scrape_queue.roster_hosts(manifest, results) == ['hb', 'ha']
+
+
+# --- The store marker (#161) ----------------------------------------------------------------------------------
+#
+# An unmounted or wrongly mounted store used to be scraped into: main() ran os.makedirs(store_root) and every
+# city found no ledgers, re-downloaded its corpus onto the 30 GiB root disk and exited 0, hidden once the mount
+# returned. The operator creates <store-root>/.pano-store once, ON the remote store, so it is present exactly
+# when the store is mounted - positive evidence, where os.path.ismount is neither necessary nor sufficient.
+
+class TestTheQueueRefusesAStoreWithoutItsMarker:
+
+    def test_an_unmarked_store_exits_five_having_run_and_written_nothing(self, tmp_path, fake_runner, journal,
+                                                                         capsys):
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, mark=False)
+
+        assert code == scrape_queue.EXIT_STORE_NOT_MARKED == 5
+        assert journal.read() == [], 'no city may start'
+        assert not (tmp_path / 'store').exists(), 'the absent store root must not be created'
+        assert not list(tmp_path.rglob('scrape_queue.log')), 'nothing may be written, not even the log'
+        err = capsys.readouterr().err
+        assert os.path.join(str(tmp_path / 'store'), '.pano-store') in err
+        assert 'docs/ops.md#the-store-marker' in err
+
+    def test_an_existing_but_unmarked_directory_is_refused_too(self, tmp_path, fake_runner, journal):
+        """The shape an unmounted sshfs mount point actually has: an empty directory."""
+        (tmp_path / 'store').mkdir()
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, mark=False)
+
+        assert code == 5
+        assert journal.read() == []
+        assert list((tmp_path / 'store').iterdir()) == []
+
+    def test_the_refusal_comes_before_the_lock(self, tmp_path, fake_runner, journal):
+        """A queue that refuses must not also report a lock problem, nor hold the lock while it refuses."""
+        lock = str(tmp_path / 'q.lock')
+        with scrape_queue.exclusive_lock(lock):
+            code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--lock', lock, mark=False)
+
+        assert code == 5
+
+    def test_a_directory_named_like_the_marker_is_not_a_marker(self, tmp_path):
+        (tmp_path / scrape_queue.STORE_MARKER).mkdir()
+
+        assert not scrape_queue.store_is_marked(str(tmp_path))
+
+    def test_a_marked_store_runs(self, tmp_path, fake_runner, journal, fleet_in_step):
+        assert run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate') == 0
+        assert len([line for line in journal.read() if line.startswith('START')]) == 3
+
+
+class TestAStoreThatGoesAwayMidNight:
+    """sshfs can drop at 02:00. The check repeats before every city, so the cities after the drop are not
+    scraped onto the root disk, and later ones still run if the mount comes back."""
+
+    def test_the_cities_after_the_drop_are_booked_store_missing(self, tmp_path, fake_runner, journal,
+                                                                  monkeypatch, fleet_in_step, capsys):
+        monkeypatch.setenv('QUEUE_TEST_UNMOUNT_ALPHA_AA', '1')
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        starts = [line.split()[1] for line in journal.read() if line.startswith('START')]
+        assert starts == ['alpha-aa'], 'no city may start once the marker is gone'
+        assert code == 1
+        grouped = [line for line in out.splitlines() if line.startswith('[queue] STORE_MISSING')]
+        assert len(grouped) == 1 and 'bravo-bb' in grouped[0] and 'charlie-cc' in grouped[0], out
+        assert '2 not started (store not mounted)' in out
+        # And one line per city as it happens, which is what the mail shows if the night dies before its
+        # summary.
+        assert '[queue] bravo-bb: NOT STARTED - the store is not mounted' in out
+
+    def test_a_city_after_the_mount_returns_still_runs(self, tmp_path):
+        """The check is per city, not a latch: a mount that comes back is used."""
+        cities = [scrape_queue.City(c, 'h') for c in ('alpha', 'bravo', 'charlie')]
+        mounted = iter([True, False, True])
+        ran = []
+
+        def run_one(city, *a, **k):
+            ran.append(city.city_id)
+            return scrape_queue.CityResult(city.city_id, 'ok', 0, 1.0)
+
+        results = scrape_queue.run_queue(cities, 'store', 'py', 'runner', [], run_one=run_one,
+                                         store_check=lambda: next(mounted))
+
+        assert ran == ['alpha', 'charlie']
+        assert [(r.city_id, r.outcome) for r in results] == [
+            ('alpha', 'ok'), ('bravo', 'store_missing'), ('charlie', 'ok')]
+
+    def test_the_extra_passes_check_it_too_and_never_re_run_a_missing_city(self, tmp_path, monkeypatch):
+        cities = [scrape_queue.City(c, 'h') for c in ('alpha', 'bravo')]
+        ran = []
+        mounted = [True]
+        # A finite window: each run spends its budget on the clock, and a call cap raises. With an instant
+        # run_one under a real 600-minute window, a regression here re-queued both cities forever - the test
+        # hung instead of failing, and CI has no pytest timeout to turn a hang into a red X (#174 review).
+        clock = FakeClock()
+        monkeypatch.setattr(scrape_queue, 'time', clock)
+
+        def run_one(city, store_root, python_exe, runner_path, budget, *a, **k):
+            ran.append(city.city_id)
+            if len(ran) > 4:
+                raise AssertionError('re-ran a city on an unmounted store: %s' % ran)
+            if len(ran) == 2:
+                mounted[0] = False  # the drop happens during bravo's pass-1 run
+            clock.now += budget * 60.0
+            return scrape_queue.CityResult(city.city_id, 'ok', 0, budget * 60.0,
+                                           stop_reasons={'image_stop': 'max-runtime', 'depth_stop': None})
+
+        checks = []
+
+        def store_check():
+            # Capped too: a booked store_missing city spends no clock, so a queue that kept re-queueing one
+            # would spin here without ever calling run_one.
+            checks.append(mounted[0])
+            if len(checks) > 8:
+                raise AssertionError('kept re-checking a city booked store_missing: %d checks' % len(checks))
+            return mounted[0]
+
+        results = scrape_queue.run_queue(cities, 'store', 'py', 'runner', [], max_runtime_minutes=600,
+                                         city_max_runtime=12, run_one=run_one, store_check=store_check)
+
+        assert ran == ['alpha', 'bravo'], 'no extra pass may start a city on an unmounted store'
+        assert [(r.city_id, r.outcome, r.pass_number) for r in results][2:] == [
+            ('alpha', 'store_missing', 2), ('bravo', 'store_missing', 2)]
+        assert scrape_queue.exit_code_for(results) == 1
+
+    def test_a_store_missing_city_is_never_re_run(self):
+        assert not scrape_queue.stopped_on_budget(scrape_queue.CityResult('a', 'store_missing', None, None, 12.0))
+
+    def test_store_missing_leads_the_summary(self):
+        results = [scrape_queue.CityResult('zulu', 'failed', 1, 60.0),
+                   scrape_queue.CityResult('alpha', 'store_missing', None, None),
+                   scrape_queue.CityResult('bravo', 'store_missing', None, None)]
+
+        lines = [l for l in scrape_queue.summarise(results, 1.0).splitlines() if l.startswith('[queue] ')]
+
+        assert lines[1].startswith('[queue] STORE_MISSING') and 'alpha, bravo' in lines[1]
+        assert lines[2].startswith('[queue] zulu')
+
+    def test_the_queue_log_carries_it_at_error(self, tmp_path, fake_runner, journal, monkeypatch):
+        monkeypatch.setenv('QUEUE_TEST_UNMOUNT_ALPHA_AA', '1')
+
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        log = (tmp_path / 'store' / 'scrape_queue.log').read_text()
+        assert re.search(r' ERROR STORE_MISSING', log), log
+        assert re.search(r' ERROR bravo-bb: store marker missing; not started', log), log
+
+
+class TestADryRunWarnsAboutAnUnmarkedStore:
+
+    def test_it_warns_and_keeps_its_exit_code(self, tmp_path, fake_runner, journal, capsys):
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', mark=False)
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert '[queue] WARNING:' in out and '.pano-store' in out and 'exit 5' in out
+
+    def test_a_marked_store_gets_no_warning(self, tmp_path, fake_runner, journal, capsys):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run')
+
+        assert '.pano-store' not in capsys.readouterr().out
+
+
+class TestADryRunProbesStreetlevel:
+    """(d) of #161, advisory: a dry run before a deploy should say that the cities' interpreter cannot import
+    streetlevel, rather than leave it to the night's `depth-unavailable` lines."""
+
+    def test_an_unimportable_streetlevel_is_a_warning_and_keeps_the_exit_code(
+            self, tmp_path, fake_runner, journal, capsys, streetlevel_probe):
+        streetlevel_probe.answer = (False, "ModuleNotFoundError: No module named 'streetlevel'")
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run')
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert '[queue] WARNING: streetlevel is not importable' in out and 'ModuleNotFoundError' in out
+        assert streetlevel_probe.calls == [sys.executable], 'the probe runs in the CITIES\' interpreter'
+
+    def test_an_importable_streetlevel_says_nothing(self, tmp_path, fake_runner, journal, capsys,
+                                                    streetlevel_probe):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run')
+
+        assert 'streetlevel is not importable' not in capsys.readouterr().out
+        assert streetlevel_probe.calls == [sys.executable]
+
+    def test_it_is_skipped_when_depth_is(self, tmp_path, fake_runner, journal, streetlevel_probe):
+        run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--', '--skip-depth')
+
+        assert streetlevel_probe.calls == []
+
+    def test_the_nightly_path_never_probes(self, tmp_path, fake_runner, journal, streetlevel_probe):
+        """The runner reports depth-unavailable itself, in the real cron environment; a probe here would
+        only add a child process to every night."""
+        run_main(tmp_path, three_cities(tmp_path), fake_runner)
+
+        assert streetlevel_probe.calls == []
+
+
+class TestTheStreetlevelProbeItself:
+
+    def test_an_interpreter_that_cannot_start_is_a_failed_probe(self, tmp_path):
+        ok, detail = REAL_PROBE(str(tmp_path / 'no-python'))
+
+        assert not ok and detail
+
+    def test_a_failing_import_reports_its_last_line(self, monkeypatch):
+        def run(argv, **kwargs):
+            assert argv[1:] == ['-c', 'from streetlevel import streetview']
+            return SimpleNamespace(returncode=1, stdout=b"Traceback...\nImportError: half-written\n")
+
+        monkeypatch.setattr(scrape_queue.subprocess, 'run', run)
+
+        assert REAL_PROBE('py') == (False, 'ImportError: half-written')
+
+    def test_a_clean_import_is_ok(self, monkeypatch):
+        monkeypatch.setattr(scrape_queue.subprocess, 'run', lambda argv, **k: SimpleNamespace(returncode=0,
+                                                                                               stdout=b''))
+
+        assert REAL_PROBE('py') == (True, '')
+
+    def test_a_probe_that_times_out_is_a_failed_probe_not_a_raise(self, monkeypatch):
+        """"Never raises" covers a hung import too - a half-mounted venv on the store is the likely one."""
+        def run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get('timeout'))
+
+        monkeypatch.setattr(scrape_queue.subprocess, 'run', run)
+
+        ok, detail = REAL_PROBE('py', timeout=1)
+        assert not ok and 'timed out' in detail
 
 
 # --- The manifest is cross-checked against the fleet (#130) -------------------------------------------------
@@ -2484,7 +3208,7 @@ class TestDryRunCrossChecksToo:
         lock = str(tmp_path / 'q.lock')
         with scrape_queue.exclusive_lock(lock):
             code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--dry-run', '--no-rotate',
-                            '--lock', lock)
+                            '--lock', lock, mark=False)
 
         out = capsys.readouterr().out
         assert code == 1

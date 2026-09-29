@@ -10,12 +10,14 @@ import asyncio
 import base64
 import collections
 import contextlib
+import contextvars
 import csv
 import json
 import logging
 import math
 import os
 import random
+import re
 import stat
 import struct
 import tempfile
@@ -108,6 +110,22 @@ def _get_response(url, session, stream=False):
                            stream=stream)
     if not stream:
         return response
+    # The streamed path is the two probes (_probe_zoom, frame_covers_pano), and both read a black
+    # body as a verdict: "retired" (ledgered downloaded=0, never re-asked) and "the frame covers the pano".
+    # Google answers both of those with a black 200, so only a 200 is evidence (#166 option b, the #99 rule).
+    # `== 200`, not raise_for_status(): a 206 or a final 3xx is no more evidence than a 403. The raise is
+    # transient wherever it lands. 429/5xx should normally not reach here, since the adapter's Retry owns
+    # them and an exhausted retry raises; if one does, this raises it like any other non-200.
+    if response.status_code != 200:
+        response.close()     # close it; nothing will read this body
+        raise requests.HTTPError('cbk probe answered %s, not 200: %s' % (response.status_code, url),
+                                 response=response)
+    # A 200 that landed on Google's interstitial is a captcha page, not a tile: raised with its Response, so
+    # pushback_reason reads it as the refusal it is rather than PIL failing on HTML (#162).
+    landing_url = _interstitial_url(_requests_response_urls(response))
+    if landing_url is not None:
+        response.close()
+        raise requests.HTTPError('cbk probe landed on %s: %s' % (landing_url, url), response=response)
     return response.raw
 
 
@@ -129,6 +147,163 @@ _CBK_BASE_URL = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&onerr
 # ClientHttpProxyError all derive from ClientError. asyncio.TimeoutError does NOT, though, so a plain request
 # timeout used to get zero retries - and now that one failed tile fails the whole pano, that costs a download.
 _TILE_RETRY_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError)
+
+# How a tile answer is treated (#162). Before this, every ClientError - a 429 and a 403 included - was retried
+# 10 times with uncapped exponential backoff: 5,120 requests and ~1 MB of scrape.log per refused 16384-wide
+# pano, which is a soft refusal being escalated by the client. Now:
+#   * 429/403, or a landing URL carrying one of _BLOCK_URL_MARKERS, is PUSH-BACK: raised as TilePushbackError,
+#     which is not in _TILE_RETRY_ERRORS, so backoff never sees it. (The URL markers are the depth phase's
+#     _raise_if_blocked rule applied by analogy; no CBK interstitial has been observed.)
+#   * any other 4xx except 408 is this pano's problem, not weather: not retried (_tile_error_is_final), and
+#     not push-back either. Every retired pano measured answers 200 with an all-black body, never a 4xx.
+#   * 5xx, 408, timeouts, connection errors and a wrong Content-Type are retried, TILE_MAX_TRIES times, each
+#     wait capped at TILE_RETRY_MAX_WAIT seconds, and no retry once the tile has spent TILE_RETRY_MAX_SECONDS
+#     of its own time - since its first attempt, less every wait for a fan-out slot, on retries too (see
+#     _tile_retry_budget_spent).
+# The two limits are read at call time (see _tile_retry_waits and the decorator), so a test can zero them.
+TILE_PUSHBACK_STATUSES = frozenset((403, 429))
+TILE_MAX_TRIES = 10
+TILE_RETRY_MAX_WAIT = 32
+TILE_RETRY_MAX_SECONDS = 120
+# (_BLOCK_URL_MARKERS, the interstitial substrings, is defined once with the depth phase's constants below and
+# read by _fetch_tile at call time.)
+
+
+class TilePushbackError(Exception):
+    """Google refused a tile - an HTTP 429 or 403, or a redirect onto its interstitial - rather than failing it.
+
+    Deliberately NOT an aiohttp.ClientError, so the tile's backoff decorator cannot retry it: asking again is
+    how a soft refusal is escalated into a ban. `requested`/`total` are filled in by fetch_pano_image once the
+    fan-out has been abandoned, so the one scrape.log line the image loop writes says how much was spent.
+    """
+
+    def __init__(self, status, x, y, requested=None, total=None, landing_url=None):
+        super().__init__(status, x, y)
+        self.status = status
+        self.x = x
+        self.y = y
+        self.requested = requested
+        self.total = total
+        self.landing_url = landing_url
+
+    @property
+    def reason(self):
+        """The short cause the image loop's log line carries in parentheses: `HTTP 429`, or `interstitial`."""
+        return 'interstitial' if self.landing_url else 'HTTP %d' % (self.status,)
+
+    def __str__(self):
+        if self.landing_url:
+            message = 'tile (%d, %d) landed on %s' % (self.x, self.y, self.landing_url)
+        else:
+            message = 'tile (%d, %d) answered HTTP %d' % (self.x, self.y, self.status)
+        if self.requested is not None and self.total is not None:
+            message += '; %d of %d tile requests made, the rest abandoned' % (self.requested, self.total)
+        return message
+
+
+def _tile_error_is_final(e):
+    """backoff's giveup predicate: an HTTP 4xx other than 408 will not get better by asking again.
+
+    A Content-Type failure carries the response's own status (200), so it stays retryable - CBK intermittently
+    answers with a non-image body (tests/test_gsv_tile_contract.py's _live_get). 429 and 403 never reach here:
+    _fetch_tile has already turned them into TilePushbackError, which the decorator does not catch.
+    """
+    return isinstance(e, aiohttp.ClientResponseError) and 400 <= e.status < 500 and e.status != 408
+
+
+class _TileClock:
+    """One tile's retry-budget clock: when its first attempt began, and how long it has since queued for a slot."""
+
+    __slots__ = ('tile', 'started', 'slot_wait')
+
+    def __init__(self, tile):
+        self.tile = tile
+        self.started = time.monotonic()
+        self.slot_wait = 0.0
+
+
+# This task's _TileClock. A context variable because every tile is its own task (ensure_future copies the
+# context), so each task gets its own value, and backoff's retries run in that same task and see it. The clock
+# names its tile, so a task that ever fetched two DIFFERENT tiles in turn starts a fresh clock for the second
+# rather than carrying the first one's into its budget.
+_TILE_CLOCK = contextvars.ContextVar('_TILE_CLOCK', default=None)
+
+
+def _tile_clock(tile):
+    """This task's clock for `tile`, started now if the task has none for it yet."""
+    clock = _TILE_CLOCK.get()
+    if clock is None or clock.tile != tile:
+        clock = _TileClock(tile)
+        _TILE_CLOCK.set(clock)
+    return clock
+
+
+def _tile_retry_budget_spent():
+    """True once this tile has spent TILE_RETRY_MAX_SECONDS of its OWN time (#172 review, ops 2; final MINOR 1).
+
+    Its own time is the time since its first attempt began, less every wait for a fan-out slot - the first one
+    and every retry's. Not backoff's max_time, whose clock starts when the decorated call does: all 512 tile
+    tasks start at t=0 and then queue for a slot, so on a slow fan-out the queue alone spent the late tiles'
+    budget. Excluding only the first wait was not enough either: each retry queues again, behind every tile
+    not yet started (the Semaphore wakes in order), so an EARLY tile that failed lost its retries instead -
+    at 512 tiles, 8 slots and 2 s a tile, one re-queue is ~128 s against a 120 s budget. What is left counts:
+    the requests themselves and backoff's waits between them. Checked after each failed attempt, like
+    max_time, so the last wait may overshoot by up to one capped wait; a single attempt is bounded
+    separately, by aiohttp's own per-request timeout.
+    """
+    clock = _TILE_CLOCK.get()
+    return clock is not None and time.monotonic() - clock.started - clock.slot_wait >= TILE_RETRY_MAX_SECONDS
+
+
+def _tile_should_give_up(e):
+    """backoff's giveup predicate: the error will not get better by asking again, or the tile is out of time."""
+    return _tile_error_is_final(e) or _tile_retry_budget_spent()
+
+
+def _tile_retry_waits():
+    """backoff's wait generator: exponential, each wait capped at TILE_RETRY_MAX_WAIT seconds.
+
+    A generator function rather than `backoff.expo` with `max_value=` so the cap is read when a tile starts
+    retrying, not when the module was imported - that is what lets a test zero it. `yield from` forwards the
+    priming send() backoff 2.x makes (and 1.x's plain next()) straight to expo.
+    """
+    yield from backoff.expo(max_value=TILE_RETRY_MAX_WAIT)
+
+
+class _TileAbandonedError(Exception):
+    """A tile never requested, because another tile of the same pano had already been refused (#162)."""
+
+
+class _TileFanOut:
+    """One pano's fan-out state, shared by every tile task: the concurrency slot, and what the tiles saw.
+
+    `slot` bounds requests in flight to thread_count, like the connector, but it is what lets the refusal
+    check sit AFTER a task gets its turn - all 512 tasks start at t=0, so a check at task start would see
+    nothing refused yet and every one would go on to send. `requests` counts requests actually made,
+    `retries` the backoff retries (backoff itself no longer logs), `refused` the first TilePushbackError.
+    """
+
+    def __init__(self):
+        self.slot = None
+        self.requests = 0
+        self.retries = 0
+        self.refused = None
+
+
+# Why a context variable rather than a parameter: `_download_tiles(tiles)` and `_download_tile(session, tile)`
+# are replaced by stubs of exactly those signatures across the suite (stub_tiles, TestTheTileFanOutContract,
+# test_image_downloaders.py), so threading a state object through them would break every one. fetch_pano_image
+# sets it around asyncio.run; asyncio.run and ensure_future copy the context, so every tile task sees the same
+# _TileFanOut object. When it is unset - _fetch_tile or _download_tile driven directly - behaviour is exactly
+# what it was before #162: no slot, no counting, no abandonment.
+_TILE_FANOUT = contextvars.ContextVar('_TILE_FANOUT', default=None)
+
+
+def _count_tile_retry(details):
+    """backoff's on_backoff handler: count the retry on this pano's fan-out, in place of backoff's log line."""
+    fanout = _TILE_FANOUT.get()
+    if fanout is not None:
+        fanout.retries += 1
 
 # A stitched frame with more black than this is not imagery, it is a grid bug. Nothing below the stitch can
 # see one: an out-of-range tile is answered 200 OK with a valid ALL-BLACK image/jpeg (pinned on real bytes in
@@ -190,20 +365,69 @@ async def _fetch_tile(session, tile):
 
     Undecorated so tests can drive it without backoff's sleeps; _download_tile below is the retrying variant
     the fan-out uses.
+
+    A refusal - HTTP 429/403 (raised by the session's raise_for_status on entering the request), or a landing
+    URL on Google's interstitial - becomes TilePushbackError, which backoff does not catch (#162). Inside a
+    pano's fan-out (_TILE_FANOUT set) the first refusal also abandons every tile not yet requested.
     """
+    fanout = _TILE_FANOUT.get()
+    clock = _tile_clock(tile)
+    if fanout is None or fanout.slot is None:
+        return await _request_tile(session, tile)
+    queued_at = time.monotonic()
+    async with fanout.slot:
+        # Every wait for a slot is the fan-out's time, not this tile's (_tile_retry_budget_spent).
+        clock.slot_wait += time.monotonic() - queued_at
+        # After taking the slot, never before: see _TileFanOut.
+        if fanout.refused is not None:
+            raise _TileAbandonedError('tile (%d, %d) not requested: %s' % (tile[0], tile[1], fanout.refused))
+        fanout.requests += 1
+        try:
+            return await _request_tile(session, tile)
+        except TilePushbackError as e:
+            if fanout.refused is None:
+                fanout.refused = e
+            raise
+
+
+async def _request_tile(session, tile):
+    """The one HTTP request behind _fetch_tile, and the translation of Google's refusal into push-back."""
     x, y, url = tile
-    async with session.get(url, proxy=_proxies.get("http"), headers=_random_header()) as response:
-        # .get(), not [..]: a response with no Content-Type must raise the same retryable error as a wrong
-        # one, not a bare KeyError that is in neither backoff tuple (#45).
-        content_type = response.headers.get('Content-Type', '')
-        if content_type[0:10] != "image/jpeg":
-            raise aiohttp.ClientResponseError(
-                response.request_info, response.history, status=response.status,
-                message="unexpected Content-Type %r for tile (%d, %d)" % (content_type, x, y))
-        return x, y, await response.content.read()
+    try:
+        async with session.get(url, proxy=_proxies.get("http"), headers=_random_header()) as response:
+            # Before the Content-Type check: an interstitial is also not image/jpeg, and that check raises a
+            # RETRYABLE error - the one answer to push-back this module must never give.
+            landing_url = str(response.url)
+            if any(marker in landing_url for marker in _BLOCK_URL_MARKERS):
+                raise TilePushbackError(response.status, x, y, landing_url=landing_url)
+            # .get(), not [..]: a response with no Content-Type must raise the same retryable error as a wrong
+            # one, not a bare KeyError that is in neither backoff tuple (#45).
+            content_type = response.headers.get('Content-Type', '')
+            if content_type[0:10] != "image/jpeg":
+                raise aiohttp.ClientResponseError(
+                    response.request_info, response.history, status=response.status,
+                    message="unexpected Content-Type %r for tile (%d, %d)" % (content_type, x, y))
+            return x, y, await response.content.read()
+    except aiohttp.ClientResponseError as e:
+        if e.status in TILE_PUSHBACK_STATUSES:
+            raise TilePushbackError(e.status, x, y) from e
+        # The session raises for any non-2xx landing while the request is being ENTERED, so the in-context
+        # check above only ever sees a 2xx one. An interstitial served as 503 (or anything else) lands here,
+        # and without this it would be retried: 10 tries x (redirect + landing) per tile (#172 review).
+        landing_url = _interstitial_url(_aiohttp_error_urls(e))
+        if landing_url is not None:
+            raise TilePushbackError(e.status, x, y, landing_url=landing_url) from e
+        raise
 
 
-_download_tile = backoff.on_exception(backoff.expo, _TILE_RETRY_ERRORS, max_tries=10)(_fetch_tile)
+# logger=None: backoff's own handlers wrote one INFO line per retry and one ERROR per give-up - 5,120 lines
+# for one refused pano. Capping the 'backoff' logger at WARNING would still have left the 512 ERROR lines, so
+# the decorator logs nothing and each pano owns its one line (fetch_pano_image, or the image loop for a
+# refusal). The time budget is in the giveup predicate, not max_time, so it can leave out every wait for a
+# fan-out slot, first request and retries alike (_tile_retry_budget_spent), and is read at call time.
+_download_tile = backoff.on_exception(_tile_retry_waits, _TILE_RETRY_ERRORS, max_tries=TILE_MAX_TRIES,
+                                      giveup=_tile_should_give_up,
+                                      on_backoff=_count_tile_retry, logger=None)(_fetch_tile)
 
 
 async def _download_tiles(tiles):
@@ -213,6 +437,10 @@ async def _download_tiles(tiles):
     return_exceptions=True nothing propagates out of the gather anyway - the decorator this replaces could
     never fire for tile errors and only re-ran connector construction, re-downloading every tile (#45).
     """
+    fanout = _TILE_FANOUT.get()
+    if fanout is not None:
+        # Built here, inside the running loop, because a Semaphore belongs to the loop that first waits on it.
+        fanout.slot = asyncio.Semaphore(thread_count)
     conn = aiohttp.TCPConnector(limit=thread_count)
     async with aiohttp.ClientSession(raise_for_status=True, connector=conn) as session:
         tasks = [asyncio.ensure_future(_download_tile(session, tile)) for tile in tiles]
@@ -314,17 +542,10 @@ def _stitch_tiles(tile_results, zoom_dims, final_dims):
     return image
 
 
-def _black_fraction(image):
-    """Exact fraction of black pixels in the frame, via the luma histogram.
-
-    Counted over every pixel rather than a downsampled probe, and by histogram rather than a numpy array so
-    it stays a C-level pass with no second copy of a 16384x8192 frame. Both alternatives to an exact count
-    are wrong in a way that matters here: an averaging downscale blends a black region into its neighbours
-    and reports "slightly dark" for a frame that is three-quarters missing, while a NEAREST probe aliases on
-    exactly the sort of regular black/imagery pattern a tiling bug produces.
-    """
-    luma = image.convert('L')
-    return luma.histogram()[0] / float(luma.width * luma.height)
+# Moved to downloaders/common.py with #164, so CropRunner can judge a cut window with the same primitive
+# without importing this module. The alias keeps refetch_panos and the stitcher/tile-contract tests on the
+# name they already use; it is the same function object, not a copy.
+_black_fraction = common.black_fraction
 
 
 def _reject_mostly_black_stitch(image, pano_id, zoom):
@@ -354,40 +575,83 @@ def _reject_mostly_black_stitch(image, pano_id, zoom):
 StitchedPano = collections.namedtuple('StitchedPano', ['image', 'undersized_tiles', 'upscaled'])
 
 
-def resolve_zoom_and_dims(pano_info):
-    """(width, height, zoom) for `pano_info`, or None when there is nothing to download.
+# --- the zoom decision: photometa-reported levels first, the two-tile probe as the fallback (#74) --------------
 
-    None is a PERMANENT verdict about the pano, and covers both of its causes: no reported dimensions (there
-    is no other source for them, so asking again tomorrow asks the same question), and a black tile at both
-    zoom 5 and zoom 3, which is what Google answers for a pano id it no longer serves. Neither is a transient
-    condition, so callers ledger it rather than retrying. A network failure here still RAISES, and stays
-    transient.
+# What photometa reports about a pano's pyramid: `sizes[k]` is the (width, height) served at zoom k, lowest
+# first, and `tile_size` the (w, h) of one tile body. On the wire that is msg[2][3][0] as one [[h, w]] per level
+# and msg[2][3][1] as [w, h] - measured 2026-09-26, and the same reading as streetlevel's parse_panorama_message
+# (pinned against it in tests/test_streetlevel_api.py).
+ImageLevels = collections.namedtuple('ImageLevels', ['sizes', 'tile_size'])
 
-    Costs up to two HTTP requests, and none at all when the dimensions are missing.
+# resolve_frame's answer.
+#   width, height - the caller's frame (the app's /adminapi/panos dims), never Google's: it is what gets saved.
+#   zoom          - the level to fetch.
+#   consistent    - whether the grid the caller's frame implies at `zoom` is exactly a level Google reports
+#                   (choose_zoom). Always True when the probe answered, which cannot tell.
+#   served_dims   - Google's top level, or None when the probe answered.
+#   evidence      - 'photometa' or 'probe'.
+#   refusal       - why photometa's answer is not stitchable, when consistent is False: 'frame' (no reported
+#                   level is the caller's grid) or 'tile_size' (the levels are not cut in 512 px tiles). None
+#                   otherwise, including on the probe arm, whose frame check is download_single_pano's.
+ResolvedFrame = collections.namedtuple('ResolvedFrame',
+                                       ['width', 'height', 'zoom', 'consistent', 'served_dims', 'evidence',
+                                        'refusal'], defaults=(None,))
+
+
+class FrameDisagreementError(Exception):
+    """The pano Google serves is not the frame the caller asked for, so stitching it would save a crop.
+
+    Three ways to know that: photometa's reported levels do not admit the frame, photometa's tiles are not
+    512 px, or - when the probe answered instead of photometa - a tile past the frame's grid has imagery
+    (frame_covers_pano). The message names which, after the words "frame disagreement", which is what
+    to grep scrape.log for.
+
+    Raised by download_single_pano - never by resolve_frame or resolve_zoom_and_dims - so it is TRANSIENT
+    under the #41 ledger: counted in tonight's failures, not ledgered, re-attempted next run at the cost of one
+    photometa request (or four probe requests on the fallback). Deliberately not a permanent verdict: the
+    app's frame can catch up (a SidewalkWebpage gsv_data refresh is the remedy), and a permanent verdict on a
+    brand-new evidence source, for a source with no breaker, is the wrong default.
     """
-    pano_id = pano_info['pano_id']
-    pano_dims = (pano_info.get('width'), pano_info.get('height'))
-    final_image_width = int(pano_dims[0]) if pano_dims[0] is not None else None
-    final_image_height = int(pano_dims[1]) if pano_dims[1] is not None else None
 
-    # There is no legacy-XML path here any more (#52 items 3/4/5). It read a `<pano_id>.xml` for dims and
-    # zoom; #39 removed the downloader that wrote those (cbk?output=xml died in 2022), so the files on the
-    # store are frozen 2022 metadata. It could only ever run for a pano with an .xml and NO .jpg - the
-    # caller's skip check returns first - which is 1 of the 1,025 .xml files sampled across dc, columbus-oh,
-    # amsterdam and newberg-or. On that one pano it did harm: a declared num_zoom_levels was trusted over
-    # the probe and test-fetched, and a black tile returned DownloadResult.failure, which is PERMANENT
-    # under the #41 ledger. So stale 2022 metadata could blacklist a pano Google still serves.
 
-    # Without dims we cannot size the tile grid. Checked before the session is opened, so this case costs
-    # nothing.
-    if final_image_width is None or final_image_height is None:
-        return None
+def choose_zoom(sizes, width, height):
+    """(zoom, consistent) for fetching a (width, height) frame from a pano whose levels are `sizes`.
 
-    # Session scoped to the zoom/dimension probes; the tile fan-out uses its own aiohttp session. This runs
-    # once per pano, so leaving it unclosed would pile up connection pools until GC (#51).
+    The HIGHEST k for which _dims_at_zoom(width, height, k) == sizes[k] - i.e. the grid the stitcher would
+    request at k is exactly a level Google serves - with consistent=True. When no k qualifies the caller's frame
+    is not in this pano's pyramid at all: (len(sizes) - 1, False).
+
+    Why a consistency check and not "the top level": the stitcher derives its grid from the caller's frame, so
+    fetching the top level for a frame smaller than it returns the top-left corner of the pano at the frame's
+    exact dimensions - no black, no undersized tile, nothing downstream can see it. The probe this replaces did
+    exactly that for an 8192x4096 app frame on a pano Google serves at 16384x8192.
+
+    >>> choose_zoom([(512, 256), (1024, 512), (2048, 1024)], 2048, 1024)
+    (2, True)
+    >>> choose_zoom([(512, 256), (1024, 512), (2048, 1024)], 1024, 512)     # a lower level IS the frame
+    (1, True)
+    >>> choose_zoom([(512, 256), (1024, 512)], 2048, 1024)                  # truncated: a 2x upscale
+    (1, True)
+    >>> choose_zoom([(416, 208), (832, 416)], 1024, 512)                    # another family entirely
+    (1, False)
+    """
+    for zoom in range(len(sizes) - 1, -1, -1):
+        if _dims_at_zoom(width, height, zoom) == tuple(sizes[zoom]):
+            return zoom, True
+    return len(sizes) - 1, False
+
+
+def _probe_zoom(pano_id):
+    """The two blank-tile requests that picked every zoom before #74: 5, 3, or None (no imagery at either).
+
+    Kept verbatim as the fallback - for every photometa failure, for a fresh block latch, and for photometa's
+    "not found" - and so still the only evidence a PERMANENT None verdict may rest on (see resolve_frame).
+    Only a 200 is that evidence: _get_response raises requests.HTTPError, closing the response first, on any
+    other status (#166 option b), so a 403 or 404 with a black body is a transient failure, never None.
+    """
+    # Session scoped to the zoom probes; the tile fan-out uses its own aiohttp session. This runs once per
+    # pano, so leaving it unclosed would pile up connection pools until GC (#51).
     with _request_session() as session:
-        # The probe is now the only thing that picks a zoom, so it is unconditional - it used to sit behind
-        # `if zoom is None:` because the legacy XML could have set one already.
         url_zoom_3 = f'{_CBK_BASE_URL}&zoom=3&x=0&y=0&panoid={pano_id}'
         url_zoom_5 = f'{_CBK_BASE_URL}&zoom=5&x=0&y=0&panoid={pano_id}'
 
@@ -401,14 +665,294 @@ def resolve_zoom_and_dims(pano_info):
         # there is no imagery. So check at both zoom levels. How to check:
         # http://stackoverflow.com/questions/14041562/python-pil-detect-if-an-image-is-completely-black-or-white
         if im_zoom_5.convert("L").getextrema() != (0, 0):
-            zoom = 5
-        elif im_zoom_3.convert("L").getextrema() != (0, 0):
-            zoom = 3
-        else:
-            # Can't determine zoom.
-            return None
+            return 5
+        if im_zoom_3.convert("L").getextrema() != (0, 0):
+            return 3
+        # Can't determine zoom.
+        return None
 
-    return final_image_width, final_image_height, zoom
+
+# Returned by _photometa_levels when photometa could not answer (refused, failed, or skipped under a fresh
+# latch) - distinct from None, which is photometa's own "not found".
+_PHOTOMETA_UNANSWERED = object()
+
+# Consecutive non-refusal photometa failures after which the image phase stops asking for the rest of the run.
+# Each failure is not cheap: the photometa session's retry policy and 30 s timeout put a stalled endpoint at
+# ~3.5 minutes per NEW pano before the probe answers (measured at a 0.3 s timeout against a loopback socket that
+# never replies: six attempts and 33 s of back-off), so a 12-minute city slot would download about three panos.
+# 3 for MAX_CONSECUTIVE_UNDERSIZED's reason: one is a blip, three in a row is the endpoint.
+PHOTOMETA_MAX_CONSECUTIVE_FAILURES = 3
+
+# Where the image phase reads and writes this host's standing with Google, when not the host defaults.
+# DownloadRunner.run points them at --depth-block-latch / --depth-pace-state, so an operator who moves the
+# depth phase's host state moves the image phase's with it (#74 review item 6). None means the default path.
+image_block_latch_path = None
+image_pace_state_path = None
+
+
+def image_host_state_paths(block_latch_path=None, pace_state_path=None):
+    """(latch path, pace-state path) the image phase uses: explicit, else the module paths, else the host default.
+
+    The ONE resolution order, used by both halves of the image phase that touch this host's standing - photometa
+    (resolve_frame, which download_pano gives no path) and the push-back breaker (DownloadRunner's
+    download_panorama_images, which scopes the module paths to its answer for the loop). Two orders written
+    twice is how the two would come to read and write different files (#172 final review, cross-PR item 4).
+    Resolved at call time, so the suite's isolation of the defaults applies.
+    """
+    latch = block_latch_path if block_latch_path is not None else (
+        image_block_latch_path if image_block_latch_path is not None else default_block_latch_path())
+    pace = pace_state_path if pace_state_path is not None else (
+        image_pace_state_path if image_pace_state_path is not None else default_pace_state_path())
+    return latch, pace
+
+
+@contextlib.contextmanager
+def scoped_image_host_state(block_latch_path, pace_state_path):
+    """Point the module paths photometa reads at this pair for the duration, then put them back.
+
+    download_panorama_images wraps its loop in this, so a caller that hands it explicit paths gets photometa's
+    refusals written there too, not to whatever the module paths happened to be (#172 final review, item 4).
+    """
+    global image_block_latch_path, image_pace_state_path
+    saved = image_block_latch_path, image_pace_state_path
+    image_block_latch_path, image_pace_state_path = block_latch_path, pace_state_path
+    try:
+        yield
+    finally:
+        image_block_latch_path, image_pace_state_path = saved
+
+
+class _PhotometaRunMemory:
+    """What this process has learned about photometa's health for the image phase (#74 review items 4, 10).
+
+    Per process, deliberately, and so per city: scrape_queue runs every city as its own DownloadRunner
+    process. A fleet-wide photometa fault (a streetlevel change, a parse regression) is then paid for three
+    requests per city rather than once per new pano, and each city's stdout still says it happened. Google's
+    REFUSALS are a fact about the host and live in the block latch file, which is the cross-process record;
+    a refusal also sets given_up here, because _write_block_latch never raises and the file may not exist
+    afterwards (a --depth-block-latch in a missing directory, a full temp dir), and a run that relied on the
+    file alone would ask a host that just refused it once per new pano (#74 round two).
+    """
+
+    def __init__(self):
+        self.consecutive_failures = 0
+        self.given_up = False
+        self.announced = False
+
+
+_photometa_run = _PhotometaRunMemory()
+
+
+def _announce_probe_fallback(message):
+    """The first time this run the probe answers because photometa could not: one line on BOTH channels.
+
+    stdout because a fleet-wide photometa fault silently switches off the frame check photometa gives (the
+    probe arm's frame_covers_pano costs two more requests a pano) and is otherwise only per-pano detail in
+    scrape.log; scrape.log because it is what is still there next week. Once, because the cause is the same for
+    every pano after the first. A refusal announces itself with its own WARNING and counts as this line.
+    """
+    if _photometa_run.announced:
+        return
+    _photometa_run.announced = True
+    logging.warning("IMAGEDOWNLOAD: %s", message)
+    print("IMAGEDOWNLOAD: %s" % message)
+
+
+def _photometa_levels(pano_id, latch_path):
+    """ImageLevels, None (photometa: not found), or _PHOTOMETA_UNANSWERED. Never raises.
+
+    The image phase shares the depth phase's block latch - the FILE, not the pacer (#74). A fresh latch means
+    this host was refused recently, so photometa is not asked at all. A refusal met here writes the latch, so
+    every later pano this run reads it and skips photometa too (which is why the refusal WARNING prints once
+    per run), the depth phase later in the run stands itself down at zero requests, and the earned depth pace
+    is forfeited - both through record_google_refusal, the image breaker's own bookkeeper (#162).
+
+    A refusal is what pushback_reason calls one, or a DepthBlockedError: a 5xx storm exhausting the retry
+    policy is a RetryError too, and is weather, not a refusal (#172 final review) - it takes the
+    ordinary-failure arm. In practice a photometa 403 (or an interstitial) arrives as DepthBlockedError, because
+    the session's _raise_if_blocked hook raises it before streetlevel sees the body, and a 429 arrives as a
+    RetryError, since 429 is in the forcelist; streetlevel never calls raise_for_status, so pushback_reason's
+    HTTPError leg is not reached from here.
+
+    There is no pacer: one request per NEW pano, each followed by a 28-512 tile fan-out, is already slower
+    than the depth phase's own opening interval.
+
+    After PHOTOMETA_MAX_CONSECUTIVE_FAILURES failures in a row that are not refusals, or after one refusal
+    (whether or not the latch could be written), photometa is not asked again this run (_PhotometaRunMemory).
+    Every failure, refusal or fresh latch that puts a run on the probe says so once per run on stdout; a
+    "not found" does not, since a retired pano is ordinary and photometa did answer.
+    """
+    latched_hours = _block_latch_age_hours(latch_path)
+    if latched_hours is not None and latched_hours < DEPTH_BLOCK_LATCH_HOURS:
+        # No WARNING token: the depth phase's own stand-down line is this latch's alarm, and the image phase
+        # is still downloading. The line exists so stdout says why no pano asks photometa.
+        _announce_probe_fallback(
+            "block latch set %.1fh ago (%s): photometa is not asked and every zoom comes from the tile probe "
+            "(with its frame check) for the next %.1f hours - on every city this host runs, not just this one"
+            % (latched_hours, latch_path, DEPTH_BLOCK_LATCH_HOURS - latched_hours))
+        logging.info("IMAGEDOWNLOAD: pano %s: block latch set %.1fh ago (%s); zoom from the tile probe, "
+                     "photometa not asked", pano_id, latched_hours, latch_path)
+        return _PHOTOMETA_UNANSWERED
+    if _photometa_run.given_up:
+        logging.info("IMAGEDOWNLOAD: pano %s: photometa refused, or failed %d times in a row, earlier this run; "
+                     "zoom from the tile probe, photometa not asked", pano_id, PHOTOMETA_MAX_CONSECUTIVE_FAILURES)
+        return _PHOTOMETA_UNANSWERED
+    try:
+        # The photometa session (the depth phase's, without a pacer): same retry policy and timeout, and the
+        # _raise_if_blocked hook that turns an interstitial into DepthBlockedError.
+        with _depth_session() as session:
+            levels = _fetch_image_levels(pano_id, session)
+    except Exception as e:
+        # Deliberately broad, and then split on ONE predicate: Google refusing this host (pushback_reason's
+        # line, the same the image loop's breaker draws, or the hook's DepthBlockedError) latches; everything
+        # else - a network blip, a 5xx storm's RetryError, a non-JSON body (ValueError), an envelope that is not
+        # photometa's (DepthPayloadError), streetlevel missing (ImportError), or a shape nobody has seen yet -
+        # costs this pano the probe's four requests, never the pano itself, and never the fleet's standing.
+        if isinstance(e, DepthBlockedError) or pushback_reason(e) is not None:
+            _photometa_refused(pano_id, latch_path, e)
+        else:
+            _photometa_failed(pano_id, e)
+        return _PHOTOMETA_UNANSWERED
+    _photometa_run.consecutive_failures = 0
+    return levels
+
+
+def _photometa_refused(pano_id, latch_path, e):
+    """Google refused the photometa request: latch, forfeit the pace, give photometa up, say so on both channels.
+
+    Worded from record_google_refusal's return value, since the latch write never raises: a latch that did not
+    land stands neither this run's depth phase nor any later city down, and the WARNING must not claim it does.
+    """
+    _latch, pace_path = image_host_state_paths(latch_path)
+    written = record_google_refusal(latch_path, pace_path)
+    # In-process too: the latch write never raises, so it may have left no file behind.
+    _photometa_run.given_up = True
+    _photometa_run.announced = True
+    if written:
+        latch_said = "the depth phase will stand down (latch %s)" % (latch_path,)
+    else:
+        latch_said = ("the block latch %s could not be written, so neither this run's depth phase nor a later "
+                      "city will know" % (latch_path,))
+    # The same reach on both channels: the latch is what carries the refusal past this run.
+    reach = ("the next %g hours, on every city this host runs" % DEPTH_BLOCK_LATCH_HOURS
+             if written else "the rest of this run")
+    logging.error("IMAGEDOWNLOAD: pano %s: Google refused the photometa request (%s); taking the zoom from the "
+                  "tile probe for %s; %s", pano_id, str(e)[:200], reach, latch_said)
+    print("IMAGEDOWNLOAD: WARNING - Google refused a photometa request (%s). The zoom probe is used for %s, "
+          "and %s." % (str(e)[:200], reach, latch_said))
+
+
+def _photometa_failed(pano_id, e):
+    """Photometa did not answer, and it was not a refusal: count it, and give photometa up after three in a row.
+
+    Per-pano detail to scrape.log; the first one this run is also announced on stdout.
+    """
+    _photometa_run.consecutive_failures += 1
+    logging.warning("IMAGEDOWNLOAD: pano %s: photometa unavailable (%r); zoom from the tile probe", pano_id, e)
+    _announce_probe_fallback(
+        "WARNING - photometa did not answer for pano %s (%s); the zoom comes from the tile probe, with its "
+        "frame check, for every pano photometa cannot answer, and after %d failures in a row photometa is "
+        "not asked again this run" % (pano_id, repr(e)[:200], PHOTOMETA_MAX_CONSECUTIVE_FAILURES))
+    if _photometa_run.consecutive_failures >= PHOTOMETA_MAX_CONSECUTIVE_FAILURES:
+        _photometa_run.given_up = True
+        logging.warning("IMAGEDOWNLOAD: photometa failed %d times in a row; not asked again this run",
+                        _photometa_run.consecutive_failures)
+
+
+def resolve_frame(pano_info, block_latch_path=None, photometa=True):
+    """ResolvedFrame for `pano_info`, or None when there is nothing to download.
+
+    None is a PERMANENT verdict about the pano, and covers both of its causes: no reported dimensions (there
+    is no other source for them, so asking again tomorrow asks the same question), and a black tile at both
+    zoom 5 and zoom 3 ON 200 RESPONSES, which is what Google answers for a pano id it no longer serves. Neither
+    is a transient condition, so callers ledger it rather than retrying. A probe answered with any status but
+    200 RAISES requests.HTTPError, whatever its body (#166 option b), and so does a network failure; both stay
+    transient. Photometa never founds a None on its own (step 3), so the 200 rule is the whole of what a
+    permanent GSV verdict rests on, on either arm.
+
+    The decision (#74):
+      1. No dims: None, at zero requests.
+      2. Ask photometa, without the depth payload (16 KB), which levels the pano is served at, and pick the
+         zoom with choose_zoom. A frame no level admits comes back with consistent=False - reported, never
+         raised here: refetch_panos.py composes resolve_zoom_and_dims with its own frame gate, and the nightly
+         refusal is download_single_pano's policy.
+      3. Photometa "not found" does NOT become None on its own: the probe runs first, so a permanent verdict
+         rests on the same two black tiles it always has (plan decision D5 - GSV has no permanent-verdict
+         breaker, so a photometa fault answering "not found" would otherwise write off a city in a night).
+      4. Photometa refused, failed, or skipped under a fresh block latch: the probe answers, as it always did.
+
+    Costs one photometa request for a live pano, one photometa plus two probe requests for a retired one, two
+    probe requests under a fresh latch, and nothing at all when the dimensions are missing.
+
+    @param block_latch_path Where Google's refusals are remembered; None is image_block_latch_path, which
+                            DownloadRunner.run sets from --depth-block-latch, else the host default the depth
+                            phase also uses (default_block_latch_path) - plan decision D3, threaded through in
+                            review item 6 so the two phases can never read different latches.
+    @param photometa        False skips step 2 entirely: the probe answers, at zero photometa requests and
+                            with no read or write of the block latch. resolve_zoom_and_dims passes it, so
+                            refetch_panos.py keeps the decisions it made before #74 (review item 2).
+    """
+    pano_id = pano_info['pano_id']
+    pano_dims = (pano_info.get('width'), pano_info.get('height'))
+    width = int(pano_dims[0]) if pano_dims[0] is not None else None
+    height = int(pano_dims[1]) if pano_dims[1] is not None else None
+
+    # There is no legacy-XML path here any more (#52 items 3/4/5). It read a `<pano_id>.xml` for dims and
+    # zoom; #39 removed the downloader that wrote those (cbk?output=xml died in 2022), so the files on the
+    # store are frozen 2022 metadata. It could only ever run for a pano with an .xml and NO .jpg - the
+    # caller's skip check returns first - which is 1 of the 1,025 .xml files sampled across dc, columbus-oh,
+    # amsterdam and newberg-or. On that one pano it did harm: a declared num_zoom_levels was trusted over
+    # the probe and test-fetched, and a black tile returned DownloadResult.failure, which is PERMANENT
+    # under the #41 ledger. So stale 2022 metadata could blacklist a pano Google still serves.
+
+    # Without dims we cannot size the tile grid. Checked before anything is opened, so this case costs
+    # nothing.
+    if width is None or height is None:
+        return None
+
+    # The reported width is Google's own number and is in hand before any request, so the #121 tripwire runs
+    # here: a photometa request or probe that then fails transiently must not swallow the warning. It sits in
+    # resolve_frame rather than resolve_zoom_and_dims so the nightly path (download_single_pano) and refetch
+    # (through the wrapper) both reach it. An observation, never a gate.
+    common.warn_if_wider_than_viewer_ceiling(pano_id, width, 'gsv')
+
+    if photometa:
+        latch_path, _pace_path = image_host_state_paths(block_latch_path)
+        levels = _photometa_levels(pano_id, latch_path)
+    else:
+        levels = _PHOTOMETA_UNANSWERED
+    if levels is None or levels is _PHOTOMETA_UNANSWERED:
+        zoom = _probe_zoom(pano_id)
+        return None if zoom is None else ResolvedFrame(width, height, zoom, True, None, 'probe')
+
+    served_dims = tuple(levels.sizes[-1])
+    if tuple(levels.tile_size) != (TILE_SIZE, TILE_SIZE):
+        # The grid arithmetic assumes 512 px tiles throughout; a pano whose levels are cut differently is not
+        # one this stitcher can fetch correctly at any zoom.
+        logging.warning("IMAGEDOWNLOAD: pano %s: photometa reports %sx%s tiles, not %d", pano_id,
+                        levels.tile_size[0], levels.tile_size[1], TILE_SIZE)
+        return ResolvedFrame(width, height, len(levels.sizes) - 1, False, served_dims, 'photometa', 'tile_size')
+    zoom, consistent = choose_zoom(levels.sizes, width, height)
+    return ResolvedFrame(width, height, zoom, consistent, served_dims, 'photometa',
+                         None if consistent else 'frame')
+
+
+def resolve_zoom_and_dims(pano_info):
+    """(width, height, zoom) for `pano_info`, or None when there is nothing to download - the seam
+    refetch_panos.py composes, unchanged in contract AND in answers since #73: the zoom comes from the two-tile
+    probe alone, exactly as it did before #74. Photometa is never asked here, so this never reads or writes the
+    host's block latch.
+
+    Why not photometa (#74 review item 2): refetch replaces imagery that may be irreplaceable, and its
+    refusals are the feature. Photometa's level-matching would turn two of them into swaps - a stored
+    8192x4096 frame on a pano Google now serves at 16384 ('frame_grew' -> a native zoom-4 fetch) and a
+    five-level 5376x2688 pano ('upscaled' -> a native zoom-4 fetch). Both swaps may well be better imagery,
+    but changing what the repair pass does is a separate decision from the nightly zoom, not a side effect
+    of it. The probe's answer goes through refetch's own frame_covers_pano gate, which is what turns a frame
+    smaller than Google's into 'frame_grew'.
+    """
+    frame = resolve_frame(pano_info, photometa=False)
+    return None if frame is None else (frame.width, frame.height, frame.zoom)
 
 
 def frame_covers_pano(pano_id, width, height, zoom):
@@ -419,9 +963,10 @@ def frame_covers_pano(pano_id, width, height, zoom):
     on real bytes in tests/test_gsv_tile_contract.py), so imagery there means the real pano is larger than
     the frame we were about to fetch.
 
-    The nightly downloader never needs this: it sizes the grid from /adminapi/panos, which is Google's own
-    number for a pano Google is currently serving. refetch_panos.py does, because it fetches at the frame
-    the STORED file has, which is a scrape-time archive - and Google re-serves panos larger (measured at
+    The nightly downloader needs this only when the tile probe chose the zoom (_frame_refusal): when photometa
+    answers, its reported levels already say whether the app's frame is one of them. /adminapi/panos is not
+    always Google's current number (#74, #121). refetch_panos.py needs it for every pano, because it fetches
+    at the frame the STORED file has, which is a scrape-time archive - and Google re-serves panos larger (measured at
     4.6% of a sampled store, reports/2026-08-10-store-coverage.md). Fetching a 26x13 grid for a pano Google
     now holds at 32x16 does not return a smaller version of the pano; it returns the top-left 81% of it, at
     the stored file's exact dimensions, with no undersized tile and no black to give it away. That is a
@@ -434,7 +979,9 @@ def frame_covers_pano(pano_id, width, height, zoom):
     would proceed. That is why the x probe is taken on the grid's middle row rather than on row 0. Row 0 is
     the zenith cap - the one strip of a panorama where a uniformly black real tile is plausible - while the
     middle row is horizon-adjacent imagery, which never is. The y probe lands on ground rows for the same
-    reason. Both probes must come back blank for the frame to pass.
+    reason. Both probes must come back blank for the frame to pass. A probe answered with any status but 200
+    raises requests.HTTPError rather than reading as blank (#166 option b): before that, a 403 or 404 with a
+    black body was exactly this acceptance case.
     """
     tiles_x, tiles_y = _tile_grid(width, height, zoom)
     with _request_session() as session:
@@ -464,17 +1011,36 @@ def fetch_pano_image(pano_id, width, height, zoom):
     final_im_dimension = (width, height)
 
     tiles = _generate_tile_urls(pano_id, width, height, zoom)
-    results = asyncio.run(_download_tiles(tiles))
+    # The fan-out's shared state (#162) - see _TILE_FANOUT for why it rides in a context variable. Reset in a
+    # finally, so no later fan-out in this thread can inherit a refusal it did not see.
+    fanout = _TileFanOut()
+    token = _TILE_FANOUT.set(fanout)
+    try:
+        results = asyncio.run(_download_tiles(tiles))
+    finally:
+        _TILE_FANOUT.reset(token)
     ok, failed = _partition_tile_results(tiles, results)
     if failed:
+        refusals = [error for _cell, error in failed if isinstance(error, TilePushbackError)]
+        if refusals:
+            # Google refused us. Raised WITHOUT a log line: the image loop writes the one line a refused
+            # pano gets, naming the push-back, and this layer adding its own is how one refusal used to cost
+            # 5,120 lines (#162). The counts go on the exception so that one line says what was spent.
+            refusal = refusals[0]
+            refusal.requested, refusal.total = fanout.requests, len(tiles)
+            raise refusal
         # Fail the whole pano: a partial stitch would leave silently-black regions that downstream crops
         # can't detect - exactly the corruption #44 is about. Raise (rather than return failure) so the
         # failure is treated as transient: the tile that timed out today usually exists tomorrow, and under
         # #41's ledger semantics a raised pano is re-attempted next run instead of blacklisted.
         (x, y), first_error = failed[0]
-        logging.error("IMAGEDOWNLOAD: pano %s: %d/%d tiles failed; first failure: tile (%d, %d): %r",
-                      pano_id, len(failed), len(tiles), x, y, first_error)
+        logging.error("IMAGEDOWNLOAD: pano %s: %d/%d tiles failed after %d tile retries; first failure: "
+                      "tile (%d, %d): %r", pano_id, len(failed), len(tiles), fanout.retries, x, y, first_error)
         raise first_error
+    if fanout.retries:
+        # backoff no longer logs its retries, so this is the one place a pano that needed them says so - the
+        # earliest sign of trouble that is not yet a failure.
+        logging.info("IMAGEDOWNLOAD: pano %s: stitched after %d tile retries", pano_id, fanout.retries)
 
     degraded = _undersized_tile_count(ok)
     if degraded:
@@ -501,6 +1067,82 @@ def fetch_pano_image(pano_id, width, height, zoom):
     return StitchedPano(image, degraded, upscaled)
 
 
+# urllib3's ResponseError.SPECIFIC_ERROR, 'too many {status_code} error responses', as it reads inside the
+# RetryError requests raises when the zoom probe's retry policy is exhausted.
+_RETRY_STATUS_RE = re.compile(r'too many (\d{3}) error responses')
+
+
+def pushback_reason(exc):
+    """'HTTP 429' / 'HTTP 403' / 'interstitial' when `exc` is Google refusing this host; None otherwise (#162).
+
+    What the image loop's push-back breaker counts, so the line is drawn at GOOGLE'S OWN refusal and never at
+    this box's network: a timeout, a reset, a DNS failure is weather. Three shapes qualify:
+
+    * TilePushbackError - a tile answered 429/403 or landed on an interstitial, whatever status it wore.
+    * requests' RetryError from the zoom probe, whose urllib3 policy retries 429 and 5xx and gives up with
+      'too many N error responses'. It counts ONLY when N is in TILE_PUSHBACK_STATUSES - in practice 429,
+      since 403 is not in the forcelist and so never exhausts it (the 403 half is for the day it is). A 5xx
+      storm exhausting the policy is Google being ill, not Google refusing us - and a trip writes the
+      fleet-wide block latch, so reading an outage as a refusal would stand every city's depth phase down for
+      six hours. The image phase's photometa arm (#74) latches on this same line; the depth phase's own
+      `except (DepthBlockedError, RetryError)` is broader, and its latch predates this breaker (a
+      follow-up). A RetryError whose status cannot be read is None for the same reason. One that gave up
+      ON Google's interstitial (its message names the /sorry/ path or the consent host) is 'interstitial'
+      whatever its status: the landing is the refusal, and a 503 captcha page is not an outage.
+    * requests' HTTPError from the zoom probe, which since #166 raises for any status but 200 and carries
+      the Response. 403 is not in the retry policy's forcelist, so THIS is the shape a probe 403 arrives in:
+      it counts when the status is in TILE_PUSHBACK_STATUSES, or when the landing or any redirect hop
+      carries an interstitial marker. Any other status (404, 410, a 5xx the adapter handed back) is None.
+
+    Everything else - a tile 404 or 5xx, a mostly-black stitch, an OSError from the store - is None.
+    """
+    if isinstance(exc, TilePushbackError):
+        return exc.reason
+    if isinstance(exc, requests.exceptions.RetryError):
+        match = _RETRY_STATUS_RE.search(str(exc))
+        if match and int(match.group(1)) in TILE_PUSHBACK_STATUSES:
+            return 'HTTP %s' % (match.group(1),)
+        if _interstitial_url([str(exc)]) is not None:
+            return 'interstitial'
+        return None
+    if isinstance(exc, requests.HTTPError):
+        response = exc.response
+        if response is None:
+            return None
+        if response.status_code in TILE_PUSHBACK_STATUSES:
+            return 'HTTP %d' % (response.status_code,)
+        if _interstitial_url(_requests_response_urls(response)) is not None:
+            return 'interstitial'
+    return None
+
+
+def _interstitial_url(urls):
+    """The first of `urls` that carries one of Google's interstitial markers, or None. Read at call time."""
+    for url in urls:
+        if any(marker in url for marker in _BLOCK_URL_MARKERS):
+            return url
+    return None
+
+
+def _aiohttp_error_urls(e):
+    """Every URL a tile's ClientResponseError can name: the landing, each redirect hop, and each hop's
+    Location. Defensive about shape, because a test double (or a Content-Type failure) may carry less."""
+    urls = [str(getattr(getattr(e, 'request_info', None), 'real_url', '') or '')]
+    for hop in getattr(e, 'history', None) or ():
+        urls.append(str(getattr(hop, 'url', '') or ''))
+        urls.append(str((getattr(hop, 'headers', None) or {}).get('Location', '') or ''))
+    return urls
+
+
+def _requests_response_urls(response):
+    """The same for a requests Response: the landing, each redirect hop, and each hop's Location."""
+    urls = [str(response.url or '')]
+    for hop in response.history or ():
+        urls.append(str(hop.url or ''))
+        urls.append(str(hop.headers.get('Location', '') or ''))
+    return urls
+
+
 def _write_display_copy(image, out_image_name, pano_id):
     """The viewer's copy of a pano wider than it can texture (#115), beside the native file.
 
@@ -519,6 +1161,29 @@ def _write_display_copy(image, out_image_name, pano_id):
         logging.error("IMAGEDOWNLOAD: pano %s: display copy not written: %r", pano_id, e)
 
 
+def _frame_refusal(pano_id, frame):
+    """Why `frame` must not be stitched, as one line starting "frame disagreement", or None when it may be.
+
+    Photometa's two refusals are decided in resolve_frame, at no extra request. The probe arm cannot tell a
+    frame from a crop - it only asks whether zoom 5 or 3 has imagery at (0, 0) - so on that arm the frame is
+    checked here with frame_covers_pano: two more tile requests, spent only when photometa did not answer,
+    and before the fan-out. Without it every photometa failure, fresh block latch or "not found" would
+    stitch and permanently ledger exactly the crop a photometa refusal holds off (#74 review item 1).
+    """
+    served = '%dx%d' % frame.served_dims if frame.served_dims else None
+    if frame.refusal == 'frame':
+        return ("frame disagreement: the app's frame is %dx%d but Google serves this pano at %s, and no "
+                "reported level is that frame's tile grid" % (frame.width, frame.height, served))
+    if frame.refusal == 'tile_size':
+        return ("frame disagreement: photometa reports this pano (served at %s) in tiles that are not %d px, "
+                "so no tile grid this stitcher can request fits it" % (served, TILE_SIZE))
+    if frame.evidence == 'probe' and not frame_covers_pano(pano_id, frame.width, frame.height, frame.zoom):
+        return ("frame disagreement: the app's frame is %dx%d but a tile past its grid at zoom %d has "
+                "imagery, so Google serves this pano larger (zoom from the tile probe; photometa did not "
+                "answer)" % (frame.width, frame.height, frame.zoom))
+    return None
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
 
@@ -534,19 +1199,32 @@ def download_single_pano(storage_path, pano_info):
     filename = pano_id + ".jpg"
     out_image_name = os.path.join(destination_dir, filename)
 
-    # Skip download if image already exists. Before the probe on purpose: an image on disk is the resume
-    # marker, so a pano already downloaded must cost zero requests.
+    # Skip download if image already exists. Before photometa and the probe on purpose: an image on disk is the
+    # resume marker, so a pano already downloaded must cost zero requests.
     if os.path.isfile(out_image_name):
         return DownloadResult.skipped
 
-    resolved = resolve_zoom_and_dims(pano_info)
-    if resolved is None:
+    frame = resolve_frame(pano_info)
+    if frame is None:
         # No dims, or no imagery at any zoom - both permanent properties of the pano, so the #41 ledger
         # writes downloaded=0 and never re-attempts it.
         return DownloadResult.failure
-    final_image_width, final_image_height, zoom = resolved
+    refusal = _frame_refusal(pano_id, frame)
+    if refusal is not None:
+        # Google serves this pano in a pyramid the app's frame is not part of. Fetching anyway would stitch
+        # the app's grid out of a larger pano - its top-left corner, at the app's exact dimensions, with no
+        # black and no undersized tile to give it away (#74, #121). Refused instead, loudly on both channels
+        # (stdout is tonight's run narrative, scrape.log is what is still there next week), and RAISED so the
+        # run counts it as a failure without ledgering it: retried next run.
+        #
+        # One line per channel: the print here, and the ERROR DownloadRunner's image loop logs with this
+        # exception's text. Logging an ERROR here as well put two in scrape.log for every refusal.
+        print("IMAGEDOWNLOAD: WARNING - pano %s: %s; not downloaded, retried next run" % (pano_id, refusal))
+        raise FrameDisagreementError('pano %s: %s' % (pano_id, refusal))
 
-    stitched = fetch_pano_image(pano_id, final_image_width, final_image_height, zoom)
+    # fetch_pano_image always receives the APP's frame: the reported levels only ever choose which zoom (and so
+    # which grid) is requested, never what size the saved JPEG is.
+    stitched = fetch_pano_image(pano_id, frame.width, frame.height, frame.zoom)
     # atomic_output_path, not a direct save: an image on disk IS the resume marker, so a mid-write crash
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:
@@ -591,6 +1269,19 @@ DEPTH_STOP_CONSECUTIVE_FAILURES = 'consecutive-failures'
 DEPTH_STOP_MAX_RUNTIME = 'max-runtime'
 DEPTH_STOP_MAX_REQUESTS = 'max-requests'
 
+# The run conditions this phase notes into stop_reasons['conditions'] (#161): shapes that end the city's run in
+# an ordinary exit 0 but that the night must fail on, because a stopped or absent depth phase is otherwise
+# reported only in a scrape.log nobody reads unprompted. A condition says nothing about re-running - that is
+# depth_stop's job - so a refusal and a stand-down both keep depth_stop == DEPTH_STOP_BLOCKED and differ here.
+DEPTH_CONDITION_REFUSED = 'depth-refused'           # Google refused THIS run; the latch was written
+DEPTH_CONDITION_STOOD_DOWN = 'depth-stood-down'     # a live latch at phase start (another run's refusal, or this
+                                                    # run's image phase: photometa or a push-back trip); no request
+DEPTH_CONDITION_BREAKER = 'depth-breaker'           # DEPTH_MAX_CONSECUTIVE_FAILURES in a row
+DEPTH_CONDITION_LEDGER = 'depth-ledger-unusable'    # depth_log.csv could not be read, or not be written
+DEPTH_CONDITION_UNAVAILABLE = 'depth-unavailable'   # streetlevel is not importable
+DEPTH_CONDITIONS = frozenset({DEPTH_CONDITION_REFUSED, DEPTH_CONDITION_STOOD_DOWN, DEPTH_CONDITION_BREAKER,
+                              DEPTH_CONDITION_LEDGER, DEPTH_CONDITION_UNAVAILABLE})
+
 # Substrings that mark Google's "you are a robot" landing pages rather than pano metadata.
 _BLOCK_URL_MARKERS = ('/sorry/', 'consent.google.com')
 
@@ -627,7 +1318,8 @@ def _raise_if_blocked(response, *args, **kwargs):
 
 
 def _depth_session(pacer=None):
-    """Build the requests.Session handed to streetlevel for photometa requests.
+    """Build the requests.Session handed to streetlevel for photometa requests - THE photometa session, used
+    since #74 by the image phase's levels request too (with no pacer; see _photometa_levels).
 
     Same retry policy and default timeout as _request_session(), plus backoff jitter, the
     block-detection hook, and - when a pacer is given - the push-back observer that feeds it.
@@ -929,11 +1621,22 @@ def _block_latch_age_hours(path):
     return max(0.0, age_hours)
 
 
+def fresh_block_latch_hours(path):
+    """The latch's age in hours if it is still within DEPTH_BLOCK_LATCH_HOURS, else None - read at zero requests.
+
+    The image phase's question (#162): has Google refused this host recently enough that ONE refusal of our
+    own should be believed? Same reading rules as the depth phase's, so an ambiguous latch is "not fresh".
+    """
+    age = _block_latch_age_hours(path)
+    return age if age is not None and age < DEPTH_BLOCK_LATCH_HOURS else None
+
+
 def _write_block_latch(path):
     """Record that Google refused this host, for the next city in the queue to find.
 
     Never raises: this is called on a path where the run has already been refused, and forfeiting the log.csv
     evidence row over a latch we could not write would trade a real diagnostic for a small optimisation.
+    Returns whether the latch landed, so a caller can say so rather than claim it (#172 review).
     """
     try:
         with open(path, 'w') as f:
@@ -943,6 +1646,31 @@ def _write_block_latch(path):
     except OSError as e:
         logging.error("DEPTHDOWNLOAD: could not write the block latch %s (%s); the next city will "
                       "rediscover the block itself", path, str(e))
+        return False
+    return True
+
+
+def record_google_refusal(block_latch_path=None, pace_state_path=None):
+    """The image phase's push-back breaker tripped: remember it the way a depth blocked stop does (#162).
+
+    Writes the block latch - "this host's standing with Google"; tiles and photometa leave the same IP, so a
+    host Google refuses images to should not go on to spend depth requests either - and forfeits the depth
+    pace this host has earned, the other half of what a refusal costs. Never raises: the run has already been
+    refused, and losing the log.csv evidence row over this bookkeeping would be the wrong trade. Each path
+    resolves to its host default when not given, at call time (so the suite's isolation applies).
+
+    Returns whether the latch was written - the one outcome the caller's messages depend on: a latch that did
+    not land stands neither this run's depth phase nor any later city down.
+    """
+    written = _write_block_latch(default_block_latch_path() if block_latch_path is None else block_latch_path)
+    try:
+        DepthPacer(state_path=default_pace_state_path() if pace_state_path is None else pace_state_path).forfeit()
+    except Exception as e:
+        # DepthPacer's own reads and writes already swallow what they can meet; this is the backstop for the
+        # invariant, not an expected path.
+        logging.error("IMAGEDOWNLOAD: could not forfeit the depth pace (%r); the next depth phase may open "
+                      "at an interval this host has not earned back", e)
+    return written
 
 
 def default_pace_state_path():
@@ -1001,8 +1729,14 @@ def _write_pace_state(path, interval, clean_streak):
     the breaker - one unwritable temp directory would then trip it after 25 panos on every city, every night -
     and from the second it would take the log.csv evidence row with it.
 
-    Written to a per-process temporary name and renamed into place, so a run that reads while another writes
-    sees the old file or the new one, never a torn one (and a torn one would only mean "open careful").
+    Written to a temporary name and renamed into place, so a run that reads while another writes sees the old
+    file or the new one, never a torn one (and a torn one would only mean "open careful"). The temporary name
+    is FIXED, `<path>.tmp`, not per process: the queue SIGKILLs cities, and a per-pid orphan left between the
+    write and the rename would never be swept, while a fixed one is replaced by the next write
+    (TestTheTemporaryFileCannotAccumulate, #125.7). That is safe for the depth phase, which writes under
+    `<pace>.lock`. The image phase's refusal forfeit (#74) writes WITHOUT the lock, so a manual run beside the
+    queue can share the temporary file with it; the worst case is an OSError (logged) or a torn file, which
+    reads as "open careful" - the direction a refusal forfeit wants anyway.
     """
     tmp = path + '.tmp'
     try:
@@ -1175,6 +1909,66 @@ _DepthRaster = collections.namedtuple('_DepthRaster', ['data'])
 _PanoOrientation = collections.namedtuple('_PanoOrientation', ['depth', 'heading', 'pitch', 'roll'])
 
 
+def _photometa_msg(response, pano_id):
+    """The envelope check both photometa callers share: response -> msg, or None when photometa says the pano
+    is not found (code 2).
+
+    Raises DepthPayloadError for anything that is not the photometa envelope at all - an error JSON, a quota
+    page that happened to parse. Transient, deliberately: reading one as "not found" would ledger 'unavailable'
+    in the depth phase, and in the image phase send the pano to the probe's permanent-verdict path, for a pano
+    Google may still be serving. One function so the depth and image seams cannot drift into refusing
+    different shapes.
+    """
+    response_code = _msg_path(response, 1, 0, 0, 0)
+    if response_code is None:
+        raise DepthPayloadError("unrecognized photometa response for pano %s" % (pano_id,))
+    # 1 = OK, 3 = also OK; 2 = not found (streetlevel's reading of the same field).
+    if response_code not in (1, 3):
+        return None
+    return response[1][0]
+
+
+def _image_levels_from_msg(msg):
+    """ImageLevels from a photometa msg's msg[2][3], or None when that path is absent or malformed.
+
+    Wire order is [[height, width]] per level and [width, height] for the tile (streetlevel's
+    parse_panorama_message reads it the same way - tests/test_streetlevel_api.py holds the two together on a
+    non-square level, the only kind on which a swapped reading shows).
+    """
+    raw_sizes = _msg_path(msg, 2, 3, 0)
+    raw_tile = _msg_path(msg, 2, 3, 1)
+    try:
+        sizes = [(int(level[0][1]), int(level[0][0])) for level in raw_sizes]
+        tile_size = (int(raw_tile[0]), int(raw_tile[1]))
+    except (TypeError, IndexError, KeyError, ValueError):
+        return None
+    return ImageLevels(sizes, tile_size)
+
+
+def _fetch_image_levels(pano_id, session):
+    """One photometa request WITHOUT the depth payload -> ImageLevels, or None when the pano is not found.
+
+    download_depth=False is a 16 KB answer where the depth phase's is 370 KB (measured 2026-09-26), and it
+    carries the same msg[2][3] - but no depth, so this response cannot be handed on to the depth phase.
+
+    Everything else raises, and resolve_frame decides: DepthBlockedError / RetryError (Google refused - the
+    latch), and RequestException, ValueError (a non-JSON body) or DepthPayloadError (an envelope that is not
+    photometa's, or an OK one with no readable levels) for the probe fallback.
+    """
+    # Imported lazily, like the depth seam's: a box without streetlevel raises ImportError here, which
+    # resolve_frame treats as "photometa unavailable" rather than a lost pano.
+    from streetlevel.streetview import api
+
+    response = api.find_panorama_by_id(pano_id, download_depth=False, locale='en', session=session)
+    msg = _photometa_msg(response, pano_id)
+    if msg is None:
+        return None
+    levels = _image_levels_from_msg(msg)
+    if levels is None or not levels.sizes:
+        raise DepthPayloadError("photometa answered for pano %s but carries no readable image_sizes" % (pano_id,))
+    return levels
+
+
 def _fetch_pano_with_depth_planes(pano_id, session):
     """One photometa request -> (pano-shaped namespace | None, DepthPlanes | None).
 
@@ -1199,16 +1993,9 @@ def _fetch_pano_with_depth_planes(pano_id, session):
     from streetlevel.streetview import api
 
     response = api.find_panorama_by_id(pano_id, download_depth=True, locale='en', session=session)
-    response_code = _msg_path(response, 1, 0, 0, 0)
-    if response_code is None:
-        # Not the photometa envelope at all - an error JSON, a quota page that happened to parse. Transient:
-        # returning (None, None) instead would ledger 'unavailable' and permanently write off a pano Google
-        # may still be serving.
-        raise DepthPayloadError("unrecognized photometa response for pano %s" % (pano_id,))
-    # 1 = OK, 3 = also OK; 2 = not found (streetlevel's reading of the same field).
-    if response_code not in (1, 3):
+    msg = _photometa_msg(response, pano_id)
+    if msg is None:
         return None, None
-    msg = response[1][0]
     # Orientation scalars, with streetlevel's conversions: degrees -> radians, and pitch stored as 90 - raw.
     heading = _msg_path(msg, 5, 0, 1, 2, 0)
     pitch = _msg_path(msg, 5, 0, 1, 2, 1)
@@ -1461,6 +2248,8 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
                                DEPTH_STOP_MAX_RUNTIME means "more time would have helped", which is why
                                the stood-down and breaker-tripped cases have to be distinguishable from it
                                rather than collapsed into "stopped early".
+                               The same dict carries the phase's run conditions (DEPTH_CONDITIONS, #161),
+                               noted through common.note_condition, which the queue books against the night.
     @return                    (success_count, fail_count, skipped_count, total_completed).
     """
     def _record(reason):
@@ -1473,6 +2262,11 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         from streetlevel import streetview  # noqa: F401
     except ImportError as e:
         logging.error("DEPTHDOWNLOAD: streetlevel is not installed (%s); skipping depth phase", str(e))
+        # Both channels (#161): this was logging-only, so the channel cron delivers said nothing at all - and
+        # a pip install half-written mid-deploy stops every city's depth phase this way.
+        print("DEPTHDOWNLOAD: WARNING - streetlevel is not importable (%s); the depth phase did not run. "
+              "Reinstall requirements.txt in this interpreter." % (e,))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_UNAVAILABLE, 'streetlevel not importable: %s' % (e,))
         _record(None)
         return 0, 0, 0, 0
 
@@ -1486,8 +2280,14 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         logging.error("DEPTHDOWNLOAD: block latch set %.1fh ago (%s); skipping the depth phase",
                       latched_hours, latch_path)
         print("DEPTHDOWNLOAD: WARNING - Google refused this host %.1f hours ago, so the depth phase is "
-              "standing down (latch %s, held for %g hours). Images are unaffected; unresolved panos are "
-              "retried once it expires." % (latched_hours, latch_path, DEPTH_BLOCK_LATCH_HOURS))
+              "standing down (latch %s, held for %g hours); unresolved panos are retried once it expires. GSV "
+              "images still download while it is fresh, but on probation (one refused pano stops them, #162) "
+              "and with every zoom from the tile probe rather than photometa (#74)."
+              % (latched_hours, latch_path, DEPTH_BLOCK_LATCH_HOURS))
+        # A condition even when nothing was refused tonight: the latch outlives the night's window, so a
+        # stand-down at the start of one is a refusal the queue never saw (a manual backfill between nights).
+        common.note_condition(stop_reasons, DEPTH_CONDITION_STOOD_DOWN,
+                              'latch set %.1fh ago (%s)' % (latched_hours, latch_path))
         _record(DEPTH_STOP_BLOCKED)
         return 0, 0, 0, 0
 
@@ -1517,7 +2317,8 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         # Deliberately not degrading to "nothing is resolved": that would re-request the entire corpus against an
         # already-sick store. If the ledger can't be read, sit this run out.
         logging.error("DEPTHDOWNLOAD: Cannot read %s (%s); skipping the depth phase", depth_log_path, str(e))
-        print("DEPTHDOWNLOAD: Cannot read the depth ledger (%s). Skipping the depth phase." % (e))
+        print("DEPTHDOWNLOAD: WARNING - cannot read the depth ledger (%s). Skipping the depth phase." % (e))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_LEDGER, 'cannot read %s: %s' % (depth_log_path, e))
         return 0, 0, 0, 0
 
     # Partition before requesting anything. Counting the ledger skips up front keeps log.csv's 'skipped' column
@@ -1545,6 +2346,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         # WARNING token so an ops grep for storage trouble matches this at-start message the same as the
         # end-of-phase ones - a store unmounted before the run is likelier than one filling during it.
         print("DEPTHDOWNLOAD: WARNING - cannot write the depth ledger (%s). Skipping the depth phase." % (e))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_LEDGER, 'cannot write %s: %s' % (depth_log_path, e))
         return 0, 0, skipped_count, skipped_count
 
     def remember_standing():
@@ -1721,6 +2523,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early because Google stopped answering. No panos "
               "were lost (unresolved panos are retried next run), but check for a rate limit before the next "
               "run. Last error: %s" % (str(last_error)[:200],))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_REFUSED, str(last_error)[:200])
     elif stop_reason == DEPTH_STOP_CONSECUTIVE_FAILURES:
         # The breaker counts storage failures (ENOSPC/EIO on the sshfs mount) as well as network ones, so don't
         # attribute the trip to Google: break the streak down by class so the dominant cause stays visible even
@@ -1730,11 +2533,15 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
               "error: %s. No panos were lost (unresolved panos are retried next run); check whether the cause "
               "is the store (full/unmounted) or the network before the next run."
               % (consecutive_failures, breakdown, last_error))
+        common.note_condition(stop_reasons, DEPTH_CONDITION_BREAKER,
+                              '%d consecutive failures (%s); last error: %s'
+                              % (consecutive_failures, breakdown, last_error))
     elif last_error is not None:
         # No breaker tripped, but something did fail: a budget may have stopped the run first (a shared
         # --max-runtime window is often minutes, far fewer than the breaker needs to see a streak), or the
         # failures were scattered, or a self-heal ledger write failed - which counts nowhere else. Without this
-        # arm a full store can read as a healthy, fully-backfilled city.
+        # arm a full store can read as a healthy, fully-backfilled city. Deliberately NOT a run condition
+        # (#161): a few transient failures inside a budget stop are an ordinary night.
         print("DEPTHDOWNLOAD: WARNING - the depth phase hit errors (%d success, %d failed [%d unavailable], "
               "%d skipped of %d). No panos were lost (unresolved panos are retried next run). Last error: %s"
               % (success_count, fail_count, unavailable_count, skipped_count, total_panos,

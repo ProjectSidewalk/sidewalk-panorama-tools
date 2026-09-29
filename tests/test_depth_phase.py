@@ -3,6 +3,10 @@
 import csv
 import logging
 import os
+import re
+import shlex
+import shutil
+import subprocess
 import sys
 import time
 from types import SimpleNamespace
@@ -686,3 +690,139 @@ def test_missing_streetlevel_returns_zeros(tmp_path, monkeypatch):
 
     assert gsv.download_depth_maps(storage, pano_infos('aaaaaa')) == (0, 0, 0, 0)
     assert read_ledger(storage) is None
+
+
+# --- Conditions the depth phase notes for the queue (#161) ---------------------------------------------------
+#
+# Each of these used to end the city's run in an ordinary exit 0, so the night's only alarm never fired. They
+# ride the run summary (stop_reasons['conditions']); a condition does not change what stopped the phase.
+
+def condition_codes(stop_reasons):
+    return [c['code'] for c in stop_reasons.get('conditions', [])]
+
+
+class TestTheDepthPhaseNotesItsConditions:
+
+    def test_a_tripped_breaker_is_noted_with_its_breakdown(self, tmp_path, fake_streetview, monkeypatch):
+        monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 3)
+        fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+        monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_BREAKER]
+        assert '3 storage' in stop_reasons['conditions'][0]['detail']
+
+    def test_an_unreadable_ledger_is_noted(self, tmp_path, fake_streetview, monkeypatch):
+        def boom(path):
+            raise OSError(5, 'Input/output error')
+
+        monkeypatch.setattr(gsv, '_load_depth_log', boom)
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('aaaaaa'), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_LEDGER]
+
+    def test_an_unreadable_ledger_prints_a_warning(self, tmp_path, fake_streetview, monkeypatch, capsys):
+        """The WARNING token an ops grep for storage trouble keys on, like the unwritable arm's."""
+        def boom(path):
+            raise OSError(5, 'Input/output error')
+
+        monkeypatch.setattr(gsv, '_load_depth_log', boom)
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('aaaaaa'))
+
+        assert 'WARNING' in capsys.readouterr().out
+
+    def test_an_unwritable_ledger_is_noted(self, tmp_path, fake_streetview, monkeypatch):
+        monkeypatch.setattr(gsv.csv, 'writer', lambda *args, **kwargs: _FullDiskWriter())
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('aaaaaa'), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_LEDGER]
+
+    def test_a_missing_streetlevel_is_noted_and_said_on_both_channels(self, tmp_path, monkeypatch, capsys,
+                                                                       caplog):
+        """It was logging-only: no stdout line at all, so the one channel cron delivers carried nothing, and a
+        half-written pip install mid-deploy (docs/ops.md warns of it) would silently stop every depth phase."""
+        monkeypatch.setitem(sys.modules, 'streetlevel', None)
+        monkeypatch.delitem(sys.modules, 'streetlevel.streetview', raising=False)
+        stop_reasons = {}
+
+        with caplog.at_level(logging.ERROR):
+            gsv.download_depth_maps(str(tmp_path), pano_infos('aaaaaa'), stop_reasons=stop_reasons)
+
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_UNAVAILABLE]
+        out = capsys.readouterr().out
+        assert 'WARNING' in out and 'streetlevel' in out
+        assert any(r.levelno == logging.ERROR and 'streetlevel' in r.getMessage() for r in caplog.records)
+
+    def test_scattered_errors_before_a_budget_stop_are_not_a_condition(self, tmp_path, fake_streetview,
+                                                                       monkeypatch):
+        """The scattered-errors arm warns on stdout but is not an alarm: a few transient failures inside a
+        budget stop are an ordinary night, and alarming on them would make the alarm noise."""
+        fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+        monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+        ticks = iter(range(0, 60000, 120))
+        monkeypatch.setattr(gsv.time, 'monotonic', lambda: float(next(ticks)))
+        stop_reasons = {}
+
+        gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), run_start_monotonic=0.0,
+                                max_runtime_minutes=5, stop_reasons=stop_reasons)
+
+        assert stop_reasons['depth_stop'] == gsv.DEPTH_STOP_MAX_RUNTIME
+        assert condition_codes(stop_reasons) == []
+
+
+OPS_MD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', 'ops.md')
+
+
+@pytest.mark.skipif(shutil.which('awk') is None, reason='the recipe is an awk one-liner; CI has awk')
+@pytest.mark.parametrize('line_ending', ['as written', 'LF'])
+def test_the_ledger_scrub_recipe_finds_the_last_save_in_the_ledger_this_writer_writes(
+        tmp_path, fake_streetview, line_ending):
+    """docs/ops.md's scrub recipe (rule 10's CRITICAL, #163) must find the last `saved` row in the file this
+    module actually writes. It said `grep -n ',saved$'`, but csv.writer's default lineterminator is CRLF and
+    the depth ledger does not override it (the image ledger does), so on the Linux box `$` never matched
+    before the CR and step 3 printed nothing - on the one night the recipe is needed. Git Bash's grep
+    strips the CR, so a dry run on a Windows desktop passed. The ledger's line endings are NOT to be changed:
+    every production depth_log.csv is already CRLF. So the recipe is run here, verbatim from the page, against
+    a ledger written by download_depth_maps itself - and against an LF copy, in case one is ever normalised."""
+    with open(OPS_MD, encoding='utf-8') as f:
+        commands = re.findall(r"`(awk -F, [^`]*depth_log\.csv)`", f.read())
+    assert len(commands) == 1, commands
+
+    storage = str(tmp_path)
+    saved_ids = {'aa0001', 'aa0002', 'aa0003'}
+    fake_streetview.find_panorama_by_id = (
+        lambda pano_id, **kwargs: make_pano(default_depth_array()) if pano_id in saved_ids else None)
+    gsv.download_depth_maps(storage, pano_infos(*sorted(saved_ids)))                  # the healthy nights
+    gsv.download_depth_maps(storage, pano_infos(*['bb%04d' % i for i in range(5)]))  # the barren span
+    ledger = os.path.join(storage, gsv.DEPTH_LOG_FILENAME)
+    with open(ledger, 'rb') as f:
+        raw = f.read()
+    assert raw.count(b'\r\n') == 9, raw  # the premise: header + 3 saved + 5 unavailable, all CRLF
+    if line_ending == 'LF':
+        with open(ledger, 'wb') as f:
+            f.write(raw.replace(b'\r\n', b'\n'))
+
+    out = subprocess.run(shlex.split(commands[0]), cwd=storage, capture_output=True, text=True, check=True)
+
+    assert out.stdout.strip() == '4', out  # line 1 is the header, lines 2-4 the saves
+
+
+@pytest.mark.skipif(shutil.which('awk') is None, reason='the recipe is an awk one-liner; CI has awk')
+def test_the_ledger_scrub_recipe_keeps_the_header_when_nothing_was_ever_saved(tmp_path, fake_streetview):
+    """A small city can be written off entirely. The recipe must then name line 1 (keep the header), not print
+    nothing - `head -n` with no number is an error, and one with 0 would delete the header."""
+    with open(OPS_MD, encoding='utf-8') as f:
+        command = re.findall(r"`(awk -F, [^`]*depth_log\.csv)`", f.read())[0]
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: None
+    gsv.download_depth_maps(str(tmp_path), pano_infos('bb0001', 'bb0002'))
+
+    out = subprocess.run(shlex.split(command), cwd=str(tmp_path), capture_output=True, text=True, check=True)
+
+    assert out.stdout.strip() == '1', out

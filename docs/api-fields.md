@@ -16,6 +16,19 @@ The two Project Sidewalk endpoints this repo reads, field by field. Both are ser
 | `camera_pitch` | The pitch (in degrees) of the camera with respect to horizontal |
 | `source` | The source of the imagery (`gsv`, `mapillary`, `panoramax`, …) |
 
+**The downloader requires four of these keys: `pano_id`, `source`, `width` and `height`.** When 90% or more
+of the records served lack any one of them (the key absent, not merely blank; counted per record), the run
+treats the list as a schema drift: neither phase runs, nothing is ledgered, and the night fails with the
+condition `pano-schema-drift` (#161). Without the guard a renamed `width`/`height` would make every
+not-yet-downloaded GSV pano a *permanent* `downloaded=0` verdict in one night. The endpoint writes a pano's
+null `width`/`height` by *omitting* the key (Play's `writeNullable`; 106 of Seattle's 183,927 records in
+2026-09), so over the webserver a per-pano null and a renamed field look the same record by record, and the
+90% fraction is what tells them apart. The dims are required of every record, Mapillary and Panoramax
+included, although neither of those downloaders reads them. A renamed `pano_id` never reaches the guard —
+every row is dropped as an empty id, and a city with history reports `pano-list-empty` instead. The same
+rule applies to a `-c` CSV, so a hand-made one must carry the `width` and `height` columns (blank cells are
+fine).
+
 The downloader drops empty ids and the literal id `tutorial`, then keeps `gsv` and `panoramax`, plus
 `mapillary` when `MAPILLARY_ACCESS_TOKEN` is set. Panoramax `pano_id`s are UUIDs, so nothing may assume an
 id alphabet. See [Downloader → Imagery sources](downloader.md#imagery-sources).
@@ -54,7 +67,10 @@ than from memory, because the four this table used to carry were each wrong in a
 | `zoom` | The zoom level in the GSV interface when the user placed the label |
 
 **This endpoint does not send `source`.** `/adminapi/panos` does, and some older CSV exports have a
-column by that name, but `LabelCVMetadata` has no such field. Nothing in the cropper ever read it.
+column by that name, but `LabelCVMetadata` has no such field. Nor does it send `copyright` or
+`license`. The cropper copies all three into its per-crop provenance manifest when a row carries them
+and writes them empty when it does not, so a `-d` run today records none of them — see
+[Cropper → The provenance manifest](cropper.md#the-provenance-manifest-crop_provenancecsv).
 
 **`label_type` replaced `label_type_id`, and the cropper still needs the id.** Until
 [SidewalkWebpage#4103](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4103) (released

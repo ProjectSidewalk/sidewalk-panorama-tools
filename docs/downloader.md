@@ -68,9 +68,13 @@ python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbu
 | `--max-runtime MINUTES` | Stop *starting* new downloads and requests after this much wall time. Sized to the nightly cron slot ([#38](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/38)). |
 | `--min-depth-runtime MINUTES` | Reserve the tail of `--max-runtime` for depth when depth has unresolved work — a *share* of the budget, so size it against the slot, not the night. Default `0`; the production line passes `6` of its 12-minute `--city-max-runtime` (below), and must stay below it or no images are downloaded. |
 | `--max-depth-requests N` | Stop the depth phase after N metadata requests. Useful for throttling the initial backfill. |
-| `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
-| `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back **from Google** or a refusal resets it, a local failure does not, a phase that made no requests writes nothing, and a day-old file is ignored. The phase holds `<PATH>.lock` while it runs, so a second concurrent phase paces itself from scratch. Defaults to a file beside the *default* block latch; `--depth-block-latch` does not move it. |
+| `--depth-block-latch PATH` | Where a refusal from Google is remembered so the next city stands down instead of rediscovering it. Defaults to a file in the system temp directory - local disk, not the store. Moves the latch for **both** phases: the GSV image phase reads it before each photometa request and writes it on a refusal ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |
+| `--depth-pace-state PATH` | Where the depth pacer remembers the request interval this host has *earned*, so the next city opens there instead of ramping down from `depth_start_interval` again. Only earned speed is kept — a push-back **from Google** or a refusal (in either phase) resets it, a local failure does not, a phase that made no requests writes nothing, and a day-old file is ignored. The phase holds `<PATH>.lock` while it runs, so a second concurrent phase paces itself from scratch. Defaults to a file beside the *default* block latch; `--depth-block-latch` does not move it. |
+| `--width-alarm-latch PATH` | Where this host remembers it has already alarmed on a frame wider than the viewer ceiling (#121). The first run to see one exits 1; later runs find this file and only warn; delete it to re-arm. Defaults to a file in the system temp directory — local disk, because a wider frame is a fact about Google, not one city. See [Operations](ops.md#the-width-tripwire). |
 | `--run-summary-file PATH` | Write a small JSON object (`image_stop`, `depth_stop`) naming what stopped each phase. `scrape_queue` passes this and reads it back to decide which cities still have work; nothing else reads it, and without the flag nothing is written. No default, deliberately — a default path would write into whatever CWD cron started in. |
+| `--from-store CITY_ID` | Pull already-scraped panoramas for `CITY_ID` from the Project Sidewalk pano store over SFTP instead of downloading them. **The default, without it, is to download from the provider yourself**; this is for collaborators the Project Sidewalk team has issued SFTP credentials — see [below](#pulling-from-the-project-sidewalk-pano-store). Skips the Google depth phase (`--with-depth` pulls stored artifacts instead); Google is never contacted. |
+| `--with-depth` | With `--from-store`: also pull the stored `.depth.npz` for every GSV pano lacking one locally. |
+| `--sftp-host`, `--sftp-base`, `--sftp-user`, `--sftp-port`, `--sftp-key` | With `--from-store`: the store's connection settings. Each falls back to the matching `PS_SFTP_*` variable; host and base are required. |
 
 Budgets are measured with `time.monotonic()`, never the wall clock, so an NTP step or a DST transition cannot
 stretch or shrink a run.
@@ -95,6 +99,121 @@ Three consequences worth knowing:
   misconfigured crontab shows up in the night's message instead of looking like ordinary budget exhaustion.
 
 `--min-depth-runtime` is ignored without `--max-runtime`, and with `--skip-depth`.
+
+## Pulling from the Project Sidewalk pano store
+
+**The default is to download from the imagery provider yourself** — everything above. `--from-store CITY_ID`
+is an alternative for collaborators with a working relationship with the Project Sidewalk team, who issue the
+SFTP credentials it needs. How to obtain them is not documented in this repo; ask the team. It copies
+panoramas the nightly scrape has already stored instead of fetching them again
+([#30](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/30)).
+
+What it does, and what stays the same:
+
+* **The same pano list and the same selection** — `/adminapi/panos` or `-c`, narrowed by `--all-panos`
+  exactly as a scrape is. The Mapillary token is not needed: the store already has the bytes.
+* **The same ledger and the same `log.csv` row**, so a multi-night pull resumes like a scrape does, and
+  `--max-runtime` works unchanged.
+* **Nothing is requested from Google, Mapillary or Panoramax.** The depth phase is skipped; `--with-depth`
+  pulls the stored `.depth.npz` artifacts instead.
+* Panos are copied **100 per `sftp` session** (`BATCH_SIZE` in `downloaders/store_sftp.py`; lower it on a slow
+  link). `--max-runtime` is checked between sessions, never inside one, so a session in flight can overrun the
+  budget by up to one batch.
+* Every file is **verified before it is renamed into place** — a JPEG must have a readable header *and* an
+  end-of-image marker that closes its image data, a `.npz` must be a complete zip — because a saved file is the
+  next run's resume marker. A transfer cut short leaves nothing behind. A JPEG may carry up to 64 KB after its
+  end-of-image marker (a camera trailer on a Mapillary or Panoramax original); more than that is refused, and
+  retried each night, with a `truncated` line in `scrape.log` naming it.
+* **Tested with the OpenSSH `sftp` on Linux and macOS** — the batch's quoting follows OpenSSH's parser, and
+  the suite drives the real client where one is installed. On Windows, run it from WSL.
+
+### Settings
+
+The same variables the [log analyzer](log-analyzer.md#connection-settings) reads, so one set serves both.
+Each has a matching flag, and a flag beats its variable.
+
+| Variable | Flag | |
+|---|---|---|
+| `PS_SFTP_HOST` | `--sftp-host` | **Required.** The store host. |
+| `PS_SFTP_BASE` | `--sftp-base` | **Required.** The store root; the city's panos are under `<base>/<CITY_ID>/`. |
+| `PS_SFTP_USER` | `--sftp-user` | Optional; otherwise `~/.ssh/config` decides. |
+| `PS_SFTP_PORT` | `--sftp-port` | Optional. |
+| `PS_SFTP_KEY` | `--sftp-key` | Optional private key path (`~` is expanded). |
+
+`CITY_ID` is the city's folder on the store — `seattle-wa`, `cdmx` — the same id `scrape_queue`'s manifest and
+`log_analyzer/cities.csv` carry. It has **no default** and is never derived from the server name, because
+nothing maps one to the other: `seattle-wa` is served by `sidewalk-sea`.
+
+```bash
+# Seattle's labelled panoramas, from the store, into a local directory
+export PS_SFTP_HOST=... PS_SFTP_BASE=...
+python3 DownloadRunner.py sidewalk-sea.cs.washington.edu ./seattle --from-store seattle-wa
+
+# Every visited panorama, not only the labelled ones; settings as flags, capped at two hours
+python3 DownloadRunner.py sidewalk-sea.cs.washington.edu ./seattle --from-store seattle-wa \
+    --all-panos --max-runtime 120 --sftp-host ... --sftp-base ... --sftp-key ~/.ssh/ps_store
+
+# The stored depth artifacts too - for every GSV panorama in the list, with or without --all-panos
+python3 DownloadRunner.py sidewalk-sea.cs.washington.edu ./seattle --from-store seattle-wa --with-depth
+```
+
+### What the ledger learns
+
+**Only `1` rows.** A pulled panorama, and one already on disk, is ledgered `1` with a blank `fetched_at` —
+the provider was not contacted, and when it last was is not something the pull knows. A panorama the store
+does not hold *tonight* is counted in `log.csv` field 9 and left **without a row**: the scrape may add it
+tomorrow, so its absence is never a verdict, and the next pull tries again. The run's closing line says how
+many that was.
+
+**What is still missing** after a pull is the pano list (`/adminapi/panos`, or your `-c` CSV) minus the ids
+in `pano_id_log.csv`: absent panoramas have no row, so they are exactly the difference, and they are what the
+next run asks the store for again. For tonight's alone, `grep 'absent; not ledgered' scrape.log` names each one
+(`scrape.log` rotates at 10 MB × 3, so the ledger difference is the durable answer).
+
+Existing `0` rows — from an earlier scrape of your own — are honoured like any other row, so those panoramas
+are not asked of the store. Deleting them is the lever, as it is for a scrape
+([Resume ledgers](ops.md#resume-ledgers)).
+
+`--with-depth` writes **nothing** to `depth_log.csv`. A later scrape's depth phase finds each pulled artifact
+on disk and ledgers it `saved` without a request. The depth pass covers every GSV panorama in the list that
+lacks a local artifact — not only tonight's images, and **whether or not `--all-panos` is given**, the depth
+phase's own view of the corpus — so it can be run after an image-only pull, and on a labelled-only pull it
+still fetches depth for the unlabelled panoramas too (several times more sessions). An artifact
+the store does not have (Google had no depth for that panorama) is counted in field 14, which is [not an alert
+signal](ops.md#the-depth-failure-count-is-not-an-alert-signal).
+
+### When it goes wrong
+
+* **A wrong city id or base** fails the first session on its first line — the batch opens with a `cd` into the
+  city's folder precisely so this is loud — rather than every panorama reading as absent. The run prints a
+  `STOREPULL: WARNING` line, stops, writes its `log.csv` row and **exits 1**.
+* **Any other failed session** — a missing key, a passphrase-protected key without an agent, the host
+  unreachable — does the same. `sftp` runs with `BatchMode=yes`, so it fails in about a second instead of
+  waiting on a prompt nothing can answer. The panoramas it did not reach are not counted and retry next run.
+* **A file that arrives incomplete or unreadable** is discarded, counted as failed, and retried next run; a
+  `STOREPULL: WARNING - N pano(s) arrived incomplete or unreadable` line says how many.
+* **A file that verified but could not be placed** means *local* storage trouble — a full disk, a dropped
+  mount — which a retry will not fix. A `STOREPULL: WARNING - N pano(s) verified but could not be placed on
+  local storage; ... a retry will not fix it: check local disk space and the mount` line says so
+  (`STOREDEPTH:` for depth artifacts); the run still exits 0, so read it. Nothing is ledgered, so once the
+  disk or mount is fixed the next run pulls them.
+* **A changed host key is refused** (`StrictHostKeyChecking=accept-new`: an unknown host is trusted once).
+* `sftp`'s error output is summarised and redacted before it reaches stdout or `scrape.log`; raw error output
+  is never logged. **Redacted:** the host, user and key path you configured, wherever they appear, and the port you
+  configured as a whole word (so `PS_SFTP_PORT=22` leaves a pano id like `ab22xy` alone); what
+  `ssh -G <host>` says an `~/.ssh/config` alias resolves to (its `HostName`, `User` and `Port`, as whole
+  words), when `ssh` is installed; and, by pattern, `port N`, `[host]:N`, IPv4 and IPv6 literals, and any
+  `name@`. **Not redacted:** a host name `ssh` prints that neither your settings nor `ssh -G` name (a
+  `ProxyJump` hop, say), and file paths other than the key. Check a summary before pasting it anywhere public.
+* `--skip-depth`, `--min-depth-runtime`, `--max-depth-requests`, `--depth-block-latch` and
+  `--depth-pace-state` have no effect in this mode and each prints a warning saying so.
+* A `.part` file is a transfer in progress; one left by a killed run is removed before that panorama is
+  next requested, and is safe to delete by hand.
+* A pano id outside `[A-Za-z0-9_-]` cannot be written into an `sftp` batch safely; it is skipped, counted as
+  failed and logged. No id any of the three imagery sources issues falls outside it.
+
+It never pulls the store's `log.csv`, its ledgers, `scrape.log`, or `.w8192.jpg`
+[display copies](ops.md#display-copies-of-wide-panoramas), and it never writes to the store.
 
 ## Nightly deployment
 
@@ -286,16 +405,54 @@ with several rows on one host does not spend the whole cap on it.
 | `--only CITY_ID` | Re-run one city through the same machinery — the lock, the budgets, the summary — rather than by hand. Repeatable. |
 | `--no-rotate` | Keep manifest order. By default the starting point rotates daily, so a night that truncates does not always drop the same tail cities. |
 | `--single-pass` | Run every city once and leave the rest of the window unused — today's behaviour before [extra passes](#extra-passes). `--only` implies it. |
-| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. |
+| `--dry-run` | Print the order and the exact command per city, then run the [manifest cross-check](#the-manifest-is-cross-checked-against-the-fleet). Takes no lock, so it is safe to run while the queue is running. Warns (without changing its exit code) when the [store marker](ops.md#the-store-marker) is missing, and when the cities' interpreter (`--python`) cannot import `streetlevel` — skipped when `--skip-depth` is passed through. |
 | `-- ...` | Everything after `--` is passed to every city verbatim. |
 
 **Exit codes**, since the exit is the alert: it is the subject line of the night's message
 ([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), and it is the code cron sees: `0` every city ran and succeeded and the
 manifest names every city, `1` something failed, timed out, **was never reached**, **a city has no manifest
-row** (private or public), or no host would serve the roster to check that, `2` usage, `3` another queue run holds the
-lock. A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
+row** (private or public), no host would serve the roster to check that, or **a city reported a
+[condition](#a-city-can-finish-ok-and-still-fail-the-night)** or was not started because the store marker
+had gone (`store_missing`, a mount that dropped mid-night), `2` usage, `3` another queue run holds the lock,
+`5` **the store marker `<store-root>/.pano-store` is missing at startup** — nothing ran and nothing was
+written ([ops: the store marker](ops.md#the-store-marker)). A city the window did not reach counts as a failure deliberately — a fleet quietly completing 40 of 53
 cities a night is the silent failure this design exists to surface. If a night's truncation is expected and
 accepted, the window is the wrong size.
+
+#### A city can finish ok and still fail the night
+
+Some nights the runner itself would call a failure end in an ordinary exit 0: Google refused the depth phase,
+the depth ledger could not be read, every Mapillary pano was dropped for want of a token. Production delivers
+only nonzero exits ([`cron_notify.py --only-on-failure`](ops.md#hearing-about-a-bad-night)), so until
+[#161](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/161) those nights reached nobody.
+
+Each such shape is now a **condition**: the runner records it in the run summary the queue already reads
+(`--run-summary-file`, [below](#extra-passes)), as `{"code": ..., "detail": ...}` in a `conditions` list that
+is always present, empty on a clean run. A condition does **not** change the city's outcome — it stays `ok`,
+keeps its place in the `N/M cities ok` count and its eligibility for an extra pass — but **any condition fails
+the night**. The runner's own exit code is unchanged. The city's line in the night's narrative carries them:
+
+```
+[queue] bravo-bb: ok (exit 0) in 11.9 min; conditions: depth-refused
+```
+
+A code the queue does not know is kept and still fails the night, so a runner newer than its queue cannot be
+silenced by it.
+
+| code | what happened | where to read more |
+|---|---|---|
+| `depth-refused` | Google refused this run's depth requests; the 6 h block latch was written | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-stood-down` | A live latch at depth-phase start; the depth phase made no request. The refusal behind it is another run's, or this run's own image phase (a photometa refusal, or a push-back trip, which also exits the city 1). GSV images are not stood down by a latch, only put on probation | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-breaker` | 25 consecutive depth failures; the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-ledger-unusable` | `depth_log.csv` could not be read or written; depth sat the run out | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
+| `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
+| `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |
+| `images-no-success` | No image attempt this run was answered, and either at least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) raised or the phase's budget ran out with only raises behind it *and* those raises took at least `IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS` (60 s) each on average (a blackholed network takes ~3.5 min per raise; a mature city's few slow perennial raisers filling the share are not an outage) — the network, the store, or a bug. Old `downloaded=0` rows in the ledger are not attempts and do not count, and a GSV [frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) is Google answering, so it counts as an answer although it is not ledgered. A GSV push-back (a refused tile, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) counts as a raise; a push-back *trip* records `image_stop: blocked`, which the budget arm does not read as a budget stop, and already fails the city through its own exit 1. The count arm still applies: ten raises with nothing answered, refusals included, are reported alongside a trip that follows them. The duration gate is the *mean*, so one slow raise among fast ones does not pass it. The detail reads `N attempts raised, 0 answered, S s per raise` on both arms, so the queue's summary line carries the duration the thresholds are sized against | the errors in the city's `scrape.log` |
+| `pano-list-empty` | The pano list was empty as served (a list the source filter emptied is that filter's condition instead) for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
+| `no-run-summary` | *(the queue's own)* An `ok` run left no readable run summary, so its conditions are unknown — a check that did not run has not passed. Also what an operator's own `--run-summary-file` after `--` produces, so do not pass one through the queue | [Extra passes](#extra-passes) |
+| `conditions-unreadable` | *(the queue's own)* The summary's `conditions` was present but not a list of objects with a non-blank string `code`. (An unknown code is kept, with its whitespace collapsed to single spaces, so a newer runner can still fail the night on one line.) | — |
+| `pano-schema-drift` | 90% or more of the pano list's records lack `pano_id`, `source`, `width` or `height` — a renamed field. **Neither phase runs and nothing is ledgered**, because scraping it would write every new GSV pano off permanently | [API fields](api-fields.md#adminapipanos--the-downloaders-pano-list) |
 
 ### Extra passes
 
@@ -316,7 +473,9 @@ Three rules that are load-bearing:
 
 * **Who has work is read from what the runner reported, not from how long the queue watched it.** The queue
   passes each city a `--run-summary-file`; `DownloadRunner` writes what stopped each phase, and a phase that
-  stopped on `max-runtime` — either phase — is one that would have kept going. Only an `ok` run qualifies: a
+  stopped on `max-runtime` — either phase — is one that would have kept going. (The same file carries the
+  run's [conditions](#a-city-can-finish-ok-and-still-fail-the-night), which decide the exit code, not who is
+  re-run.) Only an `ok` run qualifies: a
   crash says nothing about work left and re-running it is a crash loop; a timed-out city was killed past its
   budget and would be killed again. Nothing crosses nights and nothing reads the store.
 
@@ -328,8 +487,9 @@ Three rules that are load-bearing:
   exhausted its own list exits at minute ~6.4 of 12 — so the city that most needed the leftover window was
   the one denied it.
 
-  The other depth stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
-  collapsed into "stopped early": `blocked` means the host is standing down for six hours and a re-run would
+  The other stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
+  collapsed into "stopped early": `blocked` (from either phase — the image phase reports it when Google's
+  push-back stopped GSV, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) means the host is standing down for six hours and a re-run would
   spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again, and
   `max-requests` is a per-process cap the operator asked for, which re-running would silently multiply. If no
   summary arrives at all the queue falls back to the old elapsed-time rule, which is at least a *necessary*
@@ -389,7 +549,8 @@ The queue is a driver, not a replacement for the runner. A single city is still 
 * **Give it the venv interpreter by absolute path.** Cron's `PATH` is minimal, and `source activate` buys
   nothing a direct path doesn't.
 * **The exit code is the run's own**, so the queue — and the night's message — can read it. `SIGTERM` becomes exit
-  143 *after* the `finally` that writes the `log.csv` row, so stopping a run still leaves evidence.
+  143 *after* the `finally` that writes the `log.csv` row, so stopping a run still leaves evidence. A tripped
+  image breaker — #113's, or GSV's push-back breaker — is exit 1.
 * **Nothing is written relative to the CWD.** `scrape.log` and `log.csv` both land in `<storage-dir>`.
 * **Sizing:** `--max-runtime` is the slot, `--min-depth-runtime 60` reserves the tail for depth. Overlapping
   city runs share Google's patience — see the per-process caveat in
@@ -436,6 +597,12 @@ Two things deliberately absent. `allow_other` needs `user_allow_other` in `/etc/
 **non-root** user mounts; `fusermount` skips that check for root, so a systemd unit does not need it. And
 `_netdev` is an fstab-generator directive — a native unit derives no ordering from `Options=`, so the explicit
 `After=`/`Wants=` is what actually does the work.
+
+**The queue's guard is the store marker.** `scrape_queue.py` refuses a `--store-root` without a
+`.pano-store` file in it — exit 5 at startup, `store_missing` for each city due after a mid-night drop — and the
+file lives on the remote store, so an unmounted mount point never has it
+([ops: the store marker](ops.md#the-store-marker), #161). The hardening below stays as defence in depth, and
+still matters for a hand run of `DownloadRunner.py`, which does not check the marker.
 
 **Harden the mount point itself.** This is the one failure the unit makes *more* likely rather than less:
 
@@ -491,14 +658,106 @@ Each pano is dispatched to a source-specific module by the `source` field from `
 live in [`downloaders/`](../downloaders). Three sources are supported: `gsv` and `panoramax` always, and
 `mapillary` when `MAPILLARY_ACCESS_TOKEN` is set. Panos with any other `source` are skipped with a warning,
 and are deliberately **not** written to `pano_id_log.csv`, so a later run (or a later release) can still
-pick them up.
+pick them up. In [store mode](#pulling-from-the-project-sidewalk-pano-store) none of this section runs; the
+bytes come from the Project Sidewalk store.
+
+All three sources also carry the **width tripwire**: a panorama wider than 16384 px — the widest an
+8192-class GPU can render — gets an `over the viewer ceiling` warning in `scrape.log` and on stdout, and is
+downloaded exactly as it would have been otherwise. The **first** run on a host to see one also exits 1, so
+the failure-only alarm delivers it once; a latch file then keeps later runs to a warning (see
+`--width-alarm-latch`). What it means, the latch, and what to do are in
+[Operations](ops.md#the-width-tripwire).
 
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
-`cbk?output=tile` endpoint into one equirectangular JPEG: it determines a working zoom level (5 preferred,
-falling back to 3 — a fully black tile at both means there is no imagery), fans the tiles out concurrently
-with `aiohttp` and `backoff` retries, pastes them into a canvas sized from the server's width/height, and
-upscales zoom-3 panos with LANCZOS. The tile-resolution history is written up in
+`cbk?output=tile` endpoint into one equirectangular JPEG. To choose the zoom it asks Google's photometa
+endpoint — the one the depth phase already uses, without the depth payload, a 16 KB answer — which zoom
+levels this pano is served at, and picks the highest level that is exactly the tile grid the app's
+`width`/`height` implies ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)).
+If no level is (or its tiles are not 512 px), the pano is **refused** rather than stitched: fetching anyway
+would save the top-left corner of a larger pano at the app's exact dimensions, with nothing in the file to
+show it.
+
+If photometa is unavailable, or says the pano is gone, the older two-tile probe picks the zoom instead (a
+fully black tile at both zoom 5 and zoom 3, **on a 200**, means there is no imagery — still the only evidence
+a permanent "no imagery" verdict rests on; see below). The probe cannot tell a frame from a crop, so on that path two more tiles —
+the ones just past the frame's grid — are checked before the fan-out, and imagery there is the same refusal.
+That check guards only a frame **smaller** than Google serves. A frame **larger** than Google serves (an app
+frame of 16384×8192 on a pano served at 13312×6656) has nothing past its grid, so it passes; about a third of
+its grid then comes back black, which is under the stitcher's 50% limit, and it is stitched and ledgered as a
+success. The photometa path refuses that case (no level admits the frame); on the probe path it is a known
+residual, older than #74 and expected to be rare. The first photometa failure, refusal or fresh latch in a
+run is announced once on stdout and in `scrape.log` (photometa saying a pano is gone is not: a retired pano
+is ordinary, and photometa did answer); after three photometa failures in a row that run stops asking
+photometa at all, and after one refusal it stops at once. A refusal *from Google* on that photometa
+request writes the same block latch the depth phase uses (see
+[Depth → Being a good citizen](depth.md#being-a-good-citizen-of-googles-servers)): for the next 6 hours
+every city on this host takes its zooms from the probe, the depth phase stands down, and the depth pacer's
+earned standing is forfeited, exactly as a depth-phase refusal forfeits it.
+
+**A refused pano** is a `WARNING` on stdout and one `ERROR` in `scrape.log`, both containing
+`frame disagreement`; it is counted among the night's image failures (`log.csv` field 9, which also carries
+older failures, so the count is not readable from there), is not written to `pano_id_log.csv`, and is
+retried every run. Production mails stdout only on a night that exits nonzero
+([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), so on an ordinary night the `WARNING` is
+not delivered — count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. The remedy is on
+the app side: a SidewalkWebpage `gsv_data` refresh that brings the pano's stored `width`/`height` up to what
+Google serves now. Expected volume is near zero: all 651 live panos sampled by the
+[2026-08-09 photometa census](../reports/2026-08-09-photometa-census.md) served exactly the dimensions the
+app stores.
+
+A new pano costs one photometa request where the probe cost two; a pano the probe has to answer costs the
+two probe tiles plus the two frame-check tiles (plus the photometa request that failed, if one was sent); a
+retired one costs one photometa request plus the two probe
+tiles, once. The tiles are then fanned out concurrently with `aiohttp` and `backoff` retries, pasted into a
+canvas sized from the app's width/height, and upscaled with LANCZOS when only a lower level exists. One
+visible consequence: historic **five-level** panos (5376×2688) now download at their native zoom 4 and count
+as plain successes. The probe could only answer zoom 5 or 3, so where it answered 3 they were upscaled and
+counted as fallback successes; a city's `log.csv` field 8 can therefore drop while field 7 rises by the same
+amount. The tile-resolution history is written up in
 [reports/2026-08-07-cbk-tile-resolution.md](../reports/2026-08-07-cbk-tile-resolution.md).
+
+The tile retry policy distinguishes Google refusing us from the network misbehaving (#162). Until then every
+tile error — a 429 and a 403 included — was retried 10 times with uncapped exponential backoff: 5,120
+requests per refused 16384-wide pano, which is a soft refusal being escalated by the client. Now:
+
+| Tile answer | Retried? | Push-back? |
+|---|---|---|
+| HTTP 429 or 403, or a landing URL (or redirect hop) on Google's `/sorry/` or `consent.google.com` interstitial, whatever status the interstitial answers with | never | yes |
+| any other 4xx except 408 (404 included) | no | no — an ordinary failure, retried next run |
+| 5xx, 408, a timeout, a connection error, a non-JPEG body | yes: up to 10 tries, each wait capped at 32 s, and no retry once the tile has spent 120 s of its own time: time waiting for a download slot does not count, whether before its first request or before a retry, while the requests themselves and the waits between retries do | no |
+
+The interstitial check is the depth phase's rule carried over by analogy; no CBK interstitial has been
+observed. Nothing that used to succeed on a retry is lost by not retrying a 4xx: every retired pano measured
+answers 200 with an all-black body, not an error status. The 120 s is checked after each failed try, so the
+last wait can run past it by up to one 32 s wait, and a single try is bounded separately, by aiohttp's default
+300 s per-request timeout.
+
+A refusal also **abandons the rest of that pano's fan-out**: the tiles already in flight (at most
+`thread_count`, 8 by default) finish, and no further tile is requested. An ordinary failure does not abandon
+anything — the other tiles still complete, as they always have. Each pano leaves at most one line in
+`scrape.log` about its tiles:
+
+| Pano | `scrape.log` |
+|---|---|
+| refused | one ERROR from the image loop: `Failed to download pano <id> (HTTP 429): refused by Google: tile (x, y) answered HTTP 429; 8 of 512 tile requests made, the rest abandoned` |
+| failed after retries | one ERROR, `N/M tiles failed after K tile retries; first failure: ...`, plus the loop's usual line |
+| succeeded after retries | one INFO, `stitched after K tile retries` |
+
+`backoff` itself logs nothing any more. Capping its logger at WARNING would not have been enough: its
+per-retry lines are INFO but its per-tile give-up line is ERROR, 512 of them for a pano whose every tile failed.
+**What the ledger learns from GSV.** Two answers are permanent and write a `downloaded=0` row: a pano with no
+reported width/height (decided before any request), and no imagery at either zoom, which means **both** zoom
+probes came back **200** with a fully black tile (Google's answer for a pano id it has retired). Photometa
+never writes that row on its own: when it says a pano is gone, the probe is asked anyway, and only its two
+200s make the verdict. A photometa refusal of the frame (`frame disagreement`, above) is not a verdict either. Any other
+status on a probe — 403, 404, 410, a 206, a final 3xx — raises, even when its body is a black JPEG: the pano
+counts as tonight's failure, gets no ledger row, and is asked again next run. 429 and 5xx should normally not
+get that far, since the retry policy owns them and an exhausted retry raises; one that did would raise here
+like any other non-200. A probe that raises with 403 or 429, or that landed on Google's interstitial (a 200
+captcha page included), is also **push-back** and counts towards [the push-back
+breaker](ops.md#when-google-pushes-back-on-the-image-phase); every other status is an ordinary failure. The same rule covers the frame check past the grid
+(`frame_covers_pano`) — run nightly on the probe path, and by `refetch_panos.py` for every pano — where a non-200
+black edge tile used to read as "the frame covers the pano" ([#166]).
 
 **Mapillary (`mapillary`)** — resolves `thumb_original_url` through the
 [Graph API v4](https://www.mapillary.com/developer/api-documentation) and downloads the original-resolution
@@ -571,19 +830,26 @@ shape one federated instance wide. If either ever goes wrong the candidates are 
 trips within about ninety panos on the first night and the night's message says so — instead of the city writing itself
 off a third at a time, silently and permanently.
 
+**GSV has a different breaker, for Google refusing the host** ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)).
+Three consecutive GSV panos refused with a 429/403 or an interstitial (on a tile, or on the zoom probe) stop GSV images for the run, leave nothing ledgered, write the depth block latch, and exit nonzero. It is
+not an entry in the table above and counts nothing the table counts; what it does and what to do about it are
+in [Ops → When Google pushes back on the image phase](ops.md#when-google-pushes-back-on-the-image-phase).
+
 Only a **success** resets the count — not a transient failure, and not a skip. See
 [ops.md](ops.md#when-the-image-phase-stops-trusting-a-source) for why that distinction is the whole
 difference between a breaker that fires and one that cannot.
 
 [#113]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113
+[#166]: https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166
 
 Where the reason lands: the night's message carries the count (`N failed` in the `IMAGEDOWNLOAD` line) and nothing
 else, so from the mail alone an auth envelope and a network outage look the same. The envelope's `type`,
 `code` and `message` are in `scrape.log` on the store, one line per pano.
 
-Without the token, Mapillary panos are filtered out of the run rather than failed — **silently enough to
-miss**, so a city that should have Mapillary imagery and downloads none is the symptom of a token that never
-arrived.
+Without the token, Mapillary panos are filtered out of the run rather than failed, and not ledgered, so a
+run with the token picks them up. That used to be silent enough to miss; it is now reported as the condition
+`mapillary-token-missing` with the count, which
+[fails the night](#a-city-can-finish-ok-and-still-fail-the-night) (#161).
 
 **Under cron, keep it out of the crontab body.** `crontab -l` output lands in backups, screenshots and
 pastes, and the file itself outlives the person who wrote it. Put it in a mode-`600` file and let bash source

@@ -22,7 +22,8 @@ hardcoded here. See docs/log-analyzer.md.
 and cross-checks cities.csv against the fleet roster (#133), so a city nobody added here is loud rather
 than simply unmonitored:
 
-  PS_ROSTER_HOST  required unless --roster-host  a deployment that serves /v3/api/cities
+  PS_ROSTER_HOST  optional  deployment(s) serving /v3/api/cities, comma-separated, tried in order;
+                            omit for sidewalk-sea, then sidewalk-chicago
 
 Usage:
   python3 analyze.py                        # download + analyze all cities
@@ -35,9 +36,10 @@ import argparse
 import csv
 import importlib.util
 import os
+import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -57,6 +59,15 @@ _roster_spec.loader.exec_module(roster)
 SCRIPT_DIR  = Path(__file__).parent
 LOGS_DIR    = SCRIPT_DIR / "logs"
 CITIES_FILE = SCRIPT_DIR / "cities.csv"
+
+# Where the roster cross-check (#133) asks for /v3/api/cities, in order until one answers. Unlike the SFTP
+# host and base, these can safely have a default: every deployment on the current release serves the same
+# fleet-wide roster, so the choice of host decides only whether the check runs, never what it compares
+# against - and a check that cannot run is CRITICAL in roster_check. Seattle first because it is the
+# flagship and the first to get a release. The fallback is a second app stage, not a second machine: it
+# covers one deployment being restarted or broken, not the app host being down. --roster-host /
+# PS_ROSTER_HOST replace the whole list.
+DEFAULT_ROSTER_HOSTS = ("sidewalk-sea.cs.washington.edu", "sidewalk-chicago.cs.washington.edu")
 
 # ---------------------------------------------------------------------------
 # log.csv format
@@ -100,6 +111,27 @@ INCOMPLETE_RUN_WARNING   = 3    # incomplete runs in the last 7 before flagging
 OVERLAP_TOLERANCE_MIN    = 1.0  # durations are whole minutes; a start this close to the previous end is rounding
 DEPTH_STALLED_NIGHTS     = 3    # consecutive nights with no depth request, with work left, before flagging
 DEPTH_RATE_NIGHTS        = 7    # nights the depth request rate (and so the ETA) is averaged over
+DEPTH_BARREN_NIGHTS      = 3    # nights that made depth requests since the last SAVE, before rule 10 (not
+                                # calendar nights: a night with no row or a stand-down row is no evidence).
+                                # Same as DEPTH_STALLED_NIGHTS so "stalled" and "saving nothing" read alike; one
+                                # night is already improbable by chance (below), so this is operator latency -
+                                # a one-night network or store outage heals itself and must not page.
+DEPTH_BARREN_MIN_REQUESTS = 10  # requests since the last save before 0 saves is evidence. Fleet 2026-09-18:
+                                # 62,186 saved of 96,511 requests (64%; canary 301/500), so P(0 of 10) = 0.36^10
+                                # ~ 4e-5 - a FLEET figure: per city the share ran 35% (washington-dc) to 100%
+                                # on 2026-09-27, and at a 35% save share P(0 of 10) ~ 1.3%, which 3 requesting
+                                # nights still make negligible. Measured outage shapes: 25/night (the
+                                # breaker), 1,889/night (drift).
+DEPTH_UNAVAILABLE_SHARE  = 0.5  # ledger growth / failures (excluding the newest row) at or above which the
+                                # failures are being ledgered as `unavailable`. By construction 0.0 when they are
+                                # transient (never ledgered, gsv.py) and 1.0 in the drift shape; midpoint = margin.
+MALFORMED_RECENT_DAYS    = 7    # a torn row newer than this (or undatable) warns; older ones are one INFO line.
+                                # 20 of 26 warnings on 2026-09-19 were rows dated 2022..2026-05 (#43 close-out).
+                                # 7 as NEW_FAIL_NIGHTS and DEPTH_RATE_NIGHTS; 30 would re-alert a one-off tear
+                                # for a month, and the INFO line keeps the total visible anyway.
+ZERO_PROGRESS_MIN_NEW_WORK = 3  # new image-eligible panos (field 5 growth) or unattempted ones (5 - 11) rule 3
+                                # needs. 7.9-8.4% of a GSV ledger is a permanent verdict (2026-09-06), so k new
+                                # panos all retired - no success, no regression - is ~0.084^k: 8% at 1, 0.06% at 3.
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +206,9 @@ def download_log(city_id: str, dest: Path, sftp: dict) -> bool:
 # Parsing
 # ---------------------------------------------------------------------------
 
+_FULL_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")   # rule 9's datable torn-row stamp
+
+
 def read_log(log_path: Path) -> pd.DataFrame:
     """Read a log.csv into a sorted DataFrame with LOG_COLUMNS, header row optional.
 
@@ -213,6 +248,14 @@ def read_log(log_path: Path) -> pd.DataFrame:
     # corpus. A torn write - the realistic case, a row cut short by the mount dropping - is dropped too; it
     # was reading as a crashed run, which is a fair description but not evidence the row can be trusted for.
     malformed = sum(1 for row in rows if len(row) not in LOG_ROW_WIDTHS)
+    # Field 1 of a torn row is still trusted for one thing: dating it, so rule 9 can tell tonight's tear from
+    # one years old (#163). The stamp is written first and a tear is at the tail, so the stamp is the part
+    # that survives; a tear that did cut it parses as NaT, and rule 9 counts that as recent. ISO8601 accepts
+    # a PREFIX, though - `2026` parses as 2026-01-01 and `2026-09-2` as 2026-09-02 - so a stamp cut inside
+    # its first 19 bytes would be dated months back and filed as history. Only a stamp carrying the whole
+    # `YYYY-MM-DD HH:MM:SS` is trusted; anything shorter is undatable (#169 review).
+    torn_starts = [row[0] if _FULL_STAMP.match(row[0]) else None
+                   for row in rows if len(row) not in LOG_ROW_WIDTHS]
     rows = [(row + [""] * width)[:width] for row in rows if len(row) in LOG_ROW_WIDTHS]
 
     # dtype=object, so pandas does not get to pick a string dtype whose missing-value semantics differ across
@@ -244,6 +287,8 @@ def read_log(log_path: Path) -> pd.DataFrame:
     df = df[df["start_time"].notna()]
     result = df.sort_values("start_time").reset_index(drop=True)
     result.attrs["malformed_rows"] = malformed
+    result.attrs["malformed_starts"] = tuple(pd.to_datetime(
+        pd.Series(torn_starts, dtype=object), errors="coerce", format="ISO8601", utc=True))
     return result
 
 
@@ -341,14 +386,49 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         prior_had_some = (prior_n > 0).any()
 
         if tail_all_zero and prior_had_some:
+            # ...and there was something to fetch (#163). A mature city with no new panos downloads nothing
+            # and is healthy; three of 2026-09-19's warnings were exactly that. The evidence is field 5
+            # (xml_total = len(image_pano_infos), the image-eligible corpus), NOT field 11: image_total is
+            # prior + tonight's ATTEMPTS, so panos a starved image phase never reaches do not grow it, and
+            # "field 11 did not grow" is silent on precisely the regression this rule exists for. Two arms:
+            # field 5 grew from the last logged night before the window to the newest night in it, or
+            # field 5 - field 11 on the newest row carrying both (a lower bound on eligible panos never
+            # attempted) is at least the minimum. The bound is loose by the ledger rows no longer in the list:
+            # 5 - 11 was -1 in 50 of 56 cities on 2026-09-27, so the arm needs 4 real unattempted panos
+            # there, and -1,460 in chicago-il, where only the growth arm can fire. A corpus nobody wrote
+            # (field 5 blank) is unknown, not zero, and keeps the old behaviour: fire.
+            #
+            # A written 0 is unknown too. Field 5 is len(image_pano_infos) with no empty-list guard, so an empty
+            # /adminapi/panos answer writes a plausible 0 - the value corpus_size refuses in field 19 for the
+            # same reason. Taken at face value it read a 0 on the baseline night as `1,000 new panos`, and a
+            # month of empty answers as a flat corpus with nothing to fetch; for a Mapillary- or Panoramax-only
+            # city (field 19 legitimately 0) nothing else would report the second (#169 review).
+            xml_total = df["xml_total"].where(df["xml_total"] > 0)
+            xml_by_night = xml_total.groupby(df["date"]).last()   # last() skips NaN
+            before = xml_by_night.iloc[:-ZERO_PROGRESS_DAYS].dropna()
+            during = xml_by_night.tail(ZERO_PROGRESS_DAYS).dropna()
+            growth = None if before.empty or during.empty else int(during.iloc[-1] - before.iloc[-1])
+            both = df[xml_total.notna() & df["image_total"].notna()]
+            backlog = int(both["xml_total"].iloc[-1] - both["image_total"].iloc[-1]) if not both.empty else None
+            evidence = []
+            if growth is None:
+                evidence.append("the image-eligible corpus size is unknown (field 5 blank or 0)")
+            elif growth >= ZERO_PROGRESS_MIN_NEW_WORK:
+                evidence.append(f"{growth:,} new image-eligible panos (field 5, "
+                                f"{int(before.iloc[-1]):,} → {int(during.iloc[-1]):,})")
+            if backlog is not None and backlog >= ZERO_PROGRESS_MIN_NEW_WORK:
+                evidence.append(f"{backlog:,} eligible panos never attempted on the newest run "
+                                f"(field 5 − field 11)")
             last_success_mask = df["daily_success"] > 0
-            if last_success_mask.any():
+            if evidence and last_success_mask.any():
                 last_success_date = df.loc[last_success_mask, "date"].iloc[-1]
                 issues.append({
                     "level": "WARNING",
                     "msg": (
                         f"No new images downloaded in {ZERO_PROGRESS_DAYS} days "
-                        f"(last success: {last_success_date.strftime('%Y-%m-%d')})"
+                        f"(last success: {last_success_date.strftime('%Y-%m-%d')}) though there was work: "
+                        f"{' and '.join(evidence)}. Check the image phase's budget (--min-depth-runtime at "
+                        f"or above --max-runtime downloads nothing) and scrape.log."
                     ),
                 })
 
@@ -451,6 +531,60 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
             ),
         })
 
+    # --- 10. Depth phase requesting and saving nothing (#163) ---
+    # Numbered 10 so no existing rule moves; it sits here because it reads the same `progress`. Rule 7 counts
+    # requests, so a phase whose every request fails resets it nightly: measured, 10 nights of 25 transient
+    # failures and 10 nights of 1,889 requests all written off as `unavailable` both returned no issue. The
+    # two shapes are told apart by whether the failures come back as skips (depth_progress). The ledgering
+    # arm is CRITICAL because it is permanent: an `unavailable` row is never re-requested, so every night it
+    # runs costs those panos their depth until someone scrubs the ledger. The transient arm loses nothing -
+    # those panos retry - so it is a WARNING, rule 7's tier.
+    #
+    # The count is of nights that ASKED (unsaved_request_nights), so the share is always a number here: three
+    # requesting nights are at least two requesting rows before the newest (depth_progress). The first version
+    # counted calendar nights and so could reach this with one requesting row, and carried a third message
+    # for "cannot be classified yet"; that state is no longer reachable (#169 review).
+    if progress and progress["barren"]:
+        asked = progress["unsaved_request_nights"]
+        since = progress["unsaved_nights"]
+        # A city that never saved has no `last save` to count from: unsaved_nights is then the log's span + 1,
+        # so name the span and say there was no save rather than citing one (#169 final review).
+        if progress["ever_saved"]:
+            tail = f", over {since} nights since the last save" if since != asked else ""
+        else:
+            tail = (f", over {since} nights" if since != asked else "") + ", with no save in the log"
+        nights = f"on the last {asked} nights it made requests{tail}"
+        share = progress["unavailable_share"]
+        if share >= DEPTH_UNAVAILABLE_SHARE:
+            issues.append({
+                "level": "CRITICAL",
+                "msg": (
+                    f"Depth phase saved nothing {nights}, and is writing panos off: "
+                    f"{progress['written_off']:,} of the {progress['failed_before_newest']:,} requests that "
+                    f"failed before the newest run are now `unavailable` rows in depth_log.csv, never to be "
+                    f"re-requested. The fleet saves ~60% of its requests on a healthy night, so this is "
+                    f"upstream drift (streetlevel or the depth payload), not the panos. Put --skip-depth back "
+                    f"after the `--` in the crontab and scrub the ledger before the next run - docs/ops.md, "
+                    f"When the depth phase saves nothing."
+                ),
+            })
+        else:
+            tail = ("None of it was ledgered, so those panos retry - but the backfill is not moving."
+                    if not progress["written_off"] else
+                    f"Only {progress['written_off']:,} of the failures were ledgered as `unavailable`; the "
+                    f"rest retry - but the backfill is not moving.")
+            issues.append({
+                "level": "WARNING",
+                "msg": (
+                    f"Depth phase saved nothing {nights}: {progress['unsaved_requests']:,} "
+                    f"requests, every one failed, with {progress['unresolved']:,} of "
+                    f"{progress['eligible']:,} panos unresolved. {tail} Candidates: the consecutive-failure "
+                    f"breaker (network, or a full or unmounted store), Google refusing requests, or a depth "
+                    f"payload streetlevel can no longer read - the DEPTHDOWNLOAD lines in scrape.log name "
+                    f"which."
+                ),
+            })
+
     # --- 8. The corpus column contradicts the ledger ---
     # depth_eligible is len(gsv_panos), so an empty or source-less pano-list answer writes a plausible 0 and
     # erases the city's whole depth report. corpus_size refuses such a value; this is where that refusal is
@@ -466,16 +600,38 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         })
 
     # --- 9. Rows that are not runs ---
+    # Only a RECENT torn row is news (#163). Counted over the whole file, a tear from 2022 warned every
+    # morning: 20 of the 26 warnings on 2026-09-19 were rows dated 2022..2026-05, which teaches the reader to
+    # skip the WARNING tier. Dated by field 1 on rule 1's clock; an undatable row counts as recent, because a
+    # tear can cut the stamp itself and that is exactly tonight's row. Older rows are one INFO line with the
+    # total, so the count stays visible without alerting.
     malformed = df.attrs.get("malformed_rows", 0)
     if malformed:
-        issues.append({
-            "level": "WARNING",
-            "msg": (
-                f"{malformed} row(s) have a field count that is neither {LOG_ROW_WIDTHS[0]} nor "
-                f"{LOG_ROW_WIDTHS[1]} - a torn or corrupted write. Every count in such a row is shifted, so "
-                f"it is left out of every figure above rather than read as a run."
-            ),
-        })
+        starts = df.attrs.get("malformed_starts", ())
+        cutoff = now - timedelta(days=MALFORMED_RECENT_DAYS)
+        recent = [t for t in starts if pd.isna(t) or t >= cutoff]
+        undatable = sum(1 for t in recent if pd.isna(t))
+        widths = f"neither {LOG_ROW_WIDTHS[0]} nor {LOG_ROW_WIDTHS[1]}"
+        if recent:
+            undated = f" ({undatable} with no readable timestamp)" if undatable else ""
+            issues.append({
+                "level": "WARNING",
+                "msg": (
+                    f"{len(recent)} of {malformed} row(s) have a field count that is {widths} and are from "
+                    f"the last {MALFORMED_RECENT_DAYS} days{undated} - a torn or corrupted write. Every count "
+                    f"in such a row is shifted, so it is left out of every figure above rather than read as "
+                    f"a run."
+                ),
+            })
+        else:
+            issues.append({
+                "level": "INFO",
+                "msg": (
+                    f"{malformed} historical row(s) have a field count that is {widths}, the newest dated "
+                    f"{max(starts):%Y-%m-%d} - old torn writes, already left out of every figure. Recorded, "
+                    f"not alerted: only a row from the last {MALFORMED_RECENT_DAYS} days warns."
+                ),
+            })
 
     return issues
 
@@ -562,6 +718,35 @@ def depth_progress(df: pd.DataFrame):
                    names the candidates instead of asserting one.
       corpus_suspect
                    whether `eligible` had to be taken from an older row than the newest - see corpus_size.
+      unsaved_nights
+                   CALENDAR nights since the newest date with a depth SAVE (depth_success > 0), on
+                   quiet_nights' convention: log span + 1 when the city never saved.
+      unsaved_requests
+                   requests (success + failed) on the rows after that date - all of them failures.
+      unsaved_request_nights
+                   the dates after that one on which the phase made at least one request: the nights that
+                   asked and saved nothing. What rule 10 counts - a night with no row or a stand-down row is
+                   no evidence the phase is failing. Also the stats line's count, so the two agree.
+      ever_saved   whether the log holds any save at all; without one rule 10 names no `last save`.
+      written_off  what the ledger (skip + success) gained between the first and the newest row of that span
+                   that made requests, floored at 0 (a corpus can shrink). The `unavailable` verdicts, read
+                   back one run late.
+      failed_before_newest
+                   depth_fail summed over the same requesting rows except the newest, whose verdicts cannot
+                   have come back as skips yet.
+      unavailable_share
+                   written_off / failed_before_newest, or None when there is nothing to divide by - fewer than
+                   two requesting rows, so one-night lag leaves the failures unclassifiable. Never None when
+                   barren: DEPTH_BARREN_NIGHTS (3) requesting nights are at least two requesting rows before
+                   the newest, and every request on them failed.
+      barren       rule 10 (#163): the phase is asking and saving nothing. True when panos are unresolved,
+                   unsaved_request_nights >= DEPTH_BARREN_NIGHTS, unsaved_requests >= DEPTH_BARREN_MIN_REQUESTS,
+                   quiet_nights < DEPTH_STALLED_NIGHTS (once requests stop the night is rule 7's, so the two
+                   never report one outage twice), and the newest requesting row did NOT walk its whole list
+                   (depth_total < depth_eligible). That last guard is what keeps the ordinary end of a
+                   backfill quiet: a handful of stragglers that fail every night are reached every night.
+                   quiet_nights cannot see this shape at all - it counts requests, and a failed request is a
+                   request - which is why a phase whose every attempt failed read as healthy before #163.
     """
     ran = df[df["depth_total"] > 0]  # NaN compares false: a crashed row neither ran nor resolved anything
     ledgered = ran["depth_skip"].fillna(0) + ran["depth_success"].fillna(0)
@@ -595,6 +780,42 @@ def depth_progress(df: pd.DataFrame):
     quiet_nights = (int((newest - with_requests.index.max()).days) if not with_requests.empty
                     else int((newest - per_night.index.min()).days) + 1)
 
+    # Calendar nights since the last SAVE (rule 10), on quiet_nights' convention: a city that never saved
+    # counts from its first night, +1, so a first night can never fire and a never-saved city fires on its
+    # DEPTH_BARREN_NIGHTS-th. A request is not progress; only a save is.
+    date = df["start_time"].dt.normalize()
+    saves = df["depth_success"].fillna(0).groupby(date).sum()
+    saved = saves[saves > 0]
+    last_save = saved.index.max() if not saved.empty else None
+    unsaved_nights = int((newest - last_save).days if last_save is not None
+                         else (newest - per_night.index.min()).days + 1)
+    in_span = (date > last_save) if last_save is not None else pd.Series(True, index=df.index)
+    unsaved_requests = int(requests[in_span].sum())
+    # The nights that ASKED and saved nothing - what rule 10 counts, not unsaved_nights. A night with no row,
+    # or a five-zero stand-down row, is no evidence either way: counting calendar nights let a save, a few
+    # nights of --skip-depth (docs/ops.md's own rollback) or a window that never reached the city, then ONE
+    # failing night read as `saved nothing on the last 5 nights` (#169 review).
+    unsaved_request_nights = int(date[in_span & (requests > 0)].nunique())
+    # The two all-failed shapes differ only across rows: an `unavailable` verdict is ledgered at once and
+    # comes back as the next run's skip, a transient failure never does. So what the ledger gained between
+    # the first and the newest requesting row of the span, over the failures of every row but the newest
+    # (whose verdicts cannot have come back yet), is 1.0 when failures are being written off and 0.0 when
+    # they are transient - by construction, gsv.download_depth_maps. None until two rows have asked.
+    asked = df[in_span & (requests > 0)]
+    held = asked["depth_skip"].fillna(0) + asked["depth_success"].fillna(0)
+    written_off = max(int(held.iloc[-1] - held.iloc[0]), 0) if len(asked) >= 2 else 0
+    failed_before_newest = int(asked["depth_fail"].fillna(0).iloc[:-1].sum())
+    unavailable_share = float(written_off / failed_before_newest) if failed_before_newest else None
+    # A phase that reached every pano on its list (depth_total == depth_eligible) did not stop early: the
+    # candidates are eligible - skip and every stop happens with work left. That is the ordinary end of a
+    # backfill - a handful of stragglers that fail every night - and not an outage.
+    newest_asked = df[requests > 0].iloc[-1] if (requests > 0).any() else None
+    walked_list = bool(newest_asked is not None and pd.notna(newest_asked["depth_eligible"])
+                       and newest_asked["depth_total"] >= newest_asked["depth_eligible"])
+    barren = bool(unresolved > 0 and unsaved_request_nights >= DEPTH_BARREN_NIGHTS
+                  and unsaved_requests >= DEPTH_BARREN_MIN_REQUESTS
+                  and quiet_nights < DEPTH_STALLED_NIGHTS and not walked_list)
+
     return {
         "eligible": eligible,
         "resolved": resolved,
@@ -605,6 +826,14 @@ def depth_progress(df: pd.DataFrame):
         "quiet_nights": quiet_nights,
         "newest_accounted": bool(df["depth_total"].iloc[-1] > 0),
         "corpus_suspect": corpus_suspect,
+        "unsaved_nights": unsaved_nights,
+        "unsaved_requests": unsaved_requests,
+        "unsaved_request_nights": unsaved_request_nights,
+        "ever_saved": last_save is not None,
+        "written_off": written_off,
+        "failed_before_newest": failed_before_newest,
+        "unavailable_share": unavailable_share,
+        "barren": barren,
     }
 
 
@@ -624,8 +853,14 @@ def depth_status(progress) -> str:
     # Panos per night, not requests per night. Printing the request rate next to a pano-based ETA invited
     # exactly the arithmetic the ETA no longer does - and on a night of heavy transient failure the two
     # numbers differ by the whole failure count.
+    # A barren phase says so here too: in the drift shape the ledger grows by every failure, so the rate and
+    # the ETA beside it are counting `unavailable` verdicts and read as a healthy backfill (#163).
+    # Counted in nights that made requests, the WARNING's own count - not unsaved_nights, the calendar span,
+    # which on a gappy log is a different number for the same fact (#169 final review).
+    barren = (f" · nothing saved in {progress['unsaved_request_nights']} requesting nights"
+              if progress["barren"] else "")
     return (f"depth {progress['resolved']:,}/{progress['eligible']:,} ({pct:.1f}%) · "
-            f"+{progress['nightly_resolved']:,.0f} panos/night · {eta}")
+            f"+{progress['nightly_resolved']:,.0f} panos/night · {eta}{barren}")
 
 
 def fleet_depth_summary(progress_by_city: dict, total_cities: int = None) -> list[str]:
@@ -647,6 +882,7 @@ def fleet_depth_summary(progress_by_city: dict, total_cities: int = None) -> lis
     complete  = sum(1 for p in reporting.values() if p["unresolved"] == 0)
     stalled   = sum(1 for p in reporting.values()
                     if p["unresolved"] > 0 and p["quiet_nights"] >= DEPTH_STALLED_NIGHTS)
+    barren    = sum(1 for p in reporting.values() if p["barren"])
     with_eta  = sorted((p["nights_left"], c) for c, p in reporting.items() if p["nights_left"] is not None)
     longest   = ", ".join(f"{c} ~{max(1, round(n)):,} nights ({reporting[c]['unresolved']:,} left)"
                           for n, c in reversed(with_eta[-3:]))
@@ -657,7 +893,7 @@ def fleet_depth_summary(progress_by_city: dict, total_cities: int = None) -> lis
         f"  DEPTH BACKFILL — {len(reporting)} of {total_cities} cities report a corpus",
         f"  resolved {resolved:,} of {eligible:,} GSV panos ({100.0 * resolved / eligible:.1f}%) · "
         f"+{gaining:,.0f} panos/night on +{nightly:,.0f} requests ({DEPTH_RATE_NIGHTS}-night avg) · "
-        f"{complete} complete · {stalled} stalled",
+        f"{complete} complete · {stalled} stalled · {barren} saving nothing",
     ]
     if longest:
         lines.append(f"  longest remaining: {longest}")
@@ -692,38 +928,62 @@ def city_stats(df: pd.DataFrame) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
-def roster_check(city_rows, host, fetch=None) -> tuple[list[str], bool]:
+def resolve_roster_hosts(flag, env) -> tuple[str, ...]:
+    """The hosts to ask for the roster: the flag, else PS_ROSTER_HOST, else DEFAULT_ROSTER_HOSTS.
+
+    Each is a comma-separated list. Blank entries are dropped, so an empty or whitespace-only setting counts
+    as unset rather than becoming a host of " " that reports itself unable to serve a roster.
+
+        >>> resolve_roster_hosts(None, " a.example , b.example ")
+        ('a.example', 'b.example')
+    """
+    for setting in (flag, env):
+        hosts = tuple(h.strip() for h in (setting or "").split(",") if h.strip())
+        if hosts:
+            return hosts
+    return DEFAULT_ROSTER_HOSTS
+
+
+def roster_check(city_rows, hosts, fetch=None) -> tuple[list[str], bool]:
     """Cross-check cities.csv against the fleet roster: (report lines, whether it is CRITICAL).
 
     A comparison, not auto-discovery (#133). `cities.csv` stays the source of what to monitor and the roster
     is only the cross-check; generating the file from the roster would silently pick up cities nobody has
     decided to watch, which is a different failure from the one this closes.
 
-    Three ways it goes CRITICAL, and the middle one is the one that is easy to "simplify" away:
+    `hosts` are asked in order until one serves a roster, at most roster.ROSTER_MAX_HOSTS of them. Two ways
+    it goes CRITICAL, and the second is the one that is easy to "simplify" away:
 
     * **an unlisted city** - the gap itself;
-    * **no host configured** - a check that is silently skipped every night is precisely the failure it
-      exists to prevent, so an unset host is loud rather than absent. #132 made the same call for the
-      nightly path;
-    * **no roster served** - best effort on the fetch, but a check that fails open is the #130 shape again.
+    * **no host served a roster** - best effort on the fetch, but a check that fails open is the #130 shape
+      again. An empty `hosts` lands here too, through the loop's `else`, so it cannot read as a clean check.
 
     Returns lines rather than printing them so the whole thing is drivable in a test.
     """
     fetch = roster.fetch_roster if fetch is None else fetch
-    if not host:
-        return ([f"  🔴 [CRITICAL] roster cross-check not configured — set PS_ROSTER_HOST or --roster-host "
-                 f"to a deployment that serves {roster.ROSTER_PATH}"], True)
-
-    try:
-        entries = fetch(host)
-    except roster.RosterUnavailable as e:
-        return ([f"  🔴 [CRITICAL] {host} served no roster ({e}) — cities.csv was not cross-checked"], True)
+    failures = []
+    for host in hosts[:roster.ROSTER_MAX_HOSTS]:
+        try:
+            entries = fetch(host)
+            break
+        except roster.RosterUnavailable as e:
+            failures.append(f"{host}: {e}")
+    else:
+        skipped = len(hosts) - len(failures)
+        asked = f"; {len(failures)} of {len(hosts)} hosts asked" if skipped > 0 and failures else ""
+        return ([f"  🔴 [CRITICAL] no host served a roster ({'; '.join(failures) or 'no hosts given'}{asked}) — "
+                 f"cities.csv was not cross-checked"], True)
 
     have = {cid for cid in ((r.get("city_id") or "").strip() for r in city_rows) if cid and not cid.startswith("#")}
     unlisted = roster.unlisted_cities(entries, have, roster.disabled_rows(city_rows))
     public = sum(1 for e in entries if e["visibility"] == "public")
     private = len(entries) - public
     checked = f"checked {len(have)} rows against {public} public + {private} private cities on {host}"
+
+    # A host that failed before this one answered is still reported: Seattle gets releases first, so a
+    # Seattle that fails every night would otherwise go unseen until the fallback fails too.
+    if failures:
+        checked += f" (after {'; '.join(failures)})"
 
     if not unlisted:
         return ([f"  ✅  Roster cross-check — {checked}"], False)
@@ -770,8 +1030,9 @@ def main(argv=None) -> int:
     ros = parser.add_argument_group("fleet roster cross-check (#133)")
     ros.add_argument(
         "--roster-host",
-        help=f"Deployment to ask for {roster.ROSTER_PATH}, e.g. sidewalk-sea.cs.washington.edu. Every "
-             f"deployment serves the same roster, so one host is enough. [PS_ROSTER_HOST]",
+        help=f"Deployment(s) to ask for {roster.ROSTER_PATH}, comma-separated, tried in order. Every "
+             f"deployment serves the same roster, so override only when the defaults are down. "
+             f"[PS_ROSTER_HOST, default {','.join(DEFAULT_ROSTER_HOSTS)}]",
     )
     args = parser.parse_args(argv)
 
@@ -833,9 +1094,11 @@ def main(argv=None) -> int:
             pass
 
         # Print city block
-        icon = "✅" if not issues else (
-            "🔴" if any(i["level"] == "CRITICAL" for i in issues) else "🟡"
-        )
+        # Blue when every finding is INFO (#163): rule 9's history line is recorded, not alerted, and a yellow
+        # icon for it would be the every-morning warning again in another form. Such a city counts as OK.
+        levels = {i["level"] for i in issues}
+        icon = ("✅" if not issues else "🔴" if "CRITICAL" in levels
+                else "🟡" if "WARNING" in levels else "🔵")
         print(f"\n  {icon}  {display_name}")
         if stats_line:
             print(f"      {stats_line}")
@@ -858,7 +1121,7 @@ def main(argv=None) -> int:
     if args.download:
         roster_lines, roster_critical = roster_check(
             all_rows,
-            args.roster_host or os.environ.get("PS_ROSTER_HOST"),
+            resolve_roster_hosts(args.roster_host, os.environ.get("PS_ROSTER_HOST")),
         )
         print(f"\n{'━'*70}")
         for line in roster_lines:

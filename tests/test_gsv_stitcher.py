@@ -1,18 +1,23 @@
 """Tests for the GSV tile stitcher: grid arithmetic (#44), failed-tile handling (#45), stitch geometry,
 and the atomic image save. Network-free throughout - tile downloads and the zoom probes are stubbed at the
-gsv module boundary."""
+gsv module boundary, except in the #166 probe-status classes (TestAPermanentVerdictNeedsA200,
+TestTheFrameProbeNeedsA200), which stub below it at the transport adapter so the real _get_response runs."""
 
 import asyncio
+import collections
 import logging
 import os
+import time
 from io import BytesIO
 from types import SimpleNamespace
 
 import aiohttp
 import numpy as np
 import pytest
+import requests
 from PIL import Image
-from requests.adapters import HTTPAdapter
+from requests.adapters import BaseAdapter, HTTPAdapter
+from requests.structures import CaseInsensitiveDict
 
 from downloaders import gsv
 from downloaders.common import DownloadResult
@@ -131,13 +136,16 @@ class TestGridArithmeticAgainstRealPhotometa:
 
 
 class _FakeResponse:
-    def __init__(self, headers, body=b''):
+    def __init__(self, headers, body=b'', url='https://tile.invalid/cbk?output=tile'):
         self.headers = headers
         self._body = body
         # str(ClientResponseError) reads request_info.real_url, so the fake needs one.
         self.request_info = SimpleNamespace(real_url='https://tile.invalid')
         self.history = ()
         self.status = 200
+        # The landing URL after redirects - aiohttp's ClientResponse.url. _fetch_tile reads it for Google's
+        # interstitial markers (#162).
+        self.url = url
         self.content = self
 
     async def read(self):
@@ -245,6 +253,231 @@ class TestTileRetryErrors:
         """Backoff on a KeyError or a TypeError would turn a bug into ten slow bugs."""
         for exc in (KeyError, TypeError, ValueError, AttributeError):
             assert not issubclass(exc, gsv._TILE_RETRY_ERRORS), exc
+
+
+def _slow_slots(monkeypatch):
+    """Make every fan-out slot acquisition take a measurable 20 ms, so a slot wait is never exactly 0.0."""
+    real = asyncio.Semaphore
+
+    class _SlowSemaphore(real):
+        async def acquire(self):
+            await asyncio.sleep(0.02)
+            return await super().acquire()
+
+    monkeypatch.setattr(gsv.asyncio, 'Semaphore', _SlowSemaphore)
+
+
+class _StatusSession:
+    """A ClientSession stand-in whose every tile answers `status`, or whatever `answer(url, attempt)` says.
+
+    An int answer is raised as the ClientResponseError that aiohttp's `raise_for_status=True` raises on
+    entering the request context - which is where the real one comes from, and the contract test pins that
+    the fan-out opens its session with that flag. An exception instance is raised as it is (a ClientResponseError
+    carrying a redirect's landing URL, say); anything else is returned as the response. `requests`
+    counts every request made, which is the number this whole issue (#162) is about.
+
+    `await_first` yields to the loop before answering, so a fan-out's concurrent requests are genuinely in
+    flight together - without it every request completes inside its own task's first step and nothing that
+    depends on concurrency (the abandonment's slot check) is exercised at all. `delay` makes each answer take
+    that many real seconds, for what depends on time spent queued behind the fan-out's slots.
+    """
+
+    def __init__(self, status=None, await_first=False, answer=None, delay=0):
+        self.requests = 0
+        self.attempts = collections.Counter()
+        self._answer = answer if answer is not None else (lambda url, attempt: status)
+        self._await_first = await_first
+        self._delay = delay
+
+    def get(self, url, **kwargs):
+        self.requests += 1
+        self.attempts[url] += 1
+        outcome = self._answer(url, self.attempts[url])
+        await_first = self._await_first
+        delay = self._delay
+
+        class _Ctx:
+            async def __aenter__(self):
+                if await_first or delay:
+                    await asyncio.sleep(delay)
+                if isinstance(outcome, int):
+                    raise aiohttp.ClientResponseError(SimpleNamespace(real_url='https://tile.invalid'), (),
+                                                      status=outcome, message='x')
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return outcome
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+
+TILE = (3, 1, 'https://tile.invalid/cbk?output=tile&x=3&y=1')
+
+
+class TestATileRefusalIsNotRetried:
+    """#162: a tile Google refuses is push-back, and retrying it ten times is how a soft refusal escalates.
+
+    Measured on master against a local 429 server: 10 requests per tile, 5,120 per 16384-wide pano, ~248 s
+    of backoff sleep per tile, and one `backoff` log line per retry - about 1 MB of scrape.log per pano. The
+    tile path now answers each HTTP class differently: 429/403 is push-back and never retried, any other 4xx
+    is this pano's problem and not retried either, and only 5xx/408/network trouble is weather worth waiting
+    out - bounded per wait and in total.
+    """
+
+    @pytest.mark.parametrize('status', [429, 403])
+    def test_a_refusal_status_raises_the_pushback_error_backoff_cannot_catch(self, status):
+        with pytest.raises(gsv.TilePushbackError) as excinfo:
+            asyncio.run(gsv._fetch_tile(_StatusSession(status), TILE))
+
+        assert excinfo.value.status == status
+        assert (excinfo.value.x, excinfo.value.y) == (3, 1)
+        # The whole mechanism: backoff retries only what is in this tuple, so the refusal must not be in it.
+        assert not isinstance(excinfo.value, gsv._TILE_RETRY_ERRORS)
+
+    def test_the_retrying_variant_makes_exactly_one_request_on_a_429(self):
+        session = _StatusSession(429)
+
+        with pytest.raises(gsv.TilePushbackError):
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+
+    def test_a_404_is_not_retried_either_but_stays_an_ordinary_failure(self, monkeypatch):
+        """A 404 is not push-back - it says nothing about this host - but ten more asks will not make the
+        tile exist. Every retired pano measured answers 200 with a black body, not a 4xx, so nothing that
+        used to succeed on a retry is lost."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
+        session = _StatusSession(404)
+
+        with pytest.raises(aiohttp.ClientResponseError) as excinfo:
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+        assert excinfo.value.status == 404
+        assert not isinstance(excinfo.value, gsv.TilePushbackError)
+
+    def test_a_503_is_still_retried_to_the_try_budget_and_logs_nothing(self, monkeypatch, caplog):
+        """Weather keeps its retries. What it loses is backoff's own log line per retry: 512 tiles x 9
+        INFO 'Backing off' + 512 ERROR 'Giving up' was the flood, and capping the logger at WARNING would
+        still have left the 512 ERROR lines - so the decorator logs nothing and the pano owns its one line."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        session = _StatusSession(503)
+
+        with caplog.at_level(logging.DEBUG, logger='backoff'):
+            with pytest.raises(aiohttp.ClientResponseError):
+                asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == gsv.TILE_MAX_TRIES
+        assert [r for r in caplog.records if r.name == 'backoff'] == []
+
+    def test_the_total_retry_time_is_bounded(self, monkeypatch):
+        """The time budget is wired: with no seconds left, the first 503 is the last request. Without it, one
+        bad tile could sleep ~4 minutes (expo to 256 s, uncapped) while the rest of the fan-out waits. (It is
+        in the giveup predicate rather than backoff's max_time - see the queued-for-a-slot test.)"""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0)
+        session = _StatusSession(503)
+
+        with pytest.raises(aiohttp.ClientResponseError):
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+
+    @pytest.mark.parametrize('landing', ['https://www.google.com/sorry/index?continue=x',
+                                         'https://consent.google.com/ml?continue=x'])
+    def test_a_200_that_landed_on_an_interstitial_is_pushback(self, landing, monkeypatch):
+        """The depth phase's _raise_if_blocked rule, carried over by analogy - NOT measured on CBK. A
+        captcha page would also fail the Content-Type check, but as a retried ClientResponseError."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
+        response = _FakeResponse(headers={'Content-Type': 'text/html'}, url=landing)
+        session = _StatusSession(answer=lambda url, attempt: response)
+
+        with pytest.raises(gsv.TilePushbackError) as excinfo:
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+        assert excinfo.value.landing_url == landing
+        # The one scrape.log line the image loop writes carries this text, so it must name the landing.
+        assert 'landed on %s' % landing in str(excinfo.value)
+
+    @pytest.mark.parametrize('status', [503, 500, 404, 302])
+    @pytest.mark.parametrize('real_url, history', [
+        # The landing itself carries the marker - what raise_for_status reports for a redirect chain that
+        # ends on the interstitial.
+        ('https://www.google.com/sorry/index?continue=x', ()),
+        ('https://consent.google.com/ml?continue=x', ()),
+        # Only a hop does: the Location on the way there, with the landing somewhere unremarkable.
+        ('https://tile.invalid/elsewhere',
+         (SimpleNamespace(url='https://tile.invalid/cbk', headers={'Location': 'https://www.google.com/sorry/x'}),)),
+    ])
+    def test_an_interstitial_landing_is_pushback_whatever_its_status(self, status, real_url, history,
+                                                                      monkeypatch):
+        """#172 review (ops 1): the session raises for any non-2xx landing before the in-context URL check
+        can see it, so a /sorry/ page served as 503 used to be RETRIED - 10 tries x (redirect + landing)
+        per tile, ~10,240 requests for a pano whose block began mid-fan-out. The marker is the refusal,
+        whatever status the page wears; a 429/403 landing was already push-back by its status."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
+        error = aiohttp.ClientResponseError(SimpleNamespace(real_url=real_url), history, status=status,
+                                            message='x')
+        session = _StatusSession(answer=lambda url, attempt: error)
+
+        with pytest.raises(gsv.TilePushbackError) as excinfo:
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert session.requests == 1
+        assert gsv.pushback_reason(excinfo.value) == 'interstitial'
+        assert excinfo.value.status == status
+
+    def test_a_plain_503_with_no_marker_anywhere_is_still_weather(self, monkeypatch):
+        """The control for the test above: the same error without a marker keeps its retries."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        error = aiohttp.ClientResponseError(
+            SimpleNamespace(real_url='https://tile.invalid/cbk'),
+            (SimpleNamespace(url='https://tile.invalid/a', headers={'Location': 'https://tile.invalid/cbk'}),),
+            status=503, message='x')
+        session = _StatusSession(answer=lambda url, attempt: error)
+
+        with pytest.raises(aiohttp.ClientResponseError) as excinfo:
+            asyncio.run(gsv._download_tile(session, TILE))
+
+        assert not isinstance(excinfo.value, gsv.TilePushbackError)
+        assert session.requests == gsv.TILE_MAX_TRIES
+
+    @pytest.mark.parametrize('error, final', [
+        (aiohttp.ClientResponseError(None, (), status=404), True),
+        (aiohttp.ClientResponseError(None, (), status=400), True),
+        (aiohttp.ClientResponseError(None, (), status=408), False),   # request timeout: weather
+        (aiohttp.ClientResponseError(None, (), status=500), False),
+        (aiohttp.ClientResponseError(None, (), status=503), False),
+        (aiohttp.ClientResponseError(None, (), status=200), False),   # the Content-Type check's shape
+        (asyncio.TimeoutError(), False),
+        (aiohttp.ClientConnectionError(), False),
+    ])
+    def test_the_give_up_rule(self, error, final):
+        """The retry policy as a table, so a change to it is a change to this test rather than a surprise."""
+        assert gsv._tile_error_is_final(error) is final
+
+    def test_the_documented_bounds(self):
+        """docs/downloader.md's retry table quotes these three numbers; the other tests read them back, so
+        without this a change to any of them would pass silently."""
+        assert (gsv.TILE_MAX_TRIES, gsv.TILE_RETRY_MAX_WAIT, gsv.TILE_RETRY_MAX_SECONDS) == (10, 32, 120)
+
+    def test_the_wait_cap_is_read_when_a_tile_starts_retrying(self, monkeypatch):
+        """What _tile_retry_waits exists for: `backoff.expo(max_value=32)` frozen at import would ignore the
+        patch, and every test that zeroes the cap would sleep real seconds instead (#172 tests review, G09)."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        waits = gsv._tile_retry_waits()
+        drawn = [next(waits) for _ in range(6)]
+
+        # backoff 2.x's expo yields None first (it is primed with send(None)); 1.x's does not.
+        assert [w for w in drawn if w is not None] == [0] * len([w for w in drawn if w is not None])
+        assert any(w is not None for w in drawn)
+
+    def test_the_retrying_variant_still_wraps_the_bare_fetch(self):
+        """Every stub in this file and in test_image_downloaders.py patches one of these two names; a
+        wrapper that stopped wrapping _fetch_tile would leave those stubs testing something else."""
+        assert gsv._download_tile.__wrapped__ is gsv._fetch_tile
 
 
 class TestStitchTiles:
@@ -434,13 +667,58 @@ class TestRejectMostlyBlackStitch:
 
 def stub_probe(monkeypatch, pick_zoom):
     """Make the zoom probe pick `pick_zoom` without a network: probe requests for that zoom return a
-    non-blank JPEG, every other zoom a black one (Google's no-imagery answer)."""
+    non-blank JPEG, every other zoom a black one (Google's no-imagery answer).
+
+    Since #74 the probe is the FALLBACK - resolve_frame asks photometa first - so this also makes photometa
+    unavailable, which is what routes a test onto the probe path. That half is not optional:
+    tests/test_downscaled_sidecar.py imports this helper and is outside #74's file set, and without it every
+    one of its downloads would send a real photometa request (streetlevel is installed in CI). Returns the
+    list of probe URLs requested, in order.
+
+    Only the probe's own tile, (0, 0), has imagery: the pano is exactly the app's frame, so the probe arm's
+    frame check (frame_covers_pano, two tiles just past the grid) finds black there and lets it through."""
+    requested = []
 
     def fake_get_response(url, session, stream=False):
-        color = RED if ('zoom=%d&' % pick_zoom) in url else (0, 0, 0)
+        requested.append(url)
+        color = RED if ('zoom=%d&x=0&y=0&' % pick_zoom) in url else (0, 0, 0)
         return BytesIO(jpeg_bytes(color, (16, 16)))
 
+    def photometa_unavailable(pano_id, session):
+        raise gsv.DepthPayloadError('stubbed: this test drives the probe path')
+
     monkeypatch.setattr(gsv, '_get_response', fake_get_response)
+    monkeypatch.setattr(gsv, '_fetch_image_levels', photometa_unavailable)
+    return requested
+
+
+def stub_photometa(monkeypatch, sizes=None, tile_size=(512, 512), gone=False, error=None):
+    """Make the image phase's photometa read (#74) answer without a network.
+
+    `sizes` is the per-zoom (width, height) list Google would report, lowest first; `gone` answers code 2
+    (not found); `error` is raised instead of answering. Returns the list of pano ids asked about, so a test
+    can count photometa requests."""
+    asked = []
+
+    def fake_fetch_image_levels(pano_id, session):
+        asked.append(pano_id)
+        if error is not None:
+            raise error
+        if gone:
+            return None
+        return gsv.ImageLevels([tuple(s) for s in sizes], tuple(tile_size))
+
+    monkeypatch.setattr(gsv, '_fetch_image_levels', fake_fetch_image_levels)
+    return asked
+
+
+def deny_probe(monkeypatch):
+    """Fail the test if the two-tile zoom probe is sent at all."""
+    def no_probe(*args, **kwargs):
+        # pytest.fail raises a BaseException, which no `except Exception` in the code under test can swallow.
+        pytest.fail('the zoom probe must not be sent when photometa answered')
+
+    monkeypatch.setattr(gsv, '_get_response', no_probe)
 
 
 def stub_tiles(monkeypatch, result_for_tile):
@@ -776,6 +1054,10 @@ class TestDownloadSinglePanoComposesTheSeams:
     If it is ever re-inlined, refetch_panos.py keeps working against the seams while the nightly run drifts
     away from them - and the drift would be invisible, because both would still produce a plausible JPEG at
     the reported dims. That is the #73 failure mode exactly, one level up.
+
+    Since #74 the nightly side composes resolve_frame (which also says whether Google's levels admit the frame)
+    while refetch_panos.py composes resolve_zoom_and_dims, a wrapper over it; tests/test_gsv_photometa_zoom.py
+    holds the wrapper and the refusal.
     """
 
     def test_it_calls_both_seams_and_saves_what_the_second_returned(self, tmp_path, monkeypatch):
@@ -784,13 +1066,13 @@ class TestDownloadSinglePanoComposesTheSeams:
 
         def fake_resolve(pano_info):
             calls['resolve'] = pano_info['pano_id']
-            return 1024, 512, 5
+            return gsv.ResolvedFrame(1024, 512, 5, True, (1024, 512), 'photometa')
 
         def fake_fetch(pano_id, width, height, zoom):
             calls['fetch'] = (pano_id, width, height, zoom)
             return gsv.StitchedPano(frame, 0, False)
 
-        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', fake_resolve)
+        monkeypatch.setattr(gsv, 'resolve_frame', fake_resolve)
         monkeypatch.setattr(gsv, 'fetch_pano_image', fake_fetch)
 
         result = gsv.download_single_pano(str(tmp_path), {'pano_id': 'stitchPanoAAAAAAAAAAAA',
@@ -803,7 +1085,7 @@ class TestDownloadSinglePanoComposesTheSeams:
             assert saved.size == (1024, 512)
 
     def test_a_none_from_the_probe_seam_is_the_permanent_failure_verdict(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', lambda pano_info: None)
+        monkeypatch.setattr(gsv, 'resolve_frame', lambda pano_info: None)
 
         def never(*args, **kwargs):
             raise AssertionError('no imagery means no tile fan-out')
@@ -814,7 +1096,8 @@ class TestDownloadSinglePanoComposesTheSeams:
                                                         'width': 1024, 'height': 512}) == DownloadResult.failure
 
     def test_upscaled_from_the_fetch_seam_becomes_fallback_success(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', lambda pano_info: (1024, 512, 3))
+        monkeypatch.setattr(gsv, 'resolve_frame',
+                            lambda pano_info: gsv.ResolvedFrame(1024, 512, 3, True, None, 'probe'))
         monkeypatch.setattr(gsv, 'fetch_pano_image',
                             lambda *a: gsv.StitchedPano(Image.new('RGB', (1024, 512), RED), 0, True))
 
@@ -1020,6 +1303,341 @@ class TestTheTileFanOutContract:
         assert failed == [((1, 0), boom)]
 
 
+class TestARefusedTileAbandonsThePano:
+    """#162: one refused tile ends the pano's fan-out, and the pano leaves no log line of its own.
+
+    Driven through the REAL fan-out (_download_tiles, the backoff wrapper, _fetch_tile) with only aiohttp's
+    session and connector replaced, because what is under test is how many requests leave the box: at
+    thread_count 8, a 512-tile pano whose every tile answers 429 must stop at the 8 already in flight.
+    """
+
+    @pytest.fixture
+    def fake_aiohttp(self, monkeypatch):
+        """Install a session factory; the test sets `holder['session']` to the _StatusSession it wants."""
+        holder = {}
+
+        class FakeConnector:
+            def __init__(self, limit=None):
+                holder['limit'] = limit
+
+        class FakeClientSession:
+            def __init__(self, raise_for_status=None, connector=None):
+                pass
+
+            async def __aenter__(self):
+                return holder['session']
+
+            async def __aexit__(self, *args):
+                return False
+
+        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', FakeConnector)
+        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
+        monkeypatch.setattr(gsv, 'thread_count', 8)
+        return holder
+
+    def test_a_429_abandons_the_rest_of_the_fan_out(self, fake_aiohttp):
+        session = fake_aiohttp['session'] = _StatusSession(429, await_first=True)
+
+        with pytest.raises(gsv.TilePushbackError) as excinfo:
+            gsv.fetch_pano_image('refusedPanoAAAAAAAAAAA', 16384, 8192, 5)
+
+        assert session.requests == 8, 'only the requests already in flight may leave the box'
+        message = str(excinfo.value)
+        assert 'HTTP 429' in message and 'tile (' in message and '8 of 512' in message
+
+    def test_the_refused_pano_logs_nothing_itself(self, fake_aiohttp, caplog):
+        """The image loop writes the one line a refused pano gets; this layer adding one more is how 5,120
+        became 5,121 rather than 1. (asyncio's own loop-construction DEBUG line is not ours.)"""
+        fake_aiohttp['session'] = _StatusSession(429, await_first=True)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(gsv.TilePushbackError):
+                gsv.fetch_pano_image('refusedPanoAAAAAAAAAAA', 16384, 8192, 5)
+
+        assert [r.getMessage() for r in caplog.records if r.name != 'asyncio'] == []
+
+    def test_a_healthy_fan_out_makes_every_request_and_stitches(self, fake_aiohttp):
+        """The discrimination for the abandonment: nothing refused, nothing abandoned."""
+        body = jpeg_bytes(RED)
+        session = fake_aiohttp['session'] = _StatusSession(
+            await_first=True, answer=lambda url, attempt: _FakeResponse({'Content-Type': 'image/jpeg'}, body))
+
+        stitched = gsv.fetch_pano_image('healthyPanoAAAAAAAAAAA', 1024, 512, 1)
+
+        assert session.requests == 2
+        assert stitched.image.size == (1024, 512)
+
+    def test_a_tile_that_needed_a_retry_is_one_info_line(self, monkeypatch, fake_aiohttp, caplog):
+        """backoff no longer logs, so a pano that succeeded only after retries says so once - the earliest
+        sign of trouble that is not yet a failure."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        body = jpeg_bytes(RED)
+
+        def answer(url, attempt):
+            if '&x=0&' in url and attempt == 1:
+                return 503
+            return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
+
+        session = fake_aiohttp['session'] = _StatusSession(await_first=True, answer=answer)
+
+        with caplog.at_level(logging.DEBUG):
+            gsv.fetch_pano_image('retriedPanoAAAAAAAAAAA', 1024, 512, 1)
+
+        assert session.requests == 3
+        lines = [r.getMessage() for r in caplog.records if r.name != 'asyncio']
+        assert lines == ['IMAGEDOWNLOAD: pano retriedPanoAAAAAAAAAAA: stitched after 1 tile retries']
+        assert caplog.records[-1].levelno == logging.INFO
+
+    def test_a_failed_pano_line_carries_the_retry_count(self, monkeypatch, fake_aiohttp, caplog):
+        """An ordinary failure keeps its one ERROR line, now saying how much retrying it cost."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        fake_aiohttp['session'] = _StatusSession(503)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(aiohttp.ClientResponseError):
+                gsv.fetch_pano_image('failingPanoAAAAAAAAAAA', 1024, 512, 1)
+
+        lines = [r.getMessage() for r in caplog.records if r.name != 'asyncio']
+        assert len(lines) == 1
+        assert '2/2 tiles failed' in lines[0]
+        assert 'after %d tile retries' % (2 * (gsv.TILE_MAX_TRIES - 1)) in lines[0]
+
+    def test_a_refusal_is_found_behind_an_earlier_ordinary_failure(self, monkeypatch, fake_aiohttp, caplog):
+        """Push-back that starts in a mildly degraded fan-out (#172 tests review 2, mutant G18). Tile (0, 0)
+        503s once; before its retry, tile (5, 0) is refused, so the retry is abandoned - and an abandoned
+        tile sorts FIRST in grid order. Reading only the first failed cell would book the pano as an
+        ordinary failure with an ERROR line, and the breaker would never count it."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        body = jpeg_bytes(RED)
+
+        def answer(url, attempt):
+            if '&x=0&y=0&' in url and attempt == 1:
+                return 503
+            if '&x=5&y=0&' in url:
+                return 429
+            return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
+
+        fake_aiohttp['session'] = _StatusSession(await_first=True, answer=answer)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(gsv.TilePushbackError) as excinfo:
+                gsv.fetch_pano_image('mixedPanoAAAAAAAAAAAAA', 4096, 2048, 3)
+
+        assert (excinfo.value.x, excinfo.value.y) == (5, 0)
+        assert gsv.pushback_reason(excinfo.value) == 'HTTP 429'
+        assert [r.getMessage() for r in caplog.records if r.name != 'asyncio'] == [], \
+            'a refused pano owns no line of its own, however its fan-out also failed'
+
+    @pytest.mark.parametrize('failing', [pytest.param('&x=7&y=3&', id='last-tile'),
+                                         pytest.param('&x=0&y=0&', id='first-tile')])
+    def test_time_queued_for_a_slot_does_not_spend_a_tiles_retry_budget(self, monkeypatch, fake_aiohttp, failing):
+        """#172 review (ops 2). All tile tasks start at t=0 and queue for a slot, so a retry budget measured
+        from task start was spent by the queue: on a slow fan-out the late tiles lost their retries exactly
+        when they mattered, and one 5xx twice on a late tile failed a whole pano. Scaled down: 32 tiles one at a
+        time at 30 ms each put the last tile's first request ~1 s in, against a 0.5 s budget it then needs two
+        retries of.
+
+        The first-tile variant is the final review's MINOR 1: excluding only the wait before a tile's FIRST
+        request moved the failure from late tiles to early ones, because each retry queues for a slot again,
+        behind every tile not yet started (~0.9 s here), and that wait was still inside the budget. Every slot
+        wait is excluded now, on retries too.
+
+        Every acquisition waits a measurable 20 ms (_slow_slots), so no slot wait is ever exactly 0.0. Without
+        it the first tile's first wait IS 0.0 on Windows, whose monotonic clock ticks every 15.6 ms, and an
+        implementation counting only "while slot_wait == 0" passed there (#172 verification, MINOR 2)."""
+        monkeypatch.setattr(gsv, 'thread_count', 1)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.5)
+        _slow_slots(monkeypatch)
+        body = jpeg_bytes(RED)
+
+        def answer(url, attempt):
+            if failing in url and attempt <= 2:
+                return 503
+            return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
+
+        session = fake_aiohttp['session'] = _StatusSession(answer=answer, delay=0.03)
+
+        stitched = gsv.fetch_pano_image('queuedPanoAAAAAAAAAAAA', 4096, 2048, 3)
+
+        assert session.requests == 32 + 2, 'the failing tile kept both of its retries'
+        assert stitched.image.size == (4096, 2048)
+
+    def test_the_budget_still_stops_a_tile_that_keeps_failing(self, monkeypatch, fake_aiohttp):
+        """The other half: time spent retrying, as opposed to queueing, is still bounded. Every answer takes
+        30 ms against a 0.1 s budget, so the tile stops after a handful of tries, well short of TILE_MAX_TRIES."""
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.1)
+        session = fake_aiohttp['session'] = _StatusSession(503, delay=0.03)
+
+        with pytest.raises(aiohttp.ClientResponseError):
+            gsv.fetch_pano_image('failingPanoAAAAAAAAAAA', 512, 256, 0)
+
+        assert 2 <= session.requests < gsv.TILE_MAX_TRIES
+
+    def test_the_budget_still_stops_a_queued_tile_that_keeps_failing(self, monkeypatch, fake_aiohttp):
+        """The same bound for a tile that QUEUED (#172 verification, MINOR 1). With one tile and no queue,
+        slot_wait is 0 and any over-exclusion is invisible: counting each wait twice passed the whole suite,
+        and would give every queued, persistently failing tile TILE_MAX_TRIES tries in a 5xx storm. Here the
+        last of 32 tiles queues ~0.9 s before its first request and then always 503s at 30 ms an answer
+        against a 0.1 s budget, so only its own ~0.1 s of retrying may count."""
+        monkeypatch.setattr(gsv, 'thread_count', 1)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.1)
+        body = jpeg_bytes(RED)
+
+        def answer(url, attempt):
+            if '&x=7&y=3&' in url:
+                return 503
+            return _FakeResponse({'Content-Type': 'image/jpeg'}, body)
+
+        session = fake_aiohttp['session'] = _StatusSession(answer=answer, delay=0.03)
+
+        with pytest.raises(aiohttp.ClientResponseError):
+            gsv.fetch_pano_image('queuedFailPanoAAAAAAAA', 4096, 2048, 3)
+
+        tries = session.requests - 31
+        assert 2 <= tries < gsv.TILE_MAX_TRIES - 3, 'the queue must not buy the failing tile extra retries'
+
+    def test_the_fan_out_state_does_not_outlive_the_pano(self, fake_aiohttp):
+        fake_aiohttp['session'] = _StatusSession(429, await_first=True)
+        with pytest.raises(gsv.TilePushbackError):
+            gsv.fetch_pano_image('refusedPanoAAAAAAAAAAA', 16384, 8192, 5)
+        assert gsv._TILE_FANOUT.get() is None
+
+        body = jpeg_bytes(RED)
+        fake_aiohttp['session'] = _StatusSession(
+            answer=lambda url, attempt: _FakeResponse({'Content-Type': 'image/jpeg'}, body))
+        gsv.fetch_pano_image('healthyPanoAAAAAAAAAAA', 1024, 512, 1)
+        assert gsv._TILE_FANOUT.get() is None
+
+
+def probe_retry_error(status_code):
+    """The RetryError the zoom probe's urllib3 policy raises when every retry met `status_code`."""
+    from urllib3.exceptions import MaxRetryError, ResponseError
+    return requests.exceptions.RetryError(MaxRetryError(
+        None, 'https://maps.google.com/cbk', ResponseError(ResponseError.SPECIFIC_ERROR.format(
+            status_code=status_code))))
+
+
+def probe_retry_error_at(url, status_code=503, host='www.google.com'):
+    """The RetryError requests raises when the probe's redirect ended on `url` and urllib3 gave up there."""
+    from urllib3.exceptions import MaxRetryError, ResponseError
+    from urllib3 import HTTPSConnectionPool
+    return requests.exceptions.RetryError(MaxRetryError(
+        HTTPSConnectionPool(host), url, ResponseError(ResponseError.SPECIFIC_ERROR.format(
+            status_code=status_code))))
+
+
+def probe_http_error(status_code, url='https://maps.google.com/cbk?output=tile&zoom=3', history=()):
+    """The HTTPError _get_response raises for a non-200 probe (#166), carrying the Response it closed."""
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = url
+    response.history = list(history)
+    return requests.HTTPError('cbk probe answered %s, not 200: %s' % (status_code, url), response=response)
+
+
+def redirect_hop(location, url='https://maps.google.com/cbk?output=tile&zoom=3'):
+    """One entry of requests' Response.history: the 302 the Session followed on the way to the landing."""
+    hop = requests.Response()
+    hop.status_code = 302
+    hop.url = url
+    hop.headers = CaseInsensitiveDict({'Location': location})
+    return hop
+
+
+class TestPushbackReason:
+    """gsv.pushback_reason: what the image loop's breaker counts (#162, plan D2).
+
+    Push-back is Google's own refusal, never this box's network: a timeout or a reset is weather and must
+    not latch the fleet. A probe RetryError counts only when it carries 429 or 403 - a 5xx storm exhausting
+    urllib3's policy is Google being ill, not Google refusing us, and the breaker now writes a FLEET-wide
+    latch, so reading it as a refusal would stand every city's depth down for six hours over an outage.
+    """
+
+    @pytest.mark.parametrize('error, reason', [
+        (gsv.TilePushbackError(429, 0, 0), 'HTTP 429'),
+        (gsv.TilePushbackError(403, 5, 2), 'HTTP 403'),
+        (gsv.TilePushbackError(200, 0, 0, landing_url='https://www.google.com/sorry/index'), 'interstitial'),
+        (probe_retry_error(429), 'HTTP 429'),
+        (probe_retry_error(403), 'HTTP 403'),
+        (probe_retry_error(503), None),
+        (probe_retry_error(500), None),
+        (requests.exceptions.RetryError('no status in this one'), None),
+        # An interstitial landing is the refusal whatever status it wears - D1's third push-back shape - so
+        # a 5xx RetryError that ended on one is NOT the amendment's weather. The URL is the evidence.
+        (probe_retry_error_at('/sorry/index?continue=x'), 'interstitial'),
+        (probe_retry_error_at('/ml?continue=x', host='consent.google.com'), 'interstitial'),
+        (probe_retry_error_at('/cbk?output=tile&zoom=3', host='maps.google.com'), None),
+        # After #166 a probe answered anything but 200 raises HTTPError carrying its Response. 403 is not in
+        # the retry policy's forcelist, so this is the ONLY shape a probe 403 arrives in; 429 normally
+        # exhausts the policy into a RetryError, but reads the same way if it ever lands here.
+        (probe_http_error(403), 'HTTP 403'),
+        (probe_http_error(429), 'HTTP 429'),
+        (probe_http_error(404), None),
+        (probe_http_error(410), None),
+        (probe_http_error(503), None),
+        (probe_http_error(206), None),
+        (requests.HTTPError('no response attached'), None),
+        (probe_http_error(503, url='https://www.google.com/sorry/index?continue=x'), 'interstitial'),
+        (probe_http_error(200, url='https://consent.google.com/ml?continue=x'), 'interstitial'),
+        (probe_http_error(404, history=[redirect_hop('https://www.google.com/sorry/index')]), 'interstitial'),
+        (probe_http_error(404, history=[redirect_hop('https://maps.google.com/cbk?b')]), None),
+        (asyncio.TimeoutError(), None),
+        (aiohttp.ClientConnectionError('reset'), None),
+        (requests.exceptions.ConnectionError('dns'), None),
+        (aiohttp.ClientResponseError(None, (), status=404), None),
+        (aiohttp.ClientResponseError(None, (), status=503), None),
+        (aiohttp.ClientResponseError(None, (), status=429), None),   # never reaches here raw; not ours to read
+        (gsv.StitchedPanoMostlyBlackError('black'), None),
+        (gsv._TileAbandonedError('abandoned'), None),
+        # A frame refusal is about the pano, not the host (#74): transient, never Google refusing us.
+        (gsv.FrameDisagreementError('pano x: frame disagreement: levels do not admit 13312x6656'), None),
+        (OSError('disk full'), None),
+        (ValueError('bug'), None),
+    ])
+    def test_the_table(self, error, reason):
+        assert gsv.pushback_reason(error) == reason
+
+
+class TestTheImagePhasesLatchHelpers:
+    """fresh_block_latch_hours and record_google_refusal (#162), below the image loop that calls them."""
+
+    def write_latch(self, path, hours_ago):
+        path.write_text(repr(time.time() - hours_ago * 3600.0))
+
+    @pytest.mark.parametrize('hours_ago, fresh', [(5.9, True), (6.1, False)])
+    def test_freshness_ends_at_the_depth_phases_six_hours(self, tmp_path, hours_ago, fresh):
+        """The boundary, not just 0.5 h and 7 h: probation must end when the depth stand-down does."""
+        latch = tmp_path / 'latch'
+        self.write_latch(latch, hours_ago)
+
+        age = gsv.fresh_block_latch_hours(str(latch))
+
+        assert (age is not None) is fresh
+        if fresh:
+            assert age == pytest.approx(hours_ago, abs=0.01)
+
+    def test_record_google_refusal_never_raises_even_if_the_forfeit_does(self, tmp_path, monkeypatch, caplog):
+        """The backstop for the invariant: the run has already been refused, and losing the log.csv row over
+        the pace bookkeeping would be the wrong trade. The latch is written first and still counts."""
+        def boom(self):
+            raise RuntimeError('pace file exploded')
+
+        monkeypatch.setattr(gsv.DepthPacer, 'forfeit', boom)
+        latch = tmp_path / 'latch'
+
+        with caplog.at_level(logging.ERROR):
+            written = gsv.record_google_refusal(str(latch), str(tmp_path / 'pace'))
+
+        assert written is True and latch.exists()
+        assert any('could not forfeit the depth pace' in r.getMessage() for r in caplog.records)
+
+    def test_record_google_refusal_reports_a_latch_it_could_not_write(self, tmp_path):
+        assert gsv.record_google_refusal(str(tmp_path / 'missing' / 'latch'), str(tmp_path / 'pace')) is False
+
+
 class TestAnEmptyFanOutStillHasACellSize:
 
     def test_no_tiles_yields_the_nominal_tile_size(self):
@@ -1068,3 +1686,261 @@ class TestRequestSessionCannotHangForever:
         adapter.send('request', timeout=None)
         assert captured['timeout'] is not None
         assert captured['timeout'] > 0
+
+
+# --- the probes' status rule, through the real _get_response and a real requests.Session (#166) -----------
+
+class _CannedBody(BytesIO):
+    """`Response.raw` for a canned answer. BytesIO already gives Image.open its read/seek and records
+    `closed`; release_conn is the other half of what Response.close() calls on a real urllib3 body, so it is
+    recorded too - the point of closing on the raising path is that the pooled connection goes back."""
+
+    def __init__(self, data):
+        super().__init__(data)
+        self.released = False
+
+    def release_conn(self):
+        self.released = True
+
+
+class _CannedCbkAdapter(BaseAdapter):
+    """A transport adapter that answers every request from `answer(url) -> (status, body bytes)`.
+
+    Mounted on a REAL requests.Session, so the whole of Session.send - hooks, cookie extraction, the
+    redirect walk, the stream handling - runs exactly as it does against Google, and the only thing stubbed
+    is the socket. Everything else in this file stubs _get_response itself, which is why none of it can see
+    a status: this adapter is what does.
+    """
+
+    def __init__(self, answer):
+        super().__init__()
+        self.answer = answer
+        self.served = []
+
+    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+        # (status, body) or (status, body, headers): a Location header makes the real Session walk a
+        # redirect, which is how a landing on Google's interstitial is modelled (#162).
+        status, body, *extra = self.answer(request.url)
+        response = requests.Response()
+        response.status_code = status
+        response.reason = 'canned'
+        response.url = request.url
+        response.request = request
+        response.headers = CaseInsensitiveDict({'Content-Type': 'image/jpeg', **(extra[0] if extra else {})})
+        response.raw = _CannedBody(body)
+        self.served.append(response)
+        return response
+
+    def close(self):
+        pass
+
+
+def canned_cbk(monkeypatch, answer):
+    """Route gsv's probe session through a _CannedCbkAdapter; returns the adapter, whose `served` lists
+    every Response handed back, in order."""
+    adapter = _CannedCbkAdapter(answer)
+
+    def session():
+        s = requests.Session()
+        s.mount('https://', adapter)
+        s.mount('http://', adapter)
+        return s
+
+    monkeypatch.setattr(gsv, '_request_session', session)
+    return adapter
+
+
+def cbk_query(url, key):
+    """One integer query parameter of a cbk URL - zoom, x or y."""
+    return int(url.split('&%s=' % key)[1].split('&')[0])
+
+
+# The committed bytes of a genuine out-of-range CBK answer, and a solid tile standing in for imagery.
+BLACK_BODY = fixture_bytes('z3_blank_out_of_range.jpg')
+IMAGERY_BODY = jpeg_bytes(RED, (16, 16))
+
+# Statuses a 200-rule must refuse and the retry policy hands back as a body. The four 4xx are the ones
+# #166 names; 206 and 304 are the reason the rule is `== 200` and not raise_for_status(), which passes both.
+NON_200_STATUSES = [403, 404, 401, 410, 206, 304]
+
+
+class TestAPermanentVerdictNeedsA200:
+    """#166 option (b). resolve_zoom_and_dims' None is ledgered as a permanent downloaded=0, and it used to
+    rest on two tiles decoding to exact black whatever status carried them. A 403 or 404 whose body happened
+    to be a black JPEG was therefore a verdict that the pano is retired, written once and never re-asked.
+
+    The rule is now "200 or raise" in _get_response, the one helper both probes ride. A raise is transient
+    everywhere it lands: the image loop counts a failure and ledgers nothing, and refetch_panos counts a
+    transient failure. Only the direction of error changes - a permanent verdict can become a retry, never
+    the reverse.
+    """
+
+    PANO = 'statusPanoAAAAAAAAAAA'
+
+    def pano_info(self):
+        return {'pano_id': self.PANO, 'width': 1024, 'height': 512}
+
+    def by_zoom(self, monkeypatch, answers):
+        """Answer the zoom probe by zoom level: answers = {3: (status, body), 5: (status, body)}."""
+        return canned_cbk(monkeypatch, lambda url: answers[cbk_query(url, 'zoom')])
+
+    def test_two_200_black_tiles_are_still_the_permanent_verdict(self, monkeypatch):
+        """The half of the rule that must NOT move: Google answers a retired id with a black 200, and that
+        stays a None. Pinned through the real session, not assumed from the stubbed tests above."""
+        adapter = self.by_zoom(monkeypatch, {3: (200, BLACK_BODY), 5: (200, BLACK_BODY)})
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) is None
+        assert [cbk_query(r.url, 'zoom') for r in adapter.served] == [3, 5]
+
+    def test_200_imagery_resolves_to_zoom_5(self, monkeypatch):
+        self.by_zoom(monkeypatch, {3: (200, IMAGERY_BODY), 5: (200, IMAGERY_BODY)})
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) == (1024, 512, 5)
+
+    @pytest.mark.parametrize('status', NON_200_STATUSES)
+    def test_a_black_body_under_any_other_status_raises(self, monkeypatch, status):
+        self.by_zoom(monkeypatch, {3: (status, BLACK_BODY), 5: (status, BLACK_BODY)})
+
+        with pytest.raises(requests.HTTPError) as caught:
+            gsv.resolve_zoom_and_dims(self.pano_info())
+
+        assert caught.value.response.status_code == status
+        assert 'panoid=%s' % self.PANO in str(caught.value), 'the error must name the URL it refused'
+
+    @pytest.mark.parametrize('statuses', [(200, 403), (403, 200)], ids=['z3-200,z5-403', 'z3-403,z5-200'])
+    def test_either_probes_status_counts(self, monkeypatch, statuses):
+        """Both tiles found the verdict, so both need the 200. Black at both zooms, so the stake is exactly
+        the permanent None."""
+        z3, z5 = statuses
+        self.by_zoom(monkeypatch, {3: (z3, BLACK_BODY), 5: (z5, BLACK_BODY)})
+
+        with pytest.raises(requests.HTTPError):
+            gsv.resolve_zoom_and_dims(self.pano_info())
+
+    def test_the_refused_response_is_closed_so_its_connection_goes_back(self, monkeypatch):
+        adapter = self.by_zoom(monkeypatch, {3: (403, BLACK_BODY), 5: (403, BLACK_BODY)})
+
+        with pytest.raises(requests.HTTPError):
+            gsv.resolve_zoom_and_dims(self.pano_info())
+
+        refused = adapter.served[-1]
+        assert refused.raw.closed
+        assert refused.raw.released
+
+    def test_download_single_pano_raises_instead_of_returning_the_permanent_failure(self, tmp_path,
+                                                                                  monkeypatch):
+        """DownloadResult.failure is what the image loop writes as downloaded=0 and never re-asks. A raise
+        is one counted failure with no ledger row, so tomorrow's run asks again."""
+        self.by_zoom(monkeypatch, {3: (403, BLACK_BODY), 5: (403, BLACK_BODY)})
+
+        def no_fan_out(tiles):
+            raise AssertionError('a refused probe must not reach the tile fan-out')
+
+        monkeypatch.setattr(gsv, '_download_tiles', no_fan_out)
+
+        with pytest.raises(requests.HTTPError):
+            gsv.download_single_pano(str(tmp_path), self.pano_info())
+
+        assert not os.path.exists(os.path.join(str(tmp_path), self.PANO[:2], self.PANO + '.jpg'))
+
+
+class TestARefusedProbeIsPushback:
+    """#162 after #166: the zoom probe is the first request every GSV pano makes, so a host-wide block is met
+    there first - and since #166 a non-200 probe raises HTTPError instead of handing back a body. Through the
+    real _get_response and a real requests.Session (only the socket is canned), what pushback_reason makes
+    of each refusal shape. A pure-403 block used to be an ordinary failure here that the breaker never saw.
+    """
+
+    PANO = 'probePushbackAAAAAAAA'
+    SORRY = 'https://www.google.com/sorry/index?continue=x'
+
+    def pano_info(self):
+        return {'pano_id': self.PANO, 'width': 1024, 'height': 512}
+
+    def refused(self, monkeypatch, answer):
+        adapter = canned_cbk(monkeypatch, answer)
+        with pytest.raises(requests.RequestException) as caught:
+            gsv.resolve_zoom_and_dims(self.pano_info())
+        return adapter, caught.value
+
+    def test_a_403_probe_is_pushback(self, monkeypatch):
+        _, error = self.refused(monkeypatch, lambda url: (403, BLACK_BODY))
+
+        assert isinstance(error, requests.HTTPError)
+        assert gsv.pushback_reason(error) == 'HTTP 403'
+
+    @pytest.mark.parametrize('status', [404, 410, 503])
+    def test_another_status_is_not(self, monkeypatch, status):
+        """503 here is the canned adapter handing it straight back; in production the retry policy owns it
+        and gives up with a RetryError, which the amendment reads as weather too."""
+        _, error = self.refused(monkeypatch, lambda url: (status, BLACK_BODY))
+
+        assert gsv.pushback_reason(error) is None
+
+    @pytest.mark.parametrize('landing_status', [503, 404, 200])
+    def test_a_redirect_onto_the_interstitial_is_pushback_whatever_it_answers(self, monkeypatch, landing_status):
+        """The 200 case never raised at all before: a captcha page is a 200, so the probe handed its HTML to
+        PIL and the pano failed as an unreadable image. The landing URL is the refusal, as on the tile path."""
+        def answer(url):
+            if '/sorry/' in url:
+                return landing_status, b'<html>unusual traffic</html>', {'Content-Type': 'text/html'}
+            return 302, b'', {'Location': self.SORRY}
+
+        adapter, error = self.refused(monkeypatch, answer)
+
+        assert isinstance(error, requests.HTTPError)
+        assert gsv.pushback_reason(error) == 'interstitial'
+        assert [r.status_code for r in adapter.served] == [302, landing_status], 'one probe, never retried'
+        assert adapter.served[-1].raw.closed, 'the landing is closed, like any refused probe'
+
+    def test_control_a_redirect_that_lands_on_imagery_is_fine(self, monkeypatch):
+        """So the test above measures the marker, not the redirect."""
+        def answer(url):
+            if 'moved' in url:
+                return 200, IMAGERY_BODY
+            return 302, b'', {'Location': url.replace('/cbk', '/moved')}
+
+        canned_cbk(monkeypatch, answer)
+
+        assert gsv.resolve_zoom_and_dims(self.pano_info()) == (1024, 512, 5)
+
+
+class TestTheFrameProbeNeedsA200:
+    """frame_covers_pano's documented failure direction is ACCEPTANCE: a probe that reads as exact black
+    passes the frame, and refetch_panos then spends ~512 requests on a grid nothing confirmed. A non-200
+    black body was that case exactly. It now raises, and never returns True."""
+
+    PANO = 'statusPanoAAAAAAAAAAA'
+
+    @pytest.mark.parametrize('status', NON_200_STATUSES)
+    def test_a_black_body_under_any_other_status_raises(self, monkeypatch, status):
+        canned_cbk(monkeypatch, lambda url: (status, BLACK_BODY))
+
+        with pytest.raises(requests.HTTPError) as caught:
+            gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
+
+        assert caught.value.response.status_code == status
+        assert 'panoid=%s' % self.PANO in str(caught.value), 'the error must name the URL it refused'
+
+    @pytest.mark.parametrize('refused', [(26, 6), (0, 13)], ids=['x-probe', 'y-probe'])
+    def test_either_probes_status_counts(self, monkeypatch, refused):
+        canned_cbk(monkeypatch, lambda url: (403 if (cbk_query(url, 'x'), cbk_query(url, 'y')) == refused
+                                             else 200, BLACK_BODY))
+
+        with pytest.raises(requests.HTTPError):
+            gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
+
+    def test_two_200_black_edges_still_cover_the_frame(self, monkeypatch):
+        adapter = canned_cbk(monkeypatch, lambda url: (200, BLACK_BODY))
+
+        assert gsv.frame_covers_pano(self.PANO, 13312, 6656, 5) is True
+        assert [(cbk_query(r.url, 'x'), cbk_query(r.url, 'y')) for r in adapter.served] == [(26, 6), (0, 13)]
+
+    def test_the_refused_response_is_closed(self, monkeypatch):
+        adapter = canned_cbk(monkeypatch, lambda url: (404, BLACK_BODY))
+
+        with pytest.raises(requests.HTTPError):
+            gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
+
+        assert adapter.served[-1].raw.closed
+        assert adapter.served[-1].raw.released

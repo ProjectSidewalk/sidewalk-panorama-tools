@@ -12,7 +12,9 @@ functions directly with plain arguments.
 """
 
 import ast
+import csv
 import json
+import itertools
 import logging
 import logging.handlers
 import os
@@ -33,6 +35,8 @@ import DownloadRunner
 import pytest
 
 from conftest import posix_only
+from test_gsv_stitcher import probe_retry_error
+from test_gsv_stitcher import BLACK_BODY as CBK_BLACK_BODY, canned_cbk
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER = os.path.join(REPO_ROOT, 'DownloadRunner.py')
@@ -387,15 +391,22 @@ def run_selection_only(tmp_path, *extra_args):
     return result.stdout
 
 
+def panos_line(stdout):
+    """The whole `Panos:` line. Matched whole, not by substring: store mode appends
+    ' (not pulled: no --with-depth)' to it, and a substring match passes with that suffix leaking into a
+    plain scrape run with --skip-depth, which this helper's every caller is (#155 final review, M25)."""
+    return next(line for line in stdout.splitlines() if line.startswith('Panos: '))
+
+
 def test_depth_covers_unlabeled_panos_that_the_image_phase_skips(tmp_path):
     """--all-panos gates images only; depth is wanted for the whole corpus (ProjectSidewalk#39)."""
     stdout = run_selection_only(tmp_path)
-    assert 'Panos: 2 supported, 1 eligible for image download, 2 GSV panos eligible for depth' in stdout
+    assert panos_line(stdout) == 'Panos: 2 supported, 1 eligible for image download, 2 GSV panos eligible for depth'
 
 
 def test_all_panos_widens_the_image_phase_only(tmp_path):
     stdout = run_selection_only(tmp_path, '--all-panos')
-    assert 'Panos: 2 supported, 2 eligible for image download, 2 GSV panos eligible for depth' in stdout
+    assert panos_line(stdout) == 'Panos: 2 supported, 2 eligible for image download, 2 GSV panos eligible for depth'
 
 
 # The in-process main() calls below mutate process-wide state - root logger handlers, urllib3's level, the
@@ -1889,6 +1900,81 @@ class TestAPanoramaxVerdictReachesTheLedgerThroughTheRealDispatcher:
         assert os.listdir(storage / self.FLAT[:2]) == [], 'and no flat photograph was ever stored'
 
 
+class TestAGsvProbeRefusedWithABlackBodyReachesNoLedgerRow:
+    """#166 option (b), composed through the real image loop: the GSV counterpart of the two classes above.
+
+    test_gsv_stitcher pins that a non-200 probe RAISES, and the loop's except block pins that a raise leaves
+    no row - two halves, composition inferred, which is the shape this file's dispatcher classes exist to
+    close. Without this class, a loop that ledgered an HTTPError from gsv as downloaded=0 survived the whole
+    suite. Driven through the real dispatcher, gsv.download_single_pano and a real requests.Session; only the
+    socket is canned (test_gsv_stitcher.canned_cbk).
+    """
+
+    PANO = 'gsvRefusedAAAAAAAAAAAA'
+
+    def panos(self):
+        return [{'pano_id': self.PANO, 'source': 'gsv', 'width': 1024, 'height': 512}]
+
+    def test_a_403_black_probe_is_counted_unledgered_and_asked_again(self, monkeypatch, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        adapter = canned_cbk(monkeypatch, lambda url: (403, CBK_BLACK_BODY))
+
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert result == (0, 0, 1, 0, 1), '(success, fallback_success, fail, skipped, total)'
+        assert ledger_verdict_rows(storage) == [], 'a refused probe is a condition of the run, not a verdict'
+        first_run_requests = len(adapter.served)
+        assert first_run_requests > 0
+
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert result == (0, 0, 1, 0, 1)
+        assert len(adapter.served) > first_run_requests, 'the unledgered pano must be asked again next run'
+        assert ledger_verdict_rows(storage) == []
+
+    def test_control_two_200_black_probes_are_the_permanent_verdict(self, monkeypatch, tmp_path):
+        """The same bytes under a 200 are Google's answer for a retired id, and must still write the 0-row -
+        so the test above measures the status, not the body."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        adapter = canned_cbk(monkeypatch, lambda url: (200, CBK_BLACK_BODY))
+
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert result == (0, 0, 1, 0, 1)
+        assert ledger_verdict_rows(storage) == ['%s,0' % self.PANO]
+        first_run_requests = len(adapter.served)
+
+        DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert len(adapter.served) == first_run_requests, 'a ledgered verdict is never re-asked'
+
+    def test_a_pure_403_block_at_the_probe_trips_the_pushback_breaker(self, monkeypatch, tmp_path):
+        """#162 composed with #166: every GSV pano meets the probe first, so this is where a host-wide 403
+        block arrives - as the HTTPError #166 raises. It used to be an ordinary failure per pano, so the
+        breaker never counted it and the city tried every GSV pano and exited 0."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        latch = tmp_path / 'latch'
+        adapter = canned_cbk(monkeypatch, lambda url: (403, CBK_BLACK_BODY))
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        panos = [{'pano_id': 'gsvRefused%dAAAAAAAAAAA' % n, 'source': 'gsv', 'width': 1024, 'height': 512}
+                 for n in range(5)]
+        tripped, stop_reasons = set(), {'image_stop': None, 'depth_stop': None}
+
+        result = DownloadRunner.download_panorama_images(
+            str(storage), panos, tripped_sources=tripped, stop_reasons=stop_reasons,
+            block_latch_path=str(latch), pace_state_path=str(tmp_path / 'pace'))
+
+        assert tripped == {'gsv'}
+        assert stop_reasons['image_stop'] == 'blocked'
+        assert result == (0, 0, 3, 0, 3), 'three refused panos, then the rest left unattempted'
+        assert len(adapter.served) == 3, 'one refused zoom-3 probe per pano, and nothing after the trip'
+        assert latch.exists()
+        assert ledger_verdict_rows(storage) == []
+
+
 class TestPanoramaxNeedsNoCredentialToBeSupported:
     """#110: the word `panoramax` in filter_supported_sources is the whole of what stands between Bayonne
     opening and a city that silently downloads nothing every night (#101's failure shape)."""
@@ -2194,7 +2280,7 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
             assert 'false downloaded=0 rows in pano_id_log.csv' in channel
 
     def test_the_summary_counts_the_panos_the_breaker_actually_dropped(self, monkeypatch, tmp_path, capsys):
-        """Without this, deleting `breaker_skipped += 1` leaves the operator line reading a constant
+        """Without this, deleting `unattempted[source] += 1` leaves the operator line reading a constant
         "0 pano(s) were left unattempted" - which is the number they would use to decide whether the next
         run has anything to pick up."""
         storage = tmp_path / 'storage'
@@ -2256,6 +2342,484 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
                                     '-c', str(csv_path), '--skip-depth'])
 
 
+class _PushbackHarness:
+    """Shared paths and drive() for the two #162 classes below; not collected (no Test prefix)."""
+
+    @pytest.fixture(autouse=True)
+    def _paths(self, tmp_path):
+        from downloaders import gsv
+        self.gsv = gsv
+        self.P = gsv.TilePushbackError(429, 0, 0)
+        self.latch = tmp_path / 'latch'
+        self.pace = tmp_path / 'pace'
+        self.storage = tmp_path / 'storage'
+        self.storage.mkdir()
+
+    @staticmethod
+    def gsv_panos(count):
+        return [{'pano_id': 'gsv-%d' % n, 'source': 'gsv'} for n in range(count)]
+
+    def drive(self, monkeypatch, panos, verdicts):
+        """Run the image phase over `panos` in list order; return (result, calls, tripped, stop_reasons)."""
+        calls, tripped, stop_reasons = [], set(), {'image_stop': None, 'depth_stop': None}
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', scripted_download_pano(verdicts, calls))
+        result = DownloadRunner.download_panorama_images(
+            str(self.storage), panos, tripped_sources=tripped, stop_reasons=stop_reasons,
+            block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+        return result, calls, tripped, stop_reasons
+
+    def ledger(self):
+        return ledger_verdict_rows(self.storage, sort=False)
+
+
+class TestAPushbackTripAndImagesNoSuccess(_PushbackHarness):
+    """Cross-PR note 4 (#174 final review), now that #172 is on master. A push-back is counted as RAISED for
+    images-no-success - it is Google refusing this host, not an answer about any pano. The BUDGET arm never
+    fires on a trip: a trip records `blocked`, and that arm reads only `max-runtime`. The COUNT arm can: a
+    transient does not reset the push-back count, so enough network raises between refusals reach the
+    minimum before the trip, and then both are reported. That is kept on purpose - those raises were real,
+    and the city is booked failed through tripped_sources either way (verifier, 674bde9)."""
+
+    def slow(self, monkeypatch, verdicts, minutes_per_attempt):
+        """drive()'s download_pano, but each attempt costs `minutes_per_attempt` on a fake monotonic clock, so
+        the budget arm's duration gate is met and only the stop keying can hold the condition back."""
+        clock = [1000.0]
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+        answer = scripted_download_pano(verdicts)
+
+        def fake(storage_path, pano_info):
+            clock[0] += minutes_per_attempt * 60.0
+            return answer(storage_path, pano_info)
+        return fake
+
+    def test_a_real_trip_does_not_fire_the_budget_arm(self, monkeypatch):
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        fake = self.slow(monkeypatch, verdicts, 5.0)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', fake)
+        tripped, stop_reasons = set(), {'image_stop': None, 'depth_stop': None}
+
+        DownloadRunner.download_panorama_images(
+            str(self.storage), panos, tripped_sources=tripped, stop_reasons=stop_reasons,
+            block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+
+        assert stop_reasons['image_stop'] == DownloadRunner.STOP_BLOCKED, 'the case under test: a real trip'
+        assert tripped == {'gsv'}
+        assert stop_reasons.get('conditions', []) == []
+
+    def test_a_trip_after_enough_raises_also_reports_it_through_the_count_arm(self, monkeypatch):
+        """The verifier's sequence at the shipped constants: refusal, refusal, 8 network errors, refusal. The
+        third refusal trips GSV; the eleven raises with nothing answered are the count arm's condition too."""
+        panos = self.gsv_panos(11)
+        order = [self.P, self.P] + [RuntimeError('network')] * 8 + [self.P]
+        verdicts = {p['pano_id']: v for p, v in zip(panos, order)}
+
+        _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert len(calls) == 11 and tripped == {'gsv'} and stop_reasons['image_stop'] == 'blocked'
+        assert stop_reasons['conditions'] == [{'code': DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
+                                               'detail': '11 attempts raised, 0 answered, 0 s per raise'}]
+
+    def test_pushbacks_below_a_trip_count_as_raises(self, monkeypatch):
+        """Pins the decision: two refusals (no trip) beside eight network raises, nothing answered, are ten
+        raises at the real minimum. Counted as answers they would hide the outage."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        panos = self.gsv_panos(10)
+        verdicts = {p['pano_id']: (self.P if n < 2 else RuntimeError('network')) for n, p in enumerate(panos)}
+
+        _, _, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert tripped == set() and stop_reasons['image_stop'] is None, 'the case under test: no trip'
+        assert [c['code'] for c in stop_reasons['conditions']] == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+
+class TestGoogleRefusingGsvImagesStopsThePhase(_PushbackHarness):
+    """#162: the image phase's push-back breaker - a DIFFERENT breaker from #113's, on purpose.
+
+    #113 counts permanent verdicts and must stay off GSV, where 8.4% of a mature ledger is a retired pano.
+    This one counts only Google's own refusal (gsv.pushback_reason: a tile 429/403, an interstitial, or a
+    zoom-probe RetryError carrying 429/403), resets only on a GSV success, and costs no ledger rows at all -
+    a push-back is never a verdict, so there is nothing to withhold. On a trip it stops GSV for the run,
+    books the city failed (tripped_sources), reports 'blocked' to the queue, and writes the block latch and
+    forfeits the depth pace, because tiles and photometa leave the same IP.
+    """
+
+    def test_three_refused_panos_in_a_row_stop_gsv_and_latch_the_host(self, monkeypatch):
+        gsv = self.gsv
+        # A pace file holding EARNED standing, so the forfeit is observable: the conftest zeroes the opening
+        # interval, which would make a forfeited file and an untouched one read the same.
+        monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
+        monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
+        gsv._write_pace_state(str(self.pace), 0.25, 50)
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-4'] = downloaders.DownloadResult.success
+
+        result, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2'], 'panos after the trip must not be attempted at all'
+        assert self.ledger() == [], 'a push-back is never a verdict, so nothing is ledgered - and nothing withheld'
+        assert result == (0, 0, 3, 0, 3)
+        assert tripped == {'gsv'}, 'tripped_sources is what makes main() exit 1'
+        assert stop_reasons['image_stop'] == 'blocked'
+        age = gsv._block_latch_age_hours(str(self.latch))
+        assert age is not None and age < 0.01, 'the latch must be written, and fresh'
+        with open(self.pace) as f:
+            pace = json.load(f)
+        assert (pace['interval'], pace['clean_streak']) == (1.0, 0), 'the earned pace must be forfeited'
+
+    def test_two_are_not_a_trip(self, monkeypatch):
+        panos = self.gsv_panos(2)
+        result, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, {p['pano_id']: self.P for p in panos})
+
+        assert calls == ['gsv-0', 'gsv-1']
+        assert tripped == set()
+        assert stop_reasons['image_stop'] is None
+        assert not self.latch.exists() and not self.pace.exists()
+
+    def test_a_transient_failure_neither_counts_nor_resets(self, monkeypatch):
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-1'] = ConnectionError('connection reset')
+
+        result, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2', 'gsv-3'], 'trips on the third push-back'
+        assert tripped == {'gsv'}
+
+    def test_only_a_success_resets_the_count(self, monkeypatch):
+        panos = self.gsv_panos(7)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-2'] = downloaders.DownloadResult.success
+
+        result, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-%d' % n for n in range(6)], 'the success resets, so the trip is at gsv-5'
+        assert self.ledger() == ['gsv-2,1']
+        assert tripped == {'gsv'}
+
+    def test_a_fallback_success_resets_too(self, monkeypatch):
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-2'] = downloaders.DownloadResult.fallback_success
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-%d' % n for n in range(5)]
+        assert tripped == set()
+
+    def test_a_permanent_verdict_neither_counts_nor_resets(self, monkeypatch):
+        """DownloadResult.failure comes from the zoom probe's black tiles, which proves nothing about being
+        answered honestly - but it is still an ordinary verdict and still ledgered."""
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-1'] = downloaders.DownloadResult.failure
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2', 'gsv-3']
+        assert self.ledger() == ['gsv-1,0']
+        assert tripped == {'gsv'}
+
+    def test_a_skip_neither_counts_nor_resets(self, monkeypatch):
+        panos = self.gsv_panos(5)
+        verdicts = {p['pano_id']: self.P for p in panos}
+        verdicts['gsv-1'] = downloaders.DownloadResult.skipped
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2', 'gsv-3']
+        assert tripped == {'gsv'}
+
+    def test_it_is_keyed_on_gsv_and_stops_only_gsv(self, monkeypatch):
+        panos = [{'pano_id': 'gsv-0', 'source': 'gsv'}, {'pano_id': 'mly-0', 'source': 'mapillary'},
+                 {'pano_id': 'gsv-1', 'source': 'gsv'}, {'pano_id': 'gsv-2', 'source': 'gsv'},
+                 {'pano_id': 'mly-1', 'source': 'mapillary'}, {'pano_id': 'gsv-3', 'source': 'gsv'}]
+        verdicts = {'gsv-0': self.P, 'mly-0': downloaders.DownloadResult.success, 'gsv-1': self.P,
+                    'gsv-2': self.P, 'mly-1': downloaders.DownloadResult.success,
+                    'gsv-3': downloaders.DownloadResult.success}
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'mly-0', 'gsv-1', 'gsv-2', 'mly-1'], \
+            'a Mapillary success does not reset GSV, and Mapillary keeps downloading after the trip'
+        assert self.ledger() == ['mly-0,1', 'mly-1,1']
+        assert tripped == {'gsv'}
+
+    def test_another_sources_push_back_shaped_errors_trip_nothing(self, monkeypatch, caplog):
+        """A Mapillary 429 is Mapillary's business: it neither counts here nor is logged as Google's refusal."""
+        panos = [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(5)]
+        verdicts = {p['pano_id']: probe_retry_error(429) for p in panos}
+
+        with caplog.at_level(logging.ERROR):
+            _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert len(calls) == 5 and tripped == set() and stop_reasons['image_stop'] is None
+        assert not self.latch.exists()
+        logged = [r.getMessage() for r in caplog.records]
+        assert len([m for m in logged if 'due to error' in m]) == 5
+        assert not any('refused by Google' in m for m in logged)
+
+    def test_a_probe_shaped_refusal_counts_and_names_itself(self, monkeypatch, caplog):
+        panos = self.gsv_panos(4)
+        verdicts = {p['pano_id']: probe_retry_error(429) for p in panos}
+
+        with caplog.at_level(logging.ERROR):
+            _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2'] and tripped == {'gsv'}
+        per_pano = [r.getMessage() for r in caplog.records if 'refused by Google' in r.getMessage()]
+        assert len(per_pano) == 3
+        assert all('(HTTP 429)' in line for line in per_pano)
+
+    def test_a_probe_5xx_storm_is_weather_not_a_refusal(self, monkeypatch):
+        """The Fable amendment to D2, end to end: urllib3 exhausting its policy on 503s is Google being
+        ill. Latching would stand the whole fleet's depth down for six hours over an outage."""
+        panos = self.gsv_panos(5)
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, {p['pano_id']: probe_retry_error(503) for p in panos})
+
+        assert len(calls) == 5 and tripped == set()
+        assert not self.latch.exists()
+
+    def test_both_channels_carry_it_and_neither_carries_113s_advice(self, monkeypatch, capsys, caplog):
+        panos = self.gsv_panos(6)
+
+        with caplog.at_level(logging.DEBUG):
+            self.drive(monkeypatch, panos, {p['pano_id']: self.P for p in panos})
+
+        logged = [r.getMessage() for r in caplog.records]
+        assert len([m for m in logged if 'refused by Google: ' in m and '(HTTP 429)' in m]) == 3
+        assert len([m for m in logged if 'consecutive GSV panos' in m]) == 1
+        assert len([m for m in logged if 'Google pushed back on GSV imagery' in m]) == 1
+        assert any('3 pano(s) were left unattempted' in m for m in logged)
+        stdout = capsys.readouterr().out
+        assert 'WARNING' in stdout and str(self.latch) in stdout
+        assert '3 pano(s) were left unattempted' in stdout
+        # The per-trip line itself, which docs/ops.md quotes: the end-of-phase summary shares every token
+        # above, so without this a deleted trip print went unnoticed (#172 tests review, mutant D14).
+        assert 'WARNING - Google refused 3 GSV panos in a row (HTTP 429)' in stdout
+        for channel in (stdout, '\n'.join(logged)):
+            assert 'false downloaded=0 rows' not in channel, 'a push-back trip writes no rows to repair'
+
+    def test_two_breakers_in_one_run_each_count_only_their_own_unattempted(self, monkeypatch, capsys):
+        """A mixed-source city whose Mapillary token dies the night Google pushes back: #113 trips on
+        Mapillary and the push-back breaker on GSV. Each summary must count only its own source's unattempted
+        panos - #113's tells the operator how many to repair, and must not inflate it with GSV's."""
+        mly = downloaders.DownloadResult.failure
+        order = (['mly-0', 'mly-1', 'mly-2', 'gsv-0', 'gsv-1', 'gsv-2']
+                 + ['mly-3', 'gsv-3', 'mly-4', 'gsv-4', 'gsv-5', 'gsv-6'])
+        panos = [{'pano_id': i, 'source': 'mapillary' if i.startswith('mly') else 'gsv'} for i in order]
+        verdicts = {i: (mly if i.startswith('mly') else self.P) for i in order}
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == order[:6]
+        assert tripped == {'mapillary', 'gsv'}
+        stdout = capsys.readouterr().out
+        assert 'breaker tripped for mapillary; 2 pano(s) were left unattempted' in stdout
+        assert 'Google pushed back on GSV imagery (HTTP 429); 4 pano(s) were left unattempted' in stdout
+
+    def test_a_budget_stop_after_the_trip_does_not_overwrite_blocked(self, monkeypatch):
+        """#172 review (ops 6): after a GSV trip, a Mapillary pano later in the same list can reach the
+        budget check. 'blocked' is the stop that happened first and the one scrape_queue must read."""
+        clock = {'t': 0.0}
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock['t'])
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        panos = self.gsv_panos(3) + [{'pano_id': 'mly-0', 'source': 'mapillary'}]
+        verdicts = {p['pano_id']: self.P for p in panos[:3]}
+        verdicts['mly-0'] = downloaders.DownloadResult.success
+        scripted = scripted_download_pano(verdicts)
+
+        def download_pano(storage_path, pano_info):
+            if pano_info['pano_id'] == 'gsv-2':
+                clock['t'] = 3600.0     # the budget runs out while the tripping pano is in flight
+            return scripted(storage_path, pano_info)
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', download_pano)
+        tripped, stop_reasons = set(), {'image_stop': None, 'depth_stop': None}
+
+        DownloadRunner.download_panorama_images(
+            str(self.storage), panos, run_start_monotonic=0.0, max_runtime_minutes=1,
+            tripped_sources=tripped, stop_reasons=stop_reasons,
+            block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+
+        assert tripped == {'gsv'}
+        assert stop_reasons['image_stop'] == 'blocked'
+
+    def test_an_unwritable_latch_is_said_on_both_channels_not_claimed_written(self, monkeypatch, capsys,
+                                                                               caplog):
+        """#172 tests review 7. record_google_refusal never raises, by design - but the loop then announced
+        'block latch ... written' and 'the depth phase stands down', neither of which was true: the same run's
+        depth phase and every later city go ahead. The trip itself is unaffected."""
+        latch = self.storage / 'no-such-dir' / 'latch'
+        panos = self.gsv_panos(4)
+        calls, tripped, stop_reasons = [], set(), {'image_stop': None, 'depth_stop': None}
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano',
+                            scripted_download_pano({p['pano_id']: self.P for p in panos}, calls))
+
+        with caplog.at_level(logging.INFO):
+            DownloadRunner.download_panorama_images(
+                str(self.storage), panos, tripped_sources=tripped, stop_reasons=stop_reasons,
+                block_latch_path=str(latch), pace_state_path=str(self.pace))
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2'] and tripped == {'gsv'}
+        assert stop_reasons['image_stop'] == 'blocked'
+        assert not latch.exists()
+        stdout = capsys.readouterr().out
+        logged = '\n'.join(r.getMessage() for r in caplog.records if r.name != 'asyncio')
+        for channel in (stdout, logged):
+            assert 'written' not in channel.replace('could not be written', ''), channel
+            assert 'stands down' not in channel, 'nothing will stand down on a latch that is not there'
+            assert 'could not be written' in channel
+
+    def test_the_real_fan_out_spends_at_most_one_slot_of_requests_per_refused_pano(self, monkeypatch, caplog):
+        """The whole issue in one number, through the REAL gsv.fetch_pano_image under a 429 on every tile:
+        master spent 5,120 requests per pano and never stopped; this spends 8 per pano and stops at three."""
+        from test_gsv_stitcher import _StatusSession
+        gsv = self.gsv
+        session = _StatusSession(429, await_first=True)
+
+        class FakeClientSession:
+            def __init__(self, raise_for_status=None, connector=None):
+                pass
+
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, *args):
+                return False
+
+        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', lambda limit=None: None)
+        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
+        monkeypatch.setattr(gsv, 'thread_count', 8)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        calls = []
+
+        def download_pano(storage_path, pano_info):
+            calls.append(pano_info['pano_id'])
+            gsv.fetch_pano_image(pano_info['pano_id'], 16384, 8192, 5)
+            return downloaders.DownloadResult.success
+
+        monkeypatch.setattr(DownloadRunner, 'download_pano', download_pano)
+        tripped = set()
+        with caplog.at_level(logging.DEBUG, logger='backoff'):
+            DownloadRunner.download_panorama_images(
+                str(self.storage), self.gsv_panos(5), tripped_sources=tripped,
+                block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2']
+        assert session.requests == 24
+        assert tripped == {'gsv'}
+        assert [r for r in caplog.records if r.name == 'backoff'] == []
+
+    def test_the_blocked_stop_string_is_the_depth_phases(self):
+        """scrape_queue reads 'blocked' as "do not re-run"; one spelling across both phases."""
+        assert DownloadRunner.STOP_BLOCKED == self.gsv.DEPTH_STOP_BLOCKED
+
+
+class TestAFreshLatchPutsGsvImagesOnProbation(_PushbackHarness):
+    """#162 D5: a fresh block latch drops the push-back threshold to 1 - it does NOT stand the image phase down.
+
+    The depth phase latches after a SINGLE photometa refusal, from a different endpoint. A full stand-down
+    on read would let one interstitial stop fifty cities' images for six hours; ignoring the latch would let
+    each city spend three refused panos rediscovering it. Probation is the middle: images run, and the first
+    refusal is believed.
+    """
+
+    def write_latch(self, hours_ago):
+        self.latch.write_text(repr(time.time() - hours_ago * 3600.0))
+
+    def test_under_a_fresh_latch_one_refusal_trips(self, monkeypatch, capsys):
+        self.write_latch(0.5)
+        panos = self.gsv_panos(4)
+        verdicts = {p['pano_id']: downloaders.DownloadResult.success for p in panos}
+        verdicts['gsv-0'] = self.P
+
+        _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0']
+        assert tripped == {'gsv'} and stop_reasons['image_stop'] == 'blocked'
+        assert 'WARNING' not in capsys.readouterr().out.split('IMAGEDOWNLOAD: Processing')[0], \
+            "the probation notice is information, not the night's alarm"
+
+    def test_a_stale_latch_is_ignored(self, monkeypatch):
+        self.write_latch(7)
+        panos = self.gsv_panos(3)
+        verdicts = {'gsv-0': self.P, 'gsv-1': self.P, 'gsv-2': downloaders.DownloadResult.success}
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['gsv-0', 'gsv-1', 'gsv-2'] and tripped == set()
+
+    def test_a_fresh_latch_alone_stops_nothing(self, monkeypatch, capsys, caplog):
+        """The discrimination against reading the latch as a stand-down: nothing refuses, every pano runs."""
+        self.write_latch(0.5)
+        panos = self.gsv_panos(4)
+
+        with caplog.at_level(logging.INFO):
+            _, calls, tripped, stop_reasons = self.drive(
+                monkeypatch, panos, {p['pano_id']: downloaders.DownloadResult.success for p in panos})
+
+        assert calls == [p['pano_id'] for p in panos]
+        assert tripped == set() and stop_reasons['image_stop'] is None
+        notice = [r.getMessage() for r in caplog.records if 'probation' in r.getMessage()]
+        assert len(notice) == 1 and str(self.latch) in notice[0]
+        assert 'probation' in capsys.readouterr().out
+
+    def test_a_city_with_no_gsv_panos_announces_no_probation(self, monkeypatch, capsys, caplog):
+        """D9: a Mapillary- or Panoramax-only city has nothing of Google's to put on probation, so a fresh
+        latch (written by some other city's run) must not produce a notice about it."""
+        self.write_latch(0.5)
+        panos = [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(3)]
+
+        with caplog.at_level(logging.DEBUG):
+            _, calls, tripped, _ = self.drive(
+                monkeypatch, panos, {p['pano_id']: downloaders.DownloadResult.success for p in panos})
+
+        assert len(calls) == 3 and tripped == set()
+        assert 'probation' not in capsys.readouterr().out
+        assert not any('probation' in r.getMessage() for r in caplog.records)
+
+    def test_main_end_to_end_exits_1_and_both_phases_report_blocked(self, monkeypatch, tmp_path,
+                                                                   fake_streetview):
+        """The whole contract in one process: the image phase's trip writes the latch, the SAME run's depth
+        phase reads it and stands down at zero requests (the stub would raise on any), main() exits 1, and
+        the queue's summary says 'blocked' for both phases."""
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + ''.join(
+            'gsv-%d,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % n for n in range(4)))
+        summary = tmp_path / 'summary.json'
+        # Earned standing in --depth-pace-state, so the forfeit's destination is observable (the conftest
+        # zeroes the opening interval, which would make a forfeited file and an untouched one read the same).
+        monkeypatch.setattr(self.gsv, 'depth_start_interval', 1.0)
+        monkeypatch.setattr(self.gsv, 'depth_min_request_interval', 0.25)
+        self.gsv._write_pace_state(str(self.pace), 0.25, 50)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano',
+                            scripted_download_pano({'gsv-%d' % n: self.P for n in range(4)}))
+        monkeypatch.chdir(tmp_path)
+
+        code = DownloadRunner.main(['sidewalk-test.invalid', str(self.storage), '-c', str(csv_path),
+                                    '--depth-block-latch', str(self.latch),
+                                    '--depth-pace-state', str(self.pace),
+                                    '--run-summary-file', str(summary)])
+
+        assert code == 1
+        with open(summary) as f:
+            reported = json.load(f)
+        assert (reported['image_stop'], reported['depth_stop']) == ('blocked', 'blocked')
+        # #161 merged over #162: the same run's stand-down is the one condition; the trip itself is NOT also
+        # reported as images-no-success (cross-PR note 4) - it is the exit 1 above.
+        assert [c['code'] for c in reported['conditions']] == [self.gsv.DEPTH_CONDITION_STOOD_DOWN]
+        with open(self.pace) as f:
+            pace = json.load(f)
+        assert (pace['interval'], pace['clean_streak']) == (1.0, 0), \
+            'the forfeit must land in the --depth-pace-state file, not the host default'
+
+
 class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
     """--run-summary-file is the channel scrape_queue's extra passes read (#43, #126 review).
 
@@ -2284,7 +2848,7 @@ class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
                                    '--run-summary-file', str(tmp_path / 'summary.json'))
 
         assert sorted(calls) == sorted(GSV_PANO_IDS), 'every pano must have been downloaded'
-        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None}
+        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None, 'conditions': []}
 
     def test_a_budget_that_was_not_reached_reports_no_stop(self, monkeypatch, tmp_path):
         """Discrimination against reporting 'max-runtime' whenever --max-runtime is merely PRESENT."""
@@ -2343,7 +2907,7 @@ class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
                                pano_metadata_csv=str(csv_path), skip_depth=True,
                                run_summary_path=str(summary_path))
 
-        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None}
+        assert self.summary(tmp_path) == {'image_stop': None, 'depth_stop': None, 'conditions': []}
 
     def test_an_unwritable_summary_path_does_not_fail_the_run(self, monkeypatch, tmp_path):
         """The summary is evidence, not cargo - the same rule configure_logging follows. Losing a night's
@@ -2352,6 +2916,562 @@ class TestTheRunSummaryTellsTheQueueWhyEachPhaseStopped:
                                    '--run-summary-file', str(tmp_path / 'no-such-dir' / 'summary.json'))
 
         assert sorted(calls) == sorted(GSV_PANO_IDS), 'the scrape must have completed normally'
+
+
+# --- Conditions: a city can finish ok and still fail the night (#161) ---------------------------------------
+#
+# The run summary carries a `conditions` list - {code, detail} - for every shape the runner itself calls a
+# failure but that does not change its exit code: a refused or stood-down depth phase, a missing Mapillary
+# token, an image phase in which nothing succeeded, an empty or schema-drifted pano list. scrape_queue books
+# each one against the night, so the only unattended alarm (cron_notify --only-on-failure) actually fires.
+
+class TestNoteCondition:
+    """The one helper every condition goes through, so the dedupe and the length cap live in one place."""
+
+    def test_a_condition_is_recorded_with_its_detail(self):
+        sink = {}
+        downloaders.common.note_condition(sink, 'depth-refused', 'HTTP 429')
+        assert sink == {'conditions': [{'code': 'depth-refused', 'detail': 'HTTP 429'}]}
+
+    def test_a_detail_is_one_line(self):
+        """An exception's str can carry newlines (depth-breaker's last_error), and the queue's summary line
+        would split on them - dropping both halves out of `grep ERROR scrape_queue.log` (#174 review)."""
+        sink = {}
+        downloaders.common.note_condition(sink, 'depth-breaker', 'line one\n  line two\r\n\tthree')
+        assert sink['conditions'][0]['detail'] == 'line one line two three'
+
+    def test_no_sink_is_a_no_op(self):
+        """Callers that pass no stop_reasons (every direct test of a phase) must not need a dict."""
+        downloaders.common.note_condition(None, 'depth-refused', 'x')
+
+    def test_a_code_is_recorded_once_and_the_first_detail_wins(self):
+        """The summary's line names the FIRST occurrence; a phase that trips twice is still one condition."""
+        sink = {}
+        downloaders.common.note_condition(sink, 'depth-breaker', 'first')
+        downloaders.common.note_condition(sink, 'depth-breaker', 'second')
+        downloaders.common.note_condition(sink, 'depth-refused', 'other')
+        assert sink['conditions'] == [{'code': 'depth-breaker', 'detail': 'first'},
+                                      {'code': 'depth-refused', 'detail': 'other'}]
+
+    def test_a_long_detail_is_cut(self):
+        """The detail rides into a cron message once per condition kind; an exception's str can be a page."""
+        sink = {}
+        downloaders.common.note_condition(sink, 'depth-refused', 'x' * 5000)
+        detail = sink['conditions'][0]['detail']
+        assert len(detail) <= downloaders.common.CONDITION_DETAIL_MAX
+        assert detail.startswith('xxx')
+
+    def test_it_adds_to_a_summary_that_already_carries_stop_reasons(self):
+        sink = {'image_stop': None, 'depth_stop': 'blocked'}
+        downloaders.common.note_condition(sink, 'depth-stood-down', 'latch')
+        assert sink['depth_stop'] == 'blocked' and len(sink['conditions']) == 1
+
+
+class TestTheRunSummaryAlwaysCarriesConditions:
+
+    def test_a_clean_run_writes_an_empty_list(self, monkeypatch, tmp_path):
+        """Present and empty, not absent: the queue reads an absent key as "no conditions" too, but only a
+        present one proves the runner was new enough to have checked."""
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--run-summary-file', str(tmp_path / 'summary.json'))
+        with open(tmp_path / 'summary.json') as f:
+            assert json.load(f)['conditions'] == []
+
+    def test_a_noted_condition_reaches_the_file(self, tmp_path):
+        path = tmp_path / 'summary.json'
+        stop_reasons = {'image_stop': None, 'depth_stop': None}
+        downloaders.common.note_condition(stop_reasons, 'pano-list-empty', 'nothing served')
+
+        DownloadRunner._write_run_summary(str(path), stop_reasons)
+
+        with open(path) as f:
+            assert json.load(f)['conditions'] == [{'code': 'pano-list-empty', 'detail': 'nothing served'}]
+
+
+def summary_codes(tmp_path):
+    with open(tmp_path / 'summary.json') as f:
+        return [c['code'] for c in json.load(f)['conditions']]
+
+
+def summary_conditions(tmp_path):
+    with open(tmp_path / 'summary.json') as f:
+        return {c['code']: c['detail'] for c in json.load(f)['conditions']}
+
+
+class TestPanosTheRunCannotDownloadFailTheNight:
+    """A pano dropped before the image phase is not ledgered (a later run can pick it up), which is right -
+    and was also silent: 9,229 Richmond panos skipped every night for want of a token would have exited 0."""
+
+    MAPILLARY_ROW = 'mapillaryPanoId0000001,4096,2048,47.6,-122.3,180.0,0.0,mapillary,True\n'
+
+    def test_a_missing_mapillary_token_is_a_condition_naming_the_count(self, monkeypatch, tmp_path):
+        monkeypatch.delenv('MAPILLARY_ACCESS_TOKEN', raising=False)
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS + self.MAPILLARY_ROW,
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        conditions = summary_conditions(tmp_path)
+        assert list(conditions) == [DownloadRunner.CONDITION_MAPILLARY_TOKEN]
+        assert conditions[DownloadRunner.CONDITION_MAPILLARY_TOKEN].startswith('1 ')
+
+    def test_with_the_token_set_there_is_no_condition(self, monkeypatch, tmp_path):
+        monkeypatch.setenv('MAPILLARY_ACCESS_TOKEN', 'MLY|test|token')
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS + self.MAPILLARY_ROW,
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_an_unsupported_source_is_a_condition(self, monkeypatch, tmp_path):
+        """The shape Bayonne would have taken before #110 taught the runner the word `panoramax`."""
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS + 'fooPanoId,4096,2048,47.6,-122.3,180.0,0.0,foo,True\n',
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        conditions = summary_conditions(tmp_path)
+        assert list(conditions) == [DownloadRunner.CONDITION_UNSUPPORTED_SOURCE]
+        assert "'foo'" in conditions[DownloadRunner.CONDITION_UNSUPPORTED_SOURCE]
+
+
+class TestAnEmptyPanoListForACityWithHistoryFailsTheNight:
+    """An empty /adminapi/panos answer ran both phases over nothing and exited 0. For a city that has
+    scraped before, that is the server (or a proxy) failing, not the city being empty."""
+
+    def seed(self, tmp_path, name, rows):
+        storage = tmp_path / 'storage'
+        storage.mkdir(exist_ok=True)
+        (storage / name).write_text(rows)
+
+    def test_an_empty_list_over_an_image_ledger_is_a_condition(self, monkeypatch, tmp_path, capsys, caplog):
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
+
+        with caplog.at_level(logging.ERROR):
+            call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_LIST_EMPTY]
+        assert 'WARNING' in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and 'pano list is empty' in r.getMessage() for r in caplog.records)
+
+    def test_a_list_the_filter_emptied_is_the_filters_condition_only(self, monkeypatch, tmp_path, capsys):
+        """A Mapillary-only city whose token did not reach cron: the server served its panos, the runner
+        dropped them. `pano-list-empty` would send the operator to a server that is fine - one fact, one
+        condition, and the filter already names it (#174 review)."""
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
+        monkeypatch.delenv('MAPILLARY_ACCESS_TOKEN', raising=False)
+
+        call_main(monkeypatch, tmp_path, TestPanosTheRunCannotDownloadFailTheNight.MAPILLARY_ROW,
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_MAPILLARY_TOKEN]
+        assert '/adminapi/panos' not in capsys.readouterr().out
+
+    def test_a_list_with_no_labelled_pano_is_not_empty(self, monkeypatch, tmp_path):
+        """Without --all-panos the image list is the labelled panos only, and a hand run over a city with
+        none left has an empty image list over a served one. The server served panos; nothing is wrong."""
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
+
+        storage, calls = call_main(monkeypatch, tmp_path,
+                                   'unlabelledPano,16384,8192,47.6,-122.3,180.0,0.0,gsv,False\n',
+                                   '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert calls == [], 'the case under test: nothing eligible for the image phase'
+        assert summary_codes(tmp_path) == []
+
+    def test_a_depth_ledger_alone_is_history_too(self, monkeypatch, tmp_path):
+        self.seed(tmp_path, 'depth_log.csv', 'pano_id,status\nsomePano,saved\n')
+
+        call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_LIST_EMPTY]
+
+    def test_a_header_only_ledger_is_not_history(self, monkeypatch, tmp_path):
+        """What any empty run leaves behind: the image phase creates the ledger with its header."""
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded,fetched_at\n')
+
+        call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_fresh_store_is_not_a_condition(self, monkeypatch, tmp_path):
+        """A city being set up has nothing yet; alarming on it would be crying wolf at every launch."""
+        call_main(monkeypatch, tmp_path, '', '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == []
+
+
+def call_main_scripted(monkeypatch, tmp_path, verdicts, *extra_args):
+    """call_main, but every pano answers with its scripted verdict (or raises it)."""
+    rows = ''.join('%s,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % p for p in verdicts)
+    csv_path = tmp_path / 'panos.csv'
+    csv_path.write_text(CSV_HEADER + rows)
+    storage = tmp_path / 'storage'
+    monkeypatch.setattr(DownloadRunner, 'download_pano', scripted_download_pano(verdicts))
+    monkeypatch.chdir(tmp_path)
+    code = DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path), '--skip-depth',
+                                '--run-summary-file', str(tmp_path / 'summary.json'), *extra_args])
+    return storage, code
+
+
+class TestAnImagePhaseWithNoSuccessFailsTheNight:
+    """Every attempted pano raising is a condition of the run (the network, the store, a bug), not of the
+    panos - and a transient is never ledgered, so nothing on disk says it happened. A permanent verdict is
+    the source ANSWERING, so a night of those is not this."""
+
+    @pytest.fixture(autouse=True)
+    def small_minimum(self, monkeypatch):
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 3)
+
+    def verdicts(self, raised=0, success=0, failure=0, skipped=0):
+        out = {}
+        for i in range(raised):
+            out['raisedPano%03d' % i] = RuntimeError('store went away')
+        for i in range(success):
+            out['successPano%03d' % i] = downloaders.DownloadResult.success
+        for i in range(failure):
+            out['failurePano%03d' % i] = downloaders.DownloadResult.failure
+        for i in range(skipped):
+            out['skippedPano%03d' % i] = downloaders.DownloadResult.skipped
+        return out
+
+    def test_the_minimum_number_of_raises_and_nothing_answered_is_a_condition(self, monkeypatch, tmp_path,
+                                                                              capsys):
+        _, code = call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+        assert 'IMAGEDOWNLOAD: WARNING' in capsys.readouterr().out
+        assert code == 0, 'a condition fails the NIGHT through the queue; the runner exit code is unchanged'
+
+    def test_fewer_raises_than_the_minimum_are_not(self, monkeypatch, tmp_path):
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=2))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_one_success_among_them_is_not(self, monkeypatch, tmp_path):
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3, success=1))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_permanent_verdicts_are_answers_not_raises(self, monkeypatch, tmp_path):
+        """fail_count includes both; only the raises count here."""
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(failure=3))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_permanent_verdict_among_the_raises_is_an_answer(self, monkeypatch, tmp_path):
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3, failure=1))
+
+        assert summary_codes(tmp_path) == []
+
+    def test_skips_are_neither(self, monkeypatch, tmp_path):
+        """A skip is os.path.isfile() returning true: the source was never contacted, so it says nothing
+        about whether this run could download anything."""
+        call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3, skipped=4))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+    def test_it_goes_to_scrape_log_as_well_as_stdout(self, monkeypatch, tmp_path, caplog):
+        """Two channels (CLAUDE.md): stdout is what cron mails tonight, scrape.log is what is still there
+        next week - and the per-pano ERRORs it points at are only in the second."""
+        with caplog.at_level(logging.ERROR):
+            call_main_scripted(monkeypatch, tmp_path, self.verdicts(raised=3))
+
+        assert any(r.levelno == logging.ERROR and 'none was answered' in r.getMessage() for r in caplog.records)
+
+    def seed_failed_ledger(self, tmp_path, count):
+        storage = tmp_path / 'storage'
+        storage.mkdir(exist_ok=True)
+        ids = ['retiredPano%03d' % i for i in range(count)]
+        (storage / 'pano_id_log.csv').write_text(
+            'pano_id,downloaded,fetched_at\n' + ''.join('%s,0,\n' % p for p in ids))
+        return ids
+
+    def test_permanent_verdicts_already_in_the_ledger_are_not_this_run(self, monkeypatch, tmp_path):
+        """The production shape: a mature city is served nothing new, and its Final result line reads
+        "0 success ... N failed" because fail_count is SEEDED from the ledger's downloaded=0 rows (seattle,
+        2026-09: 14,603 failed, 0 answered, every night). Those are old answers counted at zero requests; a
+        condition keyed on fail_count would alarm every mature city every night."""
+        ids = self.seed_failed_ledger(tmp_path, DownloadRunner.IMAGE_NO_SUCCESS_MIN_RAISED)
+
+        call_main_scripted(monkeypatch, tmp_path, {p: downloaders.DownloadResult.failure for p in ids})
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_raise_on_top_of_a_failed_ledger_is_still_below_the_minimum(self, monkeypatch, tmp_path):
+        ids = self.seed_failed_ledger(tmp_path, DownloadRunner.IMAGE_NO_SUCCESS_MIN_RAISED)
+        verdicts = {p: downloaders.DownloadResult.failure for p in ids}
+        verdicts['newPano'] = RuntimeError('one transient')
+
+        call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert summary_codes(tmp_path) == []
+
+    def run_on_a_clock(self, monkeypatch, tmp_path, verdicts, minutes_per_attempt, max_runtime):
+        """call_main_scripted with a fake monotonic clock that each attempt advances - the shape of a
+        blackholed network, where one pano takes minutes to raise."""
+        clock = [1000.0]
+        answer = scripted_download_pano(verdicts)
+
+        def slow(storage_path, pano_info):
+            # A dict gives each pano its own duration, for the tests that tell a mean from a max.
+            minutes = (minutes_per_attempt[pano_info['pano_id']] if isinstance(minutes_per_attempt, dict)
+                       else minutes_per_attempt)
+            clock[0] += minutes * 60.0
+            return answer(storage_path, pano_info)
+
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        rows = ''.join('%s,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % p for p in verdicts)
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + rows)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', slow)
+        monkeypatch.chdir(tmp_path)
+        DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+                             '--skip-depth', '--max-runtime', str(max_runtime),
+                             '--run-summary-file', str(tmp_path / 'summary.json')])
+        with open(tmp_path / 'summary.json') as f:
+            return json.load(f)
+
+    def test_a_budget_spent_entirely_on_raises_is_a_condition_below_the_minimum(self, monkeypatch, tmp_path):
+        """A dropped-packet outage: each pano's first request rides the session's 5 retries at a 30 s
+        timeout, ~3.5 min per raise, so a 6-minute image share ends on max-runtime after two or three raises
+        - never the minimum. The whole budget going on raises is the same fact the minimum is a proxy for."""
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=5), 3.5, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME, 'the case under test'
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+    def test_a_budget_stop_with_an_answer_is_not(self, monkeypatch, tmp_path):
+        verdicts = dict(self.verdicts(success=1), **self.verdicts(raised=5))
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, verdicts, 3.5, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+        assert summary['conditions'] == []
+
+    def test_a_budget_stop_before_any_attempt_is_not(self, monkeypatch, tmp_path):
+        """A zero image share (the depth reservation took it all) attempted nothing, so says nothing."""
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=5), 3.5, 0)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+        assert summary['conditions'] == []
+
+    def test_raises_below_the_minimum_that_finish_the_list_are_not(self, monkeypatch, tmp_path):
+        """A mature city's handful of perennial raisers finishes in seconds and never hits the budget."""
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=2), 0.01, 6)
+
+        assert summary['image_stop'] is None
+        assert summary['conditions'] == []
+
+    def test_a_frame_disagreement_is_an_answer_not_a_raise(self, monkeypatch, tmp_path):
+        """Cross-PR note 3 (#174 final review), live since #156 merged: a pano whose app frame is not one
+        Google serves raises FrameDisagreementError every night, unledgered. Google DID answer - the pano has
+        its own WARNING and its remedy is an app-side gsv_data refresh - so a mature city with ten of them
+        and nothing new must not report images-no-success, which points at the network, the store or a bug."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        verdicts = {'framePano%03d' % i: downloaders.gsv.FrameDisagreementError('frame disagreement')
+                    for i in range(10)}
+
+        call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_frame_disagreement_among_real_raises_is_an_answer(self, monkeypatch, tmp_path):
+        """It is an ANSWER, not merely "not a raise": the rule is "none was answered", so one frame refusal
+        beside ten transient raises blocks the condition. A frame refusal excluded from both counters would
+        leave those ten raises firing it (the verifier's M12 on 674bde9)."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        verdicts = self.verdicts(raised=10)
+        verdicts['framePano'] = downloaders.gsv.FrameDisagreementError('frame disagreement')
+
+        call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert summary_codes(tmp_path) == []
+
+    def test_slow_perennial_raisers_that_fill_the_budget_are_not(self, monkeypatch, tmp_path):
+        """The #174 final review's false alarm: a mature city served nothing new, whose never-ledgered
+        candidates are a few panos that each spend most of a minute in tile retries before raising. At the
+        real minimum they fill a 6-minute share on max-runtime every night with fewer than ten raises; one
+        slow raise is not a blackhole, so the budget arm must need the blackhole's minutes-per-raise too."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=9), 0.75, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME, 'the case under test'
+        assert summary['conditions'] == []
+
+    def test_a_blackhole_at_the_real_minimum_is_still_a_condition(self, monkeypatch, tmp_path):
+        """The same city with packets dropped: ~3.5 min per raise, two raises, and the budget is gone."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=9), 3.5, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+    def test_the_gate_is_the_mean_so_one_slow_raise_among_fast_ones_is_not(self, monkeypatch, tmp_path):
+        """One 100 s raise and eight 33 s ones fill the 6-minute share: mean 40 s, max 100 s. "One slow raise
+        is not an outage" is exactly what a max-based gate would break (the verifier's M3 on 674bde9)."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        verdicts = self.verdicts(raised=10)     # the tenth is never reached: the share ends after nine
+        minutes = {p: 33.0 / 60 for p in verdicts}
+        minutes['raisedPano000'] = 100.0 / 60
+
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, verdicts, minutes, 6)
+
+        assert summary['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME, 'the case under test'
+        assert summary['conditions'] == []
+
+    def test_the_gate_sits_at_the_mean_raise_duration(self, monkeypatch, tmp_path):
+        """Pins the boundary rather than two points far either side of it: a mean exactly at
+        IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS fires, one just under it does not."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 10)
+        floor_minutes = DownloadRunner.IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS / 60.0
+        (tmp_path / 'at').mkdir()
+        (tmp_path / 'under').mkdir()
+        at = self.run_on_a_clock(monkeypatch, tmp_path / 'at', self.verdicts(raised=9), floor_minutes, 6)
+        under = self.run_on_a_clock(monkeypatch, tmp_path / 'under', self.verdicts(raised=9),
+                                    floor_minutes * 0.99, 6)
+
+        assert [c['code'] for c in at['conditions']] == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+        assert under['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME and under['conditions'] == []
+
+    @pytest.mark.parametrize('minutes_per_attempt, max_runtime, raised', [(3.5, 6, 5), (0.01, 6, 3)])
+    def test_the_detail_carries_the_seconds_per_raise(self, monkeypatch, tmp_path, minutes_per_attempt,
+                                                      max_runtime, raised):
+        """Both arms: the floor measurement (the TODO at IMAGE_NO_SUCCESS_MIN_RAISED) needs the duration of
+        the raises as well as their count, and the queue's summary line is where it is read."""
+        summary = self.run_on_a_clock(monkeypatch, tmp_path, self.verdicts(raised=raised), minutes_per_attempt,
+                                      max_runtime)
+
+        [condition] = summary['conditions']
+        expected = '%.0f s per raise' % (minutes_per_attempt * 60.0)
+        assert expected in condition['detail'], condition['detail']
+
+
+class TestAPanoListWhoseSchemaMovedIsNotScraped:
+    """D8 (#161): the one condition that also stops work.
+
+    If /adminapi/panos renamed `width`/`height` (cvMetadata already serves `pano_width`/`pano_height`, and
+    #123 just renamed that endpoint's fields), gsv.resolve_zoom_and_dims returns None before any request,
+    download_single_pano turns that into a permanent failure verdict, and every not-yet-downloaded GSV pano
+    is ledgered downloaded=0 in one night, fleet-wide, with no GSV breaker by design (#113). A missing KEY is
+    a schema; a blank value is a per-pano fact and is left to the phases.
+    """
+
+    def run_with(self, monkeypatch, tmp_path, records):
+        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
+        return call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--run-summary-file', str(tmp_path / 'summary.json'))
+
+    def records(self, count, lacking=0, drop='width'):
+        out = []
+        for i in range(count):
+            record = {'pano_id': 'gsvPano%04d' % i, 'source': 'gsv', 'width': '16384', 'height': '8192',
+                      'has_labels': True}
+            if i < lacking:
+                del record[drop]
+            out.append(record)
+        return out
+
+    def test_a_list_that_lost_width_is_not_scraped_and_nothing_is_ledgered(self, monkeypatch, tmp_path, capsys,
+                                                                          caplog):
+        with caplog.at_level(logging.ERROR):
+            storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        # Both channels: the stdout line is the one in the night's mail that says neither phase ran.
+        assert "WARNING: the pano list's schema has moved" in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and 'schema drift' in r.getMessage() for r in caplog.records)
+        assert calls == [], 'no pano may be attempted from a list whose schema moved'
+        assert not (storage / 'pano_id_log.csv').exists(), 'nothing may be ledgered'
+        rows = log_rows(storage)
+        assert len(rows) == 1, 'one evidence row: the drift stop writes it once, after the fetch handler'
+        fields = rows[0]
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[1:] == [''] * (DownloadRunner.LOG_CSV_FIELD_COUNT - 1), 'the phases stay blank'
+
+    @pytest.mark.parametrize('key', ['source', 'height'])
+    def test_any_required_key_counts(self, monkeypatch, tmp_path, key):
+        self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20, drop=key))
+
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT in summary_codes(tmp_path)
+
+    def test_a_renamed_source_is_drift_and_nothing_else(self, monkeypatch, tmp_path, capsys):
+        """Read before the filter: a list that lost `source` must not also be reported pano by pano as an
+        unsupported source - one fact, one condition."""
+        self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20, drop='source'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        assert 'unsupported source' not in capsys.readouterr().out
+
+    def test_the_threshold_is_inclusive(self, monkeypatch, tmp_path):
+        lacking = int(round(DownloadRunner.INTAKE_SCHEMA_MIN_FRACTION * 20))
+        storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=lacking))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        assert calls == []
+
+    def test_just_under_the_threshold_runs_normally(self, monkeypatch, tmp_path):
+        lacking = int(round(DownloadRunner.INTAKE_SCHEMA_MIN_FRACTION * 20)) - 1
+        storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=lacking))
+
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
+        assert len(calls) == 20
+
+    def test_one_record_lacking_a_key_runs_normally(self, monkeypatch, tmp_path):
+        storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=1))
+
+        assert summary_codes(tmp_path) == []
+        assert len(calls) == 20
+
+    def test_the_fraction_counts_records_not_missing_keys(self, monkeypatch, tmp_path):
+        """Half the records lacking BOTH dims is half the records, not all of them. This is the shape the
+        server really sends for a pano with no dims (it omits the keys - seattle had 106 such records in
+        2026-09), so a loop that counted keys would refuse a city at half the threshold."""
+        records = self.records(20)
+        for record in records[:10]:
+            del record['width']
+            del record['height']
+
+        storage, calls = self.run_with(monkeypatch, tmp_path, records)
+
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
+        assert len(calls) == 20
+
+    def test_a_hand_csv_without_the_dims_columns_is_drift_end_to_end(self, monkeypatch, tmp_path):
+        """D10 through the real -c intake rather than a patched fetch: a CSV missing the column is a list
+        missing the key, and would write every GSV pano in it off permanently."""
+        header = 'pano_id,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
+        rows = ''.join('%s,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % p for p in GSV_PANO_IDS)
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(header + rows)
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+        monkeypatch.chdir(tmp_path)
+        DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+                             '--skip-depth', '--run-summary-file', str(tmp_path / 'summary.json')])
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
+        assert calls == []
+
+    def test_blank_values_are_not_a_schema(self, monkeypatch, tmp_path):
+        """A blank cell is one pano the list knows nothing about; the key is still there. This is the -c
+        intake's shape (csv.DictReader gives every row every column). The webserver does NOT send it - its
+        writeNullable omits the key for a null - so over /adminapi/panos only the fraction separates a
+        per-pano null from a renamed field."""
+        records = self.records(20)
+        for record in records:
+            record['width'] = None
+
+        storage, calls = self.run_with(monkeypatch, tmp_path, records)
+
+        assert summary_codes(tmp_path) == []
+        assert len(calls) == 20
+
+    def test_an_empty_list_is_not_schema_drift(self, monkeypatch, tmp_path):
+        self.run_with(monkeypatch, tmp_path, [])
+
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
+
+    def test_the_run_codes_are_one_vocabulary(self):
+        from downloaders import gsv
+        assert gsv.DEPTH_CONDITIONS < DownloadRunner.RUN_CONDITIONS
+        assert {DownloadRunner.CONDITION_MAPILLARY_TOKEN, DownloadRunner.CONDITION_UNSUPPORTED_SOURCE,
+                DownloadRunner.CONDITION_PANO_LIST_EMPTY, DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
+                DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 10
 
 
 # --- log.csv field 19: the depth corpus size (#43) ---------------------------------------------------------
@@ -2398,3 +3518,808 @@ class TestTheDepthCorpusSizeReachesLogCsv:
     def test_the_field_is_the_last_one(self):
         """Appending is what keeps every existing position - and every existing reader - unmoved."""
         assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT
+
+
+# --- The evidence row covers the whole run, not just the phases (#49) ------------------------------------------
+#
+# The row is written from a finally, and a stop only leaves one if it lands inside that finally's try. The
+# budget split used to sit in front of it - and it is not instant: count_unresolved_depth reads the city's whole
+# depth_log.csv off the store, 1.4M rows on a network mount, which made it the longest window in the run where a
+# queue kill (--city-max-runtime) or an operator's stop exited 143 and left no row at all (#187 review, MINOR 2).
+
+def log_rows(storage):
+    with open(storage / 'log.csv') as f:
+        return [line.split(',') for line in f.read().strip().splitlines()]
+
+
+class TestAStopBeforeThePhasesStillWritesTheRow:
+
+    def _reserving_main(self, tmp_path, *extra_args):
+        """main() with a depth reservation configured, which is the only configuration that reads the ledger
+        before the phases. Depth is not skipped, but nothing below lets the run get as far as the depth phase."""
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + GSV_CSV_ROWS)
+        storage = tmp_path / 'storage'
+        DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path),
+                             '--max-runtime', '10', '--min-depth-runtime', '5', *extra_args])
+        return storage
+
+    def test_a_sigterm_while_the_depth_ledger_is_read_writes_one_row(self, monkeypatch, tmp_path):
+        """Delivered through the handler main() really installs, so this is the stop an operator sends and not
+        a SystemExit the test chose. Every phase field is blank - none of them started, the xml stub included -
+        and field 19 is filled, because the corpus size was known before the ledger read began."""
+        def stopped_mid_read(storage_location, gsv_panos):
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+        monkeypatch.setattr(DownloadRunner.gsv, 'count_unresolved_depth', stopped_mid_read)
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit) as excinfo:
+            self._reserving_main(tmp_path)
+
+        assert excinfo.value.code == 143
+        rows = log_rows(tmp_path / 'storage')
+        assert len(rows) == 1, 'exactly one evidence row, not none and not one per handler'
+        fields = rows[0]
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[0] != ''
+        assert fields[1:DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == [''] * 17, 'blank, not fabricated zeros'
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+
+    def test_a_crash_in_the_budget_split_writes_the_row_and_still_raises(self, tmp_path):
+        """The ordinary-exception twin, through the REAL count_unresolved_depth. It catches OSError itself (an
+        unreadable ledger reads as no backlog), so the crash that actually reaches here is one it does not catch:
+        a torn append that leaves a field past csv's field_size_limit raises csv.Error. Before the try moved,
+        that exited 1 with no row. It must fail the run loudly AND leave the row - the two halves of #49 that a
+        stop and a crash share - and a direct caller's stop reasons must already be seeded when it does."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_text(
+            'pano_id,depth\n' + 'x' * (csv.field_size_limit() + 1))
+        stop_reasons = {}
+
+        with pytest.raises(csv.Error):
+            DownloadRunner.run_scraper_and_log_results(str(storage), gsv_pano_infos(), gsv_pano_infos(), False,
+                                                       max_runtime_minutes=10, min_depth_runtime=5,
+                                                       stop_reasons=stop_reasons)
+
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        assert rows[0][1:DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == [''] * 17
+        assert rows[0][DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+        assert stop_reasons == {'image_stop': None, 'depth_stop': None}, 'seeded before the split can stop'
+
+    def test_a_stop_as_the_drift_row_lands_does_not_write_a_second(self, monkeypatch, tmp_path):
+        """The drift stop writes its row AFTER the fetch handler's try, and that placement is the whole guard: a
+        stop landing once the row is appended (closing the file on a slow mount, say) must propagate, not reach
+        the fetch handler, which would append a second timestamp-only row for the same run."""
+        real_write = DownloadRunner.write_log_csv_row
+        calls = []
+
+        def stopped_after_appending(storage_location, fields):
+            real_write(storage_location, fields)
+            calls.append(fields)
+            if len(calls) == 1:
+                raise SystemExit(143)
+
+        monkeypatch.setattr(DownloadRunner, 'write_log_csv_row', stopped_after_appending)
+        records = [{'pano_id': 'gsvPano%04d' % i, 'source': 'gsv', 'has_labels': True} for i in range(5)]
+        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER)
+        storage = tmp_path / 'storage'
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit):
+            DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path), '--skip-depth'])
+
+        assert len(log_rows(storage)) == 1, 'one row for one run, however the stop lands'
+
+    def test_a_stop_before_the_corpus_is_counted_leaves_field_19_blank(self, tmp_path):
+        """Field 19 is a count, so a row that never learned it must say so with a blank - a 0 would read as
+        "this city has no GSV panos", which is a claim about the city, not about the stop."""
+        class StoppedWhileCounted:
+            def __iter__(self):
+                raise SystemExit(143)
+
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        with pytest.raises(SystemExit):
+            DownloadRunner.run_scraper_and_log_results(str(storage), [], StoppedWhileCounted(), False)
+
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        assert len(rows[0]) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert rows[0][0] != ''
+        assert rows[0][1:] == [''] * 18
+
+    def test_a_stop_after_the_fetch_but_before_the_scrape_writes_a_timestamp_row(self, monkeypatch, tmp_path):
+        """The same gap one function up: between the pano-list fetch's own crash handler and the call into
+        run_scraper_and_log_results, _run_phases reads the store's ledgers to judge an empty list. That read
+        is on the store too, so a stop inside it must leave the fetch-failure row, not nothing."""
+        def stopped(storage_location):
+            raise SystemExit(143)
+
+        monkeypatch.setattr(DownloadRunner, '_store_has_history', stopped)
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER)  # an empty list is what sends _run_phases to the ledgers
+        storage = tmp_path / 'storage'
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit):
+            DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path), '--skip-depth'])
+
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        assert len(rows[0]) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert rows[0][0] != ''
+        assert rows[0][1:] == [''] * 18
+
+
+class TestField5IsTheImageListsLength:
+    """Fields 2-5 are the stub of an XML-metadata endpoint that died in 2022, which makes "write zeros" look like
+    a harmless cleanup. It is not: field 5 is len(image_pano_infos), and log_analyzer's rule 3 (#163) reads it
+    as the image-eligible corpus - its growth, and field 5 minus field 11, are the rule's only evidence that
+    there was work. Zeros there would make a starved image phase silent for ever. The subprocess tests above
+    only ever see it as 0, with every pano filtered out."""
+
+    def test_it_counts_the_panos_the_image_phase_was_given(self, monkeypatch, tmp_path):
+        """One unlabelled GSV pano beside three labelled ones: without --all-panos the image list is 3 and the
+        depth corpus (field 19) is 4, so the field cannot be either the whole list or a constant."""
+        rows = GSV_CSV_ROWS + 'gsvPanoIdUnlabelledDDDD,16384,8192,47.6,-122.3,180.0,0.0,gsv,False\n'
+        storage, _ = call_main(monkeypatch, tmp_path, rows)
+
+        fields = last_log_fields(storage)
+        assert fields[3] == fields[4] == str(len(GSV_PANO_IDS))
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS) + 1)
+
+    def test_all_panos_widens_it(self, monkeypatch, tmp_path):
+        rows = GSV_CSV_ROWS + 'gsvPanoIdUnlabelledDDDD,16384,8192,47.6,-122.3,180.0,0.0,gsv,False\n'
+        storage, _ = call_main(monkeypatch, tmp_path, rows, '--all-panos')
+
+        assert last_log_fields(storage)[4] == str(len(GSV_PANO_IDS) + 1)
+
+
+# --- Store mode: --from-store CITY_ID (#30) -------------------------------------------------------------------
+#
+# Driven in-process through main() against the fake `sftp -b -` in tests/test_store_sftp.py, which reads a local
+# directory tree as the "remote" store. download_pano and the depth phase are replaced with stand-ins that FAIL
+# the test if called: store mode must never contact Google, Mapillary or Panoramax, so a routing mistake shows up
+# as an AssertionError here rather than as a request nobody sees.
+
+from test_store_sftp import (  # noqa: E402  (a sibling test module: the fake and its fixtures have one home)
+    CITY as STORE_CITY, HOST as STORE_HOST, USER as STORE_USER, FAKE_SFTP_SCRIPT, make_remote, sessions,
+    small_jpeg as store_jpeg, small_npz as store_npz, write_fake_sftp)
+from downloaders import store_sftp  # noqa: E402
+import re  # noqa: E402
+
+STORE_IDS = ['storePanoAAAAAAAAAAAAA', 'storePanoBBBBBBBBBBBBB', 'storePanoCCCCCCCCCCCCC']
+
+
+def store_csv_rows(ids=STORE_IDS, source='gsv'):
+    return ''.join('%s,16384,8192,47.6,-122.3,180.0,0.0,%s,True\n' % (p, source) for p in ids)
+
+
+def contacted_a_provider(*args, **kwargs):
+    raise AssertionError('store mode contacted an imagery provider')
+
+
+class StoreRun:
+    """One in-process main() in store mode, against a fake store under tmp_path/remote."""
+
+    def __init__(self, monkeypatch, tmp_path, remote_files):
+        self.monkeypatch, self.tmp_path = monkeypatch, tmp_path
+        self.record = write_fake_sftp(tmp_path, monkeypatch)
+        self.base = make_remote(tmp_path, remote_files)
+        self.storage = tmp_path / 'storage'
+        self.key = str(tmp_path / 'keys' / 'id_ed25519')
+        monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
+        monkeypatch.setenv('PS_SFTP_BASE', self.base)
+        monkeypatch.setenv('PS_SFTP_USER', STORE_USER)
+        monkeypatch.setenv('PS_SFTP_KEY', self.key)
+        monkeypatch.delenv('PS_SFTP_PORT', raising=False)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', contacted_a_provider)
+        monkeypatch.setattr(DownloadRunner.gsv, 'download_depth_maps', contacted_a_provider)
+        monkeypatch.setattr(DownloadRunner.gsv, 'count_unresolved_depth', contacted_a_provider)
+        monkeypatch.chdir(tmp_path)
+
+    def add_remote(self, name, data):
+        path = os.path.join(self.base, STORE_CITY, name[:2], name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(data)
+
+    def main(self, csv_rows, *extra):
+        csv_path = self.tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + csv_rows)
+        return DownloadRunner.main(['sidewalk-test.invalid', str(self.storage), '-c', str(csv_path),
+                                    '--from-store', STORE_CITY, *extra])
+
+    def fields(self):
+        return last_log_fields(self.storage)
+
+    def get_lines(self):
+        return [line for s in sessions(self.record) for line in s['batch'].splitlines() if 'get ' in line]
+
+
+def jpgs(ids=STORE_IDS):
+    return {p + '.jpg': store_jpeg() for p in ids}
+
+
+class TestStoreMode:
+    def test_pulls_from_the_store_and_never_calls_a_downloader(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        assert run.main(store_csv_rows()) == 0
+        for p in STORE_IDS:
+            assert (run.storage / p[:2] / (p + '.jpg')).read_bytes() == (tmp_path / 'remote' / 'panos' / STORE_CITY
+                                                                        / p[:2] / (p + '.jpg')).read_bytes()
+        assert ledger_verdict_rows(run.storage) == sorted('%s,1' % p for p in STORE_IDS)
+
+    def test_a_pulled_row_has_a_blank_fetched_at(self, monkeypatch, tmp_path):
+        """The provider was not contacted tonight and the pull does not know when it was: blank = unknown,
+        the rule docs/ops.md gives a store assembled by copy."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        rows = (run.storage / 'pano_id_log.csv').read_text().splitlines()
+        assert rows == ['pano_id,downloaded,fetched_at', '%s,1,' % STORE_IDS[0]]
+
+    def test_absent_on_the_store_is_counted_failed_and_not_ledgered(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs([STORE_IDS[0], STORE_IDS[2]]))
+        assert run.main(store_csv_rows()) == 0
+        fields = run.fields()
+        assert fields[6:11] == ['2', '0', '1', '0', '3']
+        assert ledger_verdict_rows(run.storage) == sorted('%s,1' % p for p in (STORE_IDS[0], STORE_IDS[2]))
+
+        # The scrape adds it tomorrow; the next pull picks it up, because nothing wrote it off.
+        run.add_remote(STORE_IDS[1] + '.jpg', store_jpeg())
+        assert run.main(store_csv_rows()) == 0
+        assert ledger_verdict_rows(run.storage) == sorted('%s,1' % p for p in STORE_IDS)
+        assert (run.storage / STORE_IDS[1][:2] / (STORE_IDS[1] + '.jpg')).exists()
+
+    def test_a_truncated_pull_leaves_no_resume_marker_and_retries_next_run(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        monkeypatch.setenv('FAKE_SFTP_TRUNCATE', STORE_IDS[0] + '.jpg')
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        final = run.storage / STORE_IDS[0][:2] / (STORE_IDS[0] + '.jpg')
+        assert not final.exists() and not (run.storage / STORE_IDS[0][:2] / (STORE_IDS[0] + '.jpg.part')).exists()
+        assert ledger_verdict_rows(run.storage) == []
+        assert run.fields()[8] == '1'
+
+        monkeypatch.delenv('FAKE_SFTP_TRUNCATE')
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        assert final.exists()
+        assert ledger_verdict_rows(run.storage) == ['%s,1' % STORE_IDS[0]]
+
+    def test_a_local_pano_is_skipped_and_ledgered_like_the_scrape(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        for p in STORE_IDS:
+            (run.storage / p[:2]).mkdir(parents=True, exist_ok=True)
+            (run.storage / p[:2] / (p + '.jpg')).write_bytes(store_jpeg())
+        assert run.main(store_csv_rows()) == 0
+        assert run.fields()[6:11] == ['0', '0', '0', '3', '3']
+        assert ledger_verdict_rows(run.storage) == sorted('%s,1' % p for p in STORE_IDS)
+        assert sessions(run.record) == [], 'an already-complete store must cost zero sessions'
+
+    def test_the_local_ledger_gates_the_next_run(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        opened = len(sessions(run.record))
+        run.main(store_csv_rows())
+        assert len(sessions(run.record)) == opened
+        # prior counters are seeded exactly as the image loop seeds them
+        assert run.fields()[6:11] == ['0', '0', '0', '3', '3']
+
+    def test_candidates_are_shuffled_before_chunking(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        monkeypatch.setattr(store_sftp, 'BATCH_SIZE', 1)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: seq.reverse())
+        run.main(store_csv_rows())
+        order = [re.search(r'/(\w+)\.jpg"', line).group(1) for line in run.get_lines()]
+        assert order == list(reversed(STORE_IDS))
+
+    def test_batches_are_bounded_by_batch_size(self, monkeypatch, tmp_path):
+        ids = ['storePano%sAAAAAAAAAAAA' % c for c in 'VWXYZ']
+        run = StoreRun(monkeypatch, tmp_path, jpgs(ids))
+        monkeypatch.setattr(store_sftp, 'BATCH_SIZE', 2)
+        run.main(store_csv_rows(ids))
+        assert [len(s['batch'].splitlines()) - 1 for s in sessions(run.record)] == [2, 2, 1]
+        assert run.fields()[6] == '5'
+
+    def test_max_runtime_is_checked_between_batches(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        monkeypatch.setattr(store_sftp, 'BATCH_SIZE', 1)
+        # One simulated minute per session the fake has recorded.
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: 60.0 * len(sessions(run.record)))
+        summary = tmp_path / 'summary.json'
+        run.main(store_csv_rows(), '--max-runtime', '1.5', '--run-summary-file', str(summary))
+        assert len(sessions(run.record)) == 2
+        assert run.fields()[6] == '2'
+        assert 'STOREPULL: Max runtime of 1.5 minutes reached' in capsys.readouterr().out
+        assert json.loads(summary.read_text())['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+
+    def test_a_pull_that_finishes_inside_the_budget_reports_no_stop(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        summary = tmp_path / 'summary.json'
+        run.main(store_csv_rows(), '--max-runtime', '600', '--run-summary-file', str(summary))
+        assert json.loads(summary.read_text()) == {'image_stop': None, 'depth_stop': None, 'conditions': []}
+
+    def test_the_depth_phase_is_skipped(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        assert run.main(store_csv_rows()) == 0
+        assert run.fields()[12:16] == ['0', '0', '0', '0']
+        assert not (run.storage / 'depth_log.csv').exists()
+        assert not any('.depth.npz' in line for line in run.get_lines())
+
+    def test_with_depth_pulls_npz_and_writes_no_depth_ledger_row(self, monkeypatch, tmp_path):
+        gsv_id, mly_id = STORE_IDS[0], '123456789012345'
+        files = {gsv_id + '.jpg': store_jpeg(), gsv_id + '.depth.npz': store_npz(), mly_id + '.jpg': store_jpeg()}
+        run = StoreRun(monkeypatch, tmp_path, files)
+        monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
+        rows = store_csv_rows([gsv_id]) + store_csv_rows([mly_id], source='mapillary')
+        assert run.main(rows, '--with-depth') == 0
+        assert (run.storage / gsv_id[:2] / (gsv_id + '.depth.npz')).exists()
+        assert not (run.storage / 'depth_log.csv').exists()
+        assert run.fields()[12:16] == ['1', '0', '0', '1']
+        assert not any(mly_id + '.depth.npz' in line for line in run.get_lines())
+        # the corpus-size field still counts the GSV panos, as it does in every run
+        assert run.fields()[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == '1'
+
+    def test_with_depth_covers_panos_already_local(self, monkeypatch, tmp_path):
+        """Depth is the full GSV corpus, not tonight's image candidates: a re-run with --with-depth after an
+        image-only pull must still fetch the artifacts."""
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        run.main(store_csv_rows([pano]))
+        assert not (run.storage / pano[:2] / (pano + '.depth.npz')).exists()
+        run.main(store_csv_rows([pano]), '--with-depth')
+        assert (run.storage / pano[:2] / (pano + '.depth.npz')).exists()
+        assert run.fields()[6:11] == ['0', '0', '0', '1', '1']
+
+    def test_with_depth_skips_an_artifact_already_local(self, monkeypatch, tmp_path):
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        run.main(store_csv_rows([pano]), '--with-depth')
+        opened = len(sessions(run.record))
+        run.main(store_csv_rows([pano]), '--with-depth')
+        assert len(sessions(run.record)) == opened
+        assert run.fields()[12:16] == ['0', '0', '1', '1']
+
+    def test_with_depth_absent_artifact_is_counted_in_field_14_and_unledgered(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.main(store_csv_rows(STORE_IDS[:1]), '--with-depth')
+        assert run.fields()[12:16] == ['0', '1', '0', '1']
+        assert not (run.storage / 'depth_log.csv').exists()
+
+    def test_with_depth_is_not_narrowed_by_the_image_selection(self, monkeypatch, tmp_path):
+        """An unlabelled pano gets no image without --all-panos, but its depth artifact is still pulled -
+        the depth phase's own view of the corpus."""
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        run.main(store_csv_rows([pano]).replace(',True', ',False'), '--with-depth')
+        assert not (run.storage / pano[:2] / (pano + '.jpg')).exists()
+        assert (run.storage / pano[:2] / (pano + '.depth.npz')).exists()
+
+    def test_mapillary_panos_are_pulled_without_a_token_and_without_the_token_warning(self, monkeypatch, tmp_path,
+                                                                                      capsys, caplog):
+        mly_id = '123456789012345'
+        run = StoreRun(monkeypatch, tmp_path, jpgs([mly_id]))
+        monkeypatch.delenv(downloaders.mapillary.TOKEN_ENV_VAR, raising=False)
+        with caplog.at_level(logging.WARNING):
+            assert run.main(store_csv_rows([mly_id], source='mapillary')) == 0
+        assert (run.storage / mly_id[:2] / (mly_id + '.jpg')).exists()
+        assert 'Mapillary panos skipped' not in capsys.readouterr().out
+        assert 'Mapillary panos skipped' not in caplog.text
+
+    def test_unknown_sources_are_still_dropped_with_the_warning(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows(STORE_IDS[:1], source='infra3d'))
+        assert "unsupported source 'infra3d' skipped" in capsys.readouterr().out
+        assert sessions(run.record) == []
+
+    def test_an_id_the_batch_cannot_carry_is_counted_failed_and_never_sent(self, monkeypatch, tmp_path, caplog):
+        bad = 'bad*panoAAAAAAAAAAAAAA'
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        with caplog.at_level(logging.WARNING):
+            run.main(store_csv_rows([STORE_IDS[0], bad]))
+        assert run.fields()[6:11] == ['1', '0', '1', '0', '2']
+        assert not any(bad in line for line in run.get_lines())
+        assert ledger_verdict_rows(run.storage) == ['%s,1' % STORE_IDS[0]]
+        assert bad in caplog.text
+
+    def test_the_log_csv_row_keeps_its_width_and_a_zero_fallback_column(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        fields = run.fields()
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT == 19
+        assert fields[7] == '0'
+        assert all(f != '' for f in fields), 'a completed store run leaves no blank field'
+
+    def test_the_run_summary_reaches_stdout(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:2]))
+        run.main(store_csv_rows())
+        out = capsys.readouterr().out
+        assert 'Store mode: pulling already-scraped panoramas for %s' % STORE_CITY in out
+        assert 'STOREPULL: Completed 3 of 3 (2 pulled, 1 failed, 0 skipped)' in out
+        assert 'STOREPULL: 1 pano(s) not on the store tonight' in out
+        for secret in (STORE_HOST, STORE_USER, run.key):
+            assert secret not in out
+
+    def test_a_pulled_pano_is_logged_per_pano_and_an_absent_one_warned(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.main(store_csv_rows(STORE_IDS[:2]))
+        text = (run.storage / 'scrape.log').read_text()
+        assert 'STOREPULL: pano %s pulled' % STORE_IDS[0] in text
+        assert 'WARNING' in text and 'STOREPULL: pano %s absent' % STORE_IDS[1] in text
+
+    def test_a_session_failure_stops_the_phase_writes_the_row_and_exits_1(self, monkeypatch, tmp_path, capsys,
+                                                                            caplog):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        monkeypatch.setattr(store_sftp, 'BATCH_SIZE', 1)
+        monkeypatch.setenv('FAKE_SFTP_FAIL_AUTH', '1')
+        with caplog.at_level(logging.WARNING):
+            rc = run.main(store_csv_rows())
+        assert rc == 1
+        assert len(sessions(run.record)) == 1, 'the phase stops at the first failed session'
+        fields = run.fields()
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[6:11] == ['0', '0', '0', '0', '0'], 'unattempted panos are not counted'
+        assert all(f != '' for f in fields), 'a session failure is a stop, not a crash'
+        assert ledger_verdict_rows(run.storage) == []
+        out = capsys.readouterr().out
+        assert 'STOREPULL: WARNING' in out and 'Permission denied' in out
+        assert 'STOREPULL: WARNING' in caplog.text and 'Permission denied' in caplog.text
+        scrape_log = (run.storage / 'scrape.log').read_text()
+        for secret in (STORE_HOST, STORE_USER, run.key):
+            assert secret not in out
+            assert secret not in caplog.text
+            assert secret not in scrape_log
+
+    def test_a_session_failure_exits_nonzero_as_a_PROCESS(self, tmp_path):
+        """`sys.exit(main())` sits under the excluded __main__ guard, so only a real interpreter can see a
+        mutant that drops the exit status - the 2026-09-09 review's reason for the breaker's twin test."""
+        script = tmp_path / 'fake_sftp.py'
+        script.write_text(FAKE_SFTP_SCRIPT)
+        driver = tmp_path / 'store_driver.py'
+        driver.write_text(STORE_PROCESS_DRIVER % {'repo_root': REPO_ROOT, 'runner': RUNNER,
+                                                  'command': [sys.executable, str(script)]})
+        base = make_remote(tmp_path, jpgs(STORE_IDS[:1]))
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + store_csv_rows(STORE_IDS[:1]))
+        env = dict(os.environ, PS_SFTP_HOST=STORE_HOST, PS_SFTP_BASE=base, PS_SFTP_USER=STORE_USER,
+                   FAKE_SFTP_FAIL_AUTH='1', FAKE_SFTP_RECORD=str(tmp_path / 'sessions.jsonl'))
+        result = subprocess.run(
+            [sys.executable, str(driver), 'sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+             '--from-store', STORE_CITY],
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env)
+        assert result.returncode == 1, result.stdout[-2000:] + result.stderr[-2000:]
+        assert 'STOREPULL: WARNING' in result.stdout
+        assert STORE_HOST not in result.stdout + result.stderr
+
+    def test_a_depth_session_failure_exits_1_and_leaves_the_image_counts(self, monkeypatch, tmp_path):
+        """Every image already local, so the only session is the depth pass's - and it fails."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        for p in STORE_IDS:
+            (run.storage / p[:2]).mkdir(parents=True, exist_ok=True)
+            (run.storage / p[:2] / (p + '.jpg')).write_bytes(store_jpeg())
+        monkeypatch.setenv('FAKE_SFTP_FAIL_AUTH', '1')
+        assert run.main(store_csv_rows(), '--with-depth') == 1
+        assert len(sessions(run.record)) == 1
+        assert run.fields()[6:11] == ['0', '0', '0', '3', '3']
+        assert run.fields()[12:16] == ['0', '0', '0', '0']
+
+    def test_an_image_session_failure_does_not_go_on_to_the_depth_pass(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        monkeypatch.setenv('FAKE_SFTP_FAIL_AUTH', '1')
+        assert run.main(store_csv_rows(), '--with-depth') == 1
+        assert len(sessions(run.record)) == 1
+        assert not any('.depth.npz' in s['batch'] for s in sessions(run.record))
+
+    def test_the_depth_pass_stops_on_the_budget_and_says_so(self, monkeypatch, tmp_path, capsys):
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        # One simulated minute per session: the image pass spends it, the depth pass finds it gone.
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: 60.0 * len(sessions(run.record)))
+        summary = tmp_path / 'summary.json'
+        run.main(store_csv_rows([pano]), '--with-depth', '--max-runtime', '0.5', '--run-summary-file',
+                 str(summary))
+        assert json.loads(summary.read_text()) == {'image_stop': None,
+                                                   'depth_stop': DownloadRunner.STOP_MAX_RUNTIME,
+                                                   'conditions': []}
+        assert 'STOREDEPTH: Max runtime of 0.5 minutes reached' in capsys.readouterr().out
+        assert run.fields()[12:16] == ['0', '0', '0', '0']
+
+    def test_the_phase_functions_run_without_the_out_parameters(self, monkeypatch, tmp_path):
+        """Both out-parameters are optional, as they are for download_panorama_images."""
+        base = make_remote(tmp_path, {})
+        write_fake_sftp(tmp_path, monkeypatch)
+        settings = store_sftp.StoreSettings(STORE_HOST, base, None, None, None, STORE_CITY)
+        (tmp_path / 's').mkdir()
+        infos = [{'pano_id': p, 'source': 'gsv'} for p in STORE_IDS]
+        spent = time.monotonic() - 600
+        assert DownloadRunner.pull_panos_from_store(str(tmp_path / 's'), infos, settings, run_start_monotonic=spent,
+                                                    max_runtime_minutes=1) == (0, 0, 0, 0, 0)
+        assert DownloadRunner.pull_depth_from_store(str(tmp_path / 's'), infos, settings, run_start_monotonic=spent,
+                                                    max_runtime_minutes=1) == (0, 0, 0, 0)
+        monkeypatch.setenv('FAKE_SFTP_FAIL_AUTH', '1')
+        assert DownloadRunner.pull_depth_from_store(str(tmp_path / 's'), infos, settings) == (0, 0, 0, 0)
+
+    def test_a_depth_id_the_batch_cannot_carry_is_counted_not_sent(self, monkeypatch, tmp_path):
+        bad = 'bad*panoAAAAAAAAAAAAAA'
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.main(store_csv_rows([STORE_IDS[0], bad]), '--with-depth')
+        assert run.fields()[12:16] == ['0', '2', '0', '2']
+        assert not any(bad in line for line in run.get_lines())
+
+    def test_an_unplaced_pull_is_counted_failed_not_ledgered_and_retried(self, monkeypatch, tmp_path, capsys):
+        """`unplaced` (verified, but the rename failed - a full disk, a dropped mount) must never become a
+        downloaded=1 row: that row is a permanent resume marker, and there is no file behind it."""
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, jpgs([pano]))
+        real_replace = os.replace
+
+        def full_disk(src, dst, *a, **k):
+            if str(dst).endswith(pano + '.jpg'):
+                raise OSError(28, 'No space left on device')
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(downloaders.common.os, 'replace', full_disk)
+        assert run.main(store_csv_rows([pano])) == 0
+        final = run.storage / pano[:2] / (pano + '.jpg')
+        assert not final.exists()
+        assert ledger_verdict_rows(run.storage) == []
+        assert run.fields()[6:11] == ['0', '0', '1', '0', '1']
+        # Local storage trouble is the operator's to fix and a retry will not; stdout (the night's message)
+        # and scrape.log both say so in a closing line, not only per pano in the log (#155 review item 14).
+        line = ('STOREPULL: WARNING - 1 pano(s) verified but could not be placed on local storage; not ledgered, '
+                'and a retry will not fix it: check local disk space and the mount; see scrape.log')
+        assert line in capsys.readouterr().out
+        log = (run.storage / 'scrape.log').read_text()
+        assert line in log
+        # The per-pano line says the same, not the "retried next run" every other outcome gets.
+        assert 'pano %s unplaced; not ledgered, a retry will not fix it' % pano in log
+        assert 'unplaced; not ledgered, retried next run' not in log
+
+        monkeypatch.setattr(downloaders.common.os, 'replace', real_replace)
+        run.main(store_csv_rows([pano]))
+        assert final.exists()
+        assert ledger_verdict_rows(run.storage) == ['%s,1' % pano]
+
+    def test_a_truncated_pull_gets_a_closing_line_on_both_channels(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        monkeypatch.setenv('FAKE_SFTP_TRUNCATE', STORE_IDS[0] + '.jpg')
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        line = 'STOREPULL: WARNING - 1 pano(s) arrived incomplete or unreadable and were discarded'
+        assert line in capsys.readouterr().out
+        assert line in (run.storage / 'scrape.log').read_text()
+
+    def test_a_clean_pull_prints_no_closing_warning(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        assert 'WARNING' not in capsys.readouterr().out
+
+    def test_the_depth_pass_reports_an_unplaced_artifact(self, monkeypatch, tmp_path, capsys):
+        pano = STORE_IDS[0]
+        run = StoreRun(monkeypatch, tmp_path, {pano + '.jpg': store_jpeg(), pano + '.depth.npz': store_npz()})
+        (run.storage / pano[:2]).mkdir(parents=True)
+        (run.storage / pano[:2] / (pano + '.jpg')).write_bytes(store_jpeg())
+        real_replace = os.replace
+
+        def full_disk(src, dst, *a, **k):
+            if str(dst).endswith('.depth.npz'):
+                raise OSError(28, 'No space left on device')
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(downloaders.common.os, 'replace', full_disk)
+        run.main(store_csv_rows([pano]), '--with-depth')
+        assert ('STOREDEPTH: WARNING - 1 artifact(s) verified but could not be placed on local storage; not '
+                'ledgered, and a retry will not fix it') in capsys.readouterr().out
+
+    def test_the_store_banner_names_the_city_in_scrape_log_too(self, monkeypatch, tmp_path, capsys):
+        """A row is not distinguishable from a scrape's; the banner is the record of which store city a run
+        pulled, and scrape.log is the channel still there next week (#155 review item 15). Never the host."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        log = (run.storage / 'scrape.log').read_text()
+        assert 'Store mode: pulling already-scraped panoramas for %s' % STORE_CITY in log
+        assert STORE_HOST not in log and STORE_USER not in log
+
+    def test_the_panos_line_says_depth_is_not_pulled_without_with_depth(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        out = capsys.readouterr().out
+        assert '3 GSV panos eligible for depth (not pulled: no --with-depth)' in out
+        run.main(store_csv_rows(), '--with-depth')
+        assert 'not pulled: no --with-depth' not in capsys.readouterr().out
+
+    def test_a_stop_mid_session_is_143_not_a_session_failure(self, monkeypatch, tmp_path, capsys):
+        """SIGTERM's SystemExit(143) must pass through the session-failure handler untouched - reported as a
+        stop, not as "check your PS_SFTP_* settings" with exit 1 - and the finally must still write the row."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+
+        def sigterm(settings, batch_text):
+            raise SystemExit(143)
+
+        monkeypatch.setattr(store_sftp, 'run_sftp_batch', sigterm)
+        with pytest.raises(SystemExit) as e:
+            run.main(store_csv_rows())
+        assert e.value.code == 143
+        assert len(run.fields()) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert ledger_verdict_rows(run.storage) == []
+        assert 'session failed' not in capsys.readouterr().out
+
+    def test_prior_failures_are_seeded_into_field_9_like_the_image_loop(self, monkeypatch, tmp_path):
+        """log.csv field 9 carries the ledger's prior downloaded=0 rows in every mode; a store once scraped
+        from Google carries such rows, and the log analyzer's failure-growth rule reads field 9 across runs."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        run.storage.mkdir()
+        (run.storage / 'pano_id_log.csv').write_text(
+            'pano_id,downloaded,fetched_at\nretiredPanoAAAAAAAAAAAA,0,2026-01-01T00:00:00+00:00\n')
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        assert run.fields()[6:11] == ['1', '0', '1', '0', '2']
+
+    def test_a_local_pano_row_carries_a_blank_fetched_at(self, monkeypatch, tmp_path):
+        """ledger_verdict_rows strips fetched_at, so only a raw read can see a stamp on a file merely FOUND on
+        disk - the #114 false-provenance case."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
+        (run.storage / STORE_IDS[0][:2]).mkdir(parents=True)
+        (run.storage / STORE_IDS[0][:2] / (STORE_IDS[0] + '.jpg')).write_bytes(store_jpeg())
+        run.main(store_csv_rows(STORE_IDS[:1]))
+        assert (run.storage / 'pano_id_log.csv').read_text().splitlines() == \
+            ['pano_id,downloaded,fetched_at', '%s,1,' % STORE_IDS[0]]
+
+    def test_no_depth_reservation_is_carved_in_store_mode(self, monkeypatch, tmp_path):
+        """--min-depth-runtime with --max-runtime must neither reach count_unresolved_depth (StoreRun's stand-in
+        raises) nor shrink the image budget: store mode has no Google depth phase to reserve for. Two guards
+        make this so (the reservation's own `store_settings is None`, and _resolve_store_mode setting
+        skip_depth); this pins the behaviour both exist for."""
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        assert run.main(store_csv_rows(), '--max-runtime', '60', '--min-depth-runtime', '20') == 0
+        assert run.fields()[6] == '3'
+
+    def test_store_mode_is_not_in_the_breaker_table(self):
+        assert store_sftp.STORE_SOURCE_NAME not in DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES
+        assert DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES == {'mapillary': 3, 'panoramax': 3}
+
+
+class TestTheImageLedgerHoldsWhatTheInlineCodeHeld:
+    """ImageLedger replaced a `with open(...)` block in the Google image loop (#30), and now wraps both loops.
+    `with open` could neither swallow an exception nor defer a row; a hand-written context manager can do
+    both, so each property is pinned here, through the Google loop, where the refactor could regress it."""
+
+    def gsv_main(self, monkeypatch, tmp_path, download_pano):
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + GSV_CSV_ROWS)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', download_pano)
+        monkeypatch.chdir(tmp_path)
+        return DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
+                                    '--skip-depth'])
+
+    def test_a_stop_inside_the_image_loop_is_not_swallowed(self, monkeypatch, tmp_path):
+        """A truthy __exit__ would turn SIGTERM's SystemExit(143) into a run that carries on to the depth phase
+        and exits 0 - #49's contract and the queue's kill path, both broken silently."""
+        def stopped(storage_path, pano_info):
+            raise SystemExit(143)
+
+        with pytest.raises(SystemExit) as e:
+            self.gsv_main(monkeypatch, tmp_path, stopped)
+        assert e.value.code == 143
+
+    def test_each_row_is_on_disk_before_the_next_pano_is_attempted(self, monkeypatch, tmp_path):
+        """record() flushes per row (#55): a hard kill between panos loses at most the pano in flight."""
+        seen = []
+
+        def peeking(storage_path, pano_info):
+            with open(os.path.join(storage_path, 'pano_id_log.csv')) as f:
+                seen.append(len(f.read().splitlines()))
+            return downloaders.DownloadResult.success
+
+        assert self.gsv_main(monkeypatch, tmp_path, peeking) == 0
+        assert len(seen) == len(GSV_PANO_IDS)
+        assert seen == [1 + i for i in range(len(seen))]
+
+
+STORE_PROCESS_DRIVER = '''\
+"""Test-only driver: run the real DownloadRunner.py as a script with store_sftp pointed at the fake sftp."""
+import runpy
+import sys
+
+sys.path.insert(0, %(repo_root)r)
+
+from downloaders import store_sftp
+
+store_sftp.SFTP_COMMAND = %(command)r
+sys.argv = ['DownloadRunner.py'] + sys.argv[1:]
+runpy.run_path(%(runner)r, run_name='__main__')
+'''
+
+
+class TestStoreModeCli:
+    def csv(self, tmp_path):
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + store_csv_rows())
+        return str(csv_path)
+
+    def test_from_store_without_connection_settings_exits_2_naming_the_variables(self, monkeypatch, tmp_path,
+                                                                                 capsys):
+        for name in store_sftp.SFTP_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        storage = tmp_path / 'storage'
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', self.csv(tmp_path),
+                                 '--from-store', STORE_CITY])
+        assert e.value.code == 2
+        err = capsys.readouterr().err
+        assert 'PS_SFTP_HOST' in err and 'PS_SFTP_BASE' in err
+        assert not storage.exists(), 'settings are resolved before the storage dir or scrape.log is created'
+
+    @pytest.mark.parametrize('city', ['a/b', '..', ''])
+    def test_from_store_rejects_a_bad_city_id_at_parse_time(self, monkeypatch, tmp_path, capsys, city):
+        """Host and base are SET, so the missing-settings error cannot be what exits 2: the city check is."""
+        monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
+        monkeypatch.setenv('PS_SFTP_BASE', '/panos')
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '--from-store', city])
+        assert e.value.code == 2
+        err = capsys.readouterr().err
+        assert '--from-store' in err and 'not a store city id' in err
+        assert not (tmp_path / 'storage').exists()
+
+    def test_a_storage_path_the_batch_cannot_quote_is_a_usage_error(self, monkeypatch, tmp_path, capsys):
+        """Refused at parse time, before the storage dir or scrape.log exists - not as a traceback from inside
+        the phase, which is where build_batch would otherwise raise (#155 review item 20)."""
+        monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
+        monkeypatch.setenv('PS_SFTP_BASE', '/panos')
+        storage = str(tmp_path / 'bad') + '"store'
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', storage, '-c', self.csv(tmp_path),
+                                 '--from-store', STORE_CITY])
+        assert e.value.code == 2
+        assert 'storage path' in capsys.readouterr().err
+        assert not os.path.exists(storage) and not (tmp_path / 'bad').exists()
+
+    def test_a_bad_port_is_a_usage_error(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv('PS_SFTP_HOST', STORE_HOST)
+        monkeypatch.setenv('PS_SFTP_BASE', '/panos')
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '--from-store', STORE_CITY,
+                                 '--sftp-port', 'twenty-two'])
+        assert e.value.code == 2
+        assert 'PS_SFTP_PORT' in capsys.readouterr().err
+
+    def test_with_depth_without_from_store_is_a_usage_error(self, tmp_path):
+        with pytest.raises(SystemExit) as e:
+            DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '--with-depth'])
+        assert e.value.code == 2
+
+    @pytest.mark.parametrize('flag', [['--skip-depth'], ['--min-depth-runtime', '5'], ['--max-depth-requests', '1'],
+                                      ['--depth-block-latch', 'x'], ['--depth-pace-state', 'x']])
+    def test_depth_flags_warn_they_have_no_effect_in_store_mode(self, monkeypatch, tmp_path, capsys, flag):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        assert run.main(store_csv_rows(), *flag) == 0
+        assert 'WARNING: %s has no effect in store mode' % flag[0] in capsys.readouterr().out
+
+    def test_a_store_run_with_no_depth_flags_prints_no_depth_warning(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        assert 'has no effect' not in capsys.readouterr().out
+
+    def test_sftp_flags_without_from_store_warn(self, monkeypatch, tmp_path, capsys):
+        call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--sftp-host', 'other.example')
+        out = capsys.readouterr().out
+        assert 'WARNING: --sftp-host has no effect without --from-store' in out
+        assert 'other.example' not in out
+
+    def test_sftp_flags_beat_the_environment_end_to_end(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows(), '--sftp-host', 'other.example', '--sftp-port', '2222')
+        argv = sessions(run.record)[0]['argv']
+        assert argv[-1] == '%s@other.example' % STORE_USER
+        assert argv[argv.index('-P') + 1] == '2222'
+        assert argv[argv.index('-i') + 1] == run.key
+
+    def test_the_help_text_says_the_default_is_to_scrape_yourself(self):
+        text = ' '.join(DownloadRunner.build_parser().format_help().split())
+        assert 'The default, without this flag, is to download from the provider yourself' in text
+        assert 'collaborators' in text
+        assert 'PS_SFTP_HOST' in text

@@ -115,7 +115,9 @@ Any store scraped before the [#58](https://github.com/ProjectSidewalk/sidewalk-p
 holds x-mirrored artifacts, and the scraper will never correct them on its own — existing artifacts are never
 re-fetched or rewritten. `migrate_depth_artifacts.py` fixes them offline: it scans a storage root, flips every
 artifact whose `format_version` is missing or below 2, and stamps it, leaving v2 artifacts byte-for-byte
-untouched. It is idempotent, so re-running on a healthy store is a no-op.
+untouched. It is idempotent, so re-running on a healthy store is a no-op. The production store has never
+needed it, since it held no depth artifacts at all before the v3 writer's first run (below). The script stays
+as a safety net for dev and test stores.
 
 ```bash
 python3 migrate_depth_artifacts.py /path/to/storage --dry-run   # count pre-v2 artifacts, change nothing
@@ -124,9 +126,16 @@ python3 migrate_depth_artifacts.py /path/to/storage             # rewrite them i
 
 There is **no offline migration from v2 to v3**: the plane fields v3 adds were never stored by the v2 writer,
 so they can only come from a re-fetch. A v2 artifact reaches v3 by deleting the artifact *and* its
-`depth_log.csv` row, which makes the next run re-request it. (Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56)
-dev and test runs ever produced a v2 artifact — no production store has run the depth phase.) The plane fields
-cost roughly 10–30 KB per pano on top of v2's 50–200 KB.
+`depth_log.csv` row, which makes the next run re-request it. The plane fields cost roughly 10–30 KB per pano
+on top of v2's 50–200 KB.
+
+Only pre-[#56](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/56) dev and test runs ever
+produced a v2 artifact. The depth phase's first production run was a 500-pano `west-chester-pa` canary on
+2026-09-06, the day it went live fleet-wide ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)).
+Before it the store held **zero** `depth_log.csv` files and **zero** `.depth.npz` artifacts, the scraper host
+had just been pulled to `master`, and the canary's artifacts read back as `format_version` 3, so every artifact
+the production store holds is v3. That rests on the store, not on the v3 writer's 2026-08-07 merge date: as
+late as 2026-08-29 production was still running a build older than that merge.
 
 ## Runtime budget
 
@@ -153,6 +162,9 @@ fan-out — and on top of that:
   assuming a Google rate limit: `[Errno 28] No space left on device` points at the store, not the network. A
   run that stops on its `--max-runtime` or `--max-depth-requests` budget (or finishes its list) after failures
   prints a warning with the last error too, so a store that fills mid-run can't hide behind a budget stop.
+  A refusal, a stand-down on the latch and a tripped breaker are each also a
+  [condition that fails the night](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) (#161), so the
+  nightly alarm fires on them; a budget stop after scattered failures is not one.
 * **The pacing is adaptive** ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)).
   A run opens at `config.depth_start_interval` (1.0 s), **doubles** on any sign of push-back, and earns its way
   back down towards `config.depth_min_request_interval` (0.25 s) by a factor of 0.8 only after 200 consecutive
@@ -219,14 +231,35 @@ fan-out — and on top of that:
   the endpoint that just refused us, which is how a soft refusal is escalated into a ban that stops the image
   phase too (tiles leave the same IP). So a blocked stop writes a timestamp file, and any depth phase starting
   within `DEPTH_BLOCK_LATCH_HOURS` (6) skips itself entirely, at zero requests, with a `WARNING` on stdout.
-  * **Only a blocked stop latches.** The circuit breaker counts storage failures too, and a full disk says
-    nothing about Google.
+  * **Only Google's refusal latches: a depth blocked stop, the image phase's push-back breaker, or a photometa
+    refusal in the image phase.** The
+    circuit breaker counts storage failures too, and a full disk says nothing about Google. The image phase
+    writes the same latch (and forfeits the earned pace) when three GSV panos in a row are refused with a
+    429/403 ([#162](ops.md#when-google-pushes-back-on-the-image-phase)): tiles and photometa leave the same IP,
+    so the same run's depth phase stands down at zero requests rather than walk into the refusal again. The
+    image phase also *reads* it, but only as probation: while it is fresh, one refused GSV pano (not three)
+    stops images. It never stands images down on read, because the depth phase latches after a single
+    photometa refusal and one interstitial must not stop fifty cities' images for six hours.
   * **It lives on local disk** (`--depth-block-latch` overrides), *not* the pano store: the storage directory
     a run is given belongs to a single city, so a latch there could not be cross-city even in principle, and
     what is being remembered is this host's standing with Google. Same reasoning as `scrape_queue`'s lock.
   * **Every ambiguous latch resolves towards scraping.** Missing, unparseable, or dated implausibly far in the
     future all mean "not blocked" — a latch nobody can read must never be able to stand the whole fleet's
     depth phase down indefinitely.
+  * **The image phase shares it ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)).**
+    Since #74 the image phase makes one photometa request per *new* GSV pano, without the depth payload, to
+    read the pano's zoom levels instead of probing two tiles. It reads the latch before each such request and
+    skips photometa while one is fresh (falling back to the tile probe), and a refusal met there writes the
+    latch itself — so the depth phase later in the same run stands down at zero requests — and forfeits the
+    pacer's earned standing, as a depth-phase refusal does. A *refusal* is drawn on the push-back breaker's
+    line: a 429 or 403, an interstitial, or the session hook's `DepthBlockedError`. A 5xx storm that exhausts
+    the photometa session's retry policy is weather, not a refusal: it counts as an ordinary photometa failure
+    (three in a row and photometa is not asked again that run) and latches nothing. Both image-phase writers
+    go through `gsv.record_google_refusal`, and the WARNING says whether the latch was actually written. The image phase shares the latch, **not the
+    pacer**: a new pano's photometa request is normally followed by a 28–512-tile fan-out, so it runs far
+    below the depth phase's opening rate. A refused pano has no fan-out, but refusals are expected at close to
+    zero a night. `--depth-block-latch` moves the latch for both phases, and within the image phase photometa
+    and the push-back breaker are held to the same path (`gsv.image_host_state_paths`).
 * **Sizing, and the thing that actually decided it.** A photometa request measures **0.077 s median** from
   the production box, so the raw request cost of the 1,433,104-pano corpus is nothing like the "inherently
   multi-month job" this page used to claim — and that claim was the stated reason for leaving pacing off.
@@ -270,7 +303,9 @@ fan-out — and on top of that:
   normal. The success/failure/unavailable split is printed to stdout and `scrape.log`; the row has no
   separate column for it. What the row does carry, since [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124), is the **corpus size** (field 19), so
   the [log analyzer](log-analyzer.md#the-depth-backfill) can report how far along each city is and when it
-  will finish.
+  will finish. Its *size* is not a signal, but a phase whose requests are **all** failures is: the analyzer
+  reports several nights of requests with no save, and at CRITICAL when those failures are being ledgered as
+  `unavailable` — see [When the depth phase saves nothing](ops.md#when-the-depth-phase-saves-nothing).
 * **Storage or ledger write failures** (a full or unmounted store) are treated as transient per-pano failures
   and retried next run — the phase deliberately never lets them escape.
 

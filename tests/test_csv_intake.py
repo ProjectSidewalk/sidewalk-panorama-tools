@@ -34,6 +34,7 @@ import ast
 import csv
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -406,13 +407,76 @@ class TestLabelCsvIntake:
         assert len(labels) == 1
         assert labels[0]['pano_x'] == '100'
 
-    def test_label_ids_differing_only_by_a_leading_zero_stay_distinct(self, tmp_path):
-        """drop_duplicates deduped on the inferred int64, so 7 and 07 collapsed into one label."""
+    def test_label_ids_differing_only_by_a_leading_zero_are_one_label(self, tmp_path):
+        """'7' and '07' both file as <type>/7.jpg, so they are one label, and the first row is kept.
+        Deduping on the raw cell let both through: without --force the second read as skipped_existing
+        against the first one's crop, and under --force one file was cut twice with two provenance rows -
+        the collision #164 closed for the JSON intake. The CSV intake now keys on the same
+        _label_id_key (#170 ops-4, option b). That is not the type inference #72 removed: int() is applied
+        explicitly to one column, and the row itself still carries the raw str."""
         path = write_label_csv(tmp_path,
-                               LABEL_HEADER + label_csv_row(label_id='7')
-                               + label_csv_row(label_id='07'))
+                               LABEL_HEADER + label_csv_row(label_id='7', pano_x='100')
+                               + label_csv_row(label_id='07', pano_x='210'))
 
-        assert len(CropRunner.fetch_label_ids_csv(path)) == 2
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert len(labels) == 1
+        assert labels[0]['label_id'] == '7'
+        assert labels[0]['pano_x'] == '100'
+
+    def test_a_padded_label_id_is_the_same_label(self, tmp_path):
+        """int(' 7') is 7, and the loop files the crop under that int, so padding is not a new label."""
+        path = write_label_csv(tmp_path,
+                               LABEL_HEADER + label_csv_row(label_id='07')
+                               + label_csv_row(label_id=' 7') + label_csv_row(label_id='8'))
+
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert [row['label_id'] for row in labels] == ['07', '8']
+
+    @pytest.mark.parametrize('bad', ['', 'abc', '1.5'])
+    def test_rows_with_no_usable_label_id_are_never_collapsed(self, tmp_path, bad):
+        """A blank or unparseable label_id keys None, and None is never deduped: each such row is its own
+        bad label, counted once by the crop loop. Deduping on the raw cell collapsed repeated ones into a
+        single error, which hid all but the first. Blank cells still arrive as '' (not None) - #72."""
+        path = write_label_csv(tmp_path,
+                               LABEL_HEADER + label_csv_row(label_id=bad, pano_x='100')
+                               + label_csv_row(label_id=bad, pano_x='210'))
+
+        labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert [row['label_id'] for row in labels] == [bad, bad]
+        assert [row['pano_x'] for row in labels] == ['100', '210']
+
+    def test_the_rows_the_dedupe_drops_are_reported_once_on_both_channels(self, tmp_path, capsys, caplog):
+        """A dropped duplicate used to leave `total` one smaller than the file with nothing to say why - and
+        a differently spelled id ('07' after '7') is the likeliest to be a real data conflict (#183 M1). One
+        summary line, on stdout (cron mail) and in crop.log, naming the count and some example ids; never a
+        line per row, which on a duplicate-heavy file is the flood #139 bounded."""
+        path = write_label_csv(tmp_path,
+                               LABEL_HEADER + label_csv_row(label_id='7') + label_csv_row(label_id='07')
+                               + label_csv_row(label_id=' 7') + label_csv_row(label_id='8')
+                               + label_csv_row(label_id='') + label_csv_row(label_id=''))
+
+        with caplog.at_level('WARNING'):
+            labels = CropRunner.fetch_label_ids_csv(path)
+
+        assert len(labels) == 4
+        printed = [line for line in capsys.readouterr().out.splitlines() if 'duplicate label_id' in line]
+        logged = [r.getMessage() for r in caplog.records if 'duplicate label_id' in r.getMessage()]
+        assert len(printed) == 1 and logged == printed
+        assert re.search(r'\b2 rows\b', printed[0]) and "'07'" in printed[0] and "' 7'" in printed[0]
+        assert 'labels.csv' in printed[0]
+
+    def test_a_file_with_no_duplicates_reports_none(self, tmp_path, capsys, caplog):
+        path = write_label_csv(tmp_path, LABEL_HEADER + label_csv_row(label_id='7') + label_csv_row(label_id='8')
+                               + label_csv_row(label_id='') + label_csv_row(label_id=''))
+
+        with caplog.at_level('WARNING'):
+            CropRunner.fetch_label_ids_csv(path)
+
+        assert 'duplicate' not in capsys.readouterr().out.lower()
+        assert not [r for r in caplog.records if 'duplicate' in r.getMessage().lower()]
 
     def test_the_real_sample_file_parses(self, tmp_path):
         """samples/metadata-seattle.csv is the documented -f example: the old export's width/height
@@ -623,11 +687,11 @@ class TestJsonToCsvConversion:
 # absent: both still use pandas, and both are dev/ops tools rather than production code.
 PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape_queue.py',
                       'check_cvmetadata_schema.py', 'cron_notify.py',
-                      'migrate_depth_artifacts.py', 'refetch_panos.py', 'downscale_panos.py',
+                      'migrate_crop_store.py', 'migrate_depth_artifacts.py', 'refetch_panos.py', 'downscale_panos.py',
                       'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
                       'downloaders/gsv.py', 'downloaders/mapillary.py',
-                      'downloaders/panoramax.py']
+                      'downloaders/panoramax.py', 'downloaders/store_sftp.py']
 
 
 def imported_names(source):

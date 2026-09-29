@@ -234,8 +234,13 @@ def pick_examples(by_city, bundles, per_city=2):
     return chosen
 
 
-def render_examples(examples, path, panel_w=380):
-    """One row per ramp: what v1 cut, what v2 cuts, the gold apron outlined in both.
+def render_examples(examples, path, panel_w=380, rules=('v1', 'v2')):
+    """One row per ramp: what `rules[0]` cut, what `rules[1]` cuts, the gold apron outlined in both.
+
+    `rules` names the two keys of each example holding a (left, top, width, height) window, and labels
+    the caption. The default is this study's v1/v2 sheet, whose caption is kept exactly as it was so the
+    committed figure still reproduces; any other pair (the v3 study's v2/v3) gets a caption naming its
+    own rules, with each window's angle on the azimuth axis.
 
     Both panels are drawn at the same width on purpose. A Gallery card is a fixed box, so a wider
     window is not "a bigger picture" - it is more context at lower magnification, and that trade is
@@ -250,7 +255,7 @@ def render_examples(examples, path, panel_w=380):
         pano = Image.open(example['pano_path'])
         try:
             panels = []
-            for left, top, w, h in (example['v1'], example['v2']):
+            for left, top, w, h in (example[rules[0]], example[rules[1]]):
                 crop = CropRunner.extract_crop(pano, left, top, w, h)
                 draw = ImageDraw.Draw(crop)
                 # The gold apron in crop coordinates - x through the seam, as the window was cut.
@@ -280,19 +285,30 @@ def render_examples(examples, path, panel_w=380):
         top = sum(row_heights[:i]) + pad
         for j, panel in enumerate(panels):
             sheet.paste(panel, (pad + j * (panel_w + pad), top))
-        draw.text(
-            (pad, top + max(p.size[1] for p in panels) + 6),
-            "%s %s  %dx%d  %.0f deg below horizon   v1: %d px square, %.1f deg, fill %.2f   "
+        draw.text((pad, top + max(p.size[1] for p in panels) + 6), _caption(example, rules), fill=(20, 20, 20))
+    sheet.save(path, quality=88)
+    return sheet.size
+
+
+def _caption(example, rules):
+    """One row's caption. v1/v2 is the committed figure's text, unchanged; any other pair is generic."""
+    if tuple(rules) != ('v1', 'v2'):
+        head = "%s %s  %dx%d  %.0f deg below horizon" % (
+            example['city'], example['pano_id'][:12], example['pano_w'], example['pano_h'],
+            example['depression_deg'])
+        parts = ["%s: %dx%d px, %.1f deg, fill %.2f" % (
+            rule, example[rule][2], example[rule][3],
+            CropRunner.azimuth_px_to_deg(example[rule][2], example['pano_w']),
+            example['box_w'] / example[rule][2]) for rule in rules]
+        return '   '.join([head] + parts)
+    return ("%s %s  %dx%d  %.0f deg below horizon   v1: %d px square, %.1f deg, fill %.2f   "
             "v2: %dx%d px, %.1f deg, fill %.2f"
             % (example['city'], example['pano_id'][:12], example['pano_w'], example['pano_h'],
                example['depression_deg'],
                example['v1'][2], example['v1'][2] / example['pano_h'] * 180,
                example['box_w'] / example['v1'][2],
                example['v2'][2], example['v2'][3], example['v2'][2] / example['pano_h'] * 180,
-               example['box_w'] / example['v2'][2]),
-            fill=(20, 20, 20))
-    sheet.save(path, quality=88)
-    return sheet.size
+               example['box_w'] / example['v2'][2]))
 
 
 def main(argv=None):

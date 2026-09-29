@@ -31,6 +31,21 @@ _spec = importlib.util.spec_from_file_location(
 analyze = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(analyze)
 
+REAL_OPEN_URL = analyze.roster._open_url
+
+
+@pytest.fixture(autouse=True)
+def _no_roster_network(monkeypatch):
+    """The suite is network-free, and since the roster host gained a default (#151) a download-mode main()
+    that forgets to stub the fetch would reach sidewalk-sea for real - and still pass, whenever something
+    else already made the run CRITICAL. So the one socket-touching seam raises something fetch_roster does
+    NOT catch: a forgotten stub is a test error, not a quiet CRITICAL line. Tests of the fetch itself
+    install their own _open_url over this."""
+    def refuse(url, timeout):
+        raise AssertionError('a test reached the network for the roster: %s' % url)
+
+    monkeypatch.setattr(analyze.roster, '_open_url', refuse)
+
 
 def runner_constant(name):
     """Read a module-level constant out of DownloadRunner.py without importing it.
@@ -350,15 +365,35 @@ def daily_rows(count, offset=0, **overrides):
     return [make_row(days_ago(count + offset - 1 - i), **overrides) for i in range(count)]
 
 
-def zero_progress_rows(total=130, quiet_tail=30, success=5):
+def zero_progress_rows(total=130, quiet_tail=30, success=5, new_panos=3, not_attempted=0, step_days_ago=None,
+                       corpus_known=True, empty_list_ages=(), recent_not_attempted=None, image_fail=(0, 0)):
     """A history that downloaded `success` images a day and then stopped `quiet_tail` days ago.
 
     `total` must exceed ZERO_PROGRESS_DAYS + ZERO_PROGRESS_LOOKBACK for check 3 to look at all - the rule
     deliberately says nothing about a city whose history is too short to know what normal was.
+
+    Rule 3 also asks whether there was anything to fetch (#163), so the image-eligible corpus (field 5,
+    `xml_total`) is 1000 and grows by `new_panos` on the night `step_days_ago` - by default halfway into the
+    quiet tail. The default 3 is ZERO_PROGRESS_MIN_NEW_WORK, written as a literal so this helper still loads
+    against a module that predates the constant. `not_attempted` holds field 11 (`image_total`, what the image
+    phase has attempted) that far below field 5. `corpus_known=False` leaves field 5 blank on every row.
+    `empty_list_ages` are the rows (by age in days) whose pano-list fetch came back empty: field 5 is a written
+    0 there, which is `len(image_pano_infos)` of an empty answer. `recent_not_attempted=(n, value)` overrides
+    `not_attempted` on the newest n rows only, so the backlog can differ between the oldest and newest rows.
+    `image_fail=(before, during)` is field 9 before and during the quiet tail.
     """
-    return [make_row(days_ago(total - 1 - i),
-                     image_success=(0 if i >= total - quiet_tail else success))
-            for i in range(total)]
+    step_days_ago = quiet_tail // 2 if step_days_ago is None else step_days_ago
+    rows = []
+    for i in range(total):
+        age = total - 1 - i
+        corpus = 1000 + (new_panos if age <= step_days_ago else 0)
+        gap = (recent_not_attempted[1] if recent_not_attempted and age < recent_not_attempted[0]
+               else not_attempted)
+        written = 0 if age in empty_list_ages else corpus
+        quiet = i >= total - quiet_tail
+        rows.append(make_row(days_ago(age), image_success=(0 if quiet else success), image_fail=image_fail[quiet],
+                             xml_total=written if corpus_known else '', image_total=corpus - gap))
+    return rows
 
 
 class TestExtendedZeroProgressIsFlaggedAsARegression:
@@ -381,6 +416,8 @@ class TestExtendedZeroProgressIsFlaggedAsARegression:
         # Naming the last good day is the point of the alert: it tells the operator where to look in
         # scrape.log without having to open the log at all.
         assert days_ago(analyze.ZERO_PROGRESS_DAYS).strftime('%Y-%m-%d') in warnings[0]['msg']
+        # And naming the work that went undone is what separates it from a mature city with nothing new.
+        assert '3 new image-eligible panos' in warnings[0]['msg']
 
     def test_a_city_that_never_downloaded_anything_is_not_flagged(self, tmp_path):
         # Same shape, same length, no prior successes anywhere - so there is no regression to report.
@@ -395,6 +432,106 @@ class TestExtendedZeroProgressIsFlaggedAsARegression:
         log = write_log(tmp_path / 'log.csv', zero_progress_rows(total=short))
 
         assert analyze.analyze_city('somewhere', log, stale_days=3) == []
+
+
+class TestRule3AsksWhetherThereWasWork:
+    """Rule 3 (#163) fired on mature cities with no new panos: three of the 26 warnings on 2026-09-19
+    (west-chester-pa, tainan-tw, new-taipei-tw) were cities with nothing to fetch. It now needs evidence of
+    work - field 5 (the image-eligible corpus) growing across the window, or field 5 minus field 11 on the
+    newest row (eligible panos the image phase never attempted) - or an unknown corpus, which keeps the old
+    behaviour. Field 11 alone is not evidence: it counts attempts, so a starved image phase does not grow it."""
+
+    def rule_3(self, tmp_path, rows):
+        issues = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+        return [i for i in issues if 'No new images downloaded' in i['msg']]
+
+    def test_a_mature_city_with_nothing_new_is_not_flagged(self, tmp_path):
+        assert self.rule_3(tmp_path, zero_progress_rows(new_panos=0)) == []
+
+    def test_growth_below_the_minimum_is_not_flagged(self, tmp_path):
+        rows = zero_progress_rows(new_panos=analyze.ZERO_PROGRESS_MIN_NEW_WORK - 1)
+
+        assert self.rule_3(tmp_path, rows) == []
+
+    def test_panos_never_attempted_are_work(self, tmp_path):
+        found = self.rule_3(tmp_path, zero_progress_rows(new_panos=0, not_attempted=3))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'never attempted' in found[0]['msg']
+
+    def test_two_unattempted_are_not(self, tmp_path):
+        assert self.rule_3(tmp_path, zero_progress_rows(new_panos=0, not_attempted=2)) == []
+
+    def test_growth_before_the_window_is_not_counted(self, tmp_path):
+        """The corpus grew forty nights ago and the city downloaded it; nothing has arrived since."""
+        assert self.rule_3(tmp_path, zero_progress_rows(step_days_ago=40)) == []
+
+    def test_growth_on_the_first_quiet_night_counts(self, tmp_path):
+        """The baseline is the last night BEFORE the window, so a step on its first night is growth."""
+        found = self.rule_3(tmp_path, zero_progress_rows(step_days_ago=analyze.ZERO_PROGRESS_DAYS - 1))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+
+    def test_an_empty_list_on_the_baseline_night_is_not_growth(self, tmp_path):
+        """Field 5 is len(image_pano_infos), and an empty /adminapi/panos answer writes a plausible 0 there - the
+        value corpus_size already refuses in field 19. Read as a real corpus on the last night before the
+        window, it made a mature city with nothing new report `1,000 new image-eligible panos (0 → 1,000)`."""
+        rows = zero_progress_rows(new_panos=0, empty_list_ages=(analyze.ZERO_PROGRESS_DAYS,))
+
+        assert self.rule_3(tmp_path, rows) == []
+
+    def test_a_month_of_empty_lists_is_unknown_not_quiet(self, tmp_path):
+        """Every night in the window got an empty pano list. For a Mapillary- or Panoramax-only city (field 19
+        legitimately 0) nothing else reports that, so rule 3 must read the 0s as unknown and fire as before,
+        not as a flat corpus with nothing to fetch."""
+        rows = zero_progress_rows(new_panos=0, empty_list_ages=range(analyze.ZERO_PROGRESS_DAYS))
+
+        found = self.rule_3(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'unknown' in found[0]['msg']
+
+    def test_the_backlog_is_read_on_the_newest_row(self, tmp_path):
+        """A gap that opened recently is work, however the oldest rows looked."""
+        found = self.rule_3(tmp_path, zero_progress_rows(new_panos=0, recent_not_attempted=(5, 3)))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert '3 eligible panos never attempted' in found[0]['msg']
+
+    def test_an_empty_list_on_the_newest_night_does_not_hide_the_backlog(self, tmp_path):
+        """The backlog half of the written-0 fix. A starved city with 500 eligible panos never attempted gets an
+        empty /adminapi/panos answer on its newest night, so field 5 is 0 there. Read at face value the backlog
+        is 0 - field 11, negative, and with a flat corpus rule 3 is silent; the 0 is unknown, so the backlog is
+        read on the newest row that knows its corpus (#169 final review)."""
+        found = self.rule_3(tmp_path, zero_progress_rows(new_panos=0, not_attempted=500, empty_list_ages=(0,)))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert '500 eligible panos never attempted' in found[0]['msg']
+
+    def test_an_old_backlog_since_closed_is_not_work(self, tmp_path):
+        """The image phase caught up long ago (a first scrape's gap), and today every eligible pano has been
+        attempted: nothing to fetch, so a mature city stays quiet."""
+        rows = zero_progress_rows(new_panos=0, not_attempted=50, recent_not_attempted=(60, 0))
+
+        assert self.rule_3(tmp_path, rows) == []
+
+    def test_an_unknown_corpus_keeps_the_old_behaviour(self, tmp_path):
+        """Blank is not 0: a field 5 nobody wrote says nothing about the work, so the rule fires as before."""
+        found = self.rule_3(tmp_path, zero_progress_rows(new_panos=0, corpus_known=False))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'unknown' in found[0]['msg']
+
+    def test_a_steady_transient_set_is_the_trade_the_gate_makes(self, tmp_path):
+        """docs/log-analyzer.md, "What `log.csv` cannot show": 30 nights of 200 panos failing transiently, no
+        downloads, a flat corpus. The ungated rule fired here; the gate cannot tell this city from a mature one
+        with nothing new (field 5 flat, every eligible pano attempted), so it is silent. Pinned so the docs'
+        claim is a measurement - if a runner-side transient count (open item 3) ever lands, this test is the
+        one that should change."""
+        # 50 ledgered permanent verdicts every night, plus 200 transient failures every night of the tail.
+        rows = zero_progress_rows(new_panos=0, quiet_tail=analyze.ZERO_PROGRESS_DAYS, image_fail=(50, 250))
+
+        assert self.rule_3(tmp_path, rows) == []
 
 
 class TestAnAbnormallyLongRunIsFlagged:
@@ -810,6 +947,8 @@ class TestTheWholeReport:
             return city_id != 'seattle-wa'   # the first city in the list is the one that fails
 
         monkeypatch.setattr(analyze, 'download_log', fake_download)
+        monkeypatch.setattr(analyze.roster, 'fetch_roster',
+                            fetch_ok(roster_entry('seattle-wa'), roster_entry('newberg-or')))
 
         status = run_main(tmp_path, monkeypatch, cities=TWO_CITIES,
                           logs=[self.healthy('seattle-wa'), self.healthy('newberg-or')])
@@ -1047,6 +1186,22 @@ def depth_rows(n_days_ago, eligible, resolved_before, requests, ran=True, unavai
                     total_minutes=12, depth_eligible=eligible, **overrides)
 
 
+def saving_nothing(nights, eligible=5000, resolved=590, requests=25, unavailable=0, newest=0):
+    """`nights` consecutive nights on which every depth request failed, the newest `newest` days ago.
+
+    `unavailable` of each night's failures are permanent verdicts, so they come back as skips the next night -
+    the ledger grows by exactly that much, which is the only trace the row leaves of them. The rest are
+    transient and never ledgered, so `depth_skip` stays flat. 25 is DEPTH_MAX_CONSECUTIVE_FAILURES, the
+    breaker's trip point, and so the size of a night on which every request fails transiently.
+    """
+    rows = []
+    for i in range(nights):
+        rows.append(depth_rows(newest + nights - 1 - i, eligible, resolved, requests,
+                               unavailable=unavailable, transient=requests - unavailable))
+        resolved += unavailable
+    return rows
+
+
 class TestDepthProgress:
     """depth_progress is the one place the backfill's figures are defined; every rule and every line of the
     report reads them from here. So each definition is pinned against the row shape that would break it."""
@@ -1142,6 +1297,22 @@ class TestDepthProgress:
 
         assert analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))['unresolved'] == 0
 
+    def test_the_barren_figures_for_the_measured_transient_outage(self, tmp_path):
+        """Ten nights of the breaker tripping: 250 requests, nothing saved, nothing ledgered. The share is 0.0,
+        not None - nine earlier nights failed and none of it came back as a skip."""
+        progress = analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', saving_nothing(10))))
+
+        assert (progress['unsaved_nights'], progress['unsaved_request_nights'], progress['unsaved_requests'],
+                progress['written_off'], progress['unavailable_share'], progress['barren']) == (10, 10, 250, 0, 0.0,
+                                                                                                True)
+
+    def test_stragglers_that_the_phase_walks_every_night_are_not_barren(self, tmp_path):
+        """The ordinary end state of a backfill: the last 100 panos fail transiently every night. The phase
+        walked its whole list (depth_total == depth_eligible), so it did not stop early - nothing is broken."""
+        rows = [depth_rows(n, 1000, 900, 100, transient=100) for n in (4, 3, 2, 1, 0)]
+
+        assert analyze.depth_progress(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))['barren'] is False
+
 
 class TestADepthPhaseThatStoppedMakingProgressIsFlagged:
     """Check 7. Five zeros in the depth columns is what --skip-depth writes, what the block latch writes when
@@ -1196,6 +1367,213 @@ class TestADepthPhaseThatStoppedMakingProgressIsFlagged:
         rows = [old_row(days_ago(n)) for n in (3, 2, 1, 0)]
 
         assert self.issues(tmp_path, rows) == []
+
+
+class TestADepthPhaseThatSavesNothingIsFlagged:
+    """Rule 10 (#163). Rule 7 counts REQUESTS, so a phase whose every request fails resets it nightly and the
+    city reads as healthy. Measured against master: 10 nights of 25 transient failures returned no issue and
+    the stats line said `no rate, no ETA`; 10 nights of 1,889 requests all written off as `unavailable`
+    returned no issue and a confident `~39 nights left`.
+
+    The two shapes can only be told apart across two rows: an `unavailable` verdict is ledgered at once and
+    comes back as next night's skip, while a transient failure never does. So the ledgering arm - permanent,
+    needs a ledger scrub - is CRITICAL, and the transient arm (or one that cannot be classified yet) is a
+    WARNING, rule 7's tier."""
+
+    def issues(self, tmp_path, rows):
+        return analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+
+    def barren(self, tmp_path, rows):
+        return [i for i in self.issues(tmp_path, rows) if 'saved nothing' in i['msg']]
+
+    def test_three_nights_of_transient_failure_with_work_left_is_a_warning(self, tmp_path):
+        rows = [depth_rows(3, 5000, 0, 590)] + saving_nothing(3)
+
+        found = self.barren(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'Depth phase saved nothing on the last 3 nights' in found[0]['msg']
+        assert '75 requests' in found[0]['msg']
+        assert '4,410 of 5,000' in found[0]['msg']
+        assert 'None of it was ledgered' in found[0]['msg']
+        # D11: the breaker's stop line is logged at ERROR, so the message must not send anyone looking for a
+        # "WARNING line" that does not exist.
+        assert 'the DEPTHDOWNLOAD lines in scrape.log' in found[0]['msg']
+        # The calendar clause appears only when it differs from the count of nights that asked.
+        assert 'since the last save' not in found[0]['msg']
+
+    def test_two_nights_are_not_enough(self, tmp_path):
+        rows = [depth_rows(2, 5000, 0, 590)] + saving_nothing(2)
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_one_save_on_the_newest_night_resets_the_count(self, tmp_path):
+        """24 of 25 failed and one saved: the phase is talking to Google and writing artifacts, so it is not
+        barren - the reset is keyed on a SAVE, and one is enough."""
+        rows = saving_nothing(3, newest=1) + [depth_rows(0, 5000, 590, 25, transient=24)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    def test_nights_with_no_row_are_not_failing_nights(self, tmp_path):
+        """A save five nights ago, four nights with no row at all (a box outage, a window that never reached
+        the city), then one night of breaker trips. One failing night is exactly what DEPTH_BARREN_NIGHTS is
+        there to forgive; counting CALENDAR nights since the save read it as five (#169 review)."""
+        rows = [depth_rows(5, 5000, 0, 590)] + saving_nothing(1)
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_a_stand_down_then_one_failing_night_is_not_barren(self, tmp_path):
+        """docs/ops.md's rollback: --skip-depth for four nights (five-zero rows - rule 7's business, not this
+        rule's), then it comes off and the first night fails. That is one failing night, not five."""
+        rows = ([depth_rows(5, 5000, 0, 590)] + [depth_rows(n, 5000, 590, 0, ran=False) for n in (4, 3, 2, 1)]
+                + saving_nothing(1))
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_failing_nights_with_gaps_between_them_still_count(self, tmp_path):
+        """Three failing nights spread over eight: the rule counts nights that ASKED, wherever they fall, and
+        says how long it has been since the last save as well."""
+        rows = ([depth_rows(8, 5000, 0, 590)] + saving_nothing(1, newest=6) + saving_nothing(1, newest=3)
+                + saving_nothing(1))
+
+        found = self.barren(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'saved nothing on the last 3 nights it made requests, over 8 nights since' in found[0]['msg']
+
+    def test_a_city_that_never_saved_counts_from_its_first_night(self, tmp_path):
+        found = self.barren(tmp_path, saving_nothing(3))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'on the last 3 nights' in found[0]['msg']
+        assert 'with no save in the log' in found[0]['msg']
+
+    def test_a_city_that_never_saved_does_not_cite_a_last_save(self, tmp_path):
+        """Failing nights 4, 2 and 0 nights ago and no save anywhere in the log: there is no `last save` to
+        count from, so the message says so rather than naming one (#169 final review)."""
+        rows = saving_nothing(1, newest=4) + saving_nothing(1, newest=2) + saving_nothing(1)
+
+        found = self.barren(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'on the last 3 nights it made requests, over 5 nights, with no save in the log' in found[0]['msg']
+        assert 'since the last save' not in found[0]['msg']
+
+    def test_three_passes_on_one_failing_night_are_one_night(self, tmp_path):
+        """The queue can give a city several passes a night (#43). A one-night outage that fails all three is
+        one failing night - what DEPTH_BARREN_NIGHTS forgives - not three: the count is of DATES, not rows,
+        the same row-versus-night mistake rules 2, 3 and 6 were fixed for (#169 final review)."""
+        rows = [depth_rows(1, 5000, 0, 590)] + saving_nothing(1) * 3
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_the_stats_line_counts_the_nights_that_asked(self, tmp_path):
+        """The stats line and the WARNING give one number: nights that made requests, not calendar nights since
+        the save - on a gappy log those differ (here 3 against 8), and two lines disagreeing about one fact
+        invite someone to 'fix' the wrong one (#169 final review)."""
+        rows = ([depth_rows(8, 5000, 0, 590)] + saving_nothing(1, newest=6) + saving_nothing(1, newest=3)
+                + saving_nothing(1))
+
+        stats = analyze.city_stats(analyze.read_log(write_log(tmp_path / 'log.csv', rows)))
+
+        assert 'nothing saved in 3 requesting nights' in stats, stats
+
+    def test_the_measured_drift_is_critical(self, tmp_path):
+        """Upstream drift made every pano's depth None, so every request became an `unavailable` verdict:
+        ledgered at once, never re-requested. The ledger grows by exactly the failures, night after night."""
+        rows = saving_nothing(10, eligible=100_000, resolved=10_000, requests=1889, unavailable=1889)
+        log = write_log(tmp_path / 'log.csv', rows)
+
+        found = [i for i in analyze.analyze_city('somewhere', log, stale_days=3) if 'saved nothing' in i['msg']]
+
+        assert [i['level'] for i in found] == ['CRITICAL'], found
+        assert '17,001' in found[0]['msg']
+        assert 'unavailable' in found[0]['msg']
+        assert 'nothing saved in 10 requesting nights' in analyze.city_stats(analyze.read_log(log))
+
+    @staticmethod
+    def half_ledgered(skips):
+        """Three never-saving nights of 100 failures each, the ledger reading `skips` at the start of each."""
+        return [depth_rows(n, 5000, skip, 100, unavailable=50, transient=50) for n, skip in zip((2, 1, 0), skips)]
+
+    def test_half_the_failures_ledgered_is_the_boundary(self, tmp_path):
+        """100 of the 200 failures before the newest night came back as skips: share 0.5 exactly. The newest
+        night's failures are not in the denominator - nothing could have come back from them yet."""
+        found = self.barren(tmp_path, self.half_ledgered((590, 640, 690)))
+
+        assert [i['level'] for i in found] == ['CRITICAL'], found
+        # The two figures differ here (the drift shape makes them equal), so this pins which is which.
+        assert '100 of the 200 requests that failed before the newest run' in found[0]['msg']
+        assert 'The fleet saves ~60%' in found[0]['msg']
+
+    def test_just_under_half_is_transient(self, tmp_path):
+        found = self.barren(tmp_path, self.half_ledgered((590, 639, 689)))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'Only 99 of the failures were ledgered' in found[0]['msg']
+
+    def test_the_measured_transient_outage_is_a_warning(self, tmp_path):
+        found = self.barren(tmp_path, saving_nothing(10))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert not [i for i in self.issues(tmp_path, saving_nothing(10)) if i['level'] == 'CRITICAL']
+
+    def test_stragglers_the_phase_walks_every_night_are_not_flagged(self, tmp_path):
+        """12 panos fail transiently every night and the phase reaches every one of them: depth_total equals
+        the corpus. That is the normal end of a backfill, not an outage, and must stay silent."""
+        rows = [make_row(days_ago(n), depth_fail=12, depth_skip=4988, depth_total=5000, depth_eligible=5000)
+                for n in range(9, -1, -1)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    @pytest.mark.parametrize('requests, fires', [((3, 3, 3), False), ((4, 3, 3), True)])
+    def test_nine_requests_are_not_evidence_ten_are(self, tmp_path, requests, fires):
+        rows = [depth_rows(n, 5000, 590, r, transient=r) for n, r in zip((2, 1, 0), requests)]
+
+        assert bool(self.barren(tmp_path, rows)) is fires
+
+    def test_rule_7_takes_the_night_once_requests_stop(self, tmp_path):
+        """Three failing nights, then three with no requests at all. That is a stall, and rule 7 says so; the
+        two rules must never both fire, or one outage reads as two findings."""
+        rows = ([depth_rows(6, 5000, 0, 590)] + saving_nothing(3, newest=3)
+                + [depth_rows(n, 5000, 590, 0, ran=False) for n in (2, 1, 0)])
+
+        issues = self.issues(tmp_path, rows)
+
+        assert len(issues) == 1, issues
+        assert 'Depth backfill stalled' in issues[0]['msg']
+
+    def test_a_city_with_nothing_left_is_never_barren(self, tmp_path):
+        """Three failing nights, then the corpus shrinks to what the ledger already holds: nothing is left to
+        save, so there is nothing to report. The newest REQUESTING row still stopped short of its list, so
+        the walked-list guard does not cover this - `unresolved > 0` is what does."""
+        rows = saving_nothing(3, newest=1) + [make_row(days_ago(0), depth_skip=590, depth_total=590,
+                                                       depth_eligible=590)]
+
+        assert self.barren(tmp_path, rows) == []
+
+    def test_nothing_fires_before_the_column_exists(self, tmp_path):
+        rows = [old_row(days_ago(n), depth_fail=25, depth_skip=590, depth_total=615) for n in (3, 2, 1, 0)]
+
+        assert self.issues(tmp_path, rows) == []
+
+    def test_the_fleet_block_counts_a_city_saving_nothing(self, tmp_path, monkeypatch, capsys):
+        """Beside a healthy backfilling city - work left, requests last night - so a count of every city that
+        is merely asking cannot pass for a count of the one that saves nothing."""
+        healthy = [depth_rows(9 - i, 5000, 590 + 100 * i, 100) for i in range(10)]
+
+        run_main(tmp_path, monkeypatch, '--no-download', cities=TWO_CITIES,
+                 logs=[('seattle-wa', saving_nothing(10)), ('newberg-or', healthy)])
+
+        assert '0 stalled · 1 saving nothing' in squash(capsys.readouterr().out)
+
+    def test_the_drift_fails_the_run(self, tmp_path, monkeypatch, capsys):
+        rows = saving_nothing(10, eligible=100_000, resolved=10_000, requests=1889, unavailable=1889)
+
+        status = run_main(tmp_path, monkeypatch, '--no-download', logs=[('seattle-wa', rows)])
+
+        assert status == 1
+        assert 'Critical : 1 seattle-wa' in squash(capsys.readouterr().out)
 
 
 def test_a_blank_depth_eligible_alone_is_not_an_early_end(tmp_path):
@@ -1567,6 +1945,94 @@ class TestARowThatIsNotARun:
         assert 'no readable run' in issues[0]['msg'] and '2 row(s)' in issues[0]['msg']
 
 
+def torn(start_time):
+    """A torn write: the stamp (written first) survived, the tail did not. Three fields, not 18 or 19."""
+    return f'{start_time},1,2'
+
+
+class TestOnlyARecentTornRowIsNews:
+    """Rule 9 (#163). It counted torn rows over the whole file with no date, so every city carrying a torn
+    write from years ago warned every morning: 20 of the 26 warnings on 2026-09-19 were rows dated 2022 to
+    2026-05, and nothing on the current build wrote one. A warning that fires every day on history teaches
+    the reader to skip the WARNING tier. Now only a row from the last MALFORMED_RECENT_DAYS warns; older ones
+    are one INFO line carrying the total."""
+
+    def rule_9(self, tmp_path, rows):
+        issues = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+        return [i for i in issues if 'field count' in i['msg']]
+
+    def test_an_old_torn_row_is_info_not_a_warning(self, tmp_path):
+        """The measured production shape: one 1-field row from 2024, the rest well formed."""
+        found = self.rule_9(tmp_path, ['2024-04-27 06:00:05.587071'] + recent_rows(3))
+
+        assert [i['level'] for i in found] == ['INFO'], found
+        assert 'newest dated 2024-04-27' in found[0]['msg']
+
+    def test_the_info_line_carries_the_total_and_the_newest_date(self, tmp_path):
+        """Three old rows with the newest in the middle of the file: the line counts all three and names the
+        newest, so neither the recent count nor the oldest, first or last row's date can stand in."""
+        rows = ['2022-03-01 06:00:00', '2024-04-27 06:00:05.587071', '2023-06-15 06:00:00'] + recent_rows(3)
+
+        found = self.rule_9(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['INFO'], found
+        assert '3 historical row(s)' in found[0]['msg']
+        assert 'newest dated 2024-04-27' in found[0]['msg']
+
+    @pytest.mark.parametrize('age_hours, level', [(7 * 24 + 12, 'INFO'), (6 * 24 + 12, 'WARNING')])
+    def test_the_window_is_seven_days(self, tmp_path, age_hours, level):
+        assert analyze.MALFORMED_RECENT_DAYS == 7
+        stamp = days_ago(0) - timedelta(hours=age_hours)
+
+        found = self.rule_9(tmp_path, [torn(stamp)] + recent_rows(3))
+
+        assert [i['level'] for i in found] == [level], found
+
+    def test_an_undatable_torn_row_counts_as_recent(self, tmp_path):
+        """A tear can cut the stamp itself - and that is exactly tonight's row. Reading it as old would let a
+        crashed run look quiet."""
+        found = self.rule_9(tmp_path, ['garbage,1,2'] + recent_rows(3))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'no readable timestamp' in found[0]['msg']
+
+    @pytest.mark.parametrize('cut', ['2026', '2026-09', '2026-09-2', '2026-09-27', '2026-09-27 06:0'])
+    def test_a_stamp_cut_short_is_undatable_not_history(self, tmp_path, cut):
+        """ISO8601 accepts a prefix: `2026` parses as 2026-01-01 and `2026-09-2` as 2026-09-02, so tonight's
+        row cut inside its first bytes was dated months back and filed as history. Only a stamp that carries
+        the whole `YYYY-MM-DD HH:MM:SS` is trusted for a date (#169 review)."""
+        found = self.rule_9(tmp_path, [cut] + recent_rows(3))
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert 'no readable timestamp' in found[0]['msg']
+
+    def test_a_stamp_cut_after_the_seconds_still_dates_the_row(self, tmp_path):
+        """The fraction and the offset are past what the window needs, so a cut there still reads as history."""
+        found = self.rule_9(tmp_path, ['2024-04-27 06:00:05.58'] + recent_rows(3))
+
+        assert [i['level'] for i in found] == ['INFO'], found
+        assert 'newest dated 2024-04-27' in found[0]['msg']
+
+    def test_one_recent_among_old_is_one_warning(self, tmp_path):
+        rows = [torn(days_ago(400)), torn(days_ago(200))] + recent_rows(3) + [torn(days_ago(0))]
+
+        found = self.rule_9(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        assert '1 of 3' in found[0]['msg']
+
+    def test_a_city_with_only_history_is_blue_and_ok(self, tmp_path, monkeypatch, capsys):
+        rows = [torn(days_ago(400))] + recent_rows(3)
+
+        status = run_main(tmp_path, monkeypatch, '--no-download', logs=[('seattle-wa', rows)])
+        out = squash(capsys.readouterr().out)
+
+        assert status == 0
+        assert '🔵 Seattle' in out
+        assert 'OK : 1' in out
+        assert 'Warning : 0' in out
+
+
 class TestRules2And3CountNightsNotRows:
     """Rule 6 was rewritten because the queue's extra passes put more than one row on a night. These two were
     left counting rows as days, and both are named in days."""
@@ -1634,12 +2100,15 @@ def fetch_ok(*entries):
     return fetch
 
 
+ONE_HOST = ('host.example',)
+
+
 class TestAnUnlistedCityIsNamedAndCritical:
     """The gap itself. A city the roster knows and cities.csv does not is CRITICAL, by name."""
 
     def test_it_is_named_and_critical(self):
         lines, critical = analyze.roster_check(
-            city_rows(('seattle-wa', 'Seattle')), 'host.example',
+            city_rows(('seattle-wa', 'Seattle')), ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')))
 
         assert critical is True
@@ -1649,7 +2118,7 @@ class TestAnUnlistedCityIsNamedAndCritical:
     def test_a_complete_file_passes(self):
         """No false positive: every roster city has a row, so nothing is named and the exit stays clean."""
         lines, critical = analyze.roster_check(
-            city_rows(('seattle-wa', 'Seattle'), ('laurens-ia', 'Laurens')), 'host.example',
+            city_rows(('seattle-wa', 'Seattle'), ('laurens-ia', 'Laurens')), ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa'), roster_entry('laurens-ia')))
 
         assert critical is False
@@ -1660,7 +2129,7 @@ class TestAnUnlistedCityIsNamedAndCritical:
         different directory. This is the Bayonne finding's shape: a row one character off the id the app
         reads its own panos under, which looked present to every eye that checked."""
         lines, critical = analyze.roster_check(
-            city_rows(('Seattle-WA', 'Seattle')), 'host.example',
+            city_rows(('Seattle-WA', 'Seattle')), ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa')))
 
         assert critical is True
@@ -1678,7 +2147,7 @@ class TestPrivateCitiesAreNamedToo:
 
     def test_a_private_city_with_no_row_is_named(self):
         lines, critical = analyze.roster_check(
-            city_rows(('seattle-wa', 'Seattle')), 'host.example',
+            city_rows(('seattle-wa', 'Seattle')), ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa'),
                            roster_entry('washington-dc', visibility='private')))
 
@@ -1689,7 +2158,7 @@ class TestPrivateCitiesAreNamedToo:
         """Its url is withheld, and the report says so rather than guessing a hostname. Guessing is exactly
         how sidewalk-dc was found by hand, and it is not a method."""
         lines, _ = analyze.roster_check(
-            city_rows(), 'host.example',
+            city_rows(), ONE_HOST,
             fetch=fetch_ok(roster_entry('washington-dc', visibility='private'),
                            roster_entry('seattle-wa')))
 
@@ -1701,7 +2170,7 @@ class TestPrivateCitiesAreNamedToo:
         """The label follows the roster's visibility, not the missing url: a public entry with a null url is
         an upstream fault, and calling it "withheld (private)" would send the operator the wrong way."""
         lines, _ = analyze.roster_check(
-            city_rows(), 'host.example',
+            city_rows(), ONE_HOST,
             fetch=fetch_ok(roster_entry('laurens-ia', url=None), roster_entry('seattle-wa')))
 
         laurens = next(line for line in lines if 'laurens-ia' in line)
@@ -1715,20 +2184,115 @@ class TestTheCheckIsNeverSilentlySkipped:
     Both mutants here return ([], False) and read as a passing night.
     """
 
-    def test_no_host_configured_is_critical(self):
-        lines, critical = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')), None)
+    def test_no_hosts_is_critical(self):
+        """main() can no longer get here - it always passes the defaults - so this is the function's own
+        contract: an empty list must not skip the loop and read as a clean check."""
+        lines, critical = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')), ())
 
         assert critical is True
-        assert any('PS_ROSTER_HOST' in line for line in lines)
+        assert any('no hosts given' in line for line in lines)
 
     def test_no_roster_served_is_critical(self):
         def fetch(host):
             raise roster_mod.RosterUnavailable('timed out')
 
-        lines, critical = analyze.roster_check(city_rows(), 'host.example', fetch=fetch)
+        lines, critical = analyze.roster_check(city_rows(), ONE_HOST, fetch=fetch)
 
         assert critical is True
         assert any('timed out' in line for line in lines)
+
+    def test_an_unexpected_error_is_not_absorbed_as_a_failed_host(self):
+        """Only RosterUnavailable means "this host did not answer". Widening the catch "for robustness" would
+        turn a bug in the check into a routine CRITICAL line - and would silently disarm _no_roster_network,
+        whose whole job is to raise something this does NOT catch."""
+        def fetch(host):
+            raise RuntimeError('a bug, not a dead host')
+
+        with pytest.raises(RuntimeError):
+            analyze.roster_check(city_rows(), ('a.example', 'b.example'), fetch=fetch)
+
+    def test_the_network_guard_fires_through_the_real_fetch(self):
+        """End to end: with no fetch stub the real fetch_roster reaches the autouse guard, and the guard's
+        error escapes roster_check rather than becoming a report line."""
+        with pytest.raises(AssertionError, match='reached the network'):
+            analyze.roster_check(city_rows(), ONE_HOST)
+
+    def test_every_host_failing_is_critical_and_names_each(self):
+        """Falling back must not turn "the last host failed" into "the check passed", and the operator needs
+        every host's reason, not just the last one's."""
+        def fetch(host):
+            raise roster_mod.RosterUnavailable('down at ' + host)
+
+        lines, critical = analyze.roster_check(city_rows(), ('a.example', 'b.example'), fetch=fetch)
+
+        assert critical is True
+        assert any('down at a.example' in line and 'down at b.example' in line for line in lines)
+
+
+class TestTheNextHostIsTriedWhenOneIsDown:
+    """Unlike the SFTP host, the roster host is interchangeable, so one deployment being down is no reason to
+    skip the check. scrape_queue.load_roster already asks several; this is the analyzer's version."""
+
+    def test_the_second_host_answers_for_a_dead_first(self):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            if host == 'a.example':
+                raise roster_mod.RosterUnavailable('HTTP 503')
+            return [roster_entry('seattle-wa')]
+
+        lines, critical = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')),
+                                               ('a.example', 'b.example'), fetch=fetch)
+
+        assert asked == ['a.example', 'b.example']
+        assert critical is False
+        assert any('on b.example' in line for line in lines), 'the report must name the host that answered'
+
+    def test_the_answer_says_which_hosts_failed_first(self):
+        def fetch(host):
+            if host == 'a.example':
+                raise roster_mod.RosterUnavailable('HTTP 503')
+            return [roster_entry('seattle-wa')]
+
+        lines, _ = analyze.roster_check(city_rows(('seattle-wa', 'Seattle')),
+                                        ('a.example', 'b.example'), fetch=fetch)
+
+        assert any('on b.example' in line and 'a.example: HTTP 503' in line for line in lines)
+
+    def test_at_most_max_hosts_are_asked(self):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            raise roster_mod.RosterUnavailable('down')
+
+        hosts = tuple('h%d.example' % i for i in range(roster_mod.ROSTER_MAX_HOSTS + 2))
+        _, critical = analyze.roster_check(city_rows(), hosts, fetch=fetch)
+
+        assert asked == list(hosts[:roster_mod.ROSTER_MAX_HOSTS])
+        assert critical is True
+
+    def test_hosts_past_the_cap_are_counted_not_dropped_silently(self):
+        def fetch(host):
+            raise roster_mod.RosterUnavailable('down')
+
+        n = roster_mod.ROSTER_MAX_HOSTS
+        hosts = tuple('h%d.example' % i for i in range(n + 2))
+        lines, _ = analyze.roster_check(city_rows(), hosts, fetch=fetch)
+
+        assert any('%d of %d hosts asked' % (n, n + 2) in line for line in lines)
+
+    def test_a_live_first_host_is_the_only_one_asked(self):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            return [roster_entry('seattle-wa')]
+
+        analyze.roster_check(city_rows(('seattle-wa', 'Seattle')), ('a.example', 'b.example'), fetch=fetch)
+
+        assert asked == ['a.example']
 
 
 class TestTheOptOutMarkerIsExplicit:
@@ -1743,7 +2307,7 @@ class TestTheOptOutMarkerIsExplicit:
         rows = city_rows(('seattle-wa', 'Seattle'),
                          ('#zurich-infra3d', 'not-monitored: infra3d imagery - no GSV to scrape'))
         lines, critical = analyze.roster_check(
-            rows, 'host.example',
+            rows, ONE_HOST,
             fetch=fetch_ok(roster_entry('seattle-wa'),
                            roster_entry('zurich-infra3d', visibility='private')))
 
@@ -1757,7 +2321,7 @@ class TestTheOptOutMarkerIsExplicit:
         the city is still named, which is the safe way round."""
         rows = city_rows(('# laurens-ia', ' bayonne-fr launched 2026-09-11'))
         lines, critical = analyze.roster_check(
-            rows, 'host.example', fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
+            rows, ONE_HOST, fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
 
         assert critical is True
         assert any('laurens-ia' in line for line in lines)
@@ -1765,7 +2329,7 @@ class TestTheOptOutMarkerIsExplicit:
     def test_a_bare_hash_row_is_not_credited(self):
         rows = city_rows(('#laurens-ia', ''))
         _, critical = analyze.roster_check(
-            rows, 'host.example', fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
+            rows, ONE_HOST, fetch=fetch_ok(roster_entry('laurens-ia'), roster_entry('seattle-wa')))
 
         assert critical is True
 
@@ -1822,7 +2386,7 @@ class TestTheFailureWordingDoesNotDrift:
 
     def test_the_constants_match(self):
         import scrape_queue
-        for name in ('ROSTER_PATH', 'ROSTER_TIMEOUT_SECONDS', 'ROSTER_MAX_BYTES'):
+        for name in ('ROSTER_PATH', 'ROSTER_TIMEOUT_SECONDS', 'ROSTER_MAX_BYTES', 'ROSTER_MAX_HOSTS'):
             assert getattr(roster_mod, name) == getattr(scrape_queue, name), name
 
 
@@ -1830,7 +2394,9 @@ class TestTheFetchIsPlainHttps:
     """The one seam that touches a socket: https, the roster path, a named User-Agent, and no credential -
     a keyed roster was considered and rejected (2026-09-23; see roster.py's module docstring)."""
 
-    def test_the_request_it_sends(self):
+    def test_the_request_it_sends(self, monkeypatch):
+        # The suite-wide refusal has to be lifted for this one test: it is _open_url itself under test.
+        monkeypatch.setattr(roster_mod, '_open_url', REAL_OPEN_URL)
         seen = {}
 
         class FakeResponse:
@@ -1860,15 +2426,12 @@ class TestTheFetchIsPlainHttps:
         assert seen['timeout'] == roster_mod.ROSTER_TIMEOUT_SECONDS
 
 
-class TestTheRosterGapDecidesTheExitCode:
-    """The exit code is the only unattended alarm this script has, and a city with no row here has NO other
-    one - the queue at least books its own exit status. So the gap has to reach the return value, not just
-    the printed report.
+class _RosterMainHarness:
+    """Drives main() in download mode with the store stubbed out and a stand-in roster. No tests of its own,
+    so the classes below share `_run` without re-running each other's tests."""
 
-    The mutant is `return 1 if critical else 0` - the pre-#133 line, which prints the gap and exits 0.
-    """
-
-    def _run(self, tmp_path, monkeypatch, fetch, cities=(('seattle-wa', 'Seattle'),), argv=()):
+    def _run(self, tmp_path, monkeypatch, fetch, cities=(('seattle-wa', 'Seattle'),), argv=(),
+             env_host='host.example'):
         logs_dir = tmp_path / 'logs'
         logs_dir.mkdir(exist_ok=True)
         cities_file = tmp_path / 'cities.csv'
@@ -1897,8 +2460,20 @@ class TestTheRosterGapDecidesTheExitCode:
                                                                   'port': None, 'key': None})
         monkeypatch.setattr(analyze, 'download_log', fake_download)
         monkeypatch.setattr(analyze.roster, 'fetch_roster', fetch)
-        monkeypatch.setenv('PS_ROSTER_HOST', 'host.example')
+        if env_host is None:
+            monkeypatch.delenv('PS_ROSTER_HOST', raising=False)
+        else:
+            monkeypatch.setenv('PS_ROSTER_HOST', env_host)
         return analyze.main(list(argv))
+
+
+class TestTheRosterGapDecidesTheExitCode(_RosterMainHarness):
+    """The exit code is the only unattended alarm this script has, and a city with no row here has NO other
+    one - the queue at least books its own exit status. So the gap has to reach the return value, not just
+    the printed report.
+
+    The mutant is `return 1 if critical else 0` - the pre-#133 line, which prints the gap and exits 0.
+    """
 
     def test_a_complete_roster_on_a_healthy_fleet_exits_zero(self, tmp_path, monkeypatch):
         """The control. Without it, the test below cannot tell "the roster gap set the exit code" from
@@ -1954,6 +2529,75 @@ class TestTheRosterGapDecidesTheExitCode:
         analyze.main(['--no-download'])
 
         assert 'Roster cross-check' not in capsys.readouterr().out
+
+
+class TestTheRosterHostNeedsNoConfiguration(_RosterMainHarness):
+    """Every deployment serves the same roster, so the hosts have a default and setting nothing still runs
+    the check. The order is flag, then PS_ROSTER_HOST, then DEFAULT_ROSTER_HOSTS."""
+
+    def _asked(self, tmp_path, monkeypatch, **kw):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            return [roster_entry('seattle-wa')]
+
+        status = self._run(tmp_path, monkeypatch, fetch, **kw)
+        return status, asked
+
+    def test_the_defaults_are_the_real_hosts(self):
+        """Written out, not read back from the constant: every other test here compares the constant with
+        itself, so a typo in a hostname would pass them all and fail only in production, as a CRITICAL
+        "no host served a roster" every night. Both hosts were checked to serve the roster on 2026-09-24."""
+        assert analyze.DEFAULT_ROSTER_HOSTS == ('sidewalk-sea.cs.washington.edu',
+                                                'sidewalk-chicago.cs.washington.edu')
+
+    def test_unset_resolves_to_both_real_hosts(self):
+        """The resolver, not just the constant: `return DEFAULT_ROSTER_HOSTS[:1]` passed every other test,
+        because none needs a second host on the unset path."""
+        assert analyze.resolve_roster_hosts(None, None) == ('sidewalk-sea.cs.washington.edu',
+                                                            'sidewalk-chicago.cs.washington.edu')
+
+    def test_unset_falls_back_to_chicago_when_seattle_is_down(self, tmp_path, monkeypatch):
+        asked = []
+
+        def fetch(host):
+            asked.append(host)
+            if host == 'sidewalk-sea.cs.washington.edu':
+                raise roster_mod.RosterUnavailable('HTTP 503')
+            return [roster_entry('seattle-wa')]
+
+        status = self._run(tmp_path, monkeypatch, fetch, env_host=None)
+
+        assert asked == ['sidewalk-sea.cs.washington.edu', 'sidewalk-chicago.cs.washington.edu']
+        assert status == 0
+
+    def test_unset_uses_the_default_and_passes(self, tmp_path, monkeypatch):
+        """The mutant is losing the default: the check is then CRITICAL and the run exits 1."""
+        status, asked = self._asked(tmp_path, monkeypatch, env_host=None)
+        assert asked == [analyze.DEFAULT_ROSTER_HOSTS[0]]
+        assert status == 0
+
+    @pytest.mark.parametrize('blank', ['', '   ', ' , '], ids=['empty', 'spaces', 'only-commas'])
+    def test_a_blank_env_var_is_unset_not_a_host(self, tmp_path, monkeypatch, blank):
+        status, asked = self._asked(tmp_path, monkeypatch, env_host=blank)
+        assert asked == [analyze.DEFAULT_ROSTER_HOSTS[0]]
+        assert status == 0
+
+    def test_the_env_var_overrides_the_default(self, tmp_path, monkeypatch):
+        _, asked = self._asked(tmp_path, monkeypatch, env_host='env.example')
+        assert asked == ['env.example']
+
+    def test_the_flag_overrides_the_env_var(self, tmp_path, monkeypatch):
+        _, asked = self._asked(tmp_path, monkeypatch, env_host='env.example',
+                               argv=('--roster-host', 'flag.example'))
+        assert asked == ['flag.example']
+
+    def test_a_list_is_split_and_stripped(self):
+        assert analyze.resolve_roster_hosts(None, ' a.example , ,b.example ') == ('a.example', 'b.example')
+
+    def test_a_blank_flag_falls_through_to_the_env_var(self):
+        assert analyze.resolve_roster_hosts(' ', 'env.example') == ('env.example',)
 
 
 class TestTheDeployedCityListPassesItsOwnCheck:

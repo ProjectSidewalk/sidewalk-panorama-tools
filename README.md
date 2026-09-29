@@ -22,7 +22,7 @@ out of the panorama. It runs unattended every night, per city, across ~50 deploy
 | [`check_cvmetadata_schema.py`](docs/api-fields.md#checking-the-contract-against-a-live-deployment) | Asks a live deployment which `cvMetadata` fields it serves and exits nonzero when one `CropRunner` requires has stopped arriving. The one thing here that talks to a deployment on purpose — the suite is network-free, so nothing else can see an upstream rename. |
 | [`migrate_depth_artifacts.py`](docs/depth.md#migrating-a-pre-v2-store) | One-off, idempotent rewrite of depth artifacts written before the v2 format. |
 | [`refetch_panos.py`](docs/ops.md#repairing-fover-era-panoramas) | One-off, idempotent re-fetch of panoramas downloaded at half resolution, replacing one only when the replacement is strictly better. |
-| [`downscale_panos.py`](docs/ops.md#display-copies-of-wide-panoramas) | Idempotent sweep that writes the 8192 px display copy beside every wider panorama. **Neither downloader writes one** — that was switched off on 2026-09-09, so this is the only writer that creates one, and it runs only when you run it. |
+| [`downscale_panos.py`](docs/ops.md#display-copies-of-wide-panoramas) | Idempotent sweep that writes the 8192 px display copy beside every wider panorama (or, with `--min-width`, only the ones wider than that). **Neither downloader writes one** — that was switched off on 2026-09-09, so this is the only writer that creates one, and it runs only when you run it. |
 
 ## Quick start
 
@@ -40,11 +40,15 @@ Download a city's panoramas and depth maps into `/srv/panos/columbus-oh`:
 python3 DownloadRunner.py sidewalk-columbus.cs.washington.edu /srv/panos/columbus-oh
 ```
 
+Collaborators the Project Sidewalk team has issued SFTP credentials can copy already-scraped panoramas instead
+of downloading them — see [Pulling from the Project Sidewalk pano store](docs/downloader.md#pulling-from-the-project-sidewalk-pano-store).
+Without that flag, the default is to download from the imagery provider yourself.
+
 Then cut a crop for every label in that city:
 
 ```bash
-python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu \
-  -s /srv/panos/columbus-oh -o /srv/crops/columbus-oh
+python3 CropRunner.py -d sidewalk-columbus.cs.washington.edu --city columbus-oh \
+  -s /srv/panos/columbus-oh -o /srv/crops
 ```
 
 The server name is any deployed city — visit one to get the dropdown listing the rest. Both tools resume:
@@ -62,7 +66,7 @@ for the nightly cron form.
 
 | | |
 |---|---|
-| [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, and the nightly queue |
+| [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, the nightly queue, and pulling from the pano store |
 | [Cropper](docs/cropper.md) | Crop geometry, the two preflights, outcome taxonomy, and what to know before training on the crops |
 | [Depth maps](docs/depth.md) | The `.npz` artifact format, the plane fields, migration — and **what the depth product is and isn't** |
 | [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 19-column `log.csv`, how a crashed run reads, and operating the production host (deploy, rollback, adding a city) |
