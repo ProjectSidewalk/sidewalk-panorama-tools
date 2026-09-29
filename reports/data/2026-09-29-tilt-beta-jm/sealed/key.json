@@ -1,0 +1,1442 @@
+{
+ "t08f12a4000": {
+  "T_deg": -5.352173671135542,
+  "dbear": -23.88427734375,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "Obstacle",
+  "label_uid": "teaneck-nj:4247",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b100",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "AIhX2xCAtAbAVIcBmOxzRA",
+  "pano_width": 16384.0,
+  "pano_x": 7105.0,
+  "pano_y": 4194.0,
+  "pitch_deg": -5.288345,
+  "pose_source": "npz",
+  "roll_deg": 1.276136,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t09a00db590": {
+  "T_deg": 5.669421955998792,
+  "dbear": -121.7724609375,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "SurfaceProblem",
+  "label_uid": "seattle-wa:98415",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "4hnnFbGw3pKwX4bxqHTALA",
+  "pano_width": 16384.0,
+  "pano_x": 2650.0,
+  "pano_y": 5111.0,
+  "pitch_deg": -9.380782572039996,
+  "pose_source": "xml",
+  "roll_deg": -0.8586724265461682,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t19304b76eb": {
+  "T_deg": -5.466224689607075,
+  "dbear": -144.51416015625,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "NoCurbRamp",
+  "label_uid": "paterson-nj:24944",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b050",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "YbXpQoDOoTKyq4WnhkizUQ",
+  "pano_width": 16384.0,
+  "pano_x": 1615.0,
+  "pano_y": 4282.0,
+  "pitch_deg": 6.414536,
+  "pose_source": "npz",
+  "roll_deg": 0.418829,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t1dbedce213": {
+  "T_deg": -5.928777833699244,
+  "dbear": -49.5263671875,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "NoCurbRamp",
+  "label_uid": "seattle-wa:54395",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b050",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "uW0maggeUINA6jleJcG0uw",
+  "pano_width": 16384.0,
+  "pano_x": 5938.0,
+  "pano_y": 4281.0,
+  "pitch_deg": -0.9045197952271395,
+  "pose_source": "xml",
+  "roll_deg": 7.021982906561526,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t22aa9000b8": {
+  "T_deg": -5.171498288269544,
+  "dbear": 141.52587890625,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "SurfaceProblem",
+  "label_uid": "burnaby:488",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b050",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "JDJMG8VQ0uHf2goQxcf5oQ",
+  "pano_width": 16384.0,
+  "pano_x": 14633.0,
+  "pano_y": 4367.0,
+  "pitch_deg": 5.966537,
+  "pose_source": "npz",
+  "roll_deg": -0.80423,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t2598245ddf": {
+  "T_deg": 6.377571293866305,
+  "dbear": 154.09423828125,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "SurfaceProblem",
+  "label_uid": "oradell-nj:4862",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b100",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "rvzkd7bOriwSl_KjYs-m0w",
+  "pano_width": 16384.0,
+  "pano_x": 15205.0,
+  "pano_y": 4873.0,
+  "pitch_deg": -6.018054803662916,
+  "pose_source": "xml",
+  "roll_deg": 2.207060574635346,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t27462b059e": {
+  "T_deg": -5.699227972041123,
+  "dbear": 178.65966796875,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "NoCurbRamp",
+  "label_uid": "amsterdam:594",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "w4D-H_8N7-kZ0fxRa7DYJg",
+  "pano_width": 16384.0,
+  "pano_x": 16323.0,
+  "pano_y": 4921.0,
+  "pitch_deg": 5.679834542572614,
+  "pose_source": "xml",
+  "roll_deg": -0.8955331199899548,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t38f102a1e6": {
+  "T_deg": 5.5004691886126,
+  "dbear": 48.54266826923077,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "NoCurbRamp",
+  "label_uid": "newberg-or:16532",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "i11b1vEiT0vPp576hEzDrA",
+  "pano_width": 13312.0,
+  "pano_x": 8451.0,
+  "pano_y": 4229.0,
+  "pitch_deg": 9.215222094334957,
+  "pose_source": "xml",
+  "roll_deg": -0.8013624349074888,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t3931f8748e": {
+  "T_deg": -5.376755006543585,
+  "dbear": -34.62890625,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "SurfaceProblem",
+  "label_uid": "amsterdam:611",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b050",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "_CSsjxmgCmG_UAcp31qFoQ",
+  "pano_width": 16384.0,
+  "pano_x": 6616.0,
+  "pano_y": 4501.0,
+  "pitch_deg": -1.0580525060549455,
+  "pose_source": "xml",
+  "roll_deg": 7.929724137347455,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t3a7d276c07": {
+  "T_deg": -6.776125232068418,
+  "dbear": 39.19921875,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "SurfaceProblem",
+  "label_uid": "seattle-wa:145922",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b100",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "IhC_tNA1jn1b_Ho1pUgrFA",
+  "pano_width": 16384.0,
+  "pano_x": 9976.0,
+  "pano_y": 4416.0,
+  "pitch_deg": -10.078090841849008,
+  "pose_source": "xml",
+  "roll_deg": 1.6359049432773225,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t438511d8b3": {
+  "T_deg": 6.9512073060282455,
+  "dbear": 39.39697265625,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "CurbRamp",
+  "label_uid": "seattle-wa:126172",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b100",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "TA8RwA6696ML3NxOQvJ8sQ",
+  "pano_width": 16384.0,
+  "pano_x": 9985.0,
+  "pano_y": 5233.0,
+  "pitch_deg": 8.945295505851712,
+  "pose_source": "xml",
+  "roll_deg": 0.0607811236580171,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t4d8e4e6eac": {
+  "T_deg": 5.257712975892585,
+  "dbear": -151.11778846153845,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "Obstacle",
+  "label_uid": "spgg:8069",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b050",
+   "b100"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "t6r9oLk8IIwLGNbEveaMlQ",
+  "pano_width": 13312.0,
+  "pano_x": 1068.0,
+  "pano_y": 3972.0,
+  "pitch_deg": -5.615986127344775,
+  "pose_source": "xml",
+  "roll_deg": -0.7044854984107496,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t51003fd8ad": {
+  "T_deg": 5.675730134289633,
+  "dbear": -133.79150390625,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "Obstacle",
+  "label_uid": "seattle-wa:2345",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b050",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "OOMnOikAYr4y04vsR-htYg",
+  "pano_width": 16384.0,
+  "pano_x": 2103.0,
+  "pano_y": 4800.0,
+  "pitch_deg": -7.997611911426709,
+  "pose_source": "xml",
+  "roll_deg": -0.1954577043905436,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t57cdd31a0b": {
+  "T_deg": 8.141841767939546,
+  "dbear": 120.6298828125,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "CurbRamp",
+  "label_uid": "spgg:79889",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b050",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "YYKSIVShl5EdHuDURqVGVg",
+  "pano_width": 16384.0,
+  "pano_x": 13682.0,
+  "pano_y": 5857.0,
+  "pitch_deg": 5.257700276347627,
+  "pose_source": "xml",
+  "roll_deg": 12.575113828673445,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t5ac2d08fe9": {
+  "T_deg": -7.368971928168947,
+  "dbear": -30.612980769230774,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "CurbRamp",
+  "label_uid": "newberg-or:1231",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 1664.0,
+  "pano_id": "MDEIhJn2M__VcrBl9r-yJQ",
+  "pano_width": 3328.0,
+  "pano_x": 1381.0,
+  "pano_y": 986.0,
+  "pitch_deg": -6.27924866532484,
+  "pose_source": "xml",
+  "roll_deg": 3.858488849150172,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t5c1609b2d9": {
+  "T_deg": -5.275178979728107,
+  "dbear": -90.32451923076924,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "Obstacle",
+  "label_uid": "seattle-wa:121802",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "h3CHlihAK2g7yYf8Sz9KtA",
+  "pano_width": 13312.0,
+  "pano_x": 3316.0,
+  "pano_y": 3332.0,
+  "pitch_deg": -0.6196603465671779,
+  "pose_source": "xml",
+  "roll_deg": 5.278773344750961,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t612ca0e10c": {
+  "T_deg": -11.620507203470538,
+  "dbear": -51.16586538461539,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "Obstacle",
+  "label_uid": "pittsburgh-pa:11187",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "3kpFxSKVnA5Fqe9FqDhxpg",
+  "pano_width": 13312.0,
+  "pano_x": 4764.0,
+  "pano_y": 3560.0,
+  "pitch_deg": -14.274389339443877,
+  "pose_source": "xml",
+  "roll_deg": 3.426978206229516,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t61a0814c33": {
+  "T_deg": 11.930321132629569,
+  "dbear": -10.979567307692292,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "SurfaceProblem",
+  "label_uid": "amsterdam:864",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "kXf9MccGmt7amxBldXtSkg",
+  "pano_width": 13312.0,
+  "pano_x": 6250.0,
+  "pano_y": 5181.0,
+  "pitch_deg": 12.49564493504535,
+  "pose_source": "xml",
+  "roll_deg": 1.7672740753135736,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t627e5c61e3": {
+  "T_deg": 5.997723962292335,
+  "dbear": 9.03076171875,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "NoCurbRamp",
+  "label_uid": "pittsburgh-pa:22096",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "BP6WzYBVAVFbo-xBFJKF4w",
+  "pano_width": 16384.0,
+  "pano_x": 8603.0,
+  "pano_y": 4803.0,
+  "pitch_deg": 6.816803,
+  "pose_source": "npz",
+  "roll_deg": -4.679901,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t6f72c3c9f9": {
+  "T_deg": -5.327347974024774,
+  "dbear": 133.30810546875,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "NoCurbRamp",
+  "label_uid": "seattle-wa:290009",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "t1D0OppRdOcmEHJkVt7J6Q",
+  "pano_width": 16384.0,
+  "pano_x": 14259.0,
+  "pano_y": 4756.0,
+  "pitch_deg": 4.706070551189732,
+  "pose_source": "xml",
+  "roll_deg": -2.8850129925573595,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t73c5f628b6": {
+  "T_deg": -8.39084999240777,
+  "dbear": 153.6328125,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "CurbRamp",
+  "label_uid": "seattle-wa:279655",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b050",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "D9cIIXrZ8oekfhLTFsAH_Q",
+  "pano_width": 16384.0,
+  "pano_x": 15184.0,
+  "pano_y": 4890.0,
+  "pitch_deg": 8.722443,
+  "pose_source": "npz",
+  "roll_deg": -1.29657,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t7876d5c101": {
+  "T_deg": -6.682600511729079,
+  "dbear": 140.57091346153845,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "Obstacle",
+  "label_uid": "la-piedad-old:1779",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b150",
+   "b100"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "MHTKxxoJCLQY5j1Ex2mD4g",
+  "pano_width": 13312.0,
+  "pano_x": 11854.0,
+  "pano_y": 3738.0,
+  "pitch_deg": 6.469841,
+  "pose_source": "npz",
+  "roll_deg": -2.653381,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t7cb1b25813": {
+  "T_deg": -5.465774705237771,
+  "dbear": -20.19287109375,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "Obstacle",
+  "label_uid": "seattle-wa:254314",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b150",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "T1yn-1CPBM0wzROtgICKWQ",
+  "pano_width": 16384.0,
+  "pano_x": 7273.0,
+  "pano_y": 4288.0,
+  "pitch_deg": -5.058296,
+  "pose_source": "npz",
+  "roll_deg": 2.081172,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t7d1c4b67fa": {
+  "T_deg": 7.0218159729366905,
+  "dbear": 152.05078125,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "CurbRamp",
+  "label_uid": "seattle-wa:185994",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b150",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "_XJTCnqd-MY_tihUVdxGWg",
+  "pano_width": 16384.0,
+  "pano_x": 15112.0,
+  "pano_y": 5113.0,
+  "pitch_deg": -8.893554040331484,
+  "pose_source": "xml",
+  "roll_deg": -1.780336072685026,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t86b46dcde6": {
+  "T_deg": -5.78945281830516,
+  "dbear": -152.44290865384616,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "Obstacle",
+  "label_uid": "newberg-or:3293",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b100",
+   "b150"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "NnBRZIqb-V_sQDnAh4eSKw",
+  "pano_width": 13312.0,
+  "pano_x": 1019.0,
+  "pano_y": 3452.0,
+  "pitch_deg": 6.171900505767345,
+  "pose_source": "xml",
+  "roll_deg": 0.686836331966208,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t87251dd38a": {
+  "T_deg": 7.680240713120458,
+  "dbear": 159.36767578125,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "CurbRamp",
+  "label_uid": "columbus-oh:23063",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "GPcsnUEUxppSTr0y2EYpGQ",
+  "pano_width": 16384.0,
+  "pano_x": 15445.0,
+  "pano_y": 4696.0,
+  "pitch_deg": -7.0279216467457,
+  "pose_source": "xml",
+  "roll_deg": 3.1304727815490105,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t8f4849aa15": {
+  "T_deg": 5.431476677322324,
+  "dbear": 157.69775390625,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "CurbRamp",
+  "label_uid": "teaneck-nj:22009",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b100",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "iEmhmeg7jjtdvHmLhgrahg",
+  "pano_width": 16384.0,
+  "pano_x": 15369.0,
+  "pano_y": 4888.0,
+  "pitch_deg": -5.773094,
+  "pose_source": "npz",
+  "roll_deg": 0.237791,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t90ab39636f": {
+  "T_deg": 8.314322009332063,
+  "dbear": -51.49038461538461,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "NoCurbRamp",
+  "label_uid": "spgg:51794",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b150",
+   "b100"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "jGYf0j72FICxpLepaScu5A",
+  "pano_width": 13312.0,
+  "pano_x": 4752.0,
+  "pano_y": 4093.0,
+  "pitch_deg": 10.29665711742165,
+  "pose_source": "xml",
+  "roll_deg": -2.432129150816231,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t95151aad0f": {
+  "T_deg": -5.733465565837891,
+  "dbear": 12.81005859375,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "Obstacle",
+  "label_uid": "newport-ky:79",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b100",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "Y7EfI6A6WlCpAsUNDTlgbw",
+  "pano_width": 16384.0,
+  "pano_x": 8775.0,
+  "pano_y": 4319.0,
+  "pitch_deg": -6.185722,
+  "pose_source": "npz",
+  "roll_deg": 1.345377,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "t9bfb372d84": {
+  "T_deg": -5.152936072282769,
+  "dbear": -28.740234375,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "SurfaceProblem",
+  "label_uid": "teaneck-nj:15398",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b100",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "ThJBU7OA5ajBLOXD88W57w",
+  "pano_width": 16384.0,
+  "pano_x": 6884.0,
+  "pano_y": 4284.0,
+  "pitch_deg": -5.421486,
+  "pose_source": "npz",
+  "roll_deg": 0.830485,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "ta32b6bac6d": {
+  "T_deg": 9.448507774715768,
+  "dbear": 25.285456730769223,
+  "design": "beta",
+  "era": "mid",
+  "era_arm": "legacy+mid",
+  "label_type": "NoCurbRamp",
+  "label_uid": "pittsburgh-pa:11540",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b100",
+   "b050"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "lRBlv-5K00rFS8LktPyelA",
+  "pano_width": 13312.0,
+  "pano_x": 7591.0,
+  "pano_y": 4460.0,
+  "pitch_deg": 9.480576263765604,
+  "pose_source": "xml",
+  "roll_deg": 2.051505229562969,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "ta9749d15f2": {
+  "T_deg": -5.84009856351293,
+  "dbear": -56.89903846153847,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "NoCurbRamp",
+  "label_uid": "spgg:12096",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b150",
+   "b100"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "3FqVdGmnxXpigRugein19g",
+  "pano_width": 13312.0,
+  "pano_x": 4552.0,
+  "pano_y": 3897.0,
+  "pitch_deg": -2.430169505244918,
+  "pose_source": "xml",
+  "roll_deg": 5.387241982292765,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "taa103d7bc2": {
+  "T_deg": 5.7840196717298085,
+  "dbear": 134.80224609375,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "SurfaceProblem",
+  "label_uid": "burnaby:524",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b050",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "JV-w2CR6AVs6YDHBQMG7Uw",
+  "pano_width": 16384.0,
+  "pano_x": 14327.0,
+  "pano_y": 5574.0,
+  "pitch_deg": -6.431091,
+  "pose_source": "npz",
+  "roll_deg": 1.764902,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tab1502c942": {
+  "T_deg": -5.914976047071792,
+  "dbear": -67.763671875,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "Obstacle",
+  "label_uid": "columbia-sc:66593",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b150",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "VvJnYVDI-nYvCNww-b8mkQ",
+  "pano_width": 16384.0,
+  "pano_x": 5108.0,
+  "pano_y": 4950.0,
+  "pitch_deg": -2.337486,
+  "pose_source": "npz",
+  "roll_deg": 5.434571,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tb2550553a8": {
+  "T_deg": -7.048629407321757,
+  "dbear": -32.783203125,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "SurfaceProblem",
+  "label_uid": "seattle-wa:241980",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b100",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "FqAPac44GRsS4vhEQqB2PA",
+  "pano_width": 16384.0,
+  "pano_x": 6700.0,
+  "pano_y": 4286.0,
+  "pitch_deg": -6.992371,
+  "pose_source": "npz",
+  "roll_deg": 2.160754,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tb35150adbe": {
+  "T_deg": 5.09347876779161,
+  "dbear": 154.75341796875,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "CurbRamp",
+  "label_uid": "teaneck-nj:12562",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b050",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "I25AD16ltn9URZ6FVcrUpQ",
+  "pano_width": 16384.0,
+  "pano_x": 15235.0,
+  "pano_y": 4466.0,
+  "pitch_deg": -5.191116,
+  "pose_source": "npz",
+  "roll_deg": 0.933649,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tc29ffeb5f3": {
+  "T_deg": -5.165927294070719,
+  "dbear": 160.576171875,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "SurfaceProblem",
+  "label_uid": "spgg:36421",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b100",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "TBFKRLuH7OJHt2Q25DXapA",
+  "pano_width": 16384.0,
+  "pano_x": 15500.0,
+  "pano_y": 4238.0,
+  "pitch_deg": 5.66512003107858,
+  "pose_source": "xml",
+  "roll_deg": 0.5315214327496413,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tc2e928b2a0": {
+  "T_deg": 8.957641977296587,
+  "dbear": 144.931640625,
+  "design": "beta",
+  "era": "legacy",
+  "era_arm": "legacy+mid",
+  "label_type": "CurbRamp",
+  "label_uid": "pittsburgh-pa:1710",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b100",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "rfuZDkLNay4Yo1nBlqhTcw",
+  "pano_width": 16384.0,
+  "pano_x": 14788.0,
+  "pano_y": 4816.0,
+  "pitch_deg": -6.149106416575331,
+  "pose_source": "xml",
+  "roll_deg": 6.831046176229238,
+  "scrape_era": "xml",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tc3d3e63026": {
+  "T_deg": -5.360788830720983,
+  "dbear": 146.09619140625,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "SurfaceProblem",
+  "label_uid": "seattle-wa:286041",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b050",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "8AkXbOcLeSpUcK8Yw01XJA",
+  "pano_width": 16384.0,
+  "pano_x": 14841.0,
+  "pano_y": 4615.0,
+  "pitch_deg": 7.168999,
+  "pose_source": "npz",
+  "roll_deg": 1.056476,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tc489134b83": {
+  "T_deg": 6.567708903317738,
+  "dbear": 23.994140625,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "CurbRamp",
+  "label_uid": "seattle-wa:240773",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b050",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "d5SR3_Ua8kWHznyV3xFkAQ",
+  "pano_width": 16384.0,
+  "pano_x": 9284.0,
+  "pano_y": 5442.0,
+  "pitch_deg": 6.299194,
+  "pose_source": "npz",
+  "roll_deg": 1.998919,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tc53d60093f": {
+  "T_deg": 5.687069419282365,
+  "dbear": 150.8203125,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "CurbRamp",
+  "label_uid": "burnaby:4673",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b100",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "szlhbbXb27ZnEe0utJVn2A",
+  "pano_width": 16384.0,
+  "pano_x": 15056.0,
+  "pano_y": 4767.0,
+  "pitch_deg": -5.841194,
+  "pose_source": "npz",
+  "roll_deg": 1.204291,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tc7acb208c3": {
+  "T_deg": 6.944425246074846,
+  "dbear": -42.430889423076906,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "NoCurbRamp",
+  "label_uid": "seattle-wa:255057",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b050",
+   "b150"
+  ],
+  "pano_height": 6656.0,
+  "pano_id": "NvD9kkVQddnIC1xLBjHbgA",
+  "pano_width": 13312.0,
+  "pano_x": 5087.0,
+  "pano_y": 4390.0,
+  "pitch_deg": 2.110992,
+  "pose_source": "npz",
+  "roll_deg": -7.983276,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tcdf1f35b0c": {
+  "T_deg": 5.323327541044078,
+  "dbear": 123.57421875,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "NoCurbRamp",
+  "label_uid": "burnaby:17932",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b050",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "gUs00G6tYES-BTOxDBuc6w",
+  "pano_width": 16384.0,
+  "pano_x": 13816.0,
+  "pano_y": 5837.0,
+  "pitch_deg": -5.427307,
+  "pose_source": "npz",
+  "roll_deg": 2.786869,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tdf734c39b0": {
+  "T_deg": -5.336143337632,
+  "dbear": -25.3564453125,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "Obstacle",
+  "label_uid": "columbia-sc:37463",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b100",
+   "b150",
+   "b050"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "IMS3O7roO9RGYkDk6OBbXQ",
+  "pano_width": 16384.0,
+  "pano_x": 7038.0,
+  "pano_y": 4332.0,
+  "pitch_deg": -5.848381,
+  "pose_source": "npz",
+  "roll_deg": 0.119531,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "ted0d8eb0e2": {
+  "T_deg": -5.729599831434053,
+  "dbear": 138.75732421875,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "CurbRamp",
+  "label_uid": "paterson-nj:28740",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b150",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "H38eBW1I7re0Jcnp4hzOKg",
+  "pano_width": 16384.0,
+  "pano_x": 14507.0,
+  "pano_y": 4280.0,
+  "pitch_deg": 3.578674,
+  "pose_source": "npz",
+  "roll_deg": -4.609344,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tf3459ecaf5": {
+  "T_deg": -5.342748953722756,
+  "dbear": 141.767578125,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "Obstacle",
+  "label_uid": "seattle-wa:286038",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b150",
+   "b050",
+   "b100"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "tmFsBxP5j6uyKiLjRvgtAA",
+  "pano_width": 16384.0,
+  "pano_x": 14644.0,
+  "pano_y": 5422.0,
+  "pitch_deg": 7.549828,
+  "pose_source": "npz",
+  "roll_deg": 0.949648,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tfb81323001": {
+  "T_deg": -5.135354572809282,
+  "dbear": -133.9013671875,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "NoCurbRamp",
+  "label_uid": "waltham-ma:26768",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b100",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "4cgdUbx4nJHmT_ciVFV_KA",
+  "pano_width": 16384.0,
+  "pano_x": 2098.0,
+  "pano_y": 4626.0,
+  "pitch_deg": 7.085907,
+  "pose_source": "npz",
+  "roll_deg": 0.307899,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ },
+ "tfbc348b385": {
+  "T_deg": 5.441746245916774,
+  "dbear": 96.13037109375,
+  "design": "beta",
+  "era": "post179",
+  "era_arm": "post179",
+  "label_type": "SurfaceProblem",
+  "label_uid": "waltham-ma:25213",
+  "offsets": {
+   "b050": 0.5,
+   "b100": 1.0,
+   "b150": 1.5
+  },
+  "order": [
+   "b050",
+   "b100",
+   "b150"
+  ],
+  "pano_height": 8192.0,
+  "pano_id": "-d9SljP4KInmatkNkuvu6A",
+  "pano_width": 16384.0,
+  "pano_x": 12567.0,
+  "pano_y": 5751.0,
+  "pitch_deg": -7.053551,
+  "pose_source": "npz",
+  "roll_deg": 4.715455,
+  "scrape_era": "modern",
+  "shifted_any": false,
+  "source": "store"
+ }
+}

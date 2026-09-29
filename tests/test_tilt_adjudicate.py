@@ -634,3 +634,135 @@ def test_the_committed_tags_are_all_json_lists_of_strings():
         tags = json.loads(t['tags'])
         assert isinstance(tags, list) and all(isinstance(x, str) and x == x.strip() and x for x in tags)
         assert t['tags'] == ta.tags_as_json(t['tags'])
+
+
+# ---- #191: the asymmetric-decoy beta batch --------------------------------------------------------------
+
+def test_the_beta_windows_all_sit_on_the_leak_side_at_half_one_and_one_and_a_half_T():
+    c = ta.window_centres(600.0, 4.0, 1024, ta.BETA_OFFSETS)
+    s = 4.0 * 1024 / 180
+    assert c == {'b050': 600.0 - 0.5 * s, 'b100': 600.0 - s, 'b150': 600.0 - 1.5 * s}
+    assert ta.window_centres(600.0, 4.0, 1024, ta.BETA_OFFSETS)['b100'] == ta.window_centres(600.0, 4.0, 1024)['leak']
+
+
+def test_c_is_still_the_default_design():
+    assert ta.window_centres(600.0, -5.0, 1024) == ta.window_centres(600.0, -5.0, 1024, ta.C_OFFSETS)
+    assert tuple(ta.C_OFFSETS) == ta.WINDOW_NAMES      # build_sheets' permutation indexes this order
+
+
+def _beta_run(tmp_path, n=6):
+    labels, _ = _synthetic_run(tmp_path, n=n)
+    out = tmp_path / 'beta'
+    ta.build_sheets(pd.DataFrame(labels), str(tmp_path / 'panos'), str(out), seed='t', offsets=ta.BETA_OFFSETS)
+    return labels, out
+
+
+def test_a_beta_key_names_its_design_and_a_c_key_is_unchanged(tmp_path):
+    _, out = _beta_run(tmp_path)
+    key = ta.read_sealed_key(str(out))
+    for v in key.values():
+        assert sorted(v['order']) == ['b050', 'b100', 'b150']
+        assert v['design'] == 'beta' and v['offsets'] == ta.BETA_OFFSETS
+    c_key = ta.read_sealed_key(str(tmp_path / 'adj'))
+    assert all('design' not in v and 'offsets' not in v for v in c_key.values())
+    tasks = json.load(open(out / 'tasks.json', encoding='utf-8'))
+    assert all(set(t) == {'label_type', 'tags'} for t in tasks.values())
+
+
+def test_beta_remote_panels_make_the_same_sheet_as_a_local_cut(tmp_path):
+    import tilt_remote_crop as trc
+    labels, out = _beta_run(tmp_path, n=2)
+    sel = pd.DataFrame(labels)
+    jobs = tmp_path / 'jobs.csv'
+    ta.crop_jobs(sel, seed='t', offsets=ta.BETA_OFFSETS).to_csv(jobs, index=False)
+    assert set(pd.read_csv(jobs)['window']) == {'b050', 'b100', 'b150'}
+    panels = tmp_path / 'panels'
+    assert trc.main(['--jobs', str(jobs), '--store', str(tmp_path / 'panos'), '--out', str(panels)]) == 0
+    remote = tmp_path / 'remote'
+    ta.build_sheets(sel.assign(source='store'), None, str(remote), seed='t', panel_dir=str(panels),
+                    offsets=ta.BETA_OFFSETS)
+    for name in os.listdir(out / 'sheets'):
+        a = np.asarray(Image.open(out / 'sheets' / name), dtype=int)
+        b = np.asarray(Image.open(remote / 'sheets' / name), dtype=int)
+        assert np.abs(a - b).max() == 0
+
+
+@pytest.mark.parametrize('choice, expected', [('A', 1.5), ('B', 0.5), ('C', 1.0), ('A=B', 1.0), ('B=C', 0.75),
+                                              ('A=C', 1.25), ('none', None)])
+def test_a_sheets_beta_score(choice, expected):
+    assert ta.beta_sheet_score(choice, ['b150', 'b050', 'b100']) == expected
+
+
+def _beta_key(arms):
+    """{token: key entry}, order b050 / b100 / b150 = A / B / C, for {arm: n}."""
+    return {'%s%d' % (arm[0], i): {'order': ['b050', 'b100', 'b150'], 'era_arm': arm}
+            for arm, n in arms.items() for i in range(n)}
+
+
+def test_score_beta_reads_low_against_high_by_what_a_tie_left_out():
+    key = _beta_key({'post179': 6})
+    v = dict(zip(sorted(key), ['A', 'A=B', 'B', 'A=C', 'B=C', 'none']))
+    s = ta.score_beta(v, key)['arms']['post179']
+    assert (s['low'], s['high']) == (2, 1)     # A and A=B are low; B=C is high; B, A=C and none are neither
+    assert s['n'] == 6 and s['none'] == 1 and s['n_scored'] == 5
+    assert s['mean'] == pytest.approx((0.5 + 0.75 + 1.0 + 1.0 + 1.25) / 5)
+    assert s['score_counts'] == {'0.50': 1, '0.75': 1, '1.00': 2, '1.25': 1}
+
+
+def test_score_beta_readings_are_holm_adjusted_over_the_two_arms():
+    key = _beta_key({'post179': 12, 'legacy+mid': 12})
+    v = {t: ('A' if t.startswith('p') else 'B') for t in key}      # post179 all 0.5 T; legacy+mid all middle
+    r = ta.score_beta(v, key)
+    p = r['arms']['post179']
+    assert p['p_low_vs_high_two_sided'] == pytest.approx(2 * 0.5 ** 12)
+    assert p['p_holm'] == pytest.approx(2 * p['p_low_vs_high_two_sided'])
+    assert p['reading'] == 'below 1' and r['arms']['legacy+mid']['reading'] == 'consistent with 1'
+    assert p['ci95'] == [0.5, 0.5]
+    assert r['pooled']['n'] == 24 and r['pooled']['low'] == 12
+    assert r['arm_difference']['low_high_fisher_p'] == pytest.approx(1.0)   # legacy+mid has no low/high sheets
+
+
+def test_an_all_high_arm_reads_above_one():
+    key = _beta_key({'post179': 10})
+    r = ta.score_beta({t: 'C' for t in key}, key)['arms']['post179']
+    assert r['reading'] == 'above 1' and r['mean'] == 1.5
+
+
+def test_exact_tests_against_known_values():
+    assert ta.binom_two_sided(0, 0) == 1.0
+    assert ta.binom_two_sided(5, 10) == pytest.approx(1.0)
+    assert ta.binom_two_sided(9, 10) == pytest.approx(22 / 1024)
+    assert ta.fisher_two_sided(3, 1, 1, 3) == pytest.approx(0.4857142857)     # the tea-tasting table
+    assert ta.fisher_two_sided(8, 2, 1, 5) == pytest.approx(0.0349650350, rel=1e-6)
+    assert ta.holm({'a': 0.01, 'b': 0.04}) == {'a': pytest.approx(0.02), 'b': pytest.approx(0.04)}
+    assert ta.holm({'a': 0.03, 'b': 0.02}) == {'a': pytest.approx(0.04), 'b': pytest.approx(0.04)}
+
+
+BETA_DIR = os.path.join(REPO_ROOT, 'reports', 'data', '2026-09-29-tilt-beta-jm')
+
+
+class TestTheCommittedBetaFolder:
+    def test_its_key_selection_and_crop_jobs_are_sealed_and_hashed(self):
+        assert ta.unsealed_key_files(BETA_DIR) == []
+        for name in ('selection.csv', 'crop_jobs.csv'):
+            assert not os.path.exists(os.path.join(BETA_DIR, name))
+            assert os.path.exists(os.path.join(BETA_DIR, 'sealed', name))
+        key = ta.read_sealed_key(BETA_DIR)
+        assert len(key) == 48 and all(v['design'] == 'beta' for v in key.values())
+        with open(os.path.join(BETA_DIR, 'tasks.json'), encoding='utf-8') as f:
+            tasks = json.load(f)
+        assert set(tasks) == set(key) and all(set(t) == {'label_type', 'tags'} for t in tasks.values())
+
+    def test_the_draw_is_the_one_decisions_md_describes(self):
+        with open(os.path.join(BETA_DIR, 'draw.json'), encoding='utf-8') as f:
+            d = json.load(f)
+        assert d['design'] == 'beta' and d['offsets_T'] == ta.BETA_OFFSETS and d['min_abs_t_deg'] == 5.0
+        assert sorted(d['excluded_batches']) == ['2026-09-29-tilt-adjudication-jm', '2026-09-30-tilt-adjudication-jm-b2']
+        with open(os.path.join(BETA_DIR, 'DECISIONS.md'), encoding='utf-8') as f:
+            text = f.read()
+        assert '--seed %s --min-abs-t 5 --cell-cap 2' % d['seed'] in text and 'score_beta' in text
+
+    def test_no_beta_pano_was_in_either_c_batch(self):
+        read = lambda d: set(pd.read_csv(os.path.join(d, 'sealed', 'selection.csv'), dtype={'pano_id': str})['pano_id'])  # noqa: E731
+        beta = read(BETA_DIR)
+        assert len(beta) == 48 and not beta & (read(REDRAW_DIRS[0]) | read(REDRAW_DIRS[1]))
