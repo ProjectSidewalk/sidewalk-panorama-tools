@@ -796,6 +796,8 @@ camera tilt, [SidewalkWebpage#4784](https://github.com/ProjectSidewalk/SidewalkW
 crop level here, with a correction to follow if the measurement confirms it. A separate render-side effect is
 measured in
 [reports/2026-08-10-off-target-markers-validate.md](../reports/2026-08-10-off-target-markers-validate.md).
+
+**Measured 2026-09-26 ([#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54), [reports/2026-09-26-tilt-error-study.md](../reports/2026-09-26-tilt-error-study.md)).** The depth artifact's planes are in the camera-rig frame, exactly. The stored tiles are not gravity-levelled in either scrape era. **The labelled feature sits off the stored `pano_y`, towards the rig pixel `pano_y - T(b) h/180`** (`T(b) = pitch cos b + roll sin b`). In Jon's blind forced choice on 96 vouched-for labels (adjudicated 2026-09-29), the window shifted that way beat its mirror image 79 : 0. The result is confirmed for post179 labels and leak-dominant but short of the rule for older ones. It gives the direction, not the size, and no correction has landed in CropRunner yet. Until one does, treat a crop's vertical centring as off by up to the pano's tilt at the label's bearing: at the p90, 4.2-4.3 deg over all corpus bearings, and 4.8 deg (37.8% of the window height, at full leak) for the most distant labels.
 (An earlier note here referred to an "alternative cropper" in development; that effort was abandoned and #54
 supersedes it.)
 

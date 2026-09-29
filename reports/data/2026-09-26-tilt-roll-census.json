@@ -1,0 +1,20 @@
+{
+ "by_source": {
+  "gsv": {
+   "rows": 1333972,
+   "rows_with_camera_roll": 0
+  },
+  "infra3d": {
+   "rows": 6205,
+   "rows_with_camera_roll": 0
+  },
+  "mapillary": {
+   "rows": 9840,
+   "rows_with_camera_roll": 402
+  }
+ },
+ "fetched": "2026-09-12",
+ "n_deployments": 54,
+ "rows": 1350017,
+ "rows_with_camera_roll": 402
+}

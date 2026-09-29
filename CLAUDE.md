@@ -328,6 +328,35 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
 - **`pano_x` is never bounds-checked and must not be.** Column 0 and column `pano_width` are the same place in the world, so the seam modulo reads any finite x correctly; production rows storing `pano_x == pano_width` exist and crop fine. `pano_y` *is* checked, because the poles are not adjacent and a clamp yields clean imagery of the wrong place.
 - **`bulk_extract_crops`' counts have three non-disjoint keys.** `success + skipped_existing + missing_pano + dims_mismatch + out_of_frame + black_content + errors == total` (`DISJOINT_OUTCOMES`); the `COUNT_ANNOTATIONS` — `shifted_vertically` and `recut` on a success, `stale_kept` on a `dims_mismatch`/`out_of_frame`/`missing_pano` skip, a `black_content` withhold, or a `cannot_open` error, under `--force` that left a crop on disk — qualify a label already in a bucket instead of being buckets. Adding a key without putting it in exactly one of the two is how the invariant went stale before (this sentence said "one" for two releases after `recut` arrived) — a test asserts the sum *and the key set* from the dict, not from the docstring, and checks CropRunner's two tuples against its own.
 
+### The depth planes are in the rig frame, and the tiles are not levelled (#54, measured 2026-09-26)
+
+- **One frame, one sign, in `reports/scripts/tilt_geometry.py`.** The depth artifact's axes are x = left,
+  y = back, **z = down** (the ray formula in `docs/depth.md`, not "z up"). Its facade normals follow the stored
+  pose with slopes 0.9995 / 1.0003, which fixes the meaning of streetlevel's sign: **`pitch > 0` = the forward axis
+  points below the horizon, `roll > 0` = left side up**, so a gravity-horizontal direction sits at rig elevation
+  `+T(b)`, `T(b) = pitch cos b + roll sin b`, `b = (pano_x / w) * 360 - 180`. The #54 plan had both the axis and
+  the sign backwards; don't re-derive either, call the module.
+- **The stored `pano_y` of a tilted GSV pano is NOT pixel-true: it is off towards the rig pixel
+  (adjudicated 2026-09-29).** The stored tiles are not gravity-levelled in either scrape era (F2: every arm's
+  raw lean slope excludes 0; the calibrated slopes are estimates, 0.634-1.098). Endpoint C, Jon's blind forced
+  choice on 96 lead-labeller-vouched labels: the window shifted by T in the predicted direction beat its
+  mirror **79 : 0** (p = 1.7e-24). post179 is confirmed (98% of single-window answers); legacy+mid is not
+  (84%). **C gives the direction, not the size**: every shifted window moves by the full T, so beta is
+  unmeasured. Measure it (the asymmetric-decoy batch) before a correction applies all of T. No correction has
+  landed in CropRunner yet. When one does, it moves **both** axes via `tilt_geometry.rig_pixel_from_gravity_pixel`,
+  taking the pose from the pano's own `.npz`/`.xml`.
+- **The C folders are sealed, and the redraw is the decision-bearing one.** `reports/data/2026-09-29-tilt-adjudication-jm/`
+  and `2026-09-30-tilt-adjudication-jm-b2/` hold Jon's verdicts, his notes, and a `sealed/` key and selection;
+  `DECISIONS.md` fixed the scoring before unblinding. The first draw (`2026-09-26-tilt-adjudication/`) is
+  superseded (no validation filter); its machine-judge pass is kept, and Jon's 7 verdicts on it are a pilot
+  (`pilot-*.jsonl`, deliberately outside the analysis's `verdicts_*` glob). `next`/`record` refuse to run while
+  a key file sits outside `sealed/`. Never move a key beside its sheets, and never caption a figure with one.
+  `tilt_jm_pool.py` rebuilds the redraw from committed data, and `tilt_adjudicate_ui.py` is the judging page.
+- **The `.xml` files beside 2019-22 scrapes carry legacy tilt**, for dead panos too.
+  `tilt_geometry.xml_tilt_to_pitch_roll` is the one conversion (fitted on 3,594 panos with both files, median
+  residual about 0.1 deg). Pose a JPEG by the file of its own scrape era: an `.xml` JPEG is a 2019-22 stitch, and a 2026
+  `.npz` may describe a re-render. PS's `camera_pitch` equals this pitch; PS stores **no** roll for GSV labels.
+
 ## Desk studies under `reports/scripts/` — six conventions that keep being rediscovered
 
 These bit four scripts at once in the 2026-08-11 review; see `reports/2026-08-11-mapillary-census.md`.

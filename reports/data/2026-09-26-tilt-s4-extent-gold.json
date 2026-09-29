@@ -1,0 +1,103 @@
+{
+ "cities": {
+  "paterson-nj": {
+   "gold_panos": 30,
+   "n_pairs": 14,
+   "pairs": [
+    {
+     "det": "det:0",
+     "dy_box_heights": -0.43785143588425995,
+     "label_uid": "paterson-nj:27018",
+     "pano_id": "ycJKMD6I5D8glf_jMPqkDQ"
+    },
+    {
+     "det": "det:2",
+     "dy_box_heights": -0.24998777864685098,
+     "label_uid": "paterson-nj:27024",
+     "pano_id": "ycJKMD6I5D8glf_jMPqkDQ"
+    },
+    {
+     "det": "det:1",
+     "dy_box_heights": -0.18650067615941668,
+     "label_uid": "paterson-nj:27033",
+     "pano_id": "ycJKMD6I5D8glf_jMPqkDQ"
+    },
+    {
+     "det": "missed:0",
+     "dy_box_heights": 0.4913461538461506,
+     "label_uid": "paterson-nj:27036",
+     "pano_id": "ycJKMD6I5D8glf_jMPqkDQ"
+    },
+    {
+     "det": "missed:1",
+     "dy_box_heights": 0.7644759087066887,
+     "label_uid": "paterson-nj:27039",
+     "pano_id": "ycJKMD6I5D8glf_jMPqkDQ"
+    },
+    {
+     "det": "det:2",
+     "dy_box_heights": -0.4562769147637274,
+     "label_uid": "paterson-nj:27374",
+     "pano_id": "Xs3lDDc1o50wJmW9eGx_WA"
+    },
+    {
+     "det": "det:4",
+     "dy_box_heights": -0.16089984170752153,
+     "label_uid": "paterson-nj:27379",
+     "pano_id": "Xs3lDDc1o50wJmW9eGx_WA"
+    },
+    {
+     "det": "missed:1",
+     "dy_box_heights": -0.3995055230362503,
+     "label_uid": "paterson-nj:27383",
+     "pano_id": "Xs3lDDc1o50wJmW9eGx_WA"
+    },
+    {
+     "det": "det:5",
+     "dy_box_heights": -0.9421128412969275,
+     "label_uid": "paterson-nj:27384",
+     "pano_id": "Xs3lDDc1o50wJmW9eGx_WA"
+    },
+    {
+     "det": "det:2",
+     "dy_box_heights": 0.09659969603242625,
+     "label_uid": "paterson-nj:46496",
+     "pano_id": "BvnpSlTjHxKyBiX5tQ02Mg"
+    },
+    {
+     "det": "det:4",
+     "dy_box_heights": 0.0009481837606831851,
+     "label_uid": "paterson-nj:46498",
+     "pano_id": "BvnpSlTjHxKyBiX5tQ02Mg"
+    },
+    {
+     "det": "det:3",
+     "dy_box_heights": -0.3274416787400721,
+     "label_uid": "paterson-nj:46499",
+     "pano_id": "BvnpSlTjHxKyBiX5tQ02Mg"
+    },
+    {
+     "det": "det:1",
+     "dy_box_heights": -0.2749722049540929,
+     "label_uid": "paterson-nj:46501",
+     "pano_id": "BvnpSlTjHxKyBiX5tQ02Mg"
+    },
+    {
+     "det": "det:0",
+     "dy_box_heights": -0.21640908061594422,
+     "label_uid": "paterson-nj:46502",
+     "pano_id": "BvnpSlTjHxKyBiX5tQ02Mg"
+    }
+   ],
+   "ps_labels_on_gold_panos": 24
+  },
+  "sao-paulo-brazil": {
+   "gold_panos": 42,
+   "n_pairs": 0,
+   "pairs": [],
+   "ps_labels_on_gold_panos": 0
+  }
+ },
+ "min_pairs_to_analyse": 30,
+ "n_pairs": 14
+}

@@ -1,0 +1,51 @@
+{
+ "drawn_by_arm_type": {
+  "legacy+mid|CurbRamp": 6,
+  "legacy+mid|NoCurbRamp": 6,
+  "legacy+mid|Obstacle": 6,
+  "legacy+mid|SurfaceProblem": 6,
+  "post179|CurbRamp": 6,
+  "post179|NoCurbRamp": 6,
+  "post179|Obstacle": 6,
+  "post179|SurfaceProblem": 6
+ },
+ "drawn_by_city": {
+  "amsterdam": 2,
+  "burnaby": 3,
+  "cliffside-park-nj": 1,
+  "columbia-sc": 5,
+  "la-piedad": 1,
+  "la-piedad-old": 3,
+  "newport-ky": 1,
+  "oradell-nj": 1,
+  "paterson-nj": 1,
+  "pittsburgh-pa": 6,
+  "seattle-wa": 17,
+  "spgg": 5,
+  "teaneck-nj": 1,
+  "waltham-ma": 1
+ },
+ "eligible_by_arm_type": {
+  "legacy+mid|CurbRamp": 126,
+  "legacy+mid|NoCurbRamp": 114,
+  "legacy+mid|Obstacle": 133,
+  "legacy+mid|SurfaceProblem": 251,
+  "post179|CurbRamp": 10,
+  "post179|NoCurbRamp": 15,
+  "post179|Obstacle": 9,
+  "post179|SurfaceProblem": 13
+ },
+ "excluded_batches": [
+  "2026-09-29-tilt-adjudication-jm"
+ ],
+ "lead_made_drawn": 11,
+ "min_abs_t_deg": 6.0,
+ "per_type": 6,
+ "pool_labels": 70422,
+ "scanned_panos": 45687,
+ "seed": "20260930",
+ "spread_rule": {
+  "cell_cap_per_city_per_arm_type": 2,
+  "fill_pass": true
+ }
+}
