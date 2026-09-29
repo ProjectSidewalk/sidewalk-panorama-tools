@@ -408,9 +408,13 @@ Each with what was known when it was decided.
 
 * sidewalk-auto-labeler: `geo._world_ray`'s docstring and the premise of #52 that "streetlevel's GSV
   equirectangulars are already gravity-rectified" do not hold **for the stored tiles** (F2). F2 measured
-  the cbk tiles this repo stitches, not the images streetlevel fetches for the auto-labeler; whether the
-  two come from the same tile endpoint, and so whether the finding reaches the auto-labeler's images, is
-  unverified here.
+  the cbk tiles this repo stitches, not the images streetlevel fetches for the auto-labeler. **The
+  auto-labeler has since checked that the finding reaches its images too** (sidewalk-auto-labeler#113,
+  measured there, not here): on 141 Vancouver panos, detections on streetlevel-fetched pixels and on store
+  JPEGs land on the same row for 90% of 293 pairs. sidewalk-auto-labeler#115 corrected the
+  "gravity-rectified" wording, and `geo._world_ray` now records that streetlevel pitch > 0 is nose down.
+  Its placement coefficients (0.15-0.55) are not a beta. They measure how much of the tilt the local ground
+  does not share with the rig.
 * SidewalkWebpage#4784's mechanism is what C measured for GSV labels: the stored `pano_y` is off towards
   the rig pixel (see Prior evidence for #5174).
 * label-latlng-estimation: a depression angle read off `pano_y` is rig-relative, off by beta times T(b).
