@@ -576,7 +576,7 @@ deployed has 18 fields, and the analyzer reads them with the last one blank.
 | 16 | depth total processed | sum of fields 13–15 |
 | 17 | depth phase duration | |
 | 18 | total run duration | |
-| 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on the two timestamp-only rows (a run that died in the pano-list fetch, and a `pano-schema-drift` stop, which fetched the list but ran neither phase) and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
+| 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a row written before it was counted (the timestamp-only rows: a run that died in the pano-list fetch or between it and the phases, a `pano-schema-drift` stop, which fetched the list but ran neither phase, and a stop just before the count — see [Blank fields mark a crashed or stopped run](#blank-fields-mark-a-crashed-or-stopped-run)) and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -597,11 +597,20 @@ A run that crashes — or is stopped — still appends a full 19-field row: ever
 real counts, and every phase field from the first unfinished phase onward is blank. Field 19, the corpus size,
 is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Visibly
 missing data, never a fabricated `0`. A row that is only a timestamp, field 19 included, means neither phase
-ran, for one of two reasons: the pano-list fetch against the webserver failed, or the list was fetched but its
-schema had moved and the run stopped before scraping it (the `pano-schema-drift` condition,
-[#161](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/161)). `scrape.log` tells them
-apart: a failed fetch logs `Run crashed before the scrape started` with its traceback, a drift stop logs
-`Pano list schema drift` (and prints `WARNING: the pano list's schema has moved`, which cron mails).
+ran, and `scrape.log` says which of four reasons it was:
+
+- **the pano-list fetch against the webserver failed**, the likeliest: `Run crashed before the scrape started`
+  with its traceback;
+- **the list was fetched but its schema had moved**, and the run stopped before scraping it (the
+  `pano-schema-drift` condition, [#161](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/161)):
+  `Pano list schema drift`, and `WARNING: the pano list's schema has moved` on stdout, which cron mails;
+- **a stop or crash after the fetch but before the phases**, for example while the store's ledgers are read to
+  judge an empty list: `Run crashed before the scrape started` too, with a traceback that is not the fetch's
+  (a stop's ends in `SystemExit: 143`);
+- **a stop or crash in the instant before the corpus is counted**, at the top of the scrape: `Run failed`.
+
+A stop or crash *after* the count, in the budget split below, leaves every phase field blank but field 19
+filled, and also logs `Run failed`.
 
 Blanks are new as of [#49](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/49) — historical
 rows are all-integer — so readers must treat them as missing data (`pandas.read_csv` surfaces them as `NaN`,
@@ -609,7 +618,14 @@ turning those columns `float64`) rather than feeding them to `int()`.
 
 Fields are accumulated in memory and written once in a `finally`, which is why even a crash between phases
 produces a single full-width row. `SIGTERM` is translated into `sys.exit(143)` so a stop runs those `finally`
-blocks instead of discarding the evidence.
+blocks instead of discarding the evidence. The `try` behind that `finally` opens before anything slow, the
+budget split included: with a `--min-depth-runtime` reservation the run reads the city's whole
+`depth_log.csv` off the store before either phase starts, and a stop there used to exit 143 with no row at
+all. It now leaves a row whose every phase field is blank, the XML stub's included, with field 19 filled,
+since the corpus size is counted before the ledger is read; a stop in the instant before even that count
+leaves field 19 blank too, never `0`. Between the pano-list fetch and the phases, the handler that writes
+the fetch-failure row covers every statement, including the ledger read that judges an empty list, so a
+stop there leaves the timestamp-only row.
 
 ### The depth failure count is not an alert signal
 
