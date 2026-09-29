@@ -73,7 +73,10 @@ MIN_ABS_T_DEG = 4.0
 N_PER_ARM = 24
 SEED = '20260926'
 PANEL_W, PANEL_H = 480, 320
-CHOICES = ('A', 'B', 'C', 'none')
+# A tie names the two rings a judge found equally close (2026-09-29): it still says which window LOST, so
+# it is evidence in the leak-vs-antileak contrast whenever exactly one of those two is in the pair.
+TIE_CHOICES = ('A=B', 'A=C', 'B=C')
+CHOICES = ('A', 'B', 'C') + TIE_CHOICES + ('none',)
 WINDOW_NAMES = ('stored', 'leak', 'antileak')
 SEALED = 'sealed'
 KEY_HASH = 'key.sha256'
@@ -450,15 +453,38 @@ def next_unjudged(out_dir, judge):
     return None
 
 
-def record(out_dir, token, choice, judge):
+def load_comments(out_dir, judge):
+    """{token: comment}: the judge's free-text note on a sheet; the latest non-empty one wins."""
+    out, path = {}, _verdict_path(out_dir, judge)
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    r = json.loads(line)
+                    if r.get('comment'):
+                        out[r['token']] = r['comment']
+    return out
+
+
+def chosen_windows(choice, order):
+    """The window names a choice picked: one for A/B/C, two for a tie, none for `none`."""
+    if choice == 'none':
+        return frozenset()
+    return frozenset(order['ABC'.index(letter)] for letter in choice.split('='))
+
+
+def record(out_dir, token, choice, judge, comment=None):
     judge = normalise_judge(judge)
     assert_blind(out_dir)
     if choice not in CHOICES:
         raise ValueError('choice must be one of %s' % (CHOICES,))
     if token not in _tasks(out_dir):
         raise ValueError('unknown token %s' % token)
+    row = {'token': token, 'choice': choice, 'judge': judge}
+    if comment and str(comment).strip():
+        row['comment'] = str(comment).strip()
     with open(_verdict_path(out_dir, judge), 'a', encoding='utf-8', newline='\n') as f:
-        f.write(json.dumps({'token': token, 'choice': choice, 'judge': judge}) + '\n')
+        f.write(json.dumps(row) + '\n')
 
 
 def binom_sf(k, n, p):
@@ -467,17 +493,31 @@ def binom_sf(k, n, p):
 
 
 def score(verdicts, key):
-    """Counts of stored / plus / minus / none per era arm; `none` stays in the denominator."""
+    """Counts of stored / leak / antileak / tie / none per era arm; `none` and ties stay in the
+    denominator. `tie_pairs` names each tie's two windows, and `pairwise` counts, for every ordered pair
+    of windows, the sheets whose choice held the first and not the second (so a stored=leak tie is a
+    leak>antileak sheet, and a leak=antileak tie is evidence for neither)."""
     arms = {}
     for token, choice in verdicts.items():
         k = key[token]
-        a = arms.setdefault(k['era_arm'], dict({w: 0 for w in WINDOW_NAMES}, n=0, none=0, none_tokens=[]))
+        a = arms.setdefault(k['era_arm'], dict({w: 0 for w in WINDOW_NAMES}, n=0, none=0, none_tokens=[],
+                                               tie=0, tie_pairs={}, pairwise={}))
         a['n'] += 1
+        picked = chosen_windows(choice, k['order'])
         if choice == 'none':
             a['none'] += 1
             a['none_tokens'].append(token)
+        elif len(picked) == 2:
+            a['tie'] += 1
+            pair = '='.join(sorted(picked))
+            a['tie_pairs'][pair] = a['tie_pairs'].get(pair, 0) + 1
         else:
-            a[k['order']['ABC'.index(choice)]] += 1
+            a[next(iter(picked))] += 1
+        for w1 in WINDOW_NAMES:
+            for w2 in WINDOW_NAMES:
+                if w1 != w2 and w1 in picked and w2 not in picked:
+                    pk = '%s>%s' % (w1, w2)
+                    a['pairwise'][pk] = a['pairwise'].get(pk, 0) + 1
     for a in arms.values():
         for name in WINDOW_NAMES:
             a['share_' + name] = a[name] / a['n'] if a['n'] else None
@@ -546,6 +586,7 @@ def build_parser():
     r.add_argument('--judge', required=True, type=normalise_judge)
     r.add_argument('token')
     r.add_argument('choice', choices=CHOICES)
+    r.add_argument('--comment', help='free-text note on this sheet, kept with the verdict')
     se = sub.add_parser('seal')
     se.add_argument('--out', required=True)
     se.add_argument('--move-verdicts', action='append', type=normalise_judge, help='a judge whose verdicts must be sealed too')
@@ -567,7 +608,7 @@ def main(argv=None):
         token = next_unjudged(args.out, args.judge)
         print('all judged' if token is None else os.path.join(args.out, 'sheets', token + '.jpg'))
     elif args.cmd == 'record':
-        record(args.out, args.token, args.choice, args.judge)
+        record(args.out, args.token, args.choice, args.judge, args.comment)
     elif args.cmd == 'score':
         key = read_sealed_key(args.out)
         print(json.dumps(score(verdicts_for_score(args.out, args.judge), key), indent=1, sort_keys=True))

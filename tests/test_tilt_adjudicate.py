@@ -182,6 +182,54 @@ def test_none_is_its_own_bucket():
     assert arm['share_stored'] == pytest.approx(0.5)
 
 
+def test_a_tie_is_its_own_bucket_and_names_its_pair():
+    key = {t: {'order': ['leak', 'stored', 'antileak'], 'era_arm': 'x'} for t in 'abc'}
+    arm = ta.score({'a': 'A=B', 'b': 'B=C', 'c': 'A'}, key)['arms']['x']
+    assert arm['n'] == 3 and arm['tie'] == 2 and arm['leak'] == 1
+    assert arm['stored'] == 0 and arm['antileak'] == 0 and arm['none'] == 0
+    assert arm['tie_pairs'] == {'leak=stored': 1, 'antileak=stored': 1}
+
+
+def test_pairwise_reads_a_tie_by_the_window_it_left_out():
+    """stored=leak says antileak lost; leak=antileak says nothing about leak against antileak."""
+    key = {t: {'order': ['leak', 'stored', 'antileak'], 'era_arm': 'x'} for t in 'abcd'}
+    pw = ta.score({'a': 'A=B', 'b': 'A=C', 'c': 'C', 'd': 'none'}, key)['arms']['x']['pairwise']
+    assert pw.get('leak>antileak') == 1          # only 'a': 'b' holds both, 'd' holds neither
+    assert pw.get('antileak>leak') == 1          # 'c'
+    assert pw.get('stored>antileak') == 1 and pw.get('leak>stored') == 1
+
+
+def test_chosen_windows_follows_the_sheet_order():
+    order = ['antileak', 'leak', 'stored']
+    assert ta.chosen_windows('B', order) == {'leak'}
+    assert ta.chosen_windows('A=C', order) == {'antileak', 'stored'}
+    assert ta.chosen_windows('none', order) == frozenset()
+
+
+def _one_task_folder(tmp_path, tokens=('t1',)):
+    out = tmp_path / 'adj'
+    (out / 'sheets').mkdir(parents=True)
+    (out / 'tasks.json').write_text(json.dumps({t: {} for t in tokens}))
+    return str(out)
+
+
+def test_every_tie_choice_is_accepted_by_record(tmp_path):
+    out = _one_task_folder(tmp_path)
+    for c in ta.TIE_CHOICES:
+        ta.record(out, 't1', c, 'jon')
+    assert ta.load_verdicts(out, 'jon') == {'t1': 'B=C'}
+
+
+def test_a_comment_rides_with_the_verdict_and_survives_a_later_bare_record(tmp_path):
+    out = _one_task_folder(tmp_path, ('t1', 't2'))
+    ta.record(out, 't1', 'A=B', 'jon', comment='  both on the ramp  ')
+    ta.record(out, 't1', 'A=B', 'jon')
+    ta.record(out, 't2', 'none', 'jon', comment='   ')
+    assert ta.load_comments(out, 'jon') == {'t1': 'both on the ramp'}
+    with open(os.path.join(out, 'verdicts_jon.jsonl'), encoding='utf-8') as f:
+        assert 'comment' not in json.loads(f.read().splitlines()[2])
+
+
 def test_leak_window_is_the_rig_pixel():
     """The 'leak' centre is tilt_geometry's exact rig pixel to first order, so a sign flip in either
     module fails here rather than silently swapping the two shifted windows."""

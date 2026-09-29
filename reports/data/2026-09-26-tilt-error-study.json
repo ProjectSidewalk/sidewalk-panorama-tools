@@ -53,12 +53,20 @@
       "p_antileak_vs_third": 1.0000000000000013,
       "p_leak_vs_third": 0.0001928372849334188,
       "p_stored_vs_third": 0.9992277585031751,
+      "pairwise": {
+       "leak>antileak": 17,
+       "leak>stored": 17,
+       "stored>antileak": 2,
+       "stored>leak": 2
+      },
       "posthoc_decisive_share_leak": 0.8947368421052632,
       "posthoc_decisive_share_stored": 0.10526315789473684,
       "share_antileak": 0.0,
       "share_leak": 0.7083333333333334,
       "share_stored": 0.08333333333333333,
       "stored": 2,
+      "tie": 0,
+      "tie_pairs": {},
       "verdict": "split"
      },
      "post179": {
@@ -69,12 +77,20 @@
       "p_antileak_vs_third": 1.0000000000000013,
       "p_leak_vs_third": 6.633902471195831e-07,
       "p_stored_vs_third": 0.9999405968079378,
+      "pairwise": {
+       "leak>antileak": 20,
+       "leak>stored": 20,
+       "stored>antileak": 1,
+       "stored>leak": 1
+      },
       "posthoc_decisive_share_leak": 0.9523809523809523,
       "posthoc_decisive_share_stored": 0.047619047619047616,
       "share_antileak": 0.0,
       "share_leak": 0.8333333333333334,
       "share_stored": 0.041666666666666664,
       "stored": 1,
+      "tie": 0,
+      "tie_pairs": {},
       "verdict": "split"
      }
     },
@@ -85,7 +101,8 @@
       "leak_vs_antileak_p": 1.52587890625e-05,
       "n": 23,
       "none": 5,
-      "stored": 2
+      "stored": 2,
+      "tie": 0
      },
      "leak_below": {
       "antileak": 0,
@@ -93,7 +110,8 @@
       "leak_vs_antileak_p": 4.76837158203125e-07,
       "n": 25,
       "none": 3,
-      "stored": 1
+      "stored": 1,
+      "tie": 0
      }
     },
     "decision_bearing": false,

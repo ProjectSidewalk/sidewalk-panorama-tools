@@ -1,0 +1,194 @@
+{
+ "t052aaa5273": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "t0683219d7c": {
+  "label_type": "CurbRamp",
+  "tags": "[\"missing tactile warning\"]"
+ },
+ "t09c8d57d40": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t0b471dc7f9": {
+  "label_type": "CurbRamp",
+  "tags": "[\"missing tactile warning\",\"not enough landing space\"]"
+ },
+ "t0c0790ed97": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"alternate route present\"]"
+ },
+ "t0e93dc3b3a": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"uneven/slanted\",\"height difference\"]"
+ },
+ "t0f5be92d6a": {
+  "label_type": "Obstacle",
+  "tags": "[\"narrow\",\"pole\",\"vegetation\"]"
+ },
+ "t117ef4d34c": {
+  "label_type": "Obstacle",
+  "tags": "[\"sign\",\"narrow\"]"
+ },
+ "t139169fe00": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t1cc66bb023": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t1dfb0fa535": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t2a4daae8ed": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"height difference\"]"
+ },
+ "t2a9cd4e98a": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"grass\"]"
+ },
+ "t2c17caf25d": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"uneven/slanted\"]"
+ },
+ "t323e8476b2": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"cracks\"]"
+ },
+ "t39bc67b309": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"debris\"]"
+ },
+ "t4b6681000c": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"bumpy\",\"cracks\"]"
+ },
+ "t4c652d65b8": {
+  "label_type": "Obstacle",
+  "tags": "[\"tree\"]"
+ },
+ "t4d9d3baf45": {
+  "label_type": "Obstacle",
+  "tags": "[\"narrow\",\"parked car\"]"
+ },
+ "t5c1367a0f5": {
+  "label_type": "Obstacle",
+  "tags": "[\"trash/recycling can\"]"
+ },
+ "t5e1f8ef251": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t6719e93285": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t6c51228896": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"bumpy\",\"grass\"]"
+ },
+ "t80327bc1d2": {
+  "label_type": "Obstacle",
+  "tags": "[\"vegetation\"]"
+ },
+ "t8474531813": {
+  "label_type": "Obstacle",
+  "tags": "[\"garage entrance\",\"height difference\"]"
+ },
+ "t85bb7f5aeb": {
+  "label_type": "SurfaceProblem",
+  "tags": "[]"
+ },
+ "t8cda2fb996": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"alternate route present\"]"
+ },
+ "t8f8a926bca": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"height difference\"]"
+ },
+ "t96d569c7a1": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"cracks\",\"grass\"]"
+ },
+ "ta5436ea8c2": {
+  "label_type": "Obstacle",
+  "tags": "[\"garage entrance\",\"height difference\",\"stairs\"]"
+ },
+ "tae8b5ed813": {
+  "label_type": "CurbRamp",
+  "tags": "[\"parallel lines\",\"points into traffic\"]"
+ },
+ "tb02bbf3620": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "tb32ec67888": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tb375f54716": {
+  "label_type": "CurbRamp",
+  "tags": "[\"missing tactile warning\"]"
+ },
+ "tb5a784eeb7": {
+  "label_type": "Obstacle",
+  "tags": "[\"fire hydrant\"]"
+ },
+ "tb6a6f4747d": {
+  "label_type": "Obstacle",
+  "tags": "[\"pole\"]"
+ },
+ "tbd9b1f00ac": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tc2a88c2967": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "tc6d2923de1": {
+  "label_type": "CurbRamp",
+  "tags": "[\"points into traffic\"]"
+ },
+ "tcd57d7c29f": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "tcfa474fdbb": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "td023af4a19": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "td16def9aa7": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "td6885cdcd0": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"uneven/slanted\",\"bumpy\"]"
+ },
+ "td6afd8a9cc": {
+  "label_type": "Obstacle",
+  "tags": "[\"narrow\",\"parked car\"]"
+ },
+ "te20c3ad8c6": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tee36d01593": {
+  "label_type": "Obstacle",
+  "tags": "[\"pole\"]"
+ },
+ "tf0985789a2": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ }
+}

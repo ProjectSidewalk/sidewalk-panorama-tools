@@ -1,0 +1,51 @@
+{
+ "city_cap": 4,
+ "drawn_by_arm_type": {
+  "legacy+mid|CurbRamp": 6,
+  "legacy+mid|NoCurbRamp": 6,
+  "legacy+mid|Obstacle": 6,
+  "legacy+mid|SurfaceProblem": 6,
+  "post179|CurbRamp": 6,
+  "post179|NoCurbRamp": 6,
+  "post179|Obstacle": 6,
+  "post179|SurfaceProblem": 6
+ },
+ "drawn_by_city": {
+  "auckland": 1,
+  "burnaby": 3,
+  "cdmx": 1,
+  "cliffside-park-nj": 1,
+  "columbia-sc": 4,
+  "knox-oh": 1,
+  "la-piedad-old": 4,
+  "newberg-or": 3,
+  "oradell-nj": 4,
+  "paterson-nj": 1,
+  "pittsburgh-pa": 7,
+  "seattle-wa": 8,
+  "spgg": 4,
+  "st-louis-mo": 1,
+  "teaneck-nj": 3,
+  "waltham-ma": 1,
+  "zurich": 1
+ },
+ "eligible_by_arm": {
+  "legacy+mid": 2333,
+  "post179": 263
+ },
+ "eligible_by_arm_type": {
+  "legacy+mid|CurbRamp": 513,
+  "legacy+mid|NoCurbRamp": 499,
+  "legacy+mid|Obstacle": 462,
+  "legacy+mid|SurfaceProblem": 859,
+  "post179|CurbRamp": 76,
+  "post179|NoCurbRamp": 67,
+  "post179|Obstacle": 46,
+  "post179|SurfaceProblem": 74
+ },
+ "jm_made_drawn": 12,
+ "per_type": 6,
+ "pool_labels": 70422,
+ "scanned_panos": 45687,
+ "seed": "20260929"
+}

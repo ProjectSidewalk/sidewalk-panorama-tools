@@ -248,8 +248,13 @@ class TestVerdicts:
                'b': {'order': ['leak', 'stored', 'antileak'], 'era_arm': 'x', 'T_deg': -5.0},
                'c': {'order': ['leak', 'stored', 'antileak'], 'era_arm': 'x', 'T_deg': -6.0}}
         d = tes.c_by_direction({'a': 'A', 'b': 'A', 'c': 'B'}, key)
-        assert d['leak_above'] == {'n': 1, 'leak': 1, 'stored': 0, 'antileak': 0, 'none': 0}
-        assert d['leak_below'] == {'n': 2, 'leak': 1, 'stored': 1, 'antileak': 0, 'none': 0}
+        assert d['leak_above'] == {'n': 1, 'leak': 1, 'stored': 0, 'antileak': 0, 'none': 0, 'tie': 0}
+        assert d['leak_below'] == {'n': 2, 'leak': 1, 'stored': 1, 'antileak': 0, 'none': 0, 'tie': 0}
+
+    def test_c_direction_split_counts_a_tie_apart(self):
+        key = {'a': {'order': ['leak', 'stored', 'antileak'], 'era_arm': 'x', 'T_deg': 5.0}}
+        assert tes.c_by_direction({'a': 'A=B'}, key)['leak_above'] == {
+            'n': 1, 'leak': 0, 'stored': 0, 'antileak': 0, 'none': 0, 'tie': 1}
 
     def test_sign_test_is_exact(self):
         assert tes.sign_test(37, 0)['p_one_sided'] == pytest.approx(0.5 ** 37)

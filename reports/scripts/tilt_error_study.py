@@ -344,12 +344,14 @@ def posthoc_decisive_share(arm, name):
 def c_by_direction(verdicts, key):
     """Verdicts split by whether the leak window sits above (T > 0: y - T h/180 is higher in the
     frame) or below the stored one."""
-    out = {d: {'n': 0, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 0} for d in ('leak_above', 'leak_below')}
+    out = {d: {'n': 0, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 0, 'tie': 0}
+           for d in ('leak_above', 'leak_below')}
     for token, choice in verdicts.items():
         k = key[token]
         d = out['leak_above' if k['T_deg'] > 0 else 'leak_below']
         d['n'] += 1
-        d['none' if choice == 'none' else k['order']['ABC'.index(choice)]] += 1
+        picked = tilt_adjudicate.chosen_windows(choice, k['order'])
+        d['none' if not picked else 'tie' if len(picked) == 2 else next(iter(picked))] += 1
     return out
 
 
