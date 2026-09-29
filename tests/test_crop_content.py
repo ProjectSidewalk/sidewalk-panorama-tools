@@ -776,6 +776,23 @@ class TestTheJsonIntakeDedupesOnTheIdTheLoopFilesUnder:
                                          label_row(label_id='01', pano_x=500)])
         assert len(rows) == 1 and rows[0]['pano_x'] == 100
 
+    def test_the_rows_the_dedupe_drops_are_one_summary_line_on_both_channels(self, crop_runner, capsys, caplog):
+        """This printed "Duplicate label ID" once per dropped row, on stdout only: unbounded on a
+        duplicate-heavy payload (#139's flood shape) and absent from crop.log. Now one line on both
+        channels, with the count and a few example ids, bounded however many rows are dropped (#183 M1)."""
+        rows = [label_row(label_id=1)] + [label_row(label_id=i % 3 + 1) for i in range(500)]
+        with caplog.at_level('WARNING'):
+            kept = crop_runner.json_to_list(rows, source='labels.json')
+
+        assert [r['label_id'] for r in kept] == [1, 2, 3]
+        out = capsys.readouterr().out
+        assert 'Duplicate label ID' not in out
+        printed = [line for line in out.splitlines() if 'duplicate label_id' in line]
+        logged = [r.getMessage() for r in caplog.records if 'duplicate label_id' in r.getMessage()]
+        assert len(printed) == 1 and logged == printed
+        assert '498 rows' in printed[0] and 'labels.json' in printed[0]
+        assert len(printed[0]) < 400
+
     def test_under_force_one_id_is_cut_once(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, GOOD)
@@ -828,3 +845,60 @@ class TestTheJsonIntakeDedupesOnTheIdTheLoopFilesUnder:
 
         assert crop_runner.main(['--city', CITY, '-f', str(path), '-s', str(store), '-o', str(out)]) == 1
         assert find_crop(out, 1) is not None
+
+
+def provenance_rows(out):
+    """Every row of the provenance manifest, wherever it lives under out."""
+    manifests = _rglob(out, 'crop_provenance.csv')
+    assert len(manifests) == 1, manifests
+    with open(manifests[0], newline='', encoding='utf-8') as f:
+        return list(csv.DictReader(f))
+
+
+class TestTheCsvIntakeDedupesOnTheIdTheLoopFilesUnder:
+    """The CSV intake keys its dedupe on _label_id_key too (#170 ops-4). The intake-level tests in
+    test_csv_intake.py pin what fetch_label_ids_csv returns; these pin the claim end to end through
+    main(-f *.csv), so a second CSV reader or a pre-filter in main() cannot keep them green (#183 M2)."""
+
+    def _main(self, crop_runner, monkeypatch, tmp_path, rows, *extra):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, GOOD)
+        path = tmp_path / 'labels.csv'
+        write_labels_csv(str(path), rows)
+        seen = {}
+        real = crop_runner.bulk_extract_crops
+
+        def spy(*args, **kwargs):
+            seen['counts'] = real(*args, **kwargs)
+            return seen['counts']
+
+        monkeypatch.setattr(crop_runner, 'bulk_extract_crops', spy)
+        rc = crop_runner.main(['--city', CITY, '-f', str(path), '-s', str(store), '-o', str(out)] + list(extra))
+        return rc, seen['counts'], out
+
+    def test_under_force_one_id_is_cut_once(self, crop_runner, monkeypatch, tmp_path):
+        """'7' and '07' both file as 7.jpg. Deduped on the raw cell, --force cut that file twice and wrote
+        two provenance rows; now the first row is the label and the second is dropped in the intake. The
+        two blank ids are two errors, not one."""
+        rows = [label_row(pano_id=GOOD, label_id='7'), label_row(pano_id=GOOD, label_id='07', pano_x=600),
+                label_row(pano_id=GOOD, label_id=''), label_row(pano_id=GOOD, label_id='')]
+        rc, counts, out = self._main(crop_runner, monkeypatch, tmp_path, rows, '--force')
+
+        assert rc == 1
+        assert counts['total'] == 3 and counts['success'] == 1 and counts['errors'] == 2
+        assert reconciles(counts)
+        assert [row['label_id'] for row in provenance_rows(out)] == ['7']
+        assert find_crop(out, 7) is not None
+
+    def test_unusable_ids_are_never_collapsed(self, crop_runner, monkeypatch, tmp_path):
+        """A row whose id cannot be an int is its own bad label. Deduped on the raw cell, repeated ones
+        collapsed into one and the rest vanished from `total`, so the counts reconciled over a total that
+        was too small."""
+        rows = [label_row(pano_id=GOOD, label_id='1')]
+        rows += [label_row(pano_id=GOOD, label_id=bad) for bad in ('', '', 'abc', 'abc', '1.5', '1.5')]
+        rc, counts, out = self._main(crop_runner, monkeypatch, tmp_path, rows)
+
+        assert rc == 1
+        assert counts['total'] == 7 and counts['errors'] == 6 and counts['success'] == 1
+        assert reconciles(counts)
+        assert [row['label_id'] for row in provenance_rows(out)] == ['1']
