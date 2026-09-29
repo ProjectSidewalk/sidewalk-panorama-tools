@@ -177,6 +177,43 @@ def test_the_ops_log_csv_table_has_one_row_per_field():
     assert numbers == list(range(1, DownloadRunner.LOG_CSV_FIELD_COUNT + 1))
 
 
+# Every place the prose states the CURRENT width of a log.csv row. Deliberately phrase-specific: the pages also
+# say "18-field rows" and "an 18-name header" about the rows written before field 19, which are history, not a
+# stale count, so a bare "18" is not an error.
+LOG_CSV_WIDTH_CLAIMS = (
+    r'(\d+)-column `log\.csv`',
+    r'One (\d+)-column row per run',
+    r'one row of (\d+) positional',
+    r'[Pp]arses the (\d+) positional columns',
+    r'reads the \[(\d+) positional columns',
+    r'(\d+) comma-separated fields',
+    r'appends a full (\d+)-field row',
+    r'log\.csv` has (\d+) fields',
+)
+
+
+def test_the_prose_states_the_current_log_csv_width():
+    """The ops.md table is pinned row by row above; the sentences that state the row's width are not, and
+    they are what a reader quotes. Field 19 (#124) moved the width by hand in every one of these sentences
+    across CLAUDE.md, the README and docs/, and a missed one would have read exactly like a current one.
+    Every pattern must still match somewhere: a reworded sentence that no pattern reads would otherwise retire
+    its check silently, and a total-count floor cannot see that once the corpus has more claims than the floor
+    (the #187 review reworded one of eleven claims to a wrong count, and a floor of ten passed it)."""
+    import DownloadRunner
+
+    pages = ['CLAUDE.md'] + PAGES
+    found = []
+    for page in pages:
+        with open(os.path.join(REPO_ROOT, page), encoding='utf-8') as f:
+            text = ' '.join(f.read().split())
+        for pattern in LOG_CSV_WIDTH_CLAIMS:
+            found += [(page, pattern, int(n)) for n in re.findall(pattern, text)]
+
+    unmatched = [p for p in LOG_CSV_WIDTH_CLAIMS if not any(fp == p for _, fp, _ in found)]
+    assert not unmatched, f'no page states the log.csv width in these phrasings any more: {unmatched}'
+    assert all(n == DownloadRunner.LOG_CSV_FIELD_COUNT for _, _, n in found), found
+
+
 @pytest.mark.parametrize('source', CITING_SOURCES)
 def test_docs_paths_cited_in_code_exist(source):
     # Asserted, not skipped: skipping on a missing file meant a rename silently retired the check instead of

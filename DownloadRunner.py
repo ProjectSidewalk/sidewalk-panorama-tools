@@ -1061,8 +1061,9 @@ LOG_CSV_FIELD_COUNT = 19
 # number the analyzer cannot derive from the other 18: field 16 says how many panos are resolved, and only this
 # says out of how many, which is what a backfill's progress and ETA are computed from. Appended at the END of
 # the row so no existing position moves, and written from the finally rather than after the depth phase because
-# it is known before any phase runs - so a crashed run still records it, and only a run that died in the
-# pano-list fetch itself leaves it blank.
+# it is known before any phase runs - so a crashed run still records it. Only the two timestamp-only rows leave
+# it blank: a run that died in the pano-list fetch itself, and the schema-drift stop (#161), which fetched the
+# list but ran neither phase.
 DEPTH_ELIGIBLE_FIELD = 19
 
 

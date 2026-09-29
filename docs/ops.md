@@ -576,7 +576,7 @@ deployed has 18 fields, and the analyzer reads them with the last one blank.
 | 16 | depth total processed | sum of fields 13–15 |
 | 17 | depth phase duration | |
 | 18 | total run duration | |
-| 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a run that died in the pano-list fetch, and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
+| 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on the two timestamp-only rows (a run that died in the pano-list fetch, and a `pano-schema-drift` stop, which fetched the list but ran neither phase) and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -594,9 +594,14 @@ reported an abnormally long run on the same night, with nothing actually wrong.
 ### Blank fields mark a crashed or stopped run
 
 A run that crashes — or is stopped — still appends a full 19-field row: every phase that completed keeps its
-real counts, and every field from the first unfinished phase onward is blank. Visibly missing data, never a
-fabricated `0`. A row that is only a timestamp means the run died before scraping started, most likely because
-the pano-list fetch against the webserver failed.
+real counts, and every phase field from the first unfinished phase onward is blank. Field 19, the corpus size,
+is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Visibly
+missing data, never a fabricated `0`. A row that is only a timestamp, field 19 included, means neither phase
+ran, for one of two reasons: the pano-list fetch against the webserver failed, or the list was fetched but its
+schema had moved and the run stopped before scraping it (the `pano-schema-drift` condition,
+[#161](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/161)). `scrape.log` tells them
+apart: a failed fetch logs `Run crashed before the scrape started` with its traceback, a drift stop logs
+`Pano list schema drift` (and prints `WARNING: the pano list's schema has moved`, which cron mails).
 
 Blanks are new as of [#49](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/49) — historical
 rows are all-integer — so readers must treat them as missing data (`pandas.read_csv` surfaces them as `NaN`,

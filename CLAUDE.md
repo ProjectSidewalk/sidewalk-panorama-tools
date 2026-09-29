@@ -96,7 +96,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 | `docs/testing.md` | what the suite covers |
 | `docs/history.md` | removed code, and why |
 
-`tests/test_docs.py` fails if a relative link or an anchor (cross-page **or** same-page) stops resolving, if a docs page is not linked from the README, or if a `docs/*.md` path cited in a Python comment **or in this file** goes missing — so the pointers above are checked, not decorative. Links are scanned over the joined page text, so one that hard-wraps across a newline is still checked.
+`tests/test_docs.py` fails if a relative link or an anchor (cross-page **or** same-page) stops resolving, if a docs page is not linked from the README, if a `docs/*.md` path cited in a Python comment **or in this file** goes missing, or if a sentence stating `log.csv`'s width (here, the README or `docs/`) disagrees with `LOG_CSV_FIELD_COUNT` — so the pointers above are checked, not decorative. Links are scanned over the joined page text, so one that hard-wraps across a newline is still checked.
 
 **Coverage** is configured in `.coveragerc` (#57) and gated by its `fail_under`. Three things about it are load-bearing and easy to break by "simplifying":
 
