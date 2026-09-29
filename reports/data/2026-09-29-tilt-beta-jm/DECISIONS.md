@@ -72,3 +72,28 @@ Per era arm (legacy+mid, post179) and pooled. `none` and ties are never dropped 
 7. **Notes.** The judge may attach a note to any sheet. Notes are committed with the verdicts. Reading a note
    as a different answer (for example, a `none` whose note names a tie) is post hoc. It may be reported as a
    sensitivity, and never replaces the scored result.
+
+## 4. Unblinding (2026-09-29)
+
+**What was known.** Jon judged all 48 sheets. His verdicts were committed as a separate commit after the
+rules above: 17 C, 11 B, 8 A, 3 `A=C`, 9 `none`, with 14 notes. Nobody who judged had opened the key.
+
+**Then** the key was opened and `score_beta` run with the rules unchanged:
+
+| | n | `none` | scored | low : high | two-sided p (Holm) | reading | mean score [95% CI] |
+|---|---|---|---|---|---|---|---|
+| post179 | 24 | 1 | 23 | 4 : 1 | 0.375 (0.75) | consistent with 1 | 0.95 [0.86, 1.03] |
+| legacy+mid | 24 | 8 | 16 | 4 : 1 | 0.375 (0.75) | consistent with 1 | 0.91 [0.80, 1.00] |
+| pooled | 48 | 9 | 39 | 8 : 2 | 0.109 | - | 0.93 [0.86, 0.99] |
+
+- Score counts: post179 0.5 ×3, 0.75 ×1, 1.0 ×18, 1.5 ×1. legacy+mid 0.5 ×3, 0.75 ×1, 1.0 ×11, 1.25 ×1.
+  The 1.0 T window takes 29 of the 39 scored sheets. Section 2.1's caveat applies to that share.
+- **Rule 5:** both arms read consistent with 1, so the CropRunner correction defaults to **beta = 1** in both
+  arms, and the CIs above are its quoted uncertainty. The pooled CI's upper end is just under 1, but by rule 4
+  the mean is descriptive, and the pooled sign test (8 : 2, p = 0.11) is not significant.
+- **Rule 6:** the low/high split does not differ between arms (Fisher p = 1.0). legacy+mid has more `none`
+  (8 of 24 against 1 of 24, Fisher p = 0.023). By the pre-set reading, legacy+mid's 7 stored wins in C are
+  per-pano (XML) pose error rather than a smaller beta.
+- **Post hoc, not part of the result:** six of legacy+mid's eight `none` sheets have |T| >= 7.7 deg, where the
+  nearest window is furthest from the stored y. Nine notes name a second ring as nearly as good. Neither
+  observation changes a scored answer.
