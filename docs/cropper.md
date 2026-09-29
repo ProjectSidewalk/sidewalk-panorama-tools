@@ -20,7 +20,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | Flag | What it does |
 |---|---|
 | `-d <fqdn>` | Fetch label metadata from a Project Sidewalk server's `/adminapi/labels/cvMetadata`. Mutually exclusive with `-f`; one is required. |
-| `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. A `.json` file must hold an **array** of label rows; anything else stops the run before any crop with a `ValueError` traceback naming the file (exit 1, on stderr, not in `crop.log` — the same as a file that is not valid JSON). Inside the array, a row that is not an object or lacks a field the crop loop needs is one counted error, never the end of the run, and rows are deduplicated on the integer their crop is filed under (`1`, `"1"` and `1.0` are one label). |
+| `-f <file>` | Read label metadata from a `.csv` or `.json` file (extension is matched case-insensitively). See `samples/`. A `.json` file must hold an **array** of label rows; anything else stops the run before any crop with a `ValueError` traceback naming the file (exit 1, on stderr, not in `crop.log` — the same as a file that is not valid JSON). Inside the array, a row that is not an object or lacks a field the crop loop needs is one counted error, never the end of the run, and rows are deduplicated on the integer their crop is filed under (`1`, `"1"` and `1.0` are one label). A `.csv` file is deduplicated on the same integer (`7`, `07` and ` 7` are one label). |
 | `-s <dir>` | **Required.** Directory holding the panos downloaded by `DownloadRunner.py`; they are what the labels are cut out of. |
 | `-o <dir>` | **Required.** The root that holds one crop store per city. This run writes only into `<dir>/<city>/`: its crops, and its own `crop.log`, `crop_rule.json` and `crop_provenance.csv` — see [One store, one city](#one-store-one-city) and [What a crop store holds](#what-a-crop-store-holds). |
 | `--city <city_id>` | **Required.** The city the labels belong to: an active (not `#`-commented) `city_id` row of `log_analyzer/cities.csv` (`seattle-wa`, `cdmx`), read when the flag is parsed. Anything else — a misspelling, a retired city, an unreadable roster — is exit 2, since the city names a directory and a typo would start a new store; add a missing city to the roster first ([Adding a city](ops.md#adding-a-city), step 3). Names the store, `<crop-dir>/<city>/`; recorded in its `crop_rule.json` and on every provenance row — see [One store, one city](#one-store-one-city). |
@@ -180,7 +180,13 @@ scratch path — so forgetting one wrote an ML training corpus somewhere nobody 
 [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) a missing flag is an argparse
 error naming it.
 
-Both intakes dedupe on `label_id`, and the CSV intake reads with `csv.DictReader` rather than pandas
+Both intakes dedupe on `label_id` as the integer the crop is filed under (`_label_id_key`), keeping the first
+row per id, so `7` and `07` are one label rather than two rows cut to the same `7.jpg` (twice under `--force`,
+with two provenance rows, until
+[#170](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/170)'s follow-up). A row whose
+`label_id` is blank or not an integer is never deduplicated: each one is its own counted error. The row keeps
+its raw string; only the key is an `int`. A dropped duplicate is not in the run's `total`, so the intake says
+how many it dropped, in one line on stdout and in `crop.log` with a few example ids — never a line per row. The CSV intake reads with `csv.DictReader` rather than pandas
 ([#72](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/72)), so no field's type depends on
 what the values happen to look like — the inference that gave an all-numeric Mapillary `pano_id` column
 `int64` and crashed every shard slice. It checks the required columns up front, so a header typo is one error
