@@ -12,6 +12,7 @@ functions directly with plain arguments.
 """
 
 import ast
+import csv
 import json
 import itertools
 import logging
@@ -3375,7 +3376,9 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         assert any(r.levelno == logging.ERROR and 'schema drift' in r.getMessage() for r in caplog.records)
         assert calls == [], 'no pano may be attempted from a list whose schema moved'
         assert not (storage / 'pano_id_log.csv').exists(), 'nothing may be ledgered'
-        fields = last_log_fields(storage)
+        rows = log_rows(storage)
+        assert len(rows) == 1, 'one evidence row: the drift stop writes it once, after the fetch handler'
+        fields = rows[0]
         assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
         assert fields[1:] == [''] * (DownloadRunner.LOG_CSV_FIELD_COUNT - 1), 'the phases stay blank'
 
@@ -3563,24 +3566,54 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
         assert fields[1:DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == [''] * 17, 'blank, not fabricated zeros'
         assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
 
-    def test_a_crash_in_the_budget_split_writes_the_row_and_still_raises(self, monkeypatch, tmp_path):
-        """The ordinary-exception twin: an unreadable ledger that raises must fail the run loudly AND leave the
-        row, the two halves of #49 that a stop and a crash share."""
-        def unreadable(storage_location, gsv_panos):
-            raise OSError('depth_log.csv: stale file handle')
-
-        monkeypatch.setattr(DownloadRunner.gsv, 'count_unresolved_depth', unreadable)
+    def test_a_crash_in_the_budget_split_writes_the_row_and_still_raises(self, tmp_path):
+        """The ordinary-exception twin, through the REAL count_unresolved_depth. It catches OSError itself (an
+        unreadable ledger reads as no backlog), so the crash that actually reaches here is one it does not catch:
+        a torn append that leaves a field past csv's field_size_limit raises csv.Error. Before the try moved,
+        that exited 1 with no row. It must fail the run loudly AND leave the row - the two halves of #49 that a
+        stop and a crash share - and a direct caller's stop reasons must already be seeded when it does."""
         storage = tmp_path / 'storage'
         storage.mkdir()
+        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_text(
+            'pano_id,depth\n' + 'x' * (csv.field_size_limit() + 1))
+        stop_reasons = {}
 
-        with pytest.raises(OSError):
+        with pytest.raises(csv.Error):
             DownloadRunner.run_scraper_and_log_results(str(storage), gsv_pano_infos(), gsv_pano_infos(), False,
-                                                       max_runtime_minutes=10, min_depth_runtime=5)
+                                                       max_runtime_minutes=10, min_depth_runtime=5,
+                                                       stop_reasons=stop_reasons)
 
         rows = log_rows(storage)
         assert len(rows) == 1
         assert rows[0][1:DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == [''] * 17
         assert rows[0][DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+        assert stop_reasons == {'image_stop': None, 'depth_stop': None}, 'seeded before the split can stop'
+
+    def test_a_stop_as_the_drift_row_lands_does_not_write_a_second(self, monkeypatch, tmp_path):
+        """The drift stop writes its row AFTER the fetch handler's try, and that placement is the whole guard: a
+        stop landing once the row is appended (closing the file on a slow mount, say) must propagate, not reach
+        the fetch handler, which would append a second timestamp-only row for the same run."""
+        real_write = DownloadRunner.write_log_csv_row
+        calls = []
+
+        def stopped_after_appending(storage_location, fields):
+            real_write(storage_location, fields)
+            calls.append(fields)
+            if len(calls) == 1:
+                raise SystemExit(143)
+
+        monkeypatch.setattr(DownloadRunner, 'write_log_csv_row', stopped_after_appending)
+        records = [{'pano_id': 'gsvPano%04d' % i, 'source': 'gsv', 'has_labels': True} for i in range(5)]
+        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER)
+        storage = tmp_path / 'storage'
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit):
+            DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path), '--skip-depth'])
+
+        assert len(log_rows(storage)) == 1, 'one row for one run, however the stop lands'
 
     def test_a_stop_before_the_corpus_is_counted_leaves_field_19_blank(self, tmp_path):
         """Field 19 is a count, so a row that never learned it must say so with a blank - a 0 would read as
