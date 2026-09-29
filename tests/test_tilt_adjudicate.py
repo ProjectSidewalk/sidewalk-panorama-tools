@@ -435,11 +435,13 @@ class TestTheCommittedFolder:
         for t in tasks.values():
             assert set(t) == {'label_type', 'tags'}
 
-    def test_the_report_prints_no_key_and_its_results_follow_the_instructions(self):
+    def test_the_report_prints_no_key_and_leads_with_the_decision_bearing_pass(self):
+        """Adjudicated 2026-09-29: the judge-first instructions are gone, the key is still never printed,
+        and Jon's pass on the redraw comes before the superseded machine pass."""
         with open(REPORT_MD, encoding='utf-8') as f:
             text = f.read()
         assert 'key:' not in text and 'A=leak' not in text and 'adjudication-sheet.jpg' not in text
-        assert text.index('How to adjudicate') < text.index('Preliminary machine pass')
+        assert text.index("Jon's adjudication, on the redraw") < text.index('Superseded first draw')
 
 
 # ---- the tests lens's kill-tests (#158 review): XML-era roll, the |T| boundary, the fill ----------
@@ -557,22 +559,35 @@ def test_M11_a_fresh_salt_is_128_bits_and_random(tmp_path):
 QUOTES_THE_MACHINE_RESULT = ('reports/README.md', 'docs/cropper.md', "CLAUDE.md's tilt subsection")
 
 
-def test_the_do_not_open_lists_name_every_file_that_quotes_the_machine_result():
+def test_the_judge_readme_names_every_file_that_quotes_a_result():
+    """Every judge folder's README (the template) still tells a future judge what not to open."""
     readme = ' '.join(ta.JUDGE_README.split())
-    with open(REPORT_MD, encoding='utf-8') as f:
-        report = ' '.join(f.read().split())
-    how = report[report.index('**How to adjudicate**'):report.index('Preliminary machine pass')]
     for name in QUOTES_THE_MACHINE_RESULT:
         assert name in readme
-        assert name in how
 
 
-def test_c_says_which_contrast_jons_verdict_is_read_on():
+def test_c_says_which_contrast_is_primary_and_that_the_rule_was_fixed_blind():
     with open(REPORT_MD, encoding='utf-8') as f:
         report = ' '.join(f.read().split())
-    how = report[report.index('**How to adjudicate**'):report.index('Preliminary machine pass')]
-    assert "Jon's verdict is read on the blind leak-vs-antileak contrast" in how
-    assert 'pre-set stored/shifted rule reported alongside' in how
+    assert '**Primary:** leak against antileak, a one-sided exact sign test' in report
+    assert 'fixed before unblinding' in report and 'DECISIONS.md' in report
+
+
+REDRAW_DIRS = [os.path.join(REPO_ROOT, 'reports', 'data', d) for d in
+               ('2026-09-29-tilt-adjudication-jm', '2026-09-30-tilt-adjudication-jm-b2')]
+
+
+@pytest.mark.parametrize('d', REDRAW_DIRS, ids=['batch1', 'batch2'])
+def test_a_redraw_folder_keeps_its_key_selection_and_crop_jobs_sealed(d):
+    """selection.csv and crop_jobs.csv name each window's role, so they are key files too."""
+    assert ta.unsealed_key_files(d) == []
+    for name in ('selection.csv', 'crop_jobs.csv'):
+        assert not os.path.exists(os.path.join(d, name)) and os.path.exists(os.path.join(d, 'sealed', name))
+    n_key = len(ta.read_sealed_key(d))                  # the hash check, and a count only
+    with open(os.path.join(d, 'tasks.json'), encoding='utf-8') as f:
+        tasks = json.load(f)
+    assert n_key == len(tasks) == 48 and all(set(t) == {'label_type', 'tags'} for t in tasks.values())
+    assert len(ta.load_verdicts(d, 'jon')) == 48
 
 
 # ---- Gemini 3.1 Pro follow-up (#158): the fill's usage error and the tags encoding ----------------
