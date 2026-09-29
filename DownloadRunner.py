@@ -1061,9 +1061,11 @@ LOG_CSV_FIELD_COUNT = 19
 # number the analyzer cannot derive from the other 18: field 16 says how many panos are resolved, and only this
 # says out of how many, which is what a backfill's progress and ETA are computed from. Appended at the END of
 # the row so no existing position moves, and written from the finally rather than after the depth phase because
-# it is known before any phase runs - so a crashed run still records it. It is blank only when the run stopped
-# before counting it: in the pano-list fetch itself, or in the instant before the count at the top of
-# run_scraper_and_log_results, whose finally writes '' rather than a 0 that would read as an empty city.
+# it is known before any phase runs - so a crashed run still records it. It is blank only on a row written before
+# the count: the timestamp-only rows (a run that died in the pano-list fetch itself or between it and the
+# phases, and the schema-drift stop (#161), which fetched the list but ran neither phase), and a stop in the
+# instant before the count at the top of run_scraper_and_log_results, whose finally writes '' rather than a 0
+# that would read as an empty city.
 DEPTH_ELIGIBLE_FIELD = 19
 
 
