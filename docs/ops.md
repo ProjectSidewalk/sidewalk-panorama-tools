@@ -604,7 +604,14 @@ turning those columns `float64`) rather than feeding them to `int()`.
 
 Fields are accumulated in memory and written once in a `finally`, which is why even a crash between phases
 produces a single full-width row. `SIGTERM` is translated into `sys.exit(143)` so a stop runs those `finally`
-blocks instead of discarding the evidence.
+blocks instead of discarding the evidence. The `try` behind that `finally` opens before anything slow, the
+budget split included: with a `--min-depth-runtime` reservation the run reads the city's whole
+`depth_log.csv` off the store before either phase starts, and a stop there used to exit 143 with no row at
+all. It now leaves a row whose every phase field is blank, the XML stub's included, with field 19 filled,
+since the corpus size is counted before the ledger is read; a stop in the instant before even that count
+leaves field 19 blank too, never `0`. Between the pano-list fetch and the phases, the handler that writes
+the fetch-failure row covers every statement, including the ledger read that judges an empty list, so a
+stop there leaves the timestamp-only row.
 
 ### The depth failure count is not an alert signal
 

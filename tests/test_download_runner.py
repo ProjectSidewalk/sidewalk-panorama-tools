@@ -3517,6 +3517,113 @@ class TestTheDepthCorpusSizeReachesLogCsv:
         assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT
 
 
+# --- The evidence row covers the whole run, not just the phases (#49) ------------------------------------------
+#
+# The row is written from a finally, and a stop only leaves one if it lands inside that finally's try. The
+# budget split used to sit in front of it - and it is not instant: count_unresolved_depth reads the city's whole
+# depth_log.csv off the store, 1.4M rows on a network mount, which made it the longest window in the run where a
+# queue kill (--city-max-runtime) or an operator's stop exited 143 and left no row at all (#187 review, MINOR 2).
+
+def log_rows(storage):
+    with open(storage / 'log.csv') as f:
+        return [line.split(',') for line in f.read().strip().splitlines()]
+
+
+class TestAStopBeforeThePhasesStillWritesTheRow:
+
+    def _reserving_main(self, tmp_path, *extra_args):
+        """main() with a depth reservation configured, which is the only configuration that reads the ledger
+        before the phases. Depth is not skipped, but nothing below lets the run get as far as the depth phase."""
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + GSV_CSV_ROWS)
+        storage = tmp_path / 'storage'
+        DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path),
+                             '--max-runtime', '10', '--min-depth-runtime', '5', *extra_args])
+        return storage
+
+    def test_a_sigterm_while_the_depth_ledger_is_read_writes_one_row(self, monkeypatch, tmp_path):
+        """Delivered through the handler main() really installs, so this is the stop an operator sends and not
+        a SystemExit the test chose. Every phase field is blank - none of them started, the xml stub included -
+        and field 19 is filled, because the corpus size was known before the ledger read began."""
+        def stopped_mid_read(storage_location, gsv_panos):
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+        monkeypatch.setattr(DownloadRunner.gsv, 'count_unresolved_depth', stopped_mid_read)
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit) as excinfo:
+            self._reserving_main(tmp_path)
+
+        assert excinfo.value.code == 143
+        rows = log_rows(tmp_path / 'storage')
+        assert len(rows) == 1, 'exactly one evidence row, not none and not one per handler'
+        fields = rows[0]
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[0] != ''
+        assert fields[1:DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == [''] * 17, 'blank, not fabricated zeros'
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+
+    def test_a_crash_in_the_budget_split_writes_the_row_and_still_raises(self, monkeypatch, tmp_path):
+        """The ordinary-exception twin: an unreadable ledger that raises must fail the run loudly AND leave the
+        row, the two halves of #49 that a stop and a crash share."""
+        def unreadable(storage_location, gsv_panos):
+            raise OSError('depth_log.csv: stale file handle')
+
+        monkeypatch.setattr(DownloadRunner.gsv, 'count_unresolved_depth', unreadable)
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        with pytest.raises(OSError):
+            DownloadRunner.run_scraper_and_log_results(str(storage), gsv_pano_infos(), gsv_pano_infos(), False,
+                                                       max_runtime_minutes=10, min_depth_runtime=5)
+
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        assert rows[0][1:DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == [''] * 17
+        assert rows[0][DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+
+    def test_a_stop_before_the_corpus_is_counted_leaves_field_19_blank(self, tmp_path):
+        """Field 19 is a count, so a row that never learned it must say so with a blank - a 0 would read as
+        "this city has no GSV panos", which is a claim about the city, not about the stop."""
+        class StoppedWhileCounted:
+            def __iter__(self):
+                raise SystemExit(143)
+
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+
+        with pytest.raises(SystemExit):
+            DownloadRunner.run_scraper_and_log_results(str(storage), [], StoppedWhileCounted(), False)
+
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        assert len(rows[0]) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert rows[0][0] != ''
+        assert rows[0][1:] == [''] * 18
+
+    def test_a_stop_after_the_fetch_but_before_the_scrape_writes_a_timestamp_row(self, monkeypatch, tmp_path):
+        """The same gap one function up: between the pano-list fetch's own crash handler and the call into
+        run_scraper_and_log_results, _run_phases reads the store's ledgers to judge an empty list. That read
+        is on the store too, so a stop inside it must leave the fetch-failure row, not nothing."""
+        def stopped(storage_location):
+            raise SystemExit(143)
+
+        monkeypatch.setattr(DownloadRunner, '_store_has_history', stopped)
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER)  # an empty list is what sends _run_phases to the ledgers
+        storage = tmp_path / 'storage'
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit):
+            DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path), '--skip-depth'])
+
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        assert len(rows[0]) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert rows[0][0] != ''
+        assert rows[0][1:] == [''] * 18
+
+
 class TestField5IsTheImageListsLength:
     """Fields 2-5 are the stub of an XML-metadata endpoint that died in 2022, which makes "write zeros" look like
     a harmless cleanup. It is not: field 5 is len(image_pano_infos), and log_analyzer's rule 3 (#163) reads it

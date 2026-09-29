@@ -1061,8 +1061,9 @@ LOG_CSV_FIELD_COUNT = 19
 # number the analyzer cannot derive from the other 18: field 16 says how many panos are resolved, and only this
 # says out of how many, which is what a backfill's progress and ETA are computed from. Appended at the END of
 # the row so no existing position moves, and written from the finally rather than after the depth phase because
-# it is known before any phase runs - so a crashed run still records it, and only a run that died in the
-# pano-list fetch itself leaves it blank.
+# it is known before any phase runs - so a crashed run still records it. It is blank only when the run stopped
+# before counting it: in the pano-list fetch itself, or in the instant before the count at the top of
+# run_scraper_and_log_results, whose finally writes '' rather than a 0 that would read as an empty city.
 DEPTH_ELIGIBLE_FIELD = 19
 
 
@@ -1134,7 +1135,8 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     completed phase's counts (a failure in the depth phase must not discard what the image phase downloaded),
     while the phases that never finished stay visibly blank rather than turning into fake zeros (#49). The
     one field that is not a phase result - the depth corpus size, DEPTH_ELIGIBLE_FIELD - is known up front
-    and lands on every row that gets this far, crashed or not.
+    and lands on every row that gets this far, crashed or not. The try opens before the budget split, whose
+    depth-ledger read is the slowest thing ahead of the phases, so a stop there still writes the row.
 
     @param storage_location Root of the pano store (log.csv and the ledgers live here).
     @param image_pano_infos Panos eligible for image download (narrowed by --all-panos).
@@ -1162,45 +1164,50 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     start_time = datetime.now()
     run_start_monotonic = time.monotonic()
 
-    # Seeded before anything can stop: a key present and None means "this phase finished its list", which is
-    # what tells scrape_queue the city is DONE rather than merely unobserved.
-    if stop_reasons is not None:
-        stop_reasons.setdefault('image_stop', None)
-        stop_reasons.setdefault('depth_stop', None)
-
-    # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
-    # split below needs it too - and because its size is log.csv's last field (#43): the denominator every
-    # progress figure for the backfill needs, and the one number nothing else in the row carries.
-    gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
-    depth_eligible = len(gsv_panos)
-
-    # Both phases share --max-runtime (it exists to keep the run inside its daily cron slot, per #38, and that
-    # constraint doesn't care which phase spends the clock), but the image phase must leave the reserved tail so
-    # an image backlog — a mapathon is the canonical case — can't starve the depth backfill night after night
-    # (#43). The reservation is only taken when the depth ledger shows unresolved work: once a city is fully
-    # backfilled the depth phase returns in milliseconds, and reserving for it would burn image throughput for
-    # nothing. Depth still ends at the total, so slack from a light image night rolls to depth rather than being
-    # lost. No reservation when depth is skipped: the image phase keeps the whole window.
-    image_max_runtime = max_runtime_minutes
-    if store_settings is None and max_runtime_minutes is not None and not skip_depth and min_depth_runtime > 0:
-        depth_backlog = gsv.count_unresolved_depth(storage_location, gsv_panos)
-        if depth_backlog:
-            image_max_runtime = max(0.0, max_runtime_minutes - min_depth_runtime)
-            print("Budget: %.1f min total; image phase capped at %.1f min (%.1f min reserved for depth; "
-                  "backlog: %d panos)"
-                  % (max_runtime_minutes, image_max_runtime, min_depth_runtime, depth_backlog))
-            if image_max_runtime == 0.0 and max_runtime_minutes > 0:
-                # Loud on stdout because cron mails it: without this, a zero-image night reads like ordinary
-                # budget exhaustion and a misconfigured fleet would silently stop downloading images.
-                print("WARNING: --min-depth-runtime (%g) >= --max-runtime (%g); NO images will be downloaded "
-                      "this run" % (min_depth_runtime, max_runtime_minutes))
-        else:
-            print("Budget: no unresolved depth work; image phase gets the full %.1f min"
-                  % (max_runtime_minutes,))
-
+    # The row's accumulator and the try that writes it come first, ahead of even the budget split: that split
+    # reads the city's whole depth ledger off the store, and a stop there used to exit 143 with no row at all
+    # (#187 review). depth_eligible starts as None rather than 0 because field 19 is a count - a stop before
+    # it is known must leave it blank, never claim the city has no GSV panos.
     fields = [log_timestamp(start_time)]
+    depth_eligible = None
     tripped_sources = set()
     try:
+        # Seeded before anything can stop: a key present and None means "this phase finished its list", which is
+        # what tells scrape_queue the city is DONE rather than merely unobserved.
+        if stop_reasons is not None:
+            stop_reasons.setdefault('image_stop', None)
+            stop_reasons.setdefault('depth_stop', None)
+
+        # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
+        # split below needs it too - and because its size is log.csv's last field (#43): the denominator every
+        # progress figure for the backfill needs, and the one number nothing else in the row carries.
+        gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
+        depth_eligible = len(gsv_panos)
+
+        # Both phases share --max-runtime (it exists to keep the run inside its daily cron slot, per #38, and that
+        # constraint doesn't care which phase spends the clock), but the image phase must leave the reserved tail so
+        # an image backlog — a mapathon is the canonical case — can't starve the depth backfill night after night
+        # (#43). The reservation is only taken when the depth ledger shows unresolved work: once a city is fully
+        # backfilled the depth phase returns in milliseconds, and reserving for it would burn image throughput for
+        # nothing. Depth still ends at the total, so slack from a light image night rolls to depth rather than being
+        # lost. No reservation when depth is skipped: the image phase keeps the whole window.
+        image_max_runtime = max_runtime_minutes
+        if store_settings is None and max_runtime_minutes is not None and not skip_depth and min_depth_runtime > 0:
+            depth_backlog = gsv.count_unresolved_depth(storage_location, gsv_panos)
+            if depth_backlog:
+                image_max_runtime = max(0.0, max_runtime_minutes - min_depth_runtime)
+                print("Budget: %.1f min total; image phase capped at %.1f min (%.1f min reserved for depth; "
+                      "backlog: %d panos)"
+                      % (max_runtime_minutes, image_max_runtime, min_depth_runtime, depth_backlog))
+                if image_max_runtime == 0.0 and max_runtime_minutes > 0:
+                    # Loud on stdout because cron mails it: without this, a zero-image night reads like ordinary
+                    # budget exhaustion and a misconfigured fleet would silently stop downloading images.
+                    print("WARNING: --min-depth-runtime (%g) >= --max-runtime (%g); NO images will be downloaded "
+                          "this run" % (min_depth_runtime, max_runtime_minutes))
+            else:
+                print("Budget: no unresolved depth work; image phase gets the full %.1f min"
+                      % (max_runtime_minutes,))
+
         # There is no XML metadata phase (that endpoint died in 2022; depth now comes from streetlevel below),
         # but its log.csv columns are stubbed with the values every production run has always written so the
         # positional format parsed by scraper-log-analyzer doesn't shift. Deliberately the image
@@ -1265,7 +1272,7 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
         # Whatever the phases managed to record, then blanks up to the corpus-size field, then the corpus size
         # itself. On a completed run the padding is empty; on a crashed one it is the unfinished phases.
         fields += [''] * (DEPTH_ELIGIBLE_FIELD - 1 - len(fields))
-        fields.append(depth_eligible)
+        fields.append('' if depth_eligible is None else depth_eligible)
         write_log_csv_row(storage_location, fields)
     return tripped_sources
 
@@ -1401,51 +1408,55 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         pano_infos = filter_supported_sources(pano_infos, conditions=stop_reasons,
                                               require_credentials=store_settings is None)
         image_pano_infos = select_image_panos(pano_infos, all_panos)
+
+        if schema_drift is not None:
+            # The one condition that also stops work (D8, #161): scraping a list whose width/height keys moved
+            # would ledger every new GSV pano downloaded=0 PERMANENTLY, and there is no GSV breaker by design
+            # (#113). So neither phase runs and nothing is ledgered; the log.csv row, written below once this
+            # try is behind us, records a run that started and did nothing, with every phase blank.
+            logging.error("Pano list schema drift: %s; required keys %s. Skipping both phases and ledgering "
+                          "nothing.", schema_drift, ', '.join(INTAKE_REQUIRED_KEYS))
+            print("WARNING: the pano list's schema has moved - %s. Neither phase ran and nothing was ledgered; "
+                  "see docs/api-fields.md for the fields the downloader requires." % (schema_drift,))
+            note_condition(stop_reasons, CONDITION_PANO_SCHEMA_DRIFT, schema_drift)
+        elif served_empty and _store_has_history(storage_location):
+            # An empty list for a city that has scraped before is the server (or something between us and it)
+            # failing, not the city emptying. The run continues - there is nothing to do and nothing to lose -
+            # but the night is told (#161).
+            logging.error("The pano list is empty, but this store has scraped before (%s)", storage_location)
+            print("WARNING: the pano list is empty, but this store has scraped before. Check the server's "
+                  "/adminapi/panos.")
+            note_condition(stop_reasons, CONDITION_PANO_LIST_EMPTY,
+                           'no panos served for a store with ledger history')
+
+        # Uncomment this to test on a smaller subset of the pano_info.
+        # import random
+        # n = 3
+        # if len(pano_infos) > n:
+        #     pano_infos = random.sample(pano_infos, n)
+
+        # In store mode without --with-depth no depth pass runs at all, so say so rather than read as if one will.
+        depth_note = ' (not pulled: no --with-depth)' if store_settings is not None and not with_depth else ''
+        if schema_drift is None:
+            print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth%s"
+                  % (len(pano_infos), len(image_pano_infos),
+                     sum(1 for p in pano_infos if p.get('source') == 'gsv'), depth_note))
+            # Use pano_id list and associated info to gather panos from respective APIs
+            print("Fetching Panoramas")
     except BaseException:
         # A crash before the scrape starts - a webserver outage being the single most likely nightly failure -
         # must still leave both kinds of evidence (#49): the traceback in scrape.log, and a blank-padded
-        # log.csv row whose real timestamp shows a run started and produced nothing.
+        # log.csv row whose real timestamp shows a run started and produced nothing. The try runs right up to
+        # the call below, whose own finally takes over: _store_has_history reads the store, so a stop in it
+        # (or anywhere else between the fetch and the phases) must not be the one place a run leaves no row.
         logging.exception("Run crashed before the scrape started")
         write_log_csv_row(storage_location, [log_timestamp()])
         raise
 
     if schema_drift is not None:
-        # The one condition that also stops work (D8, #161): scraping a list whose width/height keys moved
-        # would ledger every new GSV pano downloaded=0 PERMANENTLY, and there is no GSV breaker by design
-        # (#113). So neither phase runs and nothing is ledgered; the log.csv row records a run that started
-        # and did nothing, with every phase blank.
-        logging.error("Pano list schema drift: %s; required keys %s. Skipping both phases and ledgering "
-                      "nothing.", schema_drift, ', '.join(INTAKE_REQUIRED_KEYS))
-        print("WARNING: the pano list's schema has moved - %s. Neither phase ran and nothing was ledgered; "
-              "see docs/api-fields.md for the fields the downloader requires." % (schema_drift,))
-        note_condition(stop_reasons, CONDITION_PANO_SCHEMA_DRIFT, schema_drift)
         write_log_csv_row(storage_location, [log_timestamp()])
         return set()
 
-    if served_empty and _store_has_history(storage_location):
-        # An empty list for a city that has scraped before is the server (or something between us and it)
-        # failing, not the city emptying. The run continues - there is nothing to do and nothing to lose -
-        # but the night is told (#161).
-        logging.error("The pano list is empty, but this store has scraped before (%s)", storage_location)
-        print("WARNING: the pano list is empty, but this store has scraped before. Check the server's "
-              "/adminapi/panos.")
-        note_condition(stop_reasons, CONDITION_PANO_LIST_EMPTY,
-                       'no panos served for a store with ledger history')
-
-    # Uncomment this to test on a smaller subset of the pano_info.
-    # import random
-    # n = 3
-    # if len(pano_infos) > n:
-    #     pano_infos = random.sample(pano_infos, n)
-
-    # In store mode without --with-depth no depth pass runs at all, so say so rather than read as if one will.
-    depth_note = ' (not pulled: no --with-depth)' if store_settings is not None and not with_depth else ''
-    print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth%s"
-          % (len(pano_infos), len(image_pano_infos), sum(1 for p in pano_infos if p.get('source') == 'gsv'),
-             depth_note))
-
-    # Use pano_id list and associated info to gather panos from respective APIs
-    print("Fetching Panoramas")
     try:
         tripped_sources = run_scraper_and_log_results(
             storage_location, image_pano_infos, pano_infos, skip_depth,
