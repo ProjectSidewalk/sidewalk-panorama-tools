@@ -188,6 +188,7 @@ LOG_CSV_WIDTH_CLAIMS = (
     r'reads the \[(\d+) positional columns',
     r'(\d+) comma-separated fields',
     r'appends a full (\d+)-field row',
+    r'log\.csv` has (\d+) fields',
 )
 
 
@@ -195,7 +196,9 @@ def test_the_prose_states_the_current_log_csv_width():
     """The ops.md table is pinned row by row above; the sentences that state the row's width are not, and
     they are what a reader quotes. Field 19 (#124) moved the width by hand in every one of these sentences
     across CLAUDE.md, the README and docs/, and a missed one would have read exactly like a current one.
-    The floor (the ten claims there are today) keeps a reworded page from retiring the check silently."""
+    Every pattern must still match somewhere: a reworded sentence that no pattern reads would otherwise retire
+    its check silently, and a total-count floor cannot see that once the corpus has more claims than the floor
+    (the #187 review reworded one of eleven claims to a wrong count, and a floor of ten passed it)."""
     import DownloadRunner
 
     pages = ['CLAUDE.md'] + PAGES
@@ -206,7 +209,8 @@ def test_the_prose_states_the_current_log_csv_width():
         for pattern in LOG_CSV_WIDTH_CLAIMS:
             found += [(page, pattern, int(n)) for n in re.findall(pattern, text)]
 
-    assert len(found) >= 10, found
+    unmatched = [p for p in LOG_CSV_WIDTH_CLAIMS if not any(fp == p for _, fp, _ in found)]
+    assert not unmatched, f'no page states the log.csv width in these phrasings any more: {unmatched}'
     assert all(n == DownloadRunner.LOG_CSV_FIELD_COUNT for _, _, n in found), found
 
 
