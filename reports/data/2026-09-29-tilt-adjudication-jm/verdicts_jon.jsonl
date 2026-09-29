@@ -46,3 +46,19 @@
 {"token": "te20c3ad8c6", "choice": "none", "judge": "jon"}
 {"token": "tee36d01593", "choice": "none", "judge": "jon"}
 {"token": "tf0985789a2", "choice": "C", "judge": "jon"}
+{"token": "t0f5be92d6a", "choice": "C", "judge": "jon"}
+{"token": "t0f5be92d6a", "choice": "C", "judge": "jon", "comment": "Slight lean towards C in marking this public phone as an obstacle but it could also be A since the tag says \"vegetation\" in addition to \"pole\". And A is closer to the vegetation...."}
+{"token": "t323e8476b2", "choice": "C", "judge": "jon"}
+{"token": "t323e8476b2", "choice": "C", "judge": "jon", "comment": "A, B, and C are all quite close in marking a surface problem on this sidewalk but C best captures it then A then B."}
+{"token": "t39bc67b309", "choice": "none", "judge": "jon", "comment": "Both A and C actually mark debris but if I had to choose, I would say C is right in the middle of the debris"}
+{"token": "t39bc67b309", "choice": "C", "judge": "jon", "comment": "Both A and C actually mark debris but if I had to choose, I would say C is right in the middle of the debris"}
+{"token": "t4b6681000c", "choice": "none", "judge": "jon", "comment": "It's just not clear what the labeler was trying to mark here. Both B and C capture problems"}
+{"token": "t5c1367a0f5", "choice": "none", "judge": "jon", "comment": "Both B and C clearly mark the trash can. It's not clear which is better."}
+{"token": "t6719e93285", "choice": "none", "judge": "jon", "comment": "It's simply not possible to know"}
+{"token": "t80327bc1d2", "choice": "none", "judge": "jon", "comment": "Both A and B clearly mark vegetation. It's not possible to know which is correct"}
+{"token": "t85bb7f5aeb", "choice": "none", "judge": "jon", "comment": "All of these labels fall on the same cobbleston surface, so it's not possible to choose"}
+{"token": "tc2a88c2967", "choice": "B", "judge": "jon", "comment": "Both B and C seem to mark the correct location of a missing curb ramp but if forced to choose, B is better because it aligns with the crosswalk"}
+{"token": "tc2a88c2967", "choice": "B", "judge": "jon", "comment": "Both B and C seem to mark the correct location of a missing curb ramp but if forced to choose, B is better because it aligns with the crosswalk"}
+{"token": "td6afd8a9cc", "choice": "none", "judge": "jon", "comment": "Both A and C clearly mark the parked car as an obstacle. It's not clear which is better."}
+{"token": "te20c3ad8c6", "choice": "none", "judge": "jon", "comment": "Both B and C could be the correct areas for a missing curb ramp but it's not clear which is better"}
+{"token": "tee36d01593", "choice": "none", "judge": "jon", "comment": "None of these things are truly along the pole. B is probably best..."}
