@@ -256,6 +256,44 @@ class TestVerdicts:
         assert tes.c_by_direction({'a': 'A=B'}, key)['leak_above'] == {
             'n': 1, 'leak': 0, 'stored': 0, 'antileak': 0, 'none': 0, 'tie': 1}
 
+    def test_the_secondary_rule_leaves_ties_and_none_out_of_its_denominator(self):
+        arm = {'stored': 1, 'leak': 9, 'antileak': 0, 'tie': 5, 'none': 5, 'n': 20}
+        assert tes.secondary_verdict(arm) == 'leak'                  # 9 of 10 single-window answers
+        assert tes.c_verdict(arm) == 'split'                         # 9 of all 20: the original rule
+        assert tes.secondary_verdict(dict(arm, stored=2)) == 'split'  # 9 of 11
+        assert tes.secondary_verdict({'stored': 0, 'leak': 0, 'antileak': 0}) == 'no data'
+
+    def test_score_redraw_reads_the_primary_contrast_through_ties(self):
+        """A stored=leak tie is a leak sheet, a stored=antileak tie an antileak one, and a leak=antileak
+        tie neither; the by-direction split follows T's sign."""
+        o = ['leak', 'stored', 'antileak']
+        key = {t: {'order': o, 'era_arm': 'x', 'T_deg': T} for t, T in
+               (('a', 5.0), ('b', -5.0), ('c', 5.0), ('d', -5.0), ('e', 5.0), ('f', 5.0))}
+        j = tes.score_redraw({'a': 'A', 'b': 'A=B', 'c': 'A=C', 'd': 'B=C', 'e': 'none', 'f': 'C'}, key)
+        a = j['arms']['x']
+        assert a['leak_vs_antileak']['leak'] == 2 and a['leak_vs_antileak']['antileak'] == 2
+        assert (a['stored'], a['leak'], a['antileak'], a['tie'], a['none']) == (0, 1, 1, 3, 1)
+        assert a['single_window'] == 2 and a['share_of_single_leak'] == pytest.approx(0.5)
+        assert j['by_direction']['leak_above'] == {'n': 4, 'leak': 1, 'antileak': 1,
+                                                   'leak_vs_antileak_p': pytest.approx(0.75)}
+        assert j['by_direction']['leak_below']['leak'] == 1 and j['by_direction']['leak_below']['antileak'] == 1
+        assert j['leak_vs_antileak']['p_one_sided'] == pytest.approx(tes.sign_test(2, 2)['p_one_sided'])
+
+    def test_the_note_sensitivity_replaces_only_a_recorded_none(self):
+        o = ['leak', 'stored', 'antileak']
+        key = {t: {'order': o, 'era_arm': 'x', 'T_deg': 5.0} for t in 'abc'}
+        s = tes.note_named_ties_sensitivity({'a': 'none', 'b': 'C', 'c': 'none'}, key,
+                                            ties={'a': 'A=B', 'b': 'A=B', 'z': 'A=B'})
+        assert s['n_replaced'] == 1                                   # 'b' was answered; 'z' is not a sheet
+        assert s['leak_vs_antileak']['leak'] == 1 and s['leak_vs_antileak']['antileak'] == 1
+        assert s['tie_pairs'] == {'x': {'leak=stored': 1}} and 'POST HOC' in s['status']
+
+    def test_score_redraw_pools_arms_for_the_primary_test(self):
+        o = ['antileak', 'leak', 'stored']
+        key = {'a': {'order': o, 'era_arm': 'p', 'T_deg': 4.0}, 'b': {'order': o, 'era_arm': 'q', 'T_deg': -4.0}}
+        j = tes.score_redraw({'a': 'B', 'b': 'B'}, key)
+        assert j['leak_vs_antileak']['leak'] == 2 and j['leak_vs_antileak']['p_one_sided'] == pytest.approx(0.25)
+
     def test_sign_test_is_exact(self):
         assert tes.sign_test(37, 0)['p_one_sided'] == pytest.approx(0.5 ** 37)
         assert tes.sign_test(5, 5)['p_one_sided'] > 0.5
@@ -713,7 +751,8 @@ def test_every_hashed_input_is_never_line_ending_normalised(summary):
     that rewrote line endings (core.autocrlf=true, Git for Windows' default install choice) would fail
     the regeneration test. Every one must be `-text` (#158 final review: the photometa census was not)."""
     paths = ['reports/data/' + v['file'] for v in summary['generated_from'].values()]
-    paths += ['reports/data/2026-09-26-tilt-adjudication/sealed/salt.txt']
+    paths += ['reports/data/%s/sealed/salt.txt' % f for f in (
+        '2026-09-26-tilt-adjudication', '2026-09-29-tilt-adjudication-jm', '2026-09-30-tilt-adjudication-jm-b2')]
     try:
         r = subprocess.run(['git', 'check-attr', 'text', '--'] + paths, cwd=REPO_ROOT,
                            capture_output=True, text=True, check=True)

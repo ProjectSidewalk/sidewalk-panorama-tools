@@ -8,10 +8,13 @@ Scripts: `reports/scripts/tilt_geometry.py`, `tilt_pose_scan.py`, `tilt_frame.py
 measured is transcribed from it (figures cited from other reports and issues are citations, not
 measurements), and `tests/test_tilt_error_study.py` fails if one is not, matching each in
 the words or table row it is quoted in. `tilt_error_study.py analyze` rebuilds the artifact from
-committed data alone, and a test re-runs it.
+committed data alone, and a test re-runs it. The design this study was built from is
+[`plans/2026-09-26-issue-54-tilt-plan.md`](plans/2026-09-26-issue-54-tilt-plan.md), committed as a record.
+Where the study departs from it, the departure is listed under "Deviations from the plan".
 
-**Jon: if you have not adjudicated endpoint C yet, read only "How to adjudicate" under C, and nothing
-after it, until your verdicts are committed.**
+**Endpoint C was adjudicated by Jon on 2026-09-29**, on a redraw from labels the two lead labellers vouch
+for. Its rules were fixed before either key was opened, in
+[`data/2026-09-29-tilt-adjudication-jm/DECISIONS.md`](data/2026-09-29-tilt-adjudication-jm/DECISIONS.md).
 
 ## The question
 
@@ -83,25 +86,49 @@ panos (on disk here), split by scrape era; on the store, 150 random plus the 150
 panos per scrape era. A JPEG with an `.xml` beside it is a 2019-22 stitch and is posed by that XML, never
 by a 2026 npz that may describe a re-render.
 
-**C - the crop.** `tilt_adjudicate.py` draws labels by the live measurable rule
+**C - the crop.** The instrument, in both of its draws: `tilt_adjudicate.py` draws labels by the live measurable rule
 (`rawlabels.study_measurable`, never the corpus CSV's stale column) from the four placement types, with a
 pose matching the scrape era, stored dims equal to the JPEG's, and |T| >= 4 deg. It cuts the production v2
 window (`crop_window_width` + `compute_crop_box` + `extract_crop`) three times: at the stored `pano_y`, at
 the rig pixel `pano_y - T h/180` ("leak"), and at `pano_y + T h/180` ("antileak"). All three are the same
 size, and each carries a ring where the label would sit. They are shown side by side as A/B/C in a random
-order. A judge answers which ring sits on the labelled feature, or `none`. The order lives only in
-`sealed/key.json`, which the `next`/`record` commands never read and which they refuse to run beside
-(any key file outside `sealed/` stops them); the working folder carries a salted hash of it instead.
-The corpus gave 19 eligible legacy+mid labels and 2 post179 ones, so each arm was topped up to 24 from
-Seattle's store sample (2,716 and 258 eligible there; 5 and 22 taken), cut on the store host by
-`tilt_remote_crop.py` from boxes computed here, and pinned pixel-identical to a local cut by a test.
+order. The order lives only in `sealed/key.json`, which the `next`/`record` commands never read and which
+they refuse to run beside (any key file outside `sealed/` stops them); the working folder carries a salted
+hash of it instead.
+
+*The first draw (superseded).* The corpus gave 19 eligible legacy+mid labels and 2 post179 ones, so each
+arm was topped up to 24 from Seattle's store sample (2,716 and 258 eligible there; 5 and 22 taken), cut on
+the store host by `tilt_remote_crop.py` from boxes computed here, and pinned pixel-identical to a local cut
+by a test. Nothing in that draw filtered on validation. Seven sheets in, Jon found labels he would have
+voted down, so it was replaced. Its seven verdicts are kept as a pilot, and only the machine judge's pass
+over it is reported below.
+
+*The redraw (decision-bearing).* `tilt_jm_pool.py` builds a pool of labels made by `jonfroehlich` or
+`mikey`, or validated Agree by either, with no Disagree from either, across the GSV deployments: a pool of
+70,422 labels, posed by a store scan of 45,687 panos. It then draws 6 labels per type per era arm, one
+label per pano. **Batch 1** is at |T| >= 4 deg with at most 4 labels per city per arm: 2,333 legacy+mid
+and 263 post179 labels were eligible at |T| >= 4 deg. **Batch 2** is at |T| >= 6 deg, excludes batch 1's
+panos, and allows at most 2 labels per city per (arm, type), with a fill pass. Once batch 1 was excluded,
+legacy+mid had 114-251 eligible panos per type and post179 had 9-15 eligible panos per type. A rebuild of
+batch 1 from the committed pool and scan reproduces its labels and crop boxes exactly. Jon judged every
+sheet on a local page (`tilt_adjudicate_ui.py`) that writes only through `record`, asking for **the ring
+closest to where he would have marked the feature**. The page showed the label type as the feature to find,
+offered ties (`A=B`, `A=C`, `B=C`) and `none` (all three off), and took an optional note.
 
 **By design, the stored window's content always sits between the other two** (all three share `pano_x`,
 centred at `y`, `y - s` and `y + s`), so a judge can pick out "stored" by content. The two outer windows
 cannot be told apart without knowing the sign of T, which nothing on a sheet shows. So the contrast that
 is blind even to a judge who knows the hypothesis is **leak against antileak**; stored against shifted is
-blind only to a judge who does not. A follow-up instrument should use asymmetric decoys (for example
-offsets of s and 2s, or a random second offset) so that the middle window is not always the stored one.
+blind only to a judge who does not. Hence the redraw's rules (DECISIONS.md, fixed before unblinding):
+- **Primary:** leak against antileak, a one-sided exact sign test over every sheet whose choice holds
+  exactly one of the two. A stored=leak tie counts for leak, and a leak=antileak tie for neither.
+- **Secondary:** a window is confirmed at >= 90% of the single-window answers, with ties and `none`
+  reported as their own buckets.
+- **The plan's rule**, >= 90% of *all* n with `none` in the denominator, is still reported, labelled as
+  the original rule. It became unreachable once `none` passed 10% of an arm.
+
+A follow-up instrument should use asymmetric decoys (for example offsets of s and 2s, or a random second
+offset), so that the middle window is not always the stored one and the shift's size can be read.
 
 ## Results
 
@@ -153,25 +180,67 @@ pinned by a test.
 
 ![two posed corpus panos](figures/2026-09-26-tilt-horizon-examples.jpg)
 
-### C: the crop endpoint (Jon's adjudication pending)
+### C: the leak window beats its mirror 79 : 0; post179 confirmed, legacy+mid short of the secondary rule
 
-**The decision-bearing adjudication is Jon's and has not happened yet.** Jon: read the "How to
-adjudicate" block and stop there; everything after it in this report is results you should not see
-before judging.
+**Jon's adjudication, on the redraw.** 96 sheets (batch 1 and batch 2), all judged, verdicts committed
+before either key was opened:
 
-**How to adjudicate** (about 30 minutes, from the repo root; nothing prints the key). The same five
-steps are in the folder's own [`README.md`](data/2026-09-26-tilt-adjudication/README.md):
+| batch | arm | n | stored / leak / antileak / tie / none | leak : antileak | p (one-sided) | leak share of single-window answers | secondary (>= 90% of single) | original rule (>= 90% of all n) |
+|---|---|---|---|---|---|---|---|---|
+| batch 1 | legacy+mid | 24 | 2 / 17 / 0 / 0 / 5 | 17 : 0 | 7.6e-06 | 89% | split | split |
+| batch 1 | post179 | 24 | 1 / 20 / 0 / 0 / 3 | 20 : 0 | 9.5e-07 | 95% | leak | split |
+| batch 2 | legacy+mid | 24 | 5 / 19 / 0 / 0 / 0 | 19 : 0 | 1.9e-06 | 79% | split | split |
+| batch 2 | post179 | 24 | 0 / 23 / 0 / 0 / 1 | 23 : 0 | 1.2e-07 | 100% | leak | leak |
+| pooled | legacy+mid | 48 | 7 / 36 / 0 / 0 / 5 | 36 : 0 | 1.5e-11 | 84% | split | split |
+| pooled | post179 | 48 | 1 / 43 / 0 / 0 / 4 | 43 : 0 | 1.1e-13 | 98% | leak | split |
 
-    python reports/scripts/tilt_adjudicate.py next   --out reports/data/2026-09-26-tilt-adjudication --judge jon
-    # open the printed sheet; which ring sits on the labelled feature? then
-    python reports/scripts/tilt_adjudicate.py record --out reports/data/2026-09-26-tilt-adjudication --judge jon <token> A|B|C|none
-    # repeat until `next` prints "all judged"; commit verdicts_jon.jsonl; then re-run tilt_error_study.py analyze
+**Primary: leak 79 : antileak 0, one-sided sign test p = 1.7e-24.** Every sheet on which one of the two
+shifted windows beat the other went to the window shifted by T in the predicted direction. The mirror
+shift, the same distance the other way, never won. By where the leak window sits (leak window above the
+stored one: leak 43, antileak 0 of 51 sheets; below it: leak 36, antileak 0 of 45), a preference for rings
+high or low in the frame cannot produce the result, and the antileak window never winning also confirms
+F1's sign. Over all sheets: stored 8, leak 79, antileak 0, tie 0, none 9 of 96 sheets.
 
-Do not open `sealed/` (the key and the machine's verdicts), the study JSON, the rest of this report,
-`reports/README.md`, `docs/cropper.md` or CLAUDE.md's tilt subsection (the last three quote the
-machine's result) until you have committed your verdicts. One sheet, exactly as a judge sees it:
+**Secondary: post179 is confirmed, legacy+mid is not.** The leak window takes 98% of the post179 arm's
+single-window answers, pooled. In legacy+mid it takes 84%, below the 90% line, because the stored window
+won 7 of those sheets. This report does not explain the gap. One candidate is that legacy+mid panos are
+mostly 2019 XML-era stitches posed by their `.xml`, whose tilt differs from the current npz pose by more
+than 1 deg on 6.5% of the overlap (S2); another is that the true shift is smaller than T. The original
+all-n rule reads split for three of the four batch-arms, as expected once `none` answers pass 10% of an arm.
+
+**Jon's notes.** 12 of batch 1's sheets and 1 of batch 2's carry a note. Five of his `none` answers are
+ties recorded as `none`: their notes name two rings as equally plausible ("Both B and C clearly mark the
+trash can"). They are scored as `none`, per the rules. **Post hoc only** (decided after unblinding, never
+the result), the 5 `none` answers whose note names two rings, read as those ties, give leak 84 : antileak 0.
+Every one of the five named pairs is stored and leak.
+
+**What C establishes, and what it does not.**
+- **It establishes that the stored `pano_y` is off in the direction and at the scale the rig tilt
+  predicts.** The error exists for GSV labels, its sign is the one F1 measured, and it survives a judge
+  who knows the hypothesis, because only the leak-against-antileak contrast is read as decisive.
+- **It does not measure the size of the shift (beta).** Every shifted window moves by the full T. Any beta
+  well above 0.5 would pick the leak window over both the stored one and the mirror, so C cannot tell
+  full T from 0.6 T. The stored window's 7 legacy+mid wins leave room for beta < 1 there. The follow-up
+  is an asymmetric-decoy batch at 0.5 T, 1.0 T and 1.5 T.
+- **It has one human judge.** That judge is Jon, who knew the hypothesis, which is why leak against
+  antileak is primary.
+- **The pool is vouched-for GSV labels only.** It contains no Mapillary or Panoramax labels (#190).
+  Batch 2 leans on Seattle (17 of 48), because at |T| >= 6 deg the supply sits in a few cities.
+- **The sheets were checked end to end.** Batch 1's key and all 48 sheets rebuild byte-identical from
+  the sealed selection. By coincidence, its per-arm counts (2 / 17 / 0 / 5 and 1 / 20 / 0 / 3) equal the
+  machine judge's on the first draw. The two draws share no label and no token, and the letter answers
+  differ; both were recomputed from the raw files.
+
+The exact rig pixel (`tilt_geometry.rig_pixel_from_gravity_pixel`) moves in x as well as y: over the 96
+redrawn labels by up to 206 px (6.7% of the window width; median 1.6%), and the first-order y is off by at
+most 0.9% of the window height. That works against choosing leak, so it cannot have produced the result.
+It matters for a correction (below).
+
+One sheet, exactly as the judge saw it (first draw; the redraw's sheets have the same layout):
 
 ![one adjudication sheet, as the judge sees it](data/2026-09-26-tilt-adjudication/sheets/t082917fa83.jpg)
+
+#### Superseded first draw: machine judge only, leak 37, antileak 0
 
 **On the blind.** The plan said to commit the key only after adjudication. The first version of this PR
 committed it beside the sheets, copied it into a second JSON, and printed the key and the machine verdict
@@ -180,16 +249,11 @@ the hash's salt), the figure is gone, and those 8 sheets are listed in the artif
 `exposed_in_figure` and scored apart for every judge. The panel order is still derivable by re-running
 `build_sheets` from the public seed; the blind protects a judge who follows the README.
 
-**Which contrast decides.** Jon's verdict is read on the blind leak-vs-antileak contrast, with the
-pre-set stored/shifted rule reported alongside, because the middle window is identifiable by content:
-the stored window always sits between the other two, and Jon knows the hypothesis.
-
-#### Preliminary machine pass: split by the pre-set rule; leak 37, antileak 0
-
-**Machine judge only; Jon's adjudication is pending and is the decision-bearing one.** The verdicts
-below are a first pass by the implementing model (claude-opus-5-5), recorded through the same CLI and
-sealed as `sealed/verdicts_claude-opus-5-5.jsonl`. That model knew the hypothesis, so only its
-leak-against-antileak contrast is blind (see Method).
+**Superseded, and not decision-bearing.** The verdicts below are a first pass over the first draw by the
+implementing model (claude-opus-5-5), recorded through the same CLI and sealed as
+`sealed/verdicts_claude-opus-5-5.jsonl`. That model knew the hypothesis, so only its leak-against-antileak
+contrast is blind (see Method). It is kept because it is independent of Jon's pass: different labels,
+a different judge, and the same direction.
 
 **Leak against antileak: leak 37, antileak 0, one-sided sign test p = 7.3e-12.** By where the leak
 window sits: above the stored one: leak 16, antileak 0 of 23 sheets; below it: leak 21, antileak 0 of 25
@@ -214,12 +278,8 @@ served at click time, which may be a later render than the stored pixels (S2 sho
 for some panos). They are listed per label in the artifact (`post179_xml_posed_tokens`); without them the
 post179 arm reads 0 / 17 / 0 / 3 of 20.
 
-The forced choice measures a direction and a rate, not a slope: any b between roughly 0.5 and 1.5 would
-pick the leak window. The leak window also shifts y only, while the exact rig pixel
-(`tilt_geometry.rig_pixel_from_gravity_pixel`) moves in x as well: over the 48 drawn labels by up to
-163 px (6.8% of the window width; median 1.6%), and the first-order y is off by at most 0.6% of the
-window height. That works against choosing leak, so it cannot have produced the result; it matters for
-a correction (below).
+Over the first draw's 48 labels, the exact rig pixel's x term reaches up to 163 px (6.8% of the window
+width; median 1.6%), and the first-order y is off by at most 0.6% of the window height.
 
 ### S1: the tilt prior, by scrape era (Seattle sample)
 
@@ -263,14 +323,21 @@ decision-bearing.
 
 ## What follows
 
-Nothing here changes CropRunner. What follows depends on Jon's verdict:
+Nothing here changes CropRunner. C establishes the leak's existence and sign, not its size, so the
+recommended order is:
 
-* **A correction, if C is confirmed**, would move the crop centre to the rig pixel with
-  `tilt_geometry.rig_pixel_from_gravity_pixel` on **both** axes, pose from the `.npz` or `.xml` beside the
-  pano, behind a flag and off by default. The y-only sketch `pano_y_rig = pano_y - T(b) h/180` is its
-  first-order y term; the x term above is first order too away from the horizon.
-* **Where it lives** is Jon's decision (plan section 9.1): in CropRunner here, or in Planning#6's shared
-  cropping library, which every consumer below would then inherit.
+* **Measure beta first.** Run an asymmetric-decoy batch with windows at 0.5 T, 1.0 T and 1.5 T. It uses the
+  same pool, scan and page, and costs about 30 minutes of judging. It says whether a correction should
+  apply all of T, and it is the number the consumers below need before regenerating anything.
+* **Then a correction**, in its own PR. It would move the crop centre to the rig pixel with
+  `tilt_geometry.rig_pixel_from_gravity_pixel` on **both** axes, taking the pose from the `.npz` or `.xml`
+  beside the pano, behind a flag and off by default until beta is known. A pano with neither file cannot
+  be corrected and should be flagged, not guessed. The y-only sketch `pano_y_rig = pano_y - T(b) h/180`
+  is its first-order y term; the x term above is first order too away from the horizon.
+* **Where it lives** is still Jon's decision (plan section 9.1). The recommendation is CropRunner here,
+  rather than waiting for Planning#6's shared cropping library, because three consumers are affected now.
+* **At the source:** the click-to-pano mapping in SidewalkWebpage (#4784), so that new labels stop
+  carrying the leak, after #5174 is reconciled (Prior evidence).
 * **The #32 coupling.** `predict_crop_size` sizes the v2 window from `pano_y` (its depression), and the
   sizing constants were fit on stored `pano_y`. A y-correction therefore changes window size as well as
   centre, and the sizing fit would need re-running on corrected coordinates.
@@ -282,9 +349,10 @@ Nothing here changes CropRunner. What follows depends on Jon's verdict:
   against the consumer report's ~10% practical and 19-42% hard ceilings. Regeneration question as above.
 * **RampNet stage one**: at the p90 the ceiling shift is 7-9 of its click sigmas (S3), far over the
   consumer report's 0.5 deg target.
-* **Follow-up issues to file** (not filed by this PR): the correction itself, if confirmed; ingesting
-  the legacy `.xml` tilt as a first-class artifact (it is the only pose for dead panos); a fleet-wide
-  pose scan (this study is Seattle plus the corpus); and an asymmetric-decoy version of the C instrument.
+* **Follow-up issues:** the beta batch and the correction are filed together after this PR. Still to
+  file: ingesting the legacy `.xml` tilt as a first-class artifact (it is the only pose for dead panos),
+  and a fleet-wide pose scan. The redraw's scan covered the vouched pool's 45,687 panos across the GSV
+  deployments, but only those.
 
 ## Prior evidence
 
@@ -295,8 +363,8 @@ Nothing here changes CropRunner. What follows depends on Jon's verdict:
   behind it. **Whether #5174 tests this mechanism could not be checked**: the issue names neither the
   city nor the panos of its nine labels (the ids in its comments are four other labels, at |camera_pitch|
   1.2-3.1 deg), and PS stores no roll, so T(b) cannot be computed for them offline. If any of the nine sat
-  near b = 0 or 180 deg, #5174 contradicts C's preliminary pass, and the two should be reconciled before
-  a correction is filed.
+  near b = 0 or 180 deg, #5174 contradicts C, and the two should be reconciled before a correction lands
+  at the source.
 
 ## Wrong turns
 
@@ -311,6 +379,8 @@ Nothing here changes CropRunner. What follows depends on Jon's verdict:
 * The corpus alone yielded 21 labels at |T| >= 4 deg, only 2 of them post179; each arm was topped up to 24 from the Seattle store sample at the same threshold instead of widening to 3 deg.
 * The first version committed the adjudication key beside the sheets, copied it into a second JSON, and printed it for 8 sheets in a report figure above the judging instructions (#158 review). The key is sealed now and those 8 sheets are scored apart.
 * The first version headlined C as "the labelled feature sits at the rig pixel". By the pre-set rule both arms are split, and the one contrast a judge who knows the hypothesis cannot steer is leak against antileak (#158 review).
+* The first C draw had no validation filter: a third of its pool was crowd-incorrect, unvalidated or disagreed with by a lead labeller, and seven sheets in the judge found labels he would have voted down. C was redrawn from a lead-labeller-vouched pool; the first draw and its seven verdicts are kept as a superseded pilot.
+* The judging question first asked which ring "sits on" the feature, which on a large or linear referent has no answer; it became the ring closest to where the judge would have marked it, and ties became answerable, after the first redrawn batch showed 12 of 48 `none`.
 
 ## Deviations from the plan
 
@@ -323,6 +393,9 @@ Each with what was known when it was decided.
 * The plan treated the +2 deg warp as a calibration that recovers the slope. It is kept, but its calibrated values are reported as estimates with the shortfall open, and "not levelled" rests on the raw slopes.
 * #54 asked for the #4784 signature directly, a sinusoid in bearing with amplitude set by the tilt; the plan replaced it with the forced choice at |T| >= 4 deg (plan section 1.3). The by-direction split is this report's partial evidence for the sign flip with bearing.
 * The plan said to commit the adjudication key only after adjudication. It was committed early, and is now sealed with a salted hash in its place.
+* C's decision-bearing sheets are a redraw, not the planned corpus draw: 96 labels from a pool the two lead labellers vouch for, in two batches (|T| >= 4 deg, then >= 6 deg). Decided 2026-09-29 after seven pilot verdicts on the first draw and before either redraw key was opened.
+* The plan's C rule (>= 90% of all n, none included) could not be met once 12 of 48 answers were none. It was replaced before unblinding by the leak-vs-antileak sign test as primary and >= 90% of single-window answers as secondary; the original rule is still reported.
+* Batch 2's spread rule is 2 per city per (arm, type) with a fill pass, not batch 1's 4 per city per arm: at |T| >= 6 deg the supply sits in a few cities and the flat cap left strata short. Decided on eligibility counts before any batch 2 sheet was cut.
 
 ## Consequences for older reports
 
@@ -338,14 +411,15 @@ Each with what was known when it was decided.
   the cbk tiles this repo stitches, not the images streetlevel fetches for the auto-labeler; whether the
   two come from the same tile endpoint, and so whether the finding reaches the auto-labeler's images, is
   unverified here.
-* SidewalkWebpage#4784's mechanism is consistent with C's preliminary pass (split by the pre-set rule;
-  leak 37, antileak 0), pending Jon's adjudication; see Prior evidence for #5174.
-* label-latlng-estimation: a depression angle read off `pano_y` is rig-relative, off by T(b), if C holds.
+* SidewalkWebpage#4784's mechanism is what C measured for GSV labels: the stored `pano_y` is off towards
+  the rig pixel (see Prior evidence for #5174).
+* label-latlng-estimation: a depression angle read off `pano_y` is rig-relative, off by beta times T(b).
 * RampNet stage one: the S3 shifts are 7-9 of its click sigmas at the p90, at b = 1.
 
 ## Open questions
 
-* C's decision-bearing verdict (Jon), and with it everything under "What follows".
+* The size of the leak (beta), which C cannot give; see "What follows".
+* Why legacy+mid's stored window still wins 7 of 48 sheets: XML pose error, a smaller beta, or both.
 * Why the calibrated F2 slopes fall short of 1 (see F2).
 * Mapillary: Richmond's labels are human, but whether PS's Mapillary viewer renders levelled is a
   SidewalkWebpage fact this repo cannot check offline; the Pannellum wrapper ignoring `cameraPitch`

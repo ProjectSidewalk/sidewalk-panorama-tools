@@ -50,3 +50,18 @@ property of the design: the tilt shift is small beside a large or linear referen
    pooled.
 5. **Comments.** The judge may attach a free-text note to any sheet (`record --comment`). Notes are kept with
    the verdict and committed.
+
+## 3. Unblinding (2026-09-29)
+
+**What was known.** Jon finished both batches: he went back over batch 1 and gave a lean wherever one ring
+was even slightly more plausible, then judged all of batch 2. His verdicts and notes were committed as
+`2a814f1` before either key was opened. He recorded no ties. 13 sheets carry a note. Five of his `none`
+answers name two rings as equally plausible in their note ("Both B and C clearly mark the trash can"), which
+are ties recorded as `none`. Several of his picks note a weak lean ("Slight lean towards C").
+
+**Then:** the two keys were opened and the batches scored by rules 2.2 and 2.3 above, unchanged, so those
+five sheets count as `none`. Reading them as the ties their notes name is **post hoc**: it was decided after
+the notes were read and after unblinding. It is reported only as a sensitivity (`NOTE_NAMED_TIES` in
+`tilt_error_study.py`) and never replaces the scored result. The result, and every number quoted from it, is
+in the study artifact (`c_redraw`) and the report's C section. The first draw's machine-judge verdicts stay
+in its `sealed/` folder, reported as a superseded first draw.

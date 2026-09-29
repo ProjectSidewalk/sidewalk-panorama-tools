@@ -289,16 +289,22 @@ plus the referenced HF dataset must reproduce every number in `reports/`.
   points below the horizon, `roll > 0` = left side up**, so a gravity-horizontal direction sits at rig elevation
   `+T(b)`, `T(b) = pitch cos b + roll sin b`, `b = (pano_x / w) * 360 - 180`. The #54 plan had both the axis and
   the sign backwards; don't re-derive either, call the module.
-- **Whether `pano_y` is pixel-true for a tilted pano is under test, pending Jon's adjudication.** The stored
-  tiles are not gravity-levelled in either scrape era (F2: every arm's raw lean slope excludes 0; the calibrated
-  slopes are estimates, 0.634-1.098, and why most read below 1 is open). Endpoint C, preliminary and machine-judged: **split by the pre-set
-  rule; leak 37, antileak 0**. That machine judge knew the hypothesis, and the stored window is identifiable by
-  content (it always sits between the other two), so only leak-vs-antileak is blind. Jon's decision-bearing
-  adjudication (`tilt_adjudicate.py`) is pending, and no correction has landed in CropRunner. Don't write one
-  before it does.
-- **The adjudication key is sealed.** `reports/data/2026-09-26-tilt-adjudication/sealed/` holds the key and the
-  machine verdicts; the working folder holds only `key.sha256`. `next`/`record` refuse to run while a key file sits
-  outside `sealed/`. Never move the key back beside the sheets, and never caption a figure with it.
+- **The stored `pano_y` of a tilted GSV pano is NOT pixel-true: it is off towards the rig pixel
+  (adjudicated 2026-09-29).** The stored tiles are not gravity-levelled in either scrape era (F2: every arm's
+  raw lean slope excludes 0; the calibrated slopes are estimates, 0.634-1.098). Endpoint C, Jon's blind forced
+  choice on 96 lead-labeller-vouched labels: the window shifted by T in the predicted direction beat its
+  mirror **79 : 0** (p = 1.7e-24). post179 is confirmed (98% of single-window answers); legacy+mid is not
+  (84%). **C gives the direction, not the size**: every shifted window moves by the full T, so beta is
+  unmeasured. Measure it (the asymmetric-decoy batch) before a correction applies all of T. No correction has
+  landed in CropRunner yet. When one does, it moves **both** axes via `tilt_geometry.rig_pixel_from_gravity_pixel`,
+  taking the pose from the pano's own `.npz`/`.xml`.
+- **The C folders are sealed, and the redraw is the decision-bearing one.** `reports/data/2026-09-29-tilt-adjudication-jm/`
+  and `2026-09-30-tilt-adjudication-jm-b2/` hold Jon's verdicts, his notes, and a `sealed/` key and selection;
+  `DECISIONS.md` fixed the scoring before unblinding. The first draw (`2026-09-26-tilt-adjudication/`) is
+  superseded (no validation filter); its machine-judge pass is kept, and Jon's 7 verdicts on it are a pilot
+  (`pilot-*.jsonl`, deliberately outside the analysis's `verdicts_*` glob). `next`/`record` refuse to run while
+  a key file sits outside `sealed/`. Never move a key beside its sheets, and never caption a figure with one.
+  `tilt_jm_pool.py` rebuilds the redraw from committed data, and `tilt_adjudicate_ui.py` is the judging page.
 - **The `.xml` files beside 2019-22 scrapes carry legacy tilt**, for dead panos too.
   `tilt_geometry.xml_tilt_to_pitch_roll` is the one conversion (fitted on 3,594 panos with both files, median
   residual about 0.1 deg). Pose a JPEG by the file of its own scrape era: an `.xml` JPEG is a 2019-22 stitch, and a 2026

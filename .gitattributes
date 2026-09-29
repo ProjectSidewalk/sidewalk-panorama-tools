@@ -4,5 +4,8 @@
 # generated_from input and the salt against `git check-attr`.
 reports/data/2026-09-26-tilt-* -text
 reports/data/2026-09-26-tilt-adjudication/** -text
+reports/data/2026-09-29-tilt-* -text
+reports/data/2026-09-29-tilt-adjudication-jm/** -text
+reports/data/2026-09-30-tilt-adjudication-jm-b2/** -text
 reports/data/2026-08-09-photometa-census.json -text
 reports/data/2026-08-12-crop-corpus-gsv.csv.gz -text

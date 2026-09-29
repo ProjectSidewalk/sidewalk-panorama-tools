@@ -75,6 +75,16 @@ BANDS = ('<5', '5-15', '15-30', '>30')
 F1_RIG, F1_GRAVITY = (0.9, 1.1), (-0.1, 0.1)
 F2_RIG, F2_GRAVITY = (0.7, 1.3), (-0.3, 0.3)
 C_RULE_SHARE = 0.9        # plan section 1.2: >= 90% of ALL n (none included) for one window, else 'split'
+SECONDARY_SHARE = 0.9     # the redraw's secondary rule: >= 90% of the single-window answers (DECISIONS.md)
+# The decision-bearing C sheets since 2026-09-29: the redraw from the lead-labeller-vouched pool
+# (tilt_jm_pool.py). The first draw (ADJ_DIR) is kept and reported as superseded.
+REDRAW_BATCHES = (('batch1', '2026-09-29-tilt-adjudication-jm', 4.0),
+                  ('batch2', '2026-09-30-tilt-adjudication-jm-b2', 6.0))
+REDRAW_DECISIONS = '2026-09-29-tilt-adjudication-jm/DECISIONS.md'
+# POST HOC (DECISIONS.md section 3): batch 1 `none` answers whose note names two rings as equally
+# plausible, read as the tie the note names. Decided after unblinding; a sensitivity, never the result.
+NOTE_NAMED_TIES = {'t4b6681000c': 'B=C', 't5c1367a0f5': 'B=C', 't80327bc1d2': 'A=B',
+                   'td6afd8a9cc': 'A=C', 'te20c3ad8c6': 'B=C'}
 RAMPNET_SIGMA_PX = 12.0      # RampNet's stage-one click sigma on a 4096-high pano (issue #54 comment)
 RAMPNET_HEIGHT_PX = 4096.0
 TAGGER_WINDOW_PX = 640.0     # sidewalk-tagger-ai: a fixed 640 x 640 pixel crop (2026-08-09 consumer-requirements report)
@@ -382,6 +392,69 @@ def c_verdict(arm):
     return 'split'
 
 
+def secondary_verdict(arm):
+    """The redraw's secondary rule (DECISIONS.md, fixed before either key was opened): a window is
+    confirmed when it takes >= SECONDARY_SHARE of the single-window answers; ties and `none` are
+    reported beside it, never in its denominator."""
+    single = sum(arm[name] for name in tilt_adjudicate.WINDOW_NAMES)
+    if not single:
+        return 'no data'
+    for name in tilt_adjudicate.WINDOW_NAMES:
+        if arm[name] / single >= SECONDARY_SHARE:
+            return name
+    return 'split'
+
+
+def note_named_ties_sensitivity(verdicts, key, ties=NOTE_NAMED_TIES):
+    """POST HOC: the pooled primary contrast with each `none` in `ties` read as the tie its note names.
+    Only a recorded `none` is replaced; a token whose verdict is anything else is left as recorded."""
+    replaced = {t: c for t, c in ties.items() if verdicts.get(t) == 'none'}
+    j = score_redraw(dict(verdicts, **replaced), key)
+    return {'status': 'POST HOC sensitivity, decided after unblinding (DECISIONS.md section 3); not the result',
+            'n_replaced': len(replaced), 'leak_vs_antileak': j['leak_vs_antileak'],
+            'tie_pairs': {arm: a['tie_pairs'] for arm, a in sorted(j['arms'].items())}}
+
+
+def score_redraw(verdicts, key):
+    """One judge on the redrawn C sheets, by DECISIONS.md: per era arm the five buckets, the primary
+    leak-vs-antileak sign test over score()'s pairwise counts (a stored=leak tie is a leak sheet, a
+    leak=antileak tie is neither), the secondary verdict, and the original all-n rule labelled as such;
+    then the pooled sign test and the same contrast split by whether the leak window sits above the
+    stored one (T > 0) or below it."""
+    j = tilt_adjudicate.score(verdicts, key)
+    total = {'leak': 0, 'antileak': 0}
+    for a in j['arms'].values():
+        a.pop('none_tokens', None)
+        single = sum(a[name] for name in tilt_adjudicate.WINDOW_NAMES)
+        a['single_window'] = single
+        for name in tilt_adjudicate.WINDOW_NAMES:
+            a['share_of_single_' + name] = a[name] / single if single else None
+        a['secondary_verdict'] = secondary_verdict(a)
+        a['original_rule_verdict'] = c_verdict(a)
+        lead, anti = a['pairwise'].get('leak>antileak', 0), a['pairwise'].get('antileak>leak', 0)
+        a['leak_vs_antileak'] = sign_test(lead, anti)
+        total['leak'] += lead
+        total['antileak'] += anti
+        for k in list(a):
+            if isinstance(a[k], float):
+                a[k] = num(a[k])
+    j['leak_vs_antileak'] = sign_test(total['leak'], total['antileak'])
+    by_dir = {d: {'n': 0, 'leak': 0, 'antileak': 0} for d in ('leak_above', 'leak_below')}
+    for token, choice in verdicts.items():
+        k = key[token]
+        d = by_dir['leak_above' if k['T_deg'] > 0 else 'leak_below']
+        d['n'] += 1
+        picked = tilt_adjudicate.chosen_windows(choice, k['order'])
+        if 'leak' in picked and 'antileak' not in picked:
+            d['leak'] += 1
+        elif 'antileak' in picked and 'leak' not in picked:
+            d['antileak'] += 1
+    for d in by_dir.values():
+        d['leak_vs_antileak_p'] = sign_test(d['leak'], d['antileak'])['p_one_sided']
+    j['by_direction'] = by_dir
+    return j
+
+
 # ---- S1, S2, S3 ------------------------------------------------------------------------------
 
 def tilt_prior(pose_att, dbear):
@@ -676,8 +749,46 @@ def report_numbers(s):
             continue
         out['c.%s.post179_noxml' % judge] = 'without them the post179 arm reads %d / %d / %d / %d of %d' % (
             w['stored'], w['leak'], w['antileak'], w['none'], w['n'])
+    r = s['c_redraw']
+    b1, b2 = r['batches']['batch1'], r['batches']['batch2']
+    out['c2.pool'] = 'a pool of %s labels, posed by a store scan of %s panos' % (
+        _c(b1['draw']['pool_labels']), _c(b1['draw']['scanned_panos']))
+    out['c2.b1.eligible'] = '%s legacy+mid and %d post179 labels were eligible at |T| >= 4 deg' % (
+        _c(b1['draw']['eligible_by_arm']['legacy+mid']), b1['draw']['eligible_by_arm']['post179'])
+    for arm in ('legacy+mid', 'post179'):
+        v = [n for k, n in b2['draw']['eligible_by_arm_type'].items() if k.startswith(arm + '|')]
+        out['c2.b2.eligible.' + arm] = '%s had %d-%d eligible panos per type' % (arm, min(v), max(v))
+
+    def row(label, arm, a):
+        lva = a['leak_vs_antileak']
+        return '| %s | %s | %d | %d / %d / %d / %d / %d | %d : %d | %s | %s | %s | %s |' % (
+            label, arm, a['n'], a['stored'], a['leak'], a['antileak'], a['tie'], a['none'], lva['leak'],
+            lva['antileak'], fmt(lva['p_one_sided'], '.1e'), fmt(100 * a['share_of_single_leak'], '.0f') + '%',
+            a['secondary_verdict'], a['original_rule_verdict'])
+    for label, part in (('batch 1', b1['jon']), ('batch 2', b2['jon']), ('pooled', r['pooled'])):
+        for arm, a in sorted(part['arms'].items()):
+            out['c2.row.%s.%s' % (label, arm)] = row(label, arm, a)
+    p = r['pooled']
+    tot = {k: sum(a[k] for a in p['arms'].values()) for k in ('n', 'stored', 'leak', 'antileak', 'tie', 'none')}
+    out['c2.totals'] = 'stored %d, leak %d, antileak %d, tie %d, none %d of %d sheets' % (
+        tot['stored'], tot['leak'], tot['antileak'], tot['tie'], tot['none'], tot['n'])
+    out['c2.lva'] = 'leak %d : antileak %d, one-sided sign test p = %s' % (
+        p['leak_vs_antileak']['leak'], p['leak_vs_antileak']['antileak'], fmt(p['leak_vs_antileak']['p_one_sided'], '.1e'))
+    up, dn = p['by_direction']['leak_above'], p['by_direction']['leak_below']
+    out['c2.dir'] = 'leak window above the stored one: leak %d, antileak %d of %d sheets; below it: leak %d, ' \
+                    'antileak %d of %d' % (up['leak'], up['antileak'], up['n'], dn['leak'], dn['antileak'], dn['n'])
+    out['c2.notes'] = '%d of batch 1\'s sheets and %d of batch 2\'s carry a note' % (
+        b1['n_sheets_with_a_note'], b2['n_sheets_with_a_note'])
+    ph = r['posthoc_note_named_ties']
+    out['c2.posthoc'] = 'the %d `none` answers whose note names two rings, read as those ties, give leak %d : ' \
+                        'antileak %d' % (ph['n_replaced'], ph['leak_vs_antileak']['leak'], ph['leak_vs_antileak']['antileak'])
+    rp = r['rig_pixel_vs_leak_window']
+    out['c2.xshift'] = 'over the %d redrawn labels by up to %s px (%s of the window width; median %s)' % (
+        rp['n'], fmt(rp['max_abs_dx_px'], '.0f'), _pct(rp['max_dx_fraction_of_width']),
+        _pct(rp['median_dx_fraction_of_width']))
+    out['c2.yerr'] = 'the first-order y is off by at most %s of the window height' % _pct(rp['max_dy_error_fraction_of_height'])
     s4 = s['s4_extent_gold']
-    out['s4'] = '%d pairs of a PS CurbRamp label and a RampNet gold box' % s4['n_pairs']
+    out['s4'] ='%d pairs of a PS CurbRamp label and a RampNet gold box' % s4['n_pairs']
     sp = [v for k, v in s4['by_city'].items() if k.startswith('sao-paulo')]
     out['s4.sp'] = 'whose %d gold panos carry no PS labels' % sp[0]['gold_panos']
     return out
@@ -815,7 +926,13 @@ def score_judge(verdicts, key, exposed=EXPOSED_IN_FIGURE):
         counts = {'n': 0, 'stored': 0, 'leak': 0, 'antileak': 0, 'none': 0}
         for t, c in sub.items():
             counts['n'] += 1
-            counts['none' if c == 'none' else key[t]['order']['ABC'.index(c)]] += 1
+            picked = tilt_adjudicate.chosen_windows(c, key[t]['order'])
+            if len(picked) == 1:
+                counts[next(iter(picked))] += 1
+            elif not picked:
+                counts['none'] += 1
+            else:
+                counts['tie'] = counts.get('tie', 0) + 1
         j[part] = counts
     return j
 
@@ -911,7 +1028,37 @@ def analyze(args):
                                                               if k['era_arm'] == 'post179' and k['scrape_era'] == 'xml'),
                            'rig_pixel_vs_leak_window': rig_pixel_shift_stats(adj['key']),
                            'decision_bearing_judge': 'jon',
-                           'status': status['status']}
+                           'status': status['status'],
+                           'superseded_by': 'c_redraw'}
+
+    # C, the redraw (decision-bearing): per batch, then pooled
+    batches, pooled_v, pooled_k = {}, {}, {}
+    for name, folder, min_t in REDRAW_BATCHES:
+        d = os.path.join(DATA, folder)
+        r = read_adjudication(d)
+        for path in r['files']:
+            s['generated_from']['%s/%s' % (name, os.path.relpath(path, d).replace(os.sep, '/'))] = {
+                'file': os.path.relpath(path, DATA).replace(os.sep, '/'), 'md5': md5(path)}
+        jon = r['verdicts'].get('jon', {})
+        assert not set(r['key']) & set(pooled_k), 'a token in two batches'
+        pooled_k.update(r['key'])
+        pooled_v.update(jon)
+        batches[name] = {'folder': folder, 'min_abs_t_deg': min_t, 'n_sheets': len(r['key']),
+                         'status': c_status(r['verdicts'], r['key'])['status'], 'draw': r['draw'],
+                         'jon': score_redraw(jon, r['key']),
+                         'n_sheets_with_a_note': len(tilt_adjudicate.load_comments(d, 'jon'))}
+    s['c_redraw'] = {
+        'decisions': REDRAW_DECISIONS,
+        'decision_rule': {'primary': 'leak vs antileak, one-sided exact sign test over pairwise counts',
+                          'secondary_share_of_single_window': SECONDARY_SHARE,
+                          'original_rule_share_of_all_n': C_RULE_SHARE},
+        'decision_bearing_judge': 'jon',
+        'status': ('adjudicated' if all(b['status'] == 'adjudicated' for b in batches.values())
+                   else 'in progress'),
+        'batches': batches,
+        'pooled': score_redraw(pooled_v, pooled_k),
+        'posthoc_note_named_ties': note_named_ties_sensitivity(pooled_v, pooled_k),
+        'rig_pixel_vs_leak_window': rig_pixel_shift_stats(pooled_k)}
 
     # S1-S3
     pose_att = pose[pose['pose_source'] != 'none']
@@ -959,8 +1106,13 @@ def analyze(args):
                                      'resampling_unit': 'pano (the raw fit and the calibration slopes '
                                                         'resampled together)',
                                      'keys': 'ci_*_calibrated_boot'}},
-        'adjudication_draw': {'keys': ['c_adjudication'], 'frame': 'corpus labels, live measurable rule, '
-                              'pose matching the scrape era, |T| threshold per draw'},
+        'adjudication_draw': {'keys': ['c_adjudication'], 'frame': 'SUPERSEDED first draw: corpus labels + '
+                              'Seattle store top-up, live measurable rule, pose matching the scrape era, '
+                              '|T| >= 4 deg, no validation filter'},
+        'vouched_redraw': {'keys': ['c_redraw'], 'frame': 'labels made or validated Agree by a lead labeller '
+                           '(jonfroehlich, mikey) with no Disagree from either, GSV deployments, live measurable '
+                           'rule, pose matching the scrape era; batch 1 |T| >= 4 deg, batch 2 |T| >= 6 deg '
+                           'excluding batch 1 panos'},
         'seattle_pose_sample': {'keys': ['s1_tilt_prior', 's2_xml_npz', 's3_miscentering', 's3_assumed_beta_range'],
                                 'frame': 'Seattle, seeded 1/4 shard sample, both scrape eras pooled for S3; '
                                          'S1/S3 T evaluated at corpus-label bearings (S3: per depression band)',
@@ -984,8 +1136,15 @@ def analyze(args):
             v['verdict']))
     for j, v in judges.items():
         for arm, a in v['arms'].items():
-            print('C %s %s: stored %d leak %d antileak %d none %d (%s)' % (j, arm, a['stored'], a['leak'], a['antileak'],
-                                                                        a['none'], a['verdict']))
+            print('C first draw (superseded) %s %s: stored %d leak %d antileak %d none %d (%s)' % (
+                j, arm, a['stored'], a['leak'], a['antileak'], a['none'], a['verdict']))
+    p = s['c_redraw']['pooled']
+    for arm, a in sorted(p['arms'].items()):
+        print('C redraw pooled %s: stored %d leak %d antileak %d tie %d none %d; leak>antileak %d:%d (%s)' % (
+            arm, a['stored'], a['leak'], a['antileak'], a['tie'], a['none'], a['leak_vs_antileak']['leak'],
+            a['leak_vs_antileak']['antileak'], a['secondary_verdict']))
+    print('C redraw pooled leak vs antileak %d:%d p=%s' % (
+        p['leak_vs_antileak']['leak'], p['leak_vs_antileak']['antileak'], fmt(p['leak_vs_antileak']['p_one_sided'], '.1e')))
     if args.figure_dir:
         import tilt_figures
         seattle_fac = facade_table(fac[fac['source'] == 'seattle'], pose[pose['npz_present'] == 1])
@@ -1052,6 +1211,13 @@ WRONG_TURNS = [
     'The first version headlined C as "the labelled feature sits at the rig pixel". By the pre-set rule '
     'both arms are split, and the one contrast a judge who knows the hypothesis cannot steer is leak '
     'against antileak (#158 review).',
+    'The first C draw had no validation filter: a third of its pool was crowd-incorrect, unvalidated or '
+    'disagreed with by a lead labeller, and seven sheets in the judge found labels he would have voted '
+    'down. C was redrawn from a lead-labeller-vouched pool; the first draw and its seven verdicts are kept '
+    'as a superseded pilot.',
+    'The judging question first asked which ring "sits on" the feature, which on a large or linear '
+    'referent has no answer; it became the ring closest to where the judge would have marked it, and ties '
+    'became answerable, after the first redrawn batch showed 12 of 48 `none`.',
 ]
 
 DEVIATIONS = [
@@ -1073,6 +1239,15 @@ DEVIATIONS = [
     'split is this report\'s partial evidence for the sign flip with bearing.',
     'The plan said to commit the adjudication key only after adjudication. It was committed early, '
     'and is now sealed with a salted hash in its place.',
+    'C\'s decision-bearing sheets are a redraw, not the planned corpus draw: 96 labels from a pool the '
+    'two lead labellers vouch for, in two batches (|T| >= 4 deg, then >= 6 deg). Decided 2026-09-29 after '
+    'seven pilot verdicts on the first draw and before either redraw key was opened.',
+    'The plan\'s C rule (>= 90% of all n, none included) could not be met once 12 of 48 answers were '
+    'none. It was replaced before unblinding by the leak-vs-antileak sign test as primary and >= 90% of '
+    'single-window answers as secondary; the original rule is still reported.',
+    'Batch 2\'s spread rule is 2 per city per (arm, type) with a fill pass, not batch 1\'s 4 per city per '
+    'arm: at |T| >= 6 deg the supply sits in a few cities and the flat cap left strata short. Decided on '
+    'eligibility counts before any batch 2 sheet was cut.',
 ]
 
 
