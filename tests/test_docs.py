@@ -224,3 +224,19 @@ def test_docs_paths_cited_in_code_exist(source):
         text = f.read()
     for cited in sorted(set(DOCS_PATH_IN_CODE.findall(text))):
         assert os.path.exists(os.path.join(REPO_ROOT, cited)), f'{source} cites {cited}, which does not exist'
+
+
+# Claude Code loads CLAUDE.md into every session and warns once it passes 150,000 characters ("CLAUDE.md is
+# over the 150.0k-char limit"); past that, the file is context nobody asked for. It reached 158,330 on
+# 2026-09-29 and was brought back to ~145,600 by moving the two reports/scripts sections to reports/README.md
+# and shortening four entries that docs/ pages carry in full. A section added without one removed is how the
+# last 8k arrived, which is why the limit is pinned rather than remembered.
+CLAUDE_MD_CHAR_LIMIT = 150_000
+
+
+def test_claude_md_stays_under_claude_codes_limit():
+    with open(os.path.join(REPO_ROOT, 'CLAUDE.md'), encoding='utf-8') as f:
+        chars = len(f.read())
+    assert chars < CLAUDE_MD_CHAR_LIMIT, (
+        f'CLAUDE.md is {chars:,} characters, over the {CLAUDE_MD_CHAR_LIMIT:,} limit Claude Code warns at. '
+        'Move detail into the docs/ page it belongs to and leave a pointer, rather than raising this number.')
