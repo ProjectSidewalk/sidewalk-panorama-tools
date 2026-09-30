@@ -112,7 +112,7 @@ def city_store(out_dir, city='seattle-wa'):
 # --force over one already on disk is a success that happened to replace something. stale_kept (#153 m2)
 # annotates a dims_mismatch or out_of_frame skip under --force that left an old crop in place.
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch',
-                     'out_of_frame', 'black_content', 'errors')
+                     'out_of_frame', 'black_content', 'no_pose', 'errors')
 ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
 
 
@@ -272,7 +272,7 @@ class TestMetadataIntake:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 2, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'errors': 1}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'errors': 1}
         assert os.path.exists(crop_path(out, 1, 1))
 
     def test_csv_missing_required_column_fails_loudly(self, crop_runner, tmp_path):
@@ -601,7 +601,7 @@ class TestBulkExtractCrops:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 3, 'success': 2, 'skipped_existing': 0, 'missing_pano': 1,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0,
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0,
                           'errors': 0}
 
     def test_rerun_skips_existing_and_still_reconciles(self, crop_runner, tmp_path):
@@ -612,7 +612,7 @@ class TestBulkExtractCrops:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 2, 'success': 0, 'skipped_existing': 2, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0,
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0,
                           'errors': 0}
 
     def test_every_outcome_is_accounted_for_exactly_once(self, crop_runner, tmp_path):
@@ -646,7 +646,7 @@ class TestBulkExtractCrops:
         assert crop_runner.COUNT_ANNOTATIONS == ANNOTATIONS
         assert counts == {'total': 7, 'success': 2, 'skipped_existing': 1, 'missing_pano': 1,
                           'dims_mismatch': 1, 'out_of_frame': 1, 'shifted_vertically': 1,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0,
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0,
                           'errors': 1}
 
     def test_a_corrupt_pano_does_not_kill_the_run(self, crop_runner, tmp_path, caplog):
@@ -751,7 +751,7 @@ class TestBulkExtractCrops:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 6, 'success': 1, 'skipped_existing': 0, 'missing_pano': 3,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'errors': 2}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'errors': 2}
         assert reconciles(counts)
 
     def test_a_truncated_pano_is_one_error_per_label(self, crop_runner, tmp_path, caplog):
@@ -769,7 +769,7 @@ class TestBulkExtractCrops:
             counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 3, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'errors': 2}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'errors': 2}
         # One decode attempt and one line for the pano (#164), not a crop_failed line per label.
         assert 'cannot decode' in caplog.text
         assert 'Failed to crop label' not in caplog.text
@@ -801,7 +801,7 @@ class TestBulkExtractCrops:
             [label_row(pano_id='', label_id=1), label_row(pano_id='   ', label_id=2)], str(store), str(out))
         assert counts == {'total': 2, 'success': 0, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'errors': 2}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'errors': 2}
 
     def test_an_unusable_output_directory_is_one_error_not_a_dead_run(self, crop_runner, tmp_path):
         """os.makedirs sat outside the try, so an OSError on the output side — a full store, a read-only
@@ -816,7 +816,7 @@ class TestBulkExtractCrops:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 2, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'errors': 1}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'errors': 1}
         assert os.path.exists(crop_path(out, 2, 2))
 
     def test_the_label_type_directory_is_made_once_per_type(self, crop_runner, tmp_path, monkeypatch):
@@ -2085,12 +2085,12 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
 # ---------------------------------------------------------------------------
 
 def counts_dict(total, errors=0, success=0, skipped_existing=0, missing_pano=0, dims_mismatch=0,
-                out_of_frame=0, shifted_vertically=0, recut=0, stale_kept=0, black_content=0):
+                out_of_frame=0, shifted_vertically=0, recut=0, stale_kept=0, black_content=0, no_pose=0):
     """A counts dict shaped exactly like bulk_extract_crops', for unit-testing the alarm alone."""
     return {'total': total, 'success': success, 'skipped_existing': skipped_existing,
             'missing_pano': missing_pano, 'dims_mismatch': dims_mismatch,
             'out_of_frame': out_of_frame, 'shifted_vertically': shifted_vertically, 'recut': recut,
-            'stale_kept': stale_kept, 'black_content': black_content, 'errors': errors}
+            'stale_kept': stale_kept, 'black_content': black_content, 'no_pose': no_pose, 'errors': errors}
 
 
 def unparseable_rows(n, first_label_id=1):
@@ -3096,7 +3096,7 @@ class TestTheMarkerFixesAfterVerification:
         """C1/C2: a key set missing the v3 constants or distance_estimator let a `{}` constant be read as
         a changed value and appended to the history for good."""
         assert set(crop_runner.RULE_MARKER_SCALAR_KEYS) == (
-            {'crop_rule_version', 'previous_crop_rule_version', 'distance_estimator'}
+            {'crop_rule_version', 'previous_crop_rule_version', 'distance_estimator', 'tilt_correction'}
             | set(crop_runner._rule_constants()))
         assert crop_runner.MANIFEST_NO_KNOWN_GAP not in crop_runner.RULE_MARKER_SCALAR_KEYS
 
@@ -3260,7 +3260,7 @@ class TestTheMarkerInThePerCityStore:
         marker = _read_marker(crop_runner, out)
         assert set(crop_runner._rule_constants()) | {
             'crop_rule_version', 'distance_estimator', 'previous_crop_rule_version', 'rules_seen',
-            'constants_seen', 'city', 'provenance_manifest', 'provenance_manifest_started_under',
+            'constants_seen', 'city', 'tilt_correction', 'provenance_manifest', 'provenance_manifest_started_under',
             crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_PRE_CITY} == set(marker)
 
 
@@ -3326,7 +3326,7 @@ class TestForceRecut:
 
         assert counts == {'total': 1, 'success': 1, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
-                          'recut': 1, 'stale_kept': 0, 'black_content': 0,
+                          'recut': 1, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0,
                           'errors': 0}
         with open(crop_path(out, 1, 1), 'rb') as f:
             recut = f.read()
