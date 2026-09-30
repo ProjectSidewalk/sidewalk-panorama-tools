@@ -2009,8 +2009,9 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
         return found
 
     def _claude_md_ids(self):
-        """The same table as it appears in CLAUDE.md, which is a THIRD hand-maintained copy."""
-        text = io.open(os.path.join(REPO_ROOT, 'CLAUDE.md'), encoding='utf-8').read()
+        """The same table as it appears in .claude/rules/cropper.md (the cropper's part of CLAUDE.md since
+        the 2026-09-29 split), which is a THIRD hand-maintained copy."""
+        text = io.open(os.path.join(REPO_ROOT, '.claude', 'rules', 'cropper.md'), encoding='utf-8').read()
         section = text.split('## Label Type IDs', 1)[-1].split('\n## ', 1)[0]
         found = {}
         for line in section.splitlines():
@@ -2025,7 +2026,7 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
         test - and CLAUDE.md is the agent-facing source of truth, so a wrong pair there is the one most
         likely to be believed and propagated."""
         documented = self._claude_md_ids()
-        assert documented, 'the label type table went missing from CLAUDE.md'
+        assert documented, 'the label type table went missing from .claude/rules/cropper.md'
         assert documented == crop_runner.LABEL_TYPE_IDS_BY_NAME
 
     def test_the_documented_table_is_the_map_pair_for_pair(self, crop_runner):
