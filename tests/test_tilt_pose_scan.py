@@ -198,14 +198,17 @@ def test_seeded_facade_sample_is_deterministic():
     assert len(a) == 10
 
 
-@pytest.mark.parametrize('name', ['tilt_geometry.py', 'tilt_pose_scan.py', 'tilt_frame.py', 'tilt_remote_crop.py'])
+@pytest.mark.parametrize('name', ['tilt_geometry.py', 'tilt_pose_scan.py', 'tilt_frame.py', 'tilt_remote_crop.py',
+                                  '../../pano_pose.py'])
 def test_runs_under_python39_syntax(name):
     """makelab2 runs Python 3.9; a `match` or an `X | None` annotation would fail there after upload.
+    pano_pose.py lives at the repo root (CropRunner imports it, #191) and is uploaded beside tilt_geometry.py,
+    which re-exports it.
 
     GRAMMAR ONLY: ast.parse(feature_version=(3, 9)) cannot see a 3.10+ standard-library call
     (zip(strict=...), itertools.pairwise, int.bit_count) - those would pass here and fail on the host.
     Keep the remote modules to the 3.9 library by review, or run them under a 3.9 interpreter."""
-    path = os.path.join(SCRIPTS, name)
+    path = os.path.normpath(os.path.join(SCRIPTS, name))
     if not os.path.exists(path):
         pytest.skip('%s not written yet' % name)
     with open(path, encoding='utf-8') as f:

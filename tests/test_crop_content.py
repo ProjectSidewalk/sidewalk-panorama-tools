@@ -351,8 +351,10 @@ class TestAMostlyBlackWindowIsWithheld:
                                | set(crop_runner.COUNT_ANNOTATIONS))
         assert 'black_content' in crop_runner.DISJOINT_OUTCOMES
         assert 'black_content' not in crop_runner.COUNT_ANNOTATIONS
+        # no_pose (#191) is reachable only under --tilt-correction, which this run does not pass; its
+        # every-bucket-once twin is tests/test_crop_tilt.py's.
         for bucket in crop_runner.DISJOINT_OUTCOMES:
-            assert counts[bucket] == 1, bucket
+            assert counts[bucket] == (0 if bucket == 'no_pose' else 1), bucket
         assert counts['total'] == 7
 
     def test_the_d4_shape_is_seen_only_inside_its_bands(self, crop_runner, tmp_path):

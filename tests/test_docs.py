@@ -40,6 +40,7 @@ PAGES = ['README.md', 'CONTRIBUTING.md'] + [
 NAMED_SOURCES = [
     'CLAUDE.md',
     'DownloadRunner.py', 'CropRunner.py', 'migrate_crop_store.py', 'migrate_depth_artifacts.py', 'config.py',
+    'pano_pose.py',
     os.path.join('downloaders', 'gsv.py'), os.path.join('downloaders', 'mapillary.py'),
     os.path.join('downloaders', 'panoramax.py'),
     os.path.join('downloaders', 'common.py'), os.path.join('log_analyzer', 'analyze.py'),
