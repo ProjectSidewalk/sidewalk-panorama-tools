@@ -39,12 +39,37 @@ PAGES = ['README.md', 'CONTRIBUTING.md'] + [
 # is read). One list, so every test that scans "the guidance" scans all of it - a rule moved out of the root
 # file would otherwise drop out of the docs-path and log.csv-width checks in silence.
 RULES_DIR = os.path.join('.claude', 'rules')
-RULE_FILES = sorted(os.path.join(RULES_DIR, f)
-                    for f in os.listdir(os.path.join(REPO_ROOT, RULES_DIR)) if f.endswith('.md'))
-NESTED_CLAUDE_MDS = sorted(os.path.relpath(os.path.join(root, 'CLAUDE.md'), REPO_ROOT)
-                           for root, dirs, files in os.walk(REPO_ROOT)
-                           if 'CLAUDE.md' in files and os.path.abspath(root) != REPO_ROOT
-                           and '.git' not in root and 'worktrees' not in root)
+
+# Directories inside a checkout that hold someone else's files, not this checkout's guidance: git's own,
+# virtualenvs, and the other checkouts Claude Code creates under .claude/worktrees/. Matched as path
+# COMPONENTS relative to the checkout, never as substrings of the absolute path - a checkout that itself sits
+# under a `worktrees` or `*.github.io` directory saw no nested CLAUDE.md at all that way (#192 review S1).
+_NOT_THIS_CHECKOUT = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '.pytest_cache'}
+
+
+def _rule_files(root):
+    """Every .claude/rules/**/*.md, recursively - Claude Code discovers subdirectories too (review S2)."""
+    found = []
+    for d, dirs, files in os.walk(os.path.join(root, RULES_DIR)):
+        dirs.sort()
+        found += [os.path.relpath(os.path.join(d, f), root) for f in files if f.endswith('.md')]
+    return sorted(found)
+
+
+def _nested_claude_mds(root):
+    found = []
+    for d, dirs, files in os.walk(root):
+        rel = os.path.relpath(d, root)
+        parts = () if rel == os.curdir else tuple(rel.split(os.sep))
+        dirs[:] = [x for x in dirs
+                   if x not in _NOT_THIS_CHECKOUT and parts + (x,) != ('.claude', 'worktrees')]
+        if parts and 'CLAUDE.md' in files:
+            found.append(os.path.join(rel, 'CLAUDE.md'))
+    return sorted(found)
+
+
+RULE_FILES = _rule_files(REPO_ROOT)
+NESTED_CLAUDE_MDS = _nested_claude_mds(REPO_ROOT)
 GUIDANCE_FILES = ['CLAUDE.md'] + RULE_FILES + NESTED_CLAUDE_MDS
 
 # Sources named one by one, so a rename fails this test instead of quietly dropping the file out of coverage.
@@ -256,26 +281,91 @@ def _chars(path):
 
 
 def _frontmatter_paths(path):
-    """The `paths:` globs of a rules file's YAML frontmatter, or None if it has no frontmatter/paths.
-
-    Parsed by hand rather than with a YAML library: the format used here is one list under one key, and a
-    parser dependency for that would be the first non-test dependency the suite pulls in for a docs check."""
+    """The `paths:` globs of a rules file's frontmatter, or None if it has none (raises ValueError, see below)."""
     with open(os.path.join(REPO_ROOT, path), encoding='utf-8') as f:
-        lines = f.read().split('\n')
-    if not lines or lines[0].strip() != '---':
+        return _parse_frontmatter_paths(f.read())
+
+
+# One frontmatter value: double-quoted, single-quoted, or bare. A bare one may not start with a character YAML
+# gives a meaning to (`*` is an alias, `[`/`{` open a flow collection, ...) and may not hold a quote, a ` #`
+# comment or a `: ` mapping. Quoted ones may not hold their own quote (no escapes are understood).
+_SCALAR = r'''(?:"([^"\\]*)"|'([^']*)'|([^\s"'#&*!|>%@`{}\[\],?:-][^"'#]*?))'''
+_ITEM = re.compile(r'\s*- ' + _SCALAR + r'\s*')
+_INLINE = re.compile(_SCALAR)
+
+
+def _scalar(match):
+    value = next(g for g in match.groups() if g is not None)
+    if ': ' in value:
+        raise ValueError(f'{value!r} would parse as a mapping, not a glob')
+    return value
+
+
+def _parse_frontmatter_paths(text):
+    """Parse the one frontmatter shape the rules files use, and refuse everything else (#192 review S3).
+
+    Not a YAML parser, and deliberately not lenient: Claude Code ignores frontmatter that YAML cannot parse and
+    then loads the file at startup, so a best-guess reading of a malformed file (an unterminated quote used to
+    pass here as a valid glob) reports scoping that does not exist. PyYAML is not a dependency of this repo and
+    is not worth becoming one for a docs check, so the subset is: a `paths:` key holding a block list of
+    scalars, or the documented comma-separated string. Anything else raises ValueError."""
+    lines = [line.rstrip('\r') for line in text.split('\n')]
+    if lines[0] != '---':
         return None
-    globs, in_paths = [], False
-    for line in lines[1:]:
-        if line.strip() == '---':
-            break
-        if line.strip() == 'paths:':
-            in_paths = True
-            continue
-        if in_paths and line.strip().startswith('- '):
-            globs.append(line.strip()[2:].strip().strip('"\''))
-        elif line.strip() and not line.startswith(' '):
-            in_paths = False
-    return globs if in_paths or globs else None
+    end = next((i for i, line in enumerate(lines[1:], 1) if line.rstrip() == '---'), None)
+    if end is None:
+        raise ValueError('the frontmatter opens with --- and is never closed')
+    body = [line for line in lines[1:end] if line.strip()]
+    if not body:
+        return None
+    key = re.fullmatch(r'paths:(.*)', body[0])
+    if not key:
+        raise ValueError(f'frontmatter line {body[0]!r}: only a `paths:` key is understood')
+    inline = key.group(1).strip()
+    if inline:
+        match = _INLINE.fullmatch(inline)
+        if not match or len(body) > 1:
+            raise ValueError(f'`paths: {inline}` is not a quoted or bare comma-separated string')
+        globs = [g.strip() for g in _scalar(match).split(',')]
+        if not all(globs):
+            raise ValueError(f'`paths: {inline}` has an empty entry')
+        return globs
+    globs = []
+    for line in body[1:]:
+        match = _ITEM.fullmatch(line)
+        if not match:
+            raise ValueError(f'frontmatter line {line!r} is not a `  - "glob"` list item')
+        globs.append(_scalar(match))
+    return globs or None
+
+
+def _expand_braces(pattern):
+    match = re.search(r'\{([^{}]*)\}', pattern)
+    if not match:
+        return [pattern]
+    return [expanded for alternative in match.group(1).split(',')
+            for expanded in _expand_braces(pattern[:match.start()] + alternative + pattern[match.end():])]
+
+
+def _glob_files(pattern, root=REPO_ROOT):
+    """The FILES a rules glob matches, repo-relative. Claude Code matches globs against file paths, so a
+    pattern that only names a directory loads nothing; it does expand `{a,b}`, which Python's glob does not
+    (#192 review N5)."""
+    import glob
+    found = set()
+    for expanded in _expand_braces(pattern):
+        found.update(os.path.relpath(m, root) for m in glob.glob(os.path.join(root, expanded), recursive=True)
+                     if os.path.isfile(m))
+    return sorted(found)
+
+
+def _loads_at_startup(path):
+    """True for a rules file with no `paths:` - and for one whose frontmatter is not understood, because
+    Claude Code drops frontmatter YAML rejects and loads the file as if it were unscoped."""
+    try:
+        return not _frontmatter_paths(path)
+    except ValueError:
+        return True
 
 
 def test_the_guidance_set_is_what_the_split_left():
@@ -290,16 +380,18 @@ def test_every_rules_file_is_path_scoped_and_every_glob_matches_something(rule):
     """A rules file without `paths:` loads into every session - the root file's problem, moved. A glob that
     matches nothing never loads at all, and the module it described is then edited without its rules, which
     reads exactly like the file never existing."""
-    import glob
-    globs = _frontmatter_paths(rule)
+    try:
+        globs = _frontmatter_paths(rule)
+    except ValueError as e:
+        pytest.fail(f'{rule}: {e}. Claude Code would ignore this frontmatter and load the file at startup')
     assert globs, f'{rule} has no `paths:` frontmatter, so it would load at startup'
     for pattern in globs:
-        matches = glob.glob(os.path.join(REPO_ROOT, pattern), recursive=True)
+        matches = _glob_files(pattern)
         assert matches, f'{rule}: the glob {pattern!r} matches no file in the repo'
 
 
 def test_the_startup_guidance_stays_under_claude_codes_limit():
-    startup = ['CLAUDE.md'] + [r for r in RULE_FILES if not _frontmatter_paths(r)]
+    startup = ['CLAUDE.md'] + [r for r in RULE_FILES if _loads_at_startup(r)]
     total = sum(_chars(p) for p in startup)
     assert total < STARTUP_CHAR_LIMIT, (
         f'the guidance loaded at startup ({startup}) is {total:,} characters, over the '
@@ -313,3 +405,93 @@ def test_the_root_claude_md_stays_small():
         f'CLAUDE.md is {chars:,} characters, over its {ROOT_CLAUDE_MD_CHAR_RATCHET:,} ratchet. It holds only '
         'what applies everywhere; a module\'s rules belong in its .claude/rules/ file. Raise the ratchet only '
         'in the change that earns it, and say why in this comment.')
+
+
+# The discovery and the parser above decide what every guidance test sees, so they are tested on their own
+# (#192 review S1-S3, N5): each case here is one the first version got wrong while the real tree passed.
+
+def _write_tree(root, files):
+    for rel, text in files.items():
+        path = os.path.join(str(root), *rel.split('/'))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(text)
+
+
+SCOPED = '---\npaths:\n  - "a.py"\n---\n# a rule\n'
+
+
+def test_discovery_does_not_depend_on_where_the_checkout_sits(tmp_path):
+    """The filter is on the path relative to the checkout. A checkout under `.claude/worktrees/` (where
+    Claude Code puts its own), under a `.git/worktrees/` admin dir, or in a `*.github.io` folder must see the
+    same files as one at D:/Git - the first version tested substrings of the absolute path and saw nothing."""
+    root = str(tmp_path / '.git' / 'worktrees' / 'site.github.io' / 'wt')
+    _write_tree(root, {
+        'CLAUDE.md': 'root',
+        '.claude/rules/a.md': SCOPED,
+        'log_analyzer/CLAUDE.md': 'nested',
+        'reports/scripts/CLAUDE.md': 'nested',
+        # Inside the checkout, these are not this checkout's guidance.
+        '.git/hooks/CLAUDE.md': 'not guidance',
+        '.venv/lib/CLAUDE.md': 'not guidance',
+        '.claude/worktrees/other/CLAUDE.md': 'another checkout',
+        '.claude/worktrees/other/log_analyzer/CLAUDE.md': 'another checkout',
+        '.claude/worktrees/other/.claude/rules/b.md': SCOPED,
+    })
+    assert _nested_claude_mds(root) == [os.path.join('log_analyzer', 'CLAUDE.md'),
+                                        os.path.join('reports', 'scripts', 'CLAUDE.md')]
+    assert _rule_files(root) == [os.path.join('.claude', 'rules', 'a.md')]
+
+
+def test_rules_files_in_subdirectories_are_discovered(tmp_path):
+    """Claude Code discovers .claude/rules/**/*.md recursively. A rules file one directory down escaped every
+    check (an unscoped 160k-character one citing a dead docs/ page passed the whole suite)."""
+    _write_tree(tmp_path, {'.claude/rules/a.md': SCOPED, '.claude/rules/sub/deeper/b.md': '# unscoped\n',
+                           '.claude/rules/notes.txt': 'not a rules file'})
+    assert _rule_files(str(tmp_path)) == [os.path.join('.claude', 'rules', 'a.md'),
+                                          os.path.join('.claude', 'rules', 'sub', 'deeper', 'b.md')]
+
+
+@pytest.mark.parametrize('text, expected', [
+    ('---\npaths:\n  - "a.py"\n  - \'b/**\'\n  - c/d.py\n---\nbody\n', ['a.py', 'b/**', 'c/d.py']),
+    ('---\npaths: "a.py, docs/*.md"\n---\n', ['a.py', 'docs/*.md']),
+    ('---\npaths: a.py, tests/x.py\n---\n', ['a.py', 'tests/x.py']),
+    ('---\npaths:\n---\n', None),
+    ('# no frontmatter\n---\n', None),
+], ids=['list', 'quoted-csv', 'bare-csv', 'empty', 'none'])
+def test_the_frontmatter_parser_reads_the_forms_claude_code_accepts(text, expected):
+    """A YAML list, or the documented comma-separated string. An empty `paths:` is YAML null: no scoping."""
+    assert _parse_frontmatter_paths(text) == expected
+
+
+@pytest.mark.parametrize('text', [
+    '---\npaths:\n  - "CropRunner.py\n  - "b.py"\n---\n',
+    '---\npaths:\n  - \'a.py\n---\n',
+    '---\npaths:\n  - "a"b.py"\n---\n',
+    '---\npaths:\n  - "a.py"\n',
+    '---\npaths:\n  - *.py\n---\n',
+    '---\npaths: ["a.py"]\n---\n',
+    '---\npath:\n  - "a.py"\n---\n',
+    '---\npaths:\n  - "a.py"\nother: 1\n---\n',
+    '---\npaths:\n  - "a.py" # why\n---\n',
+    '---\npaths:\n  "a.py"\n---\n',
+], ids=['unterminated-double', 'unterminated-single', 'stray-quote', 'never-closed', 'unquoted-alias',
+        'flow-list', 'misspelt-key', 'unknown-key', 'trailing-comment', 'not-a-list-item'])
+def test_the_frontmatter_parser_refuses_what_it_does_not_understand(text):
+    """Claude Code ignores frontmatter YAML cannot parse and loads the file as if it had no `paths:` - at
+    startup. The parser must never read such a file as scoped, so anything outside the small subset it fully
+    understands is an error rather than a best guess (an unterminated quote used to pass as a valid glob)."""
+    with pytest.raises(ValueError):
+        _parse_frontmatter_paths(text)
+
+
+def test_a_rules_file_whose_frontmatter_is_not_understood_counts_as_startup_context(tmp_path):
+    _write_tree(tmp_path, {'bad.md': '---\npaths:\n  - "CropRunner.py\n---\n# rule\n'})
+    assert _loads_at_startup(str(tmp_path / 'bad.md'))
+
+
+def test_a_glob_must_match_a_file_and_braces_expand():
+    """Claude Code matches a glob against file paths, so a bare directory pattern loads nothing; it does expand
+    `{a,b}`, which Python's glob does not."""
+    assert _glob_files('reports/plans') == []
+    assert os.path.join('tests', 'test_docs.py') in _glob_files('tests/test_docs.{py,md}')
