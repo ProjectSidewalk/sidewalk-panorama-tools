@@ -3010,7 +3010,7 @@ class TestTheMarkerKeepsItsHistory:
         assert len(kept) == 1 and kept[0].read_text(encoding='utf-8') == content
 
     def test_removing_the_history_keys_is_the_reset_after_a_whole_recut(self, crop_runner, tmp_path, caplog):
-        """docs/cropper.md and CLAUDE.md name this as the reset: the history only grows, so after a whole
+        """docs/cropper.md and .claude/rules/cropper.md name this as the reset: the history only grows, so after a whole
         store is re-cut under one rule, removing rules_seen, constants_seen and previous_crop_rule_version
         from crop_rule.json (never a crop) is what quiets it. Not deleting the file, as it was before the
         marker also carried the store's city (#159) and the manifest's gap record (#111): the city would

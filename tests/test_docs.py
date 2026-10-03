@@ -274,8 +274,8 @@ def test_docs_paths_cited_in_code_exist(source):
 # Two checks follow from that. Every guidance file stays under the per-file 150k (a scoped file still counts
 # as a file when it loads). And the startup set as a whole stays under the same 150k: that is NOT Claude
 # Code's combined limit, which is unknown; it is a stricter stand-in, harmless while the startup set is a
-# fifth of it. The root file's own ratchet is its measured size after the #192 review fixes (26,224) plus
-# about 4k of headroom - in .coveragerc's fail_under spirit: raised only by the change that earns it, and
+# fifth of it. The root file's own ratchet is its measured size after the #192 review fixes (26,428) plus
+# about 3.5k of headroom - in .coveragerc's fail_under spirit: raised only by the change that earns it, and
 # said so here, never quietly. (It was 45,000 at first, which left 19k of unnoticed regrowth.)
 PER_FILE_CHAR_LIMIT = 150_000
 STARTUP_CHAR_LIMIT = 150_000

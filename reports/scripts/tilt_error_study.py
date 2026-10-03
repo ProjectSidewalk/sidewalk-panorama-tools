@@ -24,7 +24,7 @@ Endpoints (reports/2026-09-26-tilt-error-study.md has the design and the verdict
 * S1 - the tilt prior by scrape era; S2 - the xml<->npz convention; S3 - the mis-centering ceiling;
   S4 - the RampNet extent-gold overlap count.
 
-Conventions (CLAUDE.md "Desk studies"): studyfmt.fmt/num/percentile only; label_uid = city:label_id;
+Conventions (.claude/rules/desk-studies.md): studyfmt.fmt/num/percentile only; label_uid = city:label_id;
 pano_id read as str; every merge validates; every figure in the artifact is claimed by exactly one
 entry of `populations`; json written with allow_nan=False.
 """

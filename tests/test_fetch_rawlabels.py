@@ -2,7 +2,7 @@
 
 The fetcher had no tests, and the one behaviour that most needs pinning is *where* it writes:
 every study globs `*.csv` over a directory, so a file landing in the wrong one silently changes
-the corpus behind committed artifacts rather than failing. CLAUDE.md records this as the reason
+the corpus behind committed artifacts rather than failing. .claude/rules/desk-studies.md records this as the reason
 Mapillary cities get their own cache directory; the 54-deployment `--all` sweep needs the same
 separation, and it pulls richmond-va, a Mapillary deployment, among others.
 """
@@ -106,7 +106,7 @@ class TestFetchDoesNotHangForever:
 
 
 class TestTheMapillaryCorpusKeepsItsOwnDirectory:
-    """CLAUDE.md's rule, pinned: a Mapillary city in .cache/rawlabels/ silently joins the GSV
+    """.claude/rules/desk-studies.md's rule, pinned: a Mapillary city in .cache/rawlabels/ silently joins the GSV
     corpus and moves every committed six-city number."""
 
     def test_the_three_destinations_are_all_distinct(self):

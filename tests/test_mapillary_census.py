@@ -910,7 +910,7 @@ class TestTheIncidentalSigmaIsLabelledAsIncidental:
 
 
 class TestDocstringCountsMatchTheArtifact:
-    """The transcription class this repo's own CLAUDE.md rule targets — "state which filter a
+    """The transcription class this repo's own desk-study rule targets (.claude/rules/desk-studies.md) — "state which filter a
     count is under, or don't quote it". TestReportMatchesTheArtifact covers the markdown; nothing
     covered docstrings, and crossed_block's said "2 pairs versus 7" where 7 is the shared-PANO
     count from the line above and the artifact says 6 matched pairs."""

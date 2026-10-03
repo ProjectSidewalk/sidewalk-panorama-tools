@@ -665,7 +665,7 @@ class TestTheTwoEstimatorsRunOnDifferentPopulations:
         """Both write-ups publish the cross-population comparison — the census in §4, the click-noise
         study in its Numbers section — so both have to quote the committed figure. A σ typed from
         memory into prose is the one number in this repo with no compiler and no test, which is the
-        rule CLAUDE.md states and the reason this pin exists in two files.
+        rule .claude/rules/desk-studies.md states and the reason this pin exists in two files.
         """
         summary_path = os.path.join(REPO_ROOT, 'reports', 'data',
                                     '2026-08-09-click-noise-summary.json')
