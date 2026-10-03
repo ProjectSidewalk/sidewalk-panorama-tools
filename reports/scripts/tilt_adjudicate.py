@@ -78,6 +78,12 @@ PANEL_W, PANEL_H = 480, 320
 TIE_CHOICES = ('A=B', 'A=C', 'B=C')
 CHOICES = ('A', 'B', 'C') + TIE_CHOICES + ('none',)
 WINDOW_NAMES = ('stored', 'leak', 'antileak')
+# A design is {window name: k}, each window centred at pano_y - k * T(b) * h / 180 (k = 1 is the rig pixel).
+# 'c' is endpoint C's (#158); 'beta' is #191's asymmetric-decoy batch, every window on the leak side, so the
+# middle window is 1.0 T rather than the stored y and the answer is a rate per offset.
+C_OFFSETS = {'stored': 0.0, 'leak': 1.0, 'antileak': -1.0}
+BETA_OFFSETS = {'b050': 0.5, 'b100': 1.0, 'b150': 1.5}
+DESIGNS = {'c': C_OFFSETS, 'beta': BETA_OFFSETS}
 SEALED = 'sealed'
 KEY_HASH = 'key.sha256'
 SEALED_README_FIRST_LINE = 'Do not open until you have recorded all 48 verdicts.'
@@ -268,37 +274,38 @@ def draw_with_fill(primary, fill, n_per_arm, seed):
     return pd.concat(parts, ignore_index=True), {'shortfall_in_primary': short, 'from_fill': taken}
 
 
-def window_centres(pano_y, T_deg, pano_height):
+def window_centres(pano_y, T_deg, pano_height, offsets=C_OFFSETS):
+    """{name: pano_y - k * T * h / 180} for each (name, k) of the design."""
     shift = T_deg * pano_height / 180.0
-    return {'stored': pano_y, 'leak': pano_y - shift, 'antileak': pano_y + shift}
+    return {name: pano_y - k * shift for name, k in offsets.items()}
 
 
-def window_boxes(pano_x, pano_y, T_deg, w, h):
+def window_boxes(pano_x, pano_y, T_deg, w, h, offsets=C_OFFSETS):
     """-> {name: (CropBox, (marker_x, marker_y) in crop pixels)}: the production cut, no pixels needed.
     One width for all three (computed at the stored y), so the window size cannot say which is which."""
     width = CropRunner.crop_window_width(pano_y, w, h)
     out = {}
-    for name, y in window_centres(pano_y, T_deg, h).items():
+    for name, y in window_centres(pano_y, T_deg, h, offsets).items():
         box = CropRunner.compute_crop_box(pano_x, y, width, w, h)
         out[name] = (box, CropRunner.label_position_in_crop(pano_x, y, box, w))
     return out
 
 
-def cut_windows(pano, pano_x, pano_y, T_deg):
+def cut_windows(pano, pano_x, pano_y, T_deg, offsets=C_OFFSETS):
     """-> {name: (CropBox, crop image, (marker_x, marker_y) in crop pixels)} for the three hypotheses."""
     w, h = pano.size
     out = {}
-    for name, (box, marker) in window_boxes(pano_x, pano_y, T_deg, w, h).items():
+    for name, (box, marker) in window_boxes(pano_x, pano_y, T_deg, w, h, offsets).items():
         out[name] = (box, CropRunner.extract_crop(pano, box.left, box.top, box.width, box.height), marker)
     return out
 
 
-def crop_jobs(selection, seed=SEED):
+def crop_jobs(selection, seed=SEED, offsets=C_OFFSETS):
     """One row per (label, window): the boxes tilt_remote_crop.py cuts on the store host."""
     rows = []
     for row in selection.to_dict('records'):
         boxes = window_boxes(float(row['pano_x']), float(row['pano_y']), float(row['T_deg']),
-                             int(row['pano_width']), int(row['pano_height']))
+                             int(row['pano_width']), int(row['pano_height']), offsets)
         for name, (box, _) in boxes.items():
             rows.append({'token': _token(seed, row['label_uid']), 'window': name, 'city': row['city'],
                          'pano_id': row['pano_id'], 'left': box.left, 'top': box.top, 'width': box.width,
@@ -346,9 +353,15 @@ def tags_as_json(tags):
     return json.dumps([str(t).strip() for t in parsed if str(t).strip()], ensure_ascii=False, separators=(',', ':'))
 
 
-def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
+def design_of(offsets):
+    """The DESIGNS name of an offsets dict."""
+    return next(name for name, o in DESIGNS.items() if o == offsets)
+
+
+def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None, offsets=C_OFFSETS):
     """Write sheets/<token>.jpg, tasks.json (judge-facing), README.md, key.sha256, and the key itself
-    under sealed/ (never shown to a judge).
+    under sealed/ (never shown to a judge). A design other than C's also records its name and offsets in
+    each key entry; C's entries are left exactly as they were, so its committed keys still rebuild.
 
     A row whose `source` is 'store' takes its three panels from `panel_dir` (cut on the store host by
     tilt_remote_crop.py from crop_jobs' boxes); every other row is cut here from `pano_root`."""
@@ -360,7 +373,7 @@ def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
         token = _token(seed, row['label_uid'])
         if row.get('source') == 'store':
             boxes = window_boxes(float(row['pano_x']), float(row['pano_y']), float(row['T_deg']),
-                                 int(row['pano_width']), int(row['pano_height']))
+                                 int(row['pano_width']), int(row['pano_height']), offsets)
             wins = {}
             for n, (box, marker) in boxes.items():
                 with Image.open(os.path.join(panel_dir, '%s_%s.png' % (token, n))) as im:
@@ -370,8 +383,10 @@ def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
             with Image.open(path) as pano:
                 pano.load()
                 wins = {n: (box, panel_image(crop), marker) for n, (box, crop, marker) in
-                        cut_windows(pano, float(row['pano_x']), float(row['pano_y']), float(row['T_deg'])).items()}
-        order = [WINDOW_NAMES[i] for i in rng.permutation(3)]
+                        cut_windows(pano, float(row['pano_x']), float(row['pano_y']), float(row['T_deg']),
+                                    offsets).items()}
+        names = tuple(offsets)
+        order = [names[i] for i in rng.permutation(len(names))]
         tags = row.get('tags') if isinstance(row.get('tags'), str) else '[]'
         caption = '%s   tags: %s   -- which ring sits on the labelled feature? A / B / C / none' % (
             row['label_type'], tags)
@@ -387,7 +402,9 @@ def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None):
                       'era': row['era'], 'era_arm': row['era_arm'], 'pose_source': row['pose_source'],
                       'scrape_era': row['scrape_era'], 'label_type': row['label_type'],
                       'source': row.get('source', 'corpus'),
-                      'shifted_any': bool(any(wins[n][0].shifted for n in WINDOW_NAMES))}
+                      'shifted_any': bool(any(wins[n][0].shifted for n in names))}
+        if offsets != C_OFFSETS:
+            key[token].update(design=design_of(offsets), offsets=dict(offsets))
     with open(os.path.join(out_dir, 'tasks.json'), 'w', encoding='utf-8', newline='\n') as f:
         json.dump(tasks, f, indent=1, sort_keys=True, allow_nan=False)
     write_key(out_dir, key)
@@ -492,7 +509,7 @@ def binom_sf(k, n, p):
     return float(sum(math.comb(n, i) * p ** i * (1 - p) ** (n - i) for i in range(k, n + 1)))
 
 
-def score(verdicts, key):
+def score(verdicts, key, windows=WINDOW_NAMES):
     """Counts of stored / leak / antileak / tie / none per era arm; `none` and ties stay in the
     denominator. `tie_pairs` names each tie's two windows, and `pairwise` counts, for every ordered pair
     of windows, the sheets whose choice held the first and not the second (so a stored=leak tie is a
@@ -500,7 +517,7 @@ def score(verdicts, key):
     arms = {}
     for token, choice in verdicts.items():
         k = key[token]
-        a = arms.setdefault(k['era_arm'], dict({w: 0 for w in WINDOW_NAMES}, n=0, none=0, none_tokens=[],
+        a = arms.setdefault(k['era_arm'], dict({w: 0 for w in windows}, n=0, none=0, none_tokens=[],
                                                tie=0, tie_pairs={}, pairwise={}))
         a['n'] += 1
         picked = chosen_windows(choice, k['order'])
@@ -513,17 +530,110 @@ def score(verdicts, key):
             a['tie_pairs'][pair] = a['tie_pairs'].get(pair, 0) + 1
         else:
             a[next(iter(picked))] += 1
-        for w1 in WINDOW_NAMES:
-            for w2 in WINDOW_NAMES:
+        for w1 in windows:
+            for w2 in windows:
                 if w1 != w2 and w1 in picked and w2 not in picked:
                     pk = '%s>%s' % (w1, w2)
                     a['pairwise'][pk] = a['pairwise'].get(pk, 0) + 1
     for a in arms.values():
-        for name in WINDOW_NAMES:
+        for name in windows:
             a['share_' + name] = a[name] / a['n'] if a['n'] else None
             a['p_%s_vs_third' % name] = binom_sf(a[name], a['n'], 1 / 3.0)
         a['none_tokens'].sort()
     return {'arms': arms, 'n': sum(a['n'] for a in arms.values())}
+
+
+# ---- #191: the asymmetric-decoy beta batch. Every rule below was fixed before the key was opened, and
+# its folder's DECISIONS.md is the prose of the same rules. ------------------------------------------------
+BETA_ALPHA = 0.05
+BETA_BOOT_N = 10000
+BETA_BOOT_SEED = 20260929
+BETA_LOW, BETA_HIGH = 'b050', 'b150'
+
+
+def beta_sheet_score(choice, order):
+    """A sheet's reading of beta: the chosen window's k, a tie's mean k (the two extremes tied read 1.0),
+    None for `none`."""
+    picked = chosen_windows(choice, order)
+    return float(np.mean([BETA_OFFSETS[w] for w in picked])) if picked else None
+
+
+def binom_two_sided(k, n):
+    """Exact two-sided sign test, P(|X - n/2| >= |k - n/2|) for X ~ Binomial(n, 1/2); 1.0 when n == 0."""
+    if n == 0:
+        return 1.0
+    return min(1.0, 2 * binom_sf(max(k, n - k), n, 0.5))
+
+
+def fisher_two_sided(a, b, c, d):
+    """Two-sided Fisher exact test on [[a, b], [c, d]]: the sum over tables with the same margins that are
+    no more likely than the observed one."""
+    r1, c1, n = a + b, a + c, a + b + c + d
+    if n == 0:
+        return 1.0
+    pmf = lambda x: math.comb(c1, x) * math.comb(n - c1, r1 - x) / math.comb(n, r1)  # noqa: E731
+    lo, hi = max(0, r1 + c1 - n), min(r1, c1)
+    p_obs = pmf(a)
+    return float(min(1.0, sum(pmf(x) for x in range(lo, hi + 1) if pmf(x) <= p_obs * (1 + 1e-9))))
+
+
+def holm(pvals):
+    """{name: Holm-adjusted p} for a {name: p} family."""
+    names = sorted(pvals, key=lambda k: pvals[k])
+    out, running = {}, 0.0
+    for i, name in enumerate(names):
+        running = max(running, min(1.0, (len(names) - i) * pvals[name]))
+        out[name] = running
+    return out
+
+
+def _beta_summary(scores, low, high, n, none, seed):
+    """One arm's (or the pool's) beta readout from its per-sheet scores and its low/high counts."""
+    out = {'n': n, 'none': none, 'n_scored': len(scores), 'low': low, 'high': high,
+           'p_low_vs_high_two_sided': binom_two_sided(low, low + high),
+           'score_counts': {('%.2f' % v): int(sum(1 for x in scores if x == v)) for v in sorted(set(scores))},
+           'mean': float(np.mean(scores)) if scores else None, 'ci95': None}
+    if len(scores) >= 2:
+        rng = np.random.default_rng(seed)
+        arr = np.asarray(scores, float)
+        boot = arr[rng.integers(0, len(arr), (BETA_BOOT_N, len(arr)))].mean(axis=1)
+        out['ci95'] = [float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5))]
+    return out
+
+
+def beta_reading(summary, p_adjusted):
+    """The pre-set reading of one arm (DECISIONS.md rule 3)."""
+    if p_adjusted >= BETA_ALPHA:
+        return 'consistent with 1'
+    return 'below 1' if summary['low'] > summary['high'] else 'above 1'
+
+
+def score_beta(verdicts, key):
+    """#191's readout, fixed blind: score() over the beta windows, then per era arm and pooled the
+    b050-vs-b150 sign test (primary, Holm over the two arms), the mean per-sheet score with a sheet
+    bootstrap CI, and the two arm comparisons that bear on legacy+mid's 7 stored wins in C."""
+    base = score(verdicts, key, tuple(BETA_OFFSETS))
+    per_arm, pooled_scores = {}, []
+    for arm, a in sorted(base['arms'].items()):
+        scores = [beta_sheet_score(verdicts[t], key[t]['order']) for t in sorted(verdicts)
+                  if key[t]['era_arm'] == arm and verdicts[t] != 'none']
+        pooled_scores += scores
+        per_arm[arm] = _beta_summary(scores, a['pairwise'].get('%s>%s' % (BETA_LOW, BETA_HIGH), 0),
+                                     a['pairwise'].get('%s>%s' % (BETA_HIGH, BETA_LOW), 0), a['n'], a['none'],
+                                     BETA_BOOT_SEED)
+    adj = holm({arm: s['p_low_vs_high_two_sided'] for arm, s in per_arm.items()})
+    for arm, s in per_arm.items():
+        s['p_holm'] = adj[arm]
+        s['reading'] = beta_reading(s, adj[arm])
+    tot = lambda f: sum(s[f] for s in per_arm.values())  # noqa: E731
+    pooled = _beta_summary(pooled_scores, tot('low'), tot('high'), tot('n'), tot('none'), BETA_BOOT_SEED)
+    out = {'counts': base, 'arms': per_arm, 'pooled': pooled, 'alpha': BETA_ALPHA}
+    lm, pp = per_arm.get('legacy+mid'), per_arm.get('post179')
+    if lm and pp:
+        out['arm_difference'] = {
+            'low_high_fisher_p': fisher_two_sided(lm['low'], lm['high'], pp['low'], pp['high']),
+            'none_fisher_p': fisher_two_sided(lm['none'], lm['n'] - lm['none'], pp['none'], pp['n'] - pp['none'])}
+    return out
 
 
 def _read_pose(paths):
@@ -577,6 +687,7 @@ def build_parser():
     sh.add_argument('--pano-root', required=True)
     sh.add_argument('--panel-dir')
     sh.add_argument('--seed', default=SEED)
+    sh.add_argument('--design', choices=sorted(DESIGNS), default='c')
     for name in ('next', 'score'):
         s = sub.add_parser(name)
         s.add_argument('--out', required=True)
@@ -601,8 +712,12 @@ def main(argv=None):
     if args.cmd == 'select':
         select(args)
     elif args.cmd == 'sheets':
-        sel = pd.read_csv(os.path.join(args.out, 'selection.csv'), dtype={'pano_id': str})
-        build_sheets(sel, args.pano_root, args.out, args.seed, panel_dir=args.panel_dir)
+        path = os.path.join(args.out, 'selection.csv')
+        if not os.path.exists(path):                    # tilt_jm_pool.py draw writes it under sealed/
+            path = os.path.join(args.out, SEALED, 'selection.csv')
+        sel = pd.read_csv(path, dtype={'pano_id': str})
+        build_sheets(sel, args.pano_root, args.out, args.seed, panel_dir=args.panel_dir,
+                     offsets=DESIGNS[args.design])
         print('wrote %d sheets' % len(sel))
     elif args.cmd == 'next':
         token = next_unjudged(args.out, args.judge)

@@ -1,0 +1,51 @@
+{"token": "t08f12a4000", "choice": "B", "judge": "jon"}
+{"token": "t09a00db590", "choice": "B", "judge": "jon"}
+{"token": "t09a00db590", "choice": "none", "judge": "jon"}
+{"token": "t19304b76eb", "choice": "none", "judge": "jon"}
+{"token": "t19304b76eb", "choice": "none", "judge": "jon", "comment": "It's not possible to tell what the labeler was trying to label here"}
+{"token": "t1dbedce213", "choice": "C", "judge": "jon"}
+{"token": "t22aa9000b8", "choice": "C", "judge": "jon"}
+{"token": "t2598245ddf", "choice": "B", "judge": "jon"}
+{"token": "t27462b059e", "choice": "A", "judge": "jon"}
+{"token": "t38f102a1e6", "choice": "C", "judge": "jon"}
+{"token": "t3931f8748e", "choice": "A", "judge": "jon"}
+{"token": "t3a7d276c07", "choice": "B", "judge": "jon"}
+{"token": "t438511d8b3", "choice": "B", "judge": "jon"}
+{"token": "t4d8e4e6eac", "choice": "C", "judge": "jon", "comment": "Both A and C are pretty close but C probably wins out here"}
+{"token": "t51003fd8ad", "choice": "A=C", "judge": "jon", "comment": "Both A and C correctly mark the car as an obstacle and it's not clear which is better imo"}
+{"token": "t57cdd31a0b", "choice": "none", "judge": "jon", "comment": "All labels look slightly off here so I don't feel comfortable marking one as best"}
+{"token": "t5ac2d08fe9", "choice": "C", "judge": "jon"}
+{"token": "t5c1609b2d9", "choice": "C", "judge": "jon"}
+{"token": "t612ca0e10c", "choice": "none", "judge": "jon", "comment": "None of these camera angles are conducive for knowing for sure"}
+{"token": "t612ca0e10c", "choice": "none", "judge": "jon", "comment": "None of these camera angles / crops are conducive for knowing for sure"}
+{"token": "t61a0814c33", "choice": "none", "judge": "jon"}
+{"token": "t627e5c61e3", "choice": "A", "judge": "jon"}
+{"token": "t6f72c3c9f9", "choice": "A", "judge": "jon"}
+{"token": "t73c5f628b6", "choice": "C", "judge": "jon"}
+{"token": "t7876d5c101", "choice": "A=C", "judge": "jon"}
+{"token": "t7cb1b25813", "choice": "A=C", "judge": "jon"}
+{"token": "t7d1c4b67fa", "choice": "C", "judge": "jon"}
+{"token": "t86b46dcde6", "choice": "B", "judge": "jon"}
+{"token": "t87251dd38a", "choice": "none", "judge": "jon"}
+{"token": "t8f4849aa15", "choice": "B", "judge": "jon"}
+{"token": "t90ab39636f", "choice": "C", "judge": "jon"}
+{"token": "t95151aad0f", "choice": "B", "judge": "jon", "comment": "Both B and C correctly mark the mailbox but I guess B is best?"}
+{"token": "t9bfb372d84", "choice": "B", "judge": "jon"}
+{"token": "ta32b6bac6d", "choice": "none", "judge": "jon"}
+{"token": "ta9749d15f2", "choice": "C", "judge": "jon", "comment": "A and C both look good. I'd say C is slightly better"}
+{"token": "taa103d7bc2", "choice": "C", "judge": "jon", "comment": "A and C both mark the surface problem. I think C is slightly better"}
+{"token": "tab1502c942", "choice": "C", "judge": "jon", "comment": "Both A and C correctly mark the garbage but C is better"}
+{"token": "tb2550553a8", "choice": "B", "judge": "jon"}
+{"token": "tb35150adbe", "choice": "C", "judge": "jon"}
+{"token": "tc29ffeb5f3", "choice": "none", "judge": "jon"}
+{"token": "tc2e928b2a0", "choice": "none", "judge": "jon"}
+{"token": "tc3d3e63026", "choice": "A", "judge": "jon"}
+{"token": "tc489134b83", "choice": "C", "judge": "jon", "comment": "A and C are both good but C slightly better"}
+{"token": "tc53d60093f", "choice": "C", "judge": "jon"}
+{"token": "tc7acb208c3", "choice": "A", "judge": "jon"}
+{"token": "tcdf1f35b0c", "choice": "B", "judge": "jon", "comment": "A, B, and C are all pretty good but B is best"}
+{"token": "tdf734c39b0", "choice": "A", "judge": "jon", "comment": "A and B are both pretty good but A is better"}
+{"token": "ted0d8eb0e2", "choice": "C", "judge": "jon"}
+{"token": "tf3459ecaf5", "choice": "C", "judge": "jon"}
+{"token": "tfb81323001", "choice": "B", "judge": "jon", "comment": "A and B are both pretty good but B is best"}
+{"token": "tfbc348b385", "choice": "A", "judge": "jon", "comment": "All three are good but A is best"}

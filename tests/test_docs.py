@@ -34,11 +34,23 @@ PAGES = ['README.md', 'CONTRIBUTING.md'] + [
     os.path.join('docs', f) for f in sorted(os.listdir(DOCS_DIR)) if f.endswith('.md')
 ]
 
+# The guidance Claude Code loads: the root file (every session), the path-scoped rules files (when a file
+# matching their `paths:` globs is read) and the nested CLAUDE.md files (when a file under their directory
+# is read). One list, so every test that scans "the guidance" scans all of it - a rule moved out of the root
+# file would otherwise drop out of the docs-path and log.csv-width checks in silence.
+RULES_DIR = os.path.join('.claude', 'rules')
+RULE_FILES = sorted(os.path.join(RULES_DIR, f)
+                    for f in os.listdir(os.path.join(REPO_ROOT, RULES_DIR)) if f.endswith('.md'))
+NESTED_CLAUDE_MDS = sorted(os.path.relpath(os.path.join(root, 'CLAUDE.md'), REPO_ROOT)
+                           for root, dirs, files in os.walk(REPO_ROOT)
+                           if 'CLAUDE.md' in files and os.path.abspath(root) != REPO_ROOT
+                           and '.git' not in root and 'worktrees' not in root)
+GUIDANCE_FILES = ['CLAUDE.md'] + RULE_FILES + NESTED_CLAUDE_MDS
+
 # Sources named one by one, so a rename fails this test instead of quietly dropping the file out of coverage.
-# CLAUDE.md earns its place here for the same reason the Python sources do: it is a pointer document that
-# cites docs/ pages by path, and nothing else checks those.
-NAMED_SOURCES = [
-    'CLAUDE.md',
+# The guidance files earn their place here for the same reason the Python sources do: they are pointer
+# documents that cite docs/ pages by path, and nothing else checks those.
+NAMED_SOURCES = GUIDANCE_FILES + [
     'DownloadRunner.py', 'CropRunner.py', 'migrate_crop_store.py', 'migrate_depth_artifacts.py', 'config.py',
     os.path.join('downloaders', 'gsv.py'), os.path.join('downloaders', 'mapillary.py'),
     os.path.join('downloaders', 'panoramax.py'),
@@ -201,7 +213,7 @@ def test_the_prose_states_the_current_log_csv_width():
     (the #187 review reworded one of eleven claims to a wrong count, and a floor of ten passed it)."""
     import DownloadRunner
 
-    pages = ['CLAUDE.md'] + PAGES
+    pages = GUIDANCE_FILES + PAGES
     found = []
     for page in pages:
         with open(os.path.join(REPO_ROOT, page), encoding='utf-8') as f:
@@ -224,3 +236,80 @@ def test_docs_paths_cited_in_code_exist(source):
         text = f.read()
     for cited in sorted(set(DOCS_PATH_IN_CODE.findall(text))):
         assert os.path.exists(os.path.join(REPO_ROOT, cited)), f'{source} cites {cited}, which does not exist'
+
+
+# Claude Code loads the root CLAUDE.md, every unscoped .claude/rules/*.md file and every @import into every
+# session, and warns once that startup set passes 150,000 characters ("CLAUDE.md is over the 150.0k-char
+# limit"); past that, it is context nobody asked for. The root file alone reached 158,330 on 2026-09-29. It was
+# trimmed to 145,600 and then split: the per-module rules moved into path-scoped rules files and nested
+# CLAUDE.md files, which load only when a matching file is read, and the root keeps what applies everywhere.
+# The tool's limit is pinned so the startup set can never again grow past it unnoticed; the root file's own
+# ratchet is set from its measured size after the split, in .coveragerc's fail_under spirit: raised only by
+# the change that earns it, never quietly.
+STARTUP_CHAR_LIMIT = 150_000
+ROOT_CLAUDE_MD_CHAR_RATCHET = 45_000
+
+
+def _chars(path):
+    with open(os.path.join(REPO_ROOT, path), encoding='utf-8') as f:
+        return len(f.read())
+
+
+def _frontmatter_paths(path):
+    """The `paths:` globs of a rules file's YAML frontmatter, or None if it has no frontmatter/paths.
+
+    Parsed by hand rather than with a YAML library: the format used here is one list under one key, and a
+    parser dependency for that would be the first non-test dependency the suite pulls in for a docs check."""
+    with open(os.path.join(REPO_ROOT, path), encoding='utf-8') as f:
+        lines = f.read().split('\n')
+    if not lines or lines[0].strip() != '---':
+        return None
+    globs, in_paths = [], False
+    for line in lines[1:]:
+        if line.strip() == '---':
+            break
+        if line.strip() == 'paths:':
+            in_paths = True
+            continue
+        if in_paths and line.strip().startswith('- '):
+            globs.append(line.strip()[2:].strip().strip('"\''))
+        elif line.strip() and not line.startswith(' '):
+            in_paths = False
+    return globs if in_paths or globs else None
+
+
+def test_the_guidance_set_is_what_the_split_left():
+    """Guards the guards below: an empty rules directory would make every per-file test vacuous."""
+    assert len(RULE_FILES) >= 6, RULE_FILES
+    assert set(NESTED_CLAUDE_MDS) >= {os.path.join('log_analyzer', 'CLAUDE.md'),
+                                      os.path.join('reports', 'scripts', 'CLAUDE.md')}, NESTED_CLAUDE_MDS
+
+
+@pytest.mark.parametrize('rule', RULE_FILES)
+def test_every_rules_file_is_path_scoped_and_every_glob_matches_something(rule):
+    """A rules file without `paths:` loads into every session - the root file's problem, moved. A glob that
+    matches nothing never loads at all, and the module it described is then edited without its rules, which
+    reads exactly like the file never existing."""
+    import glob
+    globs = _frontmatter_paths(rule)
+    assert globs, f'{rule} has no `paths:` frontmatter, so it would load at startup'
+    for pattern in globs:
+        matches = glob.glob(os.path.join(REPO_ROOT, pattern), recursive=True)
+        assert matches, f'{rule}: the glob {pattern!r} matches no file in the repo'
+
+
+def test_the_startup_guidance_stays_under_claude_codes_limit():
+    startup = ['CLAUDE.md'] + [r for r in RULE_FILES if not _frontmatter_paths(r)]
+    total = sum(_chars(p) for p in startup)
+    assert total < STARTUP_CHAR_LIMIT, (
+        f'the guidance loaded at startup ({startup}) is {total:,} characters, over the '
+        f'{STARTUP_CHAR_LIMIT:,} Claude Code warns at. Move detail into a path-scoped rules file or the '
+        'docs/ page it belongs to, rather than raising this number.')
+
+
+def test_the_root_claude_md_stays_small():
+    chars = _chars('CLAUDE.md')
+    assert chars < ROOT_CLAUDE_MD_CHAR_RATCHET, (
+        f'CLAUDE.md is {chars:,} characters, over its {ROOT_CLAUDE_MD_CHAR_RATCHET:,} ratchet. It holds only '
+        'what applies everywhere; a module\'s rules belong in its .claude/rules/ file. Raise the ratchet only '
+        'in the change that earns it, and say why in this comment.')

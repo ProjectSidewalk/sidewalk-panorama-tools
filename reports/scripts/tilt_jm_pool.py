@@ -18,6 +18,9 @@ restricted to GSV panos, the four study types and the live measurable rule (rawl
     # 3. one batch: 6 per type per era arm, one label per pano, <= 4 per city per arm, md5(seed:uid) order
     python tilt_jm_pool.py draw --pool ... --pose ... --seed 20260929 --min-abs-t 4 --out <adjudication dir>
     python tilt_jm_pool.py draw ... --seed 20260930 --min-abs-t 6 --exclude <batch 1 dir> --out <batch 2 dir>
+    # #191's beta batch: windows at 0.5 / 1.0 / 1.5 T, both C batches' panos excluded
+    python tilt_jm_pool.py draw ... --design beta --seed beta20260929 --min-abs-t 5 --cell-cap 2 \
+        --exclude <batch 1 dir> --exclude <batch 2 dir> --out <beta dir>
 
 `draw` writes selection.csv and crop_jobs.csv straight into <out>/sealed/ (both name each window's role)
 and draw.json beside it; then tilt_remote_crop.py cuts the panels on the store host and
@@ -125,11 +128,12 @@ def draw(args):
     sealed = os.path.join(args.out, ta.SEALED)
     os.makedirs(sealed, exist_ok=True)
     sel.to_csv(os.path.join(sealed, 'selection.csv'), index=False, lineterminator='\n')
-    ta.crop_jobs(sel, args.seed).to_csv(os.path.join(sealed, 'crop_jobs.csv'), index=False, lineterminator='\n')
+    ta.crop_jobs(sel, args.seed, ta.DESIGNS[args.design]).to_csv(os.path.join(sealed, 'crop_jobs.csv'), index=False, lineterminator='\n')
     left = cands[~cands['pano_id'].isin(exclude)]
     spread = ({'cell_cap_per_city_per_arm_type': args.cell_cap, 'fill_pass': True} if args.cell_cap
               else {'city_cap': CITY_CAP})
-    info = {'seed': args.seed, 'min_abs_t_deg': args.min_abs_t, 'per_type': PER_TYPE, 'spread_rule': spread,
+    info = {'seed': args.seed, 'min_abs_t_deg': args.min_abs_t, 'design': args.design,
+            'offsets_T': ta.DESIGNS[args.design], 'per_type': PER_TYPE, 'spread_rule': spread,
             'pool_labels': int(len(pool)), 'scanned_panos': int(len(pose)),
             'excluded_batches': [os.path.basename(os.path.normpath(d)) for d in args.exclude or ()],
             'eligible_by_arm_type': {'%s|%s' % k: int(v) for k, v in
@@ -158,6 +162,8 @@ def main(argv=None):
     d.add_argument('--min-abs-t', type=float, default=ta.MIN_ABS_T_DEG)
     d.add_argument('--exclude', action='append', help='an earlier batch folder whose panos are not redrawn')
     d.add_argument('--cell-cap', type=int, help='per city per (arm, type), then a fill pass; else a flat city cap')
+    d.add_argument('--design', choices=sorted(ta.DESIGNS), default='c',
+                   help="the windows' offsets in T: 'c' stored/leak/antileak, 'beta' 0.5/1.0/1.5 T (#191)")
     d.add_argument('--out', required=True)
     args = ap.parse_args(argv)
     if args.cmd == 'pool':

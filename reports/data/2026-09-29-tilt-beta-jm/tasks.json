@@ -1,0 +1,194 @@
+{
+ "t08f12a4000": {
+  "label_type": "Obstacle",
+  "tags": "[\"tree\",\"vegetation\"]"
+ },
+ "t09a00db590": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"cracks\"]"
+ },
+ "t19304b76eb": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t1dbedce213": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "t22aa9000b8": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"height difference\"]"
+ },
+ "t2598245ddf": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"height difference\"]"
+ },
+ "t27462b059e": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t38f102a1e6": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t3931f8748e": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"brick/cobblestone\",\"bumpy\",\"cracks\"]"
+ },
+ "t3a7d276c07": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"cracks\"]"
+ },
+ "t438511d8b3": {
+  "label_type": "CurbRamp",
+  "tags": "[\"missing tactile warning\"]"
+ },
+ "t4d8e4e6eac": {
+  "label_type": "Obstacle",
+  "tags": "[\"narrow\",\"pole\"]"
+ },
+ "t51003fd8ad": {
+  "label_type": "Obstacle",
+  "tags": "[\"parked car\"]"
+ },
+ "t57cdd31a0b": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t5ac2d08fe9": {
+  "label_type": "CurbRamp",
+  "tags": "[\"missing tactile warning\"]"
+ },
+ "t5c1609b2d9": {
+  "label_type": "Obstacle",
+  "tags": "[\"vegetation\"]"
+ },
+ "t612ca0e10c": {
+  "label_type": "Obstacle",
+  "tags": "[\"narrow\",\"parked car\"]"
+ },
+ "t61a0814c33": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"brick/cobblestone\"]"
+ },
+ "t627e5c61e3": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t6f72c3c9f9": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t73c5f628b6": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t7876d5c101": {
+  "label_type": "Obstacle",
+  "tags": "[\"narrow\",\"vegetation\"]"
+ },
+ "t7cb1b25813": {
+  "label_type": "Obstacle",
+  "tags": "[\"construction\"]"
+ },
+ "t7d1c4b67fa": {
+  "label_type": "CurbRamp",
+  "tags": "[\"missing tactile warning\",\"not enough landing space\",\"not level with street\"]"
+ },
+ "t86b46dcde6": {
+  "label_type": "Obstacle",
+  "tags": "[\"vegetation\"]"
+ },
+ "t87251dd38a": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t8f4849aa15": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "t90ab39636f": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "t95151aad0f": {
+  "label_type": "Obstacle",
+  "tags": "[\"mailbox\"]"
+ },
+ "t9bfb372d84": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"height difference\",\"uneven/slanted\"]"
+ },
+ "ta32b6bac6d": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"unclear if needed\"]"
+ },
+ "ta9749d15f2": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "taa103d7bc2": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"height difference\",\"uneven/slanted\"]"
+ },
+ "tab1502c942": {
+  "label_type": "Obstacle",
+  "tags": "[\"litter/garbage\"]"
+ },
+ "tb2550553a8": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"bumpy\",\"grass\",\"narrow sidewalk\"]"
+ },
+ "tb35150adbe": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "tc29ffeb5f3": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"narrow sidewalk\",\"uneven/slanted\"]"
+ },
+ "tc2e928b2a0": {
+  "label_type": "CurbRamp",
+  "tags": "[\"not enough landing space\",\"points into traffic\"]"
+ },
+ "tc3d3e63026": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"cracks\"]"
+ },
+ "tc489134b83": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "tc53d60093f": {
+  "label_type": "CurbRamp",
+  "tags": "[\"parallel lines\",\"points into traffic\"]"
+ },
+ "tc7acb208c3": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tcdf1f35b0c": {
+  "label_type": "NoCurbRamp",
+  "tags": "[]"
+ },
+ "tdf734c39b0": {
+  "label_type": "Obstacle",
+  "tags": "[\"vegetation\",\"narrow\"]"
+ },
+ "ted0d8eb0e2": {
+  "label_type": "CurbRamp",
+  "tags": "[]"
+ },
+ "tf3459ecaf5": {
+  "label_type": "Obstacle",
+  "tags": "[\"sign\"]"
+ },
+ "tfb81323001": {
+  "label_type": "NoCurbRamp",
+  "tags": "[\"no alternate route\"]"
+ },
+ "tfbc348b385": {
+  "label_type": "SurfaceProblem",
+  "tags": "[\"utility panel\",\"uneven/slanted\"]"
+ }
+}

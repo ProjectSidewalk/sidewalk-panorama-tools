@@ -91,7 +91,7 @@ button:disabled{opacity:.4;cursor:default}
 textarea{flex:1;min-height:44px;font:14px system-ui;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
 #msg{color:var(--muted);min-height:1.4em;text-align:center;margin-top:6px}
 </style></head><body>
-<header><b>Tilt adjudication (#158)</b><span id="tabs"></span></header>
+<header><b>Tilt adjudication (#158, #191)</b><span id="tabs"></span></header>
 <main><div id="view"></div><div id="msg"></div></main>
 <script>
 const WHAT={
