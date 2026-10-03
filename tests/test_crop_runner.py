@@ -1986,6 +1986,19 @@ class TestTheLabelTypeArrivesUnderEitherName:
         assert crop_runner.resolve_label_type_id({'label_type': padded}) == 1
 
 
+@pytest.mark.parametrize('page', [os.path.join('.claude', 'rules', 'cropper.md'), os.path.join('docs', 'cropper.md')])
+def test_every_documented_outcome_sum_names_exactly_the_disjoint_outcomes(crop_runner, page):
+    """Each `a + b + ... == total` the cropper's guidance and docs state is DISJOINT_OUTCOMES, term for term.
+    A new outcome (#193's `no_pose`) changes these sums in prose only, so a merge that keeps the older text
+    drops it with nothing failing (#192 review S6) - unless the prose is held to the tuple."""
+    with io.open(os.path.join(REPO_ROOT, page), encoding='utf-8') as f:
+        text = f.read()
+    sums = re.findall(r'((?:[a-z_]+ \+ )+[a-z_]+) == total', text)
+    assert sums, f'{page} states no outcome sum'
+    for found in sums:
+        assert sorted(found.split(' + ')) == sorted(crop_runner.DISJOINT_OUTCOMES), (page, found)
+
+
 class TestTheLabelTypeMapMatchesTheDocumentedTable:
     """The map is a transcription of SidewalkWebpage's LabelTypeTable enum, and docs/api-fields.md
     carries the same ids for human readers. Two hand-maintained copies of one upstream fact drift, and
