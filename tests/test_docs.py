@@ -265,15 +265,21 @@ def test_docs_paths_cited_in_code_exist(source):
 
 
 # Claude Code loads the root CLAUDE.md, every unscoped .claude/rules/*.md file and every @import into every
-# session, and warns once that startup set passes 150,000 characters ("CLAUDE.md is over the 150.0k-char
-# limit"); past that, it is context nobody asked for. The root file alone reached 158,330 on 2026-09-29. It was
-# trimmed to 145,600 and then split: the per-module rules moved into path-scoped rules files and nested
-# CLAUDE.md files, which load only when a matching file is read, and the root keeps what applies everywhere.
-# The tool's limit is pinned so the startup set can never again grow past it unnoticed; the root file's own
-# ratchet is set from its measured size after the split, in .coveragerc's fail_under spirit: raised only by
-# the change that earns it, never quietly.
+# session. It warns when a SINGLE instruction file passes 150,000 characters - the warning that started this
+# was "CLAUDE.md is over the 150.0k-char limit", when the root file alone reached 158,330 on 2026-09-29 - and
+# separately when files each under that add up past a combined limit it does not publish. The root was
+# trimmed to 145,600 and then split: the per-module rules moved into path-scoped rules files, which load only
+# when a matching file is read, and the root keeps what applies everywhere.
+#
+# Two checks follow from that. Every guidance file stays under the per-file 150k (a scoped file still counts
+# as a file when it loads). And the startup set as a whole stays under the same 150k: that is NOT Claude
+# Code's combined limit, which is unknown; it is a stricter stand-in, harmless while the startup set is a
+# fifth of it. The root file's own ratchet is its measured size after the #192 review fixes (26,224) plus
+# about 4k of headroom - in .coveragerc's fail_under spirit: raised only by the change that earns it, and
+# said so here, never quietly. (It was 45,000 at first, which left 19k of unnoticed regrowth.)
+PER_FILE_CHAR_LIMIT = 150_000
 STARTUP_CHAR_LIMIT = 150_000
-ROOT_CLAUDE_MD_CHAR_RATCHET = 45_000
+ROOT_CLAUDE_MD_CHAR_RATCHET = 30_000
 
 
 def _chars(path):
@@ -393,13 +399,21 @@ def test_every_rules_file_is_path_scoped_and_every_glob_matches_something(rule):
         assert matches, f'{rule}: the glob {pattern!r} matches no file in the repo'
 
 
-def test_the_startup_guidance_stays_under_claude_codes_limit():
+@pytest.mark.parametrize('path', GUIDANCE_FILES)
+def test_every_guidance_file_is_under_claude_codes_per_file_limit(path):
+    chars = _chars(path)
+    assert chars < PER_FILE_CHAR_LIMIT, (
+        f'{path} is {chars:,} characters, over the {PER_FILE_CHAR_LIMIT:,} Claude Code warns at for a single '
+        'file. Split it, or move detail into the docs/ page it belongs to.')
+
+
+def test_the_startup_guidance_stays_small():
     startup = ['CLAUDE.md'] + [r for r in RULE_FILES if _loads_at_startup(r)]
     total = sum(_chars(p) for p in startup)
     assert total < STARTUP_CHAR_LIMIT, (
-        f'the guidance loaded at startup ({startup}) is {total:,} characters, over the '
-        f'{STARTUP_CHAR_LIMIT:,} Claude Code warns at. Move detail into a path-scoped rules file or the '
-        'docs/ page it belongs to, rather than raising this number.')
+        f'the guidance loaded at startup ({startup}) is {total:,} characters, over {STARTUP_CHAR_LIMIT:,} - '
+        'the per-file limit, used as a stricter stand-in for the combined one Claude Code does not publish. '
+        'Move detail into a path-scoped rules file or the docs/ page it belongs to, rather than raising this.')
 
 
 def test_the_root_claude_md_stays_small():
