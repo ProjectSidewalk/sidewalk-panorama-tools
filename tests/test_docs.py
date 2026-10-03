@@ -21,6 +21,7 @@ whitespace, or hyphen, then turn each remaining whitespace character into a hyph
 deliberately *not* collapsed, because GitHub does not collapse them either - `A — B` slugs to `a--b`.
 """
 
+import functools
 import os
 import re
 
@@ -369,10 +370,12 @@ def _loads_at_startup(path):
 
 
 def test_the_guidance_set_is_what_the_split_left():
-    """Guards the guards below: an empty rules directory would make every per-file test vacuous."""
-    assert len(RULE_FILES) >= 6, RULE_FILES
-    assert set(NESTED_CLAUDE_MDS) >= {os.path.join('log_analyzer', 'CLAUDE.md'),
-                                      os.path.join('reports', 'scripts', 'CLAUDE.md')}, NESTED_CLAUDE_MDS
+    """Guards the guards below: an empty rules directory would make every per-file test vacuous. The two
+    nested CLAUDE.md files became rules files (#192 review S4); discovery of nested ones stays, so a new one is
+    checked like the rest."""
+    names = {os.path.basename(r) for r in RULE_FILES}
+    assert names >= {'downloader.md', 'depth.md', 'cropper.md', 'tilt.md', 'queue.md', 'store-repair.md',
+                     'log-analyzer.md', 'desk-studies.md'}, RULE_FILES
 
 
 @pytest.mark.parametrize('rule', RULE_FILES)
@@ -495,3 +498,77 @@ def test_a_glob_must_match_a_file_and_braces_expand():
     `{a,b}`, which Python's glob does not."""
     assert _glob_files('reports/plans') == []
     assert os.path.join('tests', 'test_docs.py') in _glob_files('tests/test_docs.{py,md}')
+
+
+# The reverse direction (#192 review S4 and its "reverse coverage check"): every glob matching something does
+# not mean everything that needs rules gets them. Before the split all of it was in every session, so a file
+# that now loads nothing has lost guidance it used to have.
+
+@functools.lru_cache(maxsize=None)
+def _glob_set(pattern):
+    return frozenset(m.replace(os.sep, '/') for m in _glob_files(pattern))
+
+
+def _guidance_loading_for(path):
+    """The guidance files Claude Code loads when `path` (repo-relative, `/`-separated) is read: every rules
+    file with a glob matching it, and every nested CLAUDE.md in a directory above it."""
+    loaded = set()
+    for rule in RULE_FILES:
+        try:
+            globs = _frontmatter_paths(rule) or []
+        except ValueError:
+            continue
+        if any(path in _glob_set(g) for g in globs):
+            loaded.add(rule.replace(os.sep, '/'))
+    for nested in NESTED_CLAUDE_MDS:
+        if path.startswith(os.path.dirname(nested).replace(os.sep, '/') + '/'):
+            loaded.add(nested.replace(os.sep, '/'))
+    return loaded
+
+
+def test_every_measured_module_loads_some_rules():
+    """A production module no rules file matches is edited with only the root's one-paragraph summary - how
+    #193's pano_pose.py would have gone unguided. The measured set is test_coverage_config's, so a new module
+    is already a deliberate measure-or-omit decision there; this makes it a guidance decision too."""
+    from test_coverage_config import PRODUCTION_MODULES
+    unguided = sorted(m for m in PRODUCTION_MODULES if not _guidance_loading_for(m))
+    assert not unguided, f'no rules file or nested CLAUDE.md loads for {unguided}'
+
+
+# A desk-study test: a test module whose module scope reaches into reports/ (puts reports/scripts on the path,
+# or names a reports/ file or directory). Two of the conventions are ABOUT these tests.
+_REACHES_INTO_REPORTS = re.compile(r"^\S.*os\.path\.join\(.*'reports'", re.MULTILINE)
+DESK_STUDY_RULES = '.claude/rules/desk-studies.md'
+
+
+def _desk_study_tests():
+    found = []
+    for f in sorted(os.listdir(os.path.join(REPO_ROOT, 'tests'))):
+        if f.startswith('test_') and f.endswith('.py'):
+            with open(os.path.join(REPO_ROOT, 'tests', f), encoding='utf-8') as fh:
+                if _REACHES_INTO_REPORTS.search(fh.read()):
+                    found.append('tests/' + f)
+    return found
+
+
+def test_the_desk_study_finder_finds_the_desk_studies():
+    found = _desk_study_tests()
+    assert len(found) >= 40 and {'tests/test_studyfmt.py', 'tests/test_reports_index.py',
+                                 'tests/test_depth_backfill_report.py'} <= set(found), found
+
+
+@pytest.mark.parametrize('path', _desk_study_tests() + [
+    'reports/README.md', 'reports/2026-09-26-tilt-error-study.md', 'reports/scripts/studyfmt.py',
+    'reports/scripts/annotate.html', 'reports/plans/2026-09-26-issue-54-tilt-plan.md'])
+def test_the_desk_study_conventions_load_for_the_studies_their_tests_and_their_reports(path):
+    """'Committed-artifact tests do not test code' and 'every number in a report's prose is transcribed' are
+    rules about these tests and this prose; they loaded for none of them after the split."""
+    assert DESK_STUDY_RULES in _guidance_loading_for(path), (
+        f'{DESK_STUDY_RULES} does not load for {path}: add a glob to its `paths:`')
+
+
+@pytest.mark.parametrize('path', ['log_analyzer/analyze.py', 'log_analyzer/roster.py', 'log_analyzer/cities.csv',
+                                  'tests/test_log_analyzer.py', 'docs/log-analyzer.md'])
+def test_the_log_analyzer_rules_load_for_its_test_and_its_page(path):
+    """Rule 3a is about tests/test_log_analyzer.py's autouse `_no_roster_network`; it did not load there."""
+    assert '.claude/rules/log-analyzer.md' in _guidance_loading_for(path)

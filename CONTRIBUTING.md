@@ -58,7 +58,7 @@ referenced dataset reproduces every number in `reports/`.
 **Desk studies under `reports/scripts/` have their own six conventions** — undefined is not zero, `pano_id` is
 pinned to `str`, Mapillary cities cache separately, committed-artifact tests don't test code, prose numbers are
 transcribed, and two figures in one artifact must each name the population they were computed on. They are
-written out in [`reports/README.md`](reports/README.md#desk-study-conventions--six-that-keep-being-rediscovered),
+written out in [`.claude/rules/desk-studies.md`](.claude/rules/desk-studies.md#desk-study-conventions--six-that-keep-being-rediscovered),
 each one because it broke something.
 
 **`label_id` is unique per city, not globally.** One database schema per city, each with its own serial. Key
