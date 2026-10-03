@@ -4,7 +4,7 @@ Three layers, because each catches something the others cannot:
 
   * the reducer against synthetic rows - a fleet average versus a longest city, undefined-is-None, the floor
     regimes from their constants - since a committed artifact was produced BY the code it would otherwise be
-    pinning (CLAUDE.md: committed-artifact tests do not test code);
+    pinning (.claude/rules/desk-studies.md: committed-artifact tests do not test code);
   * the committed JSON being exactly what the script produces from the committed CSV, so the artifact cannot
     drift from the data it claims to summarise;
   * every number the report quotes being in the artifact - the convention since two hand-typed counts in an

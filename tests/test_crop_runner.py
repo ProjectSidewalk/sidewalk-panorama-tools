@@ -1986,6 +1986,19 @@ class TestTheLabelTypeArrivesUnderEitherName:
         assert crop_runner.resolve_label_type_id({'label_type': padded}) == 1
 
 
+@pytest.mark.parametrize('page', [os.path.join('.claude', 'rules', 'cropper.md'), os.path.join('docs', 'cropper.md')])
+def test_every_documented_outcome_sum_names_exactly_the_disjoint_outcomes(crop_runner, page):
+    """Each `a + b + ... == total` the cropper's guidance and docs state is DISJOINT_OUTCOMES, term for term.
+    A new outcome (#193's `no_pose`) changes these sums in prose only, so a merge that keeps the older text
+    drops it with nothing failing (#192 review S6) - unless the prose is held to the tuple."""
+    with io.open(os.path.join(REPO_ROOT, page), encoding='utf-8') as f:
+        text = f.read()
+    sums = re.findall(r'((?:[a-z_]+ \+ )+[a-z_]+) == total', text)
+    assert sums, f'{page} states no outcome sum'
+    for found in sums:
+        assert sorted(found.split(' + ')) == sorted(crop_runner.DISJOINT_OUTCOMES), (page, found)
+
+
 class TestTheLabelTypeMapMatchesTheDocumentedTable:
     """The map is a transcription of SidewalkWebpage's LabelTypeTable enum, and docs/api-fields.md
     carries the same ids for human readers. Two hand-maintained copies of one upstream fact drift, and
@@ -2009,8 +2022,9 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
         return found
 
     def _claude_md_ids(self):
-        """The same table as it appears in CLAUDE.md, which is a THIRD hand-maintained copy."""
-        text = io.open(os.path.join(REPO_ROOT, 'CLAUDE.md'), encoding='utf-8').read()
+        """The same table as it appears in .claude/rules/cropper.md (the cropper's part of CLAUDE.md since
+        the 2026-09-29 split), which is a THIRD hand-maintained copy."""
+        text = io.open(os.path.join(REPO_ROOT, '.claude', 'rules', 'cropper.md'), encoding='utf-8').read()
         section = text.split('## Label Type IDs', 1)[-1].split('\n## ', 1)[0]
         found = {}
         for line in section.splitlines():
@@ -2025,7 +2039,7 @@ class TestTheLabelTypeMapMatchesTheDocumentedTable:
         test - and CLAUDE.md is the agent-facing source of truth, so a wrong pair there is the one most
         likely to be believed and propagated."""
         documented = self._claude_md_ids()
-        assert documented, 'the label type table went missing from CLAUDE.md'
+        assert documented, 'the label type table went missing from .claude/rules/cropper.md'
         assert documented == crop_runner.LABEL_TYPE_IDS_BY_NAME
 
     def test_the_documented_table_is_the_map_pair_for_pair(self, crop_runner):
@@ -3009,7 +3023,7 @@ class TestTheMarkerKeepsItsHistory:
         assert len(kept) == 1 and kept[0].read_text(encoding='utf-8') == content
 
     def test_removing_the_history_keys_is_the_reset_after_a_whole_recut(self, crop_runner, tmp_path, caplog):
-        """docs/cropper.md and CLAUDE.md name this as the reset: the history only grows, so after a whole
+        """docs/cropper.md and .claude/rules/cropper.md name this as the reset: the history only grows, so after a whole
         store is re-cut under one rule, removing rules_seen, constants_seen and previous_crop_rule_version
         from crop_rule.json (never a crop) is what quiets it. Not deleting the file, as it was before the
         marker also carried the store's city (#159) and the manifest's gap record (#111): the city would

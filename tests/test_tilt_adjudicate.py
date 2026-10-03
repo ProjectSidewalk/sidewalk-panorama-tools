@@ -401,7 +401,10 @@ class TestTheCommittedFolder:
     def test_the_readmes(self):
         with open(os.path.join(ADJ_DIR, 'README.md'), encoding='utf-8') as f:
             judge = f.read()
-        assert judge == ta.JUDGE_README.format(out='reports/data/2026-09-26-tilt-adjudication')
+        # The folder is a record, written while the tilt rules were still a CLAUDE.md subsection; the template
+        # names their new home (.claude/rules/tilt.md, #192) and the record keeps the words its judge read.
+        template = ta.JUDGE_README.replace("`.claude/rules/tilt.md`", "CLAUDE.md's tilt subsection")
+        assert judge == template.format(out='reports/data/2026-09-26-tilt-adjudication')
         assert 'nothing else in this folder' in judge.splitlines()[0]
         with open(os.path.join(ADJ_DIR, 'sealed', 'README.md'), encoding='utf-8') as f:
             assert f.readline().strip() == 'Do not open until you have recorded all 48 verdicts.'
@@ -555,15 +558,37 @@ def test_M11_a_fresh_salt_is_128_bits_and_random(tmp_path):
     assert all(len(s) == 32 and int(s, 16) >= 0 for s in salts) and salts[0] != salts[1]
 
 
-# The machine's aggregate result is also quoted outside the report (#158 final review item 7).
-QUOTES_THE_MACHINE_RESULT = ('reports/README.md', 'docs/cropper.md', "CLAUDE.md's tilt subsection")
+# The machine's aggregate result is also quoted outside the report (#158 final review item 7). The tilt
+# rules moved out of CLAUDE.md into .claude/rules/tilt.md on 2026-09-29 (#192), and the README kept naming
+# the old place with this list green, so the list is now also checked against the files themselves.
+QUOTES_THE_MACHINE_RESULT = ('reports/README.md', 'docs/cropper.md', '.claude/rules/tilt.md')
+MACHINE_RESULT = '79 : 0'
+
+
+def _markdown_quoting_the_result():
+    """Every .md in the checkout that quotes C's result, bar the report itself and the judge folders."""
+    found = set()
+    skip = {os.path.join(REPO_ROOT, '.claude', 'worktrees'), os.path.join(REPO_ROOT, 'reports', 'data')}
+    for d, dirs, files in os.walk(REPO_ROOT):
+        dirs[:] = [x for x in dirs if x not in {'.git', '.venv', 'venv', '__pycache__'}
+                   and os.path.join(d, x) not in skip]
+        for f in files:
+            path = os.path.join(d, f)
+            if not f.endswith('.md') or os.path.normcase(path) == os.path.normcase(REPORT_MD):
+                continue
+            with open(path, encoding='utf-8') as fh:
+                if MACHINE_RESULT in fh.read():
+                    found.add(os.path.relpath(path, REPO_ROOT).replace(os.sep, '/'))
+    return found
 
 
 def test_the_judge_readme_names_every_file_that_quotes_a_result():
-    """Every judge folder's README (the template) still tells a future judge what not to open."""
+    """Every judge folder's README (the template) still tells a future judge what not to open - by the
+    names of the files that actually quote the result today."""
     readme = ' '.join(ta.JUDGE_README.split())
     for name in QUOTES_THE_MACHINE_RESULT:
         assert name in readme
+    assert _markdown_quoting_the_result() == set(QUOTES_THE_MACHINE_RESULT)
 
 
 def test_c_says_which_contrast_is_primary_and_that_the_rule_was_fixed_blind():
