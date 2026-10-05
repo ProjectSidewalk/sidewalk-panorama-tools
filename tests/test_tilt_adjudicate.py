@@ -1125,7 +1125,22 @@ def test_score_beta_refuses_an_unfinished_batch(tmp_path, capsys):
     with pytest.raises(SystemExit) as e:
         ta.main(['score-beta', '--out', str(d), '--judge', 'jon'])
     assert e.value.code == 2
-    assert '47 verdicts for 48 sheets' in capsys.readouterr().err
+    assert 'judged 47 of 48 sheets (1 unjudged, 0 not in the key)' in capsys.readouterr().err
+    assert not list((d / 'sealed').glob('score*.json'))
+
+
+def test_score_beta_names_a_verdict_for_a_token_not_in_the_key(tmp_path, capsys):
+    """Round-2 Gemini (gemini-3.1-pro-high) finding: a stray verdict for a token the key does not hold made
+    the refusal read '48 verdicts for 48 sheets', which names nothing wrong. Every sheet is judged here and
+    one foreign token is added; the message must count it. Fails with the old message restored."""
+    d = _beta_folder_copy(tmp_path)
+    path = d / 'verdicts_jon.jsonl'
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps({'token': 'tnotinthekey', 'choice': 'A'}) + '\n')
+    with pytest.raises(SystemExit) as e:
+        ta.main(['score-beta', '--out', str(d), '--judge', 'jon'])
+    assert e.value.code == 2
+    assert 'judged 48 of 48 sheets (0 unjudged, 1 not in the key)' in capsys.readouterr().err
     assert not list((d / 'sealed').glob('score*.json'))
 
 

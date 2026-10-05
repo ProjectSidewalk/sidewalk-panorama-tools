@@ -741,8 +741,12 @@ def score_beta_report(out_dir, judge):
                          % (out_dir, design))
     verdicts = verdicts_for_score(out_dir, judge)
     if set(verdicts) != set(key):
-        raise ValueError('judge %s has %d verdicts for %d sheets; score-beta scores a finished batch only'
-                         % (judge, len(set(verdicts) & set(key)), len(key)))
+        # Both directions are counted: a stray token (not in the key) is as wrong as an unjudged sheet,
+        # and a count of the intersection alone would read "48 of 48" for it.
+        judged = set(verdicts) & set(key)
+        raise ValueError('judge %s has judged %d of %d sheets (%d unjudged, %d not in the key); score-beta '
+                         'scores a finished batch only'
+                         % (judge, len(judged), len(key), len(set(key) - judged), len(set(verdicts) - judged)))
     result = score_beta(verdicts, key)
     with open(os.path.join(out_dir, KEY_HASH), encoding='ascii') as f:
         key_sha = f.read().strip()
