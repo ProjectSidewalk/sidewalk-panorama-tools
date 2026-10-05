@@ -107,8 +107,13 @@ def test_the_beta_draw_rebuilds_from_committed_data(tmp_path, capsys):
              '--exclude', os.path.join(DATA, '2026-09-29-tilt-adjudication-jm'),
              '--exclude', os.path.join(DATA, '2026-09-30-tilt-adjudication-jm-b2'), '--out', str(out)])
     capsys.readouterr()
+    # Values, not bytes: on CI (Ubuntu / py3.10) a derived float's last printed digit differs from the
+    # Windows build that wrote the committed file (selection.csv byte 22411, '2' against '3').
     for name in ('selection.csv', 'crop_jobs.csv'):
-        with open(out / 'sealed' / name, 'rb') as a, open(os.path.join(beta, 'sealed', name), 'rb') as b:
-            assert a.read().replace(b'\r\n', b'\n') == b.read().replace(b'\r\n', b'\n'), name
+        a = pd.read_csv(out / 'sealed' / name, dtype={'pano_id': str})
+        b = pd.read_csv(os.path.join(beta, 'sealed', name), dtype={'pano_id': str})
+        pd.testing.assert_frame_equal(a, b, check_exact=False, rtol=1e-9, atol=0, obj=name)
+    jobs = pd.read_csv(out / 'sealed' / 'crop_jobs.csv')
+    assert set(jobs['window']) == {'b050', 'b100', 'b150'}
     with open(out / 'draw.json', encoding='utf-8') as a, open(os.path.join(beta, 'draw.json'), encoding='utf-8') as b:
         assert json.load(a) == json.load(b)
