@@ -5,6 +5,7 @@ __pycache__/
 *.swp
 id_rsa
 venv
+.venv/
 *.log
 crop.log.bak.txt
 .idea
