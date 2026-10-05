@@ -565,21 +565,38 @@ QUOTES_THE_MACHINE_RESULT = ('reports/README.md', 'docs/cropper.md', '.claude/ru
 MACHINE_RESULT = '79 : 0'
 
 
-def _markdown_quoting_the_result():
-    """Every .md in the checkout that quotes C's result, bar the report itself and the judge folders."""
+def _markdown_quoting_the_result(root=REPO_ROOT, report=REPORT_MD):
+    """Every .md in the checkout that quotes C's result, bar the report itself, the judge folders and the
+    plans. reports/plans/ is skipped as records (#192 round-2 review R2): a plan written after the result
+    quotes it as a premise, is frozen once its work lands, and is not something a judge would open for the
+    answer - #193's plan is the first, and naming it in the README would change the template every committed
+    judge folder is compared against."""
     found = set()
-    skip = {os.path.join(REPO_ROOT, '.claude', 'worktrees'), os.path.join(REPO_ROOT, 'reports', 'data')}
-    for d, dirs, files in os.walk(REPO_ROOT):
+    skip = {os.path.join(root, '.claude', 'worktrees'), os.path.join(root, 'reports', 'data'),
+            os.path.join(root, 'reports', 'plans')}
+    for d, dirs, files in os.walk(root):
         dirs[:] = [x for x in dirs if x not in {'.git', '.venv', 'venv', '__pycache__'}
                    and os.path.join(d, x) not in skip]
         for f in files:
             path = os.path.join(d, f)
-            if not f.endswith('.md') or os.path.normcase(path) == os.path.normcase(REPORT_MD):
+            if not f.endswith('.md') or os.path.normcase(path) == os.path.normcase(report):
                 continue
             with open(path, encoding='utf-8') as fh:
                 if MACHINE_RESULT in fh.read():
-                    found.add(os.path.relpath(path, REPO_ROOT).replace(os.sep, '/'))
+                    found.add(os.path.relpath(path, root).replace(os.sep, '/'))
     return found
+
+
+def test_the_result_scan_skips_the_report_the_judge_folders_and_the_plans(tmp_path):
+    files = {'reports/the-report.md': MACHINE_RESULT, 'reports/README.md': MACHINE_RESULT,
+             'reports/data/judge/README.md': MACHINE_RESULT, 'reports/plans/a-plan.md': MACHINE_RESULT,
+             '.claude/rules/tilt.md': MACHINE_RESULT, 'docs/other.md': 'no result here'}
+    for rel, text in files.items():
+        path = tmp_path.joinpath(*rel.split('/'))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+    found = _markdown_quoting_the_result(str(tmp_path), str(tmp_path / 'reports' / 'the-report.md'))
+    assert found == {'reports/README.md', '.claude/rules/tilt.md'}
 
 
 def test_the_judge_readme_names_every_file_that_quotes_a_result():
