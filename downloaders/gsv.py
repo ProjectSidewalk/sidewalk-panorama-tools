@@ -1084,9 +1084,8 @@ def pushback_reason(exc):
       since 403 is not in the forcelist and so never exhausts it (the 403 half is for the day it is). A 5xx
       storm exhausting the policy is Google being ill, not Google refusing us - and a trip writes the
       fleet-wide block latch, so reading an outage as a refusal would stand every city's depth phase down for
-      six hours. The image phase's photometa arm (#74) latches on this same line; the depth phase's own
-      `except (DepthBlockedError, RetryError)` is broader, and its latch predates this breaker (a
-      follow-up). A RetryError whose status cannot be read is None for the same reason. One that gave up
+      six hours. The depth loop (#177) and the image phase's photometa arm (#74/#172) both split on this
+      one predicate. A RetryError whose status cannot be read is None for the same reason. One that gave up
       ON Google's interstitial (its message names the /sorry/ path or the consent host) is 'interstitial'
       whatever its status: the landing is the refusal, and a 503 captcha page is not an outage.
     * requests' HTTPError from the zoom probe, which since #166 raises for any status but 200 and carries
@@ -2443,20 +2442,27 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
                 consecutive_failures = 0
                 streak_classes.clear()
                 pacer.on_clean()
-            except (DepthBlockedError, requests.exceptions.RetryError) as e:
-                # Google is refusing us: an interstitial, or a 429/5xx that survived every retry. That's a verdict
-                # on the endpoint, not on this pano, so stop rather than spend the rest of the budget on a wall.
-                fail_count += 1
-                stop_reason = DEPTH_STOP_BLOCKED
-                last_error = e
-                logging.error("DEPTHDOWNLOAD: Stopping depth phase, Google is refusing requests (%s)", str(e))
-                print("DEPTHDOWNLOAD: Google is refusing requests (%s). Stopping the depth phase." % (e))
-                break
-            except (requests.RequestException, ValueError) as e:
-                # Transient: connection errors/timeouts, or a non-JSON page that isn't a recognised interstitial -
-                # streetlevel never checks status codes, so non-200 responses surface as JSONDecodeError. Not
-                # ledgered, so the pano retries next run.
-                # NB: requests.RequestException subclasses OSError, so it must be caught above the OSError arm.
+            except (DepthBlockedError, requests.RequestException, ValueError) as e:
+                # NB: requests.RequestException subclasses OSError, so this arm must stay above the OSError one.
+                if isinstance(e, DepthBlockedError) or pushback_reason(e) is not None:
+                    # Google refusing THIS HOST: the hook's DepthBlockedError (403 or an interstitial), a
+                    # RetryError whose urllib3 message is 'too many 429 error responses', or one that gave up on
+                    # a /sorry/ or consent URL. A verdict on the endpoint, not this pano: stop rather than spend
+                    # the rest of the budget on a wall, and the phase end writes the latch. (#177: a 5xx storm
+                    # exhausting the same retry policy is Google being ill, not Google refusing us, and takes
+                    # the arm below - before this it latched the fleet for 6 h.) pushback_reason's HTTPError leg
+                    # would latch a 403/429 HTTPError too; streetlevel never calls raise_for_status, so none can
+                    # arrive here, and the image phase's photometa arm (_photometa_levels) draws the identical
+                    # line - one convention, not two.
+                    fail_count += 1
+                    stop_reason = DEPTH_STOP_BLOCKED
+                    last_error = e
+                    logging.error("DEPTHDOWNLOAD: Stopping depth phase, Google is refusing requests (%s)", str(e))
+                    print("DEPTHDOWNLOAD: Google is refusing requests (%s). Stopping the depth phase." % (e))
+                    break
+                # Transient: connection errors/timeouts, a 5xx storm that outlasted the retry policy, or a
+                # non-JSON page that isn't a recognised interstitial - streetlevel never checks status codes,
+                # so non-200 responses surface as JSONDecodeError. Not ledgered, so the pano retries next run.
                 fail_count += 1
                 consecutive_failures += 1
                 failure_class = 'network'
