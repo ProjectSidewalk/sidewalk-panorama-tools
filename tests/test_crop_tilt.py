@@ -443,6 +443,23 @@ class TestResolvingAPoseNeverEndsTheRun:
         lines = [r.getMessage() for r in caplog.records if 'resolving its pose raised' in r.getMessage()]
         assert len(lines) == 1 and 'RuntimeError' in lines[0] and 'badxmlpano01' in lines[0]
 
+    def test_under_force_a_crop_on_disk_is_stale_kept(self, crop_runner, tmp_path, monkeypatch):
+        """A label the raise stopped is an error that wrote nothing, so its old crop stays, as for any other
+        error under --force."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_npz_pose(put_pano(store, 'testpano0001'))
+        run(crop_runner, [label_row(label_id=1)], store, out)
+        before = open(crop_path(out, 1, 1), 'rb').read()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError('boom')
+
+        monkeypatch.setattr(pano_pose, 'resolve_pano_pose', boom)
+        counts = run(crop_runner, [label_row(label_id=1), label_row(label_id=2)], store, out,
+                     tilt_correction=True, force=True)
+        assert (counts['errors'], counts['stale_kept']) == (2, 1) and reconciles(counts)
+        assert open(crop_path(out, 1, 1), 'rb').read() == before
+
     def test_the_gsv_suffix_comes_from_crop_runners_own_import(self, crop_runner, tmp_path, monkeypatch):
         """CropRunner hands DEPTH_ARTIFACT_SUFFIX in, so resolve_pano_pose never imports per pano. Fails if
         the call stops passing it: the import below then fails on every pano."""
@@ -472,6 +489,16 @@ class TestTheFramePreflightReadsTheCorrectedY:
             counts = run(crop_runner, [label_row(pano_y=1000)], store, out, tilt_correction=True)
         assert counts['out_of_frame'] == 1 and counts['success'] == 0 and reconciles(counts)
         assert 'pano_y 1000.0 (tilt-corrected to 1024.0) is outside' in caplog.text
+
+    def test_a_corrected_y_outside_keeps_a_crop_on_disk_under_force(self, crop_runner, tmp_path, monkeypatch):
+        """The corrected-y check comes after the exists check now, so only a --force label reaches it with a
+        crop on disk; that crop is kept, as for the stored-y check."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_npz_pose(put_pano(store, 'testpano0001'))
+        run(crop_runner, [label_row(pano_y=1000)], store, out)
+        monkeypatch.setattr(pano_pose, 'corrected_pixel', lambda x, y, w, h, p, r, beta: (x, float(h)))
+        counts = run(crop_runner, [label_row(pano_y=1000)], store, out, tilt_correction=True, force=True)
+        assert (counts['out_of_frame'], counts['stale_kept']) == (1, 1) and reconciles(counts)
 
     def test_a_stored_y_outside_is_out_of_frame_whatever_the_correction_says(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
