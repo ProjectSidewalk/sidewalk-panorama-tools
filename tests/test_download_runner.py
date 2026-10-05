@@ -3108,6 +3108,20 @@ def call_main_scripted(monkeypatch, tmp_path, verdicts, *extra_args):
     return storage, code
 
 
+def scripted_verdicts(raised=0, success=0, failure=0, skipped=0):
+    """A call_main_scripted verdict map: `raised` panos raise a transient, the rest answer with a verdict."""
+    out = {}
+    for i in range(raised):
+        out['raisedPano%03d' % i] = RuntimeError('store went away')
+    for i in range(success):
+        out['successPano%03d' % i] = downloaders.DownloadResult.success
+    for i in range(failure):
+        out['failurePano%03d' % i] = downloaders.DownloadResult.failure
+    for i in range(skipped):
+        out['skippedPano%03d' % i] = downloaders.DownloadResult.skipped
+    return out
+
+
 class TestAnImagePhaseWithNoSuccessFailsTheNight:
     """Every attempted pano raising is a condition of the run (the network, the store, a bug), not of the
     panos - and a transient is never ledgered, so nothing on disk says it happened. A permanent verdict is
@@ -3118,16 +3132,7 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
         monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 3)
 
     def verdicts(self, raised=0, success=0, failure=0, skipped=0):
-        out = {}
-        for i in range(raised):
-            out['raisedPano%03d' % i] = RuntimeError('store went away')
-        for i in range(success):
-            out['successPano%03d' % i] = downloaders.DownloadResult.success
-        for i in range(failure):
-            out['failurePano%03d' % i] = downloaders.DownloadResult.failure
-        for i in range(skipped):
-            out['skippedPano%03d' % i] = downloaders.DownloadResult.skipped
-        return out
+        return scripted_verdicts(raised=raised, success=success, failure=failure, skipped=skipped)
 
     def test_the_minimum_number_of_raises_and_nothing_answered_is_a_condition(self, monkeypatch, tmp_path,
                                                                               capsys):
@@ -3518,6 +3523,99 @@ class TestTheDepthCorpusSizeReachesLogCsv:
     def test_the_field_is_the_last_one(self):
         """Appending is what keeps every existing position - and every existing reader - unmoved."""
         assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT
+
+
+# --- log.csv field 20: tonight's raised image attempts (#182) ------------------------------------------------
+#
+# Field 9 is cumulative - seeded from the ledger's downloaded=0 rows - and mixes tonight's permanent verdicts with
+# tonight's transient raises, so a steady set of panos failing transiently every night adds the same number every
+# night and nothing in the row separates it out (#169 D13). The runner already counts exactly that number for
+# `images-no-success` (`raised`); field 20 writes it down. Blank, never 0, when the image phase did not finish.
+
+class TestField20IsTonightsRaisedAttempts:
+
+    def field_20(self, storage):
+        fields = last_log_fields(storage)
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        return fields[DownloadRunner.IMAGE_RAISED_FIELD - 1]
+
+    def test_it_counts_raises_and_not_verdicts_or_skips(self, monkeypatch, tmp_path):
+        """The mixture the field exists to separate: field 9 is 2 permanent + 3 transient, field 20 the 3."""
+        storage, _ = call_main_scripted(monkeypatch, tmp_path,
+                                        scripted_verdicts(raised=3, success=1, failure=2, skipped=1))
+
+        assert last_log_fields(storage)[8] == '5', 'field 9 mixes both kinds - the case under test'
+        assert self.field_20(storage) == '3'
+
+    def test_a_frame_disagreement_is_not_a_raise(self, monkeypatch, tmp_path):
+        """Unledgered and counted in field 9 like a raise, but it is Google ANSWERING (#74) - the same split
+        `images-no-success` makes, so the two counts never disagree about what a raise is."""
+        verdicts = {'framePano%03d' % i: downloaders.gsv.FrameDisagreementError('frame disagreement')
+                    for i in range(2)}
+
+        storage, _ = call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert last_log_fields(storage)[8] == '2'
+        assert self.field_20(storage) == '0'
+
+    def test_a_gsv_push_back_is_a_raise(self, monkeypatch, tmp_path):
+        """Google refusing this host (#162) is not an answer about the pano; one refusal does not trip."""
+        verdicts = {'refusedPano000': downloaders.gsv.TilePushbackError(429, 0, 0)}
+
+        storage, _ = call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert self.field_20(storage) == '1'
+
+    def test_a_quiet_night_writes_zero_not_blank(self, monkeypatch, tmp_path):
+        """The image phase finished and nothing raised: a count, 0 - blank is reserved for "did not finish"."""
+        storage, _ = call_main_scripted(monkeypatch, tmp_path, scripted_verdicts(success=2, failure=1))
+
+        assert self.field_20(storage) == '0'
+
+    def test_a_crash_in_the_image_phase_leaves_it_blank(self, monkeypatch, tmp_path):
+        """The phase never reached its end, so the count is unknown: blank, while field 19 - known before any
+        phase ran - is still written."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').mkdir()  # the image phase's first ledger open raises
+
+        with pytest.raises(OSError):
+            call_main_scripted(monkeypatch, tmp_path, scripted_verdicts(raised=3))
+
+        fields = last_log_fields(storage)
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == '3'
+        assert self.field_20(storage) == ''
+
+    def test_a_depth_crash_keeps_it(self, tmp_path, monkeypatch):
+        """Like fields 7-12, the image phase's count survives a crash in the phase after it."""
+        def image_phase(*args, **kwargs):
+            kwargs['image_stats']['raised'] = 7
+            return 3, 1, 9, 4, 17
+
+        def depth_boom(*args, **kwargs):
+            raise RuntimeError('depth phase exploded')
+
+        monkeypatch.setattr(DownloadRunner, 'download_panorama_images', image_phase)
+        monkeypatch.setattr(DownloadRunner.gsv, 'download_depth_maps', depth_boom)
+        panos = [{'pano_id': 'testPanoIdAAAAAAAAAAAA', 'source': 'gsv'}]
+        with pytest.raises(RuntimeError, match='depth phase exploded'):
+            DownloadRunner.run_scraper_and_log_results(str(tmp_path), panos, panos, skip_depth=False)
+
+        assert self.field_20(tmp_path) == '7'
+
+    def test_an_image_phase_that_reported_nothing_leaves_it_blank(self, tmp_path, monkeypatch):
+        """The finally writes what the phase reported, never a default: no report, no number."""
+        monkeypatch.setattr(DownloadRunner, 'download_panorama_images', lambda *a, **k: (3, 1, 2, 4, 10))
+        panos = [{'pano_id': 'testPanoIdAAAAAAAAAAAA', 'source': 'gsv'}]
+
+        DownloadRunner.run_scraper_and_log_results(str(tmp_path), panos, panos, skip_depth=True)
+
+        assert self.field_20(tmp_path) == ''
+
+    def test_field_20_is_the_last_one(self):
+        """Appended, so no existing position - and no existing reader - moves."""
+        assert DownloadRunner.IMAGE_RAISED_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.IMAGE_RAISED_FIELD - 1
 
 
 # --- The evidence row covers the whole run, not just the phases (#49) ------------------------------------------
@@ -3934,6 +4032,22 @@ class TestStoreMode:
         assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT == 19
         assert fields[7] == '0'
         assert all(f != '' for f in fields), 'a completed store run leaves no blank field'
+
+    def test_field_20_counts_tonights_unpulled_panos(self, monkeypatch, tmp_path):
+        """Store mode ledgers no permanent verdict, so every pano it failed to place tonight - absent,
+        truncated, an id the batch cannot carry - is transient and retried next run: its field 20 (#182)."""
+        bad = 'bad*panoAAAAAAAAAAAAAA'
+        run = StoreRun(monkeypatch, tmp_path, jpgs([STORE_IDS[0], STORE_IDS[2]]))
+        monkeypatch.setenv('FAKE_SFTP_TRUNCATE', STORE_IDS[2] + '.jpg')
+        run.main(store_csv_rows(STORE_IDS + [bad]))
+        fields = run.fields()
+        assert fields[6] == '1' and fields[8] == '3', 'one pulled; one absent, one truncated, one unsafe'
+        assert fields[DownloadRunner.IMAGE_RAISED_FIELD - 1] == '3'
+
+    def test_field_20_is_zero_on_a_clean_pull(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.main(store_csv_rows())
+        assert run.fields()[DownloadRunner.IMAGE_RAISED_FIELD - 1] == '0'
 
     def test_the_run_summary_reaches_stdout(self, monkeypatch, tmp_path, capsys):
         run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:2]))
