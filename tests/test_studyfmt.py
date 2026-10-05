@@ -381,7 +381,7 @@ class TestOneDefinition:
         The list was four filenames typed by hand, and it went stale on the very next script
         added: mapillary_census.py imports studyfmt and calls num() eleven times, and neither
         assertion here touched it — a local `def num(...)` there passed the suite, and so would
-        any future script. CLAUDE.md states the rule as "there is one definition of each and no
+        any future script. .claude/rules/desk-studies.md states the rule as "there is one definition of each and no
         script may grow a local copy (a test asserts that)", so the test has to hold for scripts
         nobody has written yet.
 

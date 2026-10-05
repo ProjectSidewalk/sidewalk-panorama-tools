@@ -647,7 +647,7 @@ class TestTheHeadlineFunctionsAtCodeLevel:
     These existed only as pins against the committed summary, which the same code generated — so
     five simultaneous mutations (visibility px scaled 3.7x, the shared-dx tolerance x1000, the
     monthly threshold 10 -> 999, scatter decimation, and fitted_zoom * 1.5) left all 28 tests
-    green. CLAUDE.md: "Committed-artifact tests do not test code... Every finding needs a
+    green. .claude/rules/desk-studies.md: "Committed-artifact tests do not test code... Every finding needs a
     synthetic code-level test beside its corpus pin."
     """
 

@@ -808,7 +808,7 @@ class TestTheSwitch:
         assert_two_tone(os.path.join(store, 'aa', 'aaSweptAAAAAAAAAAAAA.w1024.jpg'), (CAP, 512))
 
     def test_every_caller_of_the_primitives_reads_the_switch(self):
-        """The structural claim CLAUDE.md makes, with something behind it.
+        """The structural claim .claude/rules/store-repair.md makes (item 5), with something behind it.
 
         The tests above pin the three guards that exist today. None of them notices a FOURTH automatic
         writer - a new imagery source, a new repair pass - that calls a primitive and never reads the switch:
