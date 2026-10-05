@@ -1285,10 +1285,14 @@ def _store_has_history(storage_location):
     Reads at most two lines of each. A header alone is what any run leaves behind - the image phase creates
     pano_id_log.csv with one even over an empty list - so it is not history. An unreadable ledger is not
     evidence either way and reads as no history: the depth phase reports an unusable ledger itself.
+
+    Both are read as UTF-8 with bad bytes replaced (#189): with the platform default, one undecodable byte in
+    either ledger's first two lines raised UnicodeDecodeError - a ValueError, past the OSError arm - out of the
+    empty-list path, and the run exited 1 instead of answering. A replaced byte still reads as a row, i.e. history.
     """
     for name in ('pano_id_log.csv', gsv.DEPTH_LOG_FILENAME):
         try:
-            with open(os.path.join(storage_location, name), newline='') as f:
+            with open(os.path.join(storage_location, name), newline='', encoding='utf-8', errors='replace') as f:
                 f.readline()
                 if f.readline().strip():
                     return True

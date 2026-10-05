@@ -3663,6 +3663,63 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
         assert rows[0][1:] == [''] * 18
 
 
+class TestADamagedDepthLedgerDoesNotCostTheImagePhase:
+    """#189: a depth_log.csv field past csv.field_size_limit() raised csv.Error out of count_unresolved_depth -
+    the budget split, before either phase - so one bad line cost the whole night, images included, every night
+    until someone edited the file. The depth phase now sits the run out under depth-ledger-unusable and the
+    image phase runs as if the ledger were healthy."""
+
+    def test_the_night_runs_images_and_writes_one_full_row(self, monkeypatch, tmp_path, fake_streetview):
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + GSV_CSV_ROWS)
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_bytes(
+            b'pano_id,status\n' + b'x' * (csv.field_size_limit() + 1) + b',saved\n')
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+
+        def no_request(*args, **kwargs):
+            raise AssertionError('an unusable ledger must sit the depth phase out at zero requests')
+
+        fake_streetview.find_panorama_by_id = no_request
+        monkeypatch.chdir(tmp_path)
+
+        code = DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path),
+                                    '--max-runtime', '10', '--min-depth-runtime', '1',
+                                    '--run-summary-file', str(tmp_path / 'summary.json')])
+
+        assert sorted(calls) == sorted(GSV_PANO_IDS)
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        fields = rows[0]
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert all(f != '' for f in fields[6:11]), 'the image phase finished and filled its fields'
+        assert fields[6] == str(len(GSV_PANO_IDS))
+        assert fields[12:16] == ['0'] * 4
+        assert summary_codes(tmp_path) == [DownloadRunner.gsv.DEPTH_CONDITION_LEDGER]
+        # The condition is what fails the night (the queue reads the summary); the exit code itself is the
+        # image phase's, which had nothing to complain about.
+        assert code == 0
+
+    def test_an_empty_list_over_a_ledger_with_a_bad_byte_still_judges_history(self, tmp_path):
+        """_store_has_history reads both ledgers' first two lines on the empty-list path. UnicodeDecodeError is a
+        ValueError, so with the platform default encoding one bad byte there raised out of _run_phases - exit 1,
+        no image phase - instead of answering the question."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_bytes(b'pano_id,status\r\naa\x81a,saved\r\n')
+
+        assert DownloadRunner._store_has_history(str(storage)) is True
+
+    def test_a_bad_byte_in_the_image_ledger_is_history_too(self, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').write_bytes(b'pano_id,downloaded,fetched_at\r\naa\x81a,1,\r\n')
+
+        assert DownloadRunner._store_has_history(str(storage)) is True
+
+
 class TestField5IsTheImageListsLength:
     """Fields 2-5 are the stub of an XML-metadata endpoint that died in 2022, which makes "write zeros" look like
     a harmless cleanup. It is not: field 5 is len(image_pano_infos), and log_analyzer's rule 3 (#163) reads it
