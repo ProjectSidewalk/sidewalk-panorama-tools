@@ -297,12 +297,15 @@ def _frontmatter_paths(path):
 # gives a meaning to (`*` is an alias, `[`/`{` open a flow collection, ...) and may not hold a quote, a ` #`
 # comment or a `: ` mapping. Quoted ones may not hold their own quote (no escapes are understood).
 _SCALAR = r'''(?:"([^"\\]*)"|'([^']*)'|([^\s"'#&*!|>%@`{}\[\],?:-][^"'#]*?))'''
-_ITEM = re.compile(r'\s*- ' + _SCALAR + r'\s*')
+# A list item's indent is spaces only, and the same for every item (#192 round-2 review R3): YAML forbids tabs
+# in indentation, and an item indented deeper or shallower than the first is a structural error, so PyYAML
+# rejects both - and Claude Code then loads the file at startup - while `\s*` here read both as scoped.
+_ITEM = re.compile(r'(?P<indent> *)- ' + _SCALAR + r'\s*')
 _INLINE = re.compile(_SCALAR)
 
 
 def _scalar(match):
-    value = next(g for g in match.groups() if g is not None)
+    value = next(g for g in match.groups()[-3:] if g is not None)
     if ': ' in value:
         raise ValueError(f'{value!r} would parse as a mapping, not a glob')
     return value
@@ -338,10 +341,16 @@ def _parse_frontmatter_paths(text):
             raise ValueError(f'`paths: {inline}` has an empty entry')
         return globs
     globs = []
+    indent = None
     for line in body[1:]:
         match = _ITEM.fullmatch(line)
         if not match:
-            raise ValueError(f'frontmatter line {line!r} is not a `  - "glob"` list item')
+            raise ValueError(f'frontmatter line {line!r} is not a `  - "glob"` list item (spaces only, no tabs)')
+        if indent is None:
+            indent = match.group('indent')
+        elif match.group('indent') != indent:
+            raise ValueError(f'frontmatter line {line!r} is indented {len(match.group("indent"))} spaces and the '
+                             f'first item {len(indent)}: every item of the list takes the same indent')
         globs.append(_scalar(match))
     return globs or None
 
@@ -368,7 +377,8 @@ def _glob_files(pattern, root=REPO_ROOT):
 
 def _loads_at_startup(path):
     """True for a rules file with no `paths:` - and for one whose frontmatter is not understood, because
-    Claude Code drops frontmatter YAML rejects and loads the file as if it were unscoped."""
+    Claude Code drops frontmatter YAML rejects and loads the file as if it were unscoped. (For the few shapes
+    refused by policy only, such as an extra key, this over-counts startup: the safe direction.)"""
     try:
         return not _frontmatter_paths(path)
     except ValueError:
@@ -392,7 +402,11 @@ def test_every_rules_file_is_path_scoped_and_every_glob_matches_something(rule):
     try:
         globs = _frontmatter_paths(rule)
     except ValueError as e:
-        pytest.fail(f'{rule}: {e}. Claude Code would ignore this frontmatter and load the file at startup')
+        pytest.fail(f'{rule}: {e}. This repo accepts only the frontmatter shape the docs check fully parses - a '
+                    '`paths:` key holding a list of globs, or a comma-separated string - and refuses the rest. That '
+                    'is a repo policy, stricter than Claude Code: frontmatter YAML cannot parse makes Claude Code '
+                    'load the file at startup, but an extra key it would simply ignore. Write the `paths:` list '
+                    'in the shape the other rules files use.')
     assert globs, f'{rule} has no `paths:` frontmatter, so it would load at startup'
     for pattern in globs:
         matches = _glob_files(pattern)
@@ -475,7 +489,9 @@ def test_rules_files_in_subdirectories_are_discovered(tmp_path):
     ('---\npaths: a.py, tests/x.py\n---\n', ['a.py', 'tests/x.py']),
     ('---\npaths:\n---\n', None),
     ('# no frontmatter\n---\n', None),
-], ids=['list', 'quoted-csv', 'bare-csv', 'empty', 'none'])
+    ('---\npaths:\n- "a.py"\n- "b.py"\n---\n', ['a.py', 'b.py']),
+    ('---\npaths:\n    - "a.py"\n    - "b.py"\n---\n', ['a.py', 'b.py']),
+], ids=['list', 'quoted-csv', 'bare-csv', 'empty', 'none', 'unindented-list', 'four-space-list'])
 def test_the_frontmatter_parser_reads_the_forms_claude_code_accepts(text, expected):
     """A YAML list, or the documented comma-separated string. An empty `paths:` is YAML null: no scoping."""
     assert _parse_frontmatter_paths(text) == expected
@@ -492,12 +508,21 @@ def test_the_frontmatter_parser_reads_the_forms_claude_code_accepts(text, expect
     '---\npaths:\n  - "a.py"\nother: 1\n---\n',
     '---\npaths:\n  - "a.py" # why\n---\n',
     '---\npaths:\n  "a.py"\n---\n',
+    '---\npaths:\n\t- "CropRunner.py"\n---\n',
+    '---\npaths:\n  - "CropRunner.py"\n    - "b.py"\n---\n',
+    '---\npaths:\n    - "CropRunner.py"\n  - "b.py"\n---\n',
+    '---\npaths:\n  - "CropRunner.py"\n \t- "b.py"\n---\n',
 ], ids=['unterminated-double', 'unterminated-single', 'stray-quote', 'never-closed', 'unquoted-alias',
-        'flow-list', 'misspelt-key', 'unknown-key', 'trailing-comment', 'not-a-list-item'])
+        'flow-list', 'misspelt-key', 'unknown-key', 'trailing-comment', 'not-a-list-item',
+        'tab-indent', 'second-item-deeper', 'second-item-shallower', 'space-then-tab'])
 def test_the_frontmatter_parser_refuses_what_it_does_not_understand(text):
     """Claude Code ignores frontmatter YAML cannot parse and loads the file as if it had no `paths:` - at
     startup. The parser must never read such a file as scoped, so anything outside the small subset it fully
-    understands is an error rather than a best guess (an unterminated quote used to pass as a valid glob)."""
+    understands is an error rather than a best guess (an unterminated quote used to pass as a valid glob; a
+    tab or an uneven indent did until round 2, R3). Two cases are refused by policy, not because Claude Code
+    would mis-scope them: `unknown-key` (Claude Code reads only `paths:` and ignores the rest, R6) and
+    `trailing-comment` are valid YAML it scopes correctly. They are refused because a docs check that does not
+    parse a shape cannot vouch for it; the scoping test's failure message calls that a repo policy."""
     with pytest.raises(ValueError):
         _parse_frontmatter_paths(text)
 
