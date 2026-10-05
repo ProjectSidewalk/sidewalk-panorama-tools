@@ -7,7 +7,7 @@ cropper share one definition rather than a copy.
 **Runs on makelab2 as well as here** (tilt_geometry.py and this file are uploaded side by side for the pose
 scan and the tile-frame estimator): Python 3.9 / numpy 1.23, so no `match`, no `X | None` annotations, no
 3.10+ stdlib. tests/test_tilt_pose_scan.py parses this file with `feature_version=(3, 9)`. Nothing at module
-scope imports the repo; resolve_pano_pose imports downloaders.gsv only when it is called.
+scope imports the repo; resolve_pano_pose imports downloaders.gsv only when it is called without the suffix.
 
 Conventions (every geometry function here, degrees in and out, scalars or numpy arrays):
 
@@ -238,8 +238,10 @@ def pose_from_xml(path):
     any of the three is missing, blank, unparseable or not finite. Never guessed."""
     try:
         root = ET.parse(path).getroot()
-    except (OSError, ET.ParseError) as e:
-        return None, 'xml unreadable (%s)' % (e,)
+    # Broad, like the npz reader's: ET.parse raises LookupError, not ParseError, for a declaration naming an
+    # encoding Python does not know, and a narrow except let that end the whole crop run (#193 review).
+    except Exception as e:
+        return None, 'xml unreadable (%s: %s)' % (type(e).__name__, e)
     proj = root.find('.//projection_properties')
     if proj is None:
         return None, 'xml has no projection_properties'
@@ -276,25 +278,29 @@ def pose_from_depth_artifact(path):
     return PanoPose(wrap_deg(math.degrees(pitch)), wrap_deg(math.degrees(roll)), POSE_SOURCE_NPZ), None
 
 
-def resolve_pano_pose(pano_jpg_path):
+def resolve_pano_pose(pano_jpg_path, depth_suffix=None):
     """The pose that matches this JPEG's scrape era: (PanoPose, None) or (None, reason).
 
     A pano with an <id>.xml beside it is a 2019-22 stitch, so the xml decides - even when a newer
     .depth.npz also exists, which may describe a since-re-rendered pano - and an incomplete xml is no pose,
     NEVER a fall-through to the npz. Otherwise the <id>.depth.npz (docs/depth.md) if present; otherwise no
     pose. The rule of reports/scripts/tilt_adjudicate.attach_pose, per pano.
+
+    `depth_suffix` is downloaders.gsv.DEPTH_ARTIFACT_SUFFIX. CropRunner passes it from its own module-scope
+    import, so a crop run never imports anything per pano (#193 review); left None, it is imported here.
     """
-    # Imported here, not at module scope: this file is uploaded to makelab2 without the repo, and the
-    # geometry above must import there. The suffix is gsv's, never restated.
-    from downloaders.gsv import DEPTH_ARTIFACT_SUFFIX
+    if depth_suffix is None:
+        # Imported here, not at module scope: this file is uploaded to makelab2 without the repo, and the
+        # geometry above must import there. The suffix is gsv's, never restated.
+        from downloaders.gsv import DEPTH_ARTIFACT_SUFFIX as depth_suffix
     stem = os.path.splitext(pano_jpg_path)[0]
     xml_path = stem + XML_SUFFIX
     if os.path.exists(xml_path):
         return pose_from_xml(xml_path)
-    npz_path = stem + DEPTH_ARTIFACT_SUFFIX
+    npz_path = stem + depth_suffix
     if os.path.exists(npz_path):
         return pose_from_depth_artifact(npz_path)
-    return None, 'no %s and no %s beside the pano' % (XML_SUFFIX, DEPTH_ARTIFACT_SUFFIX)
+    return None, 'no %s and no %s beside the pano' % (XML_SUFFIX, depth_suffix)
 
 
 # SidewalkWebpage v7.12.2: from here the front end wrote pano_x/pano_y live with the exact projection

@@ -183,6 +183,15 @@ class TestPoseReaders:
         pose, reason = pano_pose.pose_from_xml(str(path))
         assert pose is None and 'unreadable' in reason
 
+    def test_an_xml_naming_an_unknown_encoding_is_no_pose(self, tmp_path):
+        """ET.parse raises LookupError, not ParseError, for a declaration naming an encoding Python does not
+        know; uncaught, it ended the whole crop run at that pano (#193 review). Fails with the reader's
+        except narrowed back to (OSError, ParseError)."""
+        path = tmp_path / 'p.xml'
+        path.write_text('<?xml version="1.0" encoding="bogus"?><panorama/>', encoding='ascii')
+        pose, reason = pano_pose.pose_from_xml(str(path))
+        assert pose is None and 'unreadable' in reason and 'LookupError' in reason
+
     def test_npz_radians_become_wrapped_degrees(self, tmp_path):
         path = tmp_path / 'p.depth.npz'
         write_npz(path, pitch_rad=np.radians(2.0), roll_rad=np.radians(359.6))
@@ -263,6 +272,17 @@ class TestTheScrapeEraRule:
         write_npz(str(jpg)[:-4] + gsv.DEPTH_ARTIFACT_SUFFIX)
         pose, reason = pano_pose.resolve_pano_pose(str(jpg))
         assert pose is None and 'xml' in reason
+
+    def test_a_suffix_handed_in_needs_no_import(self, tmp_path, monkeypatch):
+        """CropRunner hands gsv's suffix in from its own module-scope import, so resolving a pose can never
+        fail per pano on an import (#193 review). Fails if the import is done whether or not one is given."""
+        jpg = self.jpg(tmp_path)
+        write_npz(str(jpg)[:-4] + gsv.DEPTH_ARTIFACT_SUFFIX)
+        monkeypatch.setitem(sys.modules, 'downloaders.gsv', None)
+        pose, _ = pano_pose.resolve_pano_pose(str(jpg), depth_suffix=gsv.DEPTH_ARTIFACT_SUFFIX)
+        assert pose.source == 'npz'
+        with pytest.raises(ImportError):
+            pano_pose.resolve_pano_pose(str(jpg))
 
     def test_neither_is_no_pose(self, tmp_path):
         pose, reason = pano_pose.resolve_pano_pose(str(self.jpg(tmp_path)))

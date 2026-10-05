@@ -32,6 +32,9 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import pano_pose
+# Handed to pano_pose.resolve_pano_pose, so a --tilt-correction run never imports per pano (#193 review).
+# Not a new dependency: downloaders/__init__.py imports gsv, so the line below loads it already.
+from downloaders.gsv import DEPTH_ARTIFACT_SUFFIX
 from downloaders.common import atomic_output_path, black_fraction, raise_decompression_bomb_ceiling  # noqa: F401
 
 # raise_decompression_bomb_ceiling is imported, not defined here, and re-exported under this module's name so
@@ -2351,7 +2354,19 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     # Once per pano, and only with the flag: the pose that matches this JPEG's scrape era
                     # (pano_pose.resolve_pano_pose). None is never guessed - every label on the pano is
                     # no_pose, a skip like missing_pano that a later run cuts once the pose is there.
-                    pose, pose_reason = pano_pose.resolve_pano_pose(pano_img_path)
+                    try:
+                        pose, pose_reason = pano_pose.resolve_pano_pose(pano_img_path,
+                                                                        depth_suffix=DEPTH_ARTIFACT_SUFFIX)
+                    except Exception as e:
+                        # The readers turn an unreadable file into no pose, so this is a fault of ours, not
+                        # of the pano: one counted error per label, retried next run, and the run goes on.
+                        counts['errors'] += len(labels)
+                        processed += len(labels)
+                        if force:
+                            counts['stale_kept'] += crops_on_disk(labels)
+                        budget.warning('crop_failed', "Failed to crop %d labels on pano %s: resolving its pose "
+                                       "raised %s: %s", len(labels), pano_id, type(e).__name__, e)
+                        continue
                     if pose is None:
                         counts['no_pose'] += len(labels)
                         processed += len(labels)

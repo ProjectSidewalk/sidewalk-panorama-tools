@@ -337,6 +337,56 @@ class TestNoPose:
         assert counts['total'] == 8
 
 
+class TestResolvingAPoseNeverEndsTheRun:
+    """Nothing in the crop loop is fatal, and that includes finding the pose (#193 review, finding 2)."""
+
+    def two_panos(self, tmp_path):
+        store = tmp_path / 'store'
+        put_pano(store, 'badxmlpano01')
+        write_npz_pose(put_pano(store, 'testpano0001'))
+        return store
+
+    def test_an_xml_naming_an_unknown_encoding_is_no_pose_and_the_next_pano_is_cut(self, crop_runner, tmp_path):
+        """Raised LookupError out of bulk_extract_crops before the reader's except was widened."""
+        store, out = self.two_panos(tmp_path), tmp_path / 'crops'
+        (store / 'ba' / 'badxmlpano01.xml').write_text('<?xml version="1.0" encoding="bogus"?><panorama/>',
+                                                         encoding='ascii')
+        counts = run(crop_runner, [label_row(pano_id='badxmlpano01', label_id=1), label_row(label_id=2)],
+                     store, out, tilt_correction=True)
+        assert counts['no_pose'] == 1 and counts['success'] == 1 and reconciles(counts)
+
+    def test_an_unexpected_raise_is_a_counted_error_and_the_next_pano_is_cut(self, crop_runner, tmp_path,
+                                                                             monkeypatch, caplog):
+        """Anything the resolver raises past its readers is an error in the invariant, logged once for the
+        pano, and the run goes on. Fails with the resolve call outside a try."""
+        store, out = self.two_panos(tmp_path), tmp_path / 'crops'
+        real = pano_pose.resolve_pano_pose
+
+        def resolve(path, **kwargs):
+            if 'badxmlpano01' in path:
+                raise RuntimeError('boom')
+            return real(path, **kwargs)
+
+        monkeypatch.setattr(pano_pose, 'resolve_pano_pose', resolve)
+        with caplog.at_level(logging.WARNING):
+            counts = run(crop_runner, [label_row(pano_id='badxmlpano01', label_id=1),
+                                       label_row(pano_id='badxmlpano01', label_id=3), label_row(label_id=2)],
+                         store, out, tilt_correction=True)
+        assert counts['errors'] == 2 and counts['success'] == 1 and reconciles(counts)
+        lines = [r.getMessage() for r in caplog.records if 'resolving its pose raised' in r.getMessage()]
+        assert len(lines) == 1 and 'RuntimeError' in lines[0] and 'badxmlpano01' in lines[0]
+
+    def test_the_gsv_suffix_comes_from_crop_runners_own_import(self, crop_runner, tmp_path, monkeypatch):
+        """CropRunner hands DEPTH_ARTIFACT_SUFFIX in, so resolve_pano_pose never imports per pano. Fails if
+        the call stops passing it: the import below then fails on every pano."""
+        import sys
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_npz_pose(put_pano(store, 'testpano0001'))
+        monkeypatch.setitem(sys.modules, 'downloaders.gsv', None)
+        counts = run(crop_runner, [label_row()], store, out, tilt_correction=True)
+        assert counts['success'] == 1 and counts['errors'] == 0
+
+
 # ---------------------------------------------------------------------------
 # The out_of_frame preflight reads the corrected y
 # ---------------------------------------------------------------------------
