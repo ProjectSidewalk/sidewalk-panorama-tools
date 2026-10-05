@@ -3566,19 +3566,25 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
         assert fields[1:DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == [''] * 17, 'blank, not fabricated zeros'
         assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
 
-    def test_a_crash_in_the_budget_split_writes_the_row_and_still_raises(self, tmp_path):
-        """The ordinary-exception twin, through the REAL count_unresolved_depth. It catches OSError itself (an
-        unreadable ledger reads as no backlog), so the crash that actually reaches here is one it does not catch:
-        a torn append that leaves a field past csv's field_size_limit raises csv.Error. Before the try moved,
-        that exited 1 with no row. It must fail the run loudly AND leave the row - the two halves of #49 that a
-        stop and a crash share - and a direct caller's stop reasons must already be seeded when it does."""
+    def test_a_crash_in_the_budget_split_writes_the_row_and_still_raises(self, monkeypatch, tmp_path):
+        """The ordinary-exception twin. This used to go through the REAL count_unresolved_depth with a field past
+        csv's field_size_limit, which raised csv.Error; since #189 that ledger reads as no backlog (the depth
+        phase sits the run out), so no known ledger damage crashes the split any more and the crash here is a
+        stand-in. Before the try moved, a crash there exited 1 with no row. It must fail the run loudly AND leave
+        the row - the two halves of #49 that a stop and a crash share - and a direct caller's stop reasons must
+        already be seeded when it does."""
+        class SplitCrash(Exception):
+            pass
+
+        def crashed(storage_location, gsv_panos):
+            raise SplitCrash('a bug in the budget split')
+
+        monkeypatch.setattr(DownloadRunner.gsv, 'count_unresolved_depth', crashed)
         storage = tmp_path / 'storage'
         storage.mkdir()
-        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_text(
-            'pano_id,depth\n' + 'x' * (csv.field_size_limit() + 1))
         stop_reasons = {}
 
-        with pytest.raises(csv.Error):
+        with pytest.raises(SplitCrash):
             DownloadRunner.run_scraper_and_log_results(str(storage), gsv_pano_infos(), gsv_pano_infos(), False,
                                                        max_runtime_minutes=10, min_depth_runtime=5,
                                                        stop_reasons=stop_reasons)

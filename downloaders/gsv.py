@@ -1277,7 +1277,7 @@ DEPTH_CONDITION_REFUSED = 'depth-refused'           # Google refused THIS run; t
 DEPTH_CONDITION_STOOD_DOWN = 'depth-stood-down'     # a live latch at phase start (another run's refusal, or this
                                                     # run's image phase: photometa or a push-back trip); no request
 DEPTH_CONDITION_BREAKER = 'depth-breaker'           # DEPTH_MAX_CONSECUTIVE_FAILURES in a row
-DEPTH_CONDITION_LEDGER = 'depth-ledger-unusable'    # depth_log.csv could not be read, or not be written
+DEPTH_CONDITION_LEDGER = 'depth-ledger-unusable'    # depth_log.csv could not be read or parsed, or not be written
 DEPTH_CONDITION_UNAVAILABLE = 'depth-unavailable'   # streetlevel is not importable
 DEPTH_CONDITIONS = frozenset({DEPTH_CONDITION_REFUSED, DEPTH_CONDITION_STOOD_DOWN, DEPTH_CONDITION_BREAKER,
                               DEPTH_CONDITION_LEDGER, DEPTH_CONDITION_UNAVAILABLE})
@@ -1752,18 +1752,32 @@ def _write_pace_state(path, interval, clean_streak):
             pass
 
 
+# What makes the depth ledger unusable rather than one row bad (#189): it could not be read (OSError), or csv could
+# not parse it (a field over csv.field_size_limit() - what a crash that wrote binary junk looks like).
+# UnicodeDecodeError is kept although _load_depth_log replaces bad bytes and so never raises it: dropping the
+# errors= kwarg can then never reintroduce the crash, only the cost of one bad byte.
+DEPTH_LEDGER_UNUSABLE_ERRORS = (OSError, csv.Error, UnicodeDecodeError)
+
+
 def _load_depth_log(depth_log_path):
     """Read the depth ledger into a set of resolved pano ids.
 
-    Tolerates malformed rows (e.g. a line truncated by a crash mid-append) by skipping them, so a damaged ledger
-    degrades to re-checking a few panos rather than crashing the run.
+    Three kinds of damage, two costs (#189):
+    - A malformed row (e.g. a line truncated by a crash mid-append) is skipped, so that pano is re-checked.
+    - A byte that is not UTF-8 is replaced, not raised: the ledger is ASCII pano ids and two status words, so the
+      replacement lands inside one field and that row either fails the shape check (skipped) or carries an id
+      that matches no pano. Either way one pano is re-requested; nothing is written off.
+    - A field longer than csv.field_size_limit() makes the ledger unusable: csv.Error propagates, and the callers
+      (DEPTH_LEDGER_UNUSABLE_ERRORS) sit the phase out. Returning the rows before the bad line instead would make
+      every pano after it look unresolved and re-request them against a store that just wrote junk.
 
     @return Set of pano ids whose depth outcome is already known ('saved' or 'unavailable').
+    @raises csv.Error on an over-long field; OSError if the file cannot be read.
     """
     resolved = set()
     if not os.path.isfile(depth_log_path):
         return resolved
-    with open(depth_log_path, newline='') as f:
+    with open(depth_log_path, newline='', encoding='utf-8', errors='replace') as f:
         for row in csv.reader(f):
             if len(row) == 2 and row[0] != 'pano_id' and row[1] in ('saved', 'unavailable'):
                 resolved.add(row[0])
@@ -1779,8 +1793,8 @@ def count_unresolved_depth(storage_path, pano_infos):
 
     A pano whose artifact exists but whose ledger row is missing (only possible after manual ledger surgery)
     counts as unresolved even though the phase will self-heal it without a request; that inaccuracy is not
-    worth a directory walk here. An unreadable ledger counts as no backlog: download_depth_maps sits the run
-    out in that state, so there is nothing to reserve for.
+    worth a directory walk here. An unreadable ledger, or one csv cannot parse (#189), counts as no backlog:
+    download_depth_maps sits the run out in that state, so there is nothing to reserve for.
 
     @param storage_path Root of the pano store (depth_log.csv lives here).
     @param pano_infos   Pano dicts (needs 'pano_id'); callers pre-filter to source == 'gsv'.
@@ -1788,7 +1802,7 @@ def count_unresolved_depth(storage_path, pano_infos):
     """
     try:
         resolved = _load_depth_log(os.path.join(storage_path, DEPTH_LOG_FILENAME))
-    except OSError:
+    except DEPTH_LEDGER_UNUSABLE_ERRORS:
         return 0
     return sum(1 for p in pano_infos if p['pano_id'] not in resolved)
 
@@ -2313,9 +2327,11 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
     log_existed = os.path.isfile(depth_log_path)
     try:
         resolved_ids = _load_depth_log(depth_log_path)
-    except OSError as e:
+    except DEPTH_LEDGER_UNUSABLE_ERRORS as e:
         # Deliberately not degrading to "nothing is resolved": that would re-request the entire corpus against an
-        # already-sick store. If the ledger can't be read, sit this run out.
+        # already-sick store. If the ledger can't be read - or parsed: a field over csv.field_size_limit() is a
+        # crash that wrote binary junk, and a partial read would re-request every pano after the bad line (#189) -
+        # sit this run out. The file is left exactly as it is; the repair is a hand edit (docs/ops.md).
         logging.error("DEPTHDOWNLOAD: Cannot read %s (%s); skipping the depth phase", depth_log_path, str(e))
         print("DEPTHDOWNLOAD: WARNING - cannot read the depth ledger (%s). Skipping the depth phase." % (e))
         common.note_condition(stop_reasons, DEPTH_CONDITION_LEDGER, 'cannot read %s: %s' % (depth_log_path, e))
@@ -2333,7 +2349,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
     random.shuffle(candidates)
 
     try:
-        depth_log = open(depth_log_path, 'a', newline='')
+        depth_log = open(depth_log_path, 'a', newline='', encoding='utf-8')  # the reader's encoding; ids are ASCII
         ledger = csv.writer(depth_log)
         if not log_existed:
             ledger.writerow(['pano_id', 'status'])
