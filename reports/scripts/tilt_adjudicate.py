@@ -40,6 +40,8 @@ who follows the working folder's README, not one who sets out to break it.
     python tilt_adjudicate.py next   --out .cache/tilt/adjudication --judge jon
     python tilt_adjudicate.py record --out .cache/tilt/adjudication --judge jon <token> A|B|C|none
     python tilt_adjudicate.py score  --out .cache/tilt/adjudication --judge jon
+    # #191's beta batch (sheets --design beta): the pre-set readout, written to sealed/score_beta_<judge>.json
+    python tilt_adjudicate.py score-beta --out reports/data/2026-09-29-tilt-beta-jm --judge jon
     # a folder written before sealing existed: move key.json (and a judge's verdicts) into sealed/
     python tilt_adjudicate.py seal   --out <dir> [--move-verdicts claude-opus-5-5]
 """
@@ -97,6 +99,19 @@ Reading any of it before judging breaks the blind, and nothing can repair that a
 The study plan (section 3.3) said to commit the key only after adjudication. It was
 committed early by mistake and is sealed here instead, so the study stays reproducible from the tree.
 '''
+BETA_SEALED_README = SEALED_README_FIRST_LINE + '''
+
+This folder holds the answer key of #191's asymmetric-decoy beta batch (`key.json`: which of A/B/C is the
+0.5 T, 1.0 T and 1.5 T window, `b050`, `b100` and `b150`, on every sheet), the salt of the hash in
+`../key.sha256`, the selection and crop jobs (both name each window), and, once a judge has finished and run
+`tilt_adjudicate.py score-beta`, that judge's scored result (`score_beta_<judge>.json`). Reading any of it
+before judging breaks the blind, and nothing can repair that afterwards.
+'''
+SEALED_READMES = {'c': SEALED_README, 'beta': BETA_SEALED_README}
+C_STEP_5 = '''5. Commit `verdicts_<you>.jsonl` (it stays in this folder), then re-run the analysis from the repository
+   root: `python reports/scripts/tilt_error_study.py analyze`. Only then open `sealed/`, the report, or
+   the study JSON.
+'''
 JUDGE_README = '''# Adjudication sheets - read this, and nothing else in this folder, first
 
 1. From the repository root: `python reports/scripts/tilt_adjudicate.py next --out {out} --judge <you>`
@@ -113,6 +128,19 @@ Do not open `sealed/`, the report's results, `reports/data/2026-09-26-tilt-error
 or another judge's answers. `next` and `record` never read the key, and they
 refuse to run while a key file sits in this folder outside `sealed/`.
 '''
+BETA_STEP_5 = '''5. Commit `verdicts_<you>.jsonl` (it stays in this folder), then score it from the repository root:
+   `python reports/scripts/tilt_adjudicate.py score-beta --out {out} --judge <you>`, which writes
+   `sealed/score_beta_<you>.json`. Only then open `sealed/`, DECISIONS.md, the report, or the study JSON.
+'''
+
+
+def judge_readme(design='c'):
+    """The judge-facing README template of a design ({out} left to format). Only step 5, the scoring
+    command, differs: C's folders are scored by tilt_error_study.py, the beta batch by `score-beta`."""
+    return JUDGE_README if design == 'c' else JUDGE_README.replace(C_STEP_5, BETA_STEP_5)
+
+
+assert C_STEP_5 in JUDGE_README     # else judge_readme('beta') would silently keep C's step 5
 
 
 class BlindBroken(RuntimeError):
@@ -145,9 +173,9 @@ def assert_blind(out_dir):
                                                                          os.path.join(out_dir, SEALED)))
 
 
-def write_key(out_dir, key, salt=None):
-    """Write the key to sealed/key.json, the salt beside it, the sealed README, and the salted hash to
-    the working folder. -> the hash."""
+def write_key(out_dir, key, salt=None, design='c'):
+    """Write the key to sealed/key.json, the salt beside it, the design's sealed README, and the salted
+    hash to the working folder. -> the hash."""
     sealed = os.path.join(out_dir, SEALED)
     os.makedirs(sealed, exist_ok=True)
     key_bytes = json.dumps(key, indent=1, sort_keys=True, allow_nan=False).encode('utf-8')
@@ -157,7 +185,7 @@ def write_key(out_dir, key, salt=None):
     with open(os.path.join(sealed, 'salt.txt'), 'w', encoding='ascii', newline='\n') as f:
         f.write(salt + '\n')
     with open(os.path.join(sealed, 'README.md'), 'w', encoding='utf-8', newline='\n') as f:
-        f.write(SEALED_README)
+        f.write(SEALED_READMES[design])
     digest = key_hash(key_bytes, salt)
     with open(os.path.join(out_dir, KEY_HASH), 'w', encoding='ascii', newline='\n') as f:
         f.write(digest + '\n')
@@ -194,9 +222,9 @@ def seal(out_dir, move_verdicts=()):
     write_judge_readme(out_dir)
 
 
-def write_judge_readme(out_dir, shown_out=None):
+def write_judge_readme(out_dir, shown_out=None, design='c'):
     with open(os.path.join(out_dir, 'README.md'), 'w', encoding='utf-8', newline='\n') as f:
-        f.write(JUDGE_README.format(out=shown_out or out_dir.replace(os.sep, '/')))
+        f.write(judge_readme(design).format(out=shown_out or out_dir.replace(os.sep, '/')))
 
 
 def era_arm(era):
@@ -407,8 +435,8 @@ def build_sheets(selection, pano_root, out_dir, seed=SEED, panel_dir=None, offse
             key[token].update(design=design_of(offsets), offsets=dict(offsets))
     with open(os.path.join(out_dir, 'tasks.json'), 'w', encoding='utf-8', newline='\n') as f:
         json.dump(tasks, f, indent=1, sort_keys=True, allow_nan=False)
-    write_key(out_dir, key)
-    write_judge_readme(out_dir)
+    write_key(out_dir, key, design=design_of(offsets))
+    write_judge_readme(out_dir, design=design_of(offsets))
     return tasks
 
 
@@ -636,6 +664,52 @@ def score_beta(verdicts, key):
     return out
 
 
+# ---- Post hoc (2026-10-05, after unblinding; #194 review finding 2). Not one of the rules above: it says
+# what the primary test COULD have shown at the n it got, which DECISIONS.md section 3 never stated.
+
+def beta_power(result):
+    """Per arm: the discordant (low + high) sheets, the smallest two-sided sign-test p that many sheets
+    can give (all of them one way), that p after Holm over the two arms, and whether it could have reached
+    BETA_ALPHA at all; plus the smallest n all one way that could. `result` is score_beta's output."""
+    k = len(result['arms'])
+    per_arm = {}
+    for arm, a in sorted(result['arms'].items()):
+        n = a['low'] + a['high']
+        p_min = binom_two_sided(n, n)
+        per_arm[arm] = {'n_discordant': n, 'min_attainable_p': p_min,
+                        'min_attainable_p_holm': min(1.0, k * p_min), 'could_reject': k * p_min < BETA_ALPHA}
+    n_min = next(n for n in range(1, 100) if k * binom_two_sided(n, n) < BETA_ALPHA)
+    return {'per_arm': per_arm, 'min_discordant_to_reject_holm': n_min, 'arms_in_holm_family': k}
+
+
+def key_design(key):
+    """The design a sealed key was built with: 'c' for entries with no `design` (C's keys predate it)."""
+    designs = {v.get('design', 'c') for v in key.values()}
+    if len(designs) != 1:
+        raise ValueError('a key mixes designs: %s' % sorted(designs))
+    return designs.pop()
+
+
+def score_beta_report(out_dir, judge):
+    """What `score-beta` writes: score_beta() over the judge's verdicts and the hash-checked sealed key,
+    plus the post-hoc power statement. Refuses (ValueError) a C key, or a judge who has not judged
+    every sheet - the rules were fixed for the whole batch."""
+    key = read_sealed_key(out_dir)
+    design = key_design(key)
+    if design != 'beta':
+        raise ValueError("%s holds a '%s' design key; score-beta scores only the beta design (use `score`)"
+                         % (out_dir, design))
+    verdicts = verdicts_for_score(out_dir, judge)
+    if set(verdicts) != set(key):
+        raise ValueError('judge %s has %d verdicts for %d sheets; score-beta scores a finished batch only'
+                         % (judge, len(set(verdicts) & set(key)), len(key)))
+    result = score_beta(verdicts, key)
+    with open(os.path.join(out_dir, KEY_HASH), encoding='ascii') as f:
+        key_sha = f.read().strip()
+    return {'judge': normalise_judge(judge), 'n_verdicts': len(verdicts), 'key_sha256': key_sha,
+            'score_beta': result, 'post_hoc_power': beta_power(result)}
+
+
 def _read_pose(paths):
     pose = pd.concat([pd.read_csv(p, dtype={'pano_id': str}) for p in paths], ignore_index=True)
     return pose.drop_duplicates(['city', 'pano_id'], keep='last')
@@ -688,10 +762,12 @@ def build_parser():
     sh.add_argument('--panel-dir')
     sh.add_argument('--seed', default=SEED)
     sh.add_argument('--design', choices=sorted(DESIGNS), default='c')
-    for name in ('next', 'score'):
+    for name in ('next', 'score', 'score-beta'):
         s = sub.add_parser(name)
         s.add_argument('--out', required=True)
         s.add_argument('--judge', required=True, type=normalise_judge)
+        if name == 'score-beta':
+            s.add_argument('--json', help='where to write the result (default: <out>/sealed/score_beta_<judge>.json)')
     r = sub.add_parser('record')
     r.add_argument('--out', required=True)
     r.add_argument('--judge', required=True, type=normalise_judge)
@@ -726,7 +802,23 @@ def main(argv=None):
         record(args.out, args.token, args.choice, args.judge, args.comment)
     elif args.cmd == 'score':
         key = read_sealed_key(args.out)
+        if key_design(key) != 'c':
+            ap.error("%s holds a '%s' design key; score it with `score-beta`, not `score` (whose windows are C's)"
+                     % (args.out, key_design(key)))
         print(json.dumps(score(verdicts_for_score(args.out, args.judge), key), indent=1, sort_keys=True))
+    elif args.cmd == 'score-beta':
+        try:
+            report = score_beta_report(args.out, args.judge)
+        except ValueError as e:
+            ap.error(str(e))
+        path = args.json or os.path.join(args.out, SEALED, 'score_beta_%s.json' % args.judge)
+        with open(path, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(report, f, indent=1, sort_keys=True, allow_nan=False)
+            f.write('\n')
+        for arm, a in sorted(report['score_beta']['arms'].items()):
+            print('%-10s low:high %d:%d  Holm p %.3f  %s  mean %.2f' % (arm, a['low'], a['high'], a['p_holm'],
+                                                                     a['reading'], a['mean']))
+        print('wrote %s' % path)
     elif args.cmd == 'seal':
         seal(args.out, args.move_verdicts or ())
         print('sealed %s' % os.path.join(args.out, SEALED))

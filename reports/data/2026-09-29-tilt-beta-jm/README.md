@@ -5,9 +5,9 @@
 2. Open the sheet it prints. Which yellow ring sits on the labelled feature? Answer A, B, C or none.
 3. `python reports/scripts/tilt_adjudicate.py record --out reports/data/2026-09-29-tilt-beta-jm --judge <you> <token> A|B|C|none`
 4. Repeat until `next` prints "all judged". A second `record` for a token replaces the first.
-5. Commit `verdicts_<you>.jsonl` (it stays in this folder), then re-run the analysis from the repository
-   root: `python reports/scripts/tilt_error_study.py analyze`. Only then open `sealed/`, the report, or
-   the study JSON.
+5. Commit `verdicts_<you>.jsonl` (it stays in this folder), then score it from the repository root:
+   `python reports/scripts/tilt_adjudicate.py score-beta --out reports/data/2026-09-29-tilt-beta-jm --judge <you>`, which writes
+   `sealed/score_beta_<you>.json`. Only then open `sealed/`, DECISIONS.md, the report, or the study JSON.
 
 Do not open `sealed/`, the report's results, `reports/data/2026-09-26-tilt-error-study.json`,
 `reports/README.md`, `docs/cropper.md` or CLAUDE.md's tilt subsection before step 5: they hold the key

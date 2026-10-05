@@ -766,3 +766,177 @@ class TestTheCommittedBetaFolder:
         read = lambda d: set(pd.read_csv(os.path.join(d, 'sealed', 'selection.csv'), dtype={'pano_id': str})['pano_id'])  # noqa: E731
         beta = read(BETA_DIR)
         assert len(beta) == 48 and not beta & (read(REDRAW_DIRS[0]) | read(REDRAW_DIRS[1]))
+
+
+# ---- #194 review fixes (2026-10-05): the unblinding table is a command's output, and a test pins it ------
+# Each test below fails with its fix reverted: there was no `score-beta` subcommand or `beta_power`, `score`
+# died with KeyError: 'b100' on the beta folder, the beta folder's sealed README was C's text, its step 5
+# named C's analysis, and the CLI --design paths and the arm-difference tests were never run.
+
+BETA_SCORE_JSON = os.path.join(BETA_DIR, 'sealed', 'score_beta_jon.json')
+
+
+def _rounded(x, nd=9):
+    """JSON-comparable with float noise below 1e-9 dropped (numpy's summation order may differ by platform)."""
+    if isinstance(x, float):
+        return round(x, nd)
+    if isinstance(x, dict):
+        return {k: _rounded(v, nd) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_rounded(v, nd) for v in x]
+    return x
+
+
+def _decisions_section(number):
+    """The text of DECISIONS.md's `## <number> ...` section, whitespace-normalised."""
+    with open(os.path.join(BETA_DIR, 'DECISIONS.md'), encoding='utf-8') as f:
+        text = f.read()
+    start = text.index('\n## %s ' % number)
+    end = text.find('\n## ', start + 1)
+    return ' '.join(text[start:end if end != -1 else len(text)].split())
+
+
+def _fmt_p(p):
+    """A p-value as DECISIONS.md writes it: 3 dp, trailing zeros dropped, 1 as 1.0."""
+    return ('%.3f' % p).rstrip('0').rstrip('.') if p < 1 else '1.0'
+
+
+def test_score_refuses_a_beta_folder_and_names_score_beta(capsys):
+    with pytest.raises(SystemExit) as e:
+        ta.main(['score', '--out', BETA_DIR, '--judge', 'jon'])
+    assert e.value.code == 2
+    assert 'score-beta' in capsys.readouterr().err
+
+
+def test_score_beta_refuses_a_c_folder(tmp_path, capsys):
+    with pytest.raises(SystemExit) as e:
+        ta.main(['score-beta', '--out', REDRAW_DIRS[0], '--judge', 'jon', '--json', str(tmp_path / 'x.json')])
+    assert e.value.code == 2
+    assert "'c' design" in capsys.readouterr().err
+    assert not (tmp_path / 'x.json').exists()
+
+
+def test_score_beta_reproduces_the_committed_score_json(tmp_path, capsys):
+    out = tmp_path / 'score.json'
+    assert ta.main(['score-beta', '--out', BETA_DIR, '--judge', 'jon', '--json', str(out)]) == 0
+    capsys.readouterr()
+    with open(out, encoding='utf-8') as f:
+        fresh = json.load(f)
+    with open(BETA_SCORE_JSON, encoding='utf-8') as f:
+        committed = json.load(f)
+    assert _rounded(fresh) == _rounded(committed)
+    assert committed['judge'] == 'jon' and committed['n_verdicts'] == 48
+
+
+def test_every_section_4_number_is_the_committed_score():
+    """reports/README.md: every number in a report's prose is transcribed from a committed artifact, and a
+    test says so. Section 4 of DECISIONS.md is that prose for this batch (#194 review finding 1)."""
+    with open(BETA_SCORE_JSON, encoding='utf-8') as f:
+        s = json.load(f)['score_beta']
+    sec = _decisions_section('4.')
+    for arm in ('post179', 'legacy+mid'):
+        a = s['arms'][arm]
+        row = '| %s | %d | %d | %d | %d : %d | %s (%s) | %s | %.2f [%.2f, %.2f] |' % (
+            arm, a['n'], a['none'], a['n_scored'], a['low'], a['high'], _fmt_p(a['p_low_vs_high_two_sided']),
+            _fmt_p(a['p_holm']), a['reading'], a['mean'], a['ci95'][0], a['ci95'][1])
+        assert row in sec, row
+        counts = ', '.join('%s ×%d' % ('1.0' if k == '1.00' else k.rstrip('0'), v)
+                           for k, v in a['score_counts'].items())
+        assert '%s %s' % (arm, counts) in sec, counts
+    p = s['pooled']
+    row = '| pooled | %d | %d | %d | %d : %d | %s | - | %.2f [%.2f, %.2f] |' % (
+        p['n'], p['none'], p['n_scored'], p['low'], p['high'], _fmt_p(p['p_low_vs_high_two_sided']), p['mean'],
+        p['ci95'][0], p['ci95'][1])
+    assert row in sec, row
+    mid = sum(a['score_counts'].get('1.00', 0) for a in s['arms'].values())
+    assert 'takes %d of the %d scored sheets' % (mid, p['n_scored']) in sec
+    d = s['arm_difference']
+    assert '(Fisher p = %s)' % _fmt_p(d['low_high_fisher_p']) in sec
+    assert '(%d of 24 against %d of 24, Fisher p = %.3f)' % (
+        s['arms']['legacy+mid']['none'], s['arms']['post179']['none'], d['none_fisher_p']) in sec
+
+
+def test_beta_power_against_known_values():
+    """n discordant sheets all one way is the smallest p a two-sided sign test can give; Holm doubles it."""
+    ph = ta.beta_power({'arms': {'a': {'low': 4, 'high': 1}, 'b': {'low': 0, 'high': 0}}})
+    assert ph['per_arm']['a'] == {'n_discordant': 5, 'min_attainable_p': pytest.approx(2 / 32),
+                                  'min_attainable_p_holm': pytest.approx(4 / 32), 'could_reject': False}
+    assert ph['per_arm']['b']['min_attainable_p'] == 1.0
+    assert ph['min_discordant_to_reject_holm'] == 7       # 2 * 2/128 = 0.031; n = 6 gives 2 * 2/64 = 0.0625
+
+
+def _asym_key_and_verdicts():
+    """post179: 4 low (A), 1 high (C), 6 middle (B), 1 none; legacy+mid: 1 low, 4 high, 1 middle, 6 none.
+    Asymmetric on purpose: the low/high Fisher table is not its own transpose, and `none` is not 0."""
+    key = _beta_key({'post179': 12, 'legacy+mid': 12})
+    v = {}
+    for prefix, choices in (('p', ['A'] * 4 + ['C'] + ['B'] * 6 + ['none']),
+                            ('l', ['A'] + ['C'] * 4 + ['B'] + ['none'] * 6)):
+        v.update(zip(sorted(t for t in key if t.startswith(prefix)), choices))
+    return key, v
+
+
+def test_score_beta_on_a_non_degenerate_synthetic_batch():
+    key, v = _asym_key_and_verdicts()
+    r = ta.score_beta(v, key)
+    p, lm = r['arms']['post179'], r['arms']['legacy+mid']
+    assert (p['low'], p['high'], p['none']) == (4, 1, 1) and (lm['low'], lm['high'], lm['none']) == (1, 4, 6)
+    # The bootstrap DECISIONS.md rule 4 fixed: 10,000 resamples over sheets, seed 20260929, the 2.5 / 97.5
+    # percentiles. Recomputed from the rule's literals, not the module's constants, so a changed constant fails.
+    arr = np.asarray([0.5] * 4 + [1.5] + [1.0] * 6)
+    rng = np.random.default_rng(20260929)
+    boot = arr[rng.integers(0, len(arr), (10000, len(arr)))].mean(axis=1)
+    assert p['ci95'] == pytest.approx([np.percentile(boot, 2.5), np.percentile(boot, 97.5)], abs=1e-12)
+    assert p['ci95'][0] < p['mean'] < p['ci95'][1] and p['ci95'][1] - p['ci95'][0] > 0.1
+    # References from scipy.stats.fisher_exact (scipy is not a dependency; pasted 2026-10-05):
+    # [[1, 4], [4, 1]] -> 0.2063492063 (its transpose [[1, 4], [1, 4]] gives 1.0);
+    # [[6, 6], [1, 11]] -> 0.0686498857 (the n-for-n-minus-none slip, [[6, 12], [1, 12]], gives 0.191).
+    assert r['arm_difference']['low_high_fisher_p'] == pytest.approx(0.2063492063492064, rel=1e-9)
+    assert r['arm_difference']['none_fisher_p'] == pytest.approx(0.06864988558352403, rel=1e-9)
+
+
+def test_the_reading_at_exactly_alpha_is_consistent_with_one():
+    """Rule 3: `Holm-adjusted p >= 0.05` reads consistent with 1, so the boundary itself does."""
+    assert ta.beta_reading({'low': 7, 'high': 0}, 0.05) == 'consistent with 1'
+    assert ta.beta_reading({'low': 7, 'high': 0}, 0.0499) == 'below 1'
+
+
+def test_the_sheets_cli_builds_the_design_it_is_given(tmp_path, capsys):
+    labels, _ = _synthetic_run(tmp_path, n=3)
+    out = tmp_path / 'cli'
+    (out / 'sealed').mkdir(parents=True)
+    pd.DataFrame(labels).to_csv(out / 'sealed' / 'selection.csv', index=False)
+    assert ta.main(['sheets', '--out', str(out), '--pano-root', str(tmp_path / 'panos'), '--seed', 't',
+                    '--design', 'beta']) == 0
+    capsys.readouterr()
+    key = ta.read_sealed_key(str(out))
+    assert len(key) == 3 and all(sorted(v['order']) == ['b050', 'b100', 'b150'] for v in key.values())
+    with open(out / 'sealed' / 'README.md', encoding='utf-8') as f:
+        assert f.read() == ta.SEALED_READMES['beta']
+    with open(out / 'README.md', encoding='utf-8') as f:
+        assert 'tilt_adjudicate.py score-beta' in f.read()
+
+
+class TestTheBetaFolderReadmes:
+    def test_the_sealed_readme_describes_this_batch(self):
+        with open(os.path.join(BETA_DIR, 'sealed', 'README.md'), encoding='utf-8') as f:
+            text = f.read()
+        assert text == ta.SEALED_READMES['beta']
+        assert text.splitlines()[0] == ta.SEALED_README_FIRST_LINE
+        assert 'endpoint-C' not in text and 'preliminary pass' not in text and 'by mistake' not in text
+        assert 'b050' in text and 'score_beta_<judge>.json' in text
+
+    def test_the_c_folders_keep_the_c_sealed_readme(self):
+        for d in REDRAW_DIRS + [ADJ_DIR]:
+            with open(os.path.join(d, 'sealed', 'README.md'), encoding='utf-8') as f:
+                assert f.read() == ta.SEALED_READMES['c'] == ta.SEALED_README
+
+    def test_step_5_scores_with_score_beta(self):
+        with open(os.path.join(BETA_DIR, 'README.md'), encoding='utf-8') as f:
+            judge = f.read()
+        assert judge == ta.judge_readme('beta').format(out='reports/data/2026-09-29-tilt-beta-jm')
+        step5 = ' '.join(judge[judge.index('\n5. '):].split('\n\n')[0].split())
+        assert ('python reports/scripts/tilt_adjudicate.py score-beta --out reports/data/2026-09-29-tilt-beta-jm'
+                in step5)
+        assert 'tilt_error_study.py' not in step5
+        assert ta.judge_readme('c') == ta.JUDGE_README
