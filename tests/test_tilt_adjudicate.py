@@ -590,7 +590,7 @@ def _markdown_quoting_the_result(root=REPO_ROOT, report=REPORT_MD):
 def test_the_result_scan_skips_the_report_the_judge_folders_and_the_plans(tmp_path):
     files = {'reports/the-report.md': MACHINE_RESULT, 'reports/README.md': MACHINE_RESULT,
              'reports/data/judge/README.md': MACHINE_RESULT, 'reports/plans/a-plan.md': MACHINE_RESULT,
-             '.claude/rules/tilt.md': MACHINE_RESULT, 'docs/other.md': 'no result here'}
+             '.claude/rules/tilt.md': MACHINE_RESULT, 'notes/other.md': 'no result here'}
     for rel, text in files.items():
         path = tmp_path.joinpath(*rel.split('/'))
         path.parent.mkdir(parents=True, exist_ok=True)
