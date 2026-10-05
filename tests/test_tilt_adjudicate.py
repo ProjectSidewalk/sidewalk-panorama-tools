@@ -1081,3 +1081,48 @@ def test_the_power_statement_states_the_holm_condition():
     sec = _decisions_section('5.')
     assert 'at least 7 discordant sheets all one way on its own' in sec
     assert '6 : 0 (p = 0.031) rejects if the other arm rejected first' in sec
+
+
+def _beta_folder_copy(tmp_path):
+    """The committed beta folder minus its sheets (score-beta never reads them), with its committed score
+    removed so a test can see whether one is written."""
+    d = tmp_path / 'beta'
+    shutil.copytree(BETA_DIR, d, ignore=shutil.ignore_patterns('sheets'))
+    (d / 'sealed' / 'score_beta_jon.json').unlink()
+    return d
+
+
+def test_score_beta_writes_to_the_default_path_the_readme_promises(tmp_path, capsys):
+    """Round-2 finding 3: every other test passes --json, so the default README step 5, tilt.md and
+    DECISIONS.md name (`sealed/score_beta_<judge>.json`) was never run. Fails if the default becomes
+    `score_%s.json`."""
+    d = _beta_folder_copy(tmp_path)
+    assert ta.main(['score-beta', '--out', str(d), '--judge', 'Jon']) == 0
+    capsys.readouterr()
+    assert sorted(p.name for p in (d / 'sealed').glob('score*.json')) == ['score_beta_jon.json']
+    with open(d / 'sealed' / 'score_beta_jon.json', encoding='utf-8') as f:
+        fresh = json.load(f)
+    with open(BETA_SCORE_JSON, encoding='utf-8') as f:
+        assert _rounded(fresh) == _rounded(json.load(f))
+
+
+def test_score_beta_refuses_an_unfinished_batch(tmp_path, capsys):
+    """Round-2 finding 3: the rules were fixed for the whole batch, so a judge with a sheet unjudged is
+    refused (exit 2) and nothing is written. Fails with the `set(verdicts) != set(key)` check removed."""
+    d = _beta_folder_copy(tmp_path)
+    path = d / 'verdicts_jon.jsonl'
+    lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+    dropped = json.loads(lines[0])['token']
+    path.write_text(''.join(ln for ln in lines if json.loads(ln)['token'] != dropped), encoding='utf-8')
+    with pytest.raises(SystemExit) as e:
+        ta.main(['score-beta', '--out', str(d), '--judge', 'jon'])
+    assert e.value.code == 2
+    assert '47 verdicts for 48 sheets' in capsys.readouterr().err
+    assert not list((d / 'sealed').glob('score*.json'))
+
+
+def test_a_key_that_mixes_designs_is_refused():
+    """Round-2 finding 3's nit: key_design's mixed-design refusal was never exercised."""
+    assert ta.key_design({'a': {}, 'b': {'design': 'c'}}) == 'c'
+    with pytest.raises(ValueError, match='mixes designs'):
+        ta.key_design({'a': {'design': 'beta'}, 'b': {}})
