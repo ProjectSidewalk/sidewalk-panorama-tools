@@ -425,7 +425,10 @@ class TestResolvingAPoseNeverEndsTheRun:
     def test_an_unexpected_raise_is_a_counted_error_and_the_next_pano_is_cut(self, crop_runner, tmp_path,
                                                                              monkeypatch, caplog):
         """Anything the resolver raises past its readers is an error in the invariant, logged once for the
-        pano, and the run goes on. Fails with the resolve call outside a try."""
+        pano, and the run goes on. Fails with the resolve call outside a try.
+
+        The line is logged under the crop_failed budget kind, not no_pose (#193 round-2 nit 3): a flood of
+        no-pose panos must not use up the budget the pose-error lines need. Fails with the kind changed."""
         store, out = self.two_panos(tmp_path), tmp_path / 'crops'
         real = pano_pose.resolve_pano_pose
 
@@ -435,6 +438,14 @@ class TestResolvingAPoseNeverEndsTheRun:
             return real(path, **kwargs)
 
         monkeypatch.setattr(pano_pose, 'resolve_pano_pose', resolve)
+        kinds = []
+        real_warning = crop_runner.WarningBudget.warning
+
+        def spy(budget, kind, message, *args):
+            kinds.append((kind, message % args))
+            return real_warning(budget, kind, message, *args)
+
+        monkeypatch.setattr(crop_runner.WarningBudget, 'warning', spy)
         with caplog.at_level(logging.WARNING):
             counts = run(crop_runner, [label_row(pano_id='badxmlpano01', label_id=1),
                                        label_row(pano_id='badxmlpano01', label_id=3), label_row(label_id=2)],
@@ -442,6 +453,7 @@ class TestResolvingAPoseNeverEndsTheRun:
         assert counts['errors'] == 2 and counts['success'] == 1 and reconciles(counts)
         lines = [r.getMessage() for r in caplog.records if 'resolving its pose raised' in r.getMessage()]
         assert len(lines) == 1 and 'RuntimeError' in lines[0] and 'badxmlpano01' in lines[0]
+        assert [kind for kind, text in kinds if 'resolving its pose raised' in text] == ['crop_failed']
 
     def test_under_force_a_crop_on_disk_is_stale_kept(self, crop_runner, tmp_path, monkeypatch):
         """A label the raise stopped is an error that wrote nothing, so its old crop stays, as for any other
