@@ -1986,17 +1986,44 @@ class TestTheLabelTypeArrivesUnderEitherName:
         assert crop_runner.resolve_label_type_id({'label_type': padded}) == 1
 
 
-@pytest.mark.parametrize('page', [os.path.join('.claude', 'rules', 'cropper.md'), os.path.join('docs', 'cropper.md')])
+CROPPER_RULES = os.path.join('.claude', 'rules', 'cropper.md')
+
+# How many outcome sums each page states. Pinned, because a sum reworded into a shape the pattern below does
+# not read would otherwise leave the check in silence while another sum on the page kept it green (#192
+# round-2 review R7). A new sum raises its page's count here.
+OUTCOME_SUMS_PER_PAGE = {CROPPER_RULES: 2, os.path.join('docs', 'cropper.md'): 1}
+
+
+@pytest.mark.parametrize('page', sorted(OUTCOME_SUMS_PER_PAGE))
 def test_every_documented_outcome_sum_names_exactly_the_disjoint_outcomes(crop_runner, page):
     """Each `a + b + ... == total` the cropper's guidance and docs state is DISJOINT_OUTCOMES, term for term.
     A new outcome (#193's `no_pose`) changes these sums in prose only, so a merge that keeps the older text
-    drops it with nothing failing (#192 review S6) - unless the prose is held to the tuple."""
+    drops it with nothing failing (#192 review S6) - unless the prose is held to the tuple. Backticks are
+    stripped first and the spacing around `+` is free, so per-term code spans still count as a sum."""
     with io.open(os.path.join(REPO_ROOT, page), encoding='utf-8') as f:
-        text = f.read()
-    sums = re.findall(r'((?:[a-z_]+ \+ )+[a-z_]+) == total', text)
-    assert sums, f'{page} states no outcome sum'
+        text = f.read().replace('`', '')
+    sums = re.findall(r'((?:[a-z_]+\s*\+\s*)+[a-z_]+)\s*==\s*total', text)
+    assert len(sums) == OUTCOME_SUMS_PER_PAGE[page], (
+        f'{page} states {len(sums)} outcome sums, OUTCOME_SUMS_PER_PAGE says {OUTCOME_SUMS_PER_PAGE[page]}', sums)
     for found in sums:
-        assert sorted(found.split(' + ')) == sorted(crop_runner.DISJOINT_OUTCOMES), (page, found)
+        assert sorted(re.split(r'\s*\+\s*', found)) == sorted(crop_runner.DISJOINT_OUTCOMES), (page, found)
+
+
+def test_the_cropper_rules_lists_of_skip_outcomes_name_every_one(crop_runner):
+    """Two lists in the cropper's rules are not sums but move with the same tuple (#192 round-2 review R7):
+    item 6's outcomes `main()` does **not** exit 1 on (every bucket but a crop, a resume skip and an error), and
+    the skips `stale_kept` annotates (those, less black_content, which the same sentence names apart). #193's
+    port edits both; a merge that kept the older wording passed every check."""
+    with io.open(os.path.join(REPO_ROOT, CROPPER_RULES), encoding='utf-8') as f:
+        text = f.read()
+    slash_list = r'((?:`[a-z_]+`/)+`[a-z_]+`)'
+    not_an_exit = re.findall(r'\*\*not\*\* on ' + slash_list, text)
+    stale_kept = re.findall(r'`stale_kept` on a ' + slash_list + ' skip', text)
+    assert len(not_an_exit) == 1 and len(stale_kept) == 1, (not_an_exit, stale_kept)
+    names = lambda found: sorted(found.replace('`', '').split('/'))
+    skips = set(crop_runner.DISJOINT_OUTCOMES) - {'success', 'skipped_existing', 'errors'}
+    assert names(not_an_exit[0]) == sorted(skips)
+    assert names(stale_kept[0]) == sorted(skips - {'black_content'})
 
 
 class TestTheLabelTypeMapMatchesTheDocumentedTable:
