@@ -1,5 +1,5 @@
 """Tests for pano_pose.py - the production home of the #54 study's frame geometry, plus what the cropper's
-tilt correction (#191) adds to it: beta, the pose readers, the scrape-era rule and the label's era.
+tilt correction (#191) adds to it: beta, the pose readers and the scrape-era rule.
 
 The geometry's conventions are pinned against things outside the module by tests/test_tilt_geometry.py,
 which now runs through reports/scripts/tilt_geometry.py's re-export. What is pinned here is that the move
@@ -7,7 +7,6 @@ changed nothing (literals computed from origin/master's tilt_geometry before the
 drift, and the cropper-side behaviour.
 """
 
-import datetime
 import os
 import sys
 import zipfile
@@ -287,40 +286,3 @@ class TestTheScrapeEraRule:
     def test_neither_is_no_pose(self, tmp_path):
         pose, reason = pano_pose.resolve_pano_pose(str(self.jpg(tmp_path)))
         assert pose is None and '.xml' in reason and gsv.DEPTH_ARTIFACT_SUFFIX in reason
-
-
-BOUNDARY_MS = 1680048000000  # 2023-03-29T00:00:00Z
-
-
-class TestLabelEra:
-    def test_the_boundary_constant_is_that_instant(self):
-        assert datetime.datetime.fromtimestamp(BOUNDARY_MS / 1000, tz=datetime.timezone.utc) == \
-            datetime.datetime.fromisoformat(pano_pose.EVO179_UTC)
-
-    @pytest.mark.parametrize('value, era', [
-        (BOUNDARY_MS, 'post179'),
-        (BOUNDARY_MS - 1, 'legacy+mid'),
-        (BOUNDARY_MS + 1, 'post179'),
-        (float(BOUNDARY_MS), 'post179'),
-        (str(BOUNDARY_MS - 1), 'legacy+mid'),
-        (' %d ' % BOUNDARY_MS, 'post179'),
-        ('%d.0' % (BOUNDARY_MS - 1000), 'legacy+mid'),
-        (1500000000000, 'legacy+mid'),
-        ('2023-03-29T00:00:00Z', 'post179'),
-        ('2023-03-28T23:59:59Z', 'legacy+mid'),
-        ('2023-03-28T23:59:59', 'legacy+mid'),
-        ('2023-03-29T01:00:00+02:00', 'legacy+mid'),
-        ('2023-03-29 00:00:00+00:00', 'post179'),
-        ('2024-01-01', 'post179'),
-    ])
-    def test_either_side_of_the_boundary(self, value, era):
-        assert pano_pose.label_era(value) == era
-
-    @pytest.mark.parametrize('value', [None, '', '   ', float('nan'), float('inf'), 'garbage', 'nan', True,
-                                       '1.2.3', [BOUNDARY_MS], 1e30])
-    def test_anything_unreadable_is_unknown(self, value):
-        assert pano_pose.label_era(value) == 'unknown'
-
-    def test_agrees_with_the_studys_boundary(self):
-        rawlabels = pytest.importorskip('rawlabels')
-        assert datetime.datetime.fromisoformat(pano_pose.EVO179_UTC) == rawlabels.EVO179.to_pydatetime()

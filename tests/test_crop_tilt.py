@@ -1,7 +1,7 @@
 """Tests for CropRunner's opt-in tilt correction (#191, following the #54 study).
 
 Under --tilt-correction each label's crop is centred on the rig pixel of the stored tiles - the stored
-(gravity-levelled) pano_x/pano_y moved by beta times the rig transform, beta per label era - with the pose
+(gravity-levelled) pano_x/pano_y moved by beta times the rig transform, beta per pose record - with the pose
 read from the pano's own .xml (a 2019-22 scrape) or else its .depth.npz, and a pano with neither counted
 no_pose, never guessed. Without the flag nothing changes.
 
@@ -32,7 +32,6 @@ W, H = 2048, 1024
 PITCH, ROLL = 3.0, -2.0
 PLANTED = (255, 0, 0)
 BASE = (0, 0, 255)
-BOUNDARY_MS = 1680048000000  # pano_pose.EVO179_UTC in epoch ms
 
 
 def put_lossless_pano(store, pano_id, planted_at=None, size=(W, H)):
@@ -414,47 +413,57 @@ class TestTheFramePreflightReadsTheCorrectedY:
 
 
 # ---------------------------------------------------------------------------
-# Beta per era
+# Beta per pose record
 # ---------------------------------------------------------------------------
 
-class TestBetaPerEra:
-    def test_each_era_gets_its_own_beta(self, crop_runner, tmp_path, windows, monkeypatch):
-        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_ERA', {'post179': 1.0, 'legacy+mid': 0.0, 'unknown': 0.5})
+class TestBetaPerPoseRecord:
+    """Beta is keyed on the pose record the correction uses (PanoPose.source), not on the label's era: the
+    #191 2026-10-01 fit gives 0.884 under the xml pose and 0.953 under the npz pose on the same pairs, and
+    the record is always known when a correction is applied, where the era is unknown on every -d label."""
+
+    def test_each_pose_record_gets_its_own_beta(self, crop_runner, tmp_path, windows, monkeypatch):
+        """Fails under the per-era table (and under one beta for both records)."""
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 0.5, 'npz': 0.0})
         store, out = tmp_path / 'store', tmp_path / 'crops'
-        write_npz_pose(put_pano(store, 'testpano0001'))
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
         x, y = 1024.0, 700.0
-        labels = [dict(label_row(pano_x=x, pano_y=y, label_id=1), time_created=BOUNDARY_MS),
-                  dict(label_row(pano_x=x, pano_y=y, label_id=2), time_created=BOUNDARY_MS - 1),
-                  label_row(pano_x=x, pano_y=y, label_id=3)]
+        # A time_created either side of v7.12.2 must change nothing: the era is not read.
+        labels = [dict(label_row(pano_id='xmlpano00001', pano_x=x, pano_y=y, label_id=1), time_created=0),
+                  dict(label_row(pano_id='npzpano00001', pano_x=x, pano_y=y, label_id=2),
+                       time_created=1900000000000)]
         run(crop_runner, labels, store, out, tilt_correction=True)
         width = crop_runner.crop_window_width(y, W, H)
-        for (box, _), beta in zip(windows, (1.0, 0.0, 0.5)):
+        assert len(windows) == 2
+        for (box, _), beta in zip(windows, (0.5, 0.0)):
             cx, cy = pano_pose.corrected_pixel(x, y, W, H, PITCH, ROLL, beta)
             assert box[:4] == crop_runner.compute_crop_box(cx, cy, width, W, H)[:4], beta
 
-    def test_the_tally_line_with_a_time_created_column(self, crop_runner, tmp_path, capsys):
-        store, out = tmp_path / 'store', tmp_path / 'crops'
-        write_npz_pose(put_pano(store, 'testpano0001'))
-        path = tmp_path / 'labels.csv'
-        with open(str(path), 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['pano_id', 'pano_x', 'pano_y', 'label_type_id', 'label_id',
-                                                   'time_created'])
-            writer.writeheader()
-            for i, stamp in enumerate((str(BOUNDARY_MS), '2023-03-29T00:00:00Z', '1500000000000', ''), 1):
-                writer.writerow(dict(label_row(label_id=i), time_created=stamp))
-        crop_runner.run(None, str(path), str(store), str(out), city=CITY, tilt_correction=True)
-        printed = capsys.readouterr().out
-        assert ('Tilt correction on (recorded in crop_rule.json): 1 labels legacy+mid (beta 1.0), '
-                '2 labels post179 (beta 1.0), 1 labels unknown (beta 1.0).') in printed
-        assert 'No label carried a readable' not in printed
+    def test_the_table_is_both_records_at_one_until_the_default_is_chosen(self, crop_runner):
+        """The shipped values, so a change to them is deliberate (#197 chooses them)."""
+        assert crop_runner.TILT_BETA_BY_POSE_SOURCE == {'xml': 1.0, 'npz': 1.0}
+        assert set(crop_runner.TILT_BETA_BY_POSE_SOURCE) == {pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ}
 
-    def test_the_tally_line_without_one_says_every_label_is_unknown(self, crop_runner, tmp_path, capsys):
+    def test_the_tally_counts_only_the_crops_the_correction_cut(self, crop_runner, tmp_path, capsys):
+        """One line naming each record's crops and beta. A skipped_existing label and a no_pose label are not
+        corrected crops, so they are not in it (#193 review: the per-era tally counted every parsed row)."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
-        write_npz_pose(put_pano(store, 'testpano0001'))
-        run(crop_runner, [label_row(label_id=1), label_row(label_id=2)], store, out, tilt_correction=True)
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        put_pano(store, 'noposepano01')
+        run(crop_runner, [label_row(pano_id='xmlpano00001', label_id=9)], store, out)  # on disk already
+        capsys.readouterr()
+        counts = run(crop_runner, [label_row(pano_id='xmlpano00001', label_id=1),
+                                   label_row(pano_id='xmlpano00001', label_id=9),
+                                   label_row(pano_id='npzpano00001', label_id=2),
+                                   label_row(pano_id='npzpano00001', label_id=3),
+                                   label_row(pano_id='noposepano01', label_id=4)],
+                     store, out, tilt_correction=True)
+        assert (counts['success'], counts['skipped_existing'], counts['no_pose']) == (3, 1, 1)
         printed = capsys.readouterr().out
-        assert '0 labels legacy+mid (beta 1.0), 0 labels post179 (beta 1.0), 2 labels unknown (beta 1.0).' in printed
-        assert 'No label carried a readable time_created' in printed
+        assert ('Tilt correction on (recorded in crop_rule.json): 1 crops cut from an xml pose (beta 1.0), '
+                '2 from an npz pose (beta 1.0).') in printed
+        assert ' era' not in printed.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -467,12 +476,13 @@ def read_marker(crop_runner, out):
 
 class TestTheMarker:
     def test_on_records_the_tables_values(self, crop_runner, tmp_path, monkeypatch):
-        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_ERA', {'post179': 0.936, 'legacy+mid': 1.0, 'unknown': 0.9})
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 0.88, 'npz': 0.95})
         crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True)
         marker = read_marker(crop_runner, tmp_path)
         assert marker['tilt_correction'] == 'on'
-        assert (marker['tilt_beta_post179'], marker['tilt_beta_legacy_mid'], marker['tilt_beta_unknown_era']) \
-            == (0.936, 1.0, 0.9)
+        assert (marker['tilt_beta_xml_pose'], marker['tilt_beta_npz_pose']) == (0.88, 0.95)
+        assert sorted(key for key in marker if key.startswith('tilt_beta')) == ['tilt_beta_npz_pose',
+                                                                               'tilt_beta_xml_pose']
         recorded, unreadable = crop_runner._read_rule_marker(str(tmp_path / crop_runner.CROP_RULE_MARKER))
         assert not unreadable and recorded['tilt_correction'] == 'on'
 
@@ -484,8 +494,8 @@ class TestTheMarker:
             crop_runner.write_rule_marker(str(tmp_path), sizing_rule=rule, tilt_correction=True)
         printed = capsys.readouterr().out
         for channel in (printed, caplog.text):
-            assert 'tilt_beta_post179=0.0 and this run uses 1.0' in channel
-        seen = read_marker(crop_runner, tmp_path)['constants_seen'][rule]['tilt_beta_post179']
+            assert 'tilt_beta_xml_pose=0.0 and this run uses 1.0' in channel
+        seen = read_marker(crop_runner, tmp_path)['constants_seen'][rule]['tilt_beta_xml_pose']
         assert seen == [0.0, 1.0]
 
     def test_the_history_survives_force(self, crop_runner, tmp_path, caplog):
@@ -493,7 +503,7 @@ class TestTheMarker:
         crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True, force=True)
         with caplog.at_level(logging.WARNING):
             crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True)
-        assert 'tilt_beta_post179=0.0 and this run uses 1.0' in caplog.text
+        assert 'tilt_beta_xml_pose=0.0 and this run uses 1.0' in caplog.text
 
     def test_a_marker_from_before_the_keys_is_silent(self, crop_runner, tmp_path, caplog):
         crop_runner.write_rule_marker(str(tmp_path))
@@ -523,4 +533,4 @@ class TestTheMarker:
         write_npz_pose(put_pano(store, 'testpano0001'))
         run(crop_runner, [label_row()], store, out, tilt_correction=True)
         marker = read_marker(crop_runner, out)
-        assert marker['tilt_correction'] == 'on' and marker['tilt_beta_unknown_era'] == 1.0
+        assert marker['tilt_correction'] == 'on' and marker['tilt_beta_npz_pose'] == 1.0

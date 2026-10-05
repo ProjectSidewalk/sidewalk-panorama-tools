@@ -36,13 +36,12 @@ Conventions (every geometry function here, degrees in and out, scalars or numpy 
   evidence, not convention: tests/test_tilt_error_study.py re-measures it against the committed scan.
 
 What is added here for the cropper, below the geometry: corrected_pixel (the correction scaled by beta),
-the two pose readers and the scrape-era rule that picks between them (resolve_pano_pose), and label_era
-(the SidewalkWebpage v7.12.2 boundary the study's per-era beta is keyed on). docs/cropper.md, "The tilt
-correction (opt-in, #191)", is the operator's account.
+and the two pose readers and the scrape-era rule that picks between them (resolve_pano_pose). The cropper
+keys beta on the PanoPose.source these return, not on the label's era (#191's 2026-10-01 fit). docs/cropper.md,
+"The tilt correction (opt-in, #191)", is the operator's account.
 """
 
 import collections
-import datetime
 import math
 import os
 import xml.etree.ElementTree as ET
@@ -201,7 +200,7 @@ def pitch_roll_to_xml_tilt(pano_yaw_deg, pitch_deg, roll_deg):
 
 
 # ---------------------------------------------------------------------------
-# The cropper's side (#191): beta, the pose readers, and the label's era.
+# The cropper's side (#191): beta, the pose readers, and the scrape-era rule between them.
 
 
 def corrected_pixel(x, y, pano_width, pano_height, pitch_deg, roll_deg, beta):
@@ -301,61 +300,3 @@ def resolve_pano_pose(pano_jpg_path, depth_suffix=None):
     if os.path.exists(npz_path):
         return pose_from_depth_artifact(npz_path)
     return None, 'no %s and no %s beside the pano' % (XML_SUFFIX, depth_suffix)
-
-
-# SidewalkWebpage v7.12.2: from here the front end wrote pano_x/pano_y live with the exact projection
-# (reports/scripts/rawlabels.py's EVO179, which tests/test_pano_pose.py pins this against).
-EVO179_UTC = '2023-03-29T00:00:00+00:00'
-_EVO179 = datetime.datetime.fromisoformat(EVO179_UTC)
-
-ERA_POST179 = 'post179'
-ERA_LEGACY_MID = 'legacy+mid'
-ERA_UNKNOWN = 'unknown'
-ERAS = (ERA_LEGACY_MID, ERA_POST179, ERA_UNKNOWN)
-
-_DECIMAL_CHARS = frozenset('0123456789.')
-
-
-def _parse_time_created(value):
-    """An aware UTC datetime, or None. Epoch milliseconds (int, float or digit string: what rawLabels
-    exports) or ISO 8601 (a trailing Z included; naive means UTC)."""
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        millis = float(value)
-    elif isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        if all(c in _DECIMAL_CHARS for c in text):
-            try:
-                millis = float(text)
-            except ValueError:
-                return None
-        else:
-            if text[-1] in 'Zz':
-                text = text[:-1] + '+00:00'
-            try:
-                stamp = datetime.datetime.fromisoformat(text)
-            except ValueError:
-                return None
-            if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=datetime.timezone.utc)
-            return stamp.astimezone(datetime.timezone.utc)
-    else:
-        return None
-    if not math.isfinite(millis):
-        return None
-    try:
-        return datetime.datetime.fromtimestamp(millis / 1000.0, tz=datetime.timezone.utc)
-    except (OverflowError, OSError, ValueError):
-        return None
-
-
-def label_era(time_created):
-    """'post179' at or after EVO179_UTC, 'legacy+mid' before it, 'unknown' for anything unreadable
-    (blank, None, NaN, garbage) - the keys of CropRunner.TILT_BETA_BY_ERA."""
-    stamp = _parse_time_created(time_created)
-    if stamp is None:
-        return ERA_UNKNOWN
-    return ERA_POST179 if stamp >= _EVO179 else ERA_LEGACY_MID

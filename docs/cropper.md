@@ -27,7 +27,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
 | `--force` | Re-cut a label whose crop already exists instead of skipping it — the repair for a store cut under an older rule. Off by default. See [Re-cutting a store](#re-cutting-a-store-with---force). |
 | `--sizing-rule {v2,v3}` | Which crop sizing rule to cut with. **`v2` is the default**, and has been since [#88](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/88) (stores cut before it are v1, [#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)); `v3` is opt-in — see [Sizing rule v3](#sizing-rule-v3-opt-in). Recorded in `crop_rule.json` and on every provenance row either way. |
-| `--tilt-correction` | Centre each crop on the label's rig pixel rather than its stored pixel, by beta per label era. **Off by default**; needs a pose beside each pano, and a pano without one is skipped as `no_pose`. Recorded in `crop_rule.json`. See [The tilt correction](#the-tilt-correction-opt-in-191). |
+| `--tilt-correction` | Centre each crop on the label's rig pixel rather than its stored pixel, by beta per pose record (`.xml` or `.depth.npz`). **Off by default**; needs a pose beside each pano, and a pano without one is skipped as `no_pose`. Recorded in `crop_rule.json`. See [The tilt correction](#the-tilt-correction-opt-in-191). |
 
 Example:
 
@@ -192,10 +192,7 @@ how many it dropped, in one line on stdout and in `crop.log` with a few example 
 what the values happen to look like — the inference that gave an all-numeric Mapillary `pano_id` column
 `int64` and crashed every shard slice. It checks the required columns up front, so a header typo is one error
 naming the file, not a `KeyError` 200k labels in. Labels are grouped by pano so each pano JPEG is decoded
-exactly once for all of its labels. One optional column is read, and only under `--tilt-correction`:
-`time_created` (epoch milliseconds, as rawLabels exports it, or ISO 8601), which sets the label's era for
-[the tilt correction](#the-tilt-correction-opt-in-191). cvMetadata does not serve it, so on `-d` every label's
-era is `unknown`; it is never required, and `REQUIRED_LABEL_COLUMNS` does not list it.
+exactly once for all of its labels.
 
 **The label's type arrives under one of two names, and both are accepted**
 ([#123](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/123)). cvMetadata sent
@@ -236,7 +233,7 @@ tightest crops. Every v2 constant is one measured number:
 **Which rule cut a store is recorded in `<crop-dir>/<city>/crop_rule.json` — check it before training on a
 directory.** `write_rule_marker()` writes the rule the run selected (`crop_rule_version`), its
 `distance_estimator`, every rule's constants, and whether [the tilt correction](#the-tilt-correction-opt-in-191)
-is on (`tilt_correction`, plus each era's beta among the constants) before anything is cut, and *warns* — on stdout and in
+is on (`tilt_correction`, plus each pose record's beta among the constants) before anything is cut, and *warns* — on stdout and in
 `crop.log` — rather than refusing when the marker disagrees with the rule this run selected, or, under the
 same rule id, when a constant that rule reads has changed (a refit v3 would still call itself v3). A mixed store is the ordinary
 result of changing the rule: existing crops are the resume marker and are not re-cut by default, so running
@@ -384,23 +381,27 @@ it cuts exactly what it did before.
   pano naming why (no file; an incomplete xml; an npz without a finite pitch or roll), and the run ends with
   one line on stdout and in `crop.log` when any were skipped. A re-run cuts them once the depth phase has
   written the pano's artifact.
-* **Beta is per era of the label** (`TILT_BETA_BY_ERA`): `post179` (a `time_created` on or after
-  2023-03-29 UTC, SidewalkWebpage v7.12.2), `legacy+mid` (before it) and `unknown`. All three are **1.0**,
-  the pre-set rule's default, until the per-era estimate on #191 sets them. `unknown` is its own entry
-  because cvMetadata serves no `time_created`, so every `-d` label is `unknown`. The run prints one line with
-  each era's count and beta, and says so when every label was `unknown`.
+* **Beta is per pose record** (`TILT_BETA_BY_POSE_SOURCE`), keyed on which file the pose came from:
+  `xml` or `npz`. Not per label era: on the same 3,518 pairs the
+  [#191 fit of 2026-10-01](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/191#issuecomment-5922041299)
+  measured beta about **0.88 under the xml pose and 0.95 under the npz pose**, so the era gap was the pose
+  record's. The record is also always known when a correction is applied, while the era is not
+  (cvMetadata serves no `time_created`). Both are **1.0** for now. Those measured values are the priors,
+  but they are not applied: choosing the default is
+  [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197). The run prints one line
+  with the number of crops the correction cut from each record and that record's beta.
 * **The window is sized at the stored `pano_y`.** The corrected point only positions it. Rule v2 was fit on
   stored coordinates, and v3's depression is the object's depression below the gravity horizon, which is what
-  the stored y records. Re-fitting either rule on corrected coordinates is a follow-up once beta is set.
+  the stored y records. Re-fitting either rule on corrected coordinates is a follow-up once beta is set
+  ([#186](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/186)).
 * **The preflight reads both points.** A label is `out_of_frame` if either its stored or its corrected y is
   outside the image. The exact rotation keeps a corrected y inside `[0, h]`, so the second test only matters
   at the nadir row.
 * **A corrected crop is a different crop.** `crop_rule.json` records `tilt_correction` (`on`/`off`) and each
-  era's beta as `tilt_beta_post179`, `tilt_beta_legacy_mid` and `tilt_beta_unknown_era`, among the constants
-  of both rules. They are `0.0` when the correction is off, since beta 0 is the identity. So a store cut
-  without the flag and then with it gets the same-rule mixed-store warning ("was cut ... with
-  tilt_beta_post179=0.0 and this run uses 1.0"), and `constants_seen` keeps that history, as for any other
-  constant. A marker written before these keys existed stays quiet. Re-cut the whole store with `--force`
+  pose record's beta as `tilt_beta_xml_pose` and `tilt_beta_npz_pose`, among the constants of both rules.
+  They are `0.0` when the correction is off, since beta 0 is the identity. So a store cut without the flag
+  and then with it gets the same-rule mixed-store warning ("was cut ... with tilt_beta_xml_pose=0.0 and this
+  run uses 1.0"), and `constants_seen` keeps that history, as for any other constant. A marker written before these keys existed stays quiet. Re-cut the whole store with `--force`
   rather than topping it up.
 * **Not per crop.** The provenance manifest has no correction column yet, so a mixed store shows only in
   `crop_rule.json`. The column is a header migration and a follow-up of its own. Non-GSV panos

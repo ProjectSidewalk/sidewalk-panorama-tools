@@ -180,21 +180,21 @@ V3_CONTEXT_WIDTH_M = 5.8
 # The window is still SIZED at the stored pano_y; the corrected point only positions it
 # (docs/cropper.md, "The tilt correction (opt-in, #191)").
 #
-# Beta per era of the label's time_created (pano_pose.label_era). 1.0 everywhere is the pre-set rule's
-# default: endpoint C found the direction 79 : 0 and the #191 beta batch read beta = 1 in both arms.
-# These are not chosen yet - Jon sets them once the auto-labeler's per-era estimate is posted on #191
-# (post179 measured 0.936 +- 0.021 there). `unknown` is its own entry because cvMetadata serves no
-# time_created, so every label on the -d path is of unknown era, and applying one era's value to all of
-# them silently would make the per-era table a fiction.
-TILT_BETA_BY_ERA = {'post179': 1.0, 'legacy+mid': 1.0, 'unknown': 1.0}
-TILT_ERAS = ('legacy+mid', 'post179', 'unknown')
+# Beta per POSE RECORD, keyed on PanoPose.source: the pose the correction reads, not the label's era. The
+# #191 2026-10-01 fit (https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/191#issuecomment-5922041299)
+# measured, on the same 3,518 pairs, beta about 0.88 under the xml pose and about 0.95 under the npz pose, so the
+# era gap was the pose record's. The record is also always known when a correction is applied, where the era
+# is unknown for every -d label (cvMetadata serves no time_created).
+#
+# Both stay 1.0 here, NOT the measured priors: endpoint C found the direction 79 : 0 and the #191 beta batch
+# read beta = 1 in both arms, and choosing the default is its own decision (#197). The priors are named so
+# whoever sets them knows where they came from; they are not applied.
+TILT_BETA_BY_POSE_SOURCE = {pano_pose.POSE_SOURCE_XML: 1.0, pano_pose.POSE_SOURCE_NPZ: 1.0}
+TILT_POSE_SOURCES = (pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ)
 
-# The optional label column the era is read from (a rawLabels CSV or hand-made file can carry it).
-TILT_ERA_COLUMN = 'time_created'
-
-# crop_rule.json's name for each era's beta; 0.0 when the correction is off (beta 0 is the identity).
-TILT_BETA_MARKER_KEYS = {'post179': 'tilt_beta_post179', 'legacy+mid': 'tilt_beta_legacy_mid',
-                         'unknown': 'tilt_beta_unknown_era'}
+# crop_rule.json's name for each pose record's beta; 0.0 when the correction is off (beta 0 is the identity).
+TILT_BETA_MARKER_KEYS = {pano_pose.POSE_SOURCE_XML: 'tilt_beta_xml_pose',
+                         pano_pose.POSE_SOURCE_NPZ: 'tilt_beta_npz_pose'}
 
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
@@ -396,7 +396,7 @@ def build_parser():
                              'Recorded in crop_rule.json and on every provenance row either way.')
     parser.add_argument('--tilt-correction', action='store_true',
                         help='Move each crop centre from the stored (gravity-levelled) label pixel to the rig '
-                             'pixel of the stored tiles, on both axes, by beta per label era (#191, #54). OFF by '
+                             'pixel of the stored tiles, on both axes, by beta per pose record (#191, #54). OFF by '
                              'default. Needs a pose beside each pano (<id>.xml for a 2019-22 scrape, else its '
                              '.depth.npz); a pano with neither is skipped as no_pose, never guessed. A corrected '
                              'crop is a different crop, recorded in crop_rule.json: re-cut a store whole with '
@@ -1599,7 +1599,7 @@ def _provenance_value(value):
 # Which recorded constants each rule actually reads, for write_rule_marker's same-id check. v3 does not
 # use CROP_SIZE_SCALE and v2 uses none of the v3_* numbers, so a change to those is not a mixed store.
 # The tilt correction (#191) moves every window whichever rule sizes it, so both rules read its betas.
-_TILT_BETA_KEYS = tuple(TILT_BETA_MARKER_KEYS[era] for era in TILT_ERAS)
+_TILT_BETA_KEYS = tuple(TILT_BETA_MARKER_KEYS[source] for source in TILT_POSE_SOURCES)
 RULE_MARKER_CONSTANT_KEYS = {
     'v2': ('crop_size_scale', 'crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h',
            'crop_max_stored_width') + _TILT_BETA_KEYS,
@@ -1617,11 +1617,12 @@ RULE_MARKER_SCALAR_KEYS = ('crop_rule_version', 'previous_crop_rule_version', 'd
 def _rule_constants(tilt_correction=False):
     """Every sizing constant, as crop_rule.json records it. Read at call time, not import time.
 
-    Each era's tilt beta is TILT_BETA_BY_ERA's value when the correction is on and 0.0 when it is off:
+    Each pose record's tilt beta is TILT_BETA_BY_POSE_SOURCE's value when the correction is on and 0.0 when
+    it is off:
     beta 0 is exactly the identity, so "off" and "beta 0" are one fact, and a store cut off-then-on is
     a same-rule constant change the existing check warns about."""
-    constants = {TILT_BETA_MARKER_KEYS[era]: float(TILT_BETA_BY_ERA[era]) if tilt_correction else 0.0
-                 for era in TILT_ERAS}
+    constants = {TILT_BETA_MARKER_KEYS[source]: float(TILT_BETA_BY_POSE_SOURCE[source]) if tilt_correction
+                 else 0.0 for source in TILT_POSE_SOURCES}
     constants.update({'crop_size_scale': CROP_SIZE_SCALE,
             'crop_min_fov_deg': CROP_MIN_FOV_DEG,
             'crop_max_fov_deg': CROP_MAX_FOV_DEG,
@@ -1697,7 +1698,7 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
     different one). `city` None - a caller below main() that has none to give - carries the recorded city
     forward rather than erasing it, since erasing it would re-open the store to the next city.
 
-    `tilt_correction` (#191) is recorded twice: each era's beta among the constants (0.0 when off - see
+    `tilt_correction` (#191) is recorded twice: each pose record's beta among the constants (0.0 when off - see
     _rule_constants), so the same-rule check warns about a store cut off-then-on and constants_seen keeps
     that history for good, and `tilt_correction: 'on' | 'off'` at top level for a reader. A marker written
     before these keys existed stays silent, since only recorded values are compared.
@@ -2263,9 +2264,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     unrecorded = 0
     # The stale_kept labels the content check withheld, for the stale_kept summary's addendum (#164).
     stale_black_content = 0
-    # Likewise for the no_pose skips (#191), and the labels per era the correction was applied under.
+    # Likewise for the no_pose skips (#191); and the crops the correction cut, per pose record.
     stale_no_pose = 0
-    era_tally = collections.Counter()
+    corrected_by_source = collections.Counter()
     close_failure = None
     try:
         for row in labels_to_crop:
@@ -2290,9 +2291,6 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     raise ValueError("non-finite label position (%r, %r)" % (row['pano_x'], row['pano_y']))
                 meta_dims = _metadata_dims(row)
                 provenance = tuple(_provenance_value(row.get(field)) for field in PROVENANCE_FIELDS)
-                # Optional, never required: cvMetadata serves no time_created, so on -d every label is
-                # 'unknown' (#191). Read only when the correction is on.
-                era = pano_pose.label_era(row.get(TILT_ERA_COLUMN)) if tilt_correction else None
             # OverflowError: json.load reads 1e999 and Infinity as float('inf'), and int() of that raises
             # OverflowError rather than ValueError - uncaught, it ended the whole run (#170 review).
             except (KeyError, TypeError, ValueError, OverflowError) as e:
@@ -2305,10 +2303,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                                _identifying_field(row, 'pano_id'),
                                _clip(str(e), LOG_ROW_REPR_MAX_CHARS), _clip(repr(row), LOG_ROW_REPR_MAX_CHARS))
                 continue
-            if tilt_correction:
-                era_tally[era] += 1
             labels_by_pano.setdefault(pano_id, []).append(
-                (pano_x, pano_y, label_type, label_id, meta_dims, provenance, era))
+                (pano_x, pano_y, label_type, label_id, meta_dims, provenance))
 
         processed = counts['errors']
         made_dirs = set()
@@ -2377,7 +2373,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         budget.warning('no_pose', "Skipped %d labels on pano %s: no pose for the tilt "
                                        "correction (%s)", len(labels), pano_id, pose_reason)
                         continue
-                for pano_x, pano_y, label_type, label_id, meta_dims, provenance, era in labels:
+                for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                     processed += 1
                     print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
 
@@ -2416,7 +2412,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     # Under --tilt-correction the row cut is the corrected one, so that is tested too; the
                     # stored y must still be inside, since a y past a pole is not a direction to correct.
                     if pose is not None:
-                        beta = TILT_BETA_BY_ERA[era]
+                        beta = TILT_BETA_BY_POSE_SOURCE[pose.source]
                         centre_x, centre_y = pano_pose.corrected_pixel(pano_x, pano_y, pano.size[0], pano.size[1],
                                                                        pose.pitch_deg, pose.roll_deg, beta)
                     else:
@@ -2485,6 +2481,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     counts['success'] += 1
                     if existed:
                         counts['recut'] += 1
+                    if pose is not None:
+                        corrected_by_source[pose.source] += 1
 
                     # After the crop is on disk and counted, never instead of it (#111). A failed append is
                     # NOT an error: the crop is the resume marker, so a re-run skips it and could never write
@@ -2509,9 +2507,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     if pose is None:
                         logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
                     else:
-                        logging.info('%s.jpg %s %s %s -> %s %s (pitch %s, roll %s from %s; era %s, beta %s)',
+                        logging.info('%s.jpg %s %s %s -> %s %s (pitch %s, roll %s from %s; beta %s)',
                                      label_id, pano_id, pano_x, pano_y, centre_x, centre_y, pose.pitch_deg,
-                                     pose.roll_deg, pose.source, era, beta)
+                                     pose.roll_deg, pose.source, beta)
                 if undecodable:
                     # The cannot_open kind, since it is the same fault one step later: the header opened,
                     # the body did not. "decode", not "open", in the text, so the two stay tellable apart.
@@ -2553,14 +2551,15 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # line of stdout scrolls past on a cron run, and a crop store carries no other provenance.
     print("Crop sizing rule %s (recorded in %s)." % (sizing_rule, CROP_RULE_MARKER))
     if tilt_correction:
-        # Said only when on, so a run without the flag prints what it always did (#191). One line naming
-        # each era's count and beta, so a store cut entirely at the unknown-era beta says so.
-        message = ("Tilt correction on (recorded in %s): %s." % (CROP_RULE_MARKER, ', '.join(
-            '%d labels %s (beta %s)' % (era_tally[era], era, TILT_BETA_BY_ERA[era]) for era in TILT_ERAS)))
-        parsed = sum(era_tally.values())
-        if parsed and era_tally['unknown'] == parsed:
-            message += (" No label carried a readable %s, so every one was corrected at the unknown-era beta "
-                        "(cvMetadata does not serve it)." % TILT_ERA_COLUMN)
+        # Said only when on, so a run without the flag prints what it always did (#191). The crops the
+        # correction actually cut, per pose record and its beta - not the labels parsed, which include the
+        # ones that were skipped or failed (#193 review).
+        message = ("Tilt correction on (recorded in %s): %d crops cut from an xml pose (beta %s), %d from an "
+                   "npz pose (beta %s)." % (CROP_RULE_MARKER,
+                                            corrected_by_source[pano_pose.POSE_SOURCE_XML],
+                                            TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_XML],
+                                            corrected_by_source[pano_pose.POSE_SOURCE_NPZ],
+                                            TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_NPZ]))
         logging.info('%s', message)
         print(message)
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
