@@ -1001,3 +1001,33 @@ class TestTheBetaFolderReadmes:
                 in step5)
         assert 'tilt_error_study.py' not in step5
         assert ta.judge_readme('c') == ta.JUDGE_README
+
+
+# ---- #194 round-2 review fixes (2026-10-05). Each test below fails with its fix reverted; the comment on
+# each says which revert it catches.
+
+def _p_values(x, path=''):
+    """Every (path, value) under a key starting `p_` in a nested score dict."""
+    if isinstance(x, dict):
+        for k, v in x.items():
+            if k.startswith('p_') and isinstance(v, (int, float)):
+                yield path + '/' + k, v
+            else:
+                yield from _p_values(v, path + '/' + k)
+    elif isinstance(x, list):
+        for i, v in enumerate(x):
+            yield from _p_values(v, '%s/%d' % (path, i))
+
+
+def test_score_beta_never_reports_a_probability_above_one():
+    """Round-2 finding 6: binom_sf sums the pmf unclamped, so legacy+mid's p_b150_vs_third came out
+    1.0000000000000013. score_beta clamps; binom_sf itself is left alone, because master's committed C study
+    JSON holds the same unclamped values and a clamp there would change it. Fails with the clamp removed."""
+    key = ta.read_sealed_key(BETA_DIR)
+    r = ta.score_beta(ta.verdicts_for_score(BETA_DIR, 'jon'), key)
+    ps = dict(_p_values(r))
+    assert '/counts/arms/legacy+mid/p_b150_vs_third' in ps
+    assert all(0.0 <= p <= 1.0 for p in ps.values()), {k: p for k, p in ps.items() if not 0 <= p <= 1}
+    with open(BETA_SCORE_JSON, encoding='utf-8') as f:
+        committed = dict(_p_values(json.load(f)))
+    assert committed and all(0.0 <= p <= 1.0 for p in committed.values())

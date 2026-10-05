@@ -641,6 +641,11 @@ def score_beta(verdicts, key):
     b050-vs-b150 sign test (primary, Holm over the two arms), the mean per-sheet score with a sheet
     bootstrap CI, and the two arm comparisons that bear on legacy+mid's 7 stored wins in C."""
     base = score(verdicts, key, tuple(BETA_OFFSETS))
+    # binom_sf sums the pmf unclamped, so a window chosen 0 times can read p = 1 + 1e-15. Clamped here and
+    # not in binom_sf, whose unclamped output master's committed C study JSON already holds (#194 round 2).
+    for a in base['arms'].values():
+        for name in BETA_OFFSETS:
+            a['p_%s_vs_third' % name] = min(1.0, a['p_%s_vs_third' % name])
     per_arm, pooled_scores = {}, []
     for arm, a in sorted(base['arms'].items()):
         scores = [beta_sheet_score(verdicts[t], key[t]['order']) for t in sorted(verdicts)
