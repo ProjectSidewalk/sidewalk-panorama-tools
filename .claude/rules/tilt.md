@@ -1,6 +1,9 @@
 ---
 paths:
   - "CropRunner.py"
+  - "pano_pose.py"
+  - "tests/test_pano_pose.py"
+  - "tests/test_crop_tilt.py"
   - "reports/scripts/tilt_*.py"
   - "reports/scripts/pov_replay.py"
   - "tests/test_tilt_*.py"
@@ -15,7 +18,7 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
 
 ## The depth planes are in the rig frame, and the tiles are not levelled (#54, measured 2026-09-26)
 
-- **One frame, one sign, in `reports/scripts/tilt_geometry.py`.** The depth artifact's axes are x = left,
+- **One frame, one sign, in `pano_pose.py`** (`reports/scripts/tilt_geometry.py` re-exports it, #191). The depth artifact's axes are x = left,
   y = back, **z = down** (the ray formula in `docs/depth.md`, not "z up"). Its facade normals follow the stored
   pose with slopes 0.9995 / 1.0003, which fixes the meaning of streetlevel's sign: **`pitch > 0` = the forward axis
   points below the horizon, `roll > 0` = left side up**, so a gravity-horizontal direction sits at rig elevation
@@ -29,9 +32,10 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   (84%). **C gives the direction, not the size**: every shifted window moves by the full T. The #191 beta batch
   (`2026-09-29-tilt-beta-jm/`) is corroboration only: it leans below 1 in both arms but, at 5 discordant sheets
   per arm, its primary test could not reject (DECISIONS.md section 5). The per-pose-record RampNet slopes are
-  about 0.88 (XML pose) and 0.95 (npz pose); the default beta is Jon's choice (#197). No correction has
-  landed in CropRunner yet. When one does, it moves **both** axes via `tilt_geometry.rig_pixel_from_gravity_pixel`,
-  taking the pose from the pano's own `.npz`/`.xml`.
+  about 0.88 (XML pose) and 0.95 (npz pose); the default beta is Jon's choice (#197). The correction is
+  CropRunner's opt-in `--tilt-correction` (`.claude/rules/cropper.md`, item 2): both axes, via
+  `pano_pose.corrected_pixel`, the pose from the pano's own `.xml`/`.npz`, beta from `TILT_BETA_BY_POSE_SOURCE`
+  (keyed on the pose record, both 1.0 until #197 decides the default).
 - **The C folders are sealed, and the redraw is the decision-bearing one.** `reports/data/2026-09-29-tilt-adjudication-jm/`
   and `2026-09-30-tilt-adjudication-jm-b2/` hold Jon's verdicts, his notes, and a `sealed/` key and selection;
   `DECISIONS.md` fixed the scoring before unblinding. The first draw (`2026-09-26-tilt-adjudication/`) is

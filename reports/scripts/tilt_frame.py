@@ -9,8 +9,8 @@ edges lean, by an amount that varies sinusoidally with bearing:
 So measuring the lean of strong near-vertical edges in 12 bearing bins, and regressing it on that
 prediction, says which frame the pixels are in: slope ~1 -> rig-aligned, slope ~0 -> levelled.
 
-**Runs on makelab2 as well as here** (Python 3.9 / numpy 1.23 / PIL 10; imports only tilt_geometry,
-uploaded beside it). No `match`, no `X | None`.
+**Runs on makelab2 as well as here** (Python 3.9 / numpy 1.23 / PIL 10; imports only tilt_geometry, which
+re-exports the repo root's pano_pose, so upload both files beside it). No `match`, no `X | None`.
 
 The estimator, per pano:
   1. decode at reduced size (JPEG draft) to a fixed working width, grayscale;

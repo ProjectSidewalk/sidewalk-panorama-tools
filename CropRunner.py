@@ -31,6 +31,10 @@ from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import pano_pose
+# Handed to pano_pose.resolve_pano_pose, so a --tilt-correction run never imports per pano (#193 review).
+# Not a new dependency: downloaders/__init__.py imports gsv, so the line below loads it already.
+from downloaders.gsv import DEPTH_ARTIFACT_SUFFIX
 from downloaders.common import atomic_output_path, black_fraction, raise_decompression_bomb_ceiling  # noqa: F401
 
 # raise_decompression_bomb_ceiling is imported, not defined here, and re-exported under this module's name so
@@ -169,6 +173,31 @@ V3_DIST_CAP_M = 50.0
 # gives 6.0; the report says why the matched value is the one shipped.
 V3_CONTEXT_WIDTH_M = 5.8
 
+# ---------------------------------------------------------------------------
+# The tilt correction (opt-in, #191). A GSV label's stored pano_x/pano_y is in gravity-levelled pixels
+# while the stored tiles are in the rig's own frame, so under --tilt-correction the crop centre moves
+# to the rig pixel (pano_pose.corrected_pixel), by beta times the rig transform - beta scaling the pose.
+# The window is still SIZED at the stored pano_y; the corrected point only positions it
+# (docs/cropper.md, "The tilt correction (opt-in, #191)").
+#
+# Beta per POSE RECORD, keyed on PanoPose.source: the pose the correction reads, not the label's era. The
+# #191 2026-10-01 fit (https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/191#issuecomment-5922041299)
+# measured, on the same 3,518 pairs, beta about 0.88 under the xml pose and about 0.95 under the npz pose, so the
+# era gap was the pose record's. The record is also always known when a correction is applied, where the era
+# is unknown for every -d label (cvMetadata serves no time_created).
+#
+# Both stay 1.0 here, NOT the measured priors: endpoint C found the direction 79 : 0 and the #191 beta batch
+# read beta = 1 in both arms, and choosing the default is its own decision (#197). The priors are named so
+# whoever sets them knows where they came from; they are not applied. Also open: the per-crop provenance
+# column (#196), which must land before the flag is turned on for any consumer store, and re-fitting the
+# sizing rules on corrected coordinates (#186).
+TILT_BETA_BY_POSE_SOURCE = {pano_pose.POSE_SOURCE_XML: 1.0, pano_pose.POSE_SOURCE_NPZ: 1.0}
+TILT_POSE_SOURCES = (pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ)
+
+# crop_rule.json's name for each pose record's beta; 0.0 when the correction is off (beta 0 is the identity).
+TILT_BETA_MARKER_KEYS = {pano_pose.POSE_SOURCE_XML: 'tilt_beta_xml_pose',
+                         pano_pose.POSE_SOURCE_NPZ: 'tilt_beta_npz_pose'}
+
 # Written into the crop directory so a store says which rule cut it. See write_rule_marker.
 CROP_RULE_MARKER = 'crop_rule.json'
 
@@ -244,9 +273,10 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 # F3) or decoded, or a black_content withhold (#164). A new key goes in exactly one of the two, and
 # tests/test_crop_runner.py asserts the dict holds nothing else. black_content is disjoint, not an
 # annotation: a withheld label is not a success, and like dims_mismatch it is something the run refused
-# to trust rather than an error it made.
+# to trust rather than an error it made. no_pose (#191) is disjoint for the same reason: under
+# --tilt-correction a pano with no pose beside it is skipped, like missing_pano, not guessed.
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch', 'out_of_frame',
-                     'black_content', 'errors')
+                     'black_content', 'no_pose', 'errors')
 COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
 
 # The content check (#164): a cut window more than this fraction exactly-black (luma 0) is not written and
@@ -282,7 +312,8 @@ CROP_MAX_BLACK_FRACTION = 0.5
 # Lines of one KIND (a malformed row, a failed write, an unopenable pano, a dims mismatch, a label out
 # of frame, a mostly black window, an unrecorded provenance row) logged per run before the rest are
 # suppressed. Per kind, not shared, so a flood of one cannot silence the first lines of another, which
-# may be the actual cause. Seven kinds x 100 lines x ~300 B is ~210 KB, a fiftieth of one rotation
+# may be the actual cause. Eight kinds (a pano with no pose, #191, is the eighth) x 100 lines x ~300 B
+# is ~240 KB, a fiftieth of one rotation
 # segment. Suppression is of
 # LINES only: every label is still counted, which is what the summary, the #136 alarm and the exit
 # code read.
@@ -365,6 +396,13 @@ def build_parser():
                              'the 2013 linear one (#32); it moves ~40%% of the 658 gold ramps\' windows by more '
                              'than 10%%, so a store cut under v2 should be re-cut whole with --force, not topped up. '
                              'Recorded in crop_rule.json and on every provenance row either way.')
+    parser.add_argument('--tilt-correction', action='store_true',
+                        help='Move each crop centre from the stored (gravity-levelled) label pixel to the rig '
+                             'pixel of the stored tiles, on both axes, by beta per pose record (#191, #54). OFF by '
+                             'default. Needs a pose beside each pano (<id>.xml for a 2019-22 scrape, else its '
+                             '.depth.npz); a pano with neither is skipped as no_pose, never guessed. A corrected '
+                             'crop is a different crop, recorded in crop_rule.json: re-cut a store whole with '
+                             '--force rather than topping it up.')
     return parser
 
 
@@ -1562,22 +1600,32 @@ def _provenance_value(value):
 
 # Which recorded constants each rule actually reads, for write_rule_marker's same-id check. v3 does not
 # use CROP_SIZE_SCALE and v2 uses none of the v3_* numbers, so a change to those is not a mixed store.
+# The tilt correction (#191) moves every window whichever rule sizes it, so both rules read its betas.
+_TILT_BETA_KEYS = tuple(TILT_BETA_MARKER_KEYS[source] for source in TILT_POSE_SOURCES)
 RULE_MARKER_CONSTANT_KEYS = {
     'v2': ('crop_size_scale', 'crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h',
-           'crop_max_stored_width'),
+           'crop_max_stored_width') + _TILT_BETA_KEYS,
     'v3': ('crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h', 'crop_max_stored_width',
-           'v3_camera_height_m', 'v3_blend_deg', 'v3_dist_cap_m', 'v3_context_width_m'),
+           'v3_camera_height_m', 'v3_blend_deg', 'v3_dist_cap_m', 'v3_context_width_m') + _TILT_BETA_KEYS,
 }
 
 
 # The marker fields _read_rule_marker type-checks: the rule ids and every recorded constant.
-RULE_MARKER_SCALAR_KEYS = ('crop_rule_version', 'previous_crop_rule_version', 'distance_estimator') + tuple(
+RULE_MARKER_SCALAR_KEYS = ('crop_rule_version', 'previous_crop_rule_version', 'distance_estimator',
+                           'tilt_correction') + tuple(
     sorted(set(key for keys in RULE_MARKER_CONSTANT_KEYS.values() for key in keys)))
 
 
-def _rule_constants():
-    """Every sizing constant, as crop_rule.json records it. Read at call time, not import time."""
-    return {'crop_size_scale': CROP_SIZE_SCALE,
+def _rule_constants(tilt_correction=False):
+    """Every sizing constant, as crop_rule.json records it. Read at call time, not import time.
+
+    Each pose record's tilt beta is TILT_BETA_BY_POSE_SOURCE's value when the correction is on and 0.0 when
+    it is off:
+    beta 0 is exactly the identity, so "off" and "beta 0" are one fact, and a store cut off-then-on is
+    a same-rule constant change the existing check warns about."""
+    constants = {TILT_BETA_MARKER_KEYS[source]: float(TILT_BETA_BY_POSE_SOURCE[source]) if tilt_correction
+                 else 0.0 for source in TILT_POSE_SOURCES}
+    constants.update({'crop_size_scale': CROP_SIZE_SCALE,
             'crop_min_fov_deg': CROP_MIN_FOV_DEG,
             'crop_max_fov_deg': CROP_MAX_FOV_DEG,
             'crop_aspect_w_over_h': CROP_ASPECT_W_OVER_H,
@@ -1585,10 +1633,12 @@ def _rule_constants():
             'v3_camera_height_m': V3_CAMERA_HEIGHT_M,
             'v3_blend_deg': V3_BLEND_DEG,
             'v3_dist_cap_m': V3_DIST_CAP_M,
-            'v3_context_width_m': V3_CONTEXT_WIDTH_M}
+            'v3_context_width_m': V3_CONTEXT_WIDTH_M})
+    return constants
 
 
-def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_RULE_VERSION):
+def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_RULE_VERSION,
+                      tilt_correction=False):
     """Record which sizing rule cut this crop store, in the store, and warn if it disagrees.
 
     `sizing_rule` is the rule THIS run cuts with, and it is what the marker records and what the
@@ -1650,6 +1700,13 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
     different one). `city` None - a caller below main() that has none to give - carries the recorded city
     forward rather than erasing it, since erasing it would re-open the store to the next city.
 
+    `tilt_correction` (#191) is recorded twice: each pose record's beta among the constants (0.0 when off - see
+    _rule_constants), so the same-rule check warns about a store cut off-then-on and constants_seen keeps
+    that history for good, and `tilt_correction: 'on' | 'off'` at top level for a reader. A marker written
+    before these keys existed is read as beta 0.0 for every rule it names, if the store holds a crop
+    (_marker_history): that code never corrected, so a --tilt-correction top-up of such a store warns, unlike
+    a constant merely unrecorded. A store with no crop has nothing uncorrected in it and is not seeded.
+
     :return: the rule version already on disk; 'unknown' if a marker exists but cannot be read; None
              if this is a fresh store.
     """
@@ -1679,7 +1736,7 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
         manifest_started_under = sizing_rule
         no_known_gap = not _store_holds_crops(destination_dir)
 
-    running = _rule_constants()
+    running = _rule_constants(tilt_correction)
     recorded, unreadable = _read_rule_marker(path)
     if unreadable:
         kept = _keep_unreadable_marker(path)
@@ -1692,7 +1749,7 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
         previous, rules_seen, constants_seen = 'unknown', ['unknown'], {}
     else:
         previous = recorded.get('crop_rule_version')
-        rules_seen, constants_seen = _marker_history(recorded)
+        rules_seen, constants_seen = _marker_history(recorded, destination_dir)
 
     # The remedy depends on --force (#153 m3): without it the store stays mixed and the remedy is a forced
     # run; with it, this run is the remedy, and the store is not one rule until it finishes. The plain form
@@ -1722,7 +1779,8 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
 
     # Same rule id, and a rule is only as fixed as its constants: a refit v3 still calls itself v3.
     # Only the constants THIS rule reads are compared, and only values the store has recorded - a marker
-    # from before the constants were written is silent rather than a false alarm.
+    # from before the constants were written is silent rather than a false alarm. The tilt betas are the
+    # exception: their pre-#191 value is known (0.0), and _marker_history records it.
     seen_for_rule = constants_seen.get(sizing_rule, {})
     changed = ['%s=%r and this run uses %r' % (key, value, running[key])
                for key in RULE_MARKER_CONSTANT_KEYS[sizing_rule]
@@ -1755,6 +1813,7 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
             json.dump(dict(running,
                            crop_rule_version=sizing_rule,
                            distance_estimator=CROP_RULE_DISTANCE_ESTIMATOR[sizing_rule],
+                           tilt_correction='on' if tilt_correction else 'off',
                            previous_crop_rule_version=previous,
                            rules_seen=rules_seen,
                            constants_seen=constants_seen,
@@ -1797,12 +1856,15 @@ def _read_rule_marker(path):
     return recorded, False
 
 
-def _marker_history(recorded):
+def _marker_history(recorded, destination_dir):
     """The store's (rules_seen, constants_seen), seeded from what the marker names at top level.
 
     The top-level keys are the LAST run's rule and constants, so they belong to the history whatever it
     says: that seeds a marker written before the history existed (whose crop_rule_version and
     previous_crop_rule_version are all it can say), and it means a hand-edited constant is compared.
+
+    `destination_dir` is the crop store, listed (_store_holds_crops) only when a rule lacks a tilt beta, to
+    decide whether that rule's history is seeded with 0.0 - see the comment below.
     """
     rules_seen = list(recorded.get('rules_seen', []))
     constants_seen = {rule: {key: list(values) for key, values in keys.items()}
@@ -1816,6 +1878,21 @@ def _marker_history(recorded):
             values = constants_seen.setdefault(last, {}).setdefault(key, [])
             if recorded[key] not in values:
                 values.append(recorded[key])
+    # A rule the store was cut under with no tilt beta recorded was run by code from before the tilt
+    # correction (#191), which never corrected: its crops are beta 0, a recorded fact rather than a guess.
+    # Seeded so the first --tilt-correction top-up of such a store warns that it is mixed, and so the sticky
+    # history keeps the 0.0 (#193 review finding 1) - without it, every store that predates the flag read as
+    # all corrected after one top-up. Only when the store holds a crop (#193 round-2 nit 1): a pre-#191 run
+    # that cut nothing still wrote a marker, and seeding that would give the first corrected run a false
+    # mixed-store warning that the sticky history repeats for good. Listed only when there is a gap to seed.
+    unseeded = [rule for rule in rules_seen if rule in RULE_MARKER_CONSTANT_KEYS
+                and not all(constants_seen.get(rule, {}).get(key) for key in _TILT_BETA_KEYS)]
+    if unseeded and _store_holds_crops(destination_dir):
+        for rule in unseeded:
+            seen = constants_seen.setdefault(rule, {})
+            for key in _TILT_BETA_KEYS:
+                if not seen.get(key):
+                    seen[key] = [0.0]
     return rules_seen, constants_seen
 
 
@@ -1881,7 +1958,8 @@ class CropWindowMostlyBlackError(Exception):
         self.box = box
 
 
-def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=CROP_RULE_VERSION):
+def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=CROP_RULE_VERSION,
+                     centre=None):
     """
     Makes a crop around the object of interest and saves it atomically.
 
@@ -1904,6 +1982,9 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, siz
     :param draw_mark: if a dot should be drawn at the label position in the crop
     :param sizing_rule: which rule in CROP_RULE_VERSIONS sizes the window (default v2). The content check
                         below runs on the window whichever rule sized it.
+    :param centre: (x, y) to centre the window on - the tilt-corrected point (#191) - instead of
+                   (pano_x, pano_y). The window is still SIZED at the stored pano_y, and the mark goes at
+                   the centre, which is where the label is in the stored tiles.
     :return: the CropBox that was cut, so the caller can count a de-centred (shifted) crop without
              recomputing the geometry.
     :raises CropWindowMostlyBlackError: the window is mostly black; nothing was written.
@@ -1915,7 +1996,10 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, siz
     try:
         pano_width, pano_height = pano.size
 
-        box = compute_crop_box(pano_x, pano_y,
+        # Sized at the stored pano_y, never the corrected one (#191): v2 was fit on stored coordinates, and
+        # v3's depression is below the gravity horizon, which is what the stored y encodes.
+        centre_x, centre_y = (pano_x, pano_y) if centre is None else centre
+        box = compute_crop_box(centre_x, centre_y,
                                crop_window_width(pano_y, pano_width, pano_height, sizing_rule),
                                pano_width, pano_height)
         window = extract_crop(pano, box.left, box.top, box.width, box.height)
@@ -1933,9 +2017,9 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, siz
             # with the window it happened to be cut from.
             draw = ImageDraw.Draw(cropped)
             r = 10
-            centre_x, centre_y = label_position_in_crop(pano_x, pano_y, box, pano_width,
-                                                        scale=cropped.size[0] / box.width)
-            draw.ellipse((centre_x - r, centre_y - r, centre_x + r, centre_y + r), fill=128)
+            mark_x, mark_y = label_position_in_crop(centre_x, centre_y, box, pano_width,
+                                                    scale=cropped.size[0] / box.width)
+            draw.ellipse((mark_x - r, mark_y - r, mark_x + r, mark_y + r), fill=128)
 
         # The crop file is its own resume marker (bulk_extract_crops skips existing ones), so a mid-write
         # crash must not leave a truncated .jpg the next run trusts - same contract as every write in
@@ -2116,7 +2200,7 @@ class WarningBudget:
 
 
 def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mark_label=False, force=False,
-                       city=None, sizing_rule=CROP_RULE_VERSION):
+                       city=None, sizing_rule=CROP_RULE_VERSION, tilt_correction=False):
     """Extract one crop per label into <destination_dir>/<label_type_id>/<label_id>.jpg.
 
     destination_dir is ONE city's store - main() passes <crop-dir>/<city>/ (#159) - and `city` is that
@@ -2144,19 +2228,21 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     :return: counts dict. The disjoint outcomes reconcile, including on re-runs:
 
                  success + skipped_existing + missing_pano + dims_mismatch + out_of_frame
-                     + black_content + errors == total
+                     + black_content + no_pose + errors == total
 
-             Those seven are DISJOINT_OUTCOMES. black_content (#164) is a label whose cut window was more
-             than CROP_MAX_BLACK_FRACTION exactly-black: nothing is written and it is not an error, so
-             a re-run cuts it once the pano is repaired. The COUNT_ANNOTATIONS are NOT among them:
-             shifted_vertically annotates a success whose window had to move to stay inside the pano, so
-             the crop exists but the label is off-centre in it; recut annotates a success that replaced a
-             crop already on disk (force=True only); stale_kept annotates a label, under force=True,
-             that the run did not write - a dims_mismatch or out_of_frame skip, a missing_pano, a
-             black_content withhold, or an error because its pano could not be opened or decoded - and whose crop
-             was already on disk, which therefore stays as whatever rule cut it. Adding a key without putting it in exactly one of the two is how the invariant
-             went stale before; tests/test_crop_runner.py asserts the sum, and the key set, from the dict
-             rather than from this docstring.
+             Those eight are DISJOINT_OUTCOMES. no_pose (#191) is a label about to be cut, under tilt_correction=True, whose pano has no usable
+             pose beside it (always 0 without the flag; a crop already on disk is skipped_existing, since the pose is
+             looked up only for a label reaching the write): skipped, not an error, and cut by a later run only if a
+             pose appears. black_content (#164) is a label whose cut window was more than
+             CROP_MAX_BLACK_FRACTION exactly-black: nothing is written and it is not an error, so a re-run cuts it once
+             the pano is repaired. The COUNT_ANNOTATIONS are NOT among them: shifted_vertically annotates a success
+             whose window had to move to stay inside the pano, so the crop exists but the label is off-centre in it;
+             recut annotates a success that replaced a crop already on disk (force=True only); stale_kept annotates a
+             label, under force=True, that the run did not write - a dims_mismatch or out_of_frame skip, a missing_pano,
+             a no_pose skip, a black_content withhold, or an error because its pano could not be opened or decoded - and
+             whose crop was already on disk, which therefore stays as whatever rule cut it. Adding a key without putting
+             it in exactly one of the two is how the invariant went stale before; tests/test_crop_runner.py asserts the
+             sum, and the key set, from the dict rather than from this docstring.
 
              The summary ends with systemic_failure_line()'s alarm when errors dominate the run (#136).
              That is a second READING of these numbers and adds no bucket of its own - which is what
@@ -2182,7 +2268,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Before the marker, so a refusal leaves it untouched, and so the marker sees the manifest it will
     # actually be appending to (#159 step 1).
     set_aside_pre_city_manifest(destination_dir)
-    write_rule_marker(destination_dir, force=force, city=city, sizing_rule=sizing_rule)
+    write_rule_marker(destination_dir, force=force, city=city, sizing_rule=sizing_rule,
+                      tilt_correction=tilt_correction)
 
     # Parse rows up front and group labels by pano (preserving first-seen order), so each pano JPEG is
     # decoded exactly once for all its labels.
@@ -2201,6 +2288,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     unrecorded = 0
     # The stale_kept labels the content check withheld, for the stale_kept summary's addendum (#164).
     stale_black_content = 0
+    # Likewise for the no_pose skips (#191); and the crops the correction cut, per pose record.
+    stale_no_pose = 0
+    corrected_by_source = collections.Counter()
     close_failure = None
     try:
         for row in labels_to_crop:
@@ -2279,6 +2369,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             decode_error = None
             undecodable = 0
             try:
+                # The pose, like the decode, is looked up lazily (#193 review): only for a label about to be
+                # cut, and once per pano, so a finished store never reads a pose file and a crop already on
+                # disk is skipped_existing whatever its pano's pose. pose stays None without the flag.
+                pose = None
+                pose_looked_up = False
+                pose_reason = pose_error = None
+                no_pose_labels = pose_error_labels = 0
                 for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                     processed += 1
                     print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
@@ -2314,6 +2411,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     # even reveal (the dot lands off-crop). pano_x gets no such check on purpose: column 0 and
                     # column width are the same place in the world, so any finite x is read correctly by the
                     # seam modulo, and rows storing pano_x == pano_width crop fine.
+                    #
+                    # Under --tilt-correction the corrected y is tested too, below, once the pose is known.
                     if not 0 <= pano_y < pano.size[1]:
                         counts['out_of_frame'] += 1
                         if force and os.path.exists(crop_destination):
@@ -2328,6 +2427,49 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     if existed and not force:
                         counts['skipped_existing'] += 1
                         continue
+
+                    centre_x, centre_y = pano_x, pano_y
+                    if tilt_correction:
+                        if not pose_looked_up:
+                            # The pose that matches this JPEG's scrape era (pano_pose.resolve_pano_pose), never
+                            # guessed. The readers turn an unreadable file into no pose with a reason, so a raise
+                            # here is a fault of ours, not of the pano: an error, retried next run, and the run
+                            # goes on (nothing in the crop loop is fatal).
+                            pose_looked_up = True
+                            try:
+                                pose, pose_reason = pano_pose.resolve_pano_pose(pano_img_path,
+                                                                                depth_suffix=DEPTH_ARTIFACT_SUFFIX)
+                            except Exception as e:
+                                pose_error = e
+                        if pose_error is not None:
+                            counts['errors'] += 1
+                            pose_error_labels += 1
+                            if force and existed:
+                                counts['stale_kept'] += 1
+                            continue
+                        if pose is None:
+                            # A skip like missing_pano, not an error: nothing is written, and under --force an
+                            # old crop stays as it was.
+                            counts['no_pose'] += 1
+                            no_pose_labels += 1
+                            if force and existed:
+                                counts['stale_kept'] += 1
+                                stale_no_pose += 1
+                            continue
+                        beta = TILT_BETA_BY_POSE_SOURCE[pose.source]
+                        centre_x, centre_y = pano_pose.corrected_pixel(pano_x, pano_y, pano.size[0], pano.size[1],
+                                                                       pose.pitch_deg, pose.roll_deg, beta)
+                        # The stored y is inside (checked above); the exact rotation keeps the corrected one in
+                        # [0, h], so this fires only at the nadir row. Same bucket, the corrected y named.
+                        if not 0 <= centre_y < pano.size[1]:
+                            counts['out_of_frame'] += 1
+                            if force and existed:
+                                counts['stale_kept'] += 1
+                            budget.warning(
+                                'out_of_frame', "Label %d on pano %s: pano_y %s (tilt-corrected to %s) is outside "
+                                "the %dx%d image; skipping rather than clamping it to a pole", label_id, pano_id,
+                                pano_y, centre_y, pano.size[0], pano.size[1])
+                            continue
                     if not decoded and decode_error is None:
                         try:
                             pano.load()
@@ -2351,8 +2493,11 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         if destination_folder not in made_dirs:
                             os.makedirs(destination_folder, exist_ok=True)
                             made_dirs.add(destination_folder)
+                        # centre only when corrected, so a run without the flag makes the call it always
+                        # made (#191).
+                        corrected_centre = {} if pose is None else {'centre': (centre_x, centre_y)}
                         box = make_single_crop(pano, pano_x, pano_y, crop_destination,
-                                               draw_mark=mark_label, sizing_rule=sizing_rule)
+                                               draw_mark=mark_label, sizing_rule=sizing_rule, **corrected_centre)
                     except CropWindowMostlyBlackError as e:
                         # Not an error (#164): the pano on disk holds black where imagery should be, and
                         # nothing was written, so a re-run cuts this label once the pano is repaired.
@@ -2374,6 +2519,8 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     counts['success'] += 1
                     if existed:
                         counts['recut'] += 1
+                    if pose is not None:
+                        corrected_by_source[pose.source] += 1
 
                     # After the crop is on disk and counted, never instead of it (#111). A failed append is
                     # NOT an error: the crop is the resume marker, so a re-run skips it and could never write
@@ -2394,8 +2541,19 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         logging.info("Label %d on pano %s: window shifted to stay inside the pano "
                                      "(top=%d), so the label sits %d px from the crop's centre",
                                      label_id, pano_id, box.top,
-                                     abs(int(pano_y - box.top - box.height / 2)))
-                    logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
+                                     abs(int(centre_y - box.top - box.height / 2)))
+                    if pose is None:
+                        logging.info('%s.jpg %s %s %s', label_id, pano_id, pano_x, pano_y)
+                    else:
+                        logging.info('%s.jpg %s %s %s -> %s %s (pitch %s, roll %s from %s; beta %s)',
+                                     label_id, pano_id, pano_x, pano_y, centre_x, centre_y, pose.pitch_deg,
+                                     pose.roll_deg, pose.source, beta)
+                if no_pose_labels:
+                    budget.warning('no_pose', "Skipped %d labels on pano %s: no pose for the tilt correction (%s)",
+                                   no_pose_labels, pano_id, pose_reason)
+                if pose_error_labels:
+                    budget.warning('crop_failed', "Failed to crop %d labels on pano %s: resolving its pose raised "
+                                   "%s: %s", pose_error_labels, pano_id, type(pose_error).__name__, pose_error)
                 if undecodable:
                     # The cannot_open kind, since it is the same fault one step later: the header opened,
                     # the body did not. "decode", not "open", in the text, so the two stay tellable apart.
@@ -2436,12 +2594,25 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # operator reads and the marker is what a consumer reads. The marker is the one that matters: a
     # line of stdout scrolls past on a cron run, and a crop store carries no other provenance.
     print("Crop sizing rule %s (recorded in %s)." % (sizing_rule, CROP_RULE_MARKER))
+    if tilt_correction:
+        # Said only when on, so a run without the flag prints what it always did (#191). The crops the
+        # correction actually cut, per pose record and its beta - not the labels parsed, which include the
+        # ones that were skipped or failed (#193 review).
+        message = ("Tilt correction on (recorded in %s): %d crops cut from an xml pose (beta %s), %d from an "
+                   "npz pose (beta %s)." % (CROP_RULE_MARKER,
+                                            corrected_by_source[pano_pose.POSE_SOURCE_XML],
+                                            TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_XML],
+                                            corrected_by_source[pano_pose.POSE_SOURCE_NPZ],
+                                            TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_NPZ]))
+        logging.info('%s', message)
+        print(message)
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
           "%d skipped on a metadata/image dimension mismatch, %d skipped for a label position outside "
-          "the image, %d withheld for a mostly black window, %d errors, of %d labels total."
+          "the image, %d withheld for a mostly black window, %d skipped for no pano pose, %d errors, of %d "
+          "labels total."
           % (counts['success'], counts['skipped_existing'], counts['missing_pano'],
-             counts['dims_mismatch'], counts['out_of_frame'], counts['black_content'], counts['errors'],
-             counts['total']))
+             counts['dims_mismatch'], counts['out_of_frame'], counts['black_content'], counts['no_pose'],
+             counts['errors'], counts['total']))
     if counts['shifted_vertically']:
         print("%d of those crops were shifted to stay inside the pano, so their label is not at the "
               "crop's centre." % counts['shifted_vertically'])
@@ -2464,6 +2635,11 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             message += (" %d of them were withheld by the content check (black_content) rather than skipped "
                         "by a preflight; crop.log's black_content lines (up to %d) include them."
                         % (stale_black_content, LOG_WARNINGS_PER_KIND))
+        if stale_no_pose:
+            # Appended for the same reason (#191): a pano with no pose is its own skip, not a preflight.
+            message += (" %d of them were on a pano with no pose for the tilt correction (no_pose); crop.log's "
+                        "no_pose lines (up to %d, one per pano) include them."
+                        % (stale_no_pose, LOG_WARNINGS_PER_KIND))
         logging.warning('%s', message)
         print(message)
     if counts['black_content']:
@@ -2474,6 +2650,17 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                    "past what Google serves - #156 - or a pre-#68 fallback). Nothing was written for them, so "
                    "a re-run cuts them once the pano is re-downloaded; crop.log names up to %d of them."
                    % (counts['black_content'], 100 * CROP_MAX_BLACK_FRACTION, LOG_WARNINGS_PER_KIND))
+        logging.warning('%s', message)
+        print(message)
+
+    if counts['no_pose']:
+        # Both channels (#191), black_content's reason: no_pose is not an error, so the exit code stays 0,
+        # and a run that skipped every label for want of a pose would otherwise complete silently.
+        message = ("%d labels were skipped because their pano has no pose for the tilt correction (no_pose), and "
+                   "nothing was written for them. A later run cuts them only if a pose appears beside the pano, "
+                   "i.e. the depth phase writes its .depth.npz; a pano the depth phase ledgers unavailable, an npz "
+                   "without a finite pitch and roll, and an .xml that is incomplete or unreadable stay no_pose. "
+                   "crop.log names up to %d of the panos and why." % (counts['no_pose'], LOG_WARNINGS_PER_KIND))
         logging.warning('%s', message)
         print(message)
 
@@ -2510,7 +2697,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
 
 def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destination_path, mark_label=False,
-        force=False, city=None, sizing_rule=CROP_RULE_VERSION):
+        force=False, city=None, sizing_rule=CROP_RULE_VERSION, tilt_correction=False):
     """Load the label metadata and extract every crop - the whole job, minus process-level setup.
 
     main() owns argv parsing, directory creation, and logging; this seam takes plain arguments so tests can
@@ -2520,7 +2707,7 @@ def run(sidewalk_server_fqdn, label_metadata_file, gsv_pano_path, crop_destinati
     print("Cropping labels")
     label_infos = load_label_metadata(sidewalk_server_fqdn, label_metadata_file)
     return bulk_extract_crops(label_infos, gsv_pano_path, crop_destination_path, mark_label=mark_label,
-                              force=force, city=city, sizing_rule=sizing_rule)
+                              force=force, city=city, sizing_rule=sizing_rule, tilt_correction=tilt_correction)
 
 
 def main(argv=None):
@@ -2598,7 +2785,7 @@ def main(argv=None):
     try:
         counts = run(sidewalk_server_fqdn=args.d, label_metadata_file=args.f, gsv_pano_path=args.s,
                      crop_destination_path=store, mark_label=args.mark_label, force=args.force,
-                     city=args.city, sizing_rule=args.sizing_rule)
+                     city=args.city, sizing_rule=args.sizing_rule, tilt_correction=args.tilt_correction)
     except CropStoreUnlistableError as e:
         # Both channels, and into crop.log, which is configured by now: as a traceback it reached stderr
         # only (#153 final F6). Exit 1, not EXIT_REFUSED_DESTINATION - nothing judged -o to be the
