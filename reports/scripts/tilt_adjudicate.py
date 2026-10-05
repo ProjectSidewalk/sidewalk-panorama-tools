@@ -687,6 +687,36 @@ def beta_power(result):
     return {'per_arm': per_arm, 'min_discordant_to_reject_holm': n_min, 'arms_in_holm_family': k}
 
 
+BETA_ARM_POSE = {'post179': 'npz', 'legacy+mid': 'xml'}   # what DECISIONS.md section 1 said every sheet was
+
+
+def beta_by_pose_record(verdicts, key):
+    """Post hoc (#194 round-2 finding 1): the per-sheet scores grouped by the key's `pose_source`, the
+    grouping the 2026-10-01 RampNet slopes use, and every sheet whose pose record is not its arm's (section 1
+    said there were none). Means only: no test, no CI, nothing here is a pre-set rule.
+
+    >>> beta_by_pose_record({'t1': 'A'}, {'t1': {'order': ['b050', 'b100', 'b150'], 'pose_source': 'npz',
+    ...                                          'era_arm': 'post179', 'label_uid': 'x:1'}})['by_pose_record']
+    {'npz': {'n': 1, 'none': 0, 'n_scored': 1, 'mean': 0.5}}
+    """
+    groups, crosses = {}, []
+    for t in sorted(verdicts):
+        k = key[t]
+        s = beta_sheet_score(verdicts[t], k['order'])
+        g = groups.setdefault(k['pose_source'], {'n': 0, 'none': 0, 'scores': []})
+        g['n'] += 1
+        if s is None:
+            g['none'] += 1
+        else:
+            g['scores'].append(s)
+        if BETA_ARM_POSE.get(k['era_arm']) != k['pose_source']:
+            crosses.append({'token': t, 'label_uid': k['label_uid'], 'era_arm': k['era_arm'],
+                            'pose_source': k['pose_source'], 'choice': verdicts[t], 'score': s})
+    by = {p: {'n': g['n'], 'none': g['none'], 'n_scored': len(g['scores']),
+              'mean': float(np.mean(g['scores'])) if g['scores'] else None} for p, g in sorted(groups.items())}
+    return {'by_pose_record': by, 'crosses_arm': crosses}
+
+
 def key_design(key):
     """The design a sealed key was built with: 'c' for entries with no `design` (C's keys predate it)."""
     designs = {v.get('design', 'c') for v in key.values()}
@@ -712,7 +742,8 @@ def score_beta_report(out_dir, judge):
     with open(os.path.join(out_dir, KEY_HASH), encoding='ascii') as f:
         key_sha = f.read().strip()
     return {'judge': normalise_judge(judge), 'n_verdicts': len(verdicts), 'key_sha256': key_sha,
-            'score_beta': result, 'post_hoc_power': beta_power(result)}
+            'score_beta': result, 'post_hoc_power': beta_power(result),
+            'post_hoc_by_pose_record': beta_by_pose_record(verdicts, key)}
 
 
 def _read_pose(paths):

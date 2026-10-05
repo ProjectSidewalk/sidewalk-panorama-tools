@@ -2,6 +2,40 @@
  "judge": "jon",
  "key_sha256": "132664d73b4db11962d10b721f41a637dd8d29e18ac6c341d548d8bca7407faf",
  "n_verdicts": 48,
+ "post_hoc_by_pose_record": {
+  "by_pose_record": {
+   "npz": {
+    "mean": 0.9347826086956522,
+    "n": 24,
+    "n_scored": 23,
+    "none": 1
+   },
+   "xml": {
+    "mean": 0.921875,
+    "n": 24,
+    "n_scored": 16,
+    "none": 8
+   }
+  },
+  "crosses_arm": [
+   {
+    "choice": "A",
+    "era_arm": "post179",
+    "label_uid": "seattle-wa:290009",
+    "pose_source": "xml",
+    "score": 1.0,
+    "token": "t6f72c3c9f9"
+   },
+   {
+    "choice": "A=C",
+    "era_arm": "legacy+mid",
+    "label_uid": "la-piedad-old:1779",
+    "pose_source": "npz",
+    "score": 0.75,
+    "token": "t7876d5c101"
+   }
+  ]
+ },
  "post_hoc_power": {
   "arms_in_holm_family": 2,
   "min_discordant_to_reject_holm": 7,

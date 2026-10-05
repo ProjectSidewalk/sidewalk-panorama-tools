@@ -1031,3 +1031,34 @@ def test_score_beta_never_reports_a_probability_above_one():
     with open(BETA_SCORE_JSON, encoding='utf-8') as f:
         committed = dict(_p_values(json.load(f)))
     assert committed and all(0.0 <= p <= 1.0 for p in committed.values())
+
+
+def test_the_means_by_pose_record_are_scored_and_section_5_quotes_them():
+    """Round-2 finding 1: section 1's "every legacy+mid label is XML-posed and every post179 label npz-posed"
+    is false for two sheets, and the 10-01 RampNet slopes are per POSE RECORD, not per arm. score-beta now
+    reports the means grouped by the key's `pose_source` (post hoc), and section 5's erratum quotes them.
+    Fails with the report field or the erratum removed."""
+    key = ta.read_sealed_key(BETA_DIR)
+    v = ta.verdicts_for_score(BETA_DIR, 'jon')
+    by = ta.beta_by_pose_record(v, key)
+    # Recomputed here from the key and the verdicts, not from the module's grouping.
+    for pose in ('npz', 'xml'):
+        scores = [ta.beta_sheet_score(v[t], key[t]['order']) for t in key
+                  if key[t]['pose_source'] == pose and v[t] != 'none']
+        assert by['by_pose_record'][pose]['n_scored'] == len(scores)
+        assert by['by_pose_record'][pose]['mean'] == pytest.approx(float(np.mean(scores)), abs=1e-12)
+    assert (by['by_pose_record']['npz']['n_scored'], by['by_pose_record']['xml']['n_scored']) == (23, 16)
+    assert by['crosses_arm'] == [
+        {'token': 't6f72c3c9f9', 'label_uid': 'seattle-wa:290009', 'era_arm': 'post179', 'pose_source': 'xml',
+         'choice': 'A', 'score': 1.0},
+        {'token': 't7876d5c101', 'label_uid': 'la-piedad-old:1779', 'era_arm': 'legacy+mid',
+         'pose_source': 'npz', 'choice': 'A=C', 'score': 0.75}]
+    with open(BETA_SCORE_JSON, encoding='utf-8') as f:
+        committed = json.load(f)['post_hoc_by_pose_record']
+    assert _rounded(committed) == _rounded(by)
+    npz, xml = (committed['by_pose_record'][p]['mean'] for p in ('npz', 'xml'))
+    sec = _decisions_section('5.')
+    for text in ('%.3f' % npz, '%.3f' % xml, '%.3f' % (npz - xml), 't6f72c3c9f9', 't7876d5c101',
+                 'seattle-wa:290009', 'la-piedad-old:1779', 'does not resolve'):
+        assert text in sec, text
+    assert 'line up with' not in sec          # the claim the erratum withdraws

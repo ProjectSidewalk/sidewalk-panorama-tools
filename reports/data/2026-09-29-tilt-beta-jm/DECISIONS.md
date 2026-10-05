@@ -120,11 +120,13 @@ measure beta, and its "consistent with 1" readings are not evidence that beta = 
   read "consistent with 1". A per-arm rejection needed at least 7 discordant sheets all one way (7 : 0 gives
   a Holm-adjusted 0.031). Rule 3's reading is what the pre-set rule says, and it carries no evidence. These
   numbers are `post_hoc_power` in `sealed/score_beta_jon.json`, and a test pins them.
-- **What the batch does show.** Both arms lean low, 4 : 1 each (pooled 8 : 2, p = 0.109, not significant). The
-  means, 0.95 [0.86, 1.03] for post179 and 0.91 [0.80, 1.00] for legacy+mid, line up with the RampNet
-  per-pose-record slopes, about 0.95 (npz) and 0.88 (XML): every post179 label here is npz-posed and every
-  legacy+mid label XML-posed. Both of section 2's biases (the middle-window pull and the bounded grid) push the
-  means toward 1. The 1.0 T window took 29 of the 39 scored sheets, under section 2.1's caveat.
+- **What the batch does show.** Both arms lean low, 4 : 1 each (pooled 8 : 2, p = 0.109, not significant).
+  The arm means are 0.95 [0.86, 1.03] for post179 and 0.91 [0.80, 1.00] for legacy+mid. Grouped by pose record
+  (see the erratum below) they are 0.935 npz-posed (23 scored sheets) and 0.922 XML-posed (16). So the batch
+  corroborates beta < 1 overall, but it does not resolve the per-pose-record split: the 0.013 gap between the
+  two pose records is much smaller than the RampNet slopes' 0.95 against 0.88, and both slopes sit inside both
+  arms' CIs. Both of section 2's biases (the middle-window pull and the bounded grid) push the means toward 1.
+  The 1.0 T window took 29 of the 39 scored sheets, under section 2.1's caveat.
 - **Rule 5's consequence is withdrawn.** Section 4 says the correction "defaults to beta = 1 in both arms".
   It does not: the default is pending Jon's choice, tracked in
   [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197). This batch is corroboration
@@ -158,6 +160,20 @@ and `tilt_adjudicate.py score` died with `KeyError: 'b100'` on this folder. Now
 file's. The README's step 5 named C's analysis (`tilt_error_study.py analyze`), and `sealed/README.md` was C's
 text (the endpoint-C key, a machine pass, a key "committed early by mistake"), none of which applies here. Both
 READMEs were rewritten for this design. The key, the salt and `key.sha256` are untouched.
+
+**Erratum to section 1** (found by the [round-2 review](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/194#issuecomment-5998184562);
+section 1 is left as written): "every legacy+mid label is XML-posed and every post179 label is npz-posed" is
+false for two sheets. The key's `pose_source` gives post179 23 npz + 1 XML and legacy+mid 23 XML + 1 npz:
+
+- `t6f72c3c9f9` (seattle-wa:290009) is post179 but XML-posed. Jon chose A, the 1.0 T window: score 1.0.
+- `t7876d5c101` (la-piedad-old:1779) is legacy+mid (era `mid`, `scrape_era` modern) but npz-posed. Jon chose
+  `A=C`, the 0.5 T and 1.0 T windows: score 0.75.
+
+So era and pose source are separable here, barely, and rule 6's gloss ("legacy+mid here means XML-posed") holds
+for 23 of 24 sheets, not all. The 10-01 slopes are defined per pose record, so the means grouped that way are
+the comparison that matches them: npz 0.935 (24 sheets, 23 scored), XML 0.922 (24 sheets, 16 scored). Both
+are `post_hoc_by_pose_record` in `sealed/score_beta_jon.json`, with the two sheets listed, and a test pins
+them. No scored result in section 4 changes: the rules group by era arm, and so does the table.
 
 **Errata to section 4's post-hoc bullet** (neither changes a scored result):
 
