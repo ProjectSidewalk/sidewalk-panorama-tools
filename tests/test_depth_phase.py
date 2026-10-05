@@ -777,7 +777,93 @@ class TestTheDepthPhaseNotesItsConditions:
         assert condition_codes(stop_reasons) == []
 
 
-OPS_MD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', 'ops.md')
+# --- A damaged ledger never crashes the run (#189) ------------------------------------------------------------
+#
+# Two kinds of damage used to raise out of the ledger read before any row was inspected: a field longer than
+# csv.field_size_limit() (csv.Error - what a crash that wrote binary junk looks like) and one byte the platform's
+# default encoding cannot decode (UnicodeDecodeError). The callers caught OSError only, and count_unresolved_depth
+# runs before either phase, so one bad line ended the whole night - image phase included - every night until
+# someone edited the file. The limit is read at test time, never hard-coded: 131072 is only CPython's default.
+
+def overlong_ledger_bytes():
+    return ('pano_id,status\n' + 'x' * (csv.field_size_limit() + 1) + ',saved\n').encode('ascii')
+
+
+# \x81 is undefined in cp1252 AND invalid UTF-8, so the read raised on master both on a Windows box and on CI's
+# Ubuntu; \xff would decode under cp1252 and only discriminate on CI.
+BAD_BYTE_LEDGER = b'pano_id,status\r\nbbbbbb,saved\r\naa\x81aaaa,saved\r\ncccccc,unavailable\r\n'
+
+
+def write_ledger_bytes(storage, data):
+    with open(os.path.join(storage, gsv.DEPTH_LOG_FILENAME), 'wb') as f:
+        f.write(data)
+
+
+class TestADamagedLedgerNeverCrashesTheRun:
+
+    def test_an_overlong_field_is_an_unusable_ledger_not_a_crash(self, tmp_path, fake_streetview, capsys):
+        """Sits the run out under the existing condition, on both channels, at zero requests - not a partial
+        read, which would re-request every pano after the bad line against a store that just wrote junk."""
+        storage = str(tmp_path)
+        write_ledger_bytes(storage, overlong_ledger_bytes())
+        calls = []
+        fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: calls.append(pano_id)
+        stop_reasons = {}
+
+        result = gsv.download_depth_maps(storage, pano_infos('aaaaaa'), stop_reasons=stop_reasons)
+
+        assert result == (0, 0, 0, 0)
+        assert calls == []
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_LEDGER]
+        out = capsys.readouterr().out
+        assert 'WARNING' in out and 'cannot read the depth ledger' in out
+
+    def test_one_invalid_byte_costs_one_row_not_the_ledger(self, tmp_path, fake_streetview):
+        """The damaged row's id no longer matches its pano, so that one pano is re-requested; every other row
+        still resolves, and nothing is a condition."""
+        storage = str(tmp_path)
+        write_ledger_bytes(storage, BAD_BYTE_LEDGER)
+        calls = []
+
+        def fetch(pano_id, **kwargs):
+            calls.append(pano_id)
+            return make_pano(default_depth_array())
+
+        fake_streetview.find_panorama_by_id = fetch
+        stop_reasons = {}
+
+        assert gsv._load_depth_log(os.path.join(storage, gsv.DEPTH_LOG_FILENAME)) >= {'bbbbbb', 'cccccc'}
+        result = gsv.download_depth_maps(storage, pano_infos('aaaaaa', 'bbbbbb', 'cccccc'),
+                                         stop_reasons=stop_reasons)
+
+        assert calls == ['aaaaaa']
+        assert result == (1, 0, 2, 3)
+        assert condition_codes(stop_reasons) == []
+
+    def test_an_unusable_ledger_is_never_touched(self, tmp_path, fake_streetview):
+        """The ledger is store state: no "move it aside" or truncate. Repair is a documented hand edit
+        (docs/ops.md), so the bytes after the phase are the bytes before it."""
+        storage = str(tmp_path)
+        before = overlong_ledger_bytes()
+        write_ledger_bytes(storage, before)
+        fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+
+        gsv.download_depth_maps(storage, pano_infos('aaaaaa'))
+
+        with open(os.path.join(storage, gsv.DEPTH_LOG_FILENAME), 'rb') as f:
+            assert f.read() == before
+
+    def test_count_unresolved_depth_reads_an_overlong_field_as_no_backlog(self, tmp_path):
+        """The budget split's read, before either phase: this is the call that took the image phase down."""
+        write_ledger_bytes(str(tmp_path), overlong_ledger_bytes())
+        assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa')) == 0
+
+    def test_count_unresolved_depth_counts_a_bad_byte_row_as_unresolved(self, tmp_path):
+        write_ledger_bytes(str(tmp_path), BAD_BYTE_LEDGER)
+        assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa', 'bbbbbb', 'cccccc')) == 1
+
+
+OPS_MD =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', 'ops.md')
 
 
 @pytest.mark.skipif(shutil.which('awk') is None, reason='the recipe is an awk one-liner; CI has awk')

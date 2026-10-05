@@ -1,6 +1,7 @@
 """Tests for the depth-phase helpers: ledger reader, payload decode, artifact writer, ground-plane
 derivation, and HTTP session hardening."""
 
+import csv
 import os
 from types import SimpleNamespace
 
@@ -31,6 +32,25 @@ class TestLoadDepthLog:
         path = tmp_path / 'depth_log.csv'
         path.write_text('pano_id,status\naaaaaa,saved\ntruncated\ncccccc,bogus-status\n\ndddddd,saved,extra\n')
         assert gsv._load_depth_log(str(path)) == {'aaaaaa'}
+
+    def test_an_overlong_field_still_raises_csv_error(self, tmp_path):
+        """The degradation lives in the callers (#189), which sit the phase out. A reader that swallowed this
+        and returned the rows before the bad line would make every pano after it look unresolved, and the phase
+        would re-request them against a store that just wrote junk."""
+        path = tmp_path / 'depth_log.csv'
+        path.write_bytes(b'pano_id,status\naaaaaa,saved\n' + b'x' * (csv.field_size_limit() + 1) + b',saved\n'
+                         + b'bbbbbb,saved\n')
+        with pytest.raises(csv.Error):
+            gsv._load_depth_log(str(path))
+        assert csv.Error in gsv.DEPTH_LEDGER_UNUSABLE_ERRORS
+
+    def test_an_invalid_byte_does_not_raise(self, tmp_path):
+        """\\x81 is invalid UTF-8 and undefined in cp1252, so this raised on master on every platform (#189)."""
+        path = tmp_path / 'depth_log.csv'
+        path.write_bytes(b'pano_id,status\r\nbbbbbb,saved\r\naa\x81aaaa,saved\r\ncccccc,unavailable\r\n')
+        resolved = gsv._load_depth_log(str(path))
+        assert {'bbbbbb', 'cccccc'} <= resolved
+        assert 'aaaaaa' not in resolved
 
 
 class TestDecodeDepthPlanes:
