@@ -41,6 +41,11 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   `tilt_jm_pool.py` rebuilds the redraw from committed data, and `tilt_adjudicate_ui.py` is the judging page.
   The beta folder is sealed the same way but built with `--design beta` (`draw` and `sheets`); score it with
   `tilt_adjudicate.py score-beta` (writes the committed `sealed/score_beta_jon.json`), never `score`.
+  **This file deliberately does not load inside a judge folder**: `reports/data/*tilt*` matches the study's
+  files, but `*` does not cross `/`, so a judge working in `reports/data/<batch>/` is never handed C's result
+  above. Keep it that way when adding globs; the judge README (`tilt_adjudicate.JUDGE_README`) names this file
+  as one not to open, and a test checks that list against every file that quotes the result (bar the
+  report, the judge folders and `reports/plans/`, which are records).
 - **The `.xml` files beside 2019-22 scrapes carry legacy tilt**, for dead panos too.
   `tilt_geometry.xml_tilt_to_pitch_roll` is the one conversion (fitted on 3,594 panos with both files, median
   residual about 0.1 deg). Pose a JPEG by the file of its own scrape era: an `.xml` JPEG is a 2019-22 stitch, and a 2026

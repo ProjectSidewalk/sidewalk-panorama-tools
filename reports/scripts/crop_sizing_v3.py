@@ -482,7 +482,7 @@ def _example_record(example):
     return record
 
 
-# Which population every top-level key of the summary is computed on (the CLAUDE.md convention: two
+# Which population every top-level key of the summary is computed on (the .claude/rules/desk-studies.md convention: two
 # figures in one artifact each name their frame). A key added to the summary without being claimed
 # here fails a test.
 GOLD_KEYS = ('cities', 'pooled', 'selection', 'window_change', 'rule_a_blend_powerlaw', 'figure_examples')

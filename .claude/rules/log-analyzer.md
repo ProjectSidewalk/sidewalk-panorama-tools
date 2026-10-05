@@ -1,6 +1,12 @@
+---
+paths:
+  - "log_analyzer/**"
+  - "tests/test_log_analyzer.py"
+  - "docs/log-analyzer.md"
+---
 # `log_analyzer/` - the ops monitor
 
-Loaded by Claude Code when a file under this directory is read. The repo-wide guidance is `CLAUDE.md` at the repo root; `docs/log-analyzer.md` is the operator page. `cities.csv` here is also the roster `CropRunner --city` reads as a file (`.claude/rules/cropper.md`), and the `log.csv` contract the analyzer parses is stated in the root file under "Storage layout" and "Things that are easy to get wrong" - `LOG_COLUMNS` here and `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` must move together.
+Loaded by Claude Code when a file matching the globs above is read: anything under `log_analyzer/`, its test, and its operator page. The repo-wide guidance is `CLAUDE.md` at the repo root; read it first. `docs/log-analyzer.md` is the operator page. `log_analyzer/cities.csv` is also the roster `CropRunner --city` reads as a file (`.claude/rules/cropper.md`), and the `log.csv` contract the analyzer parses is stated in the root file under "Storage layout" and "Things that are easy to get wrong" - `LOG_COLUMNS` in `analyze.py` and `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` must move together.
 
 **log_analyzer/analyze.py** — ops monitoring for the nightly scrape; shares no code with the runners.
 1. Reads `log_analyzer/cities.csv`, pulls each city's `log.csv` off the pano store with `sftp -b -` (the store's restricted SFTP subsystem doesn't speak the SCP wire protocol), and caches it in the gitignored `log_analyzer/logs/`. Connection settings come from `PS_SFTP_*` env vars or matching flags — host and base path are required with no defaults, since a wrong default would silently analyze the wrong store.

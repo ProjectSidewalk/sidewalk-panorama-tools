@@ -1350,7 +1350,7 @@ class TestOneProcessAtATimeSpendsTheStanding:
 
     def test_the_lock_is_released_when_the_phase_ends(self, tmp_path, recorder, clock, no_jitter, monkeypatch):
         """A lock held past the end of a phase would stand the whole fleet down after the first city - the
-        failure mode CLAUDE.md rejects O_EXCL lock files for."""
+        failure mode .claude/rules/queue.md rejects O_EXCL lock files for."""
         monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
         monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
         monkeypatch.setattr(gsv, 'DEPTH_PACE_RECOVER_AFTER', 2)
