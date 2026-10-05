@@ -35,10 +35,11 @@ PAGES = ['README.md', 'CONTRIBUTING.md'] + [
     os.path.join('docs', f) for f in sorted(os.listdir(DOCS_DIR)) if f.endswith('.md')
 ]
 
-# The guidance Claude Code loads: the root file (every session), the path-scoped rules files (when a file
-# matching their `paths:` globs is read) and the nested CLAUDE.md files (when a file under their directory
-# is read). One list, so every test that scans "the guidance" scans all of it - a rule moved out of the root
-# file would otherwise drop out of the docs-path and log.csv-width checks in silence.
+# The guidance Claude Code loads: the project file (every session), the path-scoped rules files (when a file
+# matching their `paths:` globs is read) and any nested CLAUDE.md (when a file under its directory is read -
+# this repo has none and test_there_are_no_nested_claude_md_files keeps it so; they are discovered so that
+# test can see one). One list, so every test that scans "the guidance" scans all of it - a rule moved out of
+# the root file would otherwise drop out of the docs-path and log.csv-width checks in silence.
 RULES_DIR = os.path.join('.claude', 'rules')
 
 # Directories inside a checkout that hold someone else's files, not this checkout's guidance: git's own,
@@ -57,21 +58,31 @@ def _rule_files(root):
     return sorted(found)
 
 
+# The project CLAUDE.md can live at either of these, and both load at startup (#192 round-2 review R5): a
+# `.claude/CLAUDE.md` is not a nested file that waits for a file under `.claude/` to be read.
+PROJECT_CLAUDE_MDS = ('CLAUDE.md', os.path.join('.claude', 'CLAUDE.md'))
+
+
+def _project_claude_mds(root):
+    return [p for p in PROJECT_CLAUDE_MDS if os.path.isfile(os.path.join(root, p))]
+
+
 def _nested_claude_mds(root):
+    """Every CLAUDE.md below the checkout's root other than the two project locations above."""
     found = []
     for d, dirs, files in os.walk(root):
         rel = os.path.relpath(d, root)
         parts = () if rel == os.curdir else tuple(rel.split(os.sep))
         dirs[:] = [x for x in dirs
                    if x not in _NOT_THIS_CHECKOUT and parts + (x,) != ('.claude', 'worktrees')]
-        if parts and 'CLAUDE.md' in files:
+        if parts and parts != ('.claude',) and 'CLAUDE.md' in files:
             found.append(os.path.join(rel, 'CLAUDE.md'))
     return sorted(found)
 
 
 RULE_FILES = _rule_files(REPO_ROOT)
 NESTED_CLAUDE_MDS = _nested_claude_mds(REPO_ROOT)
-GUIDANCE_FILES = ['CLAUDE.md'] + RULE_FILES + NESTED_CLAUDE_MDS
+GUIDANCE_FILES = _project_claude_mds(REPO_ROOT) + RULE_FILES + NESTED_CLAUDE_MDS
 
 # Sources named one by one, so a rename fails this test instead of quietly dropping the file out of coverage.
 # The guidance files earn their place here for the same reason the Python sources do: they are pointer
@@ -385,13 +396,28 @@ def _loads_at_startup(path):
         return True
 
 
+def _startup_guidance(root):
+    """What Claude Code loads into every session: the project CLAUDE.md (either location) and every rules
+    file it would read as unscoped."""
+    return _project_claude_mds(root) + [r for r in _rule_files(root) if _loads_at_startup(os.path.join(root, r))]
+
+
 def test_the_guidance_set_is_what_the_split_left():
-    """Guards the guards below: an empty rules directory would make every per-file test vacuous. The two
-    nested CLAUDE.md files became rules files (#192 review S4); discovery of nested ones stays, so a new one is
-    checked like the rest."""
+    """Guards the guards below: an empty rules directory would make every per-file test vacuous."""
     names = {os.path.basename(r) for r in RULE_FILES}
     assert names >= {'downloader.md', 'depth.md', 'cropper.md', 'tilt.md', 'queue.md', 'store-repair.md',
                      'log-analyzer.md', 'desk-studies.md'}, RULE_FILES
+
+
+def test_there_are_no_nested_claude_md_files():
+    """The two nested CLAUDE.md files became rules files (#192 review S4), because a nested file loads only
+    for files under its own directory and cannot be given more globs. Nothing held that: #194 carries
+    cherry-picks that ADD both files back, and since the merge base has neither, git keeps them with no
+    conflict and the suite stayed green (round-2 review R1). So a nested file is refused outright."""
+    assert NESTED_CLAUDE_MDS == [], (
+        f'nested CLAUDE.md files {NESTED_CLAUDE_MDS}: move their content into a path-scoped rules file under '
+        '.claude/rules/ (log_analyzer/CLAUDE.md is now .claude/rules/log-analyzer.md, reports/scripts/CLAUDE.md '
+        'is .claude/rules/desk-studies.md), give it the globs it needs, and delete the nested file.')
 
 
 @pytest.mark.parametrize('rule', RULE_FILES)
@@ -422,7 +448,7 @@ def test_every_guidance_file_is_under_claude_codes_per_file_limit(path):
 
 
 def test_the_startup_guidance_stays_small():
-    startup = ['CLAUDE.md'] + [r for r in RULE_FILES if _loads_at_startup(r)]
+    startup = _startup_guidance(REPO_ROOT)
     total = sum(_chars(p) for p in startup)
     assert total < STARTUP_CHAR_LIMIT, (
         f'the guidance loaded at startup ({startup}) is {total:,} characters, over {STARTUP_CHAR_LIMIT:,} - '
@@ -472,6 +498,18 @@ def test_discovery_does_not_depend_on_where_the_checkout_sits(tmp_path):
     assert _nested_claude_mds(root) == [os.path.join('log_analyzer', 'CLAUDE.md'),
                                         os.path.join('reports', 'scripts', 'CLAUDE.md')]
     assert _rule_files(root) == [os.path.join('.claude', 'rules', 'a.md')]
+
+
+def test_a_claude_md_under_dot_claude_is_startup_context_not_nested(tmp_path):
+    """Claude Code reads the project file from `./CLAUDE.md` or `./.claude/CLAUDE.md`, both at startup. The
+    first discovery counted the second as a nested file, so a 140k one left the startup check green (round-2
+    review R5)."""
+    _write_tree(tmp_path, {'CLAUDE.md': 'root', '.claude/CLAUDE.md': 'also root',
+                           '.claude/rules/scoped.md': SCOPED, '.claude/rules/unscoped.md': '# no paths\n'})
+    root = str(tmp_path)
+    assert _nested_claude_mds(root) == []
+    assert _startup_guidance(root) == ['CLAUDE.md', os.path.join('.claude', 'CLAUDE.md'),
+                                       os.path.join('.claude', 'rules', 'unscoped.md')]
 
 
 def test_rules_files_in_subdirectories_are_discovered(tmp_path):
