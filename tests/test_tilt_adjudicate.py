@@ -1062,3 +1062,22 @@ def test_the_means_by_pose_record_are_scored_and_section_5_quotes_them():
                  'seattle-wa:290009', 'la-piedad-old:1779', 'does not resolve'):
         assert text in sec, text
     assert 'line up with' not in sec          # the claim the erratum withdraws
+
+
+def test_the_power_statement_states_the_holm_condition():
+    """Round-2 finding 4: under Holm's step-down, the second arm is tested at alpha itself once the first
+    rejects at alpha / 2, so 6 : 0 (p = 0.03125) can reject when the other arm rejected first (7 : 0, p =
+    0.0156). 7 is the bar only on its own. Fails with the new field or section 5's wording reverted."""
+    ph = ta.beta_power({'arms': {'a': {'low': 4, 'high': 1}, 'b': {'low': 4, 'high': 1}}})
+    assert ph['min_discordant_to_reject_holm'] == 7
+    assert ph['min_discordant_to_reject_if_other_rejects'] == 6
+    # Holm itself agrees: 7 : 0 and 6 : 0 both reject; 6 : 0 beside a non-rejecting arm does not.
+    p7, p6 = ta.binom_two_sided(7, 7), ta.binom_two_sided(6, 6)
+    assert max(ta.holm({'a': p7, 'b': p6}).values()) < ta.BETA_ALPHA
+    assert ta.holm({'a': 0.5, 'b': p6})['b'] >= ta.BETA_ALPHA
+    with open(BETA_SCORE_JSON, encoding='utf-8') as f:
+        committed = json.load(f)['post_hoc_power']
+    assert committed['min_discordant_to_reject_if_other_rejects'] == 6
+    sec = _decisions_section('5.')
+    assert 'at least 7 discordant sheets all one way on its own' in sec
+    assert '6 : 0 (p = 0.031) rejects if the other arm rejected first' in sec

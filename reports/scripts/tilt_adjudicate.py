@@ -675,7 +675,10 @@ def score_beta(verdicts, key):
 def beta_power(result):
     """Per arm: the discordant (low + high) sheets, the smallest two-sided sign-test p that many sheets
     can give (all of them one way), that p after Holm over the two arms, and whether it could have reached
-    BETA_ALPHA at all; plus the smallest n all one way that could. `result` is score_beta's output."""
+    BETA_ALPHA at all. Plus two thresholds, because Holm is step-down: `min_discordant_to_reject_holm`, the
+    smallest n all one way that rejects on its own (its p must clear alpha / k), and
+    `min_discordant_to_reject_if_other_rejects`, the smallest that rejects once the other arm has rejected
+    first (the second step is tested at alpha itself). `result` is score_beta's output."""
     k = len(result['arms'])
     per_arm = {}
     for arm, a in sorted(result['arms'].items()):
@@ -684,7 +687,9 @@ def beta_power(result):
         per_arm[arm] = {'n_discordant': n, 'min_attainable_p': p_min,
                         'min_attainable_p_holm': min(1.0, k * p_min), 'could_reject': k * p_min < BETA_ALPHA}
     n_min = next(n for n in range(1, 100) if k * binom_two_sided(n, n) < BETA_ALPHA)
-    return {'per_arm': per_arm, 'min_discordant_to_reject_holm': n_min, 'arms_in_holm_family': k}
+    n_last = next(n for n in range(1, 100) if binom_two_sided(n, n) < BETA_ALPHA)
+    return {'per_arm': per_arm, 'min_discordant_to_reject_holm': n_min,
+            'min_discordant_to_reject_if_other_rejects': n_last, 'arms_in_holm_family': k}
 
 
 BETA_ARM_POSE = {'post179': 'npz', 'legacy+mid': 'xml'}   # what DECISIONS.md section 1 said every sheet was

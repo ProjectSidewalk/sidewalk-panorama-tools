@@ -117,8 +117,10 @@ measure beta, and its "consistent with 1" readings are not evidence that beta = 
 - **The primary test had no power at this n.** Each arm has n = 5 discordant sheets (the low + high
   sheets of rule 2). With n = 5 the smallest two-sided exact p is 2/32 = 0.0625, and the smallest Holm-adjusted
   p over the two arms is 0.125. So neither arm could reject, whatever the split: a 5 : 0 split would also have
-  read "consistent with 1". A per-arm rejection needed at least 7 discordant sheets all one way (7 : 0 gives
-  a Holm-adjusted 0.031). Rule 3's reading is what the pre-set rule says, and it carries no evidence. These
+  read "consistent with 1". A per-arm rejection needed at least 7 discordant sheets all one way on its own
+  (7 : 0 gives a Holm-adjusted 0.031). Holm steps down, so the bar is lower for the second arm: 6 : 0 (p = 0.031)
+  rejects if the other arm rejected first, at p < 0.025. At n = 5 neither applies: even unadjusted, 0.0625
+  exceeds 0.05. Rule 3's reading is what the pre-set rule says, and it carries no evidence. These
   numbers are `post_hoc_power` in `sealed/score_beta_jon.json`, and a test pins them.
 - **What the batch does show.** Both arms lean low, 4 : 1 each (pooled 8 : 2, p = 0.109, not significant).
   The arm means are 0.95 [0.86, 1.03] for post179 and 0.91 [0.80, 1.00] for legacy+mid. Grouped by pose record

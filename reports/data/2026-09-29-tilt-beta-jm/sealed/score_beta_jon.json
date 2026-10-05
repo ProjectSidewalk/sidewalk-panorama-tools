@@ -39,6 +39,7 @@
  "post_hoc_power": {
   "arms_in_holm_family": 2,
   "min_discordant_to_reject_holm": 7,
+  "min_discordant_to_reject_if_other_rejects": 6,
   "per_arm": {
    "legacy+mid": {
     "could_reject": false,
