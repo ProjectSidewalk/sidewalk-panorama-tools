@@ -991,7 +991,11 @@ class TestTheBetaFolderReadmes:
     def test_step_5_scores_with_score_beta(self):
         with open(os.path.join(BETA_DIR, 'README.md'), encoding='utf-8') as f:
             judge = f.read()
-        assert judge == ta.judge_readme('beta').format(out='reports/data/2026-09-29-tilt-beta-jm')
+        # A record, like the 2026-09-26 folder's (TestTheCommittedFolder.test_the_readmes): drawn while the tilt
+        # rules were a CLAUDE.md subsection, so it keeps the words its judge read, not #192's new path.
+        template = ta.judge_readme('beta').replace("`.claude/rules/tilt.md`", "CLAUDE.md's tilt subsection")
+        assert template != ta.judge_readme('beta')
+        assert judge == template.format(out='reports/data/2026-09-29-tilt-beta-jm')
         step5 = ' '.join(judge[judge.index('\n5. '):].split('\n\n')[0].split())
         assert ('python reports/scripts/tilt_adjudicate.py score-beta --out reports/data/2026-09-29-tilt-beta-jm'
                 in step5)
