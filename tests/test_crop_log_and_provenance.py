@@ -350,6 +350,12 @@ def labelled(label_id, **provenance):
     return row
 
 
+# What a row cut without --tilt-correction says in #196's four columns: no pose record, beta 0.0 (the
+# marker's own "off" value), and no corrected centre - blank, never the stored point copied in.
+UNCORRECTED = {'pose_source': 'none', 'tilt_beta': '0.0', 'corrected_pano_x': '', 'corrected_pano_y': ''}
+UNCORRECTED_CELLS = ['none', '0.0', '', '']
+
+
 def write_crop_file(out_dir, label_type_id, label_id):
     os.makedirs(os.path.join(str(out_dir), str(label_type_id)), exist_ok=True)
     Image.new('RGB', (4, 4)).save(crop_path(out_dir, label_type_id, label_id))
@@ -366,7 +372,14 @@ class TestTheProvenanceManifest:
         that arrives under it flows through with no renaming in between."""
         assert crop_runner.PROVENANCE_MANIFEST == 'crop_provenance.csv'
         assert crop_runner.PROVENANCE_COLUMNS == (
-            'city', 'label_id', 'pano_id', 'source', 'copyright', 'license', 'crop_rule_version')
+            'city', 'label_id', 'pano_id', 'source', 'copyright', 'license', 'crop_rule_version',
+            'pose_source', 'tilt_beta', 'corrected_pano_x', 'corrected_pano_y')
+
+    def test_the_tilt_columns_come_last_so_the_first_seven_keep_their_places(self, crop_runner):
+        """#196 appended its four columns, so a reader that indexes the pre-#196 columns by position still
+        finds them where they were."""
+        assert crop_runner.PROVENANCE_COLUMNS[:7] == crop_runner.PRE_TILT_PROVENANCE_COLUMNS
+        assert crop_runner.PROVENANCE_COLUMNS[7:] == crop_runner.TILT_PROVENANCE_COLUMNS
 
     def test_one_row_per_crop_carrying_what_the_metadata_says(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
@@ -379,10 +392,10 @@ class TestTheProvenanceManifest:
         assert rows == {
             '1': {'city': '', 'label_id': '1', 'pano_id': 'testpano0001', 'source': 'panoramax',
                   'copyright': 'Jane Doe, Bayonne', 'license': 'etalab-2.0',
-                  'crop_rule_version': crop_runner.CROP_RULE_VERSION},
+                  'crop_rule_version': crop_runner.CROP_RULE_VERSION, **UNCORRECTED},
             '2': {'city': '', 'label_id': '2', 'pano_id': 'testpano0001', 'source': 'mapillary',
                   'copyright': 'someone', 'license': 'CC-BY-SA-4.0',
-                  'crop_rule_version': crop_runner.CROP_RULE_VERSION}}
+                  'crop_rule_version': crop_runner.CROP_RULE_VERSION, **UNCORRECTED}}
 
     def test_a_field_the_metadata_does_not_carry_is_empty_not_guessed(self, crop_runner, tmp_path):
         """Absent, JSON null and a blank cell all mean 'not stated'. Mapillary's licence is uniform and a
@@ -1040,6 +1053,8 @@ class TestTheMarkerSaysWhetherTheManifestHasAKnownGap:
         assert marker['provenance_manifest'] == crop_runner.PROVENANCE_MANIFEST
         assert marker['provenance_manifest_started_under'] == crop_runner.CROP_RULE_VERSION
         assert marker['provenance_manifest_no_known_gap'] is True
+        assert marker['provenance_manifest_pre_city'] is None
+        assert marker['provenance_manifest_pre_tilt'] is None
 
     def test_a_store_with_crops_but_no_manifest_records_a_partial_one(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
@@ -1586,7 +1601,8 @@ class TestAPreCityManifestIsSetAsideNotAppendedTo:
         crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out), city='seattle-wa')
         assert manifest_rows(out, crop_runner) == [
             list(crop_runner.PROVENANCE_COLUMNS),
-            ['seattle-wa', '1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]]
+            ['seattle-wa', '1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]
+            + UNCORRECTED_CELLS]
 
     def test_the_marker_records_the_set_aside_file_and_a_known_gap(self, crop_runner, tmp_path):
         """The fresh manifest has no row for the crops cut under the old one, so it is not whole - the
@@ -1595,6 +1611,7 @@ class TestAPreCityManifestIsSetAsideNotAppendedTo:
         crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
         marker = read_marker(out, crop_runner)
         assert marker['provenance_manifest_pre_city'] == crop_runner.PROVENANCE_MANIFEST_PRE_CITY
+        assert marker['provenance_manifest_pre_tilt'] is None
         assert marker['provenance_manifest_no_known_gap'] is False
 
     def test_later_runs_keep_the_record(self, crop_runner, tmp_path):
@@ -1631,8 +1648,15 @@ class TestAPreCityManifestIsSetAsideNotAppendedTo:
         # with columns swapped, so neither is taken for the header it resembles.
         b'label_id,city,pano_id,source,copyright,license,crop_rule_version\nseattle-wa,1,p,,,,v2\n',
         b'pano_id,label_id,source,copyright,license,crop_rule_version\np,1,,,,v2\n',
-    ], ids=['unrelated', 'a-column-short', 'a-column-long', 'current-columns-permuted',
-            'pre-city-columns-permuted'])
+        b'city,pano_id,label_id,source,copyright,license,crop_rule_version\nseattle-wa,p,1,,,,v2\n',
+        (b'city,label_id,pano_id,source,copyright,license,crop_rule_version,tilt_beta,pose_source,'
+         b'corrected_pano_x,corrected_pano_y\nseattle-wa,1,p,,,,v2,0.0,none,,\n'),
+        # The pre-tilt header with only some of #196's columns is neither header.
+        (b'city,label_id,pano_id,source,copyright,license,crop_rule_version,pose_source,tilt_beta\n'
+         b'seattle-wa,1,p,,,,v2,none,0.0\n'),
+    ], ids=['unrelated', 'a-column-short', 'a-column-long', 'pre-tilt-city-moved',
+            'pre-city-columns-permuted', 'pre-tilt-columns-permuted', 'current-columns-permuted',
+            'tilt-columns-partial'])
     def test_any_other_header_stops_the_run_before_anything_is_written(self, crop_runner, tmp_path,
                                                                       content):
         store, out = self.old_store(crop_runner, tmp_path, content=content)
@@ -1663,3 +1687,148 @@ class TestAPreCityManifestIsSetAsideNotAppendedTo:
         assert crop_runner.PROVENANCE_MANIFEST in capsys.readouterr().out
         assert any(r.levelno == logging.ERROR and crop_runner.PROVENANCE_MANIFEST in r.getMessage()
                    for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# #196: a manifest written before rows carried the tilt correction is set aside, never appended to
+# ---------------------------------------------------------------------------
+
+# The header written from #159 to #196, and two rows under it (one with a quoted comma, so a byte-for-byte
+# move is the only way the body survives intact).
+PRE_TILT_HEADER = b'city,label_id,pano_id,source,copyright,license,crop_rule_version\n'
+PRE_TILT_MANIFEST = (PRE_TILT_HEADER + b'seattle-wa,7,testpano0001,gsv,,,v2\n'
+                     b'seattle-wa,8,testpano0001,gsv,"Doe, J",,v2\n')
+
+
+class TestAPreTiltManifestIsSetAsideNotAppendedTo:
+    """#196 appended four columns (pose_source, tilt_beta, corrected_pano_x, corrected_pano_y). The open
+    trusts any non-empty file's header, so without a check the first run over a store cut between #159 and
+    #196 would append eleven-field rows under a seven-field header - the #159 failure again, with nothing
+    raised. The rule is #159's: the older file is moved aside whole and a fresh manifest started. Its rows
+    are never padded with "off" values, because a crop cut under #193 with --tilt-correction may be among
+    them: blank would be read as uncorrected, and that is not known."""
+
+    def old_store(self, crop_runner, tmp_path, content=PRE_TILT_MANIFEST):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        write_crop_file(out, 1, 7)
+        write_crop_file(out, 1, 8)
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'wb') as f:
+            f.write(content)
+        return store, out
+
+    def aside(self, crop_runner, out):
+        return os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST_PRE_TILT)
+
+    def test_the_old_header_is_the_one_written_between_159_and_196(self, crop_runner):
+        assert crop_runner.PROVENANCE_MANIFEST_PRE_TILT == 'crop_provenance.pre-tilt.csv'
+        assert crop_runner._csv_line(crop_runner.PRE_TILT_PROVENANCE_COLUMNS) == PRE_TILT_HEADER
+
+    def test_the_old_file_is_moved_aside_byte_for_byte(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        counts = crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out),
+                                                city='seattle-wa')
+        assert counts['success'] == 1
+        with open(self.aside(crop_runner, out), 'rb') as f:
+            assert f.read() == PRE_TILT_MANIFEST
+
+    def test_the_new_manifest_holds_only_rows_with_the_new_header(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out), city='seattle-wa')
+        assert manifest_rows(out, crop_runner) == [
+            list(crop_runner.PROVENANCE_COLUMNS),
+            ['seattle-wa', '1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]
+            + UNCORRECTED_CELLS]
+
+    def test_the_set_aside_is_said_on_both_channels(self, crop_runner, tmp_path, capsys, caplog):
+        store, out = self.old_store(crop_runner, tmp_path)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        assert crop_runner.PROVENANCE_MANIFEST_PRE_TILT in capsys.readouterr().out
+        assert any(r.levelno == logging.WARNING and crop_runner.PROVENANCE_MANIFEST_PRE_TILT in r.getMessage()
+                   for r in caplog.records)
+
+    def test_the_marker_records_the_set_aside_file_and_a_known_gap(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        marker = read_marker(out, crop_runner)
+        assert marker['provenance_manifest_pre_tilt'] == crop_runner.PROVENANCE_MANIFEST_PRE_TILT
+        assert marker['provenance_manifest_pre_city'] is None
+        assert marker['provenance_manifest_no_known_gap'] is False
+
+    def test_later_runs_keep_the_record(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        os.rename(self.aside(crop_runner, out), os.path.join(str(out), 'archived.csv'))
+        crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out), city='seattle-wa')
+        assert read_marker(out, crop_runner)['provenance_manifest_pre_tilt'] == \
+            crop_runner.PROVENANCE_MANIFEST_PRE_TILT
+
+    def test_an_existing_set_aside_file_is_never_replaced(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        with open(self.aside(crop_runner, out), 'wb') as f:
+            f.write(PRE_TILT_HEADER + b'seattle-wa,1,earlier,gsv,,,v2\n')
+        before = tree_snapshot(out)
+        with pytest.raises(crop_runner.ProvenanceManifestHeaderError) as e:
+            crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        assert crop_runner.PROVENANCE_MANIFEST_PRE_TILT in str(e.value)
+        assert tree_snapshot(out) == before
+
+    def test_both_legacy_set_asides_coexist(self, crop_runner, tmp_path):
+        """A store set aside at #159 and cut again before #196: the pre-city file is already there, and the
+        seven-column manifest started then is set aside beside it. The marker names both."""
+        store, out = self.old_store(crop_runner, tmp_path)
+        pre_city = os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST_PRE_CITY)
+        with open(pre_city, 'wb') as f:
+            f.write(PRE_CITY_MANIFEST)
+        counts = crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        assert counts['success'] == 1
+        with open(pre_city, 'rb') as f:
+            assert f.read() == PRE_CITY_MANIFEST
+        with open(self.aside(crop_runner, out), 'rb') as f:
+            assert f.read() == PRE_TILT_MANIFEST
+        assert row_ids(out, crop_runner) == ['1']
+        marker = read_marker(out, crop_runner)
+        assert marker['provenance_manifest_pre_city'] == crop_runner.PROVENANCE_MANIFEST_PRE_CITY
+        assert marker['provenance_manifest_pre_tilt'] == crop_runner.PROVENANCE_MANIFEST_PRE_TILT
+        assert marker['provenance_manifest_no_known_gap'] is False
+
+    def test_the_current_header_is_appended_to_as_before(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out), city='seattle-wa')
+        assert row_ids(out, crop_runner) == ['1', '2']
+        assert not os.path.exists(self.aside(crop_runner, out))
+
+    def test_main_sets_it_aside_and_cuts(self, crop_runner, tmp_path):
+        store, out = self.old_store(crop_runner, tmp_path)
+        root = tmp_path / 'root'
+        root.mkdir()
+        os.rename(str(out), str(city_store(root)))
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row(label_id=1)])
+        code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store),
+                                 '-o', str(root)])
+        assert code == 0
+        with open(os.path.join(str(city_store(root)), crop_runner.PROVENANCE_MANIFEST_PRE_TILT), 'rb') as f:
+            assert f.read() == PRE_TILT_MANIFEST
+
+    def test_main_refuses_on_both_channels_with_exit_3_when_the_name_is_taken(self, crop_runner, tmp_path,
+                                                                              capsys, caplog):
+        store, out = self.old_store(crop_runner, tmp_path)
+        with open(self.aside(crop_runner, out), 'wb') as f:
+            f.write(PRE_TILT_HEADER)
+        root = tmp_path / 'root'
+        root.mkdir()
+        os.rename(str(out), str(city_store(root)))
+        before = tree_snapshot(root)
+        csv_file = tmp_path / 'labels.csv'
+        write_labels_csv(csv_file, [label_row(label_id=1)])
+        code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store),
+                                 '-o', str(root)])
+        assert code == crop_runner.EXIT_REFUSED_DESTINATION
+        assert crop_runner.PROVENANCE_MANIFEST_PRE_TILT in capsys.readouterr().out
+        assert any(r.levelno == logging.ERROR and crop_runner.PROVENANCE_MANIFEST_PRE_TILT in r.getMessage()
+                   for r in caplog.records)
+        assert tree_snapshot(root) == before
