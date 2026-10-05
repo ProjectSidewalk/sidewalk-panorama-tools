@@ -113,7 +113,7 @@ The frontmatter is the definition of when each file loads; the table says what i
 | `.claude/rules/log-analyzer.md` | the analyzer's rules and the depth backfill report | `log_analyzer/`, its test, `docs/log-analyzer.md` |
 | `.claude/rules/desk-studies.md` | the six desk-study conventions and the annotation tool | everything under `reports/`, every study test |
 
-Each also loads for its own tests and `docs/` page. `tests/test_docs.py` checks the other direction too: every measured production module, every test whose module scope reaches into `reports/`, and the log analyzer's test and page load the rules written for them.
+Each also loads for its own tests and `docs/` page. `tests/test_docs.py` checks the other direction too: every measured production module, every test whose module scope reaches into `reports/` (one that reads a report only inside a function is named in the test with the rules that load for it instead), and the log analyzer's test and page load the rules written for them.
 
 **Coverage** is configured in `.coveragerc` (#57) and gated by its `fail_under`. Three things about it are load-bearing and easy to break by "simplifying":
 

@@ -644,6 +644,40 @@ def test_the_desk_study_conventions_load_for_the_studies_their_tests_and_their_r
         f'{DESK_STUDY_RULES} does not load for {path}: add a glob to its `paths:`')
 
 
+# The finder above sees only module-scope reaches (#192 round-2 review R8). A test that opens a committed
+# report or reports/data/ file inside a function is a committed-artifact test too, but its main subject may
+# be a module with rules of its own. Each such test is named here with the rules file that loads for it
+# instead, so a new one is a decision rather than a gap nobody saw.
+_READS_A_REPORT = re.compile(r"os\.path\.join\(REPO_ROOT,\s*'reports'")
+FUNCTION_SCOPE_REPORT_READERS = {
+    # The 2026-08-11 Mapillary census is the independent witness for the label-type map's Crosswalk id.
+    'tests/test_crop_runner.py': '.claude/rules/cropper.md',
+    # The 2026-08-07 pano-y histogram is checked against the tile contract's band edges.
+    'tests/test_gsv_tile_contract.py': '.claude/rules/downloader.md',
+}
+
+
+def _report_readers_outside_the_desk_studies():
+    desk = set(_desk_study_tests())
+    found = set()
+    for f in sorted(os.listdir(os.path.join(REPO_ROOT, 'tests'))):
+        if f.startswith('test_') and f.endswith('.py') and 'tests/' + f not in desk:
+            with open(os.path.join(REPO_ROOT, 'tests', f), encoding='utf-8') as fh:
+                if _READS_A_REPORT.search(fh.read()):
+                    found.add('tests/' + f)
+    return found
+
+
+def test_every_test_that_reads_a_report_inside_a_function_is_named_with_its_rules():
+    found = _report_readers_outside_the_desk_studies()
+    assert found == set(FUNCTION_SCOPE_REPORT_READERS), (
+        f'tests reading reports/ only inside a function: {sorted(found)}; named: '
+        f'{sorted(FUNCTION_SCOPE_REPORT_READERS)}. Name a new one in FUNCTION_SCOPE_REPORT_READERS with the rules '
+        f'file that loads for it, or give {DESK_STUDY_RULES} a glob for it; drop an entry that no longer reads one.')
+    for path, rules in FUNCTION_SCOPE_REPORT_READERS.items():
+        assert rules in _guidance_loading_for(path), f'{rules} does not load for {path}'
+
+
 @pytest.mark.parametrize('path', ['log_analyzer/analyze.py', 'log_analyzer/roster.py', 'log_analyzer/cities.csv',
                                   'tests/test_log_analyzer.py', 'docs/log-analyzer.md'])
 def test_the_log_analyzer_rules_load_for_its_test_and_its_page(path):
