@@ -974,6 +974,13 @@ def test_the_sheets_cli_builds_the_design_it_is_given(tmp_path, capsys):
         assert 'tilt_adjudicate.py score-beta' in f.read()
 
 
+BETA_README_STATUS = '''
+This folder holds one judge's completed verdicts: `jon`, all 48 sheets, judged 2026-09-29 and scored in
+`sealed/score_beta_jon.json`. Adding a second judge needs a new dated entry in `DECISIONS.md` first, written
+by whoever sets that judge up (not by the judge), saying how the new verdicts are scored and read beside these.
+'''
+
+
 class TestTheBetaFolderReadmes:
     def test_the_sealed_readme_describes_this_batch(self):
         with open(os.path.join(BETA_DIR, 'sealed', 'README.md'), encoding='utf-8') as f:
@@ -991,11 +998,12 @@ class TestTheBetaFolderReadmes:
     def test_step_5_scores_with_score_beta(self):
         with open(os.path.join(BETA_DIR, 'README.md'), encoding='utf-8') as f:
             judge = f.read()
-        # A record, like the 2026-09-26 folder's (TestTheCommittedFolder.test_the_readmes): drawn while the tilt
-        # rules were a CLAUDE.md subsection, so it keeps the words its judge read, not #192's new path.
-        template = ta.judge_readme('beta').replace("`.claude/rules/tilt.md`", "CLAUDE.md's tilt subsection")
-        assert template != ta.judge_readme('beta')
-        assert judge == template.format(out='reports/data/2026-09-29-tilt-beta-jm')
+        # Live instructions, not a record (#194 round-2 finding 2): it invites further judges, and step 5 was
+        # already rewritten after judging, so it is the current template plus the folder's status note. Git at
+        # ffc7356 is the record of what Jon read. Fails if the README names "CLAUDE.md's tilt subsection" (gone
+        # since #192) instead of `.claude/rules/tilt.md`, which states this batch's result.
+        assert judge == ta.judge_readme('beta').format(out='reports/data/2026-09-29-tilt-beta-jm') + BETA_README_STATUS
+        assert '`.claude/rules/tilt.md`' in judge and 'tilt subsection' not in judge
         step5 = ' '.join(judge[judge.index('\n5. '):].split('\n\n')[0].split())
         assert ('python reports/scripts/tilt_adjudicate.py score-beta --out reports/data/2026-09-29-tilt-beta-jm'
                 in step5)

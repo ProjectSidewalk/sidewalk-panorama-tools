@@ -10,6 +10,10 @@
    `sealed/score_beta_<you>.json`. Only then open `sealed/`, DECISIONS.md, the report, or the study JSON.
 
 Do not open `sealed/`, the report's results, `reports/data/2026-09-26-tilt-error-study.json`,
-`reports/README.md`, `docs/cropper.md` or CLAUDE.md's tilt subsection before step 5: they hold the key
+`reports/README.md`, `docs/cropper.md` or `.claude/rules/tilt.md` before step 5: they hold the key
 or another judge's answers. `next` and `record` never read the key, and they
 refuse to run while a key file sits in this folder outside `sealed/`.
+
+This folder holds one judge's completed verdicts: `jon`, all 48 sheets, judged 2026-09-29 and scored in
+`sealed/score_beta_jon.json`. Adding a second judge needs a new dated entry in `DECISIONS.md` first, written
+by whoever sets that judge up (not by the judge), saying how the new verdicts are scored and read beside these.
