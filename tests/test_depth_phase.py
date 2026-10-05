@@ -16,6 +16,7 @@ import pytest
 import requests
 
 from conftest import default_depth_array, make_pano
+from test_gsv_stitcher import probe_retry_error, probe_retry_error_at
 from downloaders import gsv
 
 
@@ -613,12 +614,18 @@ def test_network_failures_keep_the_retreat_sleeps(tmp_path, fake_streetview, mon
 
 @pytest.mark.parametrize('error', [
     gsv.DepthBlockedError('redirected to https://www.google.com/sorry/index'),
-    requests.exceptions.RetryError('too many 429s'),
-])
+    # urllib3's own wording, not a hand-written 'too many 429s': since #177 the arm reads the status out of the
+    # message (pushback_reason), so only the realistic shape exercises it.
+    probe_retry_error(429),
+    # An interstitial at a 5xx status: the landing is the refusal, whatever status it wore.
+    probe_retry_error_at('https://www.google.com/sorry/index', 503),
+], ids=['blocked-error', 'retry-429', 'retry-at-interstitial-503'])
 def test_google_refusing_requests_stops_the_phase_immediately(tmp_path, fake_streetview, error):
     """A block is a verdict on the endpoint, not on one pano, so it shouldn't cost 25 more requests to notice."""
     storage = str(tmp_path)
+    latch = str(tmp_path / 'latch')
     calls = []
+    sr = {}
 
     def find(pano_id, **kwargs):
         calls.append(pano_id)
@@ -626,10 +633,108 @@ def test_google_refusing_requests_stops_the_phase_immediately(tmp_path, fake_str
 
     fake_streetview.find_panorama_by_id = find
 
-    assert gsv.download_depth_maps(storage, many_pano_infos(50)) == (0, 1, 0, 1)
+    assert gsv.download_depth_maps(storage, many_pano_infos(50), block_latch_path=latch,
+                                   stop_reasons=sr) == (0, 1, 0, 1)
     assert len(calls) == 1
     # Nothing permanent is concluded from a block; every pano retries next run.
     assert read_ledger(storage) == [['pano_id', 'status']]
+    assert os.path.isfile(latch)
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_BLOCKED
+    assert condition_codes(sr) == [gsv.DEPTH_CONDITION_REFUSED]
+
+
+# --- A 5xx storm is weather, not a refusal (#177) -------------------------------------------------------------
+#
+# The photometa session retries [429, 500, 502, 503, 504], so a 5xx storm that outlasts the policy arrives as a
+# RetryError just as a 429 does. Before #177 the depth loop read every RetryError as Google refusing this host:
+# one request, DEPTH_STOP_BLOCKED, the fleet-wide latch for 6 h and the earned pace forfeited - over an outage.
+# The image phase's photometa arm (#172) already draws the line with pushback_reason; the depth loop now does.
+
+FIVE_XX = [500, 502, 503, 504]
+
+
+@pytest.mark.parametrize('status', FIVE_XX)
+def test_a_5xx_storm_is_weather_not_a_refusal(tmp_path, fake_streetview, capsys, status):
+    storage = str(tmp_path)
+    latch = str(tmp_path / 'latch')
+    calls = []
+    sr = {}
+
+    def find(pano_id, **kwargs):
+        calls.append(pano_id)
+        raise probe_retry_error(status)
+
+    fake_streetview.find_panorama_by_id = find
+
+    assert gsv.download_depth_maps(storage, many_pano_infos(5), block_latch_path=latch,
+                                   stop_reasons=sr) == (0, 5, 0, 5)
+    assert len(calls) == 5, 'every pano is attempted: an outage does not stop the phase at the first request'
+    assert sr['depth_stop'] is None
+    assert not os.path.exists(latch)
+    assert condition_codes(sr) == []
+    assert read_ledger(storage) == [['pano_id', 'status']], 'transient: nothing ledgered, all retry next run'
+    out = capsys.readouterr().out
+    assert 'Google stopped answering' not in out
+    assert 'Google is refusing requests' not in out
+
+
+def test_a_5xx_storm_trips_the_breaker_not_the_latch(tmp_path, fake_streetview, capsys):
+    """The storm is bounded the way any network streak is: the retreat schedule, then the breaker at 25."""
+    storage = str(tmp_path)
+    latch = str(tmp_path / 'latch')
+    calls = []
+    sr = {}
+
+    def find(pano_id, **kwargs):
+        calls.append(pano_id)
+        raise probe_retry_error(503)
+
+    fake_streetview.find_panorama_by_id = find
+
+    gsv.download_depth_maps(storage, many_pano_infos(40), block_latch_path=latch, stop_reasons=sr)
+
+    assert len(calls) == gsv.DEPTH_MAX_CONSECUTIVE_FAILURES
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_CONSECUTIVE_FAILURES
+    assert condition_codes(sr) == [gsv.DEPTH_CONDITION_BREAKER]
+    assert '%d network' % gsv.DEPTH_MAX_CONSECUTIVE_FAILURES in sr['conditions'][0]['detail']
+    assert not os.path.exists(latch)
+    out = capsys.readouterr().out
+    assert 'WARNING' in out and 'consecutive failures' in out
+
+
+def test_a_retry_error_whose_status_cannot_be_read_is_weather_too(tmp_path, fake_streetview):
+    """pushback_reason returns None when it cannot read a status out of the RetryError, and the arm must follow
+    it: an unreadable give-up is not evidence of a refusal."""
+    storage = str(tmp_path)
+    latch = str(tmp_path / 'latch')
+    sr = {}
+
+    def find(pano_id, **kwargs):
+        raise requests.exceptions.RetryError('gave up')
+
+    fake_streetview.find_panorama_by_id = find
+
+    assert gsv.download_depth_maps(storage, many_pano_infos(3), block_latch_path=latch,
+                                   stop_reasons=sr) == (0, 3, 0, 3)
+    assert sr['depth_stop'] is None
+    assert not os.path.exists(latch)
+
+
+def test_a_5xx_storm_backs_this_run_off_locally(tmp_path, fake_streetview, monkeypatch):
+    """The network arm's reflex: slow THIS run down, never as Google's own evidence (which would forfeit)."""
+    calls = []
+    original = gsv.DepthPacer.on_pushback
+
+    def spy(self, why, from_google=False):
+        calls.append((why, from_google))
+        return original(self, why, from_google=from_google)
+
+    monkeypatch.setattr(gsv.DepthPacer, 'on_pushback', spy)
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: (_ for _ in ()).throw(probe_retry_error(503))
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(4), block_latch_path=str(tmp_path / 'latch'))
+
+    assert calls == [('network failure', False)] * 4
 
 
 def test_persistent_failures_cannot_starve_the_request_budget(tmp_path, fake_streetview, monkeypatch):

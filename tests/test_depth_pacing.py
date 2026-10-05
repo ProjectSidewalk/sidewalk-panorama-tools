@@ -23,6 +23,7 @@ from urllib3.exceptions import NewConnectionError, ProtocolError, ReadTimeoutErr
 from urllib3.util.retry import RequestHistory, Retry
 
 from conftest import default_depth_array, make_pano
+from test_gsv_stitcher import probe_retry_error
 from downloaders import common, gsv
 
 
@@ -370,6 +371,25 @@ class TestWhatSetsTheLatch:
         latch = str(tmp_path / 'latch')
         monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes',
                             lambda pano_id, session: (_ for _ in ()).throw(gsv.DepthBlockedError('/sorry/')))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'), block_latch_path=latch)
+
+        assert os.path.isfile(latch)
+
+    def test_a_5xx_retry_error_does_not_set_it(self, tmp_path, fake_streetview, monkeypatch):
+        """#177: a 5xx storm exhausting the photometa retry policy is Google being ill, not refusing us."""
+        latch = str(tmp_path / 'latch')
+        monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes',
+                            lambda pano_id, session: (_ for _ in ()).throw(probe_retry_error(503)))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'), block_latch_path=latch)
+
+        assert not os.path.exists(latch)
+
+    def test_a_429_retry_error_sets_it(self, tmp_path, fake_streetview, monkeypatch):
+        latch = str(tmp_path / 'latch')
+        monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes',
+                            lambda pano_id, session: (_ for _ in ()).throw(probe_retry_error(429)))
 
         gsv.download_depth_maps(str(tmp_path), pano_infos('pano1'), block_latch_path=latch)
 
@@ -798,6 +818,23 @@ class TestWhatThePhaseDoesWithIt:
         with open(state) as f:
             saved = json.load(f)
         assert saved == {**saved, 'interval': 1.0, 'clean_streak': 0}
+
+    def test_a_5xx_storm_does_not_forfeit_the_standing(self, tmp_path, fake_streetview, clock, monkeypatch):
+        """#177: the storm backs this run off locally, but the earned standing is Google's verdict to take away,
+        and an outage is not one. Requests were made, so remember_standing save()s - the earned 0.25, not the
+        widened live gap."""
+        self.real_pacing(monkeypatch)
+        state = tmp_path / 'pace'
+        write_state(state, 0.25, 1)
+        monkeypatch.setattr(gsv, '_fetch_pano_with_depth_planes',
+                            lambda pano_id, session: (_ for _ in ()).throw(probe_retry_error(503)))
+
+        gsv.download_depth_maps(str(tmp_path), pano_infos('p1'), pace_state_path=str(state),
+                                block_latch_path=str(tmp_path / 'latch'))
+
+        with open(state) as f:
+            saved = json.load(f)
+        assert saved['interval'] == pytest.approx(0.25)
 
     def test_a_stood_down_phase_leaves_the_standing_alone(self, tmp_path, recorder):
         """Zero requests is zero evidence, either way."""
