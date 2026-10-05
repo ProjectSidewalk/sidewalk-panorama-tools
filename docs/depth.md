@@ -37,6 +37,10 @@ d["heading"]         # camera heading in radians (NaN if Google omitted it); lik
 d["format_version"]  # 3; version 2 lacked the three plane fields; absent means pre-mirror-fix (see below)
 ```
 
+The cropper's opt-in tilt correction reads `pitch` and `roll` from here for a pano with no 2019-22 `.xml`
+beside it, and skips the pano as `no_pose` when either is missing or NaN
+([docs/cropper.md](cropper.md#the-tilt-correction-opt-in-191)).
+
 **The array shares the JPEG's orientation** — column 0 of `d["depth"]` is the leftmost column of the pano
 image. streetlevel's decoder delivers the payload x-mirrored relative to the imagery; we flip it back on
 write, and contract tests pin the decoder's end-to-end output orientation (both the ray-direction formula and

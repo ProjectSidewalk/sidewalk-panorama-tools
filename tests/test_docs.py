@@ -89,6 +89,7 @@ GUIDANCE_FILES = _project_claude_mds(REPO_ROOT) + RULE_FILES + NESTED_CLAUDE_MDS
 # documents that cite docs/ pages by path, and nothing else checks those.
 NAMED_SOURCES = GUIDANCE_FILES + [
     'DownloadRunner.py', 'CropRunner.py', 'migrate_crop_store.py', 'migrate_depth_artifacts.py', 'config.py',
+    'pano_pose.py',
     os.path.join('downloaders', 'gsv.py'), os.path.join('downloaders', 'mapillary.py'),
     os.path.join('downloaders', 'panoramax.py'),
     os.path.join('downloaders', 'common.py'), os.path.join('log_analyzer', 'analyze.py'),

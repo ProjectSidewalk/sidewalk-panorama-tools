@@ -1,6 +1,9 @@
 ---
 paths:
   - "CropRunner.py"
+  - "pano_pose.py"
+  - "tests/test_pano_pose.py"
+  - "tests/test_crop_tilt.py"
   - "reports/scripts/tilt_*.py"
   - "reports/scripts/pov_replay.py"
   - "tests/test_tilt_*.py"
@@ -15,7 +18,7 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
 
 ## The depth planes are in the rig frame, and the tiles are not levelled (#54, measured 2026-09-26)
 
-- **One frame, one sign, in `reports/scripts/tilt_geometry.py`.** The depth artifact's axes are x = left,
+- **One frame, one sign, in `pano_pose.py`** (`reports/scripts/tilt_geometry.py` re-exports it, #191). The depth artifact's axes are x = left,
   y = back, **z = down** (the ray formula in `docs/depth.md`, not "z up"). Its facade normals follow the stored
   pose with slopes 0.9995 / 1.0003, which fixes the meaning of streetlevel's sign: **`pitch > 0` = the forward axis
   points below the horizon, `roll > 0` = left side up**, so a gravity-horizontal direction sits at rig elevation
@@ -27,9 +30,8 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   choice on 96 lead-labeller-vouched labels: the window shifted by T in the predicted direction beat its
   mirror **79 : 0** (p = 1.7e-24). post179 is confirmed (98% of single-window answers); legacy+mid is not
   (84%). **C gives the direction, not the size**: every shifted window moves by the full T, so beta is
-  unmeasured. Measure it (the asymmetric-decoy batch) before a correction applies all of T. No correction has
-  landed in CropRunner yet. When one does, it moves **both** axes via `tilt_geometry.rig_pixel_from_gravity_pixel`,
-  taking the pose from the pano's own `.npz`/`.xml`.
+  unmeasured. Measure it (the asymmetric-decoy batch) before a correction applies all of T. The correction is
+  CropRunner's opt-in `--tilt-correction` (`.claude/rules/cropper.md`, item 2): both axes, the pano's own `.xml`/`.npz`.
 - **The C folders are sealed, and the redraw is the decision-bearing one.** `reports/data/2026-09-29-tilt-adjudication-jm/`
   and `2026-09-30-tilt-adjudication-jm-b2/` hold Jon's verdicts, his notes, and a `sealed/` key and selection;
   `DECISIONS.md` fixed the scoring before unblinding. The first draw (`2026-09-26-tilt-adjudication/`) is

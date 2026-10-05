@@ -198,23 +198,61 @@ def test_seeded_facade_sample_is_deterministic():
     assert len(a) == 10
 
 
-@pytest.mark.parametrize('name', ['tilt_geometry.py', 'tilt_pose_scan.py', 'tilt_frame.py', 'tilt_remote_crop.py'])
+@pytest.mark.parametrize('name', ['tilt_geometry.py', 'tilt_pose_scan.py', 'tilt_frame.py', 'tilt_remote_crop.py',
+                                  '../../pano_pose.py'])
 def test_runs_under_python39_syntax(name):
     """makelab2 runs Python 3.9; a `match` or an `X | None` annotation would fail there after upload.
+    pano_pose.py lives at the repo root (CropRunner imports it, #191) and is uploaded beside tilt_geometry.py,
+    which re-exports it.
 
     GRAMMAR ONLY: ast.parse(feature_version=(3, 9)) cannot see a 3.10+ standard-library call
     (zip(strict=...), itertools.pairwise, int.bit_count) - those would pass here and fail on the host.
     Keep the remote modules to the 3.9 library by review, or run them under a 3.9 interpreter."""
-    path = os.path.join(SCRIPTS, name)
+    path = os.path.normpath(os.path.join(SCRIPTS, name))
     if not os.path.exists(path):
         pytest.skip('%s not written yet' % name)
     with open(path, encoding='utf-8') as f:
-        ast.parse(f.read(), feature_version=(3, 9))
+        tree = ast.parse(f.read(), feature_version=(3, 9))
+    assert not pep604_annotations(tree), 'X | Y annotations fail on 3.9 when the def runs'
+
+
+def pep604_annotations(tree):
+    """Every `X | Y` inside an annotation (an argument's, a return's or a variable's), as line numbers.
+
+    ast.parse(feature_version=(3, 9)) accepts them: `|` in an annotation is just a BinOp, valid grammar. On
+    3.9 it fails only at runtime, when the def is evaluated (#193 review: a `str | None` mutant of
+    pano_pose.label_era passed the grammar check)."""
+    annotations = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            for arg in args.posonlyargs + args.args + args.kwonlyargs + [args.vararg, args.kwarg]:
+                if arg is not None and arg.annotation is not None:
+                    annotations.append(arg.annotation)
+            if node.returns is not None:
+                annotations.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            annotations.append(node.annotation)
+    return sorted(sub.lineno for annotation in annotations for sub in ast.walk(annotation)
+                  if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr))
 
 
 def test_py39_check_would_catch_a_310_construct():
     with pytest.raises(SyntaxError):
         ast.parse('match x:\n    case 1:\n        pass\n', feature_version=(3, 9))
+
+
+@pytest.mark.parametrize('source', ['def f(x: str | None):\n    pass\n',
+                                    'def f(*, x: "int" = 1) -> int | None:\n    pass\n',
+                                    'x: int | None = None\n'])
+def test_py39_check_would_catch_a_pep604_annotation(source):
+    """The grammar check alone passes these, so the annotation walk is what catches them."""
+    tree = ast.parse(source, feature_version=(3, 9))
+    assert pep604_annotations(tree) == [1]
+
+
+def test_a_bitor_outside_an_annotation_is_fine():
+    assert pep604_annotations(ast.parse('def f(a: int = 1 | 2):\n    return a | 4\n')) == []
 
 
 def test_shard_sample_and_parts_partition_the_kept_shards():

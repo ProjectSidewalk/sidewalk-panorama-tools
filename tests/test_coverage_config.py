@@ -34,6 +34,7 @@ PRODUCTION_MODULES = {
     'log_analyzer/roster.py',
     'migrate_crop_store.py',
     'migrate_depth_artifacts.py',
+    'pano_pose.py',
     'refetch_panos.py',
     'scrape_queue.py',
 }

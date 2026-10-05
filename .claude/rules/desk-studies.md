@@ -22,6 +22,7 @@ paths:
   - "tests/test_store_coverage.py"
   - "tests/test_pov_replay.py"
   - "tests/test_refetch_panos.py"
+  - "tests/test_pano_pose.py"
 ---
 # Desk studies: `reports/`, its scripts, its tests and its reports
 
