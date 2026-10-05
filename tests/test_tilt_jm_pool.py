@@ -89,3 +89,31 @@ class TestThePage:
     def test_the_page_offers_every_choice_the_tool_accepts(self):
         for c in ta.CHOICES:
             assert "'%s'" % c in ui.PAGE
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(REPO_ROOT, 'reports', 'data')
+
+
+def test_the_beta_draw_rebuilds_from_committed_data(tmp_path, capsys):
+    """#194 review finding 6: `draw --design beta` must cut the beta windows. Rebuilding the committed batch
+    through the CLI pins it: with `ta.DESIGNS[args.design]` dropped, crop_jobs.csv names C's windows and
+    this fails."""
+    beta = os.path.join(DATA, '2026-09-29-tilt-beta-jm')
+    out = tmp_path / 'beta'
+    jm.main(['draw', '--pool', os.path.join(DATA, '2026-09-29-tilt-jm-pool.csv.gz'),
+             '--pose', os.path.join(DATA, '2026-09-29-tilt-pose-jm.csv.gz'), '--design', 'beta',
+             '--seed', 'beta20260929', '--min-abs-t', '5', '--cell-cap', '2',
+             '--exclude', os.path.join(DATA, '2026-09-29-tilt-adjudication-jm'),
+             '--exclude', os.path.join(DATA, '2026-09-30-tilt-adjudication-jm-b2'), '--out', str(out)])
+    capsys.readouterr()
+    # Values, not bytes: on CI (Ubuntu / py3.10) a derived float's last printed digit differs from the
+    # Windows build that wrote the committed file (selection.csv byte 22411, '2' against '3').
+    for name in ('selection.csv', 'crop_jobs.csv'):
+        a = pd.read_csv(out / 'sealed' / name, dtype={'pano_id': str})
+        b = pd.read_csv(os.path.join(beta, 'sealed', name), dtype={'pano_id': str})
+        pd.testing.assert_frame_equal(a, b, check_exact=False, rtol=1e-9, atol=0, obj=name)
+    jobs = pd.read_csv(out / 'sealed' / 'crop_jobs.csv')
+    assert set(jobs['window']) == {'b050', 'b100', 'b150'}
+    with open(out / 'draw.json', encoding='utf-8') as a, open(os.path.join(beta, 'draw.json'), encoding='utf-8') as b:
+        assert json.load(a) == json.load(b)

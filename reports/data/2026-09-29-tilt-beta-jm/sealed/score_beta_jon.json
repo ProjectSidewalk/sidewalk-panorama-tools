@@ -1,0 +1,197 @@
+{
+ "judge": "jon",
+ "key_sha256": "132664d73b4db11962d10b721f41a637dd8d29e18ac6c341d548d8bca7407faf",
+ "n_verdicts": 48,
+ "post_hoc_by_pose_record": {
+  "by_pose_record": {
+   "npz": {
+    "mean": 0.9347826086956522,
+    "n": 24,
+    "n_scored": 23,
+    "none": 1
+   },
+   "xml": {
+    "mean": 0.921875,
+    "n": 24,
+    "n_scored": 16,
+    "none": 8
+   }
+  },
+  "crosses_arm": [
+   {
+    "choice": "A",
+    "era_arm": "post179",
+    "label_uid": "seattle-wa:290009",
+    "pose_source": "xml",
+    "score": 1.0,
+    "token": "t6f72c3c9f9"
+   },
+   {
+    "choice": "A=C",
+    "era_arm": "legacy+mid",
+    "label_uid": "la-piedad-old:1779",
+    "pose_source": "npz",
+    "score": 0.75,
+    "token": "t7876d5c101"
+   }
+  ]
+ },
+ "post_hoc_power": {
+  "arms_in_holm_family": 2,
+  "min_discordant_to_reject_holm": 7,
+  "min_discordant_to_reject_if_other_rejects": 6,
+  "per_arm": {
+   "legacy+mid": {
+    "could_reject": false,
+    "min_attainable_p": 0.0625,
+    "min_attainable_p_holm": 0.125,
+    "n_discordant": 5
+   },
+   "post179": {
+    "could_reject": false,
+    "min_attainable_p": 0.0625,
+    "min_attainable_p_holm": 0.125,
+    "n_discordant": 5
+   }
+  }
+ },
+ "score_beta": {
+  "alpha": 0.05,
+  "arm_difference": {
+   "low_high_fisher_p": 1.0,
+   "none_fisher_p": 0.022608947514512253
+  },
+  "arms": {
+   "legacy+mid": {
+    "ci95": [
+     0.796875,
+     1.0
+    ],
+    "high": 1,
+    "low": 4,
+    "mean": 0.90625,
+    "n": 24,
+    "n_scored": 16,
+    "none": 8,
+    "p_holm": 0.75,
+    "p_low_vs_high_two_sided": 0.375,
+    "reading": "consistent with 1",
+    "score_counts": {
+     "0.50": 3,
+     "0.75": 1,
+     "1.00": 11,
+     "1.25": 1
+    }
+   },
+   "post179": {
+    "ci95": [
+     0.8586956521739131,
+     1.0326086956521738
+    ],
+    "high": 1,
+    "low": 4,
+    "mean": 0.9456521739130435,
+    "n": 24,
+    "n_scored": 23,
+    "none": 1,
+    "p_holm": 0.75,
+    "p_low_vs_high_two_sided": 0.375,
+    "reading": "consistent with 1",
+    "score_counts": {
+     "0.50": 3,
+     "0.75": 1,
+     "1.00": 18,
+     "1.50": 1
+    }
+   }
+  },
+  "counts": {
+   "arms": {
+    "legacy+mid": {
+     "b050": 3,
+     "b100": 11,
+     "b150": 0,
+     "n": 24,
+     "none": 8,
+     "none_tokens": [
+      "t09a00db590",
+      "t57cdd31a0b",
+      "t612ca0e10c",
+      "t61a0814c33",
+      "t87251dd38a",
+      "ta32b6bac6d",
+      "tc29ffeb5f3",
+      "tc2e928b2a0"
+     ],
+     "p_b050_vs_third": 0.9951289382507903,
+     "p_b100_vs_third": 0.14006059614682395,
+     "p_b150_vs_third": 1.0,
+     "pairwise": {
+      "b050>b100": 3,
+      "b050>b150": 4,
+      "b100>b050": 12,
+      "b100>b150": 12,
+      "b150>b050": 1
+     },
+     "share_b050": 0.125,
+     "share_b100": 0.4583333333333333,
+     "share_b150": 0.0,
+     "tie": 2,
+     "tie_pairs": {
+      "b050=b100": 1,
+      "b100=b150": 1
+     }
+    },
+    "post179": {
+     "b050": 3,
+     "b100": 18,
+     "b150": 1,
+     "n": 24,
+     "none": 1,
+     "none_tokens": [
+      "t19304b76eb"
+     ],
+     "p_b050_vs_third": 0.9951289382507903,
+     "p_b100_vs_third": 3.5979356573718715e-05,
+     "p_b150_vs_third": 0.9999405968079378,
+     "pairwise": {
+      "b050>b100": 3,
+      "b050>b150": 4,
+      "b100>b050": 18,
+      "b100>b150": 19,
+      "b150>b050": 1,
+      "b150>b100": 1
+     },
+     "share_b050": 0.125,
+     "share_b100": 0.75,
+     "share_b150": 0.041666666666666664,
+     "tie": 1,
+     "tie_pairs": {
+      "b050=b100": 1
+     }
+    }
+   },
+   "n": 48
+  },
+  "pooled": {
+   "ci95": [
+    0.8589743589743589,
+    0.9935897435897436
+   ],
+   "high": 2,
+   "low": 8,
+   "mean": 0.9294871794871795,
+   "n": 48,
+   "n_scored": 39,
+   "none": 9,
+   "p_low_vs_high_two_sided": 0.109375,
+   "score_counts": {
+    "0.50": 6,
+    "0.75": 2,
+    "1.00": 29,
+    "1.25": 1,
+    "1.50": 1
+   }
+  }
+ }
+}

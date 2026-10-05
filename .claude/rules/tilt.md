@@ -29,9 +29,13 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   raw lean slope excludes 0; the calibrated slopes are estimates, 0.634-1.098). Endpoint C, Jon's blind forced
   choice on 96 lead-labeller-vouched labels: the window shifted by T in the predicted direction beat its
   mirror **79 : 0** (p = 1.7e-24). post179 is confirmed (98% of single-window answers); legacy+mid is not
-  (84%). **C gives the direction, not the size**: every shifted window moves by the full T, so beta is
-  unmeasured. Measure it (the asymmetric-decoy batch) before a correction applies all of T. The correction is
-  CropRunner's opt-in `--tilt-correction` (`.claude/rules/cropper.md`, item 2): both axes, the pano's own `.xml`/`.npz`.
+  (84%). **C gives the direction, not the size**: every shifted window moves by the full T. The #191 beta batch
+  (`2026-09-29-tilt-beta-jm/`) is corroboration only: it leans below 1 in both arms but, at 5 discordant sheets
+  per arm, its primary test could not reject (DECISIONS.md section 5). The per-pose-record RampNet slopes are
+  about 0.88 (XML pose) and 0.95 (npz pose); the default beta is Jon's choice (#197). The correction is
+  CropRunner's opt-in `--tilt-correction` (`.claude/rules/cropper.md`, item 2): both axes, via
+  `pano_pose.corrected_pixel`, the pose from the pano's own `.xml`/`.npz`, beta from `TILT_BETA_BY_POSE_SOURCE`
+  (keyed on the pose record, both 1.0 until #197 decides the default).
 - **The C folders are sealed, and the redraw is the decision-bearing one.** `reports/data/2026-09-29-tilt-adjudication-jm/`
   and `2026-09-30-tilt-adjudication-jm-b2/` hold Jon's verdicts, his notes, and a `sealed/` key and selection;
   `DECISIONS.md` fixed the scoring before unblinding. The first draw (`2026-09-26-tilt-adjudication/`) is
@@ -39,6 +43,8 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   (`pilot-*.jsonl`, deliberately outside the analysis's `verdicts_*` glob). `next`/`record` refuse to run while
   a key file sits outside `sealed/`. Never move a key beside its sheets, and never caption a figure with one.
   `tilt_jm_pool.py` rebuilds the redraw from committed data, and `tilt_adjudicate_ui.py` is the judging page.
+  The beta folder is sealed the same way but built with `--design beta` (`draw` and `sheets`); score it with
+  `tilt_adjudicate.py score-beta` (writes the committed `sealed/score_beta_jon.json`), never `score`.
   **This file deliberately does not load inside a judge folder**: `reports/data/*tilt*` matches the study's
   files, but `*` does not cross `/`, so a judge working in `reports/data/<batch>/` is never handed C's result
   above. Keep it that way when adding globs; the judge README (`tilt_adjudicate.JUDGE_README`) names this file

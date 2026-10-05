@@ -324,7 +324,7 @@ decision-bearing.
 ## What follows
 
 Nothing here changes CropRunner. C establishes the leak's existence and sign, not its size, so the
-recommended order is:
+recommended order is (as written 2026-09-29; where each step stands now is in the last bullet):
 
 * **Measure beta first.** Run an asymmetric-decoy batch with windows at 0.5 T, 1.0 T and 1.5 T. It uses the
   same pool, scan and page, and costs about 30 minutes of judging. It says whether a correction should
@@ -349,8 +349,13 @@ recommended order is:
   against the consumer report's ~10% practical and 19-42% hard ceilings. Regeneration question as above.
 * **RampNet stage one**: at the p90 the ceiling shift is 7-9 of its click sigmas (S3), far over the
   consumer report's 0.5 deg target.
-* **Follow-up issues:** the beta batch and the correction are filed together after this PR. Still to
-  file: ingesting the legacy `.xml` tilt as a first-class artifact (it is the only pose for dead panos),
+* **Follow-up issues:** issue #191 tracks both the beta batch and the correction. Both have since happened, in that
+  order. The batch corroborates a beta a little under 1 but had no power to measure it
+  ([its DECISIONS.md, section 5](data/2026-09-29-tilt-beta-jm/DECISIONS.md)). The correction landed in PR #193
+  as CropRunner's `--tilt-correction`, off by default, with beta keyed on the pose record (`xml`/`npz`,
+  both 1.0 for now; [docs/cropper.md](../docs/cropper.md#the-tilt-correction-opt-in-191)). Choosing the
+  default beta and turning the flag on is #197; the per-crop provenance column that must land first is #196.
+  Still to file: ingesting the legacy `.xml` tilt as a first-class artifact (it is the only pose for dead panos),
   and a fleet-wide pose scan. The redraw's scan covered the vouched pool's 45,687 panos across the GSV
   deployments, but only those.
 
@@ -408,9 +413,13 @@ Each with what was known when it was decided.
 
 * sidewalk-auto-labeler: `geo._world_ray`'s docstring and the premise of #52 that "streetlevel's GSV
   equirectangulars are already gravity-rectified" do not hold **for the stored tiles** (F2). F2 measured
-  the cbk tiles this repo stitches, not the images streetlevel fetches for the auto-labeler; whether the
-  two come from the same tile endpoint, and so whether the finding reaches the auto-labeler's images, is
-  unverified here.
+  the cbk tiles this repo stitches, not the images streetlevel fetches for the auto-labeler. **The
+  auto-labeler has since checked that the finding reaches its images too** (sidewalk-auto-labeler#113,
+  measured there, not here): on 141 Vancouver panos, detections on streetlevel-fetched pixels and on store
+  JPEGs land on the same row for 90% of 293 pairs. sidewalk-auto-labeler#115 corrected the
+  "gravity-rectified" wording, and `geo._world_ray` now records that streetlevel pitch > 0 is nose down.
+  Its placement coefficients (0.15-0.55) are not a beta. They measure how much of the tilt the local ground
+  does not share with the rig.
 * SidewalkWebpage#4784's mechanism is what C measured for GSV labels: the stored `pano_y` is off towards
   the rig pixel (see Prior evidence for #5174).
 * label-latlng-estimation: a depression angle read off `pano_y` is rig-relative, off by beta times T(b).
