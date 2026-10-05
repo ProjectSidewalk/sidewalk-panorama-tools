@@ -419,9 +419,21 @@ it cuts exactly what it did before.
   top-up warns and records `[0.0, 1.0]` for good. (Any other constant a marker has not recorded stays
   silent, since its old value is unknown.) Re-cut the whole store with `--force` rather than topping it up.
 * **Not per crop.** The provenance manifest has no correction column yet, so a mixed store shows only in
-  `crop_rule.json`. The column is a header migration and a follow-up of its own. Non-GSV panos
+  `crop_rule.json`, which cannot say which crops are which. The column (pose record, beta and the corrected
+  x/y) is a header migration of its own,
+  [#196](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/196). **It must land before the
+  correction is turned on for any consumer store**: since most `no_pose` is permanent (above), such a store is
+  always mixed. Choosing the default beta and turning the flag on is
+  [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197).
+* **An open question about the xml pose.** About 4% of xml-posed panos in the #54 pose scan (1,043 of
+  27,149) carry an xml `image_width` that differs from the JPEG's, mostly 16384 in the xml against a 13312
+  JPEG. Where those panos also have an npz, the two poses disagree more (p75 1.33 deg against 0.52 deg for
+  the rest). The correction trusts the xml without checking its dimensions, so whether such an xml describes
+  this JPEG is still unknown. Splitting the beta fit by that flag would tell, and it belongs with choosing
+  the default ([#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197)).
+* **Out of scope here:** non-GSV panos
   ([#190](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/190)) and the source-side fix
-  ([SidewalkWebpage#4784](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4784)) are out of scope here.
+  ([SidewalkWebpage#4784](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4784)).
 
 ## The two preflights
 
@@ -868,7 +880,7 @@ crop level here, with a correction to follow if the measurement confirms it. A s
 measured in
 [reports/2026-08-10-off-target-markers-validate.md](../reports/2026-08-10-off-target-markers-validate.md).
 
-**Measured 2026-09-26 ([#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54), [reports/2026-09-26-tilt-error-study.md](../reports/2026-09-26-tilt-error-study.md)).** The depth artifact's planes are in the camera-rig frame, exactly. The stored tiles are not gravity-levelled in either scrape era. **The labelled feature sits off the stored `pano_y`, towards the rig pixel `pano_y - T(b) h/180`** (`T(b) = pitch cos b + roll sin b`). In Jon's blind forced choice on 96 vouched-for labels (adjudicated 2026-09-29), the window shifted that way beat its mirror image 79 : 0. The result is confirmed for post179 labels and leak-dominant but short of the rule for older ones. It gives the direction, not the size, and no correction has landed in CropRunner yet. Until one does, treat a crop's vertical centring as off by up to the pano's tilt at the label's bearing: at the p90, 4.2-4.3 deg over all corpus bearings, and 4.8 deg (37.8% of the window height, at full leak) for the most distant labels.
+**Measured 2026-09-26 ([#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54), [reports/2026-09-26-tilt-error-study.md](../reports/2026-09-26-tilt-error-study.md)).** The depth artifact's planes are in the camera-rig frame, exactly. The stored tiles are not gravity-levelled in either scrape era. **The labelled feature sits off the stored `pano_y`, towards the rig pixel `pano_y - T(b) h/180`** (`T(b) = pitch cos b + roll sin b`). In Jon's blind forced choice on 96 vouched-for labels (adjudicated 2026-09-29), the window shifted that way beat its mirror image 79 : 0. The result is confirmed for post179 labels and leak-dominant but short of the rule for older ones. It gives the direction, not the size. CropRunner's [`--tilt-correction`](#the-tilt-correction-opt-in-191) applies it, but is off by default until [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197). Without it, treat a crop's vertical centring as off by up to the pano's tilt at the label's bearing: at the p90, 4.2-4.3 deg over all corpus bearings, and 4.8 deg (37.8% of the window height, at full leak) for the most distant labels.
 (An earlier note here referred to an "alternative cropper" in development; that effort was abandoned and #54
 supersedes it.)
 

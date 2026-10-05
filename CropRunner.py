@@ -188,7 +188,9 @@ V3_CONTEXT_WIDTH_M = 5.8
 #
 # Both stay 1.0 here, NOT the measured priors: endpoint C found the direction 79 : 0 and the #191 beta batch
 # read beta = 1 in both arms, and choosing the default is its own decision (#197). The priors are named so
-# whoever sets them knows where they came from; they are not applied.
+# whoever sets them knows where they came from; they are not applied. Also open: the per-crop provenance
+# column (#196), which must land before the flag is turned on for any consumer store, and re-fitting the
+# sizing rules on corrected coordinates (#186).
 TILT_BETA_BY_POSE_SOURCE = {pano_pose.POSE_SOURCE_XML: 1.0, pano_pose.POSE_SOURCE_NPZ: 1.0}
 TILT_POSE_SOURCES = (pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ)
 
