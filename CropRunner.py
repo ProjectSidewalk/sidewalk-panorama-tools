@@ -1701,7 +1701,8 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
     `tilt_correction` (#191) is recorded twice: each pose record's beta among the constants (0.0 when off - see
     _rule_constants), so the same-rule check warns about a store cut off-then-on and constants_seen keeps
     that history for good, and `tilt_correction: 'on' | 'off'` at top level for a reader. A marker written
-    before these keys existed stays silent, since only recorded values are compared.
+    before these keys existed is read as beta 0.0 for every rule it names (_marker_history): that code never
+    corrected, so a --tilt-correction top-up of such a store warns, unlike a constant merely unrecorded.
 
     :return: the rule version already on disk; 'unknown' if a marker exists but cannot be read; None
              if this is a fresh store.
@@ -1775,7 +1776,8 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
 
     # Same rule id, and a rule is only as fixed as its constants: a refit v3 still calls itself v3.
     # Only the constants THIS rule reads are compared, and only values the store has recorded - a marker
-    # from before the constants were written is silent rather than a false alarm.
+    # from before the constants were written is silent rather than a false alarm. The tilt betas are the
+    # exception: their pre-#191 value is known (0.0), and _marker_history records it.
     seen_for_rule = constants_seen.get(sizing_rule, {})
     changed = ['%s=%r and this run uses %r' % (key, value, running[key])
                for key in RULE_MARKER_CONSTANT_KEYS[sizing_rule]
@@ -1870,6 +1872,17 @@ def _marker_history(recorded):
             values = constants_seen.setdefault(last, {}).setdefault(key, [])
             if recorded[key] not in values:
                 values.append(recorded[key])
+    # A rule the store was cut under with no tilt beta recorded was run by code from before the tilt
+    # correction (#191), which never corrected: its crops are beta 0, a recorded fact rather than a guess.
+    # Seeded so the first --tilt-correction top-up of such a store warns that it is mixed, and so the sticky
+    # history keeps the 0.0 (#193 review finding 1) - without it, every store that predates the flag read as
+    # all corrected after one top-up.
+    for rule in rules_seen:
+        if rule in RULE_MARKER_CONSTANT_KEYS:
+            seen = constants_seen.setdefault(rule, {})
+            for key in _TILT_BETA_KEYS:
+                if not seen.get(key):
+                    seen[key] = [0.0]
     return rules_seen, constants_seen
 
 

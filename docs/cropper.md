@@ -401,8 +401,11 @@ it cuts exactly what it did before.
   pose record's beta as `tilt_beta_xml_pose` and `tilt_beta_npz_pose`, among the constants of both rules.
   They are `0.0` when the correction is off, since beta 0 is the identity. So a store cut without the flag
   and then with it gets the same-rule mixed-store warning ("was cut ... with tilt_beta_xml_pose=0.0 and this
-  run uses 1.0"), and `constants_seen` keeps that history, as for any other constant. A marker written before these keys existed stays quiet. Re-cut the whole store with `--force`
-  rather than topping it up.
+  run uses 1.0"), and `constants_seen` keeps that history, as for any other constant. **A marker written
+  before these keys existed means uncorrected**: a rule recorded with no beta was run by code that never
+  corrected, so its beta is read as `0.0`. That is every store cut before #191, and so its first corrected
+  top-up warns and records `[0.0, 1.0]` for good. (Any other constant a marker has not recorded stays
+  silent, since its old value is unknown.) Re-cut the whole store with `--force` rather than topping it up.
 * **Not per crop.** The provenance manifest has no correction column yet, so a mixed store shows only in
   `crop_rule.json`. The column is a header migration and a follow-up of its own. Non-GSV panos
   ([#190](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/190)) and the source-side fix
