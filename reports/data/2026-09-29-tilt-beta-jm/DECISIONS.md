@@ -91,9 +91,78 @@ rules above: 17 C, 11 B, 8 A, 3 `A=C`, 9 `none`, with 14 notes. Nobody who judge
 - **Rule 5:** both arms read consistent with 1, so the CropRunner correction defaults to **beta = 1** in both
   arms, and the CIs above are its quoted uncertainty. The pooled CI's upper end is just under 1, but by rule 4
   the mean is descriptive, and the pooled sign test (8 : 2, p = 0.11) is not significant.
+  *Appended 2026-10-05: the default is **not** chosen. It is pending Jon's choice
+  ([#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197)), and this batch does not set it.
+  See section 5.*
 - **Rule 6:** the low/high split does not differ between arms (Fisher p = 1.0). legacy+mid has more `none`
   (8 of 24 against 1 of 24, Fisher p = 0.023). By the pre-set reading, legacy+mid's 7 stored wins in C are
   per-pano (XML) pose error rather than a smaller beta.
 - **Post hoc, not part of the result:** six of legacy+mid's eight `none` sheets have |T| >= 7.7 deg, where the
   nearest window is furthest from the stored y. Nine notes name a second ring as nearly as good. Neither
   observation changes a scored answer.
+
+## 5. Post hoc: corroboration, not a measurement (2026-10-05)
+
+**What was known.** The PR's review ([#194 review](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/194#issuecomment-5969779431))
+had found that the primary test could not have rejected at the n it got, and that section 4 and the PR title
+presented that as a result. The RampNet per-pose-record slopes were posted on
+[#191 on 2026-10-01](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/191#issuecomment-5922041299):
+the same 3,518 pairs give beta about 0.88 under the XML pose and about 0.95 under the npz pose. Jon decided the
+framing below. Sections 1-3 are left exactly as written; this entry is post hoc, and nothing in it is a
+pre-set rule.
+
+**The framing: corroboration.** This batch reports a direction and the middle window's share. It does not
+measure beta, and its "consistent with 1" readings are not evidence that beta = 1.
+
+- **The primary test had no power at this n.** Each arm has n = 5 discordant sheets (the low + high
+  sheets of rule 2). With n = 5 the smallest two-sided exact p is 2/32 = 0.0625, and the smallest Holm-adjusted
+  p over the two arms is 0.125. So neither arm could reject, whatever the split: a 5 : 0 split would also have
+  read "consistent with 1". A per-arm rejection needed at least 7 discordant sheets all one way (7 : 0 gives
+  a Holm-adjusted 0.031). Rule 3's reading is what the pre-set rule says, and it carries no evidence. These
+  numbers are `post_hoc_power` in `sealed/score_beta_jon.json`, and a test pins them.
+- **What the batch does show.** Both arms lean low, 4 : 1 each (pooled 8 : 2, p = 0.109, not significant). The
+  means, 0.95 [0.86, 1.03] for post179 and 0.91 [0.80, 1.00] for legacy+mid, line up with the RampNet
+  per-pose-record slopes, about 0.95 (npz) and 0.88 (XML): every post179 label here is npz-posed and every
+  legacy+mid label XML-posed. Both of section 2's biases (the middle-window pull and the bounded grid) push the
+  means toward 1. The 1.0 T window took 29 of the 39 scored sheets, under section 2.1's caveat.
+- **Rule 5's consequence is withdrawn.** Section 4 says the correction "defaults to beta = 1 in both arms".
+  It does not: the default is pending Jon's choice, tracked in
+  [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197). This batch is corroboration
+  for that choice, not its source.
+- **Rule 6's reading conflicts with the 2026-10-01 result.** The low/high Fisher test (4 : 1 against 4 : 1,
+  p = 1.0) has no power to see an arm difference, so "the split does not differ" is not evidence that it is the
+  same. The pre-set reading, that legacy+mid's 7 stored wins in C are XML pose error "rather than a smaller
+  beta", is contradicted by the pose-record result: the same pairs read about 0.88 under the XML pose and
+  about 0.95 under the npz pose, so the slope a correction should use depends on the pose record it corrects
+  with. The `none` difference (p = 0.023) stands as a count. The reading is kept above as recorded and is not
+  endorsed here.
+
+**Provenance: what git attests, and what rests on Jon's word.** The preamble says this file was "written before
+any verdict on this batch existed", and the verdict commit says "committed before the key is opened".
+
+- Git attests **commit order, not commit time**. ffc7356 (design, rules, key hash) and 96362be (verdicts) have
+  identical author and committer times, 2026-09-29 15:07:59 -0700, and d35fa44 (unblinding) follows at
+  15:08:36. All three were made after judging ended. The salted hash was committed with the verdicts, so it
+  does not bind the key to a time before judging either.
+- The review read file mtimes in Jon's checkout: `score_beta` 14:34, the draw 14:35, the key and sheets 14:37,
+  the last verdict write 15:01. Those support `score_beta` predating the sheets. Nothing in the repository dates
+  sections 1-3 before the first verdict.
+- So "the rules were fixed before judging" rests on Jon's word, not on the repository.
+- **Recommendation for future batches:** commit and push DECISIONS.md, the scoring code and `key.sha256` before
+  the first verdict (or post the hash on the issue), so that a pushed timestamp attests the order.
+
+**The tooling, fixed with this entry.** Section 4's table was transcribed by hand: there was no command for it,
+and `tilt_adjudicate.py score` died with `KeyError: 'b100'` on this folder. Now
+`tilt_adjudicate.py score-beta --out <this folder> --judge jon` writes `sealed/score_beta_jon.json` (committed),
+`score` refuses this folder and names `score-beta`, and a test asserts that every number in section 4 is that
+file's. The README's step 5 named C's analysis (`tilt_error_study.py analyze`), and `sealed/README.md` was C's
+text (the endpoint-C key, a machine pass, a key "committed early by mistake"), none of which applies here. Both
+READMEs were rewritten for this design. The key, the salt and `key.sha256` are untouched.
+
+**Errata to section 4's post-hoc bullet** (neither changes a scored result):
+
+- "Six of legacy+mid's eight `none` sheets have |T| >= 7.7 deg": **five** do. One (`t87251dd38a`) has
+  |T| = 7.680; six meet 7.68.
+- "Nine notes name a second ring as nearly as good": **ten** single-answer sheets have such a note
+  (`t4d8e4e6eac`, `t95151aad0f`, `ta9749d15f2`, `taa103d7bc2`, `tab1502c942`, `tc489134b83`, `tcdf1f35b0c`,
+  `tdf734c39b0`, `tfb81323001`, `tfbc348b385`), and eleven with the `A=C` tie's note.

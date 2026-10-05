@@ -856,6 +856,21 @@ def test_every_section_4_number_is_the_committed_score():
         s['arms']['legacy+mid']['none'], s['arms']['post179']['none'], d['none_fisher_p']) in sec
 
 
+def test_the_post_hoc_entry_states_the_power_the_score_reports():
+    with open(BETA_SCORE_JSON, encoding='utf-8') as f:
+        ph = json.load(f)['post_hoc_power']
+    for arm in ('post179', 'legacy+mid'):
+        a = ph['per_arm'][arm]
+        assert a['n_discordant'] == 5 and not a['could_reject']
+        assert a['min_attainable_p'] == pytest.approx(0.0625)
+        assert a['min_attainable_p_holm'] == pytest.approx(0.125)
+    assert ph['min_discordant_to_reject_holm'] == 7
+    sec = _decisions_section('5.')
+    assert '2026-10-05' in sec and 'post hoc' in sec.lower()
+    for text in ('n = 5 discordant', '0.0625', '0.125', '7 : 0', 'issues/197'):
+        assert text in sec, text
+
+
 def test_beta_power_against_known_values():
     """n discordant sheets all one way is the smallest p a two-sided sign test can give; Holm doubles it."""
     ph = ta.beta_power({'arms': {'a': {'low': 4, 'high': 1}, 'b': {'low': 0, 'high': 0}}})
