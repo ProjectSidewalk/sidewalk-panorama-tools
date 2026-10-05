@@ -199,7 +199,7 @@ class TestThePerLabelWarningsAreCappedPerRun:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 18, 'success': 3, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 5, 'out_of_frame': 4, 'shifted_vertically': 0,
-                          'errors': 6, 'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'no_pose': 0}
+                          'errors': 6, 'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0}
         assert reconciles(counts)
 
     def test_stdout_is_untouched_by_the_cap(self, crop_runner, tmp_path, capsys, monkeypatch):
@@ -427,7 +427,7 @@ class TestTheProvenanceManifest:
         counts = crop_runner.bulk_extract_crops(labels, str(store), str(out))
         assert counts == {'total': 7, 'success': 1, 'skipped_existing': 1, 'missing_pano': 1,
                           'dims_mismatch': 1, 'out_of_frame': 1, 'shifted_vertically': 0, 'errors': 2,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'no_pose': 0}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0}
         assert list(manifest_by_label(out, crop_runner)) == ['1']
 
     def test_a_recut_crop_gets_a_second_row_and_the_last_names_the_current_rule(
@@ -582,7 +582,7 @@ class TestAFailedAppendDoesNotLoseTheCrop:
             counts = crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
         assert counts == {'total': 2, 'success': 2, 'skipped_existing': 0, 'missing_pano': 0,
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0, 'errors': 0,
-                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'no_pose': 0}
+                          'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0}
         assert reconciles(counts)
         assert os.path.exists(crop_path(out, 1, 1)) and os.path.exists(crop_path(out, 1, 2))
         # Both channels: the per-label reason in crop.log, the number where the operator reads.
