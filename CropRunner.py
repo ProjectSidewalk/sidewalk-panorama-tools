@@ -2220,9 +2220,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                  success + skipped_existing + missing_pano + dims_mismatch + out_of_frame
                      + black_content + no_pose + errors == total
 
-             Those eight are DISJOINT_OUTCOMES. no_pose (#191) is a label on a pano with no usable pose beside it under
-             tilt_correction=True (always 0 without it): skipped, not an error, and cut by a later run once the depth
-             phase has written the pano's .depth.npz. black_content (#164) is a label whose cut window was more than
+             Those eight are DISJOINT_OUTCOMES. no_pose (#191) is a label about to be cut, under tilt_correction=True, whose pano has no usable
+             pose beside it (always 0 without the flag; a crop already on disk is skipped_existing, since the pose is
+             looked up only for a label reaching the write): skipped, not an error, and cut by a later run only if a
+             pose appears. black_content (#164) is a label whose cut window was more than
              CROP_MAX_BLACK_FRACTION exactly-black: nothing is written and it is not an error, so a re-run cuts it once
              the pano is repaired. The COUNT_ANNOTATIONS are NOT among them: shifted_vertically annotates a success
              whose window had to move to stay inside the pano, so the crop exists but the label is off-centre in it;
@@ -2358,34 +2359,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             decode_error = None
             undecodable = 0
             try:
+                # The pose, like the decode, is looked up lazily (#193 review): only for a label about to be
+                # cut, and once per pano, so a finished store never reads a pose file and a crop already on
+                # disk is skipped_existing whatever its pano's pose. pose stays None without the flag.
                 pose = None
-                if tilt_correction:
-                    # Once per pano, and only with the flag: the pose that matches this JPEG's scrape era
-                    # (pano_pose.resolve_pano_pose). None is never guessed - every label on the pano is
-                    # no_pose, a skip like missing_pano that a later run cuts once the pose is there.
-                    try:
-                        pose, pose_reason = pano_pose.resolve_pano_pose(pano_img_path,
-                                                                        depth_suffix=DEPTH_ARTIFACT_SUFFIX)
-                    except Exception as e:
-                        # The readers turn an unreadable file into no pose, so this is a fault of ours, not
-                        # of the pano: one counted error per label, retried next run, and the run goes on.
-                        counts['errors'] += len(labels)
-                        processed += len(labels)
-                        if force:
-                            counts['stale_kept'] += crops_on_disk(labels)
-                        budget.warning('crop_failed', "Failed to crop %d labels on pano %s: resolving its pose "
-                                       "raised %s: %s", len(labels), pano_id, type(e).__name__, e)
-                        continue
-                    if pose is None:
-                        counts['no_pose'] += len(labels)
-                        processed += len(labels)
-                        if force:
-                            kept = crops_on_disk(labels)
-                            counts['stale_kept'] += kept
-                            stale_no_pose += kept
-                        budget.warning('no_pose', "Skipped %d labels on pano %s: no pose for the tilt "
-                                       "correction (%s)", len(labels), pano_id, pose_reason)
-                        continue
+                pose_looked_up = False
+                pose_reason = pose_error = None
+                no_pose_labels = pose_error_labels = 0
                 for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                     processed += 1
                     print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
@@ -2422,22 +2402,14 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     # column width are the same place in the world, so any finite x is read correctly by the
                     # seam modulo, and rows storing pano_x == pano_width crop fine.
                     #
-                    # Under --tilt-correction the row cut is the corrected one, so that is tested too; the
-                    # stored y must still be inside, since a y past a pole is not a direction to correct.
-                    if pose is not None:
-                        beta = TILT_BETA_BY_POSE_SOURCE[pose.source]
-                        centre_x, centre_y = pano_pose.corrected_pixel(pano_x, pano_y, pano.size[0], pano.size[1],
-                                                                       pose.pitch_deg, pose.roll_deg, beta)
-                    else:
-                        centre_x, centre_y = pano_x, pano_y
-                    if not (0 <= pano_y < pano.size[1] and 0 <= centre_y < pano.size[1]):
+                    # Under --tilt-correction the corrected y is tested too, below, once the pose is known.
+                    if not 0 <= pano_y < pano.size[1]:
                         counts['out_of_frame'] += 1
                         if force and os.path.exists(crop_destination):
                             counts['stale_kept'] += 1
-                        corrected = (" (tilt-corrected to %s)" % centre_y) if centre_y != pano_y else ''
                         budget.warning(
-                            'out_of_frame', "Label %d on pano %s: pano_y %s%s is outside the %dx%d image; "
-                            "skipping rather than clamping it to a pole", label_id, pano_id, pano_y, corrected,
+                            'out_of_frame', "Label %d on pano %s: pano_y %s is outside the %dx%d image; "
+                            "skipping rather than clamping it to a pole", label_id, pano_id, pano_y,
                             pano.size[0], pano.size[1])
                         continue
 
@@ -2445,6 +2417,49 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     if existed and not force:
                         counts['skipped_existing'] += 1
                         continue
+
+                    centre_x, centre_y = pano_x, pano_y
+                    if tilt_correction:
+                        if not pose_looked_up:
+                            # The pose that matches this JPEG's scrape era (pano_pose.resolve_pano_pose), never
+                            # guessed. The readers turn an unreadable file into no pose with a reason, so a raise
+                            # here is a fault of ours, not of the pano: an error, retried next run, and the run
+                            # goes on (nothing in the crop loop is fatal).
+                            pose_looked_up = True
+                            try:
+                                pose, pose_reason = pano_pose.resolve_pano_pose(pano_img_path,
+                                                                                depth_suffix=DEPTH_ARTIFACT_SUFFIX)
+                            except Exception as e:
+                                pose_error = e
+                        if pose_error is not None:
+                            counts['errors'] += 1
+                            pose_error_labels += 1
+                            if force and existed:
+                                counts['stale_kept'] += 1
+                            continue
+                        if pose is None:
+                            # A skip like missing_pano, not an error: nothing is written, and under --force an
+                            # old crop stays as it was.
+                            counts['no_pose'] += 1
+                            no_pose_labels += 1
+                            if force and existed:
+                                counts['stale_kept'] += 1
+                                stale_no_pose += 1
+                            continue
+                        beta = TILT_BETA_BY_POSE_SOURCE[pose.source]
+                        centre_x, centre_y = pano_pose.corrected_pixel(pano_x, pano_y, pano.size[0], pano.size[1],
+                                                                       pose.pitch_deg, pose.roll_deg, beta)
+                        # The stored y is inside (checked above); the exact rotation keeps the corrected one in
+                        # [0, h], so this fires only at the nadir row. Same bucket, the corrected y named.
+                        if not 0 <= centre_y < pano.size[1]:
+                            counts['out_of_frame'] += 1
+                            if force and existed:
+                                counts['stale_kept'] += 1
+                            budget.warning(
+                                'out_of_frame', "Label %d on pano %s: pano_y %s (tilt-corrected to %s) is outside "
+                                "the %dx%d image; skipping rather than clamping it to a pole", label_id, pano_id,
+                                pano_y, centre_y, pano.size[0], pano.size[1])
+                            continue
                     if not decoded and decode_error is None:
                         try:
                             pano.load()
@@ -2523,6 +2538,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         logging.info('%s.jpg %s %s %s -> %s %s (pitch %s, roll %s from %s; beta %s)',
                                      label_id, pano_id, pano_x, pano_y, centre_x, centre_y, pose.pitch_deg,
                                      pose.roll_deg, pose.source, beta)
+                if no_pose_labels:
+                    budget.warning('no_pose', "Skipped %d labels on pano %s: no pose for the tilt correction (%s)",
+                                   no_pose_labels, pano_id, pose_reason)
+                if pose_error_labels:
+                    budget.warning('crop_failed', "Failed to crop %d labels on pano %s: resolving its pose raised "
+                                   "%s: %s", pose_error_labels, pano_id, type(pose_error).__name__, pose_error)
                 if undecodable:
                     # The cannot_open kind, since it is the same fault one step later: the header opened,
                     # the body did not. "decode", not "open", in the text, so the two stay tellable apart.
@@ -2625,10 +2646,11 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     if counts['no_pose']:
         # Both channels (#191), black_content's reason: no_pose is not an error, so the exit code stays 0,
         # and a run that skipped every label for want of a pose would otherwise complete silently.
-        message = ("%d labels were skipped because their pano has no pose for the tilt correction (no_pose): "
-                   "no .xml and no usable .depth.npz beside it. Nothing was written for them, so a re-run cuts "
-                   "them once the depth phase has written the pano's .depth.npz; crop.log names up to %d of "
-                   "the panos and why." % (counts['no_pose'], LOG_WARNINGS_PER_KIND))
+        message = ("%d labels were skipped because their pano has no pose for the tilt correction (no_pose), and "
+                   "nothing was written for them. A later run cuts them only if a pose appears beside the pano, "
+                   "i.e. the depth phase writes its .depth.npz; a pano the depth phase ledgers unavailable, an npz "
+                   "without a finite pitch and roll, and an .xml that is incomplete or unreadable stay no_pose. "
+                   "crop.log names up to %d of the panos and why." % (counts['no_pose'], LOG_WARNINGS_PER_KIND))
         logging.warning('%s', message)
         print(message)
 

@@ -373,14 +373,25 @@ it cuts exactly what it did before.
   by up to a few percent of the window. The geometry lives in `pano_pose.py`, not in `CropRunner.py`, which
   keeps the [#78 rule](#angles-pixels-and-the-factor-of-two) that 360 and 180 appear only in its four unit
   functions.
-* **The pose is the pano's own, never guessed.** It is read once per pano: from `<id>.xml` when one sits
-  beside the JPEG (a 2019-22 scrape, whose pixels that file describes, even if a newer `.depth.npz` exists),
-  otherwise from `<id>.depth.npz`'s `pitch`/`roll` ([docs/depth.md](depth.md#the-artifact)). An `.xml` missing
-  a field is no pose; it does not fall through to the npz. A pano with no usable pose is **`no_pose`**:
-  every label on it is skipped, not an error, so the exit code does not change. `crop.log` gets one line per
-  pano naming why (no file; an incomplete xml; an npz without a finite pitch or roll), and the run ends with
-  one line on stdout and in `crop.log` when any were skipped. A re-run cuts them once the depth phase has
-  written the pano's artifact.
+* **The pose is the pano's own, never guessed.** It comes from `<id>.xml` when one sits beside the JPEG (a
+  2019-22 scrape, whose pixels that file describes, even if a newer `.depth.npz` exists), otherwise from
+  `<id>.depth.npz`'s `pitch`/`roll` ([docs/depth.md](depth.md#the-artifact)). An `.xml` that is missing a field
+  or cannot be parsed is no pose; it does not fall through to the npz.
+* **It is looked up lazily, once per pano.** Like the decode, the lookup happens only for a label about to be
+  cut: after the dims and stored-y preflights and after the crop-exists check. So a finished store never
+  reads a pose file, and a crop already on disk is `skipped_existing` whatever its pano's pose. If the
+  lookup itself raises (the readers turn any unreadable file into no pose, so this would be a fault in the
+  code), the pano's remaining labels are counted `errors`, with one `crop_failed` line, and the run goes on.
+* **A pano with no usable pose is `no_pose`**: every label on it that reached the lookup is skipped, not an
+  error, so the exit code does not change, and under `--force` an old crop is kept as `stale_kept`.
+  `crop.log` gets one line per pano naming why (no file; an incomplete or unreadable xml; an npz without a
+  finite pitch or roll) under its own warning budget, and the run ends with one line on stdout and in
+  `crop.log`. **Most `no_pose` is permanent.** A later run cuts the label only if a pose appears beside the
+  pano, which means the depth phase writing its `.depth.npz`. A pano the depth phase ledgers `unavailable`
+  never gets one, and neither does a pano retired at Google, which is about half of labelled panos. An npz with a NaN pitch or roll is
+  ledgered `saved` and never re-requested, and an incomplete xml never falls through. All of those stay
+  `no_pose`. So a `--force` re-cut under the flag leaves their old uncorrected crops in place, and a
+  corrected store is mixed by construction.
 * **Beta is per pose record** (`TILT_BETA_BY_POSE_SOURCE`), keyed on which file the pose came from:
   `xml` or `npz`. Not per label era: on the same 3,518 pairs the
   [#191 fit of 2026-10-01](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/191#issuecomment-5922041299)
@@ -395,7 +406,8 @@ it cuts exactly what it did before.
   the stored y records. Re-fitting either rule on corrected coordinates is a follow-up once beta is set
   ([#186](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/186)).
 * **The preflight reads both points.** A label is `out_of_frame` if either its stored or its corrected y is
-  outside the image. The exact rotation keeps a corrected y inside `[0, h]`, so the second test only matters
+  outside the image. The stored y is checked first, before the crop-exists check, as without the flag; the
+  corrected y can only be checked after the pose lookup, so only for a label about to be cut. The exact rotation keeps a corrected y inside `[0, h]`, so the second test only matters
   at the nadir row.
 * **A corrected crop is a different crop.** `crop_rule.json` records `tilt_correction` (`on`/`off`) and each
   pose record's beta as `tilt_beta_xml_pose` and `tilt_beta_npz_pose`, among the constants of both rules.

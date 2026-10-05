@@ -250,6 +250,15 @@ class TestSizingStaysAtTheStoredY:
 # no_pose
 # ---------------------------------------------------------------------------
 
+# Asserted whole: it has to be true for every no-pose shape - absent, an incomplete or unreadable xml, an npz
+# without a finite pose - and a re-run cuts none of the last three.
+NO_POSE_SUMMARY = (
+    "%d labels were skipped because their pano has no pose for the tilt correction (no_pose), and nothing was "
+    "written for them. A later run cuts them only if a pose appears beside the pano, i.e. the depth phase "
+    "writes its .depth.npz; a pano the depth phase ledgers unavailable, an npz without a finite pitch and roll, "
+    "and an .xml that is incomplete or unreadable stay no_pose. crop.log names up to 100 of the panos and why.")
+
+
 def no_pose_store(tmp_path, shape):
     store = tmp_path / 'store'
     jpg = put_pano(store, 'testpano0001')
@@ -277,9 +286,11 @@ class TestNoPose:
                  if r.getMessage().startswith('Skipped') and 'no pose for the tilt correction (' in r.getMessage()]
         assert len(lines) == 1 and reason in lines[0], 'one crop.log line per pano, naming why'
         printed = capsys.readouterr().out
-        summary = '2 labels were skipped because their pano has no pose for the tilt correction (no_pose)'
-        assert summary in printed and summary in caplog.text
+        assert NO_POSE_SUMMARY % 2 in printed and NO_POSE_SUMMARY % 2 in caplog.text
         assert '2 skipped for no pano pose' in printed
+        # 9b5182f promised "a re-run cuts them once the depth phase has written the pano's .depth.npz", which
+        # is false for an incomplete xml, a NaN npz and an unavailable pano (#193 review). Fails on it.
+        assert 'once the depth phase has written' not in printed
 
     def test_main_exits_zero(self, crop_runner, tmp_path):
         store, out = no_pose_store(tmp_path, 'absent'), tmp_path / 'crops'
@@ -305,6 +316,63 @@ class TestNoPose:
         printed = capsys.readouterr().out
         assert STALE_KEPT_SUMMARY % 1 in printed
         assert '1 of them were on a pano with no pose for the tilt correction (no_pose)' in printed
+
+    def test_a_crop_on_disk_is_skipped_existing_not_no_pose(self, crop_runner, tmp_path, capsys):
+        """Jon's decision 3 (tests review finding 2): the pose is looked up only for a label about to be cut,
+        so a crop already on disk is skipped_existing whatever its pano's pose. Failed on 9b5182f, which
+        counted it no_pose and told the operator nothing had been written."""
+        store, out = no_pose_store(tmp_path, 'absent'), tmp_path / 'crops'
+        run(crop_runner, [label_row()], store, out)
+        capsys.readouterr()
+        counts = run(crop_runner, [label_row()], store, out, tilt_correction=True)
+        assert (counts['skipped_existing'], counts['no_pose']) == (1, 0) and reconciles(counts)
+        assert 'no_pose)' not in capsys.readouterr().out
+
+    def test_a_finished_store_never_consults_a_pose(self, crop_runner, tmp_path, monkeypatch):
+        """Like the content check and the decode (#164): a store with every crop on disk reads no pose file.
+        Failed on 9b5182f, which resolved every pano's pose before its first label."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_npz_pose(put_pano(store, 'testpano0001'))
+        labels = [label_row(label_id=1), label_row(label_id=2)]
+        run(crop_runner, labels, store, out)
+        monkeypatch.setattr(pano_pose, 'resolve_pano_pose',
+                            lambda *a, **k: pytest.fail('a pose was read for a label already cut'))
+        counts = run(crop_runner, labels, store, out, tilt_correction=True)
+        assert counts['skipped_existing'] == 2 and reconciles(counts)
+
+    def test_the_pose_is_resolved_once_per_pano(self, crop_runner, tmp_path, monkeypatch):
+        """docs/cropper.md says the pose is read once per pano; this kills a per-label lookup."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_npz_pose(put_pano(store, 'testpano0001'))
+        put_pano(store, 'noposepano01')
+        calls = []
+        real = pano_pose.resolve_pano_pose
+        monkeypatch.setattr(pano_pose, 'resolve_pano_pose', lambda path, **k: calls.append(path) or real(path, **k))
+        counts = run(crop_runner, [label_row(label_id=i) for i in (1, 2, 3)]
+                     + [label_row(pano_id='noposepano01', label_id=i) for i in (4, 5)], store, out,
+                     tilt_correction=True)
+        assert (counts['success'], counts['no_pose']) == (3, 2)
+        assert len(calls) == 2
+
+    def test_no_pose_lines_have_their_own_budget(self, crop_runner, tmp_path, monkeypatch, caplog):
+        """A flood of no-pose panos cannot hide the first line of another kind: with one line per kind, a
+        cannot_open line after two no_pose panos is still logged. Kills logging no_pose under cannot_open."""
+        monkeypatch.setattr(crop_runner, 'LOG_WARNINGS_PER_KIND', 1)
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'noposepano01')
+        put_pano(store, 'noposepano02')
+        broken = store / 'br' / 'brokenpano01.jpg'
+        broken.parent.mkdir(parents=True)
+        broken.write_bytes(b'not a jpeg')
+        with caplog.at_level(logging.WARNING):
+            counts = run(crop_runner, [label_row(pano_id='noposepano01', label_id=1),
+                                       label_row(pano_id='noposepano02', label_id=2),
+                                       label_row(pano_id='brokenpano01', label_id=3)], store, out,
+                         tilt_correction=True)
+        assert (counts['no_pose'], counts['errors']) == (2, 1)
+        assert any('cannot open' in r.getMessage() and 'brokenpano01' in r.getMessage() for r in caplog.records)
+        assert sum(r.getMessage().startswith('Skipped') and 'no pose for the tilt correction (' in r.getMessage()
+                   for r in caplog.records) == 1
 
     def test_every_disjoint_outcome_once_and_the_key_set_exactly(self, crop_runner, tmp_path, monkeypatch):
         """The twin of test_crop_content's every-bucket test, with the flag on, so no_pose is reached too;
