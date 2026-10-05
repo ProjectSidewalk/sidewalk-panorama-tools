@@ -415,8 +415,9 @@ it cuts exactly what it did before.
   and then with it gets the same-rule mixed-store warning ("was cut ... with tilt_beta_xml_pose=0.0 and this
   run uses 1.0"), and `constants_seen` keeps that history, as for any other constant. **A marker written
   before these keys existed means uncorrected**: a rule recorded with no beta was run by code that never
-  corrected, so its beta is read as `0.0`. That is every store cut before #191, and so its first corrected
-  top-up warns and records `[0.0, 1.0]` for good. (Any other constant a marker has not recorded stays
+  corrected, so its beta is read as `0.0`. That is every store cut before #191 that holds a crop, and so its
+  first corrected top-up warns and records `[0.0, 1.0]` for good. A pre-#191 marker over a store with no crop
+  (a run that cut nothing) is not seeded, since no uncorrected crop exists. (Any other constant a marker has not recorded stays
   silent, since its old value is unknown.) Re-cut the whole store with `--force` rather than topping it up.
 * **Not per crop.** The provenance manifest has no correction column yet, so a mixed store shows only in
   `crop_rule.json`, which cannot say which crops are which. The column (pose record, beta and the corrected

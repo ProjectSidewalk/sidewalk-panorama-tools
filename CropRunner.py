@@ -1703,8 +1703,9 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
     `tilt_correction` (#191) is recorded twice: each pose record's beta among the constants (0.0 when off - see
     _rule_constants), so the same-rule check warns about a store cut off-then-on and constants_seen keeps
     that history for good, and `tilt_correction: 'on' | 'off'` at top level for a reader. A marker written
-    before these keys existed is read as beta 0.0 for every rule it names (_marker_history): that code never
-    corrected, so a --tilt-correction top-up of such a store warns, unlike a constant merely unrecorded.
+    before these keys existed is read as beta 0.0 for every rule it names, if the store holds a crop
+    (_marker_history): that code never corrected, so a --tilt-correction top-up of such a store warns, unlike
+    a constant merely unrecorded. A store with no crop has nothing uncorrected in it and is not seeded.
 
     :return: the rule version already on disk; 'unknown' if a marker exists but cannot be read; None
              if this is a fresh store.
@@ -1748,7 +1749,7 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
         previous, rules_seen, constants_seen = 'unknown', ['unknown'], {}
     else:
         previous = recorded.get('crop_rule_version')
-        rules_seen, constants_seen = _marker_history(recorded)
+        rules_seen, constants_seen = _marker_history(recorded, destination_dir)
 
     # The remedy depends on --force (#153 m3): without it the store stays mixed and the remedy is a forced
     # run; with it, this run is the remedy, and the store is not one rule until it finishes. The plain form
@@ -1855,12 +1856,15 @@ def _read_rule_marker(path):
     return recorded, False
 
 
-def _marker_history(recorded):
+def _marker_history(recorded, destination_dir):
     """The store's (rules_seen, constants_seen), seeded from what the marker names at top level.
 
     The top-level keys are the LAST run's rule and constants, so they belong to the history whatever it
     says: that seeds a marker written before the history existed (whose crop_rule_version and
     previous_crop_rule_version are all it can say), and it means a hand-edited constant is compared.
+
+    `destination_dir` is the crop store, listed (_store_holds_crops) only when a rule lacks a tilt beta, to
+    decide whether that rule's history is seeded with 0.0 - see the comment below.
     """
     rules_seen = list(recorded.get('rules_seen', []))
     constants_seen = {rule: {key: list(values) for key, values in keys.items()}
@@ -1878,9 +1882,13 @@ def _marker_history(recorded):
     # correction (#191), which never corrected: its crops are beta 0, a recorded fact rather than a guess.
     # Seeded so the first --tilt-correction top-up of such a store warns that it is mixed, and so the sticky
     # history keeps the 0.0 (#193 review finding 1) - without it, every store that predates the flag read as
-    # all corrected after one top-up.
-    for rule in rules_seen:
-        if rule in RULE_MARKER_CONSTANT_KEYS:
+    # all corrected after one top-up. Only when the store holds a crop (#193 round-2 nit 1): a pre-#191 run
+    # that cut nothing still wrote a marker, and seeding that would give the first corrected run a false
+    # mixed-store warning that the sticky history repeats for good. Listed only when there is a gap to seed.
+    unseeded = [rule for rule in rules_seen if rule in RULE_MARKER_CONSTANT_KEYS
+                and not all(constants_seen.get(rule, {}).get(key) for key in _TILT_BETA_KEYS)]
+    if unseeded and _store_holds_crops(destination_dir):
+        for rule in unseeded:
             seen = constants_seen.setdefault(rule, {})
             for key in _TILT_BETA_KEYS:
                 if not seen.get(key):

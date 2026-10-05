@@ -601,12 +601,24 @@ class TestTheMarker:
         assert 'tilt_beta_xml_pose=0.0 and this run uses 1.0' in caplog.text
 
     @staticmethod
-    def pre_pr_marker(crop_runner, store, shape):
+    def pre_pr_marker(crop_runner, store, shape, with_crop=True):
         """A crop_rule.json as the code before #191 wrote it: a rule, its constants, no tilt keys.
 
         'stripped': this code's marker with the tilt keys removed everywhere (top level and constants_seen).
-        'pre-history': older still, with no rules_seen/constants_seen at all, only the top-level rule."""
-        crop_runner.write_rule_marker(str(store))
+        'pre-history': older still, with no rules_seen/constants_seen at all, only the top-level rule.
+        'two-rules': 'stripped' over a store cut under v2 and then v3, so rules_seen names both and the
+        last rule is v3 (#193 round-2 nit 2).
+
+        `with_crop` puts one crop in a label-type shard: the 0.0 seed is for a store that holds crops
+        (#193 round-2 nit 1), which every pre-PR store with a crop does."""
+        if shape == 'two-rules':
+            crop_runner.write_rule_marker(str(store))
+            crop_runner.write_rule_marker(str(store), sizing_rule='v3')
+        else:
+            crop_runner.write_rule_marker(str(store))
+        if with_crop:
+            (store / '1').mkdir(exist_ok=True)
+            (store / '1' / '1.jpg').write_bytes(b'a crop cut before #191')
         path = store / crop_runner.CROP_RULE_MARKER
         marker = json.loads(path.read_text(encoding='utf-8'))
         for key in list(crop_runner.TILT_BETA_MARKER_KEYS.values()) + ['tilt_correction']:
@@ -619,14 +631,17 @@ class TestTheMarker:
                     keys.pop(key, None)
         path.write_text(json.dumps(marker), encoding='utf-8')
 
-    @pytest.mark.parametrize('shape', ['stripped', 'pre-history'])
+    @pytest.mark.parametrize('shape', ['stripped', 'pre-history', 'two-rules'])
     def test_a_marker_from_before_the_keys_reads_as_uncorrected(self, crop_runner, tmp_path, caplog, capsys,
                                                                 shape):
         """Jon's decision (2026-10-05), both reviews' finding 1: a marker with a rule but no beta keys was
         written by code that never corrected, so its crops are beta 0. The first --tilt-correction run over
         it warns that the store is mixed, and the sticky history keeps the 0.0. Every store that exists today
         is this case. Failed on 9b5182f, which pinned the opposite (the run was silent and the history read
-        [1.0] only)."""
+        [1.0] only).
+
+        'two-rules' (#193 round-2 nit 2): every rule the marker names is seeded, not only its last one.
+        Fails with the seed loop over [last] only: the v2 run then has no 0.0 to compare against."""
         self.pre_pr_marker(crop_runner, tmp_path, shape)
         capsys.readouterr()
         with caplog.at_level(logging.WARNING):
@@ -638,6 +653,8 @@ class TestTheMarker:
         assert marker['tilt_correction'] == 'on'
         for key in crop_runner.TILT_BETA_MARKER_KEYS.values():
             assert marker['constants_seen']['v2'][key] == [0.0, 1.0]
+            if shape == 'two-rules':
+                assert marker['constants_seen']['v3'][key] == [0.0]
         # Sticky: a forced pass does not clear it, so the next run still says so.
         crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True, force=True)
         caplog.clear()
@@ -665,6 +682,21 @@ class TestTheMarker:
         assert (counts['success'], counts['skipped_existing']) == (1, 1)
         assert 'tilt_beta_npz_pose=0.0 and this run uses 1.0' in capsys.readouterr().out
         assert read_marker(crop_runner, out)['constants_seen']['v2']['tilt_beta_npz_pose'] == [0.0, 1.0]
+
+    @pytest.mark.parametrize('shape', ['stripped', 'pre-history', 'two-rules'])
+    def test_a_pre_pr_marker_over_a_store_with_no_crops_is_not_seeded(self, crop_runner, tmp_path, caplog,
+                                                                      shape):
+        """#193 round-2 nit 1: a pre-PR run that cut nothing (every pano missing, say) still wrote a marker,
+        and no uncorrected crop ever existed. Seeding it would give the first corrected run a false mixed-store
+        warning that the sticky history then repeats on every run. Fails without the _store_holds_crops gate."""
+        self.pre_pr_marker(crop_runner, tmp_path, shape, with_crop=False)
+        with caplog.at_level(logging.WARNING):
+            crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True)
+        assert 'tilt_beta_xml_pose=0.0' not in caplog.text and 'tilt_beta_npz_pose=0.0' not in caplog.text
+        marker = read_marker(crop_runner, tmp_path)
+        for key in crop_runner.TILT_BETA_MARKER_KEYS.values():
+            assert marker['constants_seen']['v2'][key] == [1.0]
+            assert 0.0 not in marker['constants_seen'].get('v3', {}).get(key, [])
 
     def test_a_fresh_store_has_no_uncorrected_history(self, crop_runner, tmp_path, caplog):
         """The seed is for a marker that names a rule; a store with no marker has no crops to be uncorrected."""
