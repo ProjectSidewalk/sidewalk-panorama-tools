@@ -349,8 +349,10 @@ recommended order is:
   against the consumer report's ~10% practical and 19-42% hard ceilings. Regeneration question as above.
 * **RampNet stage one**: at the p90 the ceiling shift is 7-9 of its click sigmas (S3), far over the
   consumer report's 0.5 deg target.
-* **Follow-up issues:** the beta batch and the correction are filed together after this PR. Still to
-  file: ingesting the legacy `.xml` tilt as a first-class artifact (it is the only pose for dead panos),
+* **Follow-up issues:** the beta batch and the correction are #191. The batch has run. It corroborates a
+  beta a little under 1 but had no power to measure it
+  ([its DECISIONS.md, section 5](data/2026-09-29-tilt-beta-jm/DECISIONS.md)), and the default beta is #197.
+  Still to file: ingesting the legacy `.xml` tilt as a first-class artifact (it is the only pose for dead panos),
   and a fleet-wide pose scan. The redraw's scan covered the vouched pool's 45,687 panos across the GSV
   deployments, but only those.
 

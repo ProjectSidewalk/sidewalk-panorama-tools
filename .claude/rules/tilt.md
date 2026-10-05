@@ -26,8 +26,10 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   raw lean slope excludes 0; the calibrated slopes are estimates, 0.634-1.098). Endpoint C, Jon's blind forced
   choice on 96 lead-labeller-vouched labels: the window shifted by T in the predicted direction beat its
   mirror **79 : 0** (p = 1.7e-24). post179 is confirmed (98% of single-window answers); legacy+mid is not
-  (84%). **C gives the direction, not the size**: every shifted window moves by the full T, so beta is
-  unmeasured. Measure it (the asymmetric-decoy batch) before a correction applies all of T. No correction has
+  (84%). **C gives the direction, not the size**: every shifted window moves by the full T. The #191 beta batch
+  (`2026-09-29-tilt-beta-jm/`) is corroboration only: it leans below 1 in both arms but, at 5 discordant sheets
+  per arm, its primary test could not reject (DECISIONS.md section 5). The per-pose-record RampNet slopes are
+  about 0.88 (XML pose) and 0.95 (npz pose); the default beta is Jon's choice (#197). No correction has
   landed in CropRunner yet. When one does, it moves **both** axes via `tilt_geometry.rig_pixel_from_gravity_pixel`,
   taking the pose from the pano's own `.npz`/`.xml`.
 - **The C folders are sealed, and the redraw is the decision-bearing one.** `reports/data/2026-09-29-tilt-adjudication-jm/`
@@ -37,6 +39,8 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   (`pilot-*.jsonl`, deliberately outside the analysis's `verdicts_*` glob). `next`/`record` refuse to run while
   a key file sits outside `sealed/`. Never move a key beside its sheets, and never caption a figure with one.
   `tilt_jm_pool.py` rebuilds the redraw from committed data, and `tilt_adjudicate_ui.py` is the judging page.
+  The beta folder is sealed the same way but built with `--design beta` (`draw` and `sheets`); score it with
+  `tilt_adjudicate.py score-beta` (writes the committed `sealed/score_beta_jon.json`), never `score`.
 - **The `.xml` files beside 2019-22 scrapes carry legacy tilt**, for dead panos too.
   `tilt_geometry.xml_tilt_to_pitch_roll` is the one conversion (fitted on 3,594 panos with both files, median
   residual about 0.1 deg). Pose a JPEG by the file of its own scrape era: an `.xml` JPEG is a 2019-22 stitch, and a 2026
