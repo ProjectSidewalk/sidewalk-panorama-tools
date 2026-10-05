@@ -186,8 +186,10 @@ V3_CONTEXT_WIDTH_M = 5.8
 # era gap was the pose record's. The record is also always known when a correction is applied, where the era
 # is unknown for every -d label (cvMetadata serves no time_created).
 #
-# Both stay 1.0 here, NOT the measured priors: endpoint C found the direction 79 : 0 and the #191 beta batch
-# read beta = 1 in both arms, and choosing the default is its own decision (#197). The priors are named so
+# Both stay 1.0 here, NOT the measured priors: endpoint C found the direction 79 : 0, the #191 beta batch is
+# corroboration only (it leans below 1 in both arms but, at 5 discordant sheets per arm, had no power to
+# measure beta: reports/data/2026-09-29-tilt-beta-jm/DECISIONS.md, section 5), and choosing the default is
+# its own decision (#197). The priors are named so
 # whoever sets them knows where they came from; they are not applied. Also open: the per-crop provenance
 # column (#196), which must land before the flag is turned on for any consumer store, and re-fitting the
 # sizing rules on corrected coordinates (#186).

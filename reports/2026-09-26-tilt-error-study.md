@@ -324,7 +324,7 @@ decision-bearing.
 ## What follows
 
 Nothing here changes CropRunner. C establishes the leak's existence and sign, not its size, so the
-recommended order is:
+recommended order is (as written 2026-09-29; where each step stands now is in the last bullet):
 
 * **Measure beta first.** Run an asymmetric-decoy batch with windows at 0.5 T, 1.0 T and 1.5 T. It uses the
   same pool, scan and page, and costs about 30 minutes of judging. It says whether a correction should
@@ -349,9 +349,12 @@ recommended order is:
   against the consumer report's ~10% practical and 19-42% hard ceilings. Regeneration question as above.
 * **RampNet stage one**: at the p90 the ceiling shift is 7-9 of its click sigmas (S3), far over the
   consumer report's 0.5 deg target.
-* **Follow-up issues:** the beta batch and the correction are #191. The batch has run. It corroborates a
-  beta a little under 1 but had no power to measure it
-  ([its DECISIONS.md, section 5](data/2026-09-29-tilt-beta-jm/DECISIONS.md)), and the default beta is #197.
+* **Follow-up issues:** the beta batch and the correction are #191. Both have since happened, in that
+  order. The batch corroborates a beta a little under 1 but had no power to measure it
+  ([its DECISIONS.md, section 5](data/2026-09-29-tilt-beta-jm/DECISIONS.md)). The correction landed in #193
+  as CropRunner's `--tilt-correction`, off by default, with beta keyed on the pose record (`xml`/`npz`,
+  both 1.0 for now; [docs/cropper.md](../docs/cropper.md#the-tilt-correction-opt-in-191)). Choosing the
+  default beta and turning the flag on is #197; the per-crop provenance column that must land first is #196.
   Still to file: ingesting the legacy `.xml` tilt as a first-class artifact (it is the only pose for dead panos),
   and a fleet-wide pose scan. The redraw's scan covered the vouched pool's 45,687 panos across the GSV
   deployments, but only those.
