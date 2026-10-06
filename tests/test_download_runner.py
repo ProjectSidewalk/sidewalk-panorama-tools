@@ -3268,7 +3268,8 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
 
         call_main_scripted(monkeypatch, tmp_path, verdicts)
 
-        assert summary_codes(tmp_path) == []
+        # It is a condition of its own since #185 (TestFrameRefusalsAreCountedAndFailTheNight), never this one.
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
 
     def test_a_frame_disagreement_among_real_raises_is_an_answer(self, monkeypatch, tmp_path):
         """It is an ANSWER, not merely "not a raise": the rule is "none was answered", so one frame refusal
@@ -3280,7 +3281,7 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
 
         call_main_scripted(monkeypatch, tmp_path, verdicts)
 
-        assert summary_codes(tmp_path) == []
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
 
     def test_slow_perennial_raisers_that_fill_the_budget_are_not(self, monkeypatch, tmp_path):
         """The #174 final review's false alarm: a mature city served nothing new, whose never-ledgered
@@ -3470,8 +3471,83 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         assert gsv.DEPTH_CONDITIONS < DownloadRunner.RUN_CONDITIONS
         assert {DownloadRunner.CONDITION_MAPILLARY_TOKEN, DownloadRunner.CONDITION_UNSUPPORTED_SOURCE,
                 DownloadRunner.CONDITION_PANO_LIST_EMPTY, DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
-                DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT} < DownloadRunner.RUN_CONDITIONS
-        assert len(DownloadRunner.RUN_CONDITIONS) == 10
+                DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT,
+                DownloadRunner.CONDITION_FRAME_DISAGREEMENT} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 11
+
+
+class TestFrameRefusalsAreCountedAndFailTheNight:
+    """#185 Part 1. A pano refused for a frame disagreement (#74) was visible only as one per-pano WARNING and
+    a `grep "frame disagreement" scrape.log`: it is not ledgered, its failure hides in log.csv field 9 among
+    every ledger-seeded downloaded=0 row, and the night exited 0. At the measured rate (0 of 651), one refusal
+    is news, so a nonzero count is a run condition (Jon, 2026-10-06, Q2) and the count rides in the run
+    summary - not in log.csv (Q1). Counted at the image loop's catch site, so every arm that raises
+    FrameDisagreementError (photometa, the probe, #181's in-grid check) is counted by the same line."""
+
+    LINE = 'refused for a frame disagreement'
+
+    def refused(self, n):
+        return {'refusedPano%03d' % i: downloaders.gsv.FrameDisagreementError(
+            'pano refusedPano%03d: frame disagreement: test' % i) for i in range(n)}
+
+    def summary(self, tmp_path):
+        with open(tmp_path / 'summary.json') as f:
+            return json.load(f)
+
+    def test_two_refusals_and_a_success_are_counted_on_every_channel(self, monkeypatch, tmp_path, capsys,
+                                                                     caplog):
+        """The issue's acceptance test: the phase line on stdout AND in scrape.log's channel, the count in the
+        run summary, the condition, and neither refused pano in the ledger."""
+        verdicts = dict(self.refused(2), okPano=downloaders.DownloadResult.success)
+
+        with caplog.at_level(logging.ERROR):
+            storage, code = call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert code == 0, 'a condition fails the night through the queue, never through the runner exit code'
+        summary = self.summary(tmp_path)
+        assert summary['frame_refusals'] == 2
+        conditions = summary_conditions(tmp_path)
+        assert list(conditions) == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
+        assert conditions[DownloadRunner.CONDITION_FRAME_DISAGREEMENT].startswith('2 pano(s) refused')
+        out_lines = [l for l in capsys.readouterr().out.splitlines() if self.LINE in l]
+        assert len(out_lines) == 1 and 'WARNING - 2 pano(s)' in out_lines[0]
+        log_lines = [r.getMessage() for r in caplog.records if self.LINE in r.getMessage()]
+        assert len(log_lines) == 1 and '2 pano(s)' in log_lines[0]
+        ledger = (storage / 'pano_id_log.csv').read_text()
+        assert 'okPano,1,' in ledger
+        assert 'refusedPano' not in ledger
+
+    def test_one_refusal_is_enough(self, monkeypatch, tmp_path):
+        """The boundary: at a measured rate of zero there is no floor to clear."""
+        call_main_scripted(monkeypatch, tmp_path,
+                           dict(self.refused(1), okPano=downloaders.DownloadResult.success))
+
+        assert self.summary(tmp_path)['frame_refusals'] == 1
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
+
+    def test_zero_refusals_is_no_condition_no_key_and_no_line(self, monkeypatch, tmp_path, capsys):
+        """Every other outcome at once - success, permanent verdict, skip, transient raise - and nothing
+        about frames anywhere."""
+        verdicts = {'okPano': downloaders.DownloadResult.success,
+                    'failPano': downloaders.DownloadResult.failure,
+                    'skipPano': downloaders.DownloadResult.skipped,
+                    'raisePano': RuntimeError('store went away')}
+
+        call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        summary = self.summary(tmp_path)
+        assert 'frame_refusals' not in summary
+        assert summary['conditions'] == []
+        assert self.LINE not in capsys.readouterr().out
+
+    def test_the_count_keys_on_the_exception_type_not_its_text(self, monkeypatch, tmp_path):
+        """A transient whose message happens to mention a frame disagreement is not a refusal: the ops grep
+        keys on text, the counter must not."""
+        call_main_scripted(monkeypatch, tmp_path, {
+            'okPano': downloaders.DownloadResult.success,
+            'raisePano': RuntimeError('frame disagreement mentioned in an unrelated error')})
+
+        assert summary_codes(tmp_path) == []
 
 
 # --- log.csv field 19: the depth corpus size (#43) ---------------------------------------------------------
