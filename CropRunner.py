@@ -1569,8 +1569,7 @@ class ProvenanceManifest:
         self._file = None
         # Rows this run handed to the file whole: after a failed close, each may not have landed (#200).
         self.rows_written = 0
-        # True from a failed append until an open cuts the file back again; see close().
-        self._needs_cut = False
+        self.closed = False
         self.torn_rows_cut = int(self._open(first=True))
 
     def _open(self, first=False):
@@ -1604,7 +1603,6 @@ class ProvenanceManifest:
             _close_quietly(handle)
             raise
         self._file = handle
-        self._needs_cut = False
         return cut_row
 
     def record(self, label_id, pano_id, provenance, *, tilt):
@@ -1634,7 +1632,6 @@ class ProvenanceManifest:
         except BaseException:
             _close_quietly(self._file)
             self._file = None
-            self._needs_cut = True
             try:
                 self._open()
             except Exception:
@@ -1642,13 +1639,17 @@ class ProvenanceManifest:
             raise
 
     def close(self):
-        """Close the handle. If a failed append's reopen also failed, and no later row reopened it, the
-        torn fragment is still on disk: cut it now with one more reopen (#200), best-effort like record()'s.
-        This run has already counted that crop unrecorded, and the next run's first open would count the
-        same crop again as a torn row. If this reopen fails too, the fragment stays and is counted twice -
-        the count is then one high, never low."""
+        """Close the handle; a second call does nothing. No handle on the first call means a failed
+        append's reopen also failed, and no later row reopened it, so the torn fragment may still be on
+        disk: cut it now with one more reopen (#200), best-effort like record()'s. This run has already
+        counted that crop unrecorded, and the next run's first open would count the same crop again as a
+        torn row. If this reopen fails too, the fragment stays and is counted twice - the count is then
+        one high, never low."""
+        if self.closed:
+            return
+        self.closed = True
         handle, self._file = self._file, None
-        if handle is None and self._needs_cut:
+        if handle is None:
             try:
                 self._open()
             except Exception:

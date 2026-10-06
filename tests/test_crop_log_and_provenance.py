@@ -396,6 +396,15 @@ class TestTheProvenanceManifest:
             manifest.close()
         assert manifest_rows(tmp_path, crop_runner) == [list(crop_runner.PROVENANCE_COLUMNS)]
 
+    def test_a_second_close_does_nothing(self, crop_runner, tmp_path):
+        """close() cuts a torn tail when it finds no handle (#200), so it must tell 'dropped after a failed
+        append' from 'already closed': a second close that reopened would recreate a manifest moved away."""
+        manifest = crop_runner.ProvenanceManifest(str(tmp_path), 'seattle-wa')
+        manifest.close()
+        os.remove(os.path.join(str(tmp_path), crop_runner.PROVENANCE_MANIFEST))
+        manifest.close()
+        assert not os.path.exists(os.path.join(str(tmp_path), crop_runner.PROVENANCE_MANIFEST))
+
     def test_a_row_cannot_be_recorded_without_saying_whether_it_was_corrected(self, crop_runner, tmp_path):
         """#200 review finding 3. A default of TILT_PROVENANCE_OFF would let a future caller that forgets
         `tilt=` record a corrected crop as `none` - the misclassification #196 exists to prevent, and one no
