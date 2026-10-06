@@ -28,6 +28,12 @@ def many_pano_infos(count):
     return pano_infos(*['pano%03d' % i for i in range(count)])
 
 
+# The production retreat schedule, captured before no_retreat_sleeps empties it: the outage floor (#177 review)
+# is defined as its first step, and the tests that pin the floor must read the real one.
+REAL_RETREAT_SCHEDULE = dict(gsv.DEPTH_RETREAT_SCHEDULE)
+OUTAGE_FLOOR = min(REAL_RETREAT_SCHEDULE)
+
+
 @pytest.fixture(autouse=True)
 def no_retreat_sleeps(monkeypatch):
     """Keep the escalating-retreat sleeps out of the test suite's wall clock."""
@@ -735,6 +741,186 @@ def test_a_5xx_storm_backs_this_run_off_locally(tmp_path, fake_streetview, monke
     gsv.download_depth_maps(str(tmp_path), many_pano_infos(4), block_latch_path=str(tmp_path / 'latch'))
 
     assert calls == [('network failure', False)] * 4
+
+
+def test_a_non_json_body_is_classed_network_not_unexpected(tmp_path, fake_streetview, monkeypatch):
+    """streetlevel never checks status codes, so a non-200 body surfaces as a ValueError (JSONDecodeError) - the
+    network arm's, which drives the retreat sleeps and now the outage floor. The class was pinned by counts
+    only, so dropping ValueError from the arm's tuple survived every test (#177 review, finding 5)."""
+    monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 3)
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: (_ for _ in ()).throw(ValueError('not json'))
+    sr = {}
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(10), stop_reasons=sr)
+
+    assert '(3 network)' in sr['conditions'][0]['detail']
+
+
+# --- An outage that runs out the budget before the breaker (#177 review, finding 1) ----------------------------
+#
+# Each exhausted photometa request is 6 HTTP requests and ~30 s inside urllib3, so in production's 12-minute
+# slot a 5xx storm reaches the budget long before 25 failures. Ended on max-runtime it was the scattered-errors
+# arm - no condition, so no alarm under --only-on-failure, and re-run by the queue's extra passes into the same
+# outage. A network streak of at least the retreat schedule's first step that is still running when a budget
+# stops the phase is booked as the breaker it would have become, with the fixed token 'ended_on_budget'.
+
+def storm_on_a_clock(monkeypatch, fake_streetview, raise_error, seconds_per_request=60.0):
+    """Drive every request through raise_error() on a fake monotonic clock that each request advances by
+    seconds_per_request, and each retreat sleep by what it slept. Returns (calls, sleeps)."""
+    now = [0.0]
+    calls, sleeps = [], []
+    monkeypatch.setattr(gsv.time, 'monotonic', lambda: now[0])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(gsv.time, 'sleep', fake_sleep)
+
+    def find(pano_id, **kwargs):
+        calls.append(pano_id)
+        now[0] += seconds_per_request
+        raise_error()
+
+    fake_streetview.find_panorama_by_id = find
+    return calls, sleeps
+
+
+def raise_503():
+    raise probe_retry_error(503)
+
+
+def test_the_outage_floor_is_the_retreat_schedules_first_step():
+    assert gsv.DEPTH_OUTAGE_MIN_STREAK == OUTAGE_FLOOR
+
+
+def test_a_storm_that_runs_out_the_runtime_budget_is_booked_as_the_breaker(tmp_path, fake_streetview, monkeypatch,
+                                                                           capsys):
+    calls, _ = storm_on_a_clock(monkeypatch, fake_streetview, raise_503)
+    latch = str(tmp_path / 'latch')
+    sr = {}
+
+    # One request a minute against a budget of floor + 2 minutes: floor + 2 failures, then the budget stops it.
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), run_start_monotonic=0.0,
+                            max_runtime_minutes=OUTAGE_FLOOR + 2, block_latch_path=latch, stop_reasons=sr)
+
+    assert len(calls) == OUTAGE_FLOOR + 2 < gsv.DEPTH_MAX_CONSECUTIVE_FAILURES
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_CONSECUTIVE_FAILURES, 'the queue must not re-run it into the outage'
+    assert condition_codes(sr) == [gsv.DEPTH_CONDITION_BREAKER]
+    detail = sr['conditions'][0]['detail']
+    assert '(%d network; ended_on_budget)' % (OUTAGE_FLOOR + 2) in detail
+    assert 'too many 503 error responses' in detail
+    assert not os.path.exists(latch), 'still weather: no latch'
+    out = capsys.readouterr().out
+    assert 'WARNING' in out and 'ended_on_budget' in out
+    assert 'Google stopped answering' not in out
+
+
+def test_a_storm_that_runs_out_the_request_budget_is_booked_the_same_way(tmp_path, fake_streetview):
+    def find(pano_id, **kwargs):
+        raise requests.ConnectionError('network down')
+
+    fake_streetview.find_panorama_by_id = find
+    sr = {}
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), max_requests=OUTAGE_FLOOR, stop_reasons=sr)
+
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_CONSECUTIVE_FAILURES
+    assert '(%d network; ended_on_budget)' % OUTAGE_FLOOR in sr['conditions'][0]['detail']
+
+
+def test_a_streak_below_the_floor_at_the_budget_stays_an_ordinary_budget_stop(tmp_path, fake_streetview,
+                                                                               monkeypatch):
+    """Without the floor, a city with one unresolved pano and one timeout would fail the night."""
+    calls, _ = storm_on_a_clock(monkeypatch, fake_streetview, raise_503)
+    sr = {}
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), run_start_monotonic=0.0,
+                            max_runtime_minutes=OUTAGE_FLOOR - 1, stop_reasons=sr)
+
+    assert len(calls) == OUTAGE_FLOOR - 1
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_MAX_RUNTIME
+    assert condition_codes(sr) == []
+
+
+def test_a_storage_streak_at_the_budget_is_not_an_outage(tmp_path, fake_streetview, monkeypatch):
+    """The floor counts NETWORK failures: a full store tripping the budget is the scattered-errors arm's, and its
+    own breaker is the store's alarm."""
+    now = [0.0]
+    monkeypatch.setattr(gsv.time, 'monotonic', lambda: now[0])
+
+    def find(pano_id, **kwargs):
+        now[0] += 60.0
+        return make_pano(default_depth_array())
+
+    fake_streetview.find_panorama_by_id = find
+    monkeypatch.setattr(gsv, '_write_depth_artifact', full_disk)
+    sr = {}
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), run_start_monotonic=0.0,
+                            max_runtime_minutes=OUTAGE_FLOOR + 2, stop_reasons=sr)
+
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_MAX_RUNTIME
+    assert condition_codes(sr) == []
+
+
+def test_a_success_breaks_the_streak_the_floor_counts(tmp_path, fake_streetview, monkeypatch):
+    """The floor reads the streak still running when the budget stops the phase, not the night's total."""
+    now = [0.0]
+    seen = []
+    monkeypatch.setattr(gsv.time, 'monotonic', lambda: now[0])
+
+    def find(pano_id, **kwargs):
+        seen.append(pano_id)
+        now[0] += 60.0
+        if len(seen) == OUTAGE_FLOOR:   # floor - 1 failures, one save, then floor - 1 more failures
+            return make_pano(default_depth_array())
+        raise probe_retry_error(503)
+
+    fake_streetview.find_panorama_by_id = find
+    sr = {}
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), run_start_monotonic=0.0,
+                            max_runtime_minutes=2 * OUTAGE_FLOOR - 1, stop_reasons=sr)
+
+    assert len(seen) == 2 * OUTAGE_FLOOR - 1
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_MAX_RUNTIME
+    assert condition_codes(sr) == []
+
+
+def test_a_storm_that_runs_out_of_panos_is_not_booked(tmp_path, fake_streetview):
+    """Scoped to a BUDGET stop, as decided: a short list that ends inside a streak keeps today's behaviour (the
+    scattered-errors WARNING, no condition). A decision, not an accident - see the PR's Decisions for Jon."""
+    def find(pano_id, **kwargs):
+        raise probe_retry_error(503)
+
+    fake_streetview.find_panorama_by_id = find
+    sr = {}
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(OUTAGE_FLOOR + 1), stop_reasons=sr)
+
+    assert sr['depth_stop'] is None
+    assert condition_codes(sr) == []
+
+
+@pytest.mark.parametrize('budget_minutes, expected_sleeps', [
+    (None, [300]),      # no budget: the schedule as written
+    (3, [60]),          # two one-minute failures leave 60 s of a 3-minute budget: sleep that, not 300
+    (2, []),            # nothing left: no sleep at all
+], ids=['no-budget', 'capped', 'nothing-left'])
+def test_a_retreat_never_sleeps_past_the_budget(tmp_path, fake_streetview, monkeypatch, budget_minutes,
+                                                expected_sleeps):
+    """The 300 s step at failure 15 ignored the budget and overran the queue's 5-minute kill grace in 65% of the
+    reviewer's simulated seeds, booking the city timed_out for a reason naming neither Google nor depth."""
+    monkeypatch.setattr(gsv, 'DEPTH_RETREAT_SCHEDULE', {2: 300})
+    monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 3)
+    _, sleeps = storm_on_a_clock(monkeypatch, fake_streetview, raise_503)
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(10),
+                            run_start_monotonic=None if budget_minutes is None else 0.0,
+                            max_runtime_minutes=budget_minutes)
+
+    assert sleeps == expected_sleeps
 
 
 def test_persistent_failures_cannot_starve_the_request_budget(tmp_path, fake_streetview, monkeypatch):
