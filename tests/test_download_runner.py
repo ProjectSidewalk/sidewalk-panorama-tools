@@ -3616,6 +3616,50 @@ class TestField20IsTonightsRaisedAttempts:
 
         assert self.field_20(tmp_path) == ''
 
+    def run_stopped(self, monkeypatch, tmp_path, verdicts, minutes_per_attempt=0.0, max_runtime=None):
+        """The image phase over `verdicts` in list order, through run_scraper_and_log_results (so the row is the
+        real one), each attempt costing `minutes_per_attempt` on a fake monotonic clock. The latch and pace
+        files are this test's own, so a trip here cannot put a later test on probation."""
+        clock = [1000.0]
+        answer = scripted_download_pano(verdicts)
+
+        def slow(storage_path, pano_info):
+            clock[0] += minutes_per_attempt * 60.0
+            return answer(storage_path, pano_info)
+
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', slow)
+        panos = [{'pano_id': p, 'source': 'gsv'} for p in verdicts]
+        stop_reasons = {'image_stop': None, 'depth_stop': None}
+        DownloadRunner.run_scraper_and_log_results(
+            str(tmp_path), panos, panos, skip_depth=True, max_runtime_minutes=max_runtime,
+            depth_block_latch=str(tmp_path / 'latch'), depth_pace_state=str(tmp_path / 'pace'),
+            stop_reasons=stop_reasons)
+        return stop_reasons
+
+    def test_an_image_phase_stopped_on_its_budget_still_writes_it(self, monkeypatch, tmp_path):
+        """Slow raises (timeouts) are what fill the image budget, so a budget-stopped phase is where a blank
+        field 20 would hide the most. 3.5 min per raise in a 6-minute budget: two raises, then the stop."""
+        stop_reasons = self.run_stopped(monkeypatch, tmp_path, scripted_verdicts(raised=5),
+                                        minutes_per_attempt=3.5, max_runtime=6)
+
+        assert stop_reasons['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME, 'the case under test'
+        assert self.field_20(tmp_path) == '2'
+
+    def test_an_image_phase_stopped_by_the_push_back_breaker_still_writes_it(self, monkeypatch, tmp_path):
+        """Two network raises, then GSV_MAX_CONSECUTIVE_PUSHBACK refusals trip GSV; the panos after the trip are
+        never attempted, so they are not raises. Field 20 is the five attempts that did raise."""
+        refused = downloaders.gsv.TilePushbackError(429, 0, 0)
+        limit = DownloadRunner.GSV_MAX_CONSECUTIVE_PUSHBACK
+        verdicts = scripted_verdicts(raised=2)
+        verdicts.update({'refusedPano%03d' % i: refused for i in range(limit + 2)})
+
+        stop_reasons = self.run_stopped(monkeypatch, tmp_path, verdicts)
+
+        assert stop_reasons['image_stop'] == DownloadRunner.STOP_BLOCKED, 'the case under test'
+        assert self.field_20(tmp_path) == str(2 + limit)
+
     def test_field_20_is_the_last_one(self):
         """Appended, so no existing position - and no existing reader - moves."""
         assert DownloadRunner.IMAGE_RAISED_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT
