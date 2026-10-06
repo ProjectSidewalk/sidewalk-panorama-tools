@@ -72,7 +72,7 @@ DEFAULT_ROSTER_HOSTS = ("sidewalk-sea.cs.washington.edu", "sidewalk-chicago.cs.w
 # ---------------------------------------------------------------------------
 # log.csv format
 # ---------------------------------------------------------------------------
-# DownloadRunner appends 19 positional fields per run and never writes a header (see write_log_csv_row and
+# DownloadRunner appends 20 positional fields per run and never writes a header (see write_log_csv_row and
 # the column table in docs/ops.md). Production files carry a header only because it is added by hand when a city is
 # set up, so parsing must work either way - a forgotten header should not turn into a confusing parse error.
 LOG_COLUMNS = [
@@ -84,16 +84,28 @@ LOG_COLUMNS = [
     # The GSV corpus the depth phase was given (#43) - the denominator for everything depth_progress reports.
     # Appended last so no older position moved; blank on every row written before it existed.
     "depth_eligible",
+    # This run's image attempts that RAISED (#182) - transient, unledgered, retried next run - the per-run figure
+    # image_fail (cumulative, permanent + transient) cannot give. Rule 11 reads it. Blank on every row written
+    # before it existed, and on a run whose image phase did not finish.
+    "image_raised",
 ]
 
 # Fields 2-18 are phase results: a completed run fills every one of them, so a blank there means the run
 # ended early (#49). Field 19 is not a phase result and is blank on every pre-#43 row, so the ended-early
-# rule must not read it - or the whole fleet reads as crashing for a week after the column arrives.
+# rule must not read it - or the whole fleet reads as crashing for a week after the column arrives. Field 20
+# (#182) is left out for the same reason: it is blank on every pre-#182 row.
 PHASE_COLUMNS = LOG_COLUMNS[1:LOG_COLUMNS.index("depth_eligible")]
 
-# The widths a log.csv row is allowed to have: 18 before the corpus column (#43) existed, 19 since. Any
-# other width is a torn or corrupted write, and read_log counts them rather than reshaping them into a run.
-LOG_ROW_WIDTHS = (LOG_COLUMNS.index("depth_eligible"), len(LOG_COLUMNS))
+# The widths a log.csv row is allowed to have: 18 before the corpus column (#43) existed, 19 before the
+# raised-attempts column (#182), 20 since. Any other width is a torn or corrupted write, and read_log counts
+# them rather than reshaping them into a run.
+LOG_ROW_WIDTHS = (LOG_COLUMNS.index("depth_eligible"), LOG_COLUMNS.index("image_raised"), len(LOG_COLUMNS))
+
+
+def _widths_phrase() -> str:
+    """The allowed row widths as the width messages say them: "not one of 18, 19 or 20"."""
+    *head, last = LOG_ROW_WIDTHS
+    return f"not one of {', '.join(str(w) for w in head)} or {last}"
 
 # ---------------------------------------------------------------------------
 # Thresholds (override via CLI flags where applicable)
@@ -129,6 +141,12 @@ MALFORMED_RECENT_DAYS    = 7    # a torn row newer than this (or undatable) warn
                                 # 20 of 26 warnings on 2026-09-19 were rows dated 2022..2026-05 (#43 close-out).
                                 # 7 as NEW_FAIL_NIGHTS and DEPTH_RATE_NIGHTS; 30 would re-alert a one-off tear
                                 # for a month, and the INFO line keeps the total visible anyway.
+TRANSIENT_FAIL_NIGHTS    = 7    # consecutive logged nights rule 11 needs (as NEW_FAIL_NIGHTS). UNMEASURED: #178's
+                                # week of nights is the input that sizes this and the floor below.
+TRANSIENT_FAIL_MIN_PER_NIGHT = 10  # raised image attempts per night (field 20) rule 11 needs on every one of
+                                # them - DownloadRunner's IMAGE_NO_SUCCESS_MIN_RAISED, restated, not imported
+                                # (this module shares no code with the runners). UNMEASURED (#178): it exists to
+                                # keep a mature city's one or two perennial raisers quiet.
 ZERO_PROGRESS_MIN_NEW_WORK = 3  # new image-eligible panos (field 5 growth) or unattempted ones (5 - 11) rule 3
                                 # needs. 7.9-8.4% of a GSV ledger is a permanent verdict (2026-09-06), so k new
                                 # panos all retired - no success, no regression - is ~0.084^k: 8% at 1, 0.06% at 3.
@@ -225,7 +243,8 @@ def read_log(log_path: Path) -> pd.DataFrame:
     counted and reported (rule 9) and left OUT of the frame - not reshaped into one.
 
     Blank fields (a run that crashed or was stopped before that phase finished, see #49) stay NaN: missing
-    data, never a fabricated 0. So does field 19 on every row older than it.
+    data, never a fabricated 0. So do field 19 and field 20 on every row older than each (#43, #182) - the
+    production files hold 18-, 19- and 20-field rows under one hand-written 18-name header.
     """
     width = len(LOG_COLUMNS)
     # encoding is explicit: read_csv defaulted to UTF-8, open() takes the locale's, and a cron tool should
@@ -319,7 +338,7 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         if malformed:
             return [{"level": "CRITICAL",
                      "msg": (f"Log file has no readable run: {malformed} row(s) have a field count that is "
-                             f"neither {LOG_ROW_WIDTHS[0]} nor {LOG_ROW_WIDTHS[1]}")}]
+                             f"{_widths_phrase()}")}]
         return [{"level": "CRITICAL", "msg": "Log file is empty"}]
 
     # Convenience: calendar date column, in UTC. Rules 2, 3 and 8 and depth_progress's rate all group by it,
@@ -431,6 +450,31 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
                         f"or above --max-runtime downloads nothing) and scrape.log."
                     ),
                 })
+
+    # --- 11. A steady set of transient image failures (#182) ---
+    # A pano that raises is never ledgered, so it is retried - and raises - every night. Field 9 is cumulative
+    # and mixes those raises with permanent verdicts, so a steady set adds the same number every night and no
+    # other rule sees it a week in (rule 3's gate cannot tell it from a mature city with nothing new; #169 D13).
+    # Field 20 is the per-run count. Per night it is the MAX of the night's rows, not the sum: the queue's extra
+    # passes re-attempt the same unledgered set, so summing would count one set twice. A night whose field 20
+    # is blank (a row before #182, or an image phase that did not finish) is no evidence, and breaks the run:
+    # NaN is never read as 0, nor as over the floor. Independent of rule 3's entry gate - it needs no 30-day
+    # quiet tail and no 90-day lookback, only TRANSIENT_FAIL_NIGHTS logged nights with nothing downloaded.
+    raised_by_night = df.groupby("date")["image_raised"].max()
+    raised_tail = raised_by_night.tail(TRANSIENT_FAIL_NIGHTS)
+    if (len(raised_tail) == TRANSIENT_FAIL_NIGHTS and raised_tail.notna().all()
+            and (raised_tail >= TRANSIENT_FAIL_MIN_PER_NIGHT).all()
+            and by_night.reindex(raised_tail.index).eq(0).all()):
+        lo, hi = int(raised_tail.min()), int(raised_tail.max())
+        span = f"{lo:,}" if lo == hi else f"{lo:,}–{hi:,}"
+        issues.append({
+            "level": "WARNING",
+            "msg": (
+                f"{span} image attempts raised on each of the last {TRANSIENT_FAIL_NIGHTS} nights with no "
+                f"download (field 20): a steady set of panos failing transiently - nothing is ledgered, so "
+                f"they retry every night. Look at the IMAGEDOWNLOAD errors in scrape.log."
+            ),
+        })
 
     # --- 4. Abnormally long runtime, outside the depth phase ---
     # total_minutes used to be compared whole. The depth phase is budget-driven - it runs to whatever
@@ -611,7 +655,7 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         cutoff = now - timedelta(days=MALFORMED_RECENT_DAYS)
         recent = [t for t in starts if pd.isna(t) or t >= cutoff]
         undatable = sum(1 for t in recent if pd.isna(t))
-        widths = f"neither {LOG_ROW_WIDTHS[0]} nor {LOG_ROW_WIDTHS[1]}"
+        widths = _widths_phrase()
         if recent:
             undated = f" ({undatable} with no readable timestamp)" if undatable else ""
             issues.append({
