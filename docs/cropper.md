@@ -529,7 +529,10 @@ right-hand band has the analogous edge case at the seam: the window wraps to ima
 label on the last column of a band gets about half black (0.510 measured at 19%, withheld by a hair). A
 consumer who wants those crops out too filters below 0.5 (see
 [Before you train](#before-you-train-on-these-crops)); judging the rows at and below the label, rather than
-the whole window, is a possible stronger check, not made here.
+the whole window, is a possible stronger check, not made here. The pano-level check catches these thinner
+bands instead ([Ops → Edge black bands](ops.md#edge-black-bands), #179). The downloader refuses to save a
+stitch with a band deeper than 5% of the frame, and `scan_black_bands.py` lists the stored panos that already
+have one, which are the panos whose crops to re-cut.
 
 **Not an error.** `black_content` is like `dims_mismatch`: the run refused to trust the imagery rather than
 getting anything wrong, so it does not move the exit code or the `SYSTEMIC FAILURE` alarm. It *is* said: one
@@ -547,10 +550,11 @@ is not written, so the crop already there is kept byte for byte, and counted `st
 **Known limit: the D4 shape outside its bands.** A label *outside* the black bands of a D4 stitch gets clean
 imagery — at the wrong scale and position, because the real pano was stretched to the wrong frame. It is 0%
 black, its dimensions agree with the metadata, and no crop-level check can see it; a test pins that as a
-known limit. A pano-level check belongs on the downloader side (`refetch_panos.py`'s `too_black` gate already
-knows this shape for its own swaps), not here: judging the whole pano would mean an eager decode plus a
-full-frame luma copy (~134 MB at 16384×8192) per pano, and a threshold calibrated against real zenith and
-nadir caps.
+known limit. The pano-level check is on the downloader side, not here
+([Ops → Edge black bands](ops.md#edge-black-bands), #179). Judging the whole pano here would mean an eager
+decode plus a full-frame luma copy (~134 MB at 16384×8192) per pano. The GSV downloader refuses a new stitch
+with a deep edge band, and `scan_black_bands.py` lists the panos already on the store that have one.
+The cropper does not read that list; a person deletes the listed panos' crops and re-runs to re-cut them.
 
 ## Outcomes, exit code, and re-runs
 
@@ -865,7 +869,9 @@ its window was wider than `CROP_MAX_STORED_WIDTH` - rather than the raw window t
 can disagree slightly for a label near a band's edge; well inside a band both read the band. A store cut
 *with* the check can still hold crops up to half black: a bottom band thinner than a sixth of the pano is
 never withheld ([the numbers](#the-content-check-black_content)), so a stricter threshold, such as 0.25, is
-the consumer's to choose.
+the consumer's to choose. Alternatively, drop every crop whose pano is on `scan_black_bands.py`'s work-list
+([Ops → Edge black bands](ops.md#edge-black-bands)). That also drops the D4 crops that are clean but
+mis-scaled, which no per-crop filter can see.
 
 **You will likely want to filter out labels where `disagree_count > agree_count`.** These come from human
 validations by other Project Sidewalk users; the cropper does **not** filter them by default. A stricter
