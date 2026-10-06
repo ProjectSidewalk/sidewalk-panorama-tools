@@ -1268,6 +1268,10 @@ DEPTH_RETREAT_SCHEDULE = {5: 30, 10: 120, 15: 300}
 # failures; without this it ended as a plain max-runtime stop - no alarm, and re-run by the queue's extra passes
 # into the same outage. The floor is the schedule's first step, the streak length the phase itself already
 # treats as more than a blip; it keeps one timeout on a city's last unresolved pano from failing the night.
+# Known limit (#177 second review): the floor counts failures, not time. A blackholed photometa (no SYN-ACK)
+# costs up to ~211 s per failure on Linux (6 connect attempts x 30 s timeout + backoff), so a 12-minute slot
+# ends at a streak of about 4 and the stop stays an unbooked max-runtime. Only a prompt failure (a 5xx, a
+# refused connection, a DNS error) reaches the floor inside a slot.
 DEPTH_OUTAGE_MIN_STREAK = min(DEPTH_RETREAT_SCHEDULE)
 # Fixed, machine-readable token in that breakdown, so a budget-ended streak can be told from a tripped breaker.
 DEPTH_ENDED_ON_BUDGET = 'ended_on_budget'
@@ -2526,9 +2530,17 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
             if retreat_seconds and max_runtime_minutes is not None and run_start_monotonic is not None:
                 # Never past the budget (#177 review): the uncapped 300 s step could carry a city beyond the
                 # queue's --kill-grace and get it booked timed_out, for a reason naming neither Google nor depth.
-                # The budget check at the top of the loop then stops the phase as usual.
+                # A retreat that would reach the deadline is a budget stop now, not a sleep up to it: the loop's
+                # budget check would stop the phase straight after without another request, so the sleep only
+                # took up to 5 minutes from the queue's window (#177 second review). Booked below as any budget
+                # stop is, so a streak at the floor is still ended_on_budget.
                 left = max_runtime_minutes * 60.0 - (time.monotonic() - run_start_monotonic)
-                retreat_seconds = min(retreat_seconds, max(0.0, left))
+                if left <= retreat_seconds:
+                    stop_reason = DEPTH_STOP_MAX_RUNTIME
+                    print("DEPTHDOWNLOAD: %d consecutive failures; the %ds back-off would outlast the %.1f minutes "
+                          "left of the max runtime of %.1f minutes. Stopping."
+                          % (consecutive_failures, retreat_seconds, max(0.0, left) / 60.0, max_runtime_minutes))
+                    break
             if retreat_seconds:
                 print("DEPTHDOWNLOAD: %d consecutive failures, backing off for %ds before continuing."
                       % (consecutive_failures, retreat_seconds))
