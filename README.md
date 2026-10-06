@@ -69,7 +69,7 @@ for the nightly cron form.
 | [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, the nightly queue, and pulling from the pano store |
 | [Cropper](docs/cropper.md) | Crop geometry, the two preflights, outcome taxonomy, and what to know before training on the crops |
 | [Depth maps](docs/depth.md) | The `.npz` artifact format, the plane fields, migration — and **what the depth product is and isn't** |
-| [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 19-column `log.csv`, how a crashed run reads, and operating the production host (deploy, rollback, adding a city) |
+| [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 20-column `log.csv`, how a crashed run reads, and operating the production host (deploy, rollback, adding a city) |
 | [Log analyzer](docs/log-analyzer.md) | SFTP setup, the per-city health checks, and the depth backfill report |
 | [API fields](docs/api-fields.md) | Every column of `/adminapi/panos` and `/adminapi/labels/cvMetadata`, plus the label type IDs |
 | [Testing](docs/testing.md) | What the suite covers and the three ways it is deliberately unusual |
@@ -87,7 +87,7 @@ One directory per city, sharded by the first two characters of the pano id:
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | Display copy of a panorama wider than 8192 px (no longer written by the downloaders) |
 | `pano_id_log.csv` | Image ledger — a row means the outcome is permanent, and carries when the source answered (blank when a file was already on disk) |
 | `depth_log.csv` | Depth ledger — likewise |
-| `log.csv` | One 19-column row per run |
+| `log.csv` | One 20-column row per run |
 | `scrape.log` | Rotating run log |
 
 Transient failures deliberately leave no ledger row, so they retry on the next run; the files on disk are the

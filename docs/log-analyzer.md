@@ -5,7 +5,7 @@ flags the ones that look broken, and reports the [depth backfill](#the-depth-bac
 fleet. This is an ops tool you run from a workstation or a cron box — the scraper neither knows nor needs it,
 and it shares no code with the runners. **Pull the repo before running it after a deploy**: the column list
 it reads by position moves with the runner's ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)
-added field 19), and an older analyzer against newer rows would misplace every count.
+added field 19, [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182) field 20), and an older analyzer against newer rows would misplace every count.
 
 It needs only `pandas` plus the `sftp` client binary (`openssh-client`). `pandas` lives in
 `requirements-dev.txt`, not `requirements.txt` — nothing the scraper or cropper runs imports it
@@ -97,6 +97,7 @@ splits into a row for `laurens-ia`) would silence the very city it is about.
 | 🔴 CRITICAL | Last log entry is more than `--stale-days` days old (default 3) |
 | 🟡 WARNING | `image_fail` growing by ≥20/day (7-night average) — new panos failing. Averaged over calendar **nights**, not rows: the queue's extra passes put more than one row on a night |
 | 🟡 WARNING | Zero new images for 30 consecutive **nights**, after a period that had some (regression), **and there was work** ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)): the image-eligible corpus (field 5) grew by at least 3 from the last night before the window to the newest night in it, or field 5 − field 11 on the newest row — eligible panos the image phase never attempted — is at least 3. That difference is a lower bound, loose by the ledger rows no longer in the list: it was −1 in 50 of 56 cities on 2026-09-27 (so 4 real unattempted panos to fire) and −1,460 in chicago-il, where only the growth arm can. A blank field 5 is unknown rather than zero, and fires as before; so is a written 0, because field 5 is the image list's length and an empty pano-list answer writes 0 there (a 0 on the baseline night would otherwise read as the whole corpus arriving, and a month of empty answers as a flat corpus). A mature city with nothing new is silent: three of the 26 warnings on 2026-09-19 were exactly that. Field 11 alone is not evidence — it counts *attempts*, so a starved image phase does not grow it |
+| 🟡 WARNING | **A steady set of transient image failures** — field 20 (this run's raised image attempts, [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)) at least 10 on each of the last 7 logged nights, taking each night's maximum across its passes, with no image downloaded on any of them. Nothing is ledgered for those panos, so they retry every night; look at the `IMAGEDOWNLOAD` errors in `scrape.log`. A night with field 20 blank (an older row, or an image phase that did not finish) is no evidence and breaks the run. Thresholds unmeasured ([#178](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/178)). See [What `log.csv` could not show before field 20](#what-logcsv-could-not-show-before-field-20) |
 | 🟡 WARNING | A recent **image phase** took >3× the historical median, with the median floored at `LONG_RUN_MIN_MEDIAN` minutes before the multiplier. Read from `image_minutes` directly: a mature city's image phase is a ledger read while depth spends the whole slot, so an unfloored median is 0 and the rule could never fire. **What it can see:** inside the [queue](downloader.md#nightly-deployment) a hung image phase is killed at its slot plus `--kill-grace`, which leaves `image_minutes` blank, so this rule never sees it (the ended-early rule below does, at ≥3 of the last 7 runs — a single killed night is below that and goes unreported). It fires on legitimate long phases, such as a city's first scrape (laurens-ia, 83 min, 2026-09-17), and on hand runs without `--max-runtime` |
 | 🟡 WARNING | ≥3 of the last 7 runs ended early (blank columns) |
 | 🟡 WARNING | Two runs **overlapped**: one started before the previous one's recorded end — two processes racing on one city's ledgers. Same-day runs alone are not reported; the queue's extra passes produce them by design |
@@ -104,7 +105,7 @@ splits into a row for `laurens-ia`) would silence the very city it is about.
 | 🔴 CRITICAL | **Depth phase saved nothing and is writing panos off**: the WARNING below, and the ledger grew by at least half of the failures before the newest run — they are coming back as `unavailable` rows, which are never re-requested. That is upstream drift (a depth payload `streetlevel` can no longer read), and every night it runs costs those panos their depth until the ledger is scrubbed: see [When the depth phase saves nothing](ops.md#when-the-depth-phase-saves-nothing) |
 | 🟡 WARNING | **Depth phase saved nothing** on the last 3 nights it made requests (nights with no row, or a stand-down's five zeros, are not counted — they are no evidence either way) despite ≥10 requests, with panos unresolved and the newest requesting run stopping short of its list ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)). The stall rule above counts *requests*, and a failed request is a request, so a phase whose every attempt fails used to read as healthy. The failures are transient: less than half came back as ledger skips, so the panos retry. A city whose last few panos fail every night walks its whole list (field 16 = field 19) and is not reported: that is the ordinary end of a backfill. Once requests stop altogether the night is the stall rule's, so one outage is never reported twice |
 | 🟡 WARNING | **The newest GSV corpus size is not believable** — a `0` in field 19, which is what an empty or source-less `/adminapi/panos` answer writes. The backfill is measured against the newest earlier row instead, rather than the city silently dropping out of the report |
-| 🟡 WARNING | **Rows that are not runs**, from the last 7 days — a field count that is neither 18 nor 19, i.e. a torn or corrupted write. Every count in such a row is shifted, so it is left out of every figure rather than read as a run (a file holding nothing else is CRITICAL, and says so). Dated by the row's own field 1, which is written first and so survives a tear; a row whose stamp did not survive whole counts as recent, because that is exactly what tonight's tear can look like. "Whole" means the full `YYYY-MM-DD HH:MM:SS`: a date parser accepts a prefix, and would read `2026-09-2` as 2 September |
+| 🟡 WARNING | **Rows that are not runs**, from the last 7 days — a field count that is not one of 18, 19 or 20, i.e. a torn or corrupted write. Every count in such a row is shifted, so it is left out of every figure rather than read as a run (a file holding nothing else is CRITICAL, and says so). Dated by the row's own field 1, which is written first and so survives a tear; a row whose stamp did not survive whole counts as recent, because that is exactly what tonight's tear can look like. "Whole" means the full `YYYY-MM-DD HH:MM:SS`: a date parser accepts a prefix, and would read `2026-09-2` as 2 September |
 | 🔵 INFO | **Historical rows that are not runs** — the same, when every such row is older than 7 days: one line with the total and the newest date, recorded rather than alerted ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)). On 2026-09-19, 20 of the morning's 26 warnings were torn rows dated 2022 to 2026-05, which nothing on the current build wrote |
 
 Thresholds are module constants near the top of `analyze.py`. A city whose findings are all INFO prints the
@@ -113,7 +114,7 @@ blue icon and counts as OK.
 A healthy mature city looks like: `image_success` small or zero most days, stable `image_fail`,
 `image_skip ≈ image_total`.
 
-### What `log.csv` cannot show
+### What `log.csv` could not show before field 20
 
 **A steady set of panos failing the image phase transiently every night goes unreported once it has been
 steady for a week.** Field 9 mixes the
@@ -130,6 +131,8 @@ cannot tell this city from a mature one with nothing new to fetch (field 5 flat,
 both), and silencing the second is what the gate is for. Detecting it would need the runner to write tonight's transient count as a field 20 — and `LOG_COLUMNS` here
 and `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` move together, which a test asserts. The depth phase does not
 have this blind spot: a phase that requests and saves nothing is reported above.
+
+**Field 20 now carries that count** ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182), from [#169](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/169)'s open item 3): each run writes its image attempts that raised — the runner's `images-no-success` counter, so a push-back counts and a frame disagreement does not. The steady-transient-set check above reads it: the **max** of each night's rows (the queue's extra passes re-attempt the same set, so a sum would count it twice), at least `TRANSIENT_FAIL_MIN_PER_NIGHT` (10) on each of the last `TRANSIENT_FAIL_NIGHTS` (7) nights, with nothing downloaded on any of them. It needs no 30-night quiet tail and no 90-day lookback, so it fires a week in. Both thresholds are **unmeasured** — [#178](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/178)'s week of nights is what will size them. A blank field 20 is no evidence and breaks the run, so **rows older than the field are still blind**: the measured case above, on rows written before the field, still returns no finding.
 
 ## The depth backfill
 
@@ -174,12 +177,12 @@ How the figures are defined, since each definition is a trap the other way (the 
 
 ## Two things about the parsing
 
-**It reads the [19 positional columns](ops.md#the-logcsv-columns) by position**, tolerating a header row that
+**It reads the [20 positional columns](ops.md#the-logcsv-columns) by position**, tolerating a header row that
 may or may not be there: `write_log_csv_row` never writes one, and production files get theirs by hand at city
 setup. Rows are read with the `csv` module and padded or truncated to the column count *before* pandas sees
 them, so nothing about the file's shape is inferred — measured before field 19 shipped, `read_csv` could not
 parse the file every production city has (an 18-name hand-written header, years of 18-field rows, then
-19-field rows) under either engine. Blank fields stay `NaN` — a crashed run must never read as a quiet one —
+19-field rows — and since [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182), 20-field ones after those) under either engine. Blank fields stay `NaN` — a crashed run must never read as a quiet one —
 so every check guards against NaN rather than coercing to `int`.
 
 **It uses `sftp -b -`** (batch mode via stdin) rather than `scp`, because the store runs a restricted SFTP

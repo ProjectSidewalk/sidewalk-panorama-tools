@@ -14,7 +14,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at` (rows written by a build older than #129 — on the production store, before 2026-09-17 — have no `fetched_at`) |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
-| `log.csv` | One 19-column row per run |
+| `log.csv` | One 20-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
 | `refetch_log.csv` | Ledger for the [`fover` repair pass](#repairing-fover-era-panoramas), if one has run here |
 | `refetch.log` | That pass's rotating log |
@@ -550,11 +550,11 @@ as the fresh one, so it roughly doubles peak memory and is meant for a pilot.
 
 ## The `log.csv` columns
 
-Each run appends **one row of 19 positional comma-separated fields, with no header**, parsed by the
+Each run appends **one row of 20 positional comma-separated fields, with no header**, parsed by the
 [log analyzer](log-analyzer.md). Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata
 phase — a stub since Google killed that endpoint in 2022, kept at fixed values purely so the column positions
 never shift. Field 19 was added by [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124) (for [#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)); every row written before that
-deployed has 18 fields, and the analyzer reads them with the last one blank.
+deployed has 18 fields. Field 20 was added by [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182); every row written before it has 19 (or 18). The analyzer reads all three widths, with the fields a row lacks blank.
 
 | # | field | notes |
 |---|-------|-------|
@@ -577,6 +577,7 @@ deployed has 18 fields, and the analyzer reads them with the last one blank.
 | 17 | depth phase duration | |
 | 18 | total run duration | |
 | 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a row written before it was counted (the timestamp-only rows: a run that died in the pano-list fetch or between it and the phases, a `pano-schema-drift` stop, which fetched the list but ran neither phase, and a stop just before the count — see [Blank fields mark a crashed or stopped run](#blank-fields-mark-a-crashed-or-stopped-run)) and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
+| 20 | image attempts raised this run | transient, unledgered, retried next run — the per-run number field 9 cannot give (field 9 is prior + tonight, permanent + transient). A GSV push-back counts; a frame disagreement does not (it is Google answering), nor does a skip — the same count `images-no-success` reads. Store mode writes its unpulled count (absent, truncated, unplaced, unsafe id), since it ledgers no permanent verdict. Blank when the image phase did not finish, and on every row older than the field ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)). The log analyzer's steady-transient-set check reads it |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -593,9 +594,9 @@ reported an abnormally long run on the same night, with nothing actually wrong.
 
 ### Blank fields mark a crashed or stopped run
 
-A run that crashes — or is stopped — still appends a full 19-field row: every phase that completed keeps its
+A run that crashes — or is stopped — still appends a full 20-field row: every phase that completed keeps its
 real counts, and every phase field from the first unfinished phase onward is blank. Field 19, the corpus size,
-is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Visibly
+is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Field 20 is the image phase's own report: filled when the image phase finished (a depth-phase crash keeps it), blank when it did not. Visibly
 missing data, never a fabricated `0`. A row that is only a timestamp, field 19 included, means neither phase
 ran, and `scrape.log` says which of four reasons it was:
 
@@ -1120,7 +1121,7 @@ because of.
   ([the cross-check](downloader.md#the-manifest-is-cross-checked-against-the-fleet)), whether or not the mail
   arrived. So is a line naming a condition code (`depth-refused: …`, `mapillary-token-missing: …`) —
   [the codes table](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) says what each means.
-- `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
+- `tail -1 <city>/log.csv` has 20 fields (once [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182) is deployed; 19 from 2026-09-17 until then); blanks mean a phase never finished.
 - `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —
   a push-back from Google would be the first sign the pacer's persisted standing is too aggressive. The reason
   in parentheses matters: `(network failure)` and `(unexpected failure)` are the loop's own arms, one timeout
