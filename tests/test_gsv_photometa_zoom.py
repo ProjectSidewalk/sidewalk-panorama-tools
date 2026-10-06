@@ -25,6 +25,7 @@ Network-free: photometa is stubbed at gsv._fetch_image_levels, the probe at gsv.
 gsv._download_tiles.
 """
 
+import csv
 import io
 import logging
 import os
@@ -432,17 +433,22 @@ class TestRequestsPerPano:
     def test_a_retired_pano_costs_one_photometa_and_two_probes(self, tmp_path, monkeypatch):
         assert self.run(tmp_path, monkeypatch, gone=True, pick=-1) == (1, 2, 0)
 
-    def test_a_latched_run_costs_four_probes_and_no_photometa(self, tmp_path, monkeypatch):
-        """Two to pick the zoom and two for the probe arm's frame check (frame_covers_pano)."""
+    def test_a_latched_run_costs_five_probes_and_no_photometa(self, tmp_path, monkeypatch):
+        """Two to pick the zoom and three for the probe arm's frame check (frame_covers_pano): two tiles past
+        the grid, and since #181 the last in-grid tile on the middle row."""
         fresh_latch()
-        assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)], pick=5) == (0, 4, 2)
+        assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)], pick=5) == (0, 5, 2)
 
-    def test_a_photometa_failure_costs_one_photometa_and_four_probes(self, tmp_path, monkeypatch):
+    def test_a_photometa_failure_costs_one_photometa_and_five_probes(self, tmp_path, monkeypatch):
         asked = stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
         probes = count_probes(monkeypatch, 5)
         tiles = red_tiles(monkeypatch)
         gsv.download_single_pano(str(tmp_path), pano_info(1024, 512))
-        assert (len(asked), len(probes), len(tiles)) == (1, 4, 2)
+        assert (len(asked), len(probes), len(tiles)) == (1, 5, 2)
+
+    def test_a_not_found_costs_one_photometa_and_five_probes(self, tmp_path, monkeypatch):
+        """Photometa's "not found" on a pano the probe still finds imagery for - the third probe-arm route."""
+        assert self.run(tmp_path, monkeypatch, gone=True, pick=5) == (1, 5, 2)
 
     def test_a_pano_already_on_disk_costs_nothing(self, tmp_path, monkeypatch):
         shard = tmp_path / PANO[:2]
@@ -452,6 +458,20 @@ class TestRequestsPerPano:
 
 
 # --- the probe arm checks the frame too (review item 1) ------------------------------------------------------
+
+def url_xy(url):
+    """(x, y) of a cbk tile URL."""
+    query = dict(part.split('=', 1) for part in url.split('?', 1)[1].split('&'))
+    return int(query['x']), int(query['y'])
+
+
+def ledger_ids(storage_path):
+    """pano_id_log.csv's (pano_id, downloaded) pairs, header and fetch stamp dropped; [] when absent."""
+    path = os.path.join(str(storage_path), 'pano_id_log.csv')
+    if not os.path.exists(path):
+        return []
+    with open(path, newline='') as f:
+        return [row[:2] for row in csv.reader(f) if row and row[0] != 'pano_id']
 
 def serve_pyramid(monkeypatch, sizes):
     """A CBK stand-in for a pano Google serves as `sizes`: a tile is imagery iff it lies inside the level at its
@@ -494,7 +514,70 @@ class TestTheProbeArmChecksTheFrame:
         assert list((tmp_path / PANO[:2]).iterdir()) == []
         assert len(requested) == 3, 'two probe tiles, then the first tile past the grid - never the fan-out'
         assert 'frame disagreement' in str(refused.value) and 'tile probe' in str(refused.value)
+        assert 'larger' in str(refused.value)
         assert 'frame disagreement' in capsys.readouterr().out
+
+    @pytest.mark.parametrize('why', ['failure', 'latch', 'not_found'])
+    def test_a_frame_larger_than_google_serves_is_refused_and_saves_nothing(self, tmp_path, monkeypatch, capsys,
+                                                                            why):
+        """#181 Part 1, the residual #156's D4 left open: an app frame of 16384x8192 on a pano Google serves at
+        13312x6656. Nothing past a 32x16 grid has imagery, so the two past-the-grid tiles pass it; before #181
+        it stitched ~34% black (under STITCH_MAX_BLACK_FRACTION) and was saved and ledgered downloaded=1. The
+        photometa arm refused it; now the probe arm does too, on all three routes onto that arm."""
+        if why == 'latch':
+            fresh_latch()
+        stub_photometa(monkeypatch, SERIES_13312, gone=(why == 'not_found'),
+                       error=gsv.DepthPayloadError('photometa down') if why == 'failure' else None)
+        requested = serve_pyramid(monkeypatch, SERIES_13312)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a refused frame must not fan out'))
+
+        with pytest.raises(gsv.FrameDisagreementError) as refused:
+            gsv.download_single_pano(str(tmp_path), pano_info(16384, 8192))
+
+        assert list((tmp_path / PANO[:2]).iterdir()) == []
+        assert [url_xy(url) for url in requested] == [(0, 0), (0, 0), (32, 8), (0, 16), (31, 8)], \
+            'the probe, the two tiles past the grid, then the last in-grid tile - never the fan-out'
+        message = str(refused.value)
+        assert PANO in message and 'frame disagreement' in message and 'tile probe' in message
+        assert 'smaller' in message and '16384x8192' in message
+        out = capsys.readouterr().out
+        assert 'frame disagreement' in out and 'retried next run' in out
+
+    def test_a_frame_larger_than_served_is_counted_and_not_ledgered(self, tmp_path, monkeypatch, caplog):
+        """The same refusal through the image phase: no pano_id_log.csv row (so it is asked again next run),
+        no JPEG, one ERROR naming it - the shape of every other FrameDisagreementError."""
+        import DownloadRunner
+        stub_photometa(monkeypatch, error=gsv.DepthPayloadError('photometa down'))
+        serve_pyramid(monkeypatch, SERIES_13312)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a refused frame must not fan out'))
+
+        with caplog.at_level(logging.WARNING):
+            DownloadRunner.download_panorama_images(str(tmp_path), [dict(pano_info(16384, 8192), source='gsv')])
+
+        assert ledger_ids(tmp_path) == []
+        assert list(tmp_path.rglob('*.jpg')) == []
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1 and 'frame disagreement' in errors[0] and PANO in errors[0]
+
+    @pytest.mark.parametrize('why', ['failure', 'latch', 'not_found'])
+    def test_a_retired_pano_is_the_permanent_verdict_not_a_frame_refusal(self, tmp_path, monkeypatch, why):
+        """The order #181's check depends on. CBK answers a retired pano with a black 200 at every tile, which
+        frame_covers_pano now reads as a refusal (a frame larger than served). If the check ran before the
+        probe's verdict, every retired pano - ~52% of labelled ones - would become a nightly retried frame
+        disagreement instead of one permanent downloaded=0. The probe's two black tiles answer first, the pano
+        is ledgered 0, and the frame check is never asked."""
+        import DownloadRunner
+        if why == 'latch':
+            fresh_latch()
+        stub_photometa(monkeypatch, gone=(why == 'not_found'),
+                       error=gsv.DepthPayloadError('photometa down') if why == 'failure' else None)
+        requested = serve_pyramid(monkeypatch, [])               # retired: black at every zoom and tile
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a retired pano must not fan out'))
+
+        DownloadRunner.download_panorama_images(str(tmp_path), [dict(pano_info(16384, 8192), source='gsv')])
+
+        assert ledger_ids(tmp_path) == [[PANO, '0']]
+        assert [url_xy(url) for url in requested] == [(0, 0), (0, 0)], 'the probe only - no frame check'
 
     @pytest.mark.parametrize('frame,sizes,outcome', [((16384, 8192), SERIES_16384, DownloadResult.success),
                                                       ((3328, 1664), SERIES_3328, DownloadResult.success)])
@@ -505,7 +588,7 @@ class TestTheProbeArmChecksTheFrame:
         tiles = red_tiles(monkeypatch)
 
         assert gsv.download_single_pano(str(tmp_path), pano_info(*frame)) == outcome
-        assert len(requested) == 4
+        assert len(requested) == 5, 'two probe tiles, two past the grid, one in it (#181) - then the fan-out'
         assert jpeg_dimensions(str(tmp_path / PANO[:2] / (PANO + '.jpg'))) == frame
         assert tiles, 'the fan-out ran'
 

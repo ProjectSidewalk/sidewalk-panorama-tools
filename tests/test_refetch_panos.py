@@ -1729,6 +1729,56 @@ class TestTheDisplayCopyFollowsTheSwap:
         assert downscale_panos.downscale_store(str(tmp_path), max_width=self.CAP).written == 0
 
 
+class TestRefetchRefusesAFrameLargerThanServed:
+    """#181 Part 1, through refetch_store: a stored 16384x8192 file for a pano Google now serves at
+    13312x6656. Before #181 frame_covers_pano passed it (nothing past a 32x16 grid has imagery), the 512-tile
+    fan-out ran and the `too_black` gate refused the ~34% black stitch - LEDGERED, so the pano was never asked
+    about again. Now the in-grid tile refuses it before the fan-out: three requests after the probe, a
+    transient failure, nothing ledgered, the stored bytes untouched - so a later pass asks again, by which time
+    the stored file or Google may have changed.
+
+    Driven through the REAL resolve_zoom_and_dims and frame_covers_pano and a real requests.Session; only the
+    socket is canned. The second pano is a genuine 200 retirement - black at every tile - and must still be
+    `gone`: the probe answers before the frame check, which would otherwise read those black 200s as this
+    same refusal.
+    """
+
+    LARGER = 'aaLargerAAAAAAAAAAAAA'
+    RETIRED = 'bbRetiredBBBBBBBBBBB'
+
+    def test_the_frame_is_refused_unledgered_and_the_store_is_untouched(self, tmp_path, monkeypatch, capsys):
+        larger_path = store_with_pano(tmp_path, self.LARGER, dims=(16384, 8192))
+        retired_path = store_with_pano(tmp_path, self.RETIRED)
+        before = {larger_path: open(larger_path, 'rb').read(), retired_path: open(retired_path, 'rb').read()}
+
+        def answer(url):
+            if self.RETIRED in url:
+                return 200, BLACK_BODY
+            zoom, x, y = cbk_query(url, 'zoom'), cbk_query(url, 'x'), cbk_query(url, 'y')
+            served = (26, 13) if zoom == 5 else (7, 4)          # Google's 13312x6656 grid at zoom 5 and 3
+            return 200, IMAGERY_BODY if x < served[0] and y < served[1] else BLACK_BODY
+
+        adapter = canned_cbk(monkeypatch, answer)
+        monkeypatch.setattr(gsv, 'fetch_pano_image', lambda *a: pytest.fail('a refused frame must not fan out'))
+
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': self.LARGER}, {'pano_id': self.RETIRED}])
+
+        assert counts['transient_failures'] == 1
+        assert counts['gone'] == 1
+        assert counts['too_black'] == 0 and counts['frame_grew'] == 0 and counts['replaced'] == 0
+        with open(str(tmp_path / rp.LEDGER_FILENAME), newline='') as f:
+            assert list(csv.reader(f)) == [['pano_id', 'status'], [self.RETIRED, 'gone']]
+        for path, data in before.items():
+            assert open(path, 'rb').read() == data
+        assert not os.path.exists(str(tmp_path / rp.MEASUREMENTS_FILENAME))
+        larger = [(cbk_query(r.url, 'x'), cbk_query(r.url, 'y')) for r in adapter.served if self.LARGER in r.url]
+        assert larger == [(0, 0), (0, 0), (32, 8), (0, 16), (31, 8)]
+        retired = [r for r in adapter.served if self.RETIRED in r.url]
+        assert len(retired) == 2, 'a retired pano costs the probe only - the frame check is never asked'
+        out = capsys.readouterr().out
+        assert 'frame disagreement' in out and self.LARGER in out
+
+
 class TestARefusedProbeIsTransient:
     """#166 option (b), composed: the two probes now raise on any status but 200, and refetch_store must
     count that as a transient failure - unledgered, file untouched, pass carrying on - rather than as `gone`
