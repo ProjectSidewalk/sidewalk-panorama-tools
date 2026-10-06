@@ -79,9 +79,28 @@ class TestTheConstraintsFile:
 
 
 def _install_lines(path):
-    """The `run:` steps that install, not comments that mention installing."""
-    return [line for line in _read(path).splitlines()
-            if re.match(r'^\s*-?\s*run:.*\bpip install\b', line)]
+    """Every `pip install` a workflow runs: one-line `run:` steps, and the lines inside a block-scalar
+    `run: |` / `run: >` step (an extra install there could upgrade a package past its pin). Comments that
+    mention installing are not steps and are skipped."""
+    lines = _read(path).splitlines()
+    found = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        block = re.match(r'^(\s*)-?\s*run:\s*[|>][-+]?\s*$', line)
+        if block:
+            indent = len(line) - len(line.lstrip())
+            i += 1
+            while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > indent):
+                body = lines[i].strip()
+                if re.search(r'\bpip3? install\b', body) and not body.startswith('#'):
+                    found.append(body)
+                i += 1
+            continue
+        if re.match(r'^\s*-?\s*run:.*\bpip3? install\b', line):
+            found.append(line.strip())
+        i += 1
+    return found
 
 
 class TestTheGatedJobInstallsThePins:
@@ -113,11 +132,25 @@ class TestTheWeeklyJobInstallsLatest:
         assert lines, 'tests-latest.yml has no pip install step'
         assert not any('constraints' in line for line in lines), lines
 
+    def test_no_constraint_reaches_pip_through_the_environment(self):
+        """pip reads PIP_CONSTRAINT from the environment exactly as it reads -c, so setting it on the job or a
+        step would pin the weekly job silently while its install line still looks unconstrained."""
+        assert not re.search(r'\bPIP_CONSTRAINT\b', _read(LATEST_WORKFLOW)), \
+            'tests-latest.yml sets PIP_CONSTRAINT, which pins the install without a -c'
+
     def test_it_runs_on_a_schedule_and_never_gates_a_pull_request(self):
         text = _read(LATEST_WORKFLOW)
         assert re.search(r'^\s*schedule:', text, re.M), 'tests-latest.yml has no schedule trigger'
-        assert not re.search(r'^\s*(pull_request|push):', text, re.M), \
+        # pull_request_target and workflow_run would put it on a PR as surely as pull_request does.
+        assert not re.search(r'^\s*(pull_request\w*|push|workflow_run|merge_group):', text, re.M), \
             'tests-latest.yml must not run on PRs or pushes: it is a drift report, not a gate'
+
+    def test_nothing_switches_it_off(self):
+        """An `if:` on the job or a step (`if: false`, or one that is never true on a schedule) would leave a
+        green-looking workflow that tests nothing. The job has no condition, so none is allowed."""
+        conditions = [line.strip() for line in _read(LATEST_WORKFLOW).splitlines()
+                      if re.match(r'^\s*-?\s*if:', line)]
+        assert not conditions, conditions
 
     @pytest.mark.parametrize('needle', ["SIDEWALK_REQUIRE_STREETLEVEL: '1'", 'timeout-minutes:'])
     def test_it_keeps_the_gated_jobs_rails(self, needle):

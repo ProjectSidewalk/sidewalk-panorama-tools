@@ -12,7 +12,7 @@ Everything runs from a virtualenv — **there is no Docker in this repo**. The i
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip3 install -r requirements.txt -c constraints.txt   # constraints.txt = the production box's pip freeze (#167; docs/ops.md)
+pip3 install -r requirements.txt -c constraints.txt   # the production box's pip freeze (#167); drop -c on a Python with no wheel for a pin (3.14)
 
 # Downloader (one city)
 python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-depth] \

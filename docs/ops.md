@@ -966,7 +966,10 @@ what production runs. `constraints.txt` is the box's `pip freeze`, committed:
 - **A weekly job** (`tests-latest.yml`, Mondays 15:00 UTC, or by hand from the Actions tab) installs with no
   constraints and runs the same suite. It never runs on a pull request, so it gates nothing. A red run there
   means a new upstream release breaks the suite, and a fresh install would hit it. Its `pip freeze` step prints
-  what it resolved.
+  what it resolved. **It can go quiet in two ways.** GitHub disables a scheduled workflow in a public repo after
+  60 days without repository activity; the Actions tab then shows it disabled, and *Enable workflow* turns it
+  back on. And a failed scheduled run notifies only the user who last edited the workflow's `cron:` line, so if
+  that person has left, nobody hears about it. Look at the Actions tab whenever you look at the fleet.
 - **`tests/test_constraints.py`** fails when a `requirements.txt` package has no pin or a pin its specifier
   rejects, so a raised floor and its pin move in the same PR.
 
@@ -975,10 +978,22 @@ what production runs. `constraints.txt` is the box's `pip freeze`, committed:
 1. On the box: `cd /srv/sidewalk-panorama-tools && .venv/bin/pip freeze > /tmp/box-freeze.txt` (and
    `.venv/bin/python --version`, `git log --oneline -1`, for the header).
 2. In a branch: keep `constraints.txt`'s comment header, update its `Source:` line (Python version, commit,
-   date), and replace everything below it with the freeze. `pip freeze` lists every installed distribution,
-   which on this box includes `pytest` and `pytest-asyncio`. That is what the box has, so it stays.
+   date), and replace everything below it with the freeze. That includes `pytest` and `pytest-asyncio`: they are
+   not leftovers, because `streetlevel` itself depends on them (CI's log shows `Collecting pytest-asyncio (from
+   streetlevel...)`).
 3. Open a PR. CI installs exactly those pins. A red run means the box is running a set the suite fails on,
    which is worth knowing whichever way it is fixed.
+
+Two gaps in this loop are known and accepted:
+
+- **A removed dependency stays pinned.** `pip install` never uninstalls, so a package dropped from
+  `requirements.txt` stays in the box's venv, and every refresh pins it again. It is harmless, because a
+  constraint never installs anything, but the file slowly drifts from "what production needs" towards "what
+  production has". When dropping a dependency, delete its pin (and any pins only it pulled in) by hand in the same
+  PR, and `pip uninstall` it on the box at deploy.
+- **`setuptools` is not pinned.** `pip freeze` leaves out `pip`, `setuptools` and `wheel`, and torch declares
+  `setuptools>=77.0.3`, so it is the one runtime dependency that floats. `pip freeze --all` would record it.
+  Use that for a refresh if it ever matters.
 
 **Changing a dependency** goes the other way: edit `requirements.txt` and `constraints.txt` together (pin the
 version you tested), let CI pass, merge, deploy (the install above picks the pin up), then refresh from the box

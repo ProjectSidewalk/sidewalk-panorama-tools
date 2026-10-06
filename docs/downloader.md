@@ -34,7 +34,9 @@ pip install -r requirements.txt -c constraints.txt
 ([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The file is that box's
 `pip freeze` on Python 3.10, refreshed by the procedure in
 [Refreshing `constraints.txt`](ops.md#refreshing-constraintstxt). Leave it off to take the latest release of
-everything, which is what a weekly CI job tests, or when a pin has no wheel for your platform or Python.
+everything, which is what a weekly CI job tests, or when a pin has no wheel for your platform or Python. For
+example, numpy 2.2.6 and scipy 1.15.3 publish wheels for CPython 3.10 to 3.13 only, so on 3.14 `-c` means building
+numpy from source. (`pyfrpc` has no 3.14 wheel either way; see below.)
 
 Two platform notes:
 
