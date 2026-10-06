@@ -397,10 +397,12 @@ it cuts exactly what it did before.
   [#191 fit of 2026-10-01](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/191#issuecomment-5922041299)
   measured beta about **0.88 under the xml pose and 0.95 under the npz pose**, so the era gap was the pose
   record's. The record is also always known when a correction is applied, while the era is not
-  (cvMetadata serves no `time_created`). Both are **1.0** for now. Those measured values are the priors,
-  but they are not applied: choosing the default is
-  [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197). The run prints one line
-  with the number of crops the correction cut from each record and that record's beta.
+  (cvMetadata serves no `time_created`). The shipped values are those slopes: **0.88 (xml) and 0.95
+  (npz)**, SE about 0.02 each, decided 2026-10-06 in
+  [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197). A full-T correction
+  (beta 1) over-corrects by about 13% and 5%. PR #193 first shipped both at 1.0, before the default was
+  chosen. The run prints one line with the number of crops the correction cut from each record and that
+  record's beta.
 * **The window is sized at the stored `pano_y`.** The corrected point only positions it. Rule v2 was fit on
   stored coordinates, and v3's depression is the object's depression below the gravity horizon, which is what
   the stored y records. Re-fitting either rule on corrected coordinates is a follow-up once beta is set
@@ -413,10 +415,13 @@ it cuts exactly what it did before.
   pose record's beta as `tilt_beta_xml_pose` and `tilt_beta_npz_pose`, among the constants of both rules.
   They are `0.0` when the correction is off, since beta 0 is the identity. So a store cut without the flag
   and then with it gets the same-rule mixed-store warning ("was cut ... with tilt_beta_xml_pose=0.0 and this
-  run uses 1.0"), and `constants_seen` keeps that history, as for any other constant. **A marker written
+  run uses 0.88"), and `constants_seen` keeps that history, as for any other constant. A beta change is the
+  same case: a store corrected at #193's 1.0 and topped up at 0.88/0.95 warns (`tilt_beta_xml_pose=1.0 and
+  this run uses 0.88`), is never refused, and records `[1.0, 0.88]` for good, so the store says it holds
+  crops at both betas. **A marker written
   before these keys existed means uncorrected**: a rule recorded with no beta was run by code that never
   corrected, so its beta is read as `0.0`. That is every store cut before #191 that holds a crop, and so its
-  first corrected top-up warns and records `[0.0, 1.0]` for good. A pre-#191 marker over a store with no crop
+  first corrected top-up warns and records `[0.0, 0.88]` (xml key) for good. A pre-#191 marker over a store with no crop
   (a run that cut nothing) is not seeded, since no uncorrected crop exists. (Any other constant a marker has not recorded stays
   silent, since its old value is unknown.) Re-cut the whole store with `--force` rather than topping it up.
 * **Not per crop.** The provenance manifest has no correction column yet, so a mixed store shows only in
@@ -424,14 +429,15 @@ it cuts exactly what it did before.
   x/y) is a header migration of its own,
   [#196](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/196). **It must land before the
   correction is turned on for any consumer store**: since most `no_pose` is permanent (above), such a store is
-  always mixed. Choosing the default beta and turning the flag on is
-  [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197).
+  always mixed. The default beta is chosen (above); turning the flag on is the rest of
+  [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197), after #196's
+  [PR #200](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/200) merges.
 * **An open question about the xml pose.** About 4% of xml-posed panos in the #54 pose scan (1,043 of
   27,149) carry an xml `image_width` that differs from the JPEG's, mostly 16384 in the xml against a 13312
   JPEG. Where those panos also have an npz, the two poses disagree more (p75 1.33 deg against 0.52 deg for
   the rest). The correction trusts the xml without checking its dimensions, so whether such an xml describes
-  this JPEG is still unknown. Splitting the beta fit by that flag would tell, and it belongs with choosing
-  the default ([#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197)).
+  this JPEG is still unknown. Splitting the beta fit by that flag would tell; the 0.88 default was set
+  without that split ([#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197)).
 * **Out of scope here:** non-GSV panos
   ([#190](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/190)) and the source-side fix
   ([SidewalkWebpage#4784](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/4784)).

@@ -32,10 +32,11 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   (84%). **C gives the direction, not the size**: every shifted window moves by the full T. The #191 beta batch
   (`2026-09-29-tilt-beta-jm/`) is corroboration only: it leans below 1 in both arms but, at 5 discordant sheets
   per arm, its primary test could not reject (DECISIONS.md section 5). The per-pose-record RampNet slopes are
-  about 0.88 (XML pose) and 0.95 (npz pose); the default beta is Jon's choice (#197). The correction is
+  about 0.88 (XML pose) and 0.95 (npz pose), and those are the shipped betas (Jon, #197, 2026-10-06). The correction is
   CropRunner's opt-in `--tilt-correction` (`.claude/rules/cropper.md`, item 2): both axes, via
   `pano_pose.corrected_pixel`, the pose from the pano's own `.xml`/`.npz`, beta from `TILT_BETA_BY_POSE_SOURCE`
-  (keyed on the pose record, both 1.0 until #197 decides the default).
+  (keyed on the pose record: xml 0.88, npz 0.95; #193 shipped both at 1.0). The flag stays off until
+  #196's per-crop column lands. `TestRegistration` pins beta 1.0 on purpose (it checks the full transform).
 - **The C folders are sealed, and the redraw is the decision-bearing one.** `reports/data/2026-09-29-tilt-adjudication-jm/`
   and `2026-09-30-tilt-adjudication-jm-b2/` hold Jon's verdicts, his notes, and a `sealed/` key and selection;
   `DECISIONS.md` fixed the scoring before unblinding. The first draw (`2026-09-26-tilt-adjudication/`) is

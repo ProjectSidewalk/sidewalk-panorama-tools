@@ -186,14 +186,20 @@ V3_CONTEXT_WIDTH_M = 5.8
 # era gap was the pose record's. The record is also always known when a correction is applied, where the era
 # is unknown for every -d label (cvMetadata serves no time_created).
 #
-# Both stay 1.0 here, NOT the measured priors: endpoint C found the direction 79 : 0, the #191 beta batch is
-# corroboration only (it leans below 1 in both arms but, at 5 discordant sheets per arm, had no power to
-# measure beta: reports/data/2026-09-29-tilt-beta-jm/DECISIONS.md, section 5), and choosing the default is
-# its own decision (#197). The priors are named so
-# whoever sets them knows where they came from; they are not applied. Also open: the per-crop provenance
-# column (#196), which must land before the flag is turned on for any consumer store, and re-fitting the
-# sizing rules on corrected coordinates (#186).
-TILT_BETA_BY_POSE_SOURCE = {pano_pose.POSE_SOURCE_XML: 1.0, pano_pose.POSE_SOURCE_NPZ: 1.0}
+# The values are those slopes, rounded: 0.88 (xml) and 0.95 (npz), SE about 0.02 each - Jon's decision of
+# 2026-10-06 on #197 (https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197), citing
+# https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/191#issuecomment-5922041299. A full-T
+# correction over-corrects by about 13% (xml) and 5% (npz). The #191 beta batch's means, 0.91 and 0.95, agree.
+#
+# History: PR #193 shipped both at 1.0, NOT the measured priors, because endpoint C found the direction
+# 79 : 0, the #191 beta batch is corroboration only (it leans below 1 in both arms but, at 5 discordant
+# sheets per arm, had no power to measure beta: reports/data/2026-09-29-tilt-beta-jm/DECISIONS.md, section 5),
+# and choosing the default was its own decision (#197). crop_rule.json records each beta, so a store
+# corrected at 1.0 and again at these values gets the same-rule mixed-store warning (write_rule_marker).
+#
+# The flag is still OFF by default: turning it on waits for the per-crop provenance column (#196, PR #200).
+# Also open: re-fitting the sizing rules on corrected coordinates (#186).
+TILT_BETA_BY_POSE_SOURCE = {pano_pose.POSE_SOURCE_XML: 0.88, pano_pose.POSE_SOURCE_NPZ: 0.95}
 TILT_POSE_SOURCES = (pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ)
 
 # crop_rule.json's name for each pose record's beta; 0.0 when the correction is off (beta 0 is the identity).
