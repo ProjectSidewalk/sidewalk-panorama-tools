@@ -85,8 +85,9 @@ LOG_COLUMNS = [
     # Appended last so no older position moved; blank on every row written before it existed.
     "depth_eligible",
     # This run's image attempts that RAISED (#182) - transient, unledgered, retried next run - the per-run figure
-    # image_fail (cumulative, permanent + transient) cannot give. Rule 11 reads it. Blank on every row written
-    # before it existed, and on a run whose image phase did not finish.
+    # image_fail (cumulative, permanent + transient) cannot give. Parsed, but no rule reads it yet: the rule
+    # that will is to be sized from this field's own measurements (docs/log-analyzer.md). Blank on every row
+    # written before it existed, and on a run whose image phase did not finish.
     "image_raised",
 ]
 
@@ -141,12 +142,6 @@ MALFORMED_RECENT_DAYS    = 7    # a torn row newer than this (or undatable) warn
                                 # 20 of 26 warnings on 2026-09-19 were rows dated 2022..2026-05 (#43 close-out).
                                 # 7 as NEW_FAIL_NIGHTS and DEPTH_RATE_NIGHTS; 30 would re-alert a one-off tear
                                 # for a month, and the INFO line keeps the total visible anyway.
-TRANSIENT_FAIL_NIGHTS    = 7    # consecutive logged nights rule 11 needs (as NEW_FAIL_NIGHTS). UNMEASURED: #178's
-                                # week of nights is the input that sizes this and the floor below.
-TRANSIENT_FAIL_MIN_PER_NIGHT = 10  # raised image attempts per night (field 20) rule 11 needs on every one of
-                                # them - DownloadRunner's IMAGE_NO_SUCCESS_MIN_RAISED, restated, not imported
-                                # (this module shares no code with the runners). UNMEASURED (#178): it exists to
-                                # keep a mature city's one or two perennial raisers quiet.
 ZERO_PROGRESS_MIN_NEW_WORK = 3  # new image-eligible panos (field 5 growth) or unattempted ones (5 - 11) rule 3
                                 # needs. 7.9-8.4% of a GSV ledger is a permanent verdict (2026-09-06), so k new
                                 # panos all retired - no success, no regression - is ~0.084^k: 8% at 1, 0.06% at 3.
@@ -450,31 +445,6 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
                         f"or above --max-runtime downloads nothing) and scrape.log."
                     ),
                 })
-
-    # --- 11. A steady set of transient image failures (#182) ---
-    # A pano that raises is never ledgered, so it is retried - and raises - every night. Field 9 is cumulative
-    # and mixes those raises with permanent verdicts, so a steady set adds the same number every night and no
-    # other rule sees it a week in (rule 3's gate cannot tell it from a mature city with nothing new; #169 D13).
-    # Field 20 is the per-run count. Per night it is the MAX of the night's rows, not the sum: the queue's extra
-    # passes re-attempt the same unledgered set, so summing would count one set twice. A night whose field 20
-    # is blank (a row before #182, or an image phase that did not finish) is no evidence, and breaks the run:
-    # NaN is never read as 0, nor as over the floor. Independent of rule 3's entry gate - it needs no 30-day
-    # quiet tail and no 90-day lookback, only TRANSIENT_FAIL_NIGHTS logged nights with nothing downloaded.
-    raised_by_night = df.groupby("date")["image_raised"].max()
-    raised_tail = raised_by_night.tail(TRANSIENT_FAIL_NIGHTS)
-    if (len(raised_tail) == TRANSIENT_FAIL_NIGHTS and raised_tail.notna().all()
-            and (raised_tail >= TRANSIENT_FAIL_MIN_PER_NIGHT).all()
-            and by_night.reindex(raised_tail.index).eq(0).all()):
-        lo, hi = int(raised_tail.min()), int(raised_tail.max())
-        span = f"{lo:,}" if lo == hi else f"{lo:,}–{hi:,}"
-        issues.append({
-            "level": "WARNING",
-            "msg": (
-                f"{span} image attempts raised on each of the last {TRANSIENT_FAIL_NIGHTS} nights with no "
-                f"download (field 20): a steady set of panos failing transiently - nothing is ledgered, so "
-                f"they retry every night. Look at the IMAGEDOWNLOAD errors in scrape.log."
-            ),
-        })
 
     # --- 4. Abnormally long runtime, outside the depth phase ---
     # total_minutes used to be compared whole. The depth phase is budget-driven - it runs to whatever

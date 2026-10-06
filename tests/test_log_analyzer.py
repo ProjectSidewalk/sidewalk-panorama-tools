@@ -533,10 +533,10 @@ class TestRule3AsksWhetherThereWasWork:
         assert 'unknown' in found[0]['msg']
 
     def test_a_steady_transient_set_is_still_not_rule_3s(self, tmp_path):
-        """docs/log-analyzer.md, "What `log.csv` could not show before field 20": 30 nights of 200 panos failing
+        """docs/log-analyzer.md, "What the analyzer does not report yet": 30 nights of 200 panos failing
         transiently, no downloads, a flat corpus. The ungated rule fired here; the gate cannot tell this city
         from a mature one with nothing new (field 5 flat, every eligible pano attempted), so rule 3 stays
-        silent - field 20 (#182) is read by rule 11 instead, TestASteadyTransientSetIsReportedFromField20."""
+        silent. Field 20 (#182) carries the count, but no rule reads it yet: TestField20IsReadButNotYetJudged."""
         # 50 ledgered permanent verdicts every night, plus 200 transient failures every night of the tail.
         rows = zero_progress_rows(new_panos=0, quiet_tail=analyze.ZERO_PROGRESS_DAYS, image_fail=(50, 250),
                                   image_raised=(0, 200))
@@ -544,98 +544,29 @@ class TestRule3AsksWhetherThereWasWork:
         assert self.rule_3(tmp_path, rows) == []
 
 
-class TestASteadyTransientSetIsReportedFromField20:
-    """Rule 11 (#182). A set of panos that raise every night is never ledgered, so field 9 (cumulative,
-    permanent + transient) adds the same number every night and, a week in, no rule sees it (#169 D13). Field
-    20 is tonight's raised attempts; a run of nights on which it stays at or above a floor and nothing
-    downloads is the finding. Rows written before field 20 are no evidence: blank is NaN, never 0."""
+class TestField20IsReadButNotYetJudged:
+    """Field 20 (#182) is parsed so the rows carrying it can be measured, but no rule reads it yet. The rule that
+    will (#182, pending) needs a floor, and the number that floor depends on - how many panos raise every night
+    and never stop, such as a Mapillary city's retired images - is what field 20 itself will measure. Until then
+    the steady transient set is still unreported, and these tests say so rather than leave it implied."""
 
-    def rule_11(self, tmp_path, rows):
-        issues = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
-        return [i for i in issues if 'field 20' in i['msg']]
+    def measured(self):
+        """The #169 D13 measurement, with field 20 written: 30 nights of 200 transient failures, no download, a
+        flat corpus."""
+        return zero_progress_rows(new_panos=0, quiet_tail=30, image_fail=(50, 250), image_raised=(0, 200))
 
-    def measured(self, **overrides):
-        """The #169 D13 measurement: 30 nights of 200 transient failures, no download, a flat corpus."""
-        kwargs = dict(new_panos=0, quiet_tail=30, image_fail=(50, 250), image_raised=(0, 200))
-        kwargs.update(overrides)
-        return zero_progress_rows(**kwargs)
+    def test_the_measured_case_is_parsed(self, tmp_path):
+        df = analyze.read_log(write_log(tmp_path / 'log.csv', self.measured()))
 
-    @staticmethod
-    def with_field_20(row, value):
-        parts = row.split(',')
-        parts[analyze.LOG_COLUMNS.index('image_raised')] = str(value)
-        return ','.join(parts)
+        assert df['image_raised'].tail(30).tolist() == [200] * 30
+        assert df['image_raised'].head(len(df) - 30).eq(0).all()
 
-    def test_the_measured_case_is_reported(self, tmp_path):
-        issues = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', self.measured()), stale_days=3)
+    @pytest.mark.parametrize('image_raised', [(0, 200), None], ids=['with-field-20', 'before-field-20'])
+    def test_the_measured_case_is_still_unreported(self, tmp_path, image_raised):
+        """The D13 pin. When the rule lands, the with-field-20 case is the one that should change."""
+        rows = zero_progress_rows(new_panos=0, quiet_tail=30, image_fail=(50, 250), image_raised=image_raised)
 
-        found = [i for i in issues if 'field 20' in i['msg']]
-        assert [i['level'] for i in found] == ['WARNING'], issues
-        assert '200' in found[0]['msg'] and 'raised' in found[0]['msg']
-        assert not [i for i in issues if 'No new images downloaded' in i['msg']], 'rule 3 is still gated'
-
-    def test_rows_without_field_20_stay_silent(self, tmp_path):
-        """The D13 pin, kept as history: on rows older than the field, the city is still invisible."""
-        assert analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', self.measured(image_raised=None)),
-                                    stale_days=3) == []
-
-    def test_a_mature_city_with_nothing_new_and_no_raises_is_silent(self, tmp_path):
-        assert self.rule_11(tmp_path, self.measured(image_fail=(50, 50), image_raised=(0, 0))) == []
-
-    def test_one_or_two_perennial_raisers_are_not_a_set(self, tmp_path):
-        assert self.rule_11(tmp_path, self.measured(image_raised=(0, 2))) == []
-
-    @pytest.mark.parametrize('below', [0, 1], ids=['at-the-minimum', 'one-under'])
-    def test_the_minimum_fires_and_one_under_does_not(self, tmp_path, below):
-        per_night = analyze.TRANSIENT_FAIL_MIN_PER_NIGHT - below
-
-        found = self.rule_11(tmp_path, self.measured(image_raised=(0, per_night)))
-
-        assert len(found) == (0 if below else 1), found
-
-    def test_a_download_inside_the_window_resets_it(self, tmp_path):
-        """Nights 4-7 back downloaded; only the newest three are quiet, so the run is three nights long."""
-        rows = self.measured(quiet_tail=analyze.TRANSIENT_FAIL_NIGHTS - 4, image_raised=(200, 200))
-
-        assert self.rule_11(tmp_path, rows) == []
-
-    @pytest.mark.parametrize('extra', [0, -1], ids=['seven-nights', 'six-nights'])
-    def test_it_takes_the_whole_window(self, tmp_path, extra):
-        """A city whose whole log is the window: it fires at TRANSIENT_FAIL_NIGHTS nights and not one fewer. No
-        30-day quiet tail and no 90-day lookback, which is the point of a rule separate from rule 3."""
-        nights = analyze.TRANSIENT_FAIL_NIGHTS + extra
-        rows = self.measured(total=nights, quiet_tail=nights)
-
-        assert len(self.rule_11(tmp_path, rows)) == (1 if extra == 0 else 0)
-
-    def test_a_short_history_still_fires(self, tmp_path):
-        """40 nights: well under rule 3's entry gate (ZERO_PROGRESS_DAYS + ZERO_PROGRESS_LOOKBACK), so a
-        rule 11 nested inside that gate would be silent here."""
-        assert len(self.rule_11(tmp_path, self.measured(total=40))) == 1
-
-    def test_a_night_with_no_evidence_breaks_the_run(self, tmp_path):
-        """One night in the window with field 20 blank (a crashed image phase): NaN is not 0 and not 200."""
-        rows = self.measured()
-        rows[-3] = self.with_field_20(rows[-3], '')
-
-        assert self.rule_11(tmp_path, rows) == []
-
-    @pytest.mark.parametrize('per_pass', [6, 'floor'], ids=['under-the-floor-per-pass', 'at-the-floor-per-pass'])
-    def test_two_passes_on_one_night_are_one_set_not_two(self, tmp_path, per_pass):
-        """The queue's extra passes re-attempt the same unledgered set, so a night is the MAX of its rows:
-        6 + 6 is one set of 6, under the floor, not 12 over it. The other case is the control: two passes
-        at the floor each still fire."""
-        per_pass = analyze.TRANSIENT_FAIL_MIN_PER_NIGHT if per_pass == 'floor' else per_pass
-        assert 2 * 6 >= analyze.TRANSIENT_FAIL_MIN_PER_NIGHT > 6, 'the fixture must put the sum over the floor'
-        rows = []
-        for n in range(analyze.TRANSIENT_FAIL_NIGHTS + 2, -1, -1):
-            night = days_ago(n).replace(minute=0, second=0, microsecond=0)
-            for hour in (1, 3):
-                rows.append(make_row(night.replace(hour=hour), image_fail=50, image_raised=per_pass))
-
-        found = self.rule_11(tmp_path, rows)
-
-        assert len(found) == (0 if per_pass == 6 else 1), found
+        assert analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3) == []
 
 
 class TestAnAbnormallyLongRunIsFlagged:
