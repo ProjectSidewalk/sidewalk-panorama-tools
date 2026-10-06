@@ -255,11 +255,24 @@ TILT_PROVENANCE_OFF = (POSE_SOURCE_NONE, '0.0', '', '')
 PRE_TILT_PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
 PROVENANCE_COLUMNS = PRE_TILT_PROVENANCE_COLUMNS + TILT_PROVENANCE_COLUMNS
 
-# The manifest's header before rows carried a city (#159 step 1), and where a manifest still under it is
-# moved so the city-bearing rows never land beneath it. See set_aside_pre_city_manifest.
+# The manifest's headers before the current one, each with the name a manifest still under it is moved to
+# so rows of the current width never land beneath it (see set_aside_legacy_manifest), and the marker key
+# that records the move:
+# * before rows carried a city (#159 step 1);
+# * before rows carried the tilt correction (#196) - the header written from #159 to #196.
 PRE_CITY_PROVENANCE_COLUMNS = ('label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
 PROVENANCE_MANIFEST_PRE_CITY = 'crop_provenance.pre-city.csv'
 MANIFEST_PRE_CITY = 'provenance_manifest_pre_city'
+PROVENANCE_MANIFEST_PRE_TILT = 'crop_provenance.pre-tilt.csv'
+MANIFEST_PRE_TILT = 'provenance_manifest_pre_tilt'
+# (header, set-aside file name, what the old header lacked - for the message), oldest first.
+LEGACY_MANIFEST_HEADERS = (
+    (PRE_CITY_PROVENANCE_COLUMNS, PROVENANCE_MANIFEST_PRE_CITY, 'a city'),
+    (PRE_TILT_PROVENANCE_COLUMNS, PROVENANCE_MANIFEST_PRE_TILT, 'the tilt correction'),
+)
+# The marker key that names each set-aside file once it exists.
+LEGACY_MANIFEST_MARKER_KEYS = {PROVENANCE_MANIFEST_PRE_CITY: MANIFEST_PRE_CITY,
+                               PROVENANCE_MANIFEST_PRE_TILT: MANIFEST_PRE_TILT}
 
 # crop_rule.json's answer to "may the manifest be read as covering every crop here?" (#153 M3). Named for
 # what it records - that no run has KNOWN of a crop without a row - because that is all a marker can
@@ -1275,7 +1288,8 @@ class LegacyCropStoreError(Exception):
 
 # The store-level files a pre-#159 store keeps directly in -o. Any one of them there means -o IS a store.
 # crop.log alone is not a signal: it is what any directory a run was pointed at could hold, and a root
-# never writes one of its own - but the migrator moves it with the rest.
+# never writes one of its own - but the migrator moves it with the rest. PROVENANCE_MANIFEST_PRE_TILT is
+# deliberately absent: #196 postdates #159, so only a per-city store can hold one, never a flat root.
 LEGACY_ROOT_FILES = (CROP_RULE_MARKER, PROVENANCE_MANIFEST, PROVENANCE_MANIFEST_PRE_CITY)
 
 
@@ -1386,34 +1400,39 @@ def refuse_legacy_crop_root(crop_dir, city):
 
 class ProvenanceManifestHeaderError(Exception):
     """The provenance manifest on disk carries a header this run must not append under. See
-    set_aside_pre_city_manifest."""
+    set_aside_legacy_manifest."""
 
 
-# How much of the manifest's first line is read to judge its header. Either header is under 80 bytes; a
-# first line longer than this is not one of them.
+# How much of the manifest's first line is read to judge its header. Every known header is under 120 bytes;
+# a first line longer than this is not one of them.
 _MANIFEST_HEADER_READ_LIMIT = 4096
 
 
-def set_aside_pre_city_manifest(destination_dir):
-    """Check the manifest's header before anything is appended under it, and move a pre-city one aside.
+def set_aside_legacy_manifest(destination_dir):
+    """Check the manifest's header before anything is appended under it, and move an older one aside.
 
     ProvenanceManifest writes a header only into an EMPTY file, so it trusts whatever header a non-empty
-    one carries. When `city` became the first column (#153's stopgap for #159) that trust was wrong for
-    every manifest already on disk: seven-field rows appended under the six-field header read with every
-    column shifted by one, and nothing raised. So:
+    one carries. Each time the row grew a column that trust was wrong for every manifest already on disk:
+    when `city` became the first column (#153's stopgap for #159) seven-field rows appended under the
+    six-field header read with every column shifted by one, and when the tilt correction's four columns
+    were appended (#196) eleven-field rows would have landed under a seven-field header, with nothing
+    raised either time. So:
 
     * the current header (or no file, or an empty one, or a torn header with no newline at all - the
       manifest's own open rewrites that) passes untouched;
-    * the pre-city header (PRE_CITY_PROVENANCE_COLUMNS) is MOVED, whole, to PROVENANCE_MANIFEST_PRE_CITY,
-      and the run then starts a fresh manifest. Its rows are never rewritten or given a city: a root cut
-      before #159 may hold more than one city's crops, and a city written onto those rows would be a guess;
-    * anything else raises ProvenanceManifestHeaderError, and so does a pre-city manifest when the
-      set-aside name is already taken - never replaced, since that would lose the older file.
+    * a header in LEGACY_MANIFEST_HEADERS is MOVED, whole, to that entry's set-aside name, and the run
+      then starts a fresh manifest. Its rows are never rewritten: a pre-city row is never given a city (a
+      root cut before #159 may hold more than one city's crops, so a city written onto it would be a
+      guess), and a pre-tilt row is never padded with "not corrected" (a crop cut under #193 with
+      --tilt-correction may be among them, so that would be a guess too - its correction is unknown);
+    * anything else raises ProvenanceManifestHeaderError, and so does a legacy manifest whose set-aside
+      name is already taken - never replaced, since that would lose the older file.
 
     Called before write_rule_marker, which then finds no manifest and records a known gap if the store
-    holds crops - which it will, since the set-aside rows described crops that are still on disk.
+    holds crops - which it will, since the set-aside rows described crops that are still on disk - and
+    names the set-aside file under its LEGACY_MANIFEST_MARKER_KEYS key.
 
-    :return: PROVENANCE_MANIFEST_PRE_CITY if a manifest was moved aside, else None.
+    :return: the set-aside file's name if a manifest was moved aside, else None.
     :raises ProvenanceManifestHeaderError: before anything is written.
     """
     path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
@@ -1429,24 +1448,27 @@ def set_aside_pre_city_manifest(destination_dir):
     if not first_line.endswith(b'\n') and len(first_line) < _MANIFEST_HEADER_READ_LIMIT:
         # Empty, or a header torn before its newline: nothing after it can be a row, and the open cuts it.
         return None
-    if first_line != _csv_line(PRE_CITY_PROVENANCE_COLUMNS):
+    for columns, aside_name, lacked in LEGACY_MANIFEST_HEADERS:
+        if first_line == _csv_line(columns):
+            break
+    else:
         raise ProvenanceManifestHeaderError(
             "%s begins with a header this run does not recognise (%r; expected %s). Appending under it "
             "would misfile every column, so nothing has been cut. Move the file aside or restore it, then "
             "re-run." % (path, first_line[:200], ','.join(PROVENANCE_COLUMNS)))
-    aside = os.path.join(destination_dir, PROVENANCE_MANIFEST_PRE_CITY)
+    aside = os.path.join(destination_dir, aside_name)
     if os.path.lexists(aside):
         raise ProvenanceManifestHeaderError(
-            "%s still has the header written before rows carried a city, and %s already exists, so it "
+            "%s still has the header written before rows carried %s, and %s already exists, so it "
             "cannot be set aside without replacing that file. Nothing has been cut. Merge or rename one of "
-            "the two by hand, then re-run." % (path, aside))
+            "the two by hand, then re-run." % (path, lacked, aside))
     os.rename(path, aside)
-    message = ("%s had the header written before rows carried a city; moved it, unchanged, to %s and "
+    message = ("%s had the header written before rows carried %s; moved it, unchanged, to %s and "
                "started a new manifest. Crops listed only in the old file have no row in the new one."
-               % (path, PROVENANCE_MANIFEST_PRE_CITY))
+               % (path, lacked, aside_name))
     print(message)
     logging.warning('%s', message)
-    return PROVENANCE_MANIFEST_PRE_CITY
+    return aside_name
 
 
 class ProvenanceManifest:
@@ -1758,10 +1780,14 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
         marker = {}
     if city is None and isinstance(marker.get('city'), str):
         city = marker['city']
-    # Named once a pre-city manifest has been set aside (#159 step 1), and carried forward after that.
-    pre_city = marker.get(MANIFEST_PRE_CITY)
-    if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST_PRE_CITY)):
-        pre_city = PROVENANCE_MANIFEST_PRE_CITY
+    # Each set-aside manifest is named once it exists - pre-city (#159 step 1), pre-tilt (#196) - and carried
+    # forward after that, so renaming the file away later does not erase the record that rows were moved.
+    set_aside = {}
+    for _, aside_name, _ in LEGACY_MANIFEST_HEADERS:
+        key = LEGACY_MANIFEST_MARKER_KEYS[aside_name]
+        set_aside[key] = marker.get(key)
+        if os.path.exists(os.path.join(destination_dir, aside_name)):
+            set_aside[key] = aside_name
 
     if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST)):
         manifest_started_under = marker.get('provenance_manifest_started_under')
@@ -1854,7 +1880,7 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
                            city=city,
                            provenance_manifest=PROVENANCE_MANIFEST,
                            provenance_manifest_started_under=manifest_started_under,
-                           **{MANIFEST_NO_KNOWN_GAP: no_known_gap, MANIFEST_PRE_CITY: pre_city}),
+                           **{MANIFEST_NO_KNOWN_GAP: no_known_gap}, **set_aside),
                       f, indent=1, sort_keys=True)
     return previous
 
@@ -2244,7 +2270,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     for tilt: `pose_source` (`xml`/`npz`, or `none` without --tilt-correction), `tilt_beta` (`0.0` when
     not corrected) and the corrected centre (blank when not corrected). A no_pose or stale_kept label
     gets no row, so for a store cut more than once the LAST row per (city, label_id) describes the crop
-    on disk.
+    on disk. A manifest under an older header is set aside first (set_aside_legacy_manifest).
 
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
     pano, malformed row, or failed write is counted as an error and logged; both leave the remaining labels
@@ -2307,7 +2333,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     os.makedirs(destination_dir, exist_ok=True)
     # Before the marker, so a refusal leaves it untouched, and so the marker sees the manifest it will
     # actually be appending to (#159 step 1).
-    set_aside_pre_city_manifest(destination_dir)
+    set_aside_legacy_manifest(destination_dir)
     write_rule_marker(destination_dir, force=force, city=city, sizing_rule=sizing_rule,
                       tilt_correction=tilt_correction)
 

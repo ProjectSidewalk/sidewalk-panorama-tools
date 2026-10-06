@@ -3242,6 +3242,7 @@ class TestTheMarkerInThePerCityStore:
         assert marker['provenance_manifest_started_under'] == 'v3'
         assert marker['provenance_manifest'] == crop_runner.PROVENANCE_MANIFEST
         assert crop_runner.MANIFEST_PRE_CITY in marker
+        assert crop_runner.MANIFEST_PRE_TILT in marker
 
     def test_a_recorded_gap_leaves_the_marker_readable(self, crop_runner, tmp_path):
         """_record_manifest_gap writes `false` into the marker (building one around it if none exists);
@@ -3302,7 +3303,7 @@ class TestTheMarkerInThePerCityStore:
         assert set(crop_runner._rule_constants()) | {
             'crop_rule_version', 'distance_estimator', 'previous_crop_rule_version', 'rules_seen',
             'constants_seen', 'city', 'tilt_correction', 'provenance_manifest', 'provenance_manifest_started_under',
-            crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_PRE_CITY} == set(marker)
+            crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_PRE_CITY, crop_runner.MANIFEST_PRE_TILT} == set(marker)
 
 
 # ---------------------------------------------------------------------------
