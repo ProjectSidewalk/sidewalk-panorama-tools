@@ -777,6 +777,137 @@ class TestTheDepthPhaseNotesItsConditions:
         assert condition_codes(stop_reasons) == []
 
 
+# --- A damaged ledger never crashes the run (#189) ------------------------------------------------------------
+#
+# Two kinds of damage used to raise out of the ledger read before any row was inspected: a field longer than
+# csv.field_size_limit() (csv.Error - what a crash that wrote binary junk looks like) and one byte the platform's
+# default encoding cannot decode (UnicodeDecodeError). The callers caught OSError only, and count_unresolved_depth
+# runs before either phase, so one bad line ended the whole night - image phase included - every night until
+# someone edited the file. The limit is read at test time, never hard-coded: 131072 is only CPython's default.
+
+def overlong_ledger_bytes():
+    return ('pano_id,status\n' + 'x' * (csv.field_size_limit() + 1) + ',saved\n').encode('ascii')
+
+
+# \x81 is undefined in cp1252 AND invalid UTF-8, so the read raised on master both on a Windows box and on CI's
+# Ubuntu; \xff would decode under cp1252 and only discriminate on CI.
+BAD_BYTE_LEDGER = b'pano_id,status\r\nbbbbbb,saved\r\naa\x81aaaa,saved\r\ncccccc,unavailable\r\n'
+
+
+def write_ledger_bytes(storage, data):
+    with open(os.path.join(storage, gsv.DEPTH_LOG_FILENAME), 'wb') as f:
+        f.write(data)
+
+
+class TestADamagedLedgerNeverCrashesTheRun:
+
+    def test_an_overlong_field_is_an_unusable_ledger_not_a_crash(self, tmp_path, fake_streetview, capsys):
+        """Sits the run out under the existing condition, on both channels, at zero requests - not a partial
+        read, which would re-request every pano after the bad line against a store that just wrote junk."""
+        storage = str(tmp_path)
+        write_ledger_bytes(storage, overlong_ledger_bytes())
+        calls = []
+        fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: calls.append(pano_id)
+        stop_reasons = {}
+
+        result = gsv.download_depth_maps(storage, pano_infos('aaaaaa'), stop_reasons=stop_reasons)
+
+        assert result == (0, 0, 0, 0)
+        assert calls == []
+        assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_LEDGER]
+        out = capsys.readouterr().out
+        assert 'WARNING' in out and 'cannot read the depth ledger' in out
+
+    def test_one_invalid_byte_costs_one_row_not_the_ledger(self, tmp_path, fake_streetview):
+        """The damaged row's id no longer matches its pano, so that one pano is re-requested; every other row
+        still resolves, and nothing is a condition."""
+        storage = str(tmp_path)
+        write_ledger_bytes(storage, BAD_BYTE_LEDGER)
+        calls = []
+
+        def fetch(pano_id, **kwargs):
+            calls.append(pano_id)
+            return make_pano(default_depth_array())
+
+        fake_streetview.find_panorama_by_id = fetch
+        stop_reasons = {}
+
+        assert gsv._load_depth_log(os.path.join(storage, gsv.DEPTH_LOG_FILENAME)) >= {'bbbbbb', 'cccccc'}
+        result = gsv.download_depth_maps(storage, pano_infos('aaaaaa', 'bbbbbb', 'cccccc'),
+                                         stop_reasons=stop_reasons)
+
+        assert calls == ['aaaaaa']
+        assert result == (1, 0, 2, 3)
+        assert condition_codes(stop_reasons) == []
+
+    def test_a_nul_byte_costs_one_row_under_python_3_10_csv(self, tmp_path, fake_streetview, csv_refuses_nul):
+        """A run of NULs is the most familiar crash residue, and on 3.10 - production - csv raised on it, so the
+        phase sat out every night (#189 review). Stripped, it costs its own row: no condition, one request."""
+        storage = str(tmp_path)
+        write_ledger_bytes(storage, b'pano_id,status\r\nbbbbbb,saved\r\naaaa\x00\x00\x00\x00\r\n'
+                                    b'cccccc,unavailable\r\n')
+        calls = []
+
+        def fetch(pano_id, **kwargs):
+            calls.append(pano_id)
+            return make_pano(default_depth_array())
+
+        fake_streetview.find_panorama_by_id = fetch
+        stop_reasons = {}
+
+        result = gsv.download_depth_maps(storage, pano_infos('aaaaaa', 'bbbbbb', 'cccccc'),
+                                         stop_reasons=stop_reasons)
+
+        assert calls == ['aaaaaa']
+        assert result == (1, 0, 2, 3)
+        assert condition_codes(stop_reasons) == []
+
+    def test_a_stray_quote_costs_one_row_not_every_pano_after_it(self, tmp_path, fake_streetview):
+        """Under csv's default quoting a '"' swallowed the rest of the file into one field, silently: every pano
+        after it read as unresolved and was re-requested (or re-ledgered) every night, with no condition, until
+        the tail outgrew csv.field_size_limit() (#189 review). Read with QUOTE_NONE it is one junk row."""
+        storage = str(tmp_path)
+        write_ledger_bytes(storage, b'pano_id,status\r\nbbbbbb,saved\r\n"aaaaaa,saved\r\ncccccc,unavailable\r\n'
+                                    b'dddddd,unavailable\r\n')
+        calls = []
+
+        def fetch(pano_id, **kwargs):
+            calls.append(pano_id)
+            return make_pano(default_depth_array())
+
+        fake_streetview.find_panorama_by_id = fetch
+        stop_reasons = {}
+
+        result = gsv.download_depth_maps(storage, pano_infos('aaaaaa', 'bbbbbb', 'cccccc', 'dddddd'),
+                                         stop_reasons=stop_reasons)
+
+        assert calls == ['aaaaaa']
+        assert result == (1, 0, 3, 4)
+        assert condition_codes(stop_reasons) == []
+
+    def test_an_unusable_ledger_is_never_touched(self, tmp_path, fake_streetview):
+        """The ledger is store state: no "move it aside" or truncate. Repair is a documented hand edit
+        (docs/ops.md), so the bytes after the phase are the bytes before it."""
+        storage = str(tmp_path)
+        before = overlong_ledger_bytes()
+        write_ledger_bytes(storage, before)
+        fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+
+        gsv.download_depth_maps(storage, pano_infos('aaaaaa'))
+
+        with open(os.path.join(storage, gsv.DEPTH_LOG_FILENAME), 'rb') as f:
+            assert f.read() == before
+
+    def test_count_unresolved_depth_reads_an_overlong_field_as_no_backlog(self, tmp_path):
+        """The budget split's read, before either phase: this is the call that took the image phase down."""
+        write_ledger_bytes(str(tmp_path), overlong_ledger_bytes())
+        assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa')) == 0
+
+    def test_count_unresolved_depth_counts_a_bad_byte_row_as_unresolved(self, tmp_path):
+        write_ledger_bytes(str(tmp_path), BAD_BYTE_LEDGER)
+        assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa', 'bbbbbb', 'cccccc')) == 1
+
+
 OPS_MD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', 'ops.md')
 
 
@@ -826,3 +957,48 @@ def test_the_ledger_scrub_recipe_keeps_the_header_when_nothing_was_ever_saved(tm
     out = subprocess.run(shlex.split(command), cwd=str(tmp_path), capture_output=True, text=True, check=True)
 
     assert out.stdout.strip() == '1', out
+
+
+@pytest.mark.skipif(os.name != 'posix' or not all(shutil.which(t) for t in ('bash', 'tr', 'grep', 'cut', 'sed')),
+                    reason="the recipe is a POSIX pipeline; on Windows 'bash' may be WSL's. CI runs it")
+def test_the_unusable_ledger_repair_recipe_finds_and_removes_exactly_the_junk(tmp_path, fake_streetview):
+    """docs/ops.md's "Repairing a ledger the phase cannot read" (#189), steps 2 and 3 verbatim from the page,
+    against a CRLF ledger download_depth_maps wrote with three kinds of junk spliced in: an over-long run of
+    binary (the case that makes the ledger unusable), a stray quote, and an undecodable byte. The last two cost
+    only their own rows now (QUOTE_NONE, errors='replace'), but they are not ledger rows either, and a hand
+    repair that is already in the file should take them out with the line that matters. Step 2 must name
+    exactly those lines - not the header, not a good row - and after step 3 the phase must read the ledger and
+    keep every good row."""
+    with open(OPS_MD, encoding='utf-8') as f:
+        page = f.read()
+    finders = re.findall(r"`(tr -d '\\r' < depth_log\.csv [^`]*)`", page)
+    deleters = re.findall(r"`(sed -i '<N>d;<M>d' depth_log\.csv)`", page)
+    assert len(finders) == 1 and len(deleters) == 1, (finders, deleters)
+
+    storage = str(tmp_path)
+    good = ['aa%04d' % i for i in range(4)]
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+    gsv.download_depth_maps(storage, pano_infos(*good))
+    ledger = os.path.join(storage, gsv.DEPTH_LOG_FILENAME)
+    with open(ledger, 'rb') as f:
+        lines = f.read().split(b'\r\n')
+    assert lines[-1] == b'' and len(lines) == 6, lines  # the premise: header + 4 rows, CRLF
+    junk = {3: b'\x9f\x80' *(csv.field_size_limit() // 2 + 1) + b',saved',
+            5: b'"bb0001,saved',
+            7: b'cc\x81001,saved'}
+    for number in sorted(junk):  # 1-based line numbers in the final file
+        lines.insert(number - 1, junk[number])
+    with open(ledger, 'wb') as f:
+        f.write(b'\r\n'.join(lines))
+    with pytest.raises(csv.Error):
+        gsv._load_depth_log(ledger)  # the premise: the phase would sit this ledger out
+
+    found = subprocess.run(['bash', '-c', finders[0]], cwd=storage, capture_output=True, check=True)
+    numbers = [int(line.split(b':', 1)[0]) for line in found.stdout.splitlines()]
+    assert numbers == sorted(junk), found.stdout[:400]
+
+    deleter = deleters[0].replace('<N>d;<M>d', ';'.join('%dd' % n for n in numbers))
+    subprocess.run(['bash', '-c', deleter], cwd=storage, check=True)
+
+    assert subprocess.run(['bash', '-c', finders[0]], cwd=storage, capture_output=True).stdout == b''
+    assert gsv._load_depth_log(ledger) == set(good)

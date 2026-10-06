@@ -355,6 +355,31 @@ def fake_streetview(monkeypatch):
     return streetview
 
 
+@pytest.fixture
+def csv_refuses_nul(monkeypatch):
+    """Give csv.reader Python 3.10's answer to a NUL byte on any interpreter (#189 review).
+
+    3.10 - CI and the production box - raises `csv.Error: line contains NUL` for a line holding one; 3.11
+    accepts it. A test that writes a NUL into a ledger therefore discriminates on CI only, and a Windows 3.11
+    box would pass it against code that sits the depth phase out in production. Under this fixture any line
+    that reaches csv.reader with a NUL in it raises the 3.10 error, so the test fails on every interpreter
+    unless the code strips NULs before csv sees them.
+    """
+    import csv
+    real_reader = csv.reader
+
+    def refuse_nul(lines):
+        for line in lines:
+            if '\0' in line:
+                raise csv.Error('line contains NUL')
+            yield line
+
+    def reader(lines, *args, **kwargs):
+        return real_reader(refuse_nul(lines), *args, **kwargs)
+
+    monkeypatch.setattr(csv, 'reader', reader)
+
+
 def make_pano(depth_array=None, heading=1.25, pitch=0.02, roll=-0.01, planes='auto'):
     """Build an object shaped like streetlevel's StreetViewPanorama for the attributes the code reads.
 

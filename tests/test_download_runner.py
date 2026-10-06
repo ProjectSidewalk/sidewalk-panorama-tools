@@ -3566,19 +3566,25 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
         assert fields[1:DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == [''] * 17, 'blank, not fabricated zeros'
         assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
 
-    def test_a_crash_in_the_budget_split_writes_the_row_and_still_raises(self, tmp_path):
-        """The ordinary-exception twin, through the REAL count_unresolved_depth. It catches OSError itself (an
-        unreadable ledger reads as no backlog), so the crash that actually reaches here is one it does not catch:
-        a torn append that leaves a field past csv's field_size_limit raises csv.Error. Before the try moved,
-        that exited 1 with no row. It must fail the run loudly AND leave the row - the two halves of #49 that a
-        stop and a crash share - and a direct caller's stop reasons must already be seeded when it does."""
+    def test_a_crash_in_the_budget_split_writes_the_row_and_still_raises(self, monkeypatch, tmp_path):
+        """The ordinary-exception twin. This used to go through the REAL count_unresolved_depth with a field past
+        csv's field_size_limit, which raised csv.Error; since #189 that ledger reads as no backlog (the depth
+        phase sits the run out), so no known ledger damage crashes the split any more and the crash here is a
+        stand-in. Before the try moved, a crash there exited 1 with no row. It must fail the run loudly AND leave
+        the row - the two halves of #49 that a stop and a crash share - and a direct caller's stop reasons must
+        already be seeded when it does."""
+        class SplitCrash(Exception):
+            pass
+
+        def crashed(storage_location, gsv_panos):
+            raise SplitCrash('a bug in the budget split')
+
+        monkeypatch.setattr(DownloadRunner.gsv, 'count_unresolved_depth', crashed)
         storage = tmp_path / 'storage'
         storage.mkdir()
-        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_text(
-            'pano_id,depth\n' + 'x' * (csv.field_size_limit() + 1))
         stop_reasons = {}
 
-        with pytest.raises(csv.Error):
+        with pytest.raises(SplitCrash):
             DownloadRunner.run_scraper_and_log_results(str(storage), gsv_pano_infos(), gsv_pano_infos(), False,
                                                        max_runtime_minutes=10, min_depth_runtime=5,
                                                        stop_reasons=stop_reasons)
@@ -3655,6 +3661,63 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
         assert len(rows[0]) == DownloadRunner.LOG_CSV_FIELD_COUNT
         assert rows[0][0] != ''
         assert rows[0][1:] == [''] * 18
+
+
+class TestADamagedDepthLedgerDoesNotCostTheImagePhase:
+    """#189: a depth_log.csv field past csv.field_size_limit() raised csv.Error out of count_unresolved_depth -
+    the budget split, before either phase - so one bad line cost the whole night, images included, every night
+    until someone edited the file. The depth phase now sits the run out under depth-ledger-unusable and the
+    image phase runs as if the ledger were healthy."""
+
+    def test_the_night_runs_images_and_writes_one_full_row(self, monkeypatch, tmp_path, fake_streetview):
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + GSV_CSV_ROWS)
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_bytes(
+            b'pano_id,status\n' + b'x' * (csv.field_size_limit() + 1) + b',saved\n')
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+
+        def no_request(*args, **kwargs):
+            raise AssertionError('an unusable ledger must sit the depth phase out at zero requests')
+
+        fake_streetview.find_panorama_by_id = no_request
+        monkeypatch.chdir(tmp_path)
+
+        code = DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path),
+                                    '--max-runtime', '10', '--min-depth-runtime', '1',
+                                    '--run-summary-file', str(tmp_path / 'summary.json')])
+
+        assert sorted(calls) == sorted(GSV_PANO_IDS)
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        fields = rows[0]
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert all(f != '' for f in fields[6:11]), 'the image phase finished and filled its fields'
+        assert fields[6] == str(len(GSV_PANO_IDS))
+        assert fields[12:16] == ['0'] * 4
+        assert summary_codes(tmp_path) == [DownloadRunner.gsv.DEPTH_CONDITION_LEDGER]
+        # The condition is what fails the night (the queue reads the summary); the exit code itself is the
+        # image phase's, which had nothing to complain about.
+        assert code == 0
+
+    def test_an_empty_list_over_a_ledger_with_a_bad_byte_still_judges_history(self, tmp_path):
+        """_store_has_history reads both ledgers' first two lines on the empty-list path. UnicodeDecodeError is a
+        ValueError, so with the platform default encoding one bad byte there raised out of _run_phases - exit 1,
+        no image phase - instead of answering the question."""
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_bytes(b'pano_id,status\r\naa\x81a,saved\r\n')
+
+        assert DownloadRunner._store_has_history(str(storage)) is True
+
+    def test_a_bad_byte_in_the_image_ledger_is_history_too(self, tmp_path):
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        (storage / 'pano_id_log.csv').write_bytes(b'pano_id,downloaded,fetched_at\r\naa\x81a,1,\r\n')
+
+        assert DownloadRunner._store_has_history(str(storage)) is True
 
 
 class TestField5IsTheImageListsLength:
