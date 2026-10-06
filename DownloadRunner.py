@@ -967,7 +967,8 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
     unledgered, so a stable order would put the same absent block in the first batch every night.
 
     image_stats, as download_panorama_images takes it, gets 'raised' = tonight's unledgered failures (absent,
-    truncated, unplaced, unsafe id): with no permanent verdict here, that is exactly the transient set (#182).
+    truncated, unplaced, unsafe id): with no permanent verdict here, that is the unledgered set (#182) - mostly
+    transient, though an unsafe id fails every night for as long as it is in the list.
     """
     tripped = set() if tripped_sources is None else tripped_sources
     ledger = ImageLedger(storage_path)
@@ -1208,7 +1209,7 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
             stop_reasons.setdefault('depth_stop', None)
 
         # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
-        # split below needs it too - and because its size is log.csv's last field (#43): the denominator every
+        # split below needs it too - and because its size is log.csv field 19, DEPTH_ELIGIBLE_FIELD (#43): the denominator every
         # progress figure for the backfill needs, and the one number nothing else in the row carries.
         gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
         depth_eligible = len(gsv_panos)
