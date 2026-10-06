@@ -924,7 +924,8 @@ class TestAFailedAppendLeavesNoRowBehind:
 
         monkeypatch.setattr(crop_runner, 'open', reopen_fails, raising=False)
         counts = crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
-        assert counts['success'] == 2 and len(opened) == 2
+        # The third open is close() trying once more to cut anything the failed append left (#200).
+        assert counts['success'] == 2 and len(opened) == 3
         printed = capsys.readouterr().out
         assert '1 crops were written without a row' in printed
         assert 'could not be closed' not in printed
@@ -1239,8 +1240,9 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
     def test_an_absent_marker_is_rebuilt_around_the_flag(self, crop_runner, tmp_path):
         """Nothing is on disk to lose, so the gap is recorded on its own; write_rule_marker restores the
         rule keys on the next run."""
-        crop_runner._record_manifest_gap(str(tmp_path))
-        assert read_marker(tmp_path, crop_runner) == {'provenance_manifest_no_known_gap': False}
+        crop_runner._record_manifest_gap(str(tmp_path), 1)
+        assert read_marker(tmp_path, crop_runner) == {'provenance_manifest_no_known_gap': False,
+                                                      'provenance_manifest_known_gaps': None}
 
     @pytest.mark.parametrize('content', ['{not json', '[1, 2]'], ids=['unparseable', 'not-an-object'])
     def test_a_marker_it_cannot_read_is_left_as_it_is(self, crop_runner, tmp_path, content):
@@ -1251,7 +1253,7 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         path = tmp_path / crop_runner.CROP_RULE_MARKER
         path.write_text(content, encoding='utf-8')
         with pytest.raises((OSError, ValueError)):
-            crop_runner._record_manifest_gap(str(tmp_path))
+            crop_runner._record_manifest_gap(str(tmp_path), 1)
         assert path.read_text(encoding='utf-8') == content
 
     def test_a_transient_read_failure_leaves_the_marker_byte_identical_and_is_said(
@@ -1261,7 +1263,7 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         real_gap, real_load = crop_runner._record_manifest_gap, json.load
         seen = {}
 
-        def gap_whose_first_read_fails(destination_dir):
+        def gap_whose_first_read_fails(destination_dir, gaps):
             with open(marker_path, 'rb') as f:
                 seen['before'] = f.read()
             calls = []
@@ -1274,7 +1276,7 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
 
             with monkeypatch.context() as m:
                 m.setattr(json, 'load', flaky_load)
-                return real_gap(destination_dir)
+                return real_gap(destination_dir, gaps)
 
         monkeypatch.setattr(crop_runner, '_record_manifest_gap', gap_whose_first_read_fails)
         RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 2)
@@ -1382,7 +1384,7 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         out = tmp_path / 'crops'
         self.plant_torn_row_under_a_true_flag(crop_runner, store, out)
 
-        def refuse(destination_dir):
+        def refuse(destination_dir, gaps):
             raise OSError(28, 'No space left on device')
 
         monkeypatch.setattr(crop_runner, '_record_manifest_gap', refuse)
@@ -1456,7 +1458,7 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
                                                                monkeypatch, capsys, caplog):
         out = tmp_path / 'crops'
 
-        def refuse(destination_dir):
+        def refuse(destination_dir, gaps):
             raise OSError(28, 'No space left on device')
 
         monkeypatch.setattr(crop_runner, '_record_manifest_gap', refuse, raising=False)
@@ -1469,6 +1471,177 @@ class TestAKnownGapTurnsTheMarkerFalseForGood:
         assert any('could not record the gap' in m for m in caplog.messages)
         assert 'crops were written without a row' in printed
 
+
+class TestTheMarkerCountsTheKnownGaps:
+    """#200 review finding 2, decided by Jon: a count, beside the flag. provenance_manifest_no_known_gap
+    goes false for a manifest set aside or started over crops already on disk, and neither of those makes
+    the last-row filter wrong - a crop with no row is unknown and the filter leaves it out. What makes it
+    wrong is a crop a run cut with no row reaching the file: on a --force re-cut, the PREVIOUS row is then
+    the last one and describes a crop that is no longer on disk. MANIFEST_KNOWN_GAPS counts exactly those,
+    once each, so a count of 0 is a manifest whose last rows can be trusted as far as any run knows, and a
+    count of N says at most N labels' last rows may be stale."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        store = tmp_path / 'store'
+        put_pano(store, 'testpano0001')
+        return store
+
+    def gaps(self, out, crop_runner):
+        return read_marker(out, crop_runner)[crop_runner.MANIFEST_KNOWN_GAPS]
+
+    def test_the_key_is_named(self, crop_runner):
+        assert crop_runner.MANIFEST_KNOWN_GAPS == 'provenance_manifest_known_gaps'
+
+    def test_no_gap_is_zero(self, crop_runner, tmp_path, store):
+        out = tmp_path / 'crops'
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out), force=True)
+        assert self.gaps(out, crop_runner) == 0
+
+    def test_one_gap_is_one(self, crop_runner, tmp_path, store, monkeypatch):
+        out = tmp_path / 'crops'
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 3)
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2), labelled(3)], str(store), str(out))
+        assert self.gaps(out, crop_runner) == 1
+
+    def test_two_gaps_in_one_run_are_two(self, crop_runner, tmp_path, store, monkeypatch):
+        out = tmp_path / 'crops'
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n in (2, 4))
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2), labelled(3)], str(store), str(out))
+        assert self.gaps(out, crop_runner) == 2
+
+    def test_gaps_in_two_runs_add_and_clean_runs_keep_the_total(self, crop_runner, tmp_path, store,
+                                                                monkeypatch):
+        out = tmp_path / 'crops'
+        # Each run's only row fails: write 2 on the fresh manifest (the header is write 1), write 1 after.
+        for label_id, row_write in ((1, 2), (2, 1)):
+            with monkeypatch.context() as scoped:
+                RawWriterFaults(crop_runner, scoped, fail=lambda n: n == row_write)
+                crop_runner.bulk_extract_crops([labelled(label_id)], str(store), str(out))
+            assert self.gaps(out, crop_runner) == label_id
+        crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out), force=True)
+        assert self.gaps(out, crop_runner) == 2
+
+    def test_a_torn_row_found_at_open_is_one(self, crop_runner, tmp_path, store):
+        out = tmp_path / 'crops'
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'a', encoding='utf-8') as f:
+            f.write('seattle-wa,2,testpano0001,gs')
+        crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        assert self.gaps(out, crop_runner) == 1
+
+    def test_a_torn_row_and_an_unrecorded_row_in_one_run_are_two(self, crop_runner, tmp_path, store,
+                                                                 monkeypatch):
+        """Two places record a gap - the first open, before its cut, and the run's finally - and each
+        counts only its own: the finally adds the unrecorded rows, never the torn one again."""
+        out = tmp_path / 'crops'
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'a', encoding='utf-8') as f:
+            f.write('seattle-wa,2,testpano0001,gs')
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 1)
+        crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        assert self.gaps(out, crop_runner) == 2
+
+    def test_a_torn_last_append_whose_reopen_failed_is_not_counted_again_next_run(
+            self, crop_runner, tmp_path, store, monkeypatch, capsys):
+        """The one way a single gap could reach both places: the run's LAST append tears, the reopen that
+        would cut it fails, so the run counts it unrecorded and ends with the fragment still on disk - and
+        the next run's first open would cut it and count it as a torn row. close() makes the cut instead,
+        so the fragment does not outlive the run that already counted it."""
+        out = tmp_path / 'crops'
+        with monkeypatch.context() as scoped:
+            RawWriterFaults(crop_runner, scoped, tear=(3,))
+            faulty_open, refused = crop_runner.open, []
+
+            def first_repair_fails(file, mode='r', *args, **kwargs):
+                if (os.path.basename(str(file)) == crop_runner.PROVENANCE_MANIFEST and mode == 'r+b'
+                        and not refused):
+                    refused.append(1)
+                    raise OSError(5, 'Input/output error (repair)')
+                return faulty_open(file, mode, *args, **kwargs)
+
+            scoped.setattr(crop_runner, 'open', first_repair_fails, raising=False)
+            crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
+        assert refused, 'the reopen after the torn append must have been the one refused'
+        assert self.gaps(out, crop_runner) == 1
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'rb') as f:
+            assert f.read().endswith(b'\n'), 'the run that counted the tear leaves no fragment behind'
+        capsys.readouterr()
+        crop_runner.bulk_extract_crops([labelled(3)], str(store), str(out))
+        assert 'torn row' not in capsys.readouterr().out
+        assert self.gaps(out, crop_runner) == 1
+        assert row_ids(out, crop_runner) == ['1', '3']
+
+    def test_a_failed_close_counts_every_row_it_may_have_lost(self, crop_runner, tmp_path, store,
+                                                              monkeypatch):
+        """Whether the rows appended this run reached the store is unknown after a failed close, so each
+        is counted: the count is how far off the last-row filter could be, not how far off it is."""
+        out = tmp_path / 'crops'
+        RawWriterFaults(crop_runner, monkeypatch, fail=lambda n: n == 2, close_fails=True)
+        crop_runner.bulk_extract_crops([labelled(1), labelled(2), labelled(3)], str(store), str(out))
+        # Label 1's append failed (1); labels 2 and 3 were appended and the close then failed (2).
+        assert self.gaps(out, crop_runner) == 3
+
+    def test_a_set_aside_manifest_is_zero_while_the_flag_is_false(self, crop_runner, tmp_path):
+        """The case the count exists for: the first #196 run over an existing store sets its manifest
+        aside, which turns the flag false for good - and leaves the last-row filter exact."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        write_crop_file(out, 1, 7)
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'wb') as f:
+            f.write(PRE_TILT_MANIFEST)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out), city='seattle-wa')
+        marker = read_marker(out, crop_runner)
+        assert marker[crop_runner.MANIFEST_NO_KNOWN_GAP] is False
+        assert marker[crop_runner.MANIFEST_KNOWN_GAPS] == 0
+
+    def test_crops_already_on_disk_when_the_manifest_starts_are_zero(self, crop_runner, tmp_path, store):
+        out = tmp_path / 'crops'
+        write_crop_file(out, 1, 99)
+        crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        marker = read_marker(out, crop_runner)
+        assert marker[crop_runner.MANIFEST_NO_KNOWN_GAP] is False
+        assert marker[crop_runner.MANIFEST_KNOWN_GAPS] == 0
+
+    def test_a_restarted_manifest_starts_its_own_count(self, crop_runner, tmp_path, store, monkeypatch):
+        """The count is about the manifest on disk: the old rows went with the old file, so a gap in them
+        cannot make the new file's last rows wrong."""
+        out = tmp_path / 'crops'
+        with monkeypatch.context() as scoped:
+            RawWriterFaults(crop_runner, scoped, fail=lambda n: n == 2)
+            crop_runner.bulk_extract_crops([labelled(1)], str(store), str(out))
+        assert self.gaps(out, crop_runner) == 1
+        os.remove(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST))
+        crop_runner.bulk_extract_crops([labelled(2)], str(store), str(out))
+        assert self.gaps(out, crop_runner) == 0
+
+    def test_a_manifest_the_marker_knows_nothing_about_is_unknown_and_stays_so(self, crop_runner, tmp_path):
+        """No recorded count is not zero: a gap on top of an unknown total is still an unknown total."""
+        out = tmp_path / 'crops'
+        os.makedirs(str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'w') as f:
+            f.write(','.join(crop_runner.PROVENANCE_COLUMNS) + '\n')
+        crop_runner.write_rule_marker(str(out))
+        assert self.gaps(out, crop_runner) is None
+        crop_runner._record_manifest_gap(str(out), 2)
+        assert self.gaps(out, crop_runner) is None
+        assert read_marker(out, crop_runner)[crop_runner.MANIFEST_NO_KNOWN_GAP] is False
+
+    @pytest.mark.parametrize('recorded', [True, -1, 1.5, '3'], ids=['bool', 'negative', 'float', 'string'])
+    def test_a_recorded_value_that_is_not_a_count_is_unknown(self, crop_runner, tmp_path, recorded):
+        """A JSON true is an int to Python; adding to it would turn a hand edit into a plausible count."""
+        out = tmp_path / 'crops'
+        os.makedirs(str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'w') as f:
+            f.write(','.join(crop_runner.PROVENANCE_COLUMNS) + '\n')
+        with open(os.path.join(str(out), crop_runner.CROP_RULE_MARKER), 'w', encoding='utf-8') as f:
+            json.dump({crop_runner.MANIFEST_KNOWN_GAPS: recorded}, f)
+        crop_runner._record_manifest_gap(str(out), 1)
+        assert self.gaps(out, crop_runner) is None
+        crop_runner.write_rule_marker(str(out))
+        assert self.gaps(out, crop_runner) is None
 
 # ---------------------------------------------------------------------------
 # #111: the provenance columns are optional on all three intakes

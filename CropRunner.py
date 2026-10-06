@@ -300,6 +300,25 @@ LEGACY_MANIFEST_MARKER_KEYS = {PROVENANCE_MANIFEST_PRE_CITY: MANIFEST_PRE_CITY,
 # record: coverage itself is the manifest's rows against the crops on disk. See write_rule_marker.
 MANIFEST_NO_KNOWN_GAP = 'provenance_manifest_no_known_gap'
 
+# How many crops runs have known, or could not rule out, to have been cut with no row reaching the current
+# manifest (#200 review finding 2; a count by Jon's decision, not a second flag). The flag above also goes
+# false when a manifest is started over crops already on disk - every store's first #196 run, through the
+# set-aside - and that does not make the last-row filter wrong: a crop with no row is unknown and is left
+# out. A crop that lost its row on a --force re-cut does, since the PREVIOUS row is then the last one. So a
+# count above 0 is what makes "last row per (city, label_id)" unsafe, and it bounds how far off it can be:
+# at most that many labels' last rows misdescribe their crops. 0 when a manifest is started, carried forward,
+# added to by _record_manifest_gap and never decreased; null when the marker has no count for the manifest
+# on disk (unknown, not 0).
+MANIFEST_KNOWN_GAPS = 'provenance_manifest_known_gaps'
+
+
+def _gap_count(value):
+    """A recorded MANIFEST_KNOWN_GAPS value if it is a count, else None. A JSON `true` is an int to Python,
+    and adding to it would turn a hand edit into a plausible-looking count."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
 # ---------------------------------------------------------------------------
 # The systemic-failure alarm (#136). When cvMetadata changed shape (#123) every label errored, and the
 # run's bookkeeping was entirely correct about it: errors == total, the invariant reconciled, main()
@@ -1547,6 +1566,10 @@ class ProvenanceManifest:
         self.sizing_rule = sizing_rule
         self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
         self._file = None
+        # Rows this run handed to the file whole: after a failed close, each may not have landed (#200).
+        self.rows_written = 0
+        # True from a failed append until an open cuts the file back again; see close().
+        self._needs_cut = False
         self.torn_rows_cut = int(self._open(first=True))
 
     def _open(self, first=False):
@@ -1569,7 +1592,7 @@ class ProvenanceManifest:
                     # A torn HEADER (keep == 0) cost no crop its row; anything after a header did. A tear
                     # a later reopen finds is this run's own failed append, already counted unrecorded.
                     if keep and first:
-                        _record_manifest_gap(os.path.dirname(self.path))
+                        _record_manifest_gap(os.path.dirname(self.path), 1)
                         cut_row = True
                     f.truncate(keep)
         handle = open(self.path, 'ab', buffering=0)
@@ -1580,6 +1603,7 @@ class ProvenanceManifest:
             _close_quietly(handle)
             raise
         self._file = handle
+        self._needs_cut = False
         return cut_row
 
     def record(self, label_id, pano_id, provenance, tilt=TILT_PROVENANCE_OFF):
@@ -1603,9 +1627,11 @@ class ProvenanceManifest:
             self._open()
         try:
             _write_all(self._file, line)
+            self.rows_written += 1
         except BaseException:
             _close_quietly(self._file)
             self._file = None
+            self._needs_cut = True
             try:
                 self._open()
             except Exception:
@@ -1613,7 +1639,18 @@ class ProvenanceManifest:
             raise
 
     def close(self):
+        """Close the handle. If a failed append's reopen also failed, and no later row reopened it, the
+        torn fragment is still on disk: cut it now with one more reopen (#200), best-effort like record()'s.
+        This run has already counted that crop unrecorded, and the next run's first open would count the
+        same crop again as a torn row. If this reopen fails too, the fragment stays and is counted twice -
+        the count is then one high, never low."""
         handle, self._file = self._file, None
+        if handle is None and self._needs_cut:
+            try:
+                self._open()
+            except Exception:
+                return
+            handle, self._file = self._file, None
         if handle is not None:
             handle.close()
 
@@ -1773,6 +1810,11 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
     re-derivation that could would be a walk of the whole store. So the flag is a record of what runs
     reported, never a coverage check - a run killed between a crop's rename and its row reports nothing.
 
+    Beside the flag, MANIFEST_KNOWN_GAPS counts the crops runs have known to lose their row (#200): 0 when
+    the manifest is started - even over crops already on disk, which turn the flag false but cannot make the
+    last-row filter wrong - then carried forward and added to by _record_manifest_gap. A count it cannot read
+    as one is carried as null.
+
     It records the city the store belongs to (check_store_city, which runs before this and refuses a
     different one). `city` None - a caller below main() that has none to give - carries the recorded city
     forward rather than erasing it, since erasing it would re-open the store to the next city.
@@ -1813,9 +1855,13 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
     if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST)):
         manifest_started_under = marker.get('provenance_manifest_started_under')
         no_known_gap = marker.get(MANIFEST_NO_KNOWN_GAP)
+        known_gaps = _gap_count(marker.get(MANIFEST_KNOWN_GAPS))
     else:
         manifest_started_under = sizing_rule
         no_known_gap = not _store_holds_crops(destination_dir)
+        # A new manifest has lost no row yet. Crops already on disk turn the flag false but are not counted:
+        # they have no row in it, so the last-row filter leaves them out rather than misreading them.
+        known_gaps = 0
 
     running = _rule_constants(tilt_correction)
     recorded, unreadable = _read_rule_marker(path)
@@ -1901,7 +1947,8 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
                            city=city,
                            provenance_manifest=PROVENANCE_MANIFEST,
                            provenance_manifest_started_under=manifest_started_under,
-                           **{MANIFEST_NO_KNOWN_GAP: no_known_gap}, **set_aside),
+                           **{MANIFEST_NO_KNOWN_GAP: no_known_gap, MANIFEST_KNOWN_GAPS: known_gaps},
+                           **set_aside),
                       f, indent=1, sort_keys=True)
     return previous
 
@@ -1994,12 +2041,17 @@ def _keep_unreadable_marker(path):
     return os.path.basename(kept)
 
 
-def _record_manifest_gap(destination_dir):
-    """Turn crop_rule.json's MANIFEST_NO_KNOWN_GAP false, keeping every other key (#153 M3).
+def _record_manifest_gap(destination_dir, gaps):
+    """Turn crop_rule.json's MANIFEST_NO_KNOWN_GAP false and add `gaps` to MANIFEST_KNOWN_GAPS, keeping every
+    other key (#153 M3, #200).
 
-    Called at the end of a run that knows it left a crop without a row, and by the manifest's first open
-    just before it cuts a previous run's torn row (#153 final F1). Rewritten atomically like the
-    marker itself.
+    Called at the end of a run that knows it left crops without a row, and by the manifest's first open
+    just before it cuts a previous run's torn row (#153 final F1). Each caller passes only the crops it
+    found itself, so no crop is counted twice: the open counts the torn row (1), the end of the run its own
+    failed appends plus, after a failed close, the rows it appended - each of which may not have landed -
+    and never the torn row again. A count the marker does not hold (no key, a null, a value that is not a
+    count - _gap_count), or an absent marker, stays null: a gap on top of an unknown total is still an
+    unknown total. Rewritten atomically like the marker itself.
 
     An ABSENT marker is rebuilt around the one key: there is nothing on disk to lose, and
     write_rule_marker restores the rule keys next run. A marker that exists but cannot be read - a
@@ -2021,6 +2073,8 @@ def _record_manifest_gap(destination_dir):
         raise ValueError("%s holds %s, not a JSON object; left as it is"
                          % (CROP_RULE_MARKER, type(marker).__name__))
     marker[MANIFEST_NO_KNOWN_GAP] = False
+    recorded = _gap_count(marker.get(MANIFEST_KNOWN_GAPS))
+    marker[MANIFEST_KNOWN_GAPS] = None if recorded is None else recorded + gaps
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(marker, f, indent=1, sort_keys=True)
@@ -2671,14 +2725,18 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             print(message)
         # Also in the finally, so a run killed after losing a row still says so in the marker. Each of
         # the two is a crop on disk this run knows has no row, or may not (a failed close). A torn row
-        # found at open is the third, and was recorded before it was cut (ProvenanceManifest._open).
+        # found at open is the third, and was recorded before it was cut (ProvenanceManifest._open), so it
+        # is not counted here again (#200). After a failed close every row this run appended may be lost, so
+        # each is counted: the count bounds how far off the last-row filter can be.
         if unrecorded or close_failure is not None:
             try:
-                _record_manifest_gap(destination_dir)
+                _record_manifest_gap(destination_dir, unrecorded + (manifest.rows_written
+                                                                    if close_failure is not None else 0))
             except Exception as e:
-                message = ("CropRunner could not record the gap in %s (%s): its %s still reads as it did "
-                           "when this run started, but this run left crops without a row in %s."
-                           % (CROP_RULE_MARKER, e, MANIFEST_NO_KNOWN_GAP, PROVENANCE_MANIFEST))
+                message = ("CropRunner could not record the gap in %s (%s): its %s and %s still read as they "
+                           "did when this run started, but this run left crops without a row in %s."
+                           % (CROP_RULE_MARKER, e, MANIFEST_NO_KNOWN_GAP, MANIFEST_KNOWN_GAPS,
+                              PROVENANCE_MANIFEST))
                 logging.error('%s', message)
                 print(message)
 

@@ -3072,7 +3072,8 @@ class TestTheMarkerKeepsItsHistory:
         assert caplog.text == ''
         after = _read_marker(crop_runner, tmp_path)
         assert after['rules_seen'] == ['v3']
-        for key in ('city', crop_runner.MANIFEST_NO_KNOWN_GAP, 'provenance_manifest_started_under'):
+        for key in ('city', crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_KNOWN_GAPS,
+                    'provenance_manifest_started_under'):
             assert after[key] == before[key], key
         assert crop.read_bytes() == b'crop'
 
@@ -3249,7 +3250,7 @@ class TestTheMarkerInThePerCityStore:
         the rule history must read straight through it."""
         (tmp_path / crop_runner.PROVENANCE_MANIFEST).write_text(
             ','.join(crop_runner.PROVENANCE_COLUMNS) + '\n', encoding='utf-8')
-        crop_runner._record_manifest_gap(str(tmp_path))
+        crop_runner._record_manifest_gap(str(tmp_path), 1)
         assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') is None
         crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
         marker = _read_marker(crop_runner, tmp_path)
@@ -3303,7 +3304,8 @@ class TestTheMarkerInThePerCityStore:
         assert set(crop_runner._rule_constants()) | {
             'crop_rule_version', 'distance_estimator', 'previous_crop_rule_version', 'rules_seen',
             'constants_seen', 'city', 'tilt_correction', 'provenance_manifest', 'provenance_manifest_started_under',
-            crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_PRE_CITY, crop_runner.MANIFEST_PRE_TILT} == set(marker)
+            crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_KNOWN_GAPS, crop_runner.MANIFEST_PRE_CITY,
+            crop_runner.MANIFEST_PRE_TILT} == set(marker)
 
 
 # ---------------------------------------------------------------------------
