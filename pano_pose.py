@@ -155,9 +155,9 @@ def bearing_elevation_from_pixel(x, y, pano_width, pano_height):
 
 
 def rig_pixel_from_gravity_pixel(x, y, pano_width, pano_height, pitch_deg, roll_deg):
-    """Where a point stored in gravity-levelled pixels sits in a rig-frame raster: the correction
-    CropRunner applies at beta = 1 under --tilt-correction (#191; corrected_pixel scales it). To first
-    order y moves by -T(b)*h/180."""
+    """Where a point stored in gravity-levelled pixels sits in a rig-frame raster: the
+    full (beta 1) correction. CropRunner applies a fraction beta of it under --tilt-correction (#191,
+    #197; corrected_pixel scales it). To first order y moves by -T(b)*h/180."""
     b, el = bearing_elevation_from_pixel(x, y, pano_width, pano_height)
     return pixel_from_bearing_elevation(*gravity_to_rig(b, el, pitch_deg, roll_deg), pano_width, pano_height)
 

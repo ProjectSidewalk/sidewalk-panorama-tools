@@ -353,8 +353,9 @@ recommended order is (as written 2026-09-29; where each step stands now is in th
   order. The batch corroborates a beta a little under 1 but had no power to measure it
   ([its DECISIONS.md, section 5](data/2026-09-29-tilt-beta-jm/DECISIONS.md)). The correction landed in PR #193
   as CropRunner's `--tilt-correction`, off by default, with beta keyed on the pose record (`xml`/`npz`,
-  both 1.0 for now; [docs/cropper.md](../docs/cropper.md#the-tilt-correction-opt-in-191)). Choosing the
-  default beta and turning the flag on is #197; the per-crop provenance column that must land first is #196.
+  both 1.0 at first; [docs/cropper.md](../docs/cropper.md#the-tilt-correction-opt-in-191)). #197 then set the
+  default beta to the RampNet slopes, 0.88 (xml) and 0.95 (npz), on 2026-10-06. Turning the flag on is the
+  rest of #197; the per-crop provenance column that must land first is #196.
   Still to file: ingesting the legacy `.xml` tilt as a first-class artifact (it is the only pose for dead panos),
   and a fleet-wide pose scan. The redraw's scan covered the vouched pool's 45,687 panos across the GSV
   deployments, but only those.
