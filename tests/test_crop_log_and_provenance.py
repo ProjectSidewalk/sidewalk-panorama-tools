@@ -381,6 +381,21 @@ class TestTheProvenanceManifest:
         assert crop_runner.PROVENANCE_COLUMNS[:7] == crop_runner.PRE_TILT_PROVENANCE_COLUMNS
         assert crop_runner.PROVENANCE_COLUMNS[7:] == crop_runner.TILT_PROVENANCE_COLUMNS
 
+    @pytest.mark.parametrize('tilt', [('npz', '1.0', '5.0'), ('npz', '1.0', '5.0', '6.0', 'extra')],
+                             ids=['short', 'long'])
+    def test_a_tilt_record_of_the_wrong_width_is_refused_and_writes_nothing(self, crop_runner, tmp_path,
+                                                                           tilt):
+        """A short tuple would leave a row short of its header and a long one would put a cell under no
+        header; either is a caller's bug, raised before a byte is written - and a raise out of record() is
+        the loop's provenance_unrecorded path, never a lost crop."""
+        manifest = crop_runner.ProvenanceManifest(str(tmp_path), 'seattle-wa')
+        try:
+            with pytest.raises(ValueError):
+                manifest.record(1, 'testpano0001', ('', '', ''), tilt=tilt)
+        finally:
+            manifest.close()
+        assert manifest_rows(tmp_path, crop_runner) == [list(crop_runner.PROVENANCE_COLUMNS)]
+
     def test_one_row_per_crop_carrying_what_the_metadata_says(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
@@ -457,7 +472,8 @@ class TestTheProvenanceManifest:
                                                 force=True, sizing_rule='v3')
         assert counts['recut'] == 1
         rows = [row for row in manifest_rows(out, crop_runner)[1:] if row[1] == '1']
-        assert [row[-1] for row in rows] == ['v2', 'v3']
+        rule = crop_runner.PROVENANCE_COLUMNS.index('crop_rule_version')
+        assert [row[rule] for row in rows] == ['v2', 'v3']
 
     def test_a_manifest_that_cannot_be_opened_raises_before_any_crop(self, crop_runner, tmp_path,
                                                                      monkeypatch):
@@ -543,7 +559,8 @@ class TestTheProvenanceManifest:
             f.write(','.join(crop_runner.PROVENANCE_COLUMNS) + '\n' + '99,torn')
         crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out))
         rows = manifest_rows(out, crop_runner)
-        assert rows[1:] == [['', '1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]]
+        assert rows[1:] == [['', '1', 'testpano0001', 'gsv', '', '', crop_runner.CROP_RULE_VERSION]
+                            + UNCORRECTED_CELLS]
 
     def test_an_empty_manifest_file_still_gets_its_header(self, crop_runner, tmp_path):
         """A crash between creating the file and writing the header leaves it zero bytes. 'The file
@@ -1011,7 +1028,7 @@ class TestTheOpenTimeRepairCutsBackToTheLastWholeLine:
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         header = ','.join(crop_runner.PROVENANCE_COLUMNS)
-        good = 'seattle-wa,98,testpano0001,mapillary,"Doe, J",CC-BY-SA-4.0,v2'
+        good = 'seattle-wa,98,testpano0001,mapillary,"Doe, J",CC-BY-SA-4.0,v2,none,0.0,,'
         self.write_manifest(crop_runner, out,
                             header + '\n' + good + '\n' + 'seattle-wa,99,testpano0001,mapillary,"Roe, R')
         crop_runner.bulk_extract_crops([labelled(1), labelled(2)], str(store), str(out))
@@ -1822,7 +1839,13 @@ class TestAPreTiltManifestIsSetAsideNotAppendedTo:
         root = tmp_path / 'root'
         root.mkdir()
         os.rename(str(out), str(city_store(root)))
-        before = tree_snapshot(root)
+
+        def snapshot_without_the_log():
+            # main() opens crop.log before the refusal, and the refusal is in it; everything else is untouched.
+            return {path: data for path, data in tree_snapshot(root).items()
+                    if os.path.basename(path) != 'crop.log'}
+
+        before = snapshot_without_the_log()
         csv_file = tmp_path / 'labels.csv'
         write_labels_csv(csv_file, [label_row(label_id=1)])
         code = crop_runner.main(['--city', 'seattle-wa', '-f', str(csv_file), '-s', str(store),
@@ -1831,4 +1854,4 @@ class TestAPreTiltManifestIsSetAsideNotAppendedTo:
         assert crop_runner.PROVENANCE_MANIFEST_PRE_TILT in capsys.readouterr().out
         assert any(r.levelno == logging.ERROR and crop_runner.PROVENANCE_MANIFEST_PRE_TILT in r.getMessage()
                    for r in caplog.records)
-        assert tree_snapshot(root) == before
+        assert snapshot_without_the_log() == before

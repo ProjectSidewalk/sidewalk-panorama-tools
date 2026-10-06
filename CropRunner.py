@@ -190,9 +190,9 @@ V3_CONTEXT_WIDTH_M = 5.8
 # corroboration only (it leans below 1 in both arms but, at 5 discordant sheets per arm, had no power to
 # measure beta: reports/data/2026-09-29-tilt-beta-jm/DECISIONS.md, section 5), and choosing the default is
 # its own decision (#197). The priors are named so
-# whoever sets them knows where they came from; they are not applied. Also open: the per-crop provenance
-# column (#196), which must land before the flag is turned on for any consumer store, and re-fitting the
-# sizing rules on corrected coordinates (#186).
+# whoever sets them knows where they came from; they are not applied. The per-crop record of the correction
+# is in the provenance manifest (#196, TILT_PROVENANCE_COLUMNS); still open is re-fitting the sizing rules
+# on corrected coordinates (#186).
 TILT_BETA_BY_POSE_SOURCE = {pano_pose.POSE_SOURCE_XML: 1.0, pano_pose.POSE_SOURCE_NPZ: 1.0}
 TILT_POSE_SOURCES = (pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ)
 
@@ -235,7 +235,25 @@ PROVENANCE_MANIFEST = 'crop_provenance.csv'
 # pano_data.license, SidewalkWebpage#5202), so a value that arrives under it needs no renaming here.
 PROVENANCE_FIELDS = ('source', 'copyright', 'license')
 
-PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+# What each row says about the tilt correction (#196), since --tilt-correction makes a store mixed by
+# construction (no_pose is mostly permanent, and a --force re-cut leaves those crops stale_kept) while
+# crop_rule.json records only run-level settings: the pose record the window was corrected from, the beta
+# applied, and the corrected centre the window was cut around, unrounded. Appended after the pre-#196
+# columns, so those keep their positions.
+TILT_PROVENANCE_COLUMNS = ('pose_source', 'tilt_beta', 'corrected_pano_x', 'corrected_pano_y')
+
+# The pose_source of a crop this run did not correct. Defined here, not in pano_pose, whose PanoPose.source
+# is always a record that was read.
+POSE_SOURCE_NONE = 'none'
+
+# The four cells of a row cut without a correction: beta 0.0 is the marker's own "off" value (beta 0 is the
+# identity), and the centre columns are blank because nothing was corrected - never the stored point copied
+# in under a "corrected" name. A row's ABSENCE from the manifest (a crop listed only in a set-aside file) is
+# not this: it means unknown, since a crop cut under #193 with the flag on has no row here.
+TILT_PROVENANCE_OFF = (POSE_SOURCE_NONE, '0.0', '', '')
+
+PRE_TILT_PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+PROVENANCE_COLUMNS = PRE_TILT_PROVENANCE_COLUMNS + TILT_PROVENANCE_COLUMNS
 
 # The manifest's header before rows carried a city (#159 step 1), and where a manifest still under it is
 # moved so the city-bearing rows never land beneath it. See set_aside_pre_city_manifest.
@@ -1441,6 +1459,13 @@ class ProvenanceManifest:
     as a gap). Append-only: a row is never rewritten, so every re-cut appends a row and the last one for a
     label describes the file.
 
+    **Each row says whether its crop was tilt-corrected (#196)**: TILT_PROVENANCE_COLUMNS after
+    crop_rule_version - the pose record the correction used (`xml`/`npz`), the beta applied, and the
+    corrected centre the window was cut around, unrounded. A crop the run did not correct carries
+    TILT_PROVENANCE_OFF (`none`, `0.0`, blank, blank). `none` means "this run did not correct it"; a crop
+    with NO row here (listed only in a set-aside manifest, or cut before the manifest existed) is unknown,
+    not uncorrected.
+
     One CropRunner per store: nothing locks the manifest, and a second run's first open would cut this
     run's in-flight row as torn.
 
@@ -1514,8 +1539,9 @@ class ProvenanceManifest:
         self._file = handle
         return cut_row
 
-    def record(self, label_id, pano_id, provenance):
-        """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order.
+    def record(self, label_id, pano_id, provenance, tilt=TILT_PROVENANCE_OFF):
+        """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order; `tilt` is
+        TILT_PROVENANCE_COLUMNS' values (#196) - TILT_PROVENANCE_OFF for a crop this run did not correct.
 
         Raises if the row did not reach the file; the handle is dropped first, so nothing of the row
         survives to be written later, and then reopened at once, which cuts any part of the row that did
@@ -1523,7 +1549,13 @@ class ProvenanceManifest:
         tear left by the run's LAST append used to be cut by the next run's first open and reported as a
         previous run killed mid-append, about a row this run had already reported as unrecorded. The
         reopen is best-effort: if it fails, the handle stays dropped and the next call reopens instead."""
-        line = _csv_line((self.city, label_id, pano_id) + tuple(provenance) + (self.sizing_rule,))
+        tilt = tuple(tilt)
+        # A short tuple would shift no column - it would leave the last ones off, and a reader would see a
+        # short row - but a long one would put cells under no header. Either is a caller's bug.
+        if len(tilt) != len(TILT_PROVENANCE_COLUMNS):
+            raise ValueError("tilt provenance needs %d values (%s), got %r"
+                             % (len(TILT_PROVENANCE_COLUMNS), ', '.join(TILT_PROVENANCE_COLUMNS), tilt))
+        line = _csv_line((self.city, label_id, pano_id) + tuple(provenance) + (self.sizing_rule,) + tilt)
         if self._file is None:
             self._open()
         try:
@@ -2208,6 +2240,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     destination_dir is ONE city's store - main() passes <crop-dir>/<city>/ (#159) - and `city` is that
     city, recorded in its marker and on every manifest row. A caller below main() hands a store directly.
 
+    Every crop cut gets a ProvenanceManifest row, which since #196 also says whether this run corrected it
+    for tilt: `pose_source` (`xml`/`npz`, or `none` without --tilt-correction), `tilt_beta` (`0.0` when
+    not corrected) and the corrected centre (blank when not corrected). A no_pose or stale_kept label
+    gets no row, so for a store cut more than once the LAST row per (city, label_id) describes the crop
+    on disk.
+
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
     pano, malformed row, or failed write is counted as an error and logged; both leave the remaining labels
     running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). A pano whose header
@@ -2528,8 +2566,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     # NOT an error: the crop is the resume marker, so a re-run skips it and could never write
                     # the row - counting it would break "errors retry next run" and put one label in two
                     # buckets. It is logged per label and totalled in the summary instead.
+                    # The row says whether, and how, this crop was corrected (#196): the window's own centre,
+                    # unrounded, so the row and the crop cannot disagree.
+                    tilt = (TILT_PROVENANCE_OFF if pose is None
+                            else (pose.source, str(float(beta)), str(centre_x), str(centre_y)))
                     try:
-                        manifest.record(label_id, pano_id, provenance)
+                        manifest.record(label_id, pano_id, provenance, tilt=tilt)
                     except Exception as e:
                         unrecorded += 1
                         budget.warning('provenance_unrecorded',
