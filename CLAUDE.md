@@ -62,6 +62,10 @@ python3 migrate_crop_store.py <crop-dir> --city <city_id> [--dry-run]
 # it if that refresh fails (#122).
 python3 downscale_panos.py <storage-dir> [--dry-run] [--max-runtime MINUTES] [--max-width PX] [--min-width PX]
 
+# Edge black bands (#179): ledger every stored pano's bottom/right exact-black band depth and write a work-list of
+# the deep ones (refetch_panos --worklist reads it). Reads only; idempotent, resumable. --min-band 0 = calibration.
+python3 scan_black_bands.py <storage-dir> [--max-runtime MINUTES] [--min-band FRACTION] [--ledger CSV] [--worklist CSV]
+
 # One-off repair pass for fover-era panos (#73). Never backfills, never downgrades; see docs/ops.md
 python3 reports/scripts/pano_y_histogram.py <city-fqdn> --write-worklist
 python3 refetch_panos.py <storage-dir> (--worklist <csv.gz> | --from-store) [--dry-run] \
@@ -109,7 +113,7 @@ The frontmatter is the definition of when each file loads; the table says what i
 | `.claude/rules/cropper.md` | the crop pipeline end to end, the label-type table | `CropRunner.py`, its migrator and schema tripwire, `samples/` |
 | `.claude/rules/tilt.md` | the #54 frames and signs, the adjudication data, the crop-time correction | `CropRunner.py`, the tilt scripts (never inside a judge folder) |
 | `.claude/rules/queue.md` | the nightly queue and the alarm channel | `scrape_queue.py`, `cron_notify.py`, `docs/ops.md` |
-| `.claude/rules/store-repair.md` | the refetch gates, the display-copy sweep, the width tripwire | `refetch_panos.py`, `downscale_panos.py`, `downloaders/common.py` |
+| `.claude/rules/store-repair.md` | the refetch gates, the display-copy sweep, the width tripwire, the edge black-band sweep | `refetch_panos.py`, `downscale_panos.py`, `scan_black_bands.py`, `downloaders/common.py` |
 | `.claude/rules/log-analyzer.md` | the analyzer's rules and the depth backfill report | `log_analyzer/`, its test, `docs/log-analyzer.md` |
 | `.claude/rules/desk-studies.md` | the six desk-study conventions and the annotation tool | everything under `reports/`, every study test |
 
@@ -129,7 +133,7 @@ The per-module detail lives in the rules files named in "Guidance layout"; the s
 
 **DownloadRunner.py** - orchestrates one city's nightly run: fetch the pano list from `/adminapi/panos` (or a CSV), run the image phase then the depth phase under one monotonic `--max-runtime`, append one 19-column `log.csv` row in a `finally`, and write `--run-summary-file` (the stop reasons plus the run *conditions*, #161) for the queue. Store mode (`--from-store`, #30) pulls already-scraped panos over SFTP instead of scraping. Rules: `.claude/rules/downloader.md`.
 
-**downloaders/** - per-source imagery: `gsv.py` (tile stitching at the photometa-resolved zoom, the tile push-back breaker, and the depth phase), `mapillary.py`, `panoramax.py`, `store_sftp.py`, and `common.py` (shared image primitives, the display-copy switch, the width tripwire). Which answers are permanent ledger verdicts and which raise is a contract, and every entry in it is a measurement. Rules: `.claude/rules/downloader.md`; the depth phase's pacing, block latch and artifacts: `.claude/rules/depth.md`.
+**downloaders/** - per-source imagery: `gsv.py` (tile stitching at the photometa-resolved zoom, the tile push-back breaker, and the depth phase), `mapillary.py`, `panoramax.py`, `store_sftp.py`, and `common.py` (shared image primitives - including the #179 edge black-band detector the GSV save refuses on - the display-copy switch, the width tripwire). Which answers are permanent ledger verdicts and which raise is a contract, and every entry in it is a measurement. Rules: `.claude/rules/downloader.md`; the depth phase's pacing, block latch and artifacts: `.claude/rules/depth.md`.
 
 **CropRunner.py** - cuts one 3:2 crop per label from the stored panos into `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`: intake (cvMetadata or a file), grouping by pano, two preflights and a content check, the sizing rule (v2 default, v3 opt-in), an opt-in `--tilt-correction` (#191: the window centred on the rig pixel from the pano's own pose, beta per pose record; a pano with no pose is `no_pose`), a seam-wrapping window, atomic writes, a provenance manifest and a sticky rule marker. Nothing in the crop loop is fatal and the counts reconcile on every path. Rules: `.claude/rules/cropper.md` (also `migrate_crop_store.py`, `check_cvmetadata_schema.py` and the label-type table); the #54 tilt geometry (`pano_pose.py`) and its crop-time correction: `.claude/rules/tilt.md`.
 
@@ -137,7 +141,7 @@ The per-module detail lives in the rules files named in "Guidance layout"; the s
 
 **log_analyzer/analyze.py** - ops monitoring: pulls each city's `log.csv` off the store, applies the per-city rules, reports the depth backfill, and cross-checks `cities.csv` against the live roster with its own copy of the roster code. Rules: `.claude/rules/log-analyzer.md`.
 
-**Repair and migration passes** - `refetch_panos.py` (re-fetch behind four refusal gates; the `fover` pass it was built for does not run), `downscale_panos.py` (the display-copy sweep; the feature is switched off and this is its only creator), `migrate_depth_artifacts.py` (pre-v2 artifacts into v2 order) and `migrate_crop_store.py` (a pre-#159 flat crop store into `<crop-dir>/<city>/`). Rules: `.claude/rules/store-repair.md` for the first two, `.claude/rules/depth.md` and `.claude/rules/cropper.md` for the migrators.
+**Repair and migration passes** - `refetch_panos.py` (re-fetch behind four refusal gates; the `fover` pass it was built for does not run), `downscale_panos.py` (the display-copy sweep; the feature is switched off and this is its only creator), `scan_black_bands.py` (read-only: ledgers every pano's edge black-band depth and lists the deep ones, #179), `migrate_depth_artifacts.py` (pre-v2 artifacts into v2 order) and `migrate_crop_store.py` (a pre-#159 flat crop store into `<crop-dir>/<city>/`). Rules: `.claude/rules/store-repair.md` for the first three, `.claude/rules/depth.md` and `.claude/rules/cropper.md` for the migrators.
 
 ## Storage layout
 

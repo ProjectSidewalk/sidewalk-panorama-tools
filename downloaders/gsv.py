@@ -614,6 +614,22 @@ class FrameDisagreementError(Exception):
     """
 
 
+class EdgeBandError(FrameDisagreementError):
+    """The stitch has an exactly-black band along its bottom or right edge deeper than
+    common.EDGE_BAND_MAX_FRACTION (#179), so it is not saved.
+
+    A subclass of FrameDisagreementError because that is what such a band is evidence of: tiles past what
+    Google serves come back 200 and all black, so a band at the edge is a grid larger than the pano - #156's D4
+    shape, which the photometa arm refuses before the fan-out but the probe arm does not (#181). It therefore
+    inherits that error's handling in the image loop unchanged: counted, not ledgered, retried next run, and an
+    answer rather than a raise for images-no-success. Its message carries "frame disagreement" too, then
+    "black band", which is the grep for this check alone.
+
+    Unlike the other frame refusals it is decided AFTER the fan-out, so a pano refused here costs its whole
+    tile grid every night it is retried.
+    """
+
+
 def choose_zoom(sizes, width, height):
     """(zoom, consistent) for fetching a (width, height) frame from a pano whose levels are `sizes`.
 
@@ -1184,6 +1200,25 @@ def _frame_refusal(pano_id, frame):
     return None
 
 
+def _refuse_deep_edge_band(image, pano_id):
+    """Raise EdgeBandError, loudly on both channels, when the stitch has an edge band over the limit (#179).
+
+    Checked here, on the stitch in memory before the atomic save, and not in fetch_pano_image: refetch_panos
+    composes that seam with its own, tighter too_black gate, and this is a decision about what the nightly
+    run puts on the store. One line per channel, the FrameDisagreementError pattern: this print, and the
+    ERROR the image loop logs with the exception's text.
+    """
+    bands = common.edge_black_bands(image)
+    sides = common.deep_edge_bands(bands)
+    if not sides:
+        return
+    refusal = ("frame disagreement: the stitch has an exactly-black band %.1f%% deep along the bottom and "
+               "%.1f%% along the right (limit %.1f%%, #179), so its frame is larger than the imagery Google "
+               "served" % (100 * bands.bottom, 100 * bands.right, 100 * common.EDGE_BAND_MAX_FRACTION))
+    print("IMAGEDOWNLOAD: WARNING - pano %s: %s; not downloaded, retried next run" % (pano_id, refusal))
+    raise EdgeBandError('pano %s: %s' % (pano_id, refusal))
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
 
@@ -1225,6 +1260,7 @@ def download_single_pano(storage_path, pano_info):
     # fetch_pano_image always receives the APP's frame: the reported levels only ever choose which zoom (and so
     # which grid) is requested, never what size the saved JPEG is.
     stitched = fetch_pano_image(pano_id, frame.width, frame.height, frame.zoom)
+    _refuse_deep_edge_band(stitched.image, pano_id)
     # atomic_output_path, not a direct save: an image on disk IS the resume marker, so a mid-write crash
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:

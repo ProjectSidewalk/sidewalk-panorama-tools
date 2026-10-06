@@ -680,6 +680,86 @@ remedy is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the 
 Google serves now. The stdout line reaches no one on a night that exits 0 (see
 [Hearing about a bad night](#hearing-about-a-bad-night)).
 
+## Edge black bands
+
+Some panoramas hold exact black where imagery should be, as a band along the bottom or right edge of the
+frame: [#156](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/156)'s D4 shape (a frame
+reported larger than Google serves leaves the right and bottom 18.75% black, under the stitcher's 50%
+whole-frame guard) and the fallback stitches from before
+[#68](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/68). Every crop cut from such a pano
+inherits the problem, and the cropper's window check cannot see all of it: it misses a bottom band thinner
+than a sixth of the pano, and the D4 shape outside its bands
+([Cropper → the content check](cropper.md#the-content-check-black_content)). So
+[#179](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/179) added a pano-level check, one
+primitive in `downloaders/common.py` used in two places.
+
+**What counts as a band.** `edge_black_bands` measures how deep the exactly-black band (luma 0, the same
+definition as `black_fraction`) runs in from the bottom edge and from the right edge, as a fraction of the
+frame. It judges the frame at 1/8 scale. A stored JPEG is read in Pillow's draft mode, luma only, which takes
+about 0.08 s on the repo's 13312×6656 sample and never builds the full raster. A stitch in memory is
+box-reduced, about 0.12 s at 16384×8192. A line belongs to the band when at least
+`EDGE_BAND_LINE_MIN_BLACK` (98%) of it is exact zero, counting inward from the edge until the first line that
+is not. A black stripe with imagery between it and the edge is therefore not an edge band, and neither is a
+night scene or a near-black nadir, because JPEG noise keeps them off 0. A band deeper than
+`EDGE_BAND_MAX_FRACTION` (strict `>`) is **deep**.
+
+**`EDGE_BAND_MAX_FRACTION` is 0.05 and not yet calibrated.** A camera's genuinely black nadir cap is also a
+bottom band (a spherical cap maps to whole rows of the frame), so only depth separates it from a fault, and
+#179 asks for that depth to be measured per source before the limit is trusted. The 0.05 is set from the
+tile grid instead. One zoom-5 tile row is 1/16 = 6.25% of the frame, so any band a grid leaves is over the
+limit with room to spare, while a black cap up to 9° of elevation is under it. The sweep below records every
+pano's depths, so one sweep over a store is the calibration measurement.
+
+### The downloader refuses a stitch with a deep band
+
+`gsv.download_single_pano` checks the stitch in memory before the atomic save. A deep band raises
+`EdgeBandError`, a subclass of `FrameDisagreementError`, because tiles past what Google serves come back
+black and so a band at the edge is a grid larger than the pano. It is therefore handled exactly like
+[a frame disagreement](#a-gsv-pano-refused-for-a-frame-disagreement): one stdout `WARNING` and one
+`scrape.log` `ERROR`, both containing `frame disagreement` and `black band`. It is counted in field 9, never
+ledgered, retried every run, and counts as an answer for `images-no-success`. To count these refusals alone,
+run `grep "black band" <store>/<city>/scrape.log`.
+The photometa arm already refuses the D4 frame before the fan-out, so this check mostly catches the probe arm's
+residual ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)). Unlike the other
+frame refusals it is decided **after** the fan-out, so a pano refused here costs its whole tile grid every
+night it is retried.
+
+### Sweeping the store: `scan_black_bands.py`
+
+```bash
+python3 scan_black_bands.py <storage-dir>                     # ledger every pano, write the work-list
+python3 scan_black_bands.py <storage-dir> --max-runtime 240   # a slice; the rest report as unreached
+python3 scan_black_bands.py <storage-dir> --min-band 0        # list every pano with ANY band: calibration
+```
+
+**It reads, and writes only its own two files.** No panorama is written, moved or deleted. The files are:
+
+- `<storage-dir>/black_bands.csv` (`--ledger`), one row per pano scanned: `pano_id, size, mtime_ns, width,
+  height, bottom_band, right_band`, with the depths as fractions of the frame, whatever they are. Each row is
+  on disk as soon as its verdict lands, so a killed run keeps its progress.
+- `<storage-dir>/black_band_worklist.csv` (`--worklist`), rewritten from the whole ledger at the end of
+  every run. It lists the panos whose band is deeper than `--min-band` (default `EDGE_BAND_MAX_FRACTION`),
+  with `pano_id, width, height, bottom_band, right_band, side`.
+
+**Idempotent and resumable.** A pano whose ledger row still matches its size and mtime is not decoded again,
+so a re-run over a finished store costs one `stat` per pano. A pano swapped since then is scanned afresh. A
+pano that is not a readable JPEG is reported `FAILED` and left unledgered, so the next run tries it again,
+and the run exits 1. The summary line splits the panos it examined into: with a band, without one, already
+ledgered, failed and unreached. Like `downscale_panos.py`, run it on the host that owns the store, not over
+sshfs. The store is enumerated with `walk_store_panos()`, so display copies and crops trees are never read as
+panoramas.
+
+**What the work-list is for.** The work-list does two jobs:
+
+- Its `pano_id, width, height` columns are what `refetch_panos.py --worklist` reads. The width and height are
+  the stored frame, so the pass sees no `dims_changed`. Be aware that refetch's gates were built for the
+  `fover` pass. A pano stored after `--fixed-after` is `already_clean` by its mtime and is never fetched.
+  And a D4 pano's stored frame *is* the wrong frame, so a re-fetch at that frame stitches the same band and
+  is refused `too_black`. Repairing one needs the app's frame corrected first.
+- The same ids name the crops cut from these panos. An existing crop is the cropper's resume marker and is
+  never re-cut on its own, so re-cutting one is a person deleting it and re-running the cropper. No tool here
+  deletes a crop ([the store is an archive](#the-store-is-an-archive-not-a-cache)).
+
 ## When the depth phase stands itself down
 
 Several things stop depth without stopping the run (the latch has two sources, the depth phase and the

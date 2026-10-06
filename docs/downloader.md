@@ -705,6 +705,14 @@ Google serves now. Expected volume is near zero: all 651 live panos sampled by t
 [2026-08-09 photometa census](../reports/2026-08-09-photometa-census.md) served exactly the dimensions the
 app stores.
 
+**A stitch with a deep black band at its edge is refused the same way**
+([#179](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/179)). The check runs after the
+fan-out and before the save. A band of exact black along the bottom or right edge deeper than
+`common.EDGE_BAND_MAX_FRACTION` (5% of the frame) means the grid was larger than the pano Google served, which
+is the probe arm's residual. It raises `EdgeBandError`, a `FrameDisagreementError` subclass, so it is
+handled like the refusal above. Its lines also contain `black band`. The threshold, its calibration status,
+and the sweep for panos already on the store are in [Ops → Edge black bands](ops.md#edge-black-bands).
+
 A new pano costs one photometa request where the probe cost two; a pano the probe has to answer costs the
 two probe tiles plus the two frame-check tiles (plus the photometa request that failed, if one was sent); a
 retired one costs one photometa request plus the two probe
