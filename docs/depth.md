@@ -156,8 +156,11 @@ fan-out — and on top of that:
 * **Requests stop when Google pushes back.** The photometa endpoint doesn't answer scraping pressure with an
   HTTP 429; it serves (or redirects to) a captcha/consent interstitial carrying a 200, which would otherwise
   look identical to one pano having a bad payload. A response hook spots those, and the phase stops for the
-  run rather than spending the rest of its budget on a wall. Exhausting the retry policy against 429/5xx is
-  treated the same way.
+  run rather than spending the rest of its budget on a wall. Exhausting the retry policy against **429** is
+  treated the same way, as is giving up on an interstitial URL at any status. A run of 5xx answers that
+  exhausts it is Google being ill, not refusing us: each counts as an ordinary failure towards the breaker
+  below, and it never latches or forfeits the pace
+  ([#177](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/177)).
 * **A circuit breaker** stops the phase after 25 consecutive transient failures, with escalating back-off
   (30 s / 2 min / 5 min) before it gives up. Nothing is concluded from a trip — every unresolved pano simply
   retries next run — but the run prints a loud warning breaking the failure streak down by cause (e.g.
@@ -258,7 +261,8 @@ fan-out — and on top of that:
     pacer's earned standing, as a depth-phase refusal does. A *refusal* is drawn on the push-back breaker's
     line: a 429 or 403, an interstitial, or the session hook's `DepthBlockedError`. A 5xx storm that exhausts
     the photometa session's retry policy is weather, not a refusal: it counts as an ordinary photometa failure
-    (three in a row and photometa is not asked again that run) and latches nothing. Both image-phase writers
+    (three in a row and photometa is not asked again that run) and latches nothing. The depth loop splits on
+    the same predicate (#177). Both image-phase writers
     go through `gsv.record_google_refusal`, and the WARNING says whether the latch was actually written. The image phase shares the latch, **not the
     pacer**: a new pano's photometa request is normally followed by a 28–512-tile fan-out, so it runs far
     below the depth phase's opening rate. A refused pano has no fan-out, but refusals are expected at close to
