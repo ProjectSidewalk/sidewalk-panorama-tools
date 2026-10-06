@@ -2233,8 +2233,8 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
     The phase stops early if Google starts refusing requests (see DepthBlockedError) or after
     DEPTH_MAX_CONSECUTIVE_FAILURES transient failures in a row, rather than spending the rest of the budget on a
     wall. A network streak of at least DEPTH_OUTAGE_MIN_STREAK still running when a budget stops the phase is
-    booked as that breaker too, marked DEPTH_ENDED_ON_BUDGET, and no retreat sleep runs past the budget.
-    config.depth_min_request_interval paces requests if set.
+    booked as that breaker too, marked DEPTH_ENDED_ON_BUDGET, and a retreat that would reach the budget stops
+    the phase instead. config.depth_min_request_interval paces requests if set.
 
     Note that 'unavailable' — a permanent, expected, non-actionable outcome — is counted in fail_count, and so
     lands in log.csv's depth failure column. That column is therefore not usable as an alert signal; the split is

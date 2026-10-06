@@ -175,8 +175,11 @@ fan-out — and on top of that:
   At about 30 s per exhausted request, a 5xx storm inside a 12-minute slot meets the budget long before 25
   failures, so a run of at least 5 network failures (the back-off's first step) still going when a budget
   stops the phase is booked as the breaker too, with the token `ended_on_budget` in its breakdown (e.g.
-  `7 network; ended_on_budget`). A list that runs out mid-streak is not booked. The back-off never sleeps
-  past what is left of `--max-runtime`.
+  `7 network; ended_on_budget`). A list that runs out mid-streak is not booked. The floor counts failures,
+  not time: an outage where photometa does not answer at all costs up to ~211 s per failure (connect
+  timeouts and retries), so a slot ends at about 4 and that outage is not booked. A back-off that would
+  reach the end of `--max-runtime` stops the phase there instead of sleeping; a request already in flight
+  can still run past it.
   A refusal, a stand-down on the latch and a tripped breaker (including an `ended_on_budget` one) are each
   also a [condition that fails the night](downloader.md#a-city-can-finish-ok-and-still-fail-the-night)
   (#161), so the nightly alarm fires on them; a budget stop after scattered failures is not one.
