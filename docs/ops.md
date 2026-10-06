@@ -779,10 +779,11 @@ cannot tell from a finished backfill — so after drift, check every city's `dep
 ### Repairing a ledger the phase cannot read
 
 `depth-ledger-unusable` with `field larger than field limit` in its detail means one line of the city's
-`depth_log.csv` is junk that `csv` refuses to parse: a run of binary from a crash mid-append, or a stray `"`
-that opens a quoted field running on past the limit. The depth phase leaves the file exactly as it found it
-and sits every night out until the line is gone — no tool moves or truncates the ledger, because it is store
-state ([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The image phase is not
+`depth_log.csv` is junk that `csv` refuses to parse: a run of binary from a crash mid-append, longer than the
+limit with no line break in it. (A NUL, a stray `"` or an undecodable byte costs only its own row, and is not
+this.) The depth phase leaves the file exactly as it found it and sits every night out until the line is gone —
+no tool moves or truncates the ledger, because it is store state
+([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The image phase is not
 affected. In the city's store directory:
 
 1. **Copy the ledger first**: `cp -p depth_log.csv depth_log.csv.bak-$(date +%F)`.

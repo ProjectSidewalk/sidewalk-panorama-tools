@@ -52,6 +52,16 @@ class TestLoadDepthLog:
         assert {'bbbbbb', 'cccccc'} <= resolved
         assert 'aaaaaa' not in resolved
 
+    def test_a_stray_quote_costs_one_row_not_the_rest_of_the_file(self, tmp_path):
+        """The writer never quotes and ids are [A-Za-z0-9_-], so a '"' is junk. Read with csv's default quoting it
+        opened a quoted field that swallowed every later row - future appends included - and the reader returned
+        the rows before it with no error until the swallowed tail passed csv.field_size_limit() (#189 review)."""
+        path = tmp_path / 'depth_log.csv'
+        path.write_bytes(b'pano_id,status\r\nbbbbbb,saved\r\n"aaaaaa,saved\r\ncccccc,saved\r\ndddddd,unavailable\r\n')
+        resolved = gsv._load_depth_log(str(path))
+        assert {'bbbbbb', 'cccccc', 'dddddd'} <= resolved
+        assert 'aaaaaa' not in resolved  # the quoted row's id is '"aaaaaa', which matches no pano
+
     # Zero-filled residue: a whole line of NULs, and a torn row whose tail is NULs. Stripped, the first is an
     # empty line and the second a row with no status, so each costs its own row and nothing else.
     NUL_LEDGER = b'pano_id,status\r\nbbbbbb,saved\r\n\x00\x00\x00\x00\r\naaaa\x00\x00\x00\r\ncccccc,unavailable\r\n'

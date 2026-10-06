@@ -116,9 +116,10 @@ run re-check everything; existing artifacts are re-registered without re-downloa
 A damaged ledger costs as little as it can, and never the run
 ([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). A torn row (a crash
 mid-append) is skipped, so that one pano is re-checked. A byte that is not UTF-8 is replaced rather than
-raised, and NULs - the zero-filled residue a crash most often leaves - are stripped before `csv` sees them
-(Python 3.10 refuses a line holding one), so each costs only its own row. A field longer than `csv.field_size_limit()` makes the file
-unparseable: the depth phase then sits the run out under the `depth-ledger-unusable` condition — the same as a
+raised, NULs - the zero-filled residue a crash most often leaves - are stripped before `csv` sees them (Python
+3.10 refuses a line holding one), and a stray `"` is an ordinary character (the ledger is read with
+`QUOTE_NONE`; the writer never quotes), so each costs only its own row. A field longer than
+`csv.field_size_limit()` makes the file unparseable: the depth phase then sits the run out under the `depth-ledger-unusable` condition — the same as a
 ledger it cannot open — rather than re-request every pano after the bad line, and the image phase runs as usual.
 Nothing moves or truncates the file; [the repair is a hand edit](ops.md#repairing-a-ledger-the-phase-cannot-read).
 

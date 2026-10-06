@@ -862,6 +862,29 @@ class TestADamagedLedgerNeverCrashesTheRun:
         assert result == (1, 0, 2, 3)
         assert condition_codes(stop_reasons) == []
 
+    def test_a_stray_quote_costs_one_row_not_every_pano_after_it(self, tmp_path, fake_streetview):
+        """Under csv's default quoting a '"' swallowed the rest of the file into one field, silently: every pano
+        after it read as unresolved and was re-requested (or re-ledgered) every night, with no condition, until
+        the tail outgrew csv.field_size_limit() (#189 review). Read with QUOTE_NONE it is one junk row."""
+        storage = str(tmp_path)
+        write_ledger_bytes(storage, b'pano_id,status\r\nbbbbbb,saved\r\n"aaaaaa,saved\r\ncccccc,unavailable\r\n'
+                                    b'dddddd,unavailable\r\n')
+        calls = []
+
+        def fetch(pano_id, **kwargs):
+            calls.append(pano_id)
+            return make_pano(default_depth_array())
+
+        fake_streetview.find_panorama_by_id = fetch
+        stop_reasons = {}
+
+        result = gsv.download_depth_maps(storage, pano_infos('aaaaaa', 'bbbbbb', 'cccccc', 'dddddd'),
+                                         stop_reasons=stop_reasons)
+
+        assert calls == ['aaaaaa']
+        assert result == (1, 0, 3, 4)
+        assert condition_codes(stop_reasons) == []
+
     def test_an_unusable_ledger_is_never_touched(self, tmp_path, fake_streetview):
         """The ledger is store state: no "move it aside" or truncate. Repair is a documented hand edit
         (docs/ops.md), so the bytes after the phase are the bytes before it."""
@@ -941,7 +964,9 @@ def test_the_ledger_scrub_recipe_keeps_the_header_when_nothing_was_ever_saved(tm
 def test_the_unusable_ledger_repair_recipe_finds_and_removes_exactly_the_junk(tmp_path, fake_streetview):
     """docs/ops.md's "Repairing a ledger the phase cannot read" (#189), steps 2 and 3 verbatim from the page,
     against a CRLF ledger download_depth_maps wrote with three kinds of junk spliced in: an over-long run of
-    binary (the case that makes the ledger unusable), a stray quote, and an undecodable byte. Step 2 must name
+    binary (the case that makes the ledger unusable), a stray quote, and an undecodable byte. The last two cost
+    only their own rows now (QUOTE_NONE, errors='replace'), but they are not ledger rows either, and a hand
+    repair that is already in the file should take them out with the line that matters. Step 2 must name
     exactly those lines - not the header, not a good row - and after step 3 the phase must read the ledger and
     keep every good row."""
     with open(OPS_MD, encoding='utf-8') as f:

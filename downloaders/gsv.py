@@ -1762,8 +1762,12 @@ DEPTH_LEDGER_UNUSABLE_ERRORS = (OSError, csv.Error, UnicodeDecodeError)
 def _load_depth_log(depth_log_path):
     """Read the depth ledger into a set of resolved pano ids.
 
-    Four kinds of damage, two costs (#189):
+    Five kinds of damage, two costs (#189):
     - A malformed row (e.g. a line truncated by a crash mid-append) is skipped, so that pano is re-checked.
+    - A stray '"' is a literal character, because the ledger is read with QUOTE_NONE: the writer never quotes
+      (ids are [A-Za-z0-9_-]), so nothing legitimate changes. Under csv's default quoting it opened a field that
+      swallowed every later row, future appends included, and the read returned a partial set with no error
+      until that tail outgrew the field-size limit - the silent partial read the last item refuses.
     - A byte that is not UTF-8 is replaced, not raised: the ledger is ASCII pano ids and two status words, so the
       replacement lands inside one field and that row either fails the shape check (skipped) or carries an id
       that matches no pano. Either way that one pano is re-checked; nothing is written off.
@@ -1782,7 +1786,7 @@ def _load_depth_log(depth_log_path):
     if not os.path.isfile(depth_log_path):
         return resolved
     with open(depth_log_path, newline='', encoding='utf-8', errors='replace') as f:
-        for row in csv.reader(line.replace('\0', '') for line in f):
+        for row in csv.reader((line.replace('\0', '') for line in f), quoting=csv.QUOTE_NONE):
             if len(row) == 2 and row[0] != 'pano_id' and row[1] in ('saved', 'unavailable'):
                 resolved.add(row[0])
     return resolved
