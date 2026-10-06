@@ -252,6 +252,27 @@ POSE_SOURCE_NONE = 'none'
 # not this: it means unknown, since a crop cut under #193 with the flag on has no row here.
 TILT_PROVENANCE_OFF = (POSE_SOURCE_NONE, '0.0', '', '')
 
+
+def manifest_row_is_tilt_corrected(row):
+    """Whether a provenance-manifest row (a csv.DictReader dict) describes a tilt-corrected crop (#196).
+
+    A pose record was found (`pose_source` is not `none`) AND the beta applied was not zero. The second
+    half is not redundant (#200 review finding 1): a pose record whose beta is 0 - a plausible #197 choice
+    for the xml record - writes `xml`, `0.0` and the stored point, since corrected_pixel at beta 0 is the
+    identity. That row is kept as it is, because it is the only record that a re-cut at a higher beta would
+    change the crop, but the crop is byte-for-byte an uncorrected one.
+
+    Apply it to the LAST row per (city, label_id); a crop with no row in the current manifest is unknown,
+    and is left out by not being there. Example:
+
+        last = {}
+        with open('crop_provenance.csv', newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                last[(row['city'], row['label_id'])] = row
+        corrected = [key for key, row in last.items() if manifest_row_is_tilt_corrected(row)]
+    """
+    return row['pose_source'] != POSE_SOURCE_NONE and float(row['tilt_beta']) != 0.0
+
 PRE_TILT_PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
 PROVENANCE_COLUMNS = PRE_TILT_PROVENANCE_COLUMNS + TILT_PROVENANCE_COLUMNS
 
@@ -2585,7 +2606,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     counts['success'] += 1
                     if existed:
                         counts['recut'] += 1
-                    if pose is not None:
+                    # A beta of 0 is the identity, so that crop is not counted as corrected (#200 review
+                    # finding 1) - the same test manifest_row_is_tilt_corrected applies to its row.
+                    if pose is not None and beta != 0:
                         corrected_by_source[pose.source] += 1
 
                     # After the crop is on disk and counted, never instead of it (#111). A failed append is

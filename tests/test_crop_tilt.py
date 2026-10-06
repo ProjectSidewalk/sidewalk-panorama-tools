@@ -823,7 +823,8 @@ class TestTheManifestRecordsTheCorrectionPerCrop:
         rows = manifest_dicts(crop_runner, out)
         assert rows_after_a == 4 and len(rows) == 7, 'a stale_kept crop gets no new row'
         last = last_row_per_label(rows)
-        corrected = {label_id for (_, label_id), row in last.items() if row['pose_source'] != 'none'}
+        corrected = {label_id for (_, label_id), row in last.items()
+                     if crop_runner.manifest_row_is_tilt_corrected(row)}
         assert corrected == {'2', '3', '4'}
         assert tilt_cells(last[(CITY, '1')]) == ('none', '0.0', '', ''), 'the first run still describes label 1'
 
@@ -860,3 +861,36 @@ class TestTheManifestRecordsTheCorrectionPerCrop:
         rows = manifest_dicts(crop_runner, out)
         assert [row['pose_source'] for row in rows] == ['none', 'npz']
         assert last_row_per_label(rows)[(CITY, '1')] is rows[-1]
+
+    def test_a_beta_of_zero_keeps_its_row_and_is_not_counted_as_corrected(self, crop_runner, tmp_path,
+                                                                          monkeypatch, capsys):
+        """#200 review finding 1. Beta 0 is the identity (pano_pose.corrected_pixel returns the stored point),
+        and #197 may well choose it for the xml record. The row is still written as it is - `xml`, `0.0`, the
+        stored point - because it is the only record that a re-cut at a higher beta would change the crop, and
+        writing TILT_PROVENANCE_OFF instead would merge "pose found, beta 0" into "flag off". What must not
+        happen is any count calling it corrected: neither the documented filter nor the summary's tally."""
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 0.0, 'npz': 1.0})
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        x, y = 1024.0, 700.0
+        run(crop_runner, [label_row(pano_id='xmlpano00001', pano_x=x, pano_y=y, label_id=1),
+                          label_row(pano_id='npzpano00001', pano_x=x, pano_y=y, label_id=2)],
+            store, out, tilt_correction=True)
+        rows = {row['label_id']: row for row in manifest_dicts(crop_runner, out)}
+        assert (rows['1']['pose_source'], rows['1']['tilt_beta']) == ('xml', '0.0')
+        assert (float(rows['1']['corrected_pano_x']), float(rows['1']['corrected_pano_y'])) == (x, y)
+        assert [crop_runner.manifest_row_is_tilt_corrected(rows[i]) for i in ('1', '2')] == [False, True]
+        assert ('0 crops cut from an xml pose (beta 0.0), 1 from an npz pose (beta 1.0).'
+                in capsys.readouterr().out)
+
+    @pytest.mark.parametrize('cells, corrected', [
+        (('none', '0.0', '', ''), False),
+        (('npz', '1.0', '1.5', '2.5'), True),
+        (('xml', '0.88', '1.5', '2.5'), True),
+        (('xml', '0.0', '1.5', '2.5'), False),
+        (('npz', '-0.0', '1.5', '2.5'), False),
+    ], ids=['off', 'npz', 'xml-partial-beta', 'xml-beta-zero', 'negative-zero'])
+    def test_the_filter_is_pose_found_and_beta_nonzero(self, crop_runner, cells, corrected):
+        row = dict(zip(crop_runner.TILT_PROVENANCE_COLUMNS, cells))
+        assert crop_runner.manifest_row_is_tilt_corrected(row) is corrected
