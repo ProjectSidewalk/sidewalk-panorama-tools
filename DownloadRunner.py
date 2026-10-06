@@ -557,10 +557,11 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         paths DownloadRunner.run sets, then the host defaults - and photometa's refusals (#74) are held to the
         same pair for the loop's duration, so the two can never write different files.
     @param image_stats An optional dict the phase sets 'raised' in on its way out: this run's attempts that
-        RAISED - transient, unledgered, retried next run - which is log.csv field 20 (#182). Exactly the
-        count `images-no-success` reads: a GSV push-back is a raise, a FrameDisagreementError is not (Google
-        answered), and a skip is neither. Set only at the end, so a phase that crashes leaves it unset and the
-        field blank. An out-parameter for tripped_sources' reason: the return tuple IS fields 7-11.
+        RAISED - unledgered, so retried next run; mostly transient, though some (a retired Mapillary image)
+        raise on every run - which is log.csv field 20 (#182). Exactly the count `images-no-success` reads: a
+        GSV push-back is a raise, a FrameDisagreementError is not (Google answered), and a skip is neither. Set
+        only at the end, so a phase that crashes leaves it unset and the field blank. An out-parameter for
+        tripped_sources' reason: the return tuple IS fields 7-11.
     """
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
@@ -1085,11 +1086,12 @@ LOG_CSV_FIELD_COUNT = 20
 # that would read as an empty city.
 DEPTH_ELIGIBLE_FIELD = 19
 
-# 1-based position of this run's image attempts that RAISED - transient, unledgered, retried next run: the
-# `raised` counter download_panorama_images keeps for `images-no-success`, and the one per-run figure field 9
-# cannot give (field 9 is prior + tonight, permanent + transient, so a steady set of transient failures adds the
-# same number every night and nothing separates it out; #182). Appended last so no position moves. Blank, never
-# 0, when the image phase did not finish: the phase fills it only on its way out.
+# 1-based position of this run's image attempts that RAISED - unledgered, so retried next run; mostly transient,
+# though some (a retired Mapillary image) raise on every run. It is the `raised` counter download_panorama_images
+# keeps for `images-no-success`, and the one per-run figure field 9 cannot give (field 9 is prior + tonight,
+# permanent + transient, so a steady set of transient failures adds the same number every night and nothing
+# separates it out; #182). Appended last so no position moves. Blank, never 0, when the image phase did not
+# finish: the phase fills it only on its way out.
 IMAGE_RAISED_FIELD = 20
 
 
@@ -1209,8 +1211,9 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
             stop_reasons.setdefault('depth_stop', None)
 
         # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
-        # split below needs it too - and because its size is log.csv field 19, DEPTH_ELIGIBLE_FIELD (#43): the denominator every
-        # progress figure for the backfill needs, and the one number nothing else in the row carries.
+        # split below needs it too - and because its size is log.csv field 19, DEPTH_ELIGIBLE_FIELD (#43): the
+        # denominator every progress figure for the backfill needs, and the one number nothing else in the row
+        # carries.
         gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
         depth_eligible = len(gsv_panos)
 

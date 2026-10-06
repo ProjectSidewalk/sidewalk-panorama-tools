@@ -84,8 +84,9 @@ LOG_COLUMNS = [
     # The GSV corpus the depth phase was given (#43) - the denominator for everything depth_progress reports.
     # Appended last so no older position moved; blank on every row written before it existed.
     "depth_eligible",
-    # This run's image attempts that RAISED (#182) - transient, unledgered, retried next run - the per-run figure
-    # image_fail (cumulative, permanent + transient) cannot give. Parsed, but no rule reads it yet: the rule
+    # This run's image attempts that RAISED (#182) - unledgered, so retried next run; mostly transient, though some
+    # (a retired Mapillary image) raise on every run - the per-run figure image_fail (cumulative, permanent +
+    # transient) cannot give. Parsed, but no rule reads it yet: the rule
     # that will is to be sized from this field's own measurements (docs/log-analyzer.md). Blank on every row
     # written before it existed, and on a run whose image phase did not finish.
     "image_raised",
