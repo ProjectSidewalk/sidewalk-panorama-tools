@@ -111,7 +111,8 @@ def _get_response(url, session, stream=False):
     if not stream:
         return response
     # The streamed path is the two probes (_probe_zoom, frame_covers_pano), and both read a black
-    # body as a verdict: "retired" (ledgered downloaded=0, never re-asked) and "the frame covers the pano".
+    # body as a verdict: "retired" (ledgered downloaded=0, never re-asked) and "the frame covers the pano" -
+    # or, for frame_covers_pano's in-grid tile (#181), "Google serves it smaller", a transient refusal.
     # Google answers both of those with a black 200, so only a 200 is evidence (#166 option b, the #99 rule).
     # `== 200`, not raise_for_status(): a 206 or a final 3xx is no more evidence than a 403. The raise is
     # transient wherever it lands. 429/5xx should normally not reach here, since the adapter's Retry owns
@@ -601,14 +602,16 @@ ResolvedFrame = collections.namedtuple('ResolvedFrame',
 class FrameDisagreementError(Exception):
     """The pano Google serves is not the frame the caller asked for, so stitching it would save a crop.
 
-    Three ways to know that: photometa's reported levels do not admit the frame, photometa's tiles are not
-    512 px, or - when the probe answered instead of photometa - a tile past the frame's grid has imagery
-    (frame_covers_pano). The message names which, after the words "frame disagreement", which is what
-    to grep scrape.log for.
+    Four ways to know that: photometa's reported levels do not admit the frame, photometa's tiles are not
+    512 px, or - when the probe answered instead of photometa - frame_covers_pano finds imagery past the
+    frame's grid (Google serves it larger) or black in the grid's own last column (Google serves it smaller,
+    #181). The message names which, after the words "frame disagreement", which is what to grep scrape.log for.
 
-    Raised by download_single_pano - never by resolve_frame or resolve_zoom_and_dims - so it is TRANSIENT
-    under the #41 ledger: counted in tonight's failures, not ledgered, re-attempted next run at the cost of one
-    photometa request (or four probe requests on the fallback). Deliberately not a permanent verdict: the
+    Raised by download_single_pano, and by frame_covers_pano for the smaller case (which download_single_pano
+    turns into its own refusal and refetch_panos counts as a transient failure) - never by resolve_frame or
+    resolve_zoom_and_dims - so it is TRANSIENT under the #41 ledger: counted in tonight's failures, not
+    ledgered, re-attempted next run at the cost of one photometa request (or five probe requests on the
+    fallback). Deliberately not a permanent verdict: the
     app's frame can catch up (a SidewalkWebpage gsv_data refresh is the remedy), and a permanent verdict on a
     brand-new evidence source, for a source with no breaker, is the wrong default.
     """
@@ -747,7 +750,7 @@ def _announce_probe_fallback(message):
     """The first time this run the probe answers because photometa could not: one line on BOTH channels.
 
     stdout because a fleet-wide photometa fault silently switches off the frame check photometa gives (the
-    probe arm's frame_covers_pano costs two more requests a pano) and is otherwise only per-pano detail in
+    probe arm's frame_covers_pano costs three more requests a pano) and is otherwise only per-pano detail in
     scrape.log; scrape.log because it is what is still there next week. Once, because the cause is the same for
     every pano after the first. A refusal announces itself with its own WARNING and counts as this line.
     """
@@ -949,19 +952,46 @@ def resolve_zoom_and_dims(pano_info):
     five-level 5376x2688 pano ('upscaled' -> a native zoom-4 fetch). Both swaps may well be better imagery,
     but changing what the repair pass does is a separate decision from the nightly zoom, not a side effect
     of it. The probe's answer goes through refetch's own frame_covers_pano gate, which is what turns a frame
-    smaller than Google's into 'frame_grew'.
+    smaller than Google's into 'frame_grew' and refuses one larger as a transient failure (#181).
     """
     frame = resolve_frame(pano_info, photometa=False)
     return None if frame is None else (frame.width, frame.height, frame.zoom)
 
 
-def frame_covers_pano(pano_id, width, height, zoom):
-    """Does a (width, height) grid at `zoom` cover everything Google serves for this pano?
+def _is_exactly_black(image):
+    """True when every pixel of `image` decodes to zero luma: CBK's answer for a tile outside the pano.
 
-    Asked by requesting the two tiles just past the assumed grid - one column right, one row down - and
-    checking both come back blank. An out-of-range tile is answered 200 OK with an all-black body (pinned
-    on real bytes in tests/test_gsv_tile_contract.py), so imagery there means the real pano is larger than
-    the frame we were about to fetch.
+    Exact zero, not a threshold: an out-of-range tile is answered 200 OK with an all-black JPEG whose luma
+    extrema are (0, 0), while a genuine edge tile is black-PADDED but never all black, and dark imagery is
+    not zero after JPEG (both pinned on committed real bytes in tests/test_gsv_tile_contract.py). The rule
+    _probe_zoom applies inline.
+    """
+    return image.convert('L').getextrema() == (0, 0)
+
+
+def frame_covers_pano(pano_id, width, height, zoom):
+    """Is a (width, height) grid at `zoom` exactly what Google serves for this pano?
+
+    True when it is. False when Google serves the pano LARGER (a tile past the grid has imagery). Raises
+    FrameDisagreementError when Google serves it SMALLER (the grid's own last column is black) - #181 Part 1.
+
+    Asked with three tile requests, spent BEFORE the 512-tile fan-out so a bad frame costs three rather than
+    515. An out-of-range tile is answered 200 OK with an all-black body (pinned on real bytes in
+    tests/test_gsv_tile_contract.py), so:
+
+    1. One column past the grid, on the middle row: imagery means the pano is wider. False.
+    2. One row past the grid, in column 0: imagery means the pano is taller. False.
+    3. The grid's own last column, on the same middle row, (tiles_x - 1, tiles_y // 2): BLACK means the pano
+       ends before the grid does. Raises.
+
+    False and the raise are kept apart because their callers treat them differently. A pano Google now serves
+    larger than a stored file is a fact about Google's archive, and refetch_panos.py ledgers it as
+    'frame_grew'. A frame larger than Google serves is the mismatch photometa's arm refuses with
+    FrameDisagreementError (unledgered, retried next run), and this is the same refusal on the probe arm: the
+    app's frame can catch up. Without check 3 that frame passed checks 1 and 2 - nothing past a 32x16 grid
+    has imagery on a 26x13 pano - and stitched ~34% black, under STITCH_MAX_BLACK_FRACTION, saved and
+    ledgered downloaded=1; refetch_panos.py spent the 512-tile fan-out to refuse it as 'too_black' and then
+    ledgered that for good.
 
     The nightly downloader needs this only when the tile probe chose the zoom (_frame_refusal): when photometa
     answers, its reported levels already say whether the app's frame is one of them. /adminapi/panos is not
@@ -972,27 +1002,39 @@ def frame_covers_pano(pano_id, width, height, zoom):
     the stored file's exact dimensions, with no undersized tile and no black to give it away. That is a
     silently cropped panorama saved over a correct one, and this is the only cheap thing that catches it.
 
-    Two requests, spent BEFORE the 512-tile fan-out so a bad frame costs two rather than 514.
+    **Callers must ask the probe first.** CBK answers a retired pano with a black 200 at every tile, which
+    check 3 reads as "smaller". Both callers run this only after the probe found imagery at (0, 0), so a
+    retired pano gets the probe's permanent None and never reaches here; asked first, every retired pano
+    would become a frame disagreement retried every night.
 
-    The one way this can err is toward ACCEPTANCE: an out-of-range tile is recognised by being exactly black,
-    so a real tile past the grid that happened to decode to all-zero luma would read as blank, and the fetch
-    would proceed. That is why the x probe is taken on the grid's middle row rather than on row 0. Row 0 is
-    the zenith cap - the one strip of a panorama where a uniformly black real tile is plausible - while the
-    middle row is horizon-adjacent imagery, which never is. The y probe lands on ground rows for the same
-    reason. Both probes must come back blank for the frame to pass. A probe answered with any status but 200
-    raises requests.HTTPError rather than reading as blank (#166 option b): before that, a 403 or 404 with a
-    black body was exactly this acceptance case.
+    Checks 1 and 2 can err only toward ACCEPTANCE: a real tile past the grid that happened to decode to
+    all-zero luma would read as blank, and the fetch would proceed. That is why the x probe is taken on the
+    grid's middle row rather than on row 0. Row 0 is the zenith cap - the one strip of a panorama where a
+    uniformly black real tile is plausible - while the middle row is horizon-adjacent imagery, which never is.
+    The y probe lands on ground rows for the same reason. Check 3 sits on that middle row too, so it errs only
+    toward REFUSAL - a transient, loud, retried failure - and only for a horizon tile of exact zero luma.
+    Every probe is judged by _is_exactly_black. A probe answered with any status but 200 raises
+    requests.HTTPError rather than reading as blank (#166 option b): before that, a 403 or 404 with a black
+    body was exactly the acceptance case.
     """
     tiles_x, tiles_y = _tile_grid(width, height, zoom)
     with _request_session() as session:
-        for x, y in ((tiles_x, tiles_y // 2), (0, tiles_y)):
+        def tile_is_black(x, y):
             url = f'{_CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}'
-            probe = Image.open(_get_response(url, session, stream=True))
-            if probe.convert('L').getextrema() != (0, 0):
+            return _is_exactly_black(Image.open(_get_response(url, session, stream=True)))
+
+        for x, y in ((tiles_x, tiles_y // 2), (0, tiles_y)):
+            if not tile_is_black(x, y):
                 logging.warning("IMAGEDOWNLOAD: pano %s: tile (%d, %d) past a %dx%d grid at zoom %s has "
                                 "imagery; Google serves this pano larger than %dx%d",
                                 pano_id, x, y, tiles_x, tiles_y, zoom, width, height)
                 return False
+        last = (tiles_x - 1, tiles_y // 2)
+        if tile_is_black(*last):
+            raise FrameDisagreementError(
+                "frame disagreement: the app's frame is %dx%d but tile (%d, %d), the last column of its "
+                "%dx%d grid at zoom %s, is black, so Google serves this pano smaller"
+                % (width, height, last[0], last[1], tiles_x, tiles_y, zoom))
     return True
 
 
@@ -1166,9 +1208,11 @@ def _frame_refusal(pano_id, frame):
 
     Photometa's two refusals are decided in resolve_frame, at no extra request. The probe arm cannot tell a
     frame from a crop - it only asks whether zoom 5 or 3 has imagery at (0, 0) - so on that arm the frame is
-    checked here with frame_covers_pano: two more tile requests, spent only when photometa did not answer,
-    and before the fan-out. Without it every photometa failure, fresh block latch or "not found" would
-    stitch and permanently ledger exactly the crop a photometa refusal holds off (#74 review item 1).
+    checked here with frame_covers_pano: three more tile requests, spent only when photometa did not answer,
+    and before the fan-out, catching a frame smaller than Google serves (a tile past the grid has imagery)
+    and, since #181, one larger (the grid's last column is black). Without it every photometa failure, fresh
+    block latch or "not found" would stitch and permanently ledger exactly the crop a photometa refusal holds
+    off (#74 review item 1), or, for a frame larger than served, a ~34% black stitch.
     """
     served = '%dx%d' % frame.served_dims if frame.served_dims else None
     if frame.refusal == 'frame':
@@ -1177,7 +1221,15 @@ def _frame_refusal(pano_id, frame):
     if frame.refusal == 'tile_size':
         return ("frame disagreement: photometa reports this pano (served at %s) in tiles that are not %d px, "
                 "so no tile grid this stitcher can request fits it" % (served, TILE_SIZE))
-    if frame.evidence == 'probe' and not frame_covers_pano(pano_id, frame.width, frame.height, frame.zoom):
+    if frame.evidence != 'probe':
+        return None
+    try:
+        covers = frame_covers_pano(pano_id, frame.width, frame.height, frame.zoom)
+    except FrameDisagreementError as smaller:
+        # Google serves it SMALLER than the app's frame (#181 Part 1): the check's own words, which already
+        # begin "frame disagreement", plus the arm.
+        return "%s (zoom from the tile probe; photometa did not answer)" % (smaller,)
+    if not covers:
         return ("frame disagreement: the app's frame is %dx%d but a tile past its grid at zoom %d has "
                 "imagery, so Google serves this pano larger (zoom from the tile probe; photometa did not "
                 "answer)" % (frame.width, frame.height, frame.zoom))
