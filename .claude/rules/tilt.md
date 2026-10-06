@@ -35,7 +35,8 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   about 0.88 (XML pose) and 0.95 (npz pose); the default beta is Jon's choice (#197). The correction is
   CropRunner's opt-in `--tilt-correction` (`.claude/rules/cropper.md`, item 2): both axes, via
   `pano_pose.corrected_pixel`, the pose from the pano's own `.xml`/`.npz`, beta from `TILT_BETA_BY_POSE_SOURCE`
-  (keyed on the pose record, both 1.0 until #197 decides the default).
+  (keyed on the pose record, both 1.0 until #197 decides the default), recorded per crop in the provenance
+  manifest (#196: `pose_source`, `tilt_beta`, `corrected_pano_x`, `corrected_pano_y`).
 - **The C folders are sealed, and the redraw is the decision-bearing one.** `reports/data/2026-09-29-tilt-adjudication-jm/`
   and `2026-09-30-tilt-adjudication-jm-b2/` hold Jon's verdicts, his notes, and a `sealed/` key and selection;
   `DECISIONS.md` fixed the scoring before unblinding. The first draw (`2026-09-26-tilt-adjudication/`) is

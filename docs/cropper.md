@@ -419,12 +419,13 @@ it cuts exactly what it did before.
   first corrected top-up warns and records `[0.0, 1.0]` for good. A pre-#191 marker over a store with no crop
   (a run that cut nothing) is not seeded, since no uncorrected crop exists. (Any other constant a marker has not recorded stays
   silent, since its old value is unknown.) Re-cut the whole store with `--force` rather than topping it up.
-* **Not per crop.** The provenance manifest has no correction column yet, so a mixed store shows only in
-  `crop_rule.json`, which cannot say which crops are which. The column (pose record, beta and the corrected
-  x/y) is a header migration of its own,
-  [#196](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/196). **It must land before the
-  correction is turned on for any consumer store**: since most `no_pose` is permanent (above), such a store is
-  always mixed. Choosing the default beta and turning the flag on is
+* **Per crop since [#196](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/196).** Since
+  most `no_pose` is permanent (above), a store cut with the flag is always mixed, and `crop_rule.json` (which
+  still records the run-level setting) cannot say which crops are which. So every row of the
+  [provenance manifest](#the-provenance-manifest-crop_provenancecsv) records the correction: the pose record
+  (`pose_source`, `xml`/`npz`), the beta applied (`tilt_beta`) and the corrected centre the window was cut
+  around (`corrected_pano_x`, `corrected_pano_y`); a crop cut without the correction says `none`, `0.0` and
+  blanks. Choosing the default beta and turning the flag on is
   [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197).
 * **An open question about the xml pose.** About 4% of xml-posed panos in the #54 pose scan (1,043 of
   27,149) carry an xml `image_width` that differs from the JPEG's, mostly 16384 in the xml against a 13312
@@ -748,7 +749,8 @@ guard refuses with or without `--force`.
 |---|---|
 | `<label_type_id>/<label_id>.jpg` | One crop per label. Its existence is the resume marker: it is not re-cut unless `--force` is passed. |
 | `crop_rule.json` | Which city the store belongs to ([One store, one city](#one-store-one-city)), which sizing rule cut it, plus whether the provenance manifest has a known gap (below). |
-| `crop_provenance.csv` | One row per crop cut (a re-cut appends one; the last row for a label describes the file): where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)). |
+| `crop_provenance.csv` | One row per crop cut (a re-cut appends one; the last row for a label describes the file): where its pixels came from ([#111](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/111)), and whether it was tilt-corrected ([#196](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/196)). |
+| `crop_provenance.pre-city.csv`, `crop_provenance.pre-tilt.csv` | Older manifests set aside, unchanged, when the row grew a column (below); present only in a store that had one. |
 | `crop.log` | The rotating run log (10 MB × 3). |
 
 ### The provenance manifest, `crop_provenance.csv`
@@ -757,7 +759,7 @@ A crop is a bare JPEG and every consumer of this store is an ML dataset, so the 
 pixels came from has to travel with the crop rather than stay with the app. The manifest is that record:
 
 ```
-city,label_id,pano_id,source,copyright,license,crop_rule_version
+city,label_id,pano_id,source,copyright,license,crop_rule_version,pose_source,tilt_beta,corrected_pano_x,corrected_pano_y
 ```
 
 `city` is `--city`, on every row, so manifests concatenated across cities keep `(city, label_id)` as the
@@ -789,6 +791,19 @@ below `main()` that passes none.
   intakes.
 * **`crop_rule_version` is per row**, because a store can hold more than one geometry (see
   [Crop geometry](#crop-geometry)).
+* **The tilt correction is per row, too**
+  ([#196](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/196); see
+  [The tilt correction](#the-tilt-correction-opt-in-191)). A crop cut under `--tilt-correction` says which pose
+  record corrected it (`pose_source`: `xml` or `npz`), the beta applied (`tilt_beta`, e.g. `1.0`), and the
+  corrected centre its window was cut around (`corrected_pano_x`, `corrected_pano_y`, unrounded — the stored
+  `pano_x`/`pano_y` are in the label metadata, not here). A crop cut without the correction says `none`,
+  `0.0`, and two blanks: `0.0` is the marker's own "off" value (beta 0 is the identity), and the centre
+  columns are blank because nothing was corrected. `none` means **this run did not correct the crop**; a crop
+  with **no row** in the current manifest — listed only in a set-aside file (below), or cut before the
+  manifest existed — is **unknown**, not uncorrected. To filter a mixed store to its corrected crops, keep the
+  **last** row per `(city, label_id)` (a `no_pose` or `stale_kept` label gets no new row, so its last row is
+  from whichever run last cut it) and keep the rows whose `pose_source` is not `none`. Read the file with a
+  CSV parser (Python's `csv`, pandas), not `awk -F,` or `cut`: `copyright` can hold a quoted comma.
 * **`(city, label_id)` is the key when manifests from more than one city are combined.** `label_id`
   restarts at 1 in every city's database, so it alone collides across stores; `city` is on every row, so
   the pair does not. Within one store, `label_id` is what matches a row to its crop file,
@@ -804,14 +819,25 @@ below `main()` that passes none.
   A handle that cannot be *closed* cleanly (a network mount reporting a deferred write error) is said on
   both channels and does not stop the run summary.
 * **The header on disk is checked before anything is appended under it**
-  ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)). A manifest written before
-  rows carried a city starts `label_id,pano_id,source,copyright,license,crop_rule_version`; appending the
-  seven-field rows under it would shift every column by one, silently. So a manifest with that header is
-  **moved, unchanged, to `crop_provenance.pre-city.csv`** and a fresh manifest is started (said on both
-  channels). Its rows are never rewritten or given a city — a store cut before #159 may hold more than one
-  city's crops, and a city written onto them would be a guess. If `crop_provenance.pre-city.csv` already
-  exists, or the header is anything else, the run stops with exit **3** before cutting anything and names
-  the file; nothing is moved or replaced.
+  ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159),
+  [#196](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/196)). Rows appended under an
+  older, narrower header would read with their columns misfiled, silently. Two older headers are known, and a
+  manifest under either is **moved, unchanged, aside** and a fresh manifest is started (said on both
+  channels):
+
+  | Header on disk | Written | Moved to |
+  |---|---|---|
+  | `label_id,pano_id,source,copyright,license,crop_rule_version` | before rows carried a city (#159) | `crop_provenance.pre-city.csv` |
+  | `city,label_id,pano_id,source,copyright,license,crop_rule_version` | from #159 until rows carried the tilt correction (#196) | `crop_provenance.pre-tilt.csv` |
+
+  Their rows are never rewritten. A pre-city row is never given a city — a store cut before #159 may hold
+  more than one city's crops, and a city written onto them would be a guess. A pre-tilt row is never padded
+  with `none` — a crop cut under #193 with `--tilt-correction` may be among them, so whether it was
+  corrected is unknown, and the marker's `tilt_correction` history is the only record. **So the first run
+  after #196 over every existing store sets that store's manifest aside and starts a new one**, and the
+  store's `provenance_manifest_no_known_gap` becomes `false`. If the set-aside name already exists, or the
+  header is anything else, the run stops with exit **3** before cutting anything and names the file;
+  nothing is moved or replaced. Both set-aside files can sit side by side in one store.
 
 **Crops cut before the manifest existed have no rows**, since they are not re-cut without `--force` (a
 `--force` pass that reaches them adds their rows). `crop_rule.json` records what the runs know about gaps:
@@ -822,6 +848,7 @@ below `main()` that passes none.
 | `provenance_manifest_started_under` | The crop rule in force when the manifest was started. |
 | `provenance_manifest_no_known_gap` | `true` if the store held no crops when the manifest was started and no run since has known of a crop left without a row; `false` once either is known; `null` if a manifest is present with no record of how it started. |
 | `provenance_manifest_pre_city` | `crop_provenance.pre-city.csv` once a manifest from before rows carried a city has been set aside (above), and kept after that; `null` if none ever was. The fresh manifest started beside it records `provenance_manifest_no_known_gap: false`, since the crops the old rows describe have no row in it. |
+| `provenance_manifest_pre_tilt` | `crop_provenance.pre-tilt.csv` once a manifest from before rows carried the tilt correction has been set aside (above), and kept after that; `null` if none ever was. The same `false` follows. |
 
 The first two are set by the run that starts the manifest and carried forward by every later run.
 `provenance_manifest_no_known_gap` starts the same way and only ever goes from `true` to `false`: a run
