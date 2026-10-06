@@ -14,7 +14,7 @@ Consumer requirements and the open geometry questions are tracked in
 
 ```bash
 python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force] \
-    [--sizing-rule {v2,v3}] [--tilt-correction]
+    [--sizing-rule {v2,v3,v3-depth}] [--tilt-correction]
 ```
 
 | Flag | What it does |
@@ -26,7 +26,7 @@ python3 CropRunner.py (-d <fqdn> | -f <metadata-file>) -s <pano-dir> -o <crop-di
 | `--city <city_id>` | **Required.** The city the labels belong to: an active (not `#`-commented) `city_id` row of `log_analyzer/cities.csv` (`seattle-wa`, `cdmx`), read when the flag is parsed. Anything else — a misspelling, a retired city, an unreadable roster — is exit 2, since the city names a directory and a typo would start a new store; add a missing city to the roster first ([Adding a city](ops.md#adding-a-city), step 3). Names the store, `<crop-dir>/<city>/`; recorded in its `crop_rule.json` and on every provenance row — see [One store, one city](#one-store-one-city). |
 | `--mark-label` | Draw a dot at the label position **inside the crop**. Debugging aid, off by default — see the warning below. |
 | `--force` | Re-cut a label whose crop already exists instead of skipping it — the repair for a store cut under an older rule. Off by default. See [Re-cutting a store](#re-cutting-a-store-with---force). |
-| `--sizing-rule {v2,v3}` | Which crop sizing rule to cut with. **`v2` is the default**, and has been since [#88](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/88) (stores cut before it are v1, [#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)); `v3` is opt-in — see [Sizing rule v3](#sizing-rule-v3-opt-in). Recorded in `crop_rule.json` and on every provenance row either way. |
+| `--sizing-rule {v2,v3,v3-depth}` | Which crop sizing rule to cut with. **`v2` is the default**, and has been since [#88](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/88) (stores cut before it are v1, [#83](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/83)); `v3` is opt-in — see [Sizing rule v3](#sizing-rule-v3-opt-in) — and so is `v3-depth`, v3 with its distance read from the pano's depth artifact — see [Sizing rule v3-depth](#sizing-rule-v3-depth-opt-in-180). Recorded in `crop_rule.json` and on every provenance row either way. |
 | `--tilt-correction` | Centre each crop on the label's rig pixel rather than its stored pixel, by beta per pose record (`.xml` or `.depth.npz`). **Off by default**; needs a pose beside each pano, and a pano without one is skipped as `no_pose`. Recorded in `crop_rule.json`. See [The tilt correction](#the-tilt-correction-opt-in-191). |
 
 Example:
@@ -301,6 +301,70 @@ mix them, and on every run after. If the default does flip, fold it into the rec
 [#84](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/84) coordinates rather than
 re-cutting the stores a second time on its own. [The content check](#the-content-check-black_content)
 judges v3's window exactly as it does v2's.
+
+### Sizing rule v3-depth (opt-in, #180)
+
+`--sizing-rule v3-depth` ([#180](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/180)) is v3 with one step replaced: the distance comes from the pano's
+`.depth.npz` ([docs/depth.md](depth.md#the-artifact)) where the artifact can be trusted under the label, and
+from v3's own `blend_distance_m` everywhere else. Everything else is v3's — `geometric_window_fov_deg`, the
+clamps, 3:2, the seam, the shift, the storage cap — and a crop that falls back is **v3's crop byte for byte**
+(a test cuts the same store both ways). It is its own rule id, so `crop_rule.json` says `v3-depth`, and a v3
+store topped up under it warns that it is mixed, exactly as a v2/v3 mix does.
+
+How the distance is read (`label_distance()`; `depth_backed_distance()` composes it with the loader from a
+path):
+
+1. **At the rig pixel, not the stored one.** The depth planes are in the rig frame of the npz's own capture
+   ([#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54)'s F1), while a GSV label's
+   stored `pano_x`/`pano_y` is gravity-levelled (endpoint C), so the grid is sampled at
+   `pano_pose.corrected_pixel` under the npz's `pitch`/`roll` and the npz pose record's beta
+   (`TILT_BETA_BY_POSE_SOURCE`, the one [the tilt correction](#the-tilt-correction-opt-in-191) uses). On a
+   pano tilted 3° that is about 4 rows of a 256-row grid — exactly where depth was meant to beat the blend.
+   This is independent of `--tilt-correction`, which moves the window's centre, not the depth sample; an
+   `.xml` pose is never used for it, since it poses a 2019-22 JPEG and not this grid.
+2. **Truncation indexing** ([docs/depth.md](depth.md#sampling-depth-under-a-label)), then the **3×3
+   neighbourhood**, columns wrapped at the seam and rows not (the poles are not adjacent). A cell counts only
+   when `depth > 0` and its plane index is `> 0`: `-1` is finite and means "no plane".
+3. **The plane under the label** — the centre cell's, else the neighbourhood's most common — must be ground:
+   `|n_z| / ‖n‖ ≥ 0.7`, the threshold `gsv.ground_plane_from_artifact` uses.
+4. **The distance** is the median of the counted cells, a ray length, projected to the ground by the cosine
+   of the label's gravity depression (from the stored `pano_y`). The blend it replaces is a ground distance
+   (`h / tan d`) and `V3_CONTEXT_WIDTH_M` was fitted on it; a level ground plane at camera height `h` gives
+   exactly `h / tan d`, which the tests check on artifacts written by the real writer.
+
+**Every fallback is counted, by reason**, in the order tested (`DEPTH_FALLBACK_REASONS`):
+
+| Reason | When |
+|---|---|
+| `no_artifact` | No `.depth.npz` beside the pano: every Mapillary and Panoramax pano, and a GSV pano the depth phase has not reached or ledgered `unavailable` |
+| `unreadable` | The file will not load, or its arrays are not the documented shapes |
+| `old_format` | `format_version` absent (pre-v2, x-mirrored) or 2 (no plane fields, so no facade test): the depth source **requires format 3** |
+| `no_pose` | The npz's `pitch` or `roll` is missing or NaN: no rig pixel, and the stored one is never used instead |
+| `sky` | Fewer than 5 of the 9 cells on a plane, at or above the horizon row |
+| `no_plane` | The same below the horizon: something Google did not model (`-1` cannot tell the two apart; the horizon does) |
+| `facade` | The plane under the label is steeper than the 0.7 threshold |
+| `out_of_range` | The distance is outside [0.5 m, `V3_DIST_CAP_M` = 50 m] |
+
+The counts are `distance_depth` and `distance_blend_<reason>` in the run's counts dict
+(`DISTANCE_SOURCE_COUNTS`). They annotate a **success**: under v3-depth they sum to the crops extracted, and
+under every other rule they are absent, so the dict is the one it always was. The summary gains one line, on both channels and only under v3-depth:
+
+```
+Distance source (v3-depth): 2 crops sized from the depth artifact, 4 from the blend fallback (no_artifact 1, unreadable 1, sky 1, facade 1).
+```
+
+Per crop, `crop.log` gets a `<label_id>.jpg <pano_id> distance <m> m from depth` (or `from blend (<reason>)`)
+line. That is the per-crop record **for now**: a `distance_source` column in
+[the provenance manifest](#the-provenance-manifest-crop_provenancecsv) waits on
+[#200](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/200), which restarts every store's
+manifest once for its tilt columns; adding a column here first would restart it twice. The artifact is read
+lazily, once per pano and only for a label about to be cut, so a finished store reads none; the marker records
+the rule's own constants (`v3_depth_min_valid_cells`, `v3_depth_min_m`, `v3_depth_min_ground_verticality`,
+`v3_depth_min_format_version`, `v3_depth_lookup_pixel` = `rig`, `v3_depth_lookup_beta`) beside v3's.
+
+**Not validated against imagery yet.** #180's alignment check (facade/ground switches against strong image
+edges on about 200 GSV panos) and the per-label-type fidelity measurement have not been run; until they are,
+this is an opt-in for that measurement, not a candidate default.
 
 The window itself comes from `compute_crop_box()`, an integer `CropBox(left, top, width, height, shifted)`:
 

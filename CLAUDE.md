@@ -36,8 +36,8 @@ python3 cron_notify.py --sink '<shell command>' [--name NAME] [--only-on-failure
 # Cropper (exits 1 if any label errored; missing/untrusted panos alone are not an error). --force re-cuts existing
 # crops (#83); a -o that looks like the production canvas-capture crop store, or that crop_rule.json records as
 # another city's, is refused: exit 3, nothing written. --city is required (label_id restarts per city; #159)
-# and must be an active row of log_analyzer/cities.csv (exit 2 otherwise). --sizing-rule v3 is opt-in (#32).
-python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force] [--sizing-rule {v2,v3}] [--tilt-correction]
+# and must be an active row of log_analyzer/cities.csv (exit 2 otherwise). --sizing-rule v3 is opt-in (#32), and so is v3-depth (#180).
+python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force] [--sizing-rule {v2,v3,v3-depth}] [--tilt-correction]
 
 # flag_panos JSON -> CSV, for one city (one-off tool; see flag_panos/README.md)
 python3 flag_panos/json_to_csv.py --city <city> [--dir <dir>]

@@ -322,7 +322,7 @@ class TestFallbacks:
         """The threshold is |n_z|/|n| < 0.7: a ground plane tilted 40 degrees (0.766) is still ground."""
         normal = pano_pose.rig_from_gravity(40.0, 0.0) @ np.array([0.0, 0.0, 1.0])
         path = write_scene(tmp_path, 'absteep00001', [(normal, CAMERA_H, None)])
-        x, y = stored_pixel(180.0, 30.0)       # facing up the slope, so the ray meets it
+        x, y = stored_pixel(0.0, 30.0)         # the side of the slope the ray meets
         assert estimate_for(crop_runner, path, x, y).source == 'depth'
 
     def test_too_far_is_out_of_range(self, crop_runner, tmp_path):
@@ -653,7 +653,7 @@ class TestOffIsIdentical:
             out = tmp_path / str(with_artifact) / 'crops'
             counts = run(crop_runner, labels, store, out, sizing_rule=rule)
             assert counts['success'] == 6
-            assert sum(counts[key] for key in crop_runner.DISTANCE_SOURCE_COUNTS) == 0
+            assert not set(crop_runner.DISTANCE_SOURCE_COUNTS) & set(counts)
             results.append(crop_bytes(out, range(1, 7)))
         assert results[0] == results[1]
 

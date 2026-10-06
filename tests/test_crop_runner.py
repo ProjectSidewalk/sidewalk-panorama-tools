@@ -2461,7 +2461,7 @@ class TestTheDefaultWindowIsByteIdentical:
         """The flip to v3 is a decision for the #84 recrop campaign (a whole --force re-cut, #83), not
         something this PR takes."""
         assert crop_runner.CROP_RULE_VERSION == 'v2'
-        assert crop_runner.CROP_RULE_VERSIONS == ('v2', 'v3')
+        assert crop_runner.CROP_RULE_VERSIONS == ('v2', 'v3', 'v3-depth')   # v3-depth: opt-in, #180
         args = crop_runner.build_parser().parse_args(['--city', 'seattle-wa', '-d', 'x.invalid', '-s', '/panos',
                                                       '-o', '/out'])
         assert args.sizing_rule == 'v2'
