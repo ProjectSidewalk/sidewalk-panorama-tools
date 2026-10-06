@@ -110,7 +110,7 @@ def test_crash_mid_run_still_writes_a_full_width_log_row(tmp_path):
 
     assert result.returncode != 0, "the crash must still fail the run loudly"
     fields = last_log_fields(storage)
-    assert len(fields) == 19
+    assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
     assert fields[0] != ''  # run start timestamp
     assert fields[1:6] == ['0'] * 5  # xml stub completed before the crash
     assert fields[6:18] == [''] * 12  # image/depth/total never completed - blank, not fabricated
@@ -127,7 +127,7 @@ def test_webserver_fetch_failure_still_leaves_evidence(tmp_path):
     """A server outage - the single most likely nightly failure - crashes before any phase runs (#49).
 
     It must still fail loudly AND leave both kinds of evidence: the traceback in scrape.log, and a blank-padded
-    19-field log.csv row whose real timestamp shows a run started and produced nothing - the depth corpus
+    20-field log.csv row whose real timestamp shows a run started and produced nothing - the depth corpus
     size included, since the list it is counted from never arrived.
     """
     storage = tmp_path / 'storage'
@@ -138,24 +138,26 @@ def test_webserver_fetch_failure_still_leaves_evidence(tmp_path):
 
     assert result.returncode != 0, "a run that scraped nothing must not report success"
     fields = last_log_fields(storage)
-    assert len(fields) == 19
+    assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
     assert fields[0] != ''  # a real timestamp: evidence the run started
-    assert fields[1:] == [''] * 18  # no phase ran - all blank, not fake zeros
+    assert fields[1:] == [''] * 19  # no phase ran - all blank, not fake zeros
     assert 'Traceback' in (storage / 'scrape.log').read_text()
 
 
-def test_log_csv_keeps_19_positional_fields(tmp_path):
+def test_log_csv_keeps_20_positional_fields(tmp_path):
     storage, result = run_downloader(tmp_path)
     assert result.returncode == 0, result.stderr
 
     fields = last_log_fields(storage)
-    assert len(fields) == 19
+    assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
     # Field 1 is the run timestamp; with every pano filtered out, the xml stub, image, and depth counts are all 0.
     assert fields[1:6] == ['0'] * 5
     assert fields[6:12] == ['0'] * 6
     assert fields[12:17] == ['0'] * 5
     # Field 19 is the depth corpus size (#43): every pano here is of an unsupported source, so 0 GSV panos.
     assert fields[18] == '0'
+    # Field 20 is tonight's raised image attempts (#182): the image phase finished over an empty list, so 0.
+    assert fields[19] == '0'
 
 
 def test_skip_depth_writes_zero_depth_columns_and_no_ledger(tmp_path):
@@ -163,7 +165,7 @@ def test_skip_depth_writes_zero_depth_columns_and_no_ledger(tmp_path):
     assert result.returncode == 0, result.stderr
 
     fields = last_log_fields(storage)
-    assert len(fields) == 19
+    assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
     assert fields[12:17] == ['0'] * 5
     assert fields[18] == '0'  # the corpus size is a fact about the input, recorded whether or not depth ran
     assert not (storage / 'depth_log.csv').exists()
@@ -173,13 +175,13 @@ def test_deprecated_attempt_depth_flag_warns_but_runs(tmp_path):
     storage, result = run_downloader(tmp_path, '--attempt-depth', '--skip-depth')
     assert result.returncode == 0, result.stderr
     assert '--attempt-depth is deprecated' in result.stdout
-    assert len(last_log_fields(storage)) == 19
+    assert len(last_log_fields(storage)) == DownloadRunner.LOG_CSV_FIELD_COUNT
 
 
 def test_max_depth_requests_flag_is_accepted(tmp_path):
     storage, result = run_downloader(tmp_path, '--max-depth-requests', '10')
     assert result.returncode == 0, result.stderr
-    assert len(last_log_fields(storage)) == 19
+    assert len(last_log_fields(storage)) == DownloadRunner.LOG_CSV_FIELD_COUNT
 
 
 class TestDepthBudgetMessages:
@@ -538,7 +540,7 @@ def test_broken_scrape_log_falls_back_to_stderr_and_the_run_survives(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert 'logging to stderr' in result.stderr  # one loud warning, then the run proceeds
-    assert len(last_log_fields(storage)) == 19
+    assert len(last_log_fields(storage)) == DownloadRunner.LOG_CSV_FIELD_COUNT
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -566,11 +568,12 @@ def test_depth_crash_keeps_the_image_phases_real_counts(tmp_path, monkeypatch):
         DownloadRunner.run_scraper_and_log_results(str(storage), panos, panos, skip_depth=False)
 
     fields = last_log_fields(storage)
-    assert len(fields) == 19
+    assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
     assert fields[6:11] == ['3', '1', '2', '4', '10'], "the image phase's real counts must survive"
     assert fields[11] != ''  # image duration was recorded too
     assert fields[12:18] == [''] * 6  # depth and total never finished - blank, not fabricated
     assert fields[18] == '1'  # the one GSV pano the depth phase was given: known before it exploded (#43)
+    assert fields[19] == ''  # the stub image phase reported no raised count, so field 20 has none (#182)
 
 
 def test_an_overwide_log_row_errors_instead_of_silently_widening(tmp_path):
@@ -709,7 +712,7 @@ def test_main_with_bad_argv_exits_2(tmp_path, monkeypatch):
 
 def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
     """The #49 evidence path at the new run() seam: a pano-list fetch crash must leave a blank-padded
-    19-field log.csv row whose real timestamp shows a run started and produced nothing. In-process and
+    20-field log.csv row whose real timestamp shows a run started and produced nothing. In-process and
     deterministic - unlike the subprocess variant, which relies on .invalid DNS failing through the whole
     retry stack."""
     monkeypatch.chdir(tmp_path)
@@ -726,9 +729,9 @@ def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
         module.run('sidewalk-test.invalid', str(storage))
 
     fields = last_log_fields(storage)
-    assert len(fields) == 19
+    assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
     assert fields[0] != ''  # a real timestamp: evidence the run started
-    assert fields[1:] == [''] * 18  # no phase ran - all blank, not fake zeros
+    assert fields[1:] == [''] * 19  # no phase ran - all blank, not fake zeros
 
 
 # --- Retry semantics and source ordering (#41, #40) -----------------------------------------------------------
@@ -3521,8 +3524,9 @@ class TestTheDepthCorpusSizeReachesLogCsv:
         assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
 
     def test_the_field_is_the_last_one(self):
-        """Appending is what keeps every existing position - and every existing reader - unmoved."""
-        assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT
+        """Appending is what keeps every existing position - and every existing reader - unmoved. It was the
+        last field until #182 appended field 20 after it."""
+        assert DownloadRunner.DEPTH_ELIGIBLE_FIELD == DownloadRunner.LOG_CSV_FIELD_COUNT - 1
 
 
 # --- log.csv field 20: tonight's raised image attempts (#182) ------------------------------------------------
@@ -3730,7 +3734,7 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
         assert len(rows) == 1
         assert len(rows[0]) == DownloadRunner.LOG_CSV_FIELD_COUNT
         assert rows[0][0] != ''
-        assert rows[0][1:] == [''] * 18
+        assert rows[0][1:] == [''] * 19
 
     def test_a_stop_after_the_fetch_but_before_the_scrape_writes_a_timestamp_row(self, monkeypatch, tmp_path):
         """The same gap one function up: between the pano-list fetch's own crash handler and the call into
@@ -3752,7 +3756,7 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
         assert len(rows) == 1
         assert len(rows[0]) == DownloadRunner.LOG_CSV_FIELD_COUNT
         assert rows[0][0] != ''
-        assert rows[0][1:] == [''] * 18
+        assert rows[0][1:] == [''] * 19
 
 
 class TestField5IsTheImageListsLength:
@@ -4029,7 +4033,7 @@ class TestStoreMode:
         run = StoreRun(monkeypatch, tmp_path, jpgs())
         run.main(store_csv_rows())
         fields = run.fields()
-        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT == 19
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT == 20
         assert fields[7] == '0'
         assert all(f != '' for f in fields), 'a completed store run leaves no blank field'
 
