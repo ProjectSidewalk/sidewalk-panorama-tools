@@ -306,7 +306,8 @@ MANIFEST_NO_KNOWN_GAP = 'provenance_manifest_no_known_gap'
 # set-aside - and that does not make the last-row filter wrong: a crop with no row is unknown and is left
 # out. A crop that lost its row on a --force re-cut does, since the PREVIOUS row is then the last one. So a
 # count above 0 is what makes "last row per (city, label_id)" unsafe, and it bounds how far off it can be:
-# at most that many labels' last rows misdescribe their crops. 0 when a manifest is started, carried forward,
+# at most that many labels' last rows misdescribe their crops - as far as runs reported, since a run killed
+# outright between a crop and its row records nothing. 0 when a manifest is started, carried forward,
 # added to by _record_manifest_gap and never decreased; null when the marker has no count for the manifest
 # on disk (unknown, not 0).
 MANIFEST_KNOWN_GAPS = 'provenance_manifest_known_gaps'
@@ -2050,8 +2051,8 @@ def _record_manifest_gap(destination_dir, gaps):
     Called at the end of a run that knows it left crops without a row, and by the manifest's first open
     just before it cuts a previous run's torn row (#153 final F1). Each caller passes only the crops it
     found itself, so no crop is counted twice: the open counts the torn row (1), the end of the run its own
-    failed appends plus, after a failed close, the rows it appended - each of which may not have landed -
-    and never the torn row again. A count the marker does not hold (no key, a null, a value that is not a
+    failed appends, a row still in flight when it was interrupted, and, after a failed close, the rows it
+    appended - each of which may not have landed - and never the torn row again. A count the marker does not hold (no key, a null, a value that is not a
     count - _gap_count), or an absent marker, stays null: a gap on top of an unknown total is still an
     unknown total. Rewritten atomically like the marker itself.
 
@@ -2429,6 +2430,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
     manifest = ProvenanceManifest(destination_dir, city, sizing_rule)
     unrecorded = 0
+    # True from a crop landing until its row is recorded or counted unrecorded (#200 second review): a
+    # KeyboardInterrupt in that window is not an Exception, so it skips the count below, and on a --force
+    # re-cut it leaves the previous row last. The finally counts it.
+    row_pending = False
     # The stale_kept labels the content check withheld, for the stale_kept summary's addendum (#164).
     stale_black_content = 0
     # Likewise for the no_pose skips (#191); and the crops the correction cut, per pose record.
@@ -2659,6 +2664,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         budget.warning('crop_failed', "Failed to crop label %d on pano %s: %s",
                                        label_id, pano_id, e)
                         continue
+                    row_pending = True
                     counts['success'] += 1
                     if existed:
                         counts['recut'] += 1
@@ -2682,6 +2688,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         budget.warning('provenance_unrecorded',
                                        "Label %d on pano %s: cropped, but its provenance row was not written "
                                        "to %s (%s)", label_id, pano_id, PROVENANCE_MANIFEST, e)
+                    row_pending = False
                     if box.shifted:
                         # The crop is real imagery containing the label, but the label is not at its
                         # centre. Counted rather than merely logged: a consumer that assumes centring
@@ -2730,10 +2737,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
         # found at open is the third, and was recorded before it was cut (ProvenanceManifest._open), so it
         # is not counted here again (#200). After a failed close every row this run appended may be lost, so
         # each is counted: the count bounds how far off the last-row filter can be.
-        if unrecorded or close_failure is not None:
+        # A row in flight when an interrupt arrived is one more (#200 second review); if its write had in
+        # fact landed, the count is one high, never low. A run killed outright runs no finally and reports
+        # nothing - the count is what runs reported, not a coverage check.
+        if unrecorded or row_pending or close_failure is not None:
             try:
-                _record_manifest_gap(destination_dir, unrecorded + (manifest.rows_written
-                                                                    if close_failure is not None else 0))
+                _record_manifest_gap(destination_dir, unrecorded + int(row_pending)
+                                     + (manifest.rows_written if close_failure is not None else 0))
             except Exception as e:
                 message = ("CropRunner could not record the gap in %s (%s): its %s and %s still read as they "
                            "did when this run started, but this run left crops without a row in %s."

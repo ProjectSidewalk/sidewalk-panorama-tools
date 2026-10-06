@@ -1643,6 +1643,57 @@ class TestTheMarkerCountsTheKnownGaps:
         assert self.gaps(out, crop_runner) is None
         assert read_marker(out, crop_runner)[crop_runner.MANIFEST_NO_KNOWN_GAP] is False
 
+    def recut_interrupted(self, crop_runner, tmp_path, store, monkeypatch, interrupt):
+        """Run A cuts label 1 from gsv; run B re-cuts it (--force) from mapillary and `interrupt` is
+        installed for run B. Returns the crop store."""
+        out = tmp_path / 'crops'
+        crop_runner.bulk_extract_crops([labelled(1, source='gsv')], str(store), str(out))
+        assert self.gaps(out, crop_runner) == 0
+        with monkeypatch.context() as scoped:
+            interrupt(scoped)
+            with pytest.raises(KeyboardInterrupt):
+                crop_runner.bulk_extract_crops([labelled(1, source='mapillary')], str(store), str(out),
+                                               force=True)
+        return out
+
+    def test_a_ctrl_c_during_a_recuts_append_is_counted(self, crop_runner, tmp_path, store, monkeypatch):
+        """#200 second review, finding 1. A KeyboardInterrupt is not an Exception, so it went past the
+        loop's `except Exception` around record() and `unrecorded` never saw it: the re-cut crop was on
+        disk, run A's row was still the last one, and the count said 0 - which the docs call exact. The
+        run's finally does run, so it counts the row in flight."""
+        def interrupt(scoped):
+            def interrupted(handle, data):
+                raise KeyboardInterrupt
+            scoped.setattr(crop_runner, '_write_all', interrupted)
+
+        out = self.recut_interrupted(crop_runner, tmp_path, store, monkeypatch, interrupt)
+        rows = manifest_by_label(out, crop_runner)
+        assert rows['1']['source'] == 'gsv', 'the last row is the stale one the count must own up to'
+        marker = read_marker(out, crop_runner)
+        assert marker[crop_runner.MANIFEST_KNOWN_GAPS] == 1
+        assert marker[crop_runner.MANIFEST_NO_KNOWN_GAP] is False
+
+    def test_a_ctrl_c_after_the_crop_lands_and_before_its_row_is_counted(self, crop_runner, tmp_path, store,
+                                                                         monkeypatch):
+        """The same window, interrupted before record() writes a byte."""
+        def interrupt(scoped):
+            def interrupted(self, *args, **kwargs):
+                raise KeyboardInterrupt
+            scoped.setattr(crop_runner.ProvenanceManifest, 'record', interrupted)
+
+        out = self.recut_interrupted(crop_runner, tmp_path, store, monkeypatch, interrupt)
+        assert self.gaps(out, crop_runner) == 1
+
+    def test_an_interrupt_before_the_crop_lands_is_not_a_gap(self, crop_runner, tmp_path, store, monkeypatch):
+        """Discrimination for the two above: a crop that never landed left no row to miss."""
+        def interrupt(scoped):
+            def interrupted(*args, **kwargs):
+                raise KeyboardInterrupt
+            scoped.setattr(crop_runner, 'make_single_crop', interrupted)
+
+        out = self.recut_interrupted(crop_runner, tmp_path, store, monkeypatch, interrupt)
+        assert self.gaps(out, crop_runner) == 0
+
     @pytest.mark.parametrize('recorded', [True, -1, 1.5, '3'], ids=['bool', 'negative', 'float', 'string'])
     def test_a_recorded_value_that_is_not_a_count_is_unknown(self, crop_runner, tmp_path, recorded):
         """A JSON true is an int to Python; adding to it would turn a hand edit into a plausible count."""
