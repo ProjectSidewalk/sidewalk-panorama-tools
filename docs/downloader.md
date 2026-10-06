@@ -239,8 +239,18 @@ BASH_ENV=/home/ubuntu/.scraper.env
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
               --max-runtime 690 --city-max-runtime 12 \
-              -- --all-panos --min-depth-runtime 6
+              -- --all-panos --min-depth-runtime 6 \
+              ; aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools \
+              --metric-name QueueHeartbeat --value 1 --unit Count >> /home/ubuntu/heartbeat.log 2>&1 \
+              && echo "$(date -Is) heartbeat published" >> /home/ubuntu/heartbeat.log \
+              || echo "$(date -Is) heartbeat FAILED" >> /home/ubuntu/heartbeat.log
 ```
+
+The tail after the `;` is the [dead-man switch](ops.md#hearing-about-a-night-that-never-ran)
+([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). It publishes a CloudWatch
+heartbeat whenever the queue has finished, whatever its exit code, and an alarm fires when no heartbeat has
+arrived for 36 hours. The backslashes here are only for display: cron has no line continuation, so on the box
+this is one line.
 
 `--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
 images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the
