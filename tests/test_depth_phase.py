@@ -903,25 +903,69 @@ def test_a_storm_that_runs_out_of_panos_is_not_booked(tmp_path, fake_streetview)
     assert condition_codes(sr) == []
 
 
-@pytest.mark.parametrize('budget_minutes, expected_sleeps', [
-    (None, [300]),      # no budget: the schedule as written
-    (3, [60]),          # two one-minute failures leave 60 s of a 3-minute budget: sleep that, not 300
-    (2, []),            # nothing left: no sleep at all
-    (1.5, []),          # already 30 s over (a request outlasted the budget): no sleep, never a negative one
-], ids=['no-budget', 'capped', 'nothing-left', 'overrun'])
+@pytest.mark.parametrize('budget_minutes, expected_sleeps, expected_calls, expected_stop', [
+    # no budget: the schedule as written, then the breaker
+    (None, [300], 3, gsv.DEPTH_STOP_CONSECUTIVE_FAILURES),
+    # two one-minute failures leave 480 s of a 10-minute budget: the 300 s retreat fits, so it runs in full
+    (10, [300], 3, gsv.DEPTH_STOP_CONSECUTIVE_FAILURES),
+    # 60 s left of a 3-minute budget: the retreat would outlast it, so stop now rather than sleep out the slot
+    # (#177 second review, nit 5 - a capped sleep then stopped anyway, without another request)
+    (3, [], 2, gsv.DEPTH_STOP_MAX_RUNTIME),
+    (2, [], 2, gsv.DEPTH_STOP_MAX_RUNTIME),     # nothing left
+    (1.5, [], 2, gsv.DEPTH_STOP_MAX_RUNTIME),   # already 30 s over (a request outlasted the budget)
+], ids=['no-budget', 'room-to-spare', 'would-outlast', 'nothing-left', 'overrun'])
 def test_a_retreat_never_sleeps_past_the_budget(tmp_path, fake_streetview, monkeypatch, budget_minutes,
-                                                expected_sleeps):
+                                                expected_sleeps, expected_calls, expected_stop):
     """The 300 s step at failure 15 ignored the budget and overran the queue's 5-minute kill grace in 65% of the
-    reviewer's simulated seeds, booking the city timed_out for a reason naming neither Google nor depth."""
+    reviewer's simulated seeds, booking the city timed_out for a reason naming neither Google nor depth. A
+    retreat that would outlast the budget left is not shortened: the phase stops instead, handing the rest of
+    the slot back to the queue's window, since a sleep to the deadline is followed by no request anyway."""
     monkeypatch.setattr(gsv, 'DEPTH_RETREAT_SCHEDULE', {2: 300})
     monkeypatch.setattr(gsv, 'DEPTH_MAX_CONSECUTIVE_FAILURES', 3)
-    _, sleeps = storm_on_a_clock(monkeypatch, fake_streetview, raise_503)
+    calls, sleeps = storm_on_a_clock(monkeypatch, fake_streetview, raise_503)
+    sr = {}
 
     gsv.download_depth_maps(str(tmp_path), many_pano_infos(10),
                             run_start_monotonic=None if budget_minutes is None else 0.0,
-                            max_runtime_minutes=budget_minutes)
+                            max_runtime_minutes=budget_minutes, stop_reasons=sr)
 
     assert sleeps == expected_sleeps
+    assert len(calls) == expected_calls
+    assert sr['depth_stop'] == expected_stop
+
+
+def test_a_retreat_that_would_outlast_the_budget_still_books_an_outage(tmp_path, fake_streetview, monkeypatch):
+    """Stopping at the retreat instead of the loop's budget check is still a budget stop, so a streak at the
+    floor is booked as the breaker exactly as it would have been one sleep later."""
+    monkeypatch.setattr(gsv, 'DEPTH_RETREAT_SCHEDULE', {OUTAGE_FLOOR: 300})
+    calls, sleeps = storm_on_a_clock(monkeypatch, fake_streetview, raise_503)
+    sr = {}
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), run_start_monotonic=0.0,
+                            max_runtime_minutes=OUTAGE_FLOOR + 2, stop_reasons=sr)
+
+    assert sleeps == []
+    assert len(calls) == OUTAGE_FLOOR
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_CONSECUTIVE_FAILURES
+    assert '(%d network; ended_on_budget)' % OUTAGE_FLOOR in sr['conditions'][0]['detail']
+
+
+def test_an_unexpected_streak_at_the_budget_is_not_an_outage(tmp_path, fake_streetview, monkeypatch):
+    """The floor counts NETWORK failures only. The 'unexpected' arm is a property of the payload (a
+    DepthPayloadError, a parser crash), not of reaching photometa - and it has the 25-breaker given time. Pinned
+    because counting it survived every test (#177 second review, nit 3)."""
+    def raise_unexpected():
+        raise gsv.DepthPayloadError('depth payload present but no plane data')
+
+    calls, _ = storm_on_a_clock(monkeypatch, fake_streetview, raise_unexpected)
+    sr = {}
+
+    gsv.download_depth_maps(str(tmp_path), many_pano_infos(50), run_start_monotonic=0.0,
+                            max_runtime_minutes=OUTAGE_FLOOR + 2, stop_reasons=sr)
+
+    assert len(calls) == OUTAGE_FLOOR + 2
+    assert sr['depth_stop'] == gsv.DEPTH_STOP_MAX_RUNTIME
+    assert condition_codes(sr) == []
 
 
 def test_persistent_failures_cannot_starve_the_request_budget(tmp_path, fake_streetview, monkeypatch):
