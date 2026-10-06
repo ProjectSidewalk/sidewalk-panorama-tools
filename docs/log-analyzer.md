@@ -5,7 +5,7 @@ flags the ones that look broken, and reports the [depth backfill](#the-depth-bac
 fleet. This is an ops tool you run from a workstation or a cron box — the scraper neither knows nor needs it,
 and it shares no code with the runners. **Pull the repo before running it after a deploy**: the column list
 it reads by position moves with the runner's ([#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)
-added field 19, [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182) field 20), and an older analyzer against newer rows would misplace every count.
+added field 19, [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182) field 20), and an older analyzer drops every newer row as torn (a field count it does not know) and then reads the city as stale. **Deploy order follows:** the checkout the analyzer runs from must be on a build that knows a width before the scraper box writes it (see [Deploying](ops.md#deploying)).
 
 It needs only `pandas` plus the `sftp` client binary (`openssh-client`). `pandas` lives in
 `requirements-dev.txt`, not `requirements.txt` — nothing the scraper or cropper runs imports it

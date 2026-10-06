@@ -947,6 +947,12 @@ previous deploy's changes again.
 - **Create the [store marker](#the-store-marker) BEFORE pulling #161.** From that deploy on, a queue that
   finds no `<store-root>/.pano-store` exits 5 having run nothing, so the first night after a deploy without
   it scrapes nothing (loudly).
+- **Pull the log analyzer's checkout BEFORE the box takes #182.** #182 widens `log.csv` to 20 fields, and an
+  analyzer from before it knows only 18 and 19: it drops every 20-field row as torn (rule 9) and, once the
+  newest 19-field row is older than `--stale-days`, reports the city CRITICAL stale — every city at once,
+  measured on a mixed 19/20 file. The new analyzer reads all three widths, so running it against the old
+  box's 19-field rows is harmless; the other order is the one deploy mistake here that hits the whole fleet.
+  The same holds for any later change to the width ([log analyzer](log-analyzer.md)).
 - **Roll forward, never back, past 2026-09-17.** [`fetched_at`](#fetched_at-and-the-two-row-widths) widened
   `pano_id_log.csv` to three fields, and a pre-#129 reader skips every three-field row — so every permanent
   verdict recorded since that deploy is re-requested nightly, and a store that has only ever seen the new
