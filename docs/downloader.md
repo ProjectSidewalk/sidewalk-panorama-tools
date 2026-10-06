@@ -240,16 +240,19 @@ BASH_ENV=/home/ubuntu/.scraper.env
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
               --max-runtime 690 --city-max-runtime 12 \
               -- --all-panos --min-depth-runtime 6 \
-              ; aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools \
+              ; if [ -n "$(find /home/ubuntu/cron_notify.log -mmin -10 2>/dev/null)" ]; then \
+              aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools \
               --metric-name QueueHeartbeat --value 1 --unit Count >> /home/ubuntu/heartbeat.log 2>&1 \
               && echo "$(date -Is) heartbeat published" >> /home/ubuntu/heartbeat.log \
-              || echo "$(date -Is) heartbeat FAILED" >> /home/ubuntu/heartbeat.log
+              || echo "$(date -Is) heartbeat FAILED" >> /home/ubuntu/heartbeat.log; \
+              else echo "$(date -Is) heartbeat withheld: cron_notify.log not written" >> /home/ubuntu/heartbeat.log; fi
 ```
 
 The tail after the `;` is the [dead-man switch](ops.md#hearing-about-a-night-that-never-ran)
 ([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). It publishes a CloudWatch
-heartbeat whenever the queue has finished, whatever its exit code, and an alarm fires when no heartbeat has
-arrived for 36 hours. The backslashes here are only for display: cron has no line continuation, so on the box
+heartbeat whenever `cron_notify` has run to the end, whatever the queue's exit code. It is withheld when the
+wrapper did not write its log line, because a broken wrapper is the one failure nothing else reports. An alarm
+fires when no heartbeat has arrived for about 36 hours. The backslashes here are only for display: cron has no line continuation, so on the box
 this is one line.
 
 `--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
