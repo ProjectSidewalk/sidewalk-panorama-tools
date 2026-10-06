@@ -31,7 +31,7 @@ git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git
 cd sidewalk-panorama-tools
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 ```
 
 Download a city's panoramas and depth maps into `/srv/panos/columbus-oh`:
@@ -117,7 +117,7 @@ of them.
 ## Tests
 
 ```bash
-pip3 install -r requirements.txt -r requirements-dev.txt
+pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python3 -m pytest tests
 ```
 

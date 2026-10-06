@@ -27,8 +27,14 @@ git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git
 cd sidewalk-panorama-tools
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 ```
+
+`-c constraints.txt` installs the exact versions the production box runs and CI tests
+([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The file is that box's
+`pip freeze` on Python 3.10, refreshed by the procedure in
+[Refreshing `constraints.txt`](ops.md#refreshing-constraintstxt). Leave it off to take the latest release of
+everything, which is what a weekly CI job tests, or when a pin has no wheel for your platform or Python.
 
 Two platform notes:
 

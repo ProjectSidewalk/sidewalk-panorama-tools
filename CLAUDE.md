@@ -12,7 +12,7 @@ Everything runs from a virtualenv — **there is no Docker in this repo**. The i
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip3 install -r requirements.txt
+pip3 install -r requirements.txt -c constraints.txt   # constraints.txt = the production box's pip freeze (#167; docs/ops.md)
 
 # Downloader (one city)
 python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-depth] \
@@ -74,12 +74,12 @@ python3 assets/make_banner.py
 Tests:
 
 ```bash
-pip3 install -r requirements.txt -r requirements-dev.txt
+pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python3 -m pytest tests
 python3 -m pytest tests --cov --cov-report=term-missing   # what CI reports and gates on
 ```
 
-CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10, the production baseline. There is no linter configured.
+CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10, the production baseline, against `constraints.txt` (the box's `pip freeze`, #167). `tests-latest.yml` runs it weekly with no constraints and never on a PR, to show drift. A requirement and its pin change together (`tests/test_constraints.py` checks this). The refresh procedure is in `docs/ops.md` under "Refreshing `constraints.txt`". There is no linter configured.
 
 ## Documentation layout
 
