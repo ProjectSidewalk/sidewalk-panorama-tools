@@ -840,6 +840,28 @@ class TestADamagedLedgerNeverCrashesTheRun:
         assert result == (1, 0, 2, 3)
         assert condition_codes(stop_reasons) == []
 
+    def test_a_nul_byte_costs_one_row_under_python_3_10_csv(self, tmp_path, fake_streetview, csv_refuses_nul):
+        """A run of NULs is the most familiar crash residue, and on 3.10 - production - csv raised on it, so the
+        phase sat out every night (#189 review). Stripped, it costs its own row: no condition, one request."""
+        storage = str(tmp_path)
+        write_ledger_bytes(storage, b'pano_id,status\r\nbbbbbb,saved\r\naaaa\x00\x00\x00\x00\r\n'
+                                    b'cccccc,unavailable\r\n')
+        calls = []
+
+        def fetch(pano_id, **kwargs):
+            calls.append(pano_id)
+            return make_pano(default_depth_array())
+
+        fake_streetview.find_panorama_by_id = fetch
+        stop_reasons = {}
+
+        result = gsv.download_depth_maps(storage, pano_infos('aaaaaa', 'bbbbbb', 'cccccc'),
+                                         stop_reasons=stop_reasons)
+
+        assert calls == ['aaaaaa']
+        assert result == (1, 0, 2, 3)
+        assert condition_codes(stop_reasons) == []
+
     def test_an_unusable_ledger_is_never_touched(self, tmp_path, fake_streetview):
         """The ledger is store state: no "move it aside" or truncate. Repair is a documented hand edit
         (docs/ops.md), so the bytes after the phase are the bytes before it."""

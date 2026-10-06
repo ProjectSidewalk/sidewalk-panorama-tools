@@ -52,6 +52,24 @@ class TestLoadDepthLog:
         assert {'bbbbbb', 'cccccc'} <= resolved
         assert 'aaaaaa' not in resolved
 
+    # Zero-filled residue: a whole line of NULs, and a torn row whose tail is NULs. Stripped, the first is an
+    # empty line and the second a row with no status, so each costs its own row and nothing else.
+    NUL_LEDGER = b'pano_id,status\r\nbbbbbb,saved\r\n\x00\x00\x00\x00\r\naaaa\x00\x00\x00\r\ncccccc,unavailable\r\n'
+
+    def test_a_nul_byte_costs_one_row_on_this_interpreter(self, tmp_path):
+        """Discriminates on Python 3.10 (CI), where csv raises on a NUL; 3.11+ accepts one. The next test makes
+        the same claim on every interpreter."""
+        path = tmp_path / 'depth_log.csv'
+        path.write_bytes(self.NUL_LEDGER)
+        assert gsv._load_depth_log(str(path)) == {'bbbbbb', 'cccccc'}
+
+    def test_a_nul_byte_costs_one_row_under_python_3_10_csv(self, tmp_path, csv_refuses_nul):
+        """On 3.10, the production interpreter, csv raised `line contains NUL`, which the callers read as an
+        unusable ledger: the most familiar crash residue sat the depth phase out every night (#189 review)."""
+        path = tmp_path / 'depth_log.csv'
+        path.write_bytes(self.NUL_LEDGER)
+        assert gsv._load_depth_log(str(path)) == {'bbbbbb', 'cccccc'}
+
 
 class TestDecodeDepthPlanes:
     """gsv._decode_depth_planes: the in-repo decode of Google's depth payload into the plane data
