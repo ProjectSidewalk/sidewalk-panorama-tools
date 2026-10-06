@@ -3638,26 +3638,41 @@ class TestField20IsTonightsRaisedAttempts:
             stop_reasons=stop_reasons)
         return stop_reasons
 
+    @staticmethod
+    def answered_then(verdicts):
+        """One success and one permanent failure ahead of `verdicts`, so on a stopped phase field 20 differs from
+        field 9 (which adds the failure) and from the attempt count (which adds both)."""
+        out = {'successPano000': downloaders.DownloadResult.success,
+               'failurePano000': downloaders.DownloadResult.failure}
+        out.update(verdicts)
+        return out
+
     def test_an_image_phase_stopped_on_its_budget_still_writes_it(self, monkeypatch, tmp_path):
         """Slow raises (timeouts) are what fill the image budget, so a budget-stopped phase is where a blank
-        field 20 would hide the most. 3.5 min per raise in a 6-minute budget: two raises, then the stop."""
-        stop_reasons = self.run_stopped(monkeypatch, tmp_path, scripted_verdicts(raised=5),
-                                        minutes_per_attempt=3.5, max_runtime=6)
+        field 20 would hide the most. One minute per attempt in a 4-minute budget: a success, a permanent
+        failure, two raises, then the stop with three panos left."""
+        stop_reasons = self.run_stopped(monkeypatch, tmp_path, self.answered_then(scripted_verdicts(raised=5)),
+                                        minutes_per_attempt=1.0, max_runtime=4)
 
         assert stop_reasons['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME, 'the case under test'
+        fields = last_log_fields(tmp_path)
+        assert (fields[8], fields[10]) == ('3', '4'), 'field 9 and the attempt count must differ from field 20'
         assert self.field_20(tmp_path) == '2'
 
     def test_an_image_phase_stopped_by_the_push_back_breaker_still_writes_it(self, monkeypatch, tmp_path):
-        """Two network raises, then GSV_MAX_CONSECUTIVE_PUSHBACK refusals trip GSV; the panos after the trip are
-        never attempted, so they are not raises. Field 20 is the five attempts that did raise."""
+        """A success, a permanent failure and two network raises, then GSV_MAX_CONSECUTIVE_PUSHBACK refusals trip
+        GSV; the panos after the trip are never attempted, so they are not raises. Field 20 is the two network
+        raises plus the refusals."""
         refused = downloaders.gsv.TilePushbackError(429, 0, 0)
         limit = DownloadRunner.GSV_MAX_CONSECUTIVE_PUSHBACK
         verdicts = scripted_verdicts(raised=2)
         verdicts.update({'refusedPano%03d' % i: refused for i in range(limit + 2)})
 
-        stop_reasons = self.run_stopped(monkeypatch, tmp_path, verdicts)
+        stop_reasons = self.run_stopped(monkeypatch, tmp_path, self.answered_then(verdicts))
 
         assert stop_reasons['image_stop'] == DownloadRunner.STOP_BLOCKED, 'the case under test'
+        fields = last_log_fields(tmp_path)
+        assert (fields[8], fields[10]) == (str(3 + limit), str(4 + limit)),             'field 9 and the attempt count must differ from field 20'
         assert self.field_20(tmp_path) == str(2 + limit)
 
     def test_field_20_is_the_last_one(self):
