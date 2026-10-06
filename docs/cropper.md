@@ -425,7 +425,9 @@ it cuts exactly what it did before.
   [provenance manifest](#the-provenance-manifest-crop_provenancecsv) records the correction: the pose record
   (`pose_source`, `xml`/`npz`), the beta applied (`tilt_beta`) and the corrected centre the window was cut
   around (`corrected_pano_x`, `corrected_pano_y`); a crop cut without the correction says `none`, `0.0` and
-  blanks. Choosing the default beta and turning the flag on is
+  blanks. A crop is corrected only if its row names a pose record **and** a beta other than zero: a record
+  configured at beta 0, the identity, still writes its row (`xml` or `npz`, `0.0`, the stored point) — see
+  the filter in the manifest section. Choosing the default beta and turning the flag on is
   [#197](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197).
 * **An open question about the xml pose.** About 4% of xml-posed panos in the #54 pose scan (1,043 of
   27,149) carry an xml `image_width` that differs from the JPEG's, mostly 16384 in the xml against a 13312
@@ -796,13 +798,21 @@ below `main()` that passes none.
   [The tilt correction](#the-tilt-correction-opt-in-191)). A crop cut under `--tilt-correction` says which pose
   record corrected it (`pose_source`: `xml` or `npz`), the beta applied (`tilt_beta`, e.g. `1.0`), and the
   corrected centre its window was cut around (`corrected_pano_x`, `corrected_pano_y`, unrounded — the stored
-  `pano_x`/`pano_y` are in the label metadata, not here). A crop cut without the correction says `none`,
+  `pano_x`/`pano_y` are in the label metadata, not here). The window itself is sized at the stored point and,
+  near the poles, shifted to stay inside the pano, so the row alone does not rebuild the window or where the
+  label sits in it; that needs the label metadata too. A crop cut without the correction says `none`,
   `0.0`, and two blanks: `0.0` is the marker's own "off" value (beta 0 is the identity), and the centre
   columns are blank because nothing was corrected. `none` means **this run did not correct the crop**; a crop
   with **no row** in the current manifest — listed only in a set-aside file (below), or cut before the
   manifest existed — is **unknown**, not uncorrected. To filter a mixed store to its corrected crops, keep the
   **last** row per `(city, label_id)` (a `no_pose` or `stale_kept` label gets no new row, so its last row is
-  from whichever run last cut it) and keep the rows whose `pose_source` is not `none`. Read the file with a
+  from whichever run last cut it) and keep the rows whose `pose_source` is not `none` **and** whose
+  `tilt_beta` is not zero. The second test is not redundant
+  ([#200](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/200)): a pose record configured at
+  beta 0 writes `xml` or `npz`, `0.0`, and the stored point as its centre. That row is kept, because it is the
+  only record that a re-cut at a higher beta would change the crop, but the crop is an uncorrected one.
+  `CropRunner.manifest_row_is_tilt_corrected(row)` is that test, on a `csv.DictReader` row. The last-row
+  filter is exact while the store's `provenance_manifest_known_gaps` (below) is `0`. Read the file with a
   CSV parser (Python's `csv`, pandas), not `awk -F,` or `cut`: `copyright` can hold a quoted comma.
 * **`(city, label_id)` is the key when manifests from more than one city are combined.** `label_id`
   restarts at 1 in every city's database, so it alone collides across stores; `city` is on every row, so
@@ -835,7 +845,9 @@ below `main()` that passes none.
   with `none` — a crop cut under #193 with `--tilt-correction` may be among them, so whether it was
   corrected is unknown, and the marker's `tilt_correction` history is the only record. **So the first run
   after #196 over every existing store sets that store's manifest aside and starts a new one**, and the
-  store's `provenance_manifest_no_known_gap` becomes `false`. If the set-aside name already exists, or the
+  store's `provenance_manifest_no_known_gap` becomes `false`, while its `provenance_manifest_known_gaps`
+  starts at `0`: the old rows went with the old file, so they cannot make the new file's last rows wrong.
+  If the set-aside name already exists, or the
   header is anything else, the run stops with exit **3** before cutting anything and names the file;
   nothing is moved or replaced. Both set-aside files can sit side by side in one store.
 
@@ -847,6 +859,7 @@ below `main()` that passes none.
 | `provenance_manifest` | The manifest's file name. |
 | `provenance_manifest_started_under` | The crop rule in force when the manifest was started. |
 | `provenance_manifest_no_known_gap` | `true` if the store held no crops when the manifest was started and no run since has known of a crop left without a row; `false` once either is known; `null` if a manifest is present with no record of how it started. |
+| `provenance_manifest_known_gaps` | How many crops runs have known, or could not rule out, to have been cut with no row reaching this manifest (below). `0` when the manifest is started; `null` if the marker holds no count for the manifest on disk. |
 | `provenance_manifest_pre_city` | `crop_provenance.pre-city.csv` once a manifest from before rows carried a city has been set aside (above), and kept after that; `null` if none ever was. The fresh manifest started beside it records `provenance_manifest_no_known_gap: false`, since the crops the old rows describe have no row in it. |
 | `provenance_manifest_pre_tilt` | `crop_provenance.pre-tilt.csv` once a manifest from before rows carried the tilt correction has been set aside (above), and kept after that; `null` if none ever was. The same `false` follows. |
 
@@ -860,6 +873,21 @@ cannot read is left as it is rather than rebuilt, and the failure to record is s
 that re-cuts every crop, because nothing in the marker can tell that such a pass reached every row-less
 crop (one whose label is absent from its metadata keeps no row). Deleting the manifest restarts it, and
 the restarted one is recorded as `false` if the store already holds crops.
+
+**`provenance_manifest_known_gaps` is the one that says whether the last-row filter is safe**
+([#200](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/200)). The flag above goes `false`
+for crops cut before the manifest was started, and so on every existing store at its first run after #196
+(the set-aside). Those crops have no row, so the filter leaves them out, and is still exact. What makes it
+wrong is a crop that a run cut with no row reaching the file: after a `--force` re-cut, the previous row is
+then the last one, describing a crop that is no longer on disk. The count is the number of those, and it
+bounds the damage: at most that many labels' last rows misdescribe their crops. It starts at `0` with the
+manifest and only grows: by 1 for a torn row found at open, by 1 for each failed append, and, after a
+failed close, by the number of rows that run appended, since each may not have landed. Each gap is counted
+once. If a run's last append tears and the reopen that would cut it fails, the run counts it as unrecorded
+and cuts the fragment when it closes, so the next run does not count it again as a torn row (only if that
+cut fails too is it counted twice, which leaves the count high, never low). `null` means unknown: a gap on
+top of an unknown total leaves it `null`. `crop_rule.json` cannot list *which* labels; `crop.log` names up
+to its per-kind cap of them, under `provenance_unrecorded`.
 
 **The key is a record of what runs reported, not a coverage check.** A run killed between a crop's rename
 and its row reports nothing, so even a `true` store can hold a crop with no row. Coverage is the
