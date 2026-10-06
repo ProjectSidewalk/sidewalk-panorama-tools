@@ -1606,9 +1606,11 @@ class ProvenanceManifest:
         self._needs_cut = False
         return cut_row
 
-    def record(self, label_id, pano_id, provenance, tilt=TILT_PROVENANCE_OFF):
+    def record(self, label_id, pano_id, provenance, *, tilt):
         """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order; `tilt` is
-        TILT_PROVENANCE_COLUMNS' values (#196) - TILT_PROVENANCE_OFF for a crop this run did not correct.
+        TILT_PROVENANCE_COLUMNS' values (#196) - TILT_PROVENANCE_OFF for a crop this run did not correct. `tilt`
+        is a required keyword (#200 review): a default would let a caller that forgets it record a corrected
+        crop as `none`, which no width check can catch.
 
         Raises if the row did not reach the file; the handle is dropped first, so nothing of the row
         survives to be written later, and then reopened at once, which cuts any part of the row that did

@@ -396,6 +396,20 @@ class TestTheProvenanceManifest:
             manifest.close()
         assert manifest_rows(tmp_path, crop_runner) == [list(crop_runner.PROVENANCE_COLUMNS)]
 
+    def test_a_row_cannot_be_recorded_without_saying_whether_it_was_corrected(self, crop_runner, tmp_path):
+        """#200 review finding 3. A default of TILT_PROVENANCE_OFF would let a future caller that forgets
+        `tilt=` record a corrected crop as `none` - the misclassification #196 exists to prevent, and one no
+        width check can see. So `tilt` is a required keyword, and nothing is written without it."""
+        manifest = crop_runner.ProvenanceManifest(str(tmp_path), 'seattle-wa')
+        try:
+            with pytest.raises(TypeError):
+                manifest.record(1, 'testpano0001', ('', '', ''))
+            with pytest.raises(TypeError):
+                manifest.record(1, 'testpano0001', ('', '', ''), crop_runner.TILT_PROVENANCE_OFF)
+        finally:
+            manifest.close()
+        assert manifest_rows(tmp_path, crop_runner) == [list(crop_runner.PROVENANCE_COLUMNS)]
+
     def test_one_row_per_crop_carrying_what_the_metadata_says(self, crop_runner, tmp_path):
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
