@@ -1,0 +1,102 @@
+{
+ "seed": 190,
+ "fetched": "2026-10-06",
+ "sample": [
+  {
+   "pano_id": "b42a898f-a86c-4130-9a09-c0ebda62bc4d",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "a752d58b-a984-41b2-be17-9ef51150a765",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "cdafa20a-e837-486f-b15c-352b6c8c8035",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "8ae6f346-020d-4867-9b22-aec0c718d83a",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "a7af7558-8bc3-40db-b6c3-1a22f20eb628",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "f517c893-ebb9-4a5f-820d-d11c0fd51073",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "54b725fe-5d63-4f94-a86e-166e1233f683",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "fc3f4df1-e95c-42a0-81a6-481b82a40579",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "ba9c29dc-976e-4da6-b061-f83caabceeef",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "26b65ab0-dbf4-40d6-8975-f732a6badf16",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "3d41fefe-4ce5-4d9e-893d-ff47cc29ce93",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "6f14d966-d458-4464-aa79-cc23b2228d5c",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "c2ae08ce-75e2-460d-a7a8-ee0e6fe4adc7",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "6378c59b-c412-4ff0-aa52-adf4ae638b06",
+   "stratum": "pose-nonzero"
+  },
+  {
+   "pano_id": "30163e12-bc51-4a2d-9a59-f56a36432fa6",
+   "stratum": "pose-zero"
+  },
+  {
+   "pano_id": "897ca3fa-c08e-4c00-b3c0-17c07976c625",
+   "stratum": "pose-zero"
+  },
+  {
+   "pano_id": "17a240ee-2fe5-4cb2-adc2-c5372bc611aa",
+   "stratum": "pose-zero"
+  },
+  {
+   "pano_id": "0c6d4bde-0a6d-4c7a-8fb8-3795e99e031c",
+   "stratum": "pose-zero"
+  },
+  {
+   "pano_id": "b0bd5431-9e16-484f-9484-11df687200df",
+   "stratum": "pose-zero"
+  },
+  {
+   "pano_id": "1bbd2634-d744-44f1-99d8-2960c7a5622a",
+   "stratum": "pose-absent"
+  },
+  {
+   "pano_id": "8b42e5b0-578d-46ed-b969-bc4dfcc8d116",
+   "stratum": "pose-absent"
+  },
+  {
+   "pano_id": "e2e79e8b-8603-439e-a570-5cddd0083d87",
+   "stratum": "pose-absent"
+  },
+  {
+   "pano_id": "3b0d0d56-d59e-4577-ac70-3e872dfef811",
+   "stratum": "pose-absent"
+  },
+  {
+   "pano_id": "ce7388ef-b1a7-41b9-bf1c-f582ad9155ef",
+   "stratum": "pose-absent"
+  }
+ ]
+}
