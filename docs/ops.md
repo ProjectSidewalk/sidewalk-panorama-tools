@@ -695,7 +695,7 @@ city stays `ok`, but the queue exits 1 and the night's message carries one line 
 | `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | `depth-stood-down` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. If the line says the latch *could not be written*, nothing else on this host stands down for it. A 5xx storm on photometa is not this row: it reads `photometa did not answer` and latches nothing. | As the row above: check for a rate limit before the next night. |
 | `WARNING - Google refused 3 GSV panos in a row (HTTP 429)` earlier in the same run, then the latch line above | `depth-stood-down` | The **image phase's** push-back breaker tripped and set the latch itself ([below](#when-google-pushes-back-on-the-image-phase)). Unlike the other rows the city does not stay `ok`: the trip puts `gsv` in the tripped set, so it exits 1 and is booked `failed`. | As for the row above: the same host, the same refusal, seen from the tile endpoint instead. |
 | `WARNING - the depth phase stopped early after 25 consecutive failures (…)` | `depth-breaker` | 25 transient failures in a row. The breakdown in brackets says whether they were the store or the network. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. |
-| `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened. The phase sat the run out rather than re-request the whole corpus against a sick store. | Check the mount and the file's permissions. |
+| `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened **or parsed**: an I/O error, or a field longer than `csv.field_size_limit()` (131,072 characters by default), which is what a crash that wrote junk into the file looks like ([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The phase sat the run out rather than re-request the whole corpus against a sick store; the image phase ran as usual. One undecodable byte is not this: it costs that one row, and that pano is re-requested. | `cannot write`, or `cannot read` with an OS error: check the mount and the file's permissions. `cannot read` with `field larger than field limit`: [repair the ledger by hand](#repairing-a-ledger-the-phase-cannot-read). Nothing repairs it for you, so the condition recurs every night until you do. |
 | `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt` into `.venv` (see [Deploying](#deploying)). |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
@@ -775,6 +775,32 @@ Repeat 2–4 for every city the report flags; drift hits the whole fleet at once
 small city can be written off entirely in one night — its phase then walks its whole list, which the analyzer
 cannot tell from a finished backfill — so after drift, check every city's `depth_log.csv` for a tail of
 `unavailable` rows since the date the large cities name, not only the flagged ones.
+
+### Repairing a ledger the phase cannot read
+
+`depth-ledger-unusable` with `field larger than field limit` in its detail means one line of the city's
+`depth_log.csv` is junk that `csv` refuses to parse: a run of binary from a crash mid-append, or a stray `"`
+that opens a quoted field running on past the limit. The depth phase leaves the file exactly as it found it
+and sits every night out until the line is gone — no tool moves or truncates the ledger, because it is store
+state ([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The image phase is not
+affected. In the city's store directory:
+
+1. **Copy the ledger first**: `cp -p depth_log.csv depth_log.csv.bak-$(date +%F)`.
+2. **List every line that is not a ledger row:**
+
+   `tr -d '\r' < depth_log.csv | grep -naEv '^(pano_id,status|[A-Za-z0-9_-]+,(saved|unavailable))$' | cut -c1-120`
+
+   prints each offending line's number and its first 120 bytes. The `tr` is for the CRLF line endings (the
+   scrub's step 3, above); it removes characters, never lines, so the numbers are the file's. A torn row
+   (`aaaa` with no status) is listed too: it is harmless, but deleting it costs nothing.
+3. **Delete those lines**: `sed -i '<N>d;<M>d' depth_log.csv` with the numbers from step 2. Re-run step 2; it
+   should print nothing.
+4. **What it costs:** a deleted `saved` row costs no request — the artifact is on disk and the next run
+   re-ledgers it without asking Google. A deleted `unavailable` row costs one request. The next night's depth
+   phase runs as normal and the condition stops.
+
+`tests/test_depth_phase.py` runs steps 2 and 3, verbatim from this page, against a ledger the depth phase wrote
+with junk spliced in.
 
 ## When the image phase stops trusting a source
 

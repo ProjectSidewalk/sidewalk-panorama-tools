@@ -113,6 +113,14 @@ Ledgered panos are never re-requested. Transient network failures are *not* ledg
 next run. **The artifacts on disk are the ground truth** — deleting the ledger is safe and just makes the next
 run re-check everything; existing artifacts are re-registered without re-downloading.
 
+A damaged ledger costs as little as it can, and never the run
+([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). A torn row (a crash
+mid-append) is skipped, so that one pano is re-checked. A byte that is not UTF-8 is replaced rather than
+raised, so it too costs only its own row. A field longer than `csv.field_size_limit()` makes the file
+unparseable: the depth phase then sits the run out under the `depth-ledger-unusable` condition — the same as a
+ledger it cannot open — rather than re-request every pano after the bad line, and the image phase runs as usual.
+Nothing moves or truncates the file; [the repair is a hand edit](ops.md#repairing-a-ledger-the-phase-cannot-read).
+
 ## Migrating a pre-v2 store
 
 Any store scraped before the [#58](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/58) fix

@@ -863,7 +863,7 @@ class TestADamagedLedgerNeverCrashesTheRun:
         assert gsv.count_unresolved_depth(str(tmp_path), pano_infos('aaaaaa', 'bbbbbb', 'cccccc')) == 1
 
 
-OPS_MD =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', 'ops.md')
+OPS_MD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs', 'ops.md')
 
 
 @pytest.mark.skipif(shutil.which('awk') is None, reason='the recipe is an awk one-liner; CI has awk')
@@ -912,3 +912,46 @@ def test_the_ledger_scrub_recipe_keeps_the_header_when_nothing_was_ever_saved(tm
     out = subprocess.run(shlex.split(command), cwd=str(tmp_path), capture_output=True, text=True, check=True)
 
     assert out.stdout.strip() == '1', out
+
+
+@pytest.mark.skipif(os.name != 'posix' or not all(shutil.which(t) for t in ('bash', 'tr', 'grep', 'cut', 'sed')),
+                    reason="the recipe is a POSIX pipeline; on Windows 'bash' may be WSL's. CI runs it")
+def test_the_unusable_ledger_repair_recipe_finds_and_removes_exactly_the_junk(tmp_path, fake_streetview):
+    """docs/ops.md's "Repairing a ledger the phase cannot read" (#189), steps 2 and 3 verbatim from the page,
+    against a CRLF ledger download_depth_maps wrote with three kinds of junk spliced in: an over-long run of
+    binary (the case that makes the ledger unusable), a stray quote, and an undecodable byte. Step 2 must name
+    exactly those lines - not the header, not a good row - and after step 3 the phase must read the ledger and
+    keep every good row."""
+    with open(OPS_MD, encoding='utf-8') as f:
+        page = f.read()
+    finders = re.findall(r"`(tr -d '\\r' < depth_log\.csv [^`]*)`", page)
+    deleters = re.findall(r"`(sed -i '<N>d;<M>d' depth_log\.csv)`", page)
+    assert len(finders) == 1 and len(deleters) == 1, (finders, deleters)
+
+    storage = str(tmp_path)
+    good = ['aa%04d' % i for i in range(4)]
+    fake_streetview.find_panorama_by_id = lambda pano_id, **kwargs: make_pano(default_depth_array())
+    gsv.download_depth_maps(storage, pano_infos(*good))
+    ledger = os.path.join(storage, gsv.DEPTH_LOG_FILENAME)
+    with open(ledger, 'rb') as f:
+        lines = f.read().split(b'\r\n')
+    assert lines[-1] == b'' and len(lines) == 6, lines  # the premise: header + 4 rows, CRLF
+    junk = {3: b'\x9f\x80' *(csv.field_size_limit() // 2 + 1) + b',saved',
+            5: b'"bb0001,saved',
+            7: b'cc\x81001,saved'}
+    for number in sorted(junk):  # 1-based line numbers in the final file
+        lines.insert(number - 1, junk[number])
+    with open(ledger, 'wb') as f:
+        f.write(b'\r\n'.join(lines))
+    with pytest.raises(csv.Error):
+        gsv._load_depth_log(ledger)  # the premise: the phase would sit this ledger out
+
+    found = subprocess.run(['bash', '-c', finders[0]], cwd=storage, capture_output=True, check=True)
+    numbers = [int(line.split(b':', 1)[0]) for line in found.stdout.splitlines()]
+    assert numbers == sorted(junk), found.stdout[:400]
+
+    deleter = deleters[0].replace('<N>d;<M>d', ';'.join('%dd' % n for n in numbers))
+    subprocess.run(['bash', '-c', deleter], cwd=storage, check=True)
+
+    assert subprocess.run(['bash', '-c', finders[0]], cwd=storage, capture_output=True).stdout == b''
+    assert gsv._load_depth_log(ledger) == set(good)
