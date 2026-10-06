@@ -1695,6 +1695,20 @@ class TestTheMarkerCountsTheKnownGaps:
         assert self.gaps(out, crop_runner) == 0
 
     @pytest.mark.parametrize('recorded', [True, -1, 1.5, '3'], ids=['bool', 'negative', 'float', 'string'])
+    def test_a_carried_value_that_is_not_a_count_is_unknown(self, crop_runner, tmp_path, recorded):
+        """#200 second review, nit R5: write_rule_marker's own guard on the value it carries forward. The
+        test below reaches write_rule_marker only after _record_manifest_gap has already nulled the value,
+        so a raw carry survived it; every clean run would then carry a hand edit forward as a count."""
+        out = tmp_path / 'crops'
+        os.makedirs(str(out))
+        with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), 'w') as f:
+            f.write(','.join(crop_runner.PROVENANCE_COLUMNS) + '\n')
+        with open(os.path.join(str(out), crop_runner.CROP_RULE_MARKER), 'w', encoding='utf-8') as f:
+            json.dump({crop_runner.MANIFEST_KNOWN_GAPS: recorded}, f)
+        crop_runner.write_rule_marker(str(out))
+        assert self.gaps(out, crop_runner) is None
+
+    @pytest.mark.parametrize('recorded', [True, -1, 1.5, '3'], ids=['bool', 'negative', 'float', 'string'])
     def test_a_recorded_value_that_is_not_a_count_is_unknown(self, crop_runner, tmp_path, recorded):
         """A JSON true is an int to Python; adding to it would turn a hand edit into a plausible count."""
         out = tmp_path / 'crops'
