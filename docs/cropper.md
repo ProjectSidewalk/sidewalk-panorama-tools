@@ -812,7 +812,9 @@ below `main()` that passes none.
   beta 0 writes `xml` or `npz`, `0.0`, and the stored point as its centre. That row is kept, because it is the
   only record that a re-cut at a higher beta would change the crop, but the crop is an uncorrected one.
   `CropRunner.manifest_row_is_tilt_corrected(row)` is that test, on a `csv.DictReader` row. The last-row
-  filter is exact while the store's `provenance_manifest_known_gaps` (below) is `0`. Read the file with a
+  filter is exact while the store's `provenance_manifest_known_gaps` (below) is `0`, as far as runs could
+  report: a run killed outright, with no chance to record anything, is the one case the count cannot see.
+  Read the file with a
   CSV parser (Python's `csv`, pandas), not `awk -F,` or `cut`: `copyright` can hold a quoted comma.
 * **`(city, label_id)` is the key when manifests from more than one city are combined.** `label_id`
   restarts at 1 in every city's database, so it alone collides across stores; `city` is on every row, so
@@ -881,13 +883,16 @@ for crops cut before the manifest was started, and so on every existing store at
 wrong is a crop that a run cut with no row reaching the file: after a `--force` re-cut, the previous row is
 then the last one, describing a crop that is no longer on disk. The count is the number of those, and it
 bounds the damage: at most that many labels' last rows misdescribe their crops. It starts at `0` with the
-manifest and only grows: by 1 for a torn row found at open, by 1 for each failed append, and, after a
-failed close, by the number of rows that run appended, since each may not have landed. Each gap is counted
-once. If a run's last append tears and the reopen that would cut it fails, the run counts it as unrecorded
+manifest and only grows: by 1 for a torn row found at open, by 1 for each failed append, by 1 for a crop
+whose row was still in flight when the run was interrupted (Ctrl-C between the crop landing and its row),
+and, after a failed close, by the number of rows that run appended, since each may not have landed. Each
+gap is counted once. If a run's last append tears and the reopen that would cut it fails, the run counts it as unrecorded
 and cuts the fragment when it closes, so the next run does not count it again as a torn row (only if that
 cut fails too is it counted twice, which leaves the count high, never low). `null` means unknown: a gap on
 top of an unknown total leaves it `null`. `crop_rule.json` cannot list *which* labels; `crop.log` names up
-to its per-kind cap of them, under `provenance_unrecorded`.
+to its per-kind cap of them, under `provenance_unrecorded`. Like the flag, the count is what runs reported:
+a run killed outright (SIGKILL, an OOM kill) between a crop and its row records nothing, so where the
+filter matters, check coverage as below.
 
 **The key is a record of what runs reported, not a coverage check.** A run killed between a crop's rename
 and its row reports nothing, so even a `true` store can hold a crop with no row. Coverage is the
