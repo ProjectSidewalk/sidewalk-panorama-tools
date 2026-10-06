@@ -957,8 +957,8 @@ class TestOnlyGoogleForfeitsTheStanding:
 
     The governing precedent is the block latch's, and this is deliberately the same principle rather than a
     second convention: "Only a blocked stop latches - the breaker counts storage failures, and a full disk is
-    not Google." on_pushback is fed by the phase's `except (requests.RequestException, ValueError)` arm (a DNS
-    blip, one connection reset, a JSONDecodeError from any non-200 body) and by its `except Exception` arm,
+    not Google." on_pushback is fed by the phase's network arm (a DNS blip, one connection reset, a
+    JSONDecodeError from any non-200 body, an exhausted 5xx retry policy) and by its `except Exception` arm,
     which catches the DepthPayloadError raised for a pano that has a depth raster but no plane data - a
     property of one pano's upstream payload. None of those is Google saying "slow down", and each of them
     would otherwise hand the next 51 cities of the night a 1.0 s opening interval.
@@ -1543,8 +1543,8 @@ class TestEarnedSpeedIsRememberedNotRecomputed:
 
     def test_a_network_failure_in_the_phase_does_not_forfeit_it_either(self, tmp_path, fake_streetview,
                                                                        clock, monkeypatch):
-        """End to end through the phase's `except (requests.RequestException, ValueError)` arm, so a call site
-        that told the pacer this was Google's doing is caught here rather than only in the unit tests."""
+        """End to end through the phase's network arm, so a call site that told the pacer this was Google's
+        doing is caught here rather than only in the unit tests."""
         monkeypatch.setattr(gsv, 'depth_min_request_interval', 0.25)
         monkeypatch.setattr(gsv, 'depth_start_interval', 1.0)
         state = tmp_path / 'pace'

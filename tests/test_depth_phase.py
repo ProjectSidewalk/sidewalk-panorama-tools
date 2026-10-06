@@ -907,7 +907,8 @@ def test_a_storm_that_runs_out_of_panos_is_not_booked(tmp_path, fake_streetview)
     (None, [300]),      # no budget: the schedule as written
     (3, [60]),          # two one-minute failures leave 60 s of a 3-minute budget: sleep that, not 300
     (2, []),            # nothing left: no sleep at all
-], ids=['no-budget', 'capped', 'nothing-left'])
+    (1.5, []),          # already 30 s over (a request outlasted the budget): no sleep, never a negative one
+], ids=['no-budget', 'capped', 'nothing-left', 'overrun'])
 def test_a_retreat_never_sleeps_past_the_budget(tmp_path, fake_streetview, monkeypatch, budget_minutes,
                                                 expected_sleeps):
     """The 300 s step at failure 15 ignored the budget and overran the queue's 5-minute kill grace in 65% of the

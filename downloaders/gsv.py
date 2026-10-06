@@ -1261,6 +1261,17 @@ DEPTH_MAX_CONSECUTIVE_FAILURES = 25
 # the breaker, without pounding while we wait. Storage failures skip the retreat: a full disk cannot clear itself.
 DEPTH_RETREAT_SCHEDULE = {5: 30, 10: 120, 15: 300}
 
+# A network streak at least this long that is still running when a BUDGET stops the phase is booked as the
+# breaker it would have become (#177 review): stop reason DEPTH_STOP_CONSECUTIVE_FAILURES, condition
+# depth-breaker, and DEPTH_ENDED_ON_BUDGET in the breakdown. Each exhausted photometa request costs 6 HTTP
+# requests and ~30 s inside urllib3, so in a 12-minute slot a 5xx storm reaches the budget long before 25
+# failures; without this it ended as a plain max-runtime stop - no alarm, and re-run by the queue's extra passes
+# into the same outage. The floor is the schedule's first step, the streak length the phase itself already
+# treats as more than a blip; it keeps one timeout on a city's last unresolved pano from failing the night.
+DEPTH_OUTAGE_MIN_STREAK = min(DEPTH_RETREAT_SCHEDULE)
+# Fixed, machine-readable token in that breakdown, so a budget-ended streak can be told from a tripped breaker.
+DEPTH_ENDED_ON_BUDGET = 'ended_on_budget'
+
 # Values for download_depth_maps' stop_reason - constants so the set sites and the end-of-phase compare sites
 # can't drift apart via a typo that silently disables a warning arm.
 DEPTH_STOP_BLOCKED = 'blocked'
@@ -1505,8 +1516,8 @@ class DepthPacer:
 
         The narrowing is the block latch's rule, not a second convention (#125.1): *"Only a blocked stop
         latches - the breaker counts storage failures, and a full disk is not Google."* This method is also
-        fed by the phase's `except (requests.RequestException, ValueError)` arm - a DNS blip on the box, one
-        connection reset, a JSONDecodeError from any non-200 body - and by its `except Exception` arm, which
+        fed by the phase's network arm - a DNS blip on the box, one connection reset, a JSONDecodeError from
+        any non-200 body, a 5xx storm that exhausted the retry policy (#177) - and by its `except Exception` arm, which
         catches the DepthPayloadError raised for a pano that has a depth raster but no plane data, a property
         of one pano's upstream payload. Backing THIS run off on any of those is a cheap and correct reflex.
         Writing it to the host's file is not: candidates are shuffled, so one permanently-malformed pano in
@@ -2217,7 +2228,9 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
     Unresolved panos are shuffled, so a cluster that fails on every run can't permanently starve max_requests.
     The phase stops early if Google starts refusing requests (see DepthBlockedError) or after
     DEPTH_MAX_CONSECUTIVE_FAILURES transient failures in a row, rather than spending the rest of the budget on a
-    wall. config.depth_min_request_interval paces requests if set.
+    wall. A network streak of at least DEPTH_OUTAGE_MIN_STREAK still running when a budget stops the phase is
+    booked as that breaker too, marked DEPTH_ENDED_ON_BUDGET, and no retreat sleep runs past the budget.
+    config.depth_min_request_interval paces requests if set.
 
     Note that 'unavailable' — a permanent, expected, non-actionable outcome — is counted in fail_count, and so
     lands in log.csv's depth failure column. That column is therefore not usable as an alert signal; the split is
@@ -2510,12 +2523,29 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
             # cannot clear itself, so storage failures skip the wait (they still count toward the breaker, which
             # then trips fast) instead of burning up to 7.5 minutes of a shared --max-runtime window.
             retreat_seconds = None if failure_class == 'storage' else DEPTH_RETREAT_SCHEDULE.get(consecutive_failures)
+            if retreat_seconds and max_runtime_minutes is not None and run_start_monotonic is not None:
+                # Never past the budget (#177 review): the uncapped 300 s step could carry a city beyond the
+                # queue's --kill-grace and get it booked timed_out, for a reason naming neither Google nor depth.
+                # The budget check at the top of the loop then stops the phase as usual.
+                left = max_runtime_minutes * 60.0 - (time.monotonic() - run_start_monotonic)
+                retreat_seconds = min(retreat_seconds, max(0.0, left))
             if retreat_seconds:
                 print("DEPTHDOWNLOAD: %d consecutive failures, backing off for %ds before continuing."
                       % (consecutive_failures, retreat_seconds))
                 time.sleep(retreat_seconds)
 
     total_completed = success_count + fail_count + skipped_count
+    # A budget that stopped the phase in the middle of a network streak of at least DEPTH_OUTAGE_MIN_STREAK:
+    # the breaker would have tripped given the time, so book it as the breaker (#177 review). Network only - a
+    # storage streak has the breaker it trips fast, since storage skips the retreats. Scoped to a budget stop:
+    # a short list that runs out inside a streak keeps the scattered-errors arm below (a decision for Jon).
+    # After the with, so remember_standing saw the budget stop - it treats both the same (save, no forfeit).
+    ended_on_budget = (stop_reason in (DEPTH_STOP_MAX_RUNTIME, DEPTH_STOP_MAX_REQUESTS)
+                       and streak_classes['network'] >= DEPTH_OUTAGE_MIN_STREAK)
+    if ended_on_budget:
+        logging.error("DEPTHDOWNLOAD: %s stop during %d consecutive failures; booking it as the breaker",
+                      stop_reason, consecutive_failures)
+        stop_reason = DEPTH_STOP_CONSECUTIVE_FAILURES
     # The standing was already remembered by remember_standing on the way out of the with above.
     # Loud on stdout because cron mails it: a phase that stopped early means nothing is progressing, and the
     # per-pano detail is buried in scrape.log.
@@ -2535,10 +2565,19 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         # attribute the trip to Google: break the streak down by class so the dominant cause stays visible even
         # when the last error is the minority class.
         breakdown = ', '.join('%d %s' % (count, cls) for cls, count in streak_classes.most_common())
-        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early after %d consecutive failures (%s). Last "
-              "error: %s. No panos were lost (unresolved panos are retried next run); check whether the cause "
-              "is the store (full/unmounted) or the network before the next run."
-              % (consecutive_failures, breakdown, last_error))
+        if ended_on_budget:
+            # The token rides inside the brackets, so the detail keeps the breaker's shape and a filter can
+            # match the token rather than prose.
+            breakdown += '; ' + DEPTH_ENDED_ON_BUDGET
+            print("DEPTHDOWNLOAD: WARNING - the depth phase ran out of budget during %d consecutive failures "
+                  "(%s), before the breaker's %d. Last error: %s. No panos were lost (unresolved panos are "
+                  "retried next run); a network outage or a Google 5xx storm is the likely cause."
+                  % (consecutive_failures, breakdown, DEPTH_MAX_CONSECUTIVE_FAILURES, last_error))
+        else:
+            print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early after %d consecutive failures (%s). "
+                  "Last error: %s. No panos were lost (unresolved panos are retried next run); check whether the "
+                  "cause is the store (full/unmounted) or the network before the next run."
+                  % (consecutive_failures, breakdown, last_error))
         common.note_condition(stop_reasons, DEPTH_CONDITION_BREAKER,
                               '%d consecutive failures (%s); last error: %s'
                               % (consecutive_failures, breakdown, last_error))
