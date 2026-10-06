@@ -443,7 +443,7 @@ silenced by it.
 |---|---|---|
 | `depth-refused` | Google refused this run's depth requests; the 6 h block latch was written | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-stood-down` | A live latch at depth-phase start; the depth phase made no request. The refusal behind it is another run's, or this run's own image phase (a photometa refusal, or a push-back trip, which also exits the city 1). GSV images are not stood down by a latch, only put on probation | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
-| `depth-breaker` | 25 consecutive depth failures; the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-breaker` | 25 consecutive depth failures, or at least 5 network failures in a row when a budget stopped the phase (`ended_on_budget` in the detail, #177); the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-ledger-unusable` | `depth_log.csv` could not be read or written; depth sat the run out | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
 | `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
@@ -490,7 +490,8 @@ Three rules that are load-bearing:
   The other stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
   collapsed into "stopped early": `blocked` (from either phase — the image phase reports it when Google's
   push-back stopped GSV, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) means the host is standing down for six hours and a re-run would
-  spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again, and
+  spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again (or,
+  marked `ended_on_budget`, a network streak that ran out the budget, which a re-run would walk back into), and
   `max-requests` is a per-process cap the operator asked for, which re-running would silently multiply. If no
   summary arrives at all the queue falls back to the old elapsed-time rule, which is at least a *necessary*
   condition. That case is narrower than it sounds: a `DownloadRunner` from before the flag existed does not
