@@ -779,8 +779,9 @@ cannot tell from a finished backfill — so after drift, check every city's `dep
 ## When the image phase stops trusting a source
 
 A `downloaded=0` row is permanent and is only undone by hand-editing `pano_id_log.csv` on the store, so the
-image loop stops writing them once one source produces three in a row
-([#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113)):
+image loop stops writing them once one source produces three in a row (fifty for GSV)
+([#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113),
+[#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)):
 
 ```
 IMAGEDOWNLOAD: WARNING - 3 consecutive permanent failures from source mapillary. That is a condition of the
@@ -811,9 +812,17 @@ Only the tripped source stops: a city carrying both GSV and Mapillary panos keep
 is unchanged — its fields are counts of work and the breaker is not one of them, so stdout, `scrape.log`
 and the exit code are where this lives.
 
-GSV has no *permanent-verdict* breaker, deliberately: 7.9–8.4% of a large GSV city's ledger is a permanent
-verdict (retired imagery), so three in a row is routine there rather than evidence — about every 1,700 panos
-at 8.4%. (It has a different one, for Google refusing the host:
+**GSV's threshold is 50, not 3** ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)):
+7.9–8.4% of a large GSV city's ledger is a permanent verdict (retired imagery), so three in a row is routine
+there rather than evidence — about every 1,700 panos at 8.4%, and every few panos in an old-era backlog that
+runs 80–90% retired. What the entry guards is the cbk endpoint answering black 200s across the board, which
+would otherwise write off the city's whole unattempted GSV backlog in one night. A GSV trip prints the same
+two lines with `source gsv` and costs **49** false rows rather than two. Before deleting them, decide whether
+it was that outage or a natural streak in a heavily retired backlog: an outage shows up in every GSV city
+that night, and in an outage a sample of the ids still opens in Street View (they were not retired). A
+natural streak's rows are true
+verdicts and stay; report it, because the 50 is provisional and is re-sized from exactly that measurement.
+(GSV also has a different breaker, for Google refusing the host:
 [When Google pushes back on the image phase](#when-google-pushes-back-on-the-image-phase).) The
 table is per source, in `DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`; a source with no entry is
 unlimited, so **a new source declares its own threshold or gets no breaker at all**.

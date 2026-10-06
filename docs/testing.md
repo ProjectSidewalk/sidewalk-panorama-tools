@@ -43,7 +43,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 
 | Area | Files |
 |---|---|
-| Downloader: run flow, budgets, ledgers, crash/`SIGTERM` behaviour, the positional `log.csv` contract, and both image breakers — #113's permanent-verdict one and GSV's push-back one (#162: what counts and resets, the latch and pace forfeit, both channels, 24 requests for three refused panos through the real fan-out, and a pure-403 block met at the zoom probe tripping it through a real `requests.Session`) | `test_download_runner.py` |
+| Downloader: run flow, budgets, ledgers, crash/`SIGTERM` behaviour, the positional `log.csv` contract, and both image breakers — #113's permanent-verdict one (with GSV's #166 entry: one short of 50 ledgered, the 50th trips and exits 1) and GSV's push-back one (#162: what counts and resets, the latch and pace forfeit, both channels, 24 requests for three refused panos through the real fan-out, and a pure-403 block met at the zoom probe tripping it through a real `requests.Session`) | `test_download_runner.py` |
 | The image ledger's [two legal row widths](ops.md#fetched_at-and-the-two-row-widths): a mixed-width file reading as the union of its ids, a timestamped `0` row staying terminal, an existing two-column header left alone, a four-field row still counting as damage, the stamp carrying a UTC offset, and a `skipped` verdict writing a blank stamp that the reader still counts | `test_download_runner.py` (`TestTheFetchTimestamp`) |
 | Depth phase: ledger semantics, error taxonomy, artifact format, budget flags | `test_depth_phase.py`, `test_depth_helpers.py` |
 | Depth pacing (adaptive floor/backoff/jitter) and the cross-run block latch | `test_depth_pacing.py` |
