@@ -449,6 +449,13 @@ rule it out. A probe answered with anything but 200 raises, so the pano counts a
 than as a frame that covers; before [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166),
 a 403 or 404 with a black body passed it.
 
+The same check catches the opposite mismatch with a third request: a stored frame **larger** than Google now
+serves (16384×8192 on a pano served at 13312×6656) has a black tile in its grid's own last column. That pano
+counts as a **transient failure** — not ledgered, stored bytes untouched, asked again on the next pass —
+exactly as the nightly downloader refuses the same frame. Before
+[#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181), it passed the check, spent the full fan-out, and was
+refused and ledgered as `too_black`. `too_black` remains the backstop for any other mostly black stitch.
+
 | Outcome | Meaning | Requests |
 |---|---|---|
 | `absent` | no `.jpg` on disk — nothing to repair | 0 |
@@ -458,6 +465,7 @@ a 403 or 404 with a black body passed it.
 | `dims_changed` | the work-list's frame disagrees with the stored one — see below | 0 |
 | `gone` | Google no longer serves this pano at any zoom | ≤2 |
 | `frame_grew` | Google now serves this pano **larger**, so this frame would fetch a crop of it | ≤4 |
+| *(transient)* | Google now serves this pano **smaller** than the stored frame: counted as a failure, not ledgered ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)) | 5 |
 | `upscaled` | only a fallback zoom was available; swapping would be a 4× **downgrade** | zoom-3 grid (≤32) |
 | `undersized` | a tile still came back below 512 px: the CBK request is costing resolution again. Not swapped, **not ledgered**, and three in a row stop the run with exit 1 | full |
 | `too_black` | the fresh stitch has more black than a real panorama does | full |

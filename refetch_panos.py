@@ -502,6 +502,9 @@ def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measureme
         # the top-left corner of it - at the right dimensions, with no undersized tile and no black. The
         # only gate that can see a silently cropped panorama, and it runs before the fan-out so it costs
         # two requests. Permanent: the frame is a property of what Google holds, not of the network.
+        # The opposite mismatch - Google now serves the pano SMALLER than the stored frame - raises
+        # gsv.FrameDisagreementError from the same call (#181), after a third request: transient, unledgered,
+        # the stored file untouched, like every other raise here.
         return 'frame_grew'
 
     stitched = gsv.fetch_pano_image(pano_id, width, height, zoom)
