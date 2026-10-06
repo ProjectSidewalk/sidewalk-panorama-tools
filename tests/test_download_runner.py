@@ -1975,6 +1975,98 @@ class TestAGsvProbeRefusedWithABlackBodyReachesNoLedgerRow:
         assert ledger_verdict_rows(storage) == []
 
 
+class TestADimensionlessGsvPanoThroughTheImageLoop:
+    """#184 composed through the real dispatcher and the real ledger: a GSV record with no width/height.
+
+    Before #184 every such pano was ledgered downloaded=0 at zero requests - 1,349 washington-dc panos on
+    2026-09-24/25, never re-asked. Photometa and the tiles are stubbed; the loop, gsv.download_single_pano and
+    ImageLedger are real.
+    """
+
+    PANO = 'gsvDimlessAAAAAAAAAAAA'
+
+    def panos(self):
+        return [{'pano_id': self.PANO, 'source': 'gsv', 'has_labels': True}]
+
+    def tiles(self, monkeypatch):
+        from test_gsv_stitcher import RED, jpeg_bytes, stub_tiles
+        body = jpeg_bytes(RED)
+        return stub_tiles(monkeypatch, lambda tile: (tile[0], tile[1], body))
+
+    def test_a_live_one_is_saved_at_googles_frame_and_ledgered_1(self, monkeypatch, tmp_path, capsys, caplog):
+        from test_gsv_stitcher import deny_probe, stub_photometa
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        stub_photometa(monkeypatch, [(512, 256), (1024, 512)])
+        deny_probe(monkeypatch)
+        self.tiles(monkeypatch)
+
+        with caplog.at_level(logging.INFO):
+            result = DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert result == (1, 0, 0, 0, 1)
+        assert ledger_verdict_rows(storage) == ['%s,1' % self.PANO]
+        saved = storage / self.PANO[:2] / (self.PANO + '.jpg')
+        assert downloaders.common.jpeg_dimensions(str(saved)) == (1024, 512)
+        # The run says how many, on both channels (#184 acceptance criterion).
+        out = capsys.readouterr().out
+        assert '1 GSV pano(s) took their frame from photometa' in out
+        assert any('1 GSV pano(s) took their frame from photometa' in r.getMessage() for r in caplog.records)
+
+    def test_a_retired_one_is_ledgered_0_on_two_black_probe_tiles(self, monkeypatch, tmp_path):
+        from test_gsv_stitcher import stub_photometa, stub_probe
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        probes = stub_probe(monkeypatch, pick_zoom=-1)
+        asked = stub_photometa(monkeypatch, gone=True)
+        self.tiles(monkeypatch)
+
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos())
+
+        assert result == (0, 0, 1, 0, 1)
+        assert ledger_verdict_rows(storage) == ['%s,0' % self.PANO]
+        assert (len(asked), len(probes)) == (1, 2), 'never again a verdict without asking Google'
+
+    def test_under_a_fresh_latch_it_is_counted_unledgered_and_asked_again(self, monkeypatch, tmp_path, capsys):
+        from downloaders import gsv
+        from test_gsv_stitcher import deny_probe, stub_photometa
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        latch = tmp_path / 'latch'
+        gsv._write_block_latch(str(latch))
+        asked = stub_photometa(monkeypatch, [(512, 256), (1024, 512)])
+        deny_probe(monkeypatch)
+        self.tiles(monkeypatch)
+
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos(), block_latch_path=str(latch),
+                                                         pace_state_path=str(tmp_path / 'pace'))
+
+        assert result == (0, 0, 1, 0, 1)
+        assert ledger_verdict_rows(storage) == [], 'no frame tonight is not a verdict about the pano'
+        assert asked == []
+        assert '1 GSV pano(s) had no frame tonight' in capsys.readouterr().out
+
+        latch.unlink()
+        result = DownloadRunner.download_panorama_images(str(storage), self.panos(), block_latch_path=str(latch),
+                                                         pace_state_path=str(tmp_path / 'pace'))
+
+        assert result == (1, 0, 0, 0, 1)
+        assert ledger_verdict_rows(storage) == ['%s,1' % self.PANO]
+
+    def test_a_city_with_no_dimensionless_pano_prints_no_count(self, monkeypatch, tmp_path, capsys):
+        from test_gsv_stitcher import deny_probe, stub_photometa
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        stub_photometa(monkeypatch, [(512, 256), (1024, 512)])
+        deny_probe(monkeypatch)
+        self.tiles(monkeypatch)
+
+        DownloadRunner.download_panorama_images(
+            str(storage), [{'pano_id': self.PANO, 'source': 'gsv', 'width': 1024, 'height': 512}])
+
+        assert 'frame from photometa' not in capsys.readouterr().out
+
+
 class TestPanoramaxNeedsNoCredentialToBeSupported:
     """#110: the word `panoramax` in filter_supported_sources is the whole of what stands between Bayonne
     opening and a city that silently downloads nothing every night (#101's failure shape)."""
@@ -3342,20 +3434,21 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
 
 
 class TestAPanoListWhoseSchemaMovedIsNotScraped:
-    """D8 (#161): the one condition that also stops work.
+    """D8 (#161): the one condition that also stops work - for `pano_id` and `source` since #184.
 
-    If /adminapi/panos renamed `width`/`height` (cvMetadata already serves `pano_width`/`pano_height`, and
-    #123 just renamed that endpoint's fields), gsv.resolve_zoom_and_dims returns None before any request,
-    download_single_pano turns that into a permanent failure verdict, and every not-yet-downloaded GSV pano
-    is ledgered downloaded=0 in one night, fleet-wide, with no GSV breaker by design (#113). A missing KEY is
-    a schema; a blank value is a per-pano fact and is left to the phases.
+    When D8 shipped, a renamed `width`/`height` made gsv.resolve_zoom_and_dims return None before any request,
+    download_single_pano turned that into a permanent failure verdict, and every not-yet-downloaded GSV pano
+    would have been ledgered downloaded=0 in one night, fleet-wide. Since #184 a GSV pano with no dims takes its
+    frame from photometa, so missing dims write nothing off and are REPORTED instead of stopping the run - the
+    other half of this class. washington-dc serves 78,300 of 78,301 records without them (2026-10-06), which a
+    stop kept from being scraped at all. A missing KEY is a schema; a blank value is a per-pano fact.
     """
 
     def run_with(self, monkeypatch, tmp_path, records):
         monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
         return call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--run-summary-file', str(tmp_path / 'summary.json'))
 
-    def records(self, count, lacking=0, drop='width'):
+    def records(self, count, lacking=0, drop='source'):
         out = []
         for i in range(count):
             record = {'pano_id': 'gsvPano%04d' % i, 'source': 'gsv', 'width': '16384', 'height': '8192',
@@ -3365,7 +3458,7 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
             out.append(record)
         return out
 
-    def test_a_list_that_lost_width_is_not_scraped_and_nothing_is_ledgered(self, monkeypatch, tmp_path, capsys,
+    def test_a_list_that_lost_source_is_not_scraped_and_nothing_is_ledgered(self, monkeypatch, tmp_path, capsys,
                                                                           caplog):
         with caplog.at_level(logging.ERROR):
             storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20))
@@ -3382,11 +3475,26 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
         assert fields[1:] == [''] * (DownloadRunner.LOG_CSV_FIELD_COUNT - 1), 'the phases stay blank'
 
-    @pytest.mark.parametrize('key', ['source', 'height'])
-    def test_any_required_key_counts(self, monkeypatch, tmp_path, key):
-        self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20, drop=key))
+    @pytest.mark.parametrize('key', ['width', 'height'])
+    def test_a_list_that_lost_its_dims_is_scraped_and_reported(self, monkeypatch, tmp_path, capsys, caplog,
+                                                               key):
+        """#184: the dims half of D8 is a report, not a stop - on both channels, and not a run condition,
+        because a city whose app serves no dims (washington-dc) would otherwise fail every night."""
+        with caplog.at_level(logging.WARNING):
+            storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=20, drop=key))
 
-        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT in summary_codes(tmp_path)
+        assert summary_codes(tmp_path) == []
+        assert len(calls) == 20
+        out = capsys.readouterr().out
+        assert '20 of 20 records carry no width/height' in out and 'photometa' in out
+        assert any(r.levelno == logging.WARNING and '20 of 20 records carry no width/height' in r.getMessage()
+                   for r in caplog.records)
+
+    def test_a_few_dimensionless_records_say_nothing_here(self, monkeypatch, tmp_path, capsys):
+        """Seattle's 106 of 183,927: per-pano facts, counted by the image phase, not a list-level report."""
+        self.run_with(monkeypatch, tmp_path, self.records(20, lacking=1, drop='width'))
+
+        assert 'carry no width/height' not in capsys.readouterr().out
 
     def test_a_renamed_source_is_drift_and_nothing_else(self, monkeypatch, tmp_path, capsys):
         """Read before the filter: a list that lost `source` must not also be reported pano by pano as an
@@ -3407,14 +3515,15 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         lacking = int(round(DownloadRunner.INTAKE_SCHEMA_MIN_FRACTION * 20)) - 1
         storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=lacking))
 
-        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
-        assert len(calls) == 20
+        # A record without `source` is then the filter's business: dropped, unledgered, and its own condition.
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_UNSUPPORTED_SOURCE]
+        assert len(calls) == 20 - lacking
 
     def test_one_record_lacking_a_key_runs_normally(self, monkeypatch, tmp_path):
         storage, calls = self.run_with(monkeypatch, tmp_path, self.records(20, lacking=1))
 
-        assert summary_codes(tmp_path) == []
-        assert len(calls) == 20
+        assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
+        assert len(calls) == 19
 
     def test_the_fraction_counts_records_not_missing_keys(self, monkeypatch, tmp_path):
         """Half the records lacking BOTH dims is half the records, not all of them. This is the shape the
@@ -3430,9 +3539,10 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         assert DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT not in summary_codes(tmp_path)
         assert len(calls) == 20
 
-    def test_a_hand_csv_without_the_dims_columns_is_drift_end_to_end(self, monkeypatch, tmp_path):
+    def test_a_hand_csv_without_the_dims_columns_is_scraped_end_to_end(self, monkeypatch, tmp_path):
         """D10 through the real -c intake rather than a patched fetch: a CSV missing the column is a list
-        missing the key, and would write every GSV pano in it off permanently."""
+        missing the key. Before #184 it would have written every GSV pano in it off permanently, so D8 stopped
+        it; now each pano asks photometa for its frame, so it is scraped."""
         header = 'pano_id,height,lat,lng,camera_heading,camera_pitch,source,has_labels\n'
         rows = ''.join('%s,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % p for p in GSV_PANO_IDS)
         csv_path = tmp_path / 'panos.csv'
@@ -3443,8 +3553,8 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'), '-c', str(csv_path),
                              '--skip-depth', '--run-summary-file', str(tmp_path / 'summary.json')])
 
-        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT]
-        assert calls == []
+        assert summary_codes(tmp_path) == []
+        assert len(calls) == len(GSV_PANO_IDS)
 
     def test_blank_values_are_not_a_schema(self, monkeypatch, tmp_path):
         """A blank cell is one pano the list knows nothing about; the key is still there. This is the -c

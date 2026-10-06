@@ -86,16 +86,23 @@ IMAGE_NO_SUCCESS_MIN_RAISED = 10
 IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS = 60.0
 
 # The keys every /adminapi/panos record must carry, and the fraction of records lacking one that makes the
-# list a schema drift rather than a few odd rows (D8, #161). A missing width or height makes
-# gsv.resolve_zoom_and_dims return None before any request, which download_single_pano turns into a
-# PERMANENT failure verdict - so a renamed field would write off every new GSV pano in one night, fleet-wide.
-# A missing KEY counts and a blank VALUE (None) does not - but over /adminapi/panos the two are one shape:
-# the endpoint serialises the dims with Play's writeNullable, which OMITS the key for a null (seattle served
-# 106 of 183,927 records that way, 2026-09). Only the -c intake produces a blank value. So per record a null
-# cannot be told from a rename, and the FRACTION is what separates a few dimensionless panos from a schema.
-# `pano_id` is belt-and-braces: _normalize_pano_records has already dropped every record without one (D9).
-INTAKE_REQUIRED_KEYS = ('pano_id', 'source', 'width', 'height')
+# list a schema drift rather than a few odd rows (D8, #161). A missing KEY counts and a blank VALUE (None)
+# does not. `pano_id` is belt-and-braces: _normalize_pano_records has already dropped every record without one
+# (D9). A renamed `source` would drop every pano as unsupported, which is why it stops the run.
+INTAKE_REQUIRED_KEYS = ('pano_id', 'source')
 INTAKE_SCHEMA_MIN_FRACTION = 0.9
+
+# The frame keys, which since #184 are REPORTED at the same fraction and no longer stop the run. D8 shipped
+# with them in INTAKE_REQUIRED_KEYS because a missing width/height made download_single_pano a PERMANENT
+# downloaded=0 at zero requests, so a renamed field would have written off every new GSV pano in a night. Now
+# a dimensionless GSV pano takes its frame from photometa, one request, and nothing is written off without
+# asking Google. Over /adminapi/panos a null and a rename are ONE shape - Play's writeNullable omits the key for
+# a null (seattle served 106 of 183,927 records that way, 2026-09), and only the -c intake produces a blank
+# value - and a whole city can be dimensionless at the source: washington-dc served 78,300 of 78,301 records
+# without dims (2026-10-06, SidewalkWebpage#5667), so a stop here kept DC from being scraped at all and failed
+# every night. The fraction cannot tell DC from a rename; what a rename now costs is one photometa request
+# per new GSV pano and #74's app-vs-Google frame check, not the panos, and that is what the report says.
+INTAKE_FRAME_KEYS = ('width', 'height')
 
 
 def build_parser():
@@ -614,6 +621,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # A skip is neither - it never contacted the source.
     answered, raised = 0, 0
     raise_seconds = 0.0     # monotonic seconds spent in attempts that raised, for the budget arm's duration gate
+    # #184: dimensionless GSV panos, counted by gsv on its per-run memory; read as a difference so a caller that
+    # runs the phase twice in one process (the tests, a second city in-process) reports only this phase's.
+    photometa_run = gsv._photometa_run
+    frames_before = photometa_run.frames_from_photometa, photometa_run.frames_unknown
 
     with ledger, gsv.scoped_image_host_state(latch_path, pace_state_path):
         for pano_info in candidates:
@@ -812,6 +823,18 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                    "is needed. Check this host for a rate limit before the next run; %s."
                    % (last_pushback, sum(unattempted[s] for s in refused), latch_said))
         logging.error("%s", summary)
+        print(summary)
+
+    framed = photometa_run.frames_from_photometa - frames_before[0]
+    unframed = photometa_run.frames_unknown - frames_before[1]
+    if framed or unframed:
+        # Both channels (#184's acceptance criterion): the pano list had no width/height for these, so their
+        # frame is Google's, not the app's - which is what the cropper reads labels against, and which no
+        # frame check can compare. Information, not the night's alarm, so no WARNING token.
+        summary = ("IMAGEDOWNLOAD: %d GSV pano(s) took their frame from photometa (no width/height in the pano "
+                   "list); %d GSV pano(s) had no frame tonight (photometa unanswered) and retry next run."
+                   % (framed, unframed))
+        logging.info("%s", summary)
         print(summary)
 
     mean_raise_seconds = raise_seconds / raised if raised else 0.0
@@ -1297,31 +1320,57 @@ def _store_has_history(storage_location):
     return False
 
 
+def _records_lacking(pano_infos, keys):
+    """(records lacking any of `keys`, {key: records lacking it}) - a missing KEY, never a blank value."""
+    missing = {key: 0 for key in keys}
+    lacking = 0
+    for record in pano_infos:
+        absent = [key for key in keys if key not in record]
+        lacking += bool(absent)
+        for key in absent:
+            missing[key] += 1
+    return lacking, missing
+
+
 def _intake_schema_drift(pano_infos):
     """A description of the schema drift in the fetched pano list, or None if it has none (D8, #161).
 
     Drift is INTAKE_SCHEMA_MIN_FRACTION or more of the records lacking any INTAKE_REQUIRED_KEYS key, counted
     per record, not per key. A key present with a blank (None) value is not drift (the -c intake's shape; the
-    webserver omits the key instead, see INTAKE_REQUIRED_KEYS). An empty list is not drift either - it has no
-    schema to have moved, and `pano-list-empty` covers it.
+    webserver omits the key instead). An empty list is not drift either - it has no schema to have moved, and
+    `pano-list-empty` covers it. The frame keys are not drift since #184: see _intake_frame_gap.
 
     Example::
 
-        >>> _intake_schema_drift([{'pano_id': 'a', 'source': 'gsv', 'pano_width': 1, 'pano_height': 1}])
-        '1 of 1 records lack a required key (width: 1, height: 1)'
+        >>> _intake_schema_drift([{'pano_id': 'a', 'kind': 'gsv'}])
+        '1 of 1 records lack a required key (source: 1)'
     """
     if not pano_infos:
         return None
-    missing = {key: 0 for key in INTAKE_REQUIRED_KEYS}
-    lacking = 0
-    for record in pano_infos:
-        absent = [key for key in INTAKE_REQUIRED_KEYS if key not in record]
-        lacking += bool(absent)
-        for key in absent:
-            missing[key] += 1
+    lacking, missing = _records_lacking(pano_infos, INTAKE_REQUIRED_KEYS)
     if lacking < INTAKE_SCHEMA_MIN_FRACTION * len(pano_infos):
         return None
     return "%d of %d records lack a required key (%s)" % (
+        lacking, len(pano_infos), ', '.join('%s: %d' % (k, n) for k, n in missing.items() if n))
+
+
+def _intake_frame_gap(pano_infos):
+    """A description of a list-wide gap in the frame keys, or None (#184) - reported, never a stop.
+
+    The same fraction and the same missing-key rule as _intake_schema_drift, over INTAKE_FRAME_KEYS. A few
+    dimensionless records (seattle's 106) are per-pano facts, counted by the image phase instead.
+
+    Example::
+
+        >>> _intake_frame_gap([{'pano_id': 'a', 'source': 'gsv'}])
+        '1 of 1 records carry no width/height (width: 1, height: 1)'
+    """
+    if not pano_infos:
+        return None
+    lacking, missing = _records_lacking(pano_infos, INTAKE_FRAME_KEYS)
+    if lacking < INTAKE_SCHEMA_MIN_FRACTION * len(pano_infos):
+        return None
+    return "%d of %d records carry no width/height (%s)" % (
         lacking, len(pano_infos), ', '.join('%s: %d' % (k, n) for k, n in missing.items() if n))
 
 
@@ -1402,6 +1451,7 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         # Checked on the list as served, before anything filters it: a renamed `source` would otherwise be
         # reported as an unsupported source per pano. A drifted list goes no further (below).
         schema_drift = _intake_schema_drift(pano_infos)
+        frame_gap = None if schema_drift is not None else _intake_frame_gap(pano_infos)
         if schema_drift is not None:
             pano_infos = []
         # Also read before the filter: a list the FILTER emptied (a Mapillary city without its token, a source
@@ -1412,10 +1462,11 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         image_pano_infos = select_image_panos(pano_infos, all_panos)
 
         if schema_drift is not None:
-            # The one condition that also stops work (D8, #161): scraping a list whose width/height keys moved
-            # would ledger every new GSV pano downloaded=0 PERMANENTLY, and there is no GSV breaker by design
-            # (#113). So neither phase runs and nothing is ledgered; the log.csv row, written below once this
-            # try is behind us, records a run that started and did nothing, with every phase blank.
+            # The one condition that also stops work (D8, #161): a list whose `source` key moved would drop
+            # every pano as unsupported (and, before #184, a moved width/height would have ledgered every new
+            # GSV pano downloaded=0 PERMANENTLY - those keys are now INTAKE_FRAME_KEYS, reported, not a stop).
+            # So neither phase runs and nothing is ledgered; the log.csv row, written below once this try is
+            # behind us, records a run that started and did nothing, with every phase blank.
             logging.error("Pano list schema drift: %s; required keys %s. Skipping both phases and ledgering "
                           "nothing.", schema_drift, ', '.join(INTAKE_REQUIRED_KEYS))
             print("WARNING: the pano list's schema has moved - %s. Neither phase ran and nothing was ledgered; "
@@ -1439,6 +1490,14 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
 
         # In store mode without --with-depth no depth pass runs at all, so say so rather than read as if one will.
         depth_note = ' (not pulled: no --with-depth)' if store_settings is not None and not with_depth else ''
+        if frame_gap is not None:
+            # #184: not a stop and not a run condition - see INTAKE_FRAME_KEYS. Both channels: a renamed
+            # width/height now costs one photometa request per new GSV pano and #74's frame check, and this line
+            # is where that is said once rather than per pano.
+            message = ("the pano list's %s. Each new GSV pano among them takes its frame from photometa (one "
+                       "request); see docs/api-fields.md." % (frame_gap,))
+            logging.warning("%s", message)
+            print("WARNING: %s" % (message,))
         if schema_drift is None:
             print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth%s"
                   % (len(pano_infos), len(image_pano_infos),
