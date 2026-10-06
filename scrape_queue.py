@@ -145,6 +145,7 @@ CONDITION_LABELS = OrderedDict([
     ('pano-schema-drift', 'the pano list lost a required field; nothing was scraped'),
     ('pano-list-empty', 'empty pano list for a city that has scraped before'),
     ('images-no-success', 'every image attempt raised; none succeeded'),
+    ('frame-disagreement', 'GSV panos refused for a frame disagreement; not ledgered'),
     ('mapillary-token-missing', 'Mapillary panos skipped: MAPILLARY_ACCESS_TOKEN not set'),
     ('unsupported-source', 'panos with an unsupported source skipped'),
     ('depth-refused', 'Google refused the depth phase; latch written'),
