@@ -676,10 +676,11 @@ corner of a larger one. Each refusal is one stdout `WARNING` and one `scrape.log
 `frame disagreement`; it is counted in `log.csv` field 9, never ledgered, and retried every run. Field 9 is
 seeded with older failures, so the count is not readable there. Since
 [#185](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/185) the run counts them itself: a
-nonzero count prints one end-of-phase line on stdout and in `scrape.log`,
+nonzero count prints one end-of-phase line on stdout and in `scrape.log` (at WARNING, and worded without the
+words `frame disagreement`, so the grep below still counts exactly the refused panos),
 
 ```
-IMAGEDOWNLOAD: WARNING - 2 pano(s) refused for a frame disagreement; not ledgered, retried next run. See docs/ops.md, 'A GSV pano refused for a frame disagreement'.
+IMAGEDOWNLOAD: WARNING - 2 pano(s) refused (frame-disagreement condition); not ledgered, retried next run. See docs/ops.md#a-gsv-pano-refused-for-a-frame-disagreement
 ```
 
 writes `frame_refusals` into the run summary, and raises the `frame-disagreement`

@@ -827,10 +827,13 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
 
     if frame_refusals:
         # Both channels, the repo's rule for a warning that matters. Each refusal already printed its own
-        # line; this is the count, which before #185 only a grep of scrape.log could produce.
-        message = ("IMAGEDOWNLOAD: WARNING - %d pano(s) refused for a frame disagreement; not ledgered, retried "
-                   "next run. See docs/ops.md, 'A GSV pano refused for a frame disagreement'." % (frame_refusals,))
-        logging.error("%s", message)
+        # line; this is the count, which before #185 only a grep of scrape.log could produce. Worded WITHOUT the
+        # phrase "frame disagreement" and logged below ERROR, because `grep "frame disagreement" scrape.log`
+        # counts refusals and scrape.log carries one ERROR per refused pano (#207 review, finding 1).
+        message = ("IMAGEDOWNLOAD: WARNING - %d pano(s) refused (frame-disagreement condition); not ledgered, "
+                   "retried next run. See docs/ops.md#a-gsv-pano-refused-for-a-frame-disagreement"
+                   % (frame_refusals,))
+        logging.warning("%s", message)
         print(message)
         note_condition(stop_reasons, CONDITION_FRAME_DISAGREEMENT,
                        '%d pano(s) refused; first: %s' % (frame_refusals, first_frame_refusal))
