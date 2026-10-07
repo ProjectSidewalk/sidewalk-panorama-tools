@@ -371,6 +371,12 @@ class TestTheCommittedDataRederives:
             ep, er = ngl.exif_pose(items[p['pano_id']])
             assert (p['pers_pitch'], p['pers_roll'], p['pers_yaw'], p['exif_pose_pitch'], p['exif_pose_roll']) ==                 (pp, pr, py, ep, er)
 
+    def test_the_images_are_read_from_the_committed_data_dir_not_a_cache(self):
+        """The first fix round moved the images into reports/data/ but left IMAGE_DIR on the gitignored
+        cache: green on the author's machine, where the cache existed, and FileNotFoundError in CI."""
+        assert os.path.commonpath([ngl.IMAGE_DIR, ngl.RAW_DIR]) == ngl.RAW_DIR
+        assert '.cache' not in ngl.IMAGE_DIR.split(os.sep)
+
     def test_every_committed_image_is_the_one_recorded(self):
         with open(os.path.join(ngl.RAW_DIR, 'sample.json'), encoding='utf-8') as f:
             sample = json.load(f)['sample']

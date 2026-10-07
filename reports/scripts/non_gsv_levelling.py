@@ -76,7 +76,7 @@ CITIES = {
 }
 PANORAMAX_API = 'https://api.panoramax.xyz/api'
 RAW_DIR = os.path.join(REPO_ROOT, 'reports', 'data', '2026-10-06-non-gsv-levelling')
-IMAGE_DIR = os.path.join(REPO_ROOT, 'reports', 'scripts', '.cache', 'non_gsv_levelling')
+IMAGE_DIR = os.path.join(RAW_DIR, 'images')   # committed (Etalab 2.0, ATTRIBUTION.txt); hashes in sample.json
 USER_AGENT = 'sidewalk-panorama-tools desk study (#190; https://github.com/ProjectSidewalk/sidewalk-panorama-tools)'
 PAUSE_S = 2.0
 

@@ -312,7 +312,11 @@ Lower priority:
   GSV's, not ten times. The artifact now carries that list (`bayonne_labelled_posed_tilt`).
 * **The pixels were not committed (caught in review).** The 24 images first lived only in a gitignored
   cache, so a re-fetch after any Panoramax re-processing would have measured different pixels without
-  saying so. They are now committed with their hashes, and `analyze` checks the hashes.
+  saying so. They are now committed with their hashes, and `analyze` checks the hashes. The first try at
+  this fix copied the images into `data/` but left the script reading the cache. It was green locally,
+  where the cache still existed, and failed in CI, where it did not. A test now pins the image directory
+  inside the committed data directory, and the analysis was re-run with the cache moved aside. It
+  reproduced the artifact and figure byte for byte.
 * **Reading `a752d58b` as a wrong pose.** It was the one large-tilt picture that did not flatten. Drawn
   out, its predicted horizon matches the scene. The instrument has too few vertical edges there to read.
 
