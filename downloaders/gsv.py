@@ -608,7 +608,7 @@ class FrameDisagreementError(Exception):
     #181). The message names which, after the words "frame disagreement", which is what to grep scrape.log for.
 
     Raised by download_single_pano, and by frame_covers_pano for the smaller case (which download_single_pano
-    turns into its own refusal and refetch_panos counts as a transient failure) - never by resolve_frame or
+    turns into its own refusal and refetch_panos returns as its unledgered 'frame_shrank') - never by resolve_frame or
     resolve_zoom_and_dims - so it is TRANSIENT under the #41 ledger: counted in tonight's failures, not
     ledgered, re-attempted next run at the cost of one photometa request (or five probe requests on the
     fallback). Deliberately not a permanent verdict: the
@@ -952,7 +952,7 @@ def resolve_zoom_and_dims(pano_info):
     five-level 5376x2688 pano ('upscaled' -> a native zoom-4 fetch). Both swaps may well be better imagery,
     but changing what the repair pass does is a separate decision from the nightly zoom, not a side effect
     of it. The probe's answer goes through refetch's own frame_covers_pano gate, which is what turns a frame
-    smaller than Google's into 'frame_grew' and refuses one larger as a transient failure (#181).
+    smaller than Google's into 'frame_grew' and refuses one larger as the unledgered 'frame_shrank' (#181).
     """
     frame = resolve_frame(pano_info, photometa=False)
     return None if frame is None else (frame.width, frame.height, frame.zoom)
