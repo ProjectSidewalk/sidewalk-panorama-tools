@@ -919,7 +919,7 @@ def geometric_window_fov_deg(distance_m, context_width_m=None):
 
 # The arrays label_distance reads, plus the npz's own pose in degrees (pano_pose.pose_from_depth_artifact's
 # conversion). depth and plane_indices are (h, w) in the stored JPEG's column order (docs/depth.md).
-DepthGrid = collections.namedtuple('DepthGrid', 'depth plane_indices planes_n pitch_deg roll_deg')
+DepthGrid = collections.namedtuple('DepthGrid', 'depth plane_indices planes_n planes_d pitch_deg roll_deg')
 
 # A label's distance and where it came from. source is DISTANCE_SOURCE_DEPTH or DISTANCE_SOURCE_BLEND;
 # reason is None for depth and one of DEPTH_FALLBACK_REASONS for blend. lookup_x/lookup_y are the pano pixel
@@ -940,6 +940,8 @@ def load_depth_grid(npz_path):
     """
     if npz_path is None or not os.path.exists(npz_path):
         return None, 'no_artifact'
+    # One try around the load AND the checks (#211 review): a float raster holding a NaN, or strings, raises
+    # inside the checks, and this function is documented never to raise.
     try:
         with np.load(npz_path) as art:
             if 'format_version' not in art.files or int(art['format_version']) < V3_DEPTH_MIN_FORMAT_VERSION:
@@ -947,16 +949,18 @@ def load_depth_grid(npz_path):
             depth = np.asarray(art['depth'], dtype=np.float64)
             plane_indices = np.asarray(art['plane_indices'])
             planes_n = np.asarray(art['planes_n'], dtype=np.float64)
-    except Exception:  # a corrupt zip, a truncated member, a missing array, a non-scalar version
-        return None, 'unreadable'
-    if (depth.ndim != 2 or depth.size == 0 or plane_indices.shape != depth.shape
-            or planes_n.ndim != 2 or planes_n.shape[1] != 3
-            or int(plane_indices.min()) < 0 or int(plane_indices.max()) >= len(planes_n)):
+            planes_d = np.asarray(art['planes_d'], dtype=np.float64)
+        if (depth.ndim != 2 or depth.size == 0 or plane_indices.shape != depth.shape
+                or not np.issubdtype(plane_indices.dtype, np.integer)
+                or planes_n.ndim != 2 or planes_n.shape[1] != 3 or planes_d.shape != (len(planes_n),)
+                or int(plane_indices.min()) < 0 or int(plane_indices.max()) >= len(planes_n)):
+            return None, 'unreadable'
+    except Exception:  # a corrupt zip, a truncated member, a missing array, a non-scalar version, a bad dtype
         return None, 'unreadable'
     pose, _ = pano_pose.pose_from_depth_artifact(npz_path)
     if pose is None:
         return None, 'no_pose'
-    return DepthGrid(depth, plane_indices, planes_n, pose.pitch_deg, pose.roll_deg), None
+    return DepthGrid(depth, plane_indices, planes_n, planes_d, pose.pitch_deg, pose.roll_deg), None
 
 
 def label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason=None):
@@ -979,11 +983,17 @@ def label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason=None):
     4. **The plane under the label**: the centre cell's, or when the centre has none the most common plane
        among the counted cells (lowest index on a tie). |n_z| / |n| below V3_DEPTH_MIN_GROUND_VERTICALITY is
        `facade`.
-    5. **The distance** is the median of the counted cells' depths - a ray length - projected to the ground
-       by cos(label_depression_deg(pano_y)): the label's gravity depression, from the stored y, which is
-       gravity-levelled. The blend it replaces is a ground distance (h / tan d) and V3_CONTEXT_WIDTH_M was
+    5. **The distance** is the label's OWN ray - the continuous lookup pixel, not a cell centre - intersected
+       with that plane: |planes_d / (v . planes_n)|, the artifact's reconstruction identity (docs/depth.md)
+       evaluated at the label rather than at a cell (#211 review: a cell's depth is the ray length at its
+       centre, up to half a 0.7-degree cell from the label, which on ground is up to ~11% of the distance at
+       3-5 degrees). The 3x3 count and the plane choice above decide WHETHER and WHICH plane; the plane
+       itself is what the artifact stores, so this is exact on it. That ray length is projected to the
+       ground by cos(label_depression_deg(pano_y)): the label's gravity depression, from the stored y, which
+       is gravity-levelled. The blend it replaces is a ground distance (h / tan d) and V3_CONTEXT_WIDTH_M was
        fitted on it, so the slant range would size every window ~1/cos(d) too narrow. On level ground at
-       camera height h this is h / tan(d) exactly. Outside [V3_DEPTH_MIN_M, V3_DIST_CAP_M] is `out_of_range`.
+       camera height h this is h / tan(d) exactly. Outside [V3_DEPTH_MIN_M, V3_DIST_CAP_M] (or a ray parallel
+       to the plane) is `out_of_range`.
 
     >>> label_distance(1024, 700, 2048, 1024, None, 'no_artifact').source
     'blend'
@@ -991,6 +1001,9 @@ def label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason=None):
     depression = label_depression_deg(pano_y, pano_height)
     blend = blend_distance_m(depression)
     if grid is None:
+        # A blend estimate must carry its reason, or the loop cannot file it (#211 review).
+        if reason not in DEPTH_FALLBACK_REASONS:
+            raise ValueError("no depth grid and no fallback reason (%r)" % (reason,))
         return DistanceEstimate(blend, DISTANCE_SOURCE_BLEND, reason, None, None)
     lookup_x, lookup_y = pano_pose.corrected_pixel(pano_x, pano_y, pano_width, pano_height, grid.pitch_deg,
                                                    grid.roll_deg,
@@ -1018,8 +1031,13 @@ def label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason=None):
     if length == 0.0 or abs(float(normal[2])) / length < V3_DEPTH_MIN_GROUND_VERTICALITY:
         return fallback('facade')
 
-    distance = float(np.median(depth[counted])) * math.cos(math.radians(depression))
-    if not V3_DEPTH_MIN_M <= distance <= V3_DIST_CAP_M:
+    # The label's own ray in the artifact frame, which is -RFU (pano_pose's module docstring).
+    ray = -pano_pose.direction_rfu(*pano_pose.bearing_elevation_from_pixel(lookup_x, lookup_y, pano_width,
+                                                                           pano_height))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ray_length = abs(float(grid.planes_d[plane]) / float(np.dot(ray, normal)))
+    distance = ray_length * math.cos(math.radians(depression))
+    if not (math.isfinite(distance) and V3_DEPTH_MIN_M <= distance <= V3_DIST_CAP_M):
         return fallback('out_of_range')
     return DistanceEstimate(distance, DISTANCE_SOURCE_DEPTH, None, lookup_x, lookup_y)
 
@@ -2707,8 +2725,13 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         if sizing_rule == 'v3-depth':
                             if not depth_looked_up:
                                 depth_looked_up = True
-                                depth_grid, depth_reason = load_depth_grid(
-                                    os.path.splitext(pano_img_path)[0] + DEPTH_ARTIFACT_SUFFIX)
+                                try:
+                                    depth_grid, depth_reason = load_depth_grid(
+                                        os.path.splitext(pano_img_path)[0] + DEPTH_ARTIFACT_SUFFIX)
+                                except Exception:
+                                    # It is documented never to raise; if it does anyway, the artifact is
+                                    # unreadable for every label on the pano, never silently depth (#211).
+                                    depth_grid, depth_reason = None, 'unreadable'
                             # Inside this try: a raise here is a fault of ours, one counted error like a failed
                             # write, and the run goes on.
                             estimate = label_distance(pano_x, pano_y, pano.size[0], pano.size[1], depth_grid,
@@ -2741,7 +2764,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         corrected_by_source[pose.source] += 1
                     if estimate is not None:
                         # Counted on the success, so the sources partition success (DISTANCE_SOURCE_COUNTS).
-                        counts['distance_depth' if estimate.reason is None
+                        counts['distance_depth' if estimate.source == DISTANCE_SOURCE_DEPTH
                                else 'distance_blend_' + estimate.reason] += 1
 
                     # After the crop is on disk and counted, never instead of it (#111). A failed append is

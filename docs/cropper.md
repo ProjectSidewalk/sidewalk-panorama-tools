@@ -327,10 +327,17 @@ path):
    when `depth > 0` and its plane index is `> 0`: `-1` is finite and means "no plane".
 3. **The plane under the label** — the centre cell's, else the neighbourhood's most common — must be ground:
    `|n_z| / ‖n‖ ≥ 0.7`, the threshold `gsv.ground_plane_from_artifact` uses.
-4. **The distance** is the median of the counted cells, a ray length, projected to the ground by the cosine
-   of the label's gravity depression (from the stored `pano_y`). The blend it replaces is a ground distance
-   (`h / tan d`) and `V3_CONTEXT_WIDTH_M` was fitted on it; a level ground plane at camera height `h` gives
-   exactly `h / tan d`, which the tests check on artifacts written by the real writer.
+4. **The distance** is the label's own ray — the continuous lookup pixel, not a cell centre — intersected
+   with that plane, `|planes_d / (v · planes_n)|`: the artifact's reconstruction identity evaluated at the
+   label instead of at a cell. The 3×3 count and the plane choice decide *whether* and *which*; the plane is
+   what the artifact stores, so this is exact on it. (#180's spec said the median of the 3×3 depths; a cell's
+   depth is the ray length at its centre, up to half a 0.7° cell from the label, and on ground that costs up to
+   ~11% of the distance at 3–5° of depression and ~2% at 12–20° —
+   [#211's review](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/211#issuecomment-6030708438).)
+   The ray length is projected to the ground by the cosine of the label's gravity depression (from the stored
+   `pano_y`). The blend it replaces is a ground distance (`h / tan d`) and `V3_CONTEXT_WIDTH_M` was fitted on
+   it; a level ground plane at camera height `h` gives exactly `h / tan d` at any sub-cell position, which the
+   tests check on artifacts written by the real writer.
 
 **Every fallback is counted, by reason**, in the order tested (`DEPTH_FALLBACK_REASONS`):
 
