@@ -529,6 +529,9 @@ class ImageLedger:
 # GSV downloaded=0 verdicts per city per night), and this line is the one to change.
 GSV_MAX_CONSECUTIVE_PERMANENT = 50
 MAX_CONSECUTIVE_PERMANENT_FAILURES = {'mapillary': 3, 'panoramax': 3, 'gsv': GSV_MAX_CONSECUTIVE_PERMANENT}
+# The first thing to check after a GSV trip, in the end-of-phase summary in place of the credentials line.
+GSV_TRIP_CHECK = ("Check whether the cbk endpoint is answering black tiles (a sample of those ids still opening in "
+                  "Street View means it is; docs/ops.md, 'When the image phase stops trusting a source')")
 
 
 # --- The GSV push-back breaker (#162) ---------------------------------------------------------------------
@@ -808,10 +811,20 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         # Both channels, like the per-trip message above: this is the half that carries the unattempted count
         # and the repair pointer, which is exactly what someone needs a week later reading scrape.log while
         # editing the ledger. It was print-only until the 2026-09-09 review.
+        # What to check first depends on the source: cbk tiles carry no credentials, so GSV's advice is the
+        # outage #166 guards (#215 review). Any other tripped source keeps the credentials line.
+        checks = []
+        if 'gsv' in verdict_tripped:
+            checks.append(GSV_TRIP_CHECK)
+        others = sorted(verdict_tripped - {'gsv'})
+        if others:
+            checks.append("Check that source's credentials before the next run" if not checks
+                          else "check %s's credentials before the next run" % ', '.join(others))
         summary = ("IMAGEDOWNLOAD: WARNING - breaker tripped for %s; %d pano(s) were left unattempted and "
-                   "nothing was ledgered for them, so they retry next run. Check that source's credentials "
-                   "before the next run, then look for false downloaded=0 rows in pano_id_log.csv."
-                   % (', '.join(sorted(verdict_tripped)), sum(unattempted[s] for s in verdict_tripped)))
+                   "nothing was ledgered for them, so they retry next run. %s, then look for false "
+                   "downloaded=0 rows in pano_id_log.csv."
+                   % (', '.join(sorted(verdict_tripped)), sum(unattempted[s] for s in verdict_tripped),
+                      '; '.join(checks)))
         logging.error("%s", summary)
         print(summary)
     if refused:
