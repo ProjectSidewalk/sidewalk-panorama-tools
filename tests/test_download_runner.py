@@ -3516,9 +3516,9 @@ class TestFrameRefusalsAreCountedAndFailTheNight:
         detail = conditions[DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
         assert detail in {'2 pano(s) refused; first: %s' % e for e in self.refused(2).values()}, detail
         # Pinned to the order the loop actually attempted them, so a "last refusal wins" detail fails too.
-        first_attempted = next(r.getMessage().split()[4] for r in caplog.records
+        first_attempted = next(r.getMessage().split()[5] for r in caplog.records
                                if r.getMessage().startswith('IMAGEDOWNLOAD: Failed to download pano refusedPano'))
-        assert first_attempted in detail
+        assert first_attempted.startswith("refusedPano") and first_attempted in detail
         out_lines = [l for l in capsys.readouterr().out.splitlines() if self.LINE in l]
         assert len(out_lines) == 1 and 'WARNING - 2 pano(s)' in out_lines[0]
         log_lines = [r.getMessage() for r in caplog.records if self.LINE in r.getMessage()]
