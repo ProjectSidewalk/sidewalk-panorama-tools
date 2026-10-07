@@ -1,341 +1,481 @@
 {
  "alignment": {
   "amsterdam": {
-   "log_csv_image_rows": 41,
+   "log_csv_image_rows": 40,
    "mismatch": null,
    "paired": 39,
-   "scrape_log_runs": 39
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": false
   },
   "auckland": {
-   "log_csv_image_rows": 39,
+   "log_csv_image_rows": 38,
    "mismatch": null,
    "paired": 37,
-   "scrape_log_runs": 37
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
   },
   "bayonne-fr": {
    "log_csv_image_rows": 19,
    "mismatch": null,
    "paired": 19,
-   "scrape_log_runs": 19
+   "raise_runs_identified": true,
+   "scrape_log_runs": 19,
+   "shift1_passes_fully": false
   },
   "blackhawk-hills-il": {
-   "log_csv_image_rows": 39,
+   "log_csv_image_rows": 38,
    "mismatch": null,
    "paired": 37,
-   "scrape_log_runs": 37
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
   },
   "burnaby": {
-   "log_csv_image_rows": 41,
+   "log_csv_image_rows": 40,
    "mismatch": null,
    "paired": 39,
-   "scrape_log_runs": 39
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": true
   },
   "cdmx": {
-   "log_csv_image_rows": 49,
-   "mismatch": null,
-   "paired": 47,
-   "scrape_log_runs": 47
-  },
-  "chandigarh-india": {
-   "log_csv_image_rows": 39,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "chicago-il": {
-   "log_csv_image_rows": 56,
-   "mismatch": null,
-   "paired": 54,
-   "scrape_log_runs": 54
-  },
-  "cliffside-park-nj": {
-   "log_csv_image_rows": 39,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "clifton-nj": {
-   "log_csv_image_rows": 39,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "columbia-sc": {
    "log_csv_image_rows": 48,
    "mismatch": null,
+   "paired": 47,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 47,
+   "shift1_passes_fully": false
+  },
+  "chandigarh-india": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "chicago-il": {
+   "log_csv_image_rows": 55,
+   "mismatch": null,
+   "paired": 54,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 54,
+   "shift1_passes_fully": false
+  },
+  "cliffside-park-nj": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "clifton-nj": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "columbia-sc": {
+   "log_csv_image_rows": 47,
+   "mismatch": null,
    "paired": 46,
-   "scrape_log_runs": 46
+   "raise_runs_identified": true,
+   "scrape_log_runs": 46,
+   "shift1_passes_fully": false
   },
   "columbus-oh": {
-   "log_csv_image_rows": 42,
+   "log_csv_image_rows": 41,
    "mismatch": null,
    "paired": 40,
-   "scrape_log_runs": 40
+   "raise_runs_identified": true,
+   "scrape_log_runs": 40,
+   "shift1_passes_fully": true
   },
   "cuenca": {
-   "log_csv_image_rows": 41,
+   "log_csv_image_rows": 40,
    "mismatch": null,
    "paired": 39,
-   "scrape_log_runs": 39
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": true
   },
   "danville-il": {
-   "log_csv_image_rows": 40,
+   "log_csv_image_rows": 39,
    "mismatch": null,
    "paired": 38,
-   "scrape_log_runs": 38
+   "raise_runs_identified": true,
+   "scrape_log_runs": 38,
+   "shift1_passes_fully": false
   },
   "detroit-mi": {
-   "log_csv_image_rows": 39,
+   "log_csv_image_rows": 38,
    "mismatch": null,
    "paired": 37,
-   "scrape_log_runs": 37
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
   },
   "fort-wayne-in": {
-   "log_csv_image_rows": 38,
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 37,
-   "scrape_log_runs": 37
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
   },
   "gainesville-fl": {
-   "log_csv_image_rows": 41,
-   "mismatch": null,
-   "paired": 40,
-   "scrape_log_runs": 40
-  },
-  "hackensack-nj": {
-   "log_csv_image_rows": 39,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "houston-tx": {
-   "log_csv_image_rows": 39,
-   "mismatch": null,
-   "paired": 38,
-   "scrape_log_runs": 38
-  },
-  "kaohsiung-tw": {
-   "log_csv_image_rows": 52,
-   "mismatch": null,
-   "paired": 50,
-   "scrape_log_runs": 50
-  },
-  "keelung-tw": {
-   "log_csv_image_rows": 38,
-   "mismatch": null,
-   "paired": 36,
-   "scrape_log_runs": 36
-  },
-  "knox-oh": {
    "log_csv_image_rows": 40,
    "mismatch": null,
+   "paired": 40,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 40,
+   "shift1_passes_fully": false
+  },
+  "hackensack-nj": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "houston-tx": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
    "paired": 38,
-   "scrape_log_runs": 38
+   "raise_runs_identified": true,
+   "scrape_log_runs": 38,
+   "shift1_passes_fully": false
+  },
+  "kaohsiung-tw": {
+   "log_csv_image_rows": 51,
+   "mismatch": null,
+   "paired": 50,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 50,
+   "shift1_passes_fully": true
+  },
+  "keelung-tw": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": true
+  },
+  "knox-oh": {
+   "log_csv_image_rows": 39,
+   "mismatch": null,
+   "paired": 38,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 38,
+   "shift1_passes_fully": false
   },
   "la-ca": {
-   "log_csv_image_rows": 38,
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 36,
-   "scrape_log_runs": 36
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": true
   },
   "la-piedad": {
-   "log_csv_image_rows": 38,
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 36,
-   "scrape_log_runs": 36
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
   },
   "la-piedad-old": {
    "log_csv_image_rows": 14,
    "mismatch": null,
    "paired": 14,
-   "scrape_log_runs": 14
+   "raise_runs_identified": true,
+   "scrape_log_runs": 14,
+   "shift1_passes_fully": false
   },
   "laurens-ia": {
    "log_csv_image_rows": 22,
    "mismatch": null,
    "paired": 22,
-   "scrape_log_runs": 22
+   "raise_runs_identified": true,
+   "scrape_log_runs": 22,
+   "shift1_passes_fully": false
   },
   "madison-wi": {
-   "log_csv_image_rows": 38,
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 36,
-   "scrape_log_runs": 36
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
   },
   "maywood-nj": {
-   "log_csv_image_rows": 38,
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 36,
-   "scrape_log_runs": 36
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
   },
   "mendota-il": {
-   "log_csv_image_rows": 39,
+   "log_csv_image_rows": 38,
    "mismatch": null,
    "paired": 37,
-   "scrape_log_runs": 37
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
   },
   "new-taipei-tw": {
-   "log_csv_image_rows": 39,
+   "log_csv_image_rows": 38,
    "mismatch": null,
    "paired": 37,
-   "scrape_log_runs": 37
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
   },
   "newberg-or": {
-   "log_csv_image_rows": 38,
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 36,
-   "scrape_log_runs": 36
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": true
   },
   "newport-ky": {
-   "log_csv_image_rows": 36,
+   "log_csv_image_rows": 35,
    "mismatch": null,
    "paired": 35,
-   "scrape_log_runs": 35
+   "raise_runs_identified": true,
+   "scrape_log_runs": 35,
+   "shift1_passes_fully": false
   },
   "niagara-falls-ny": {
-   "log_csv_image_rows": 38,
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 36,
-   "scrape_log_runs": 36
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
   },
   "oradell-nj": {
-   "log_csv_image_rows": 38,
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 36,
-   "scrape_log_runs": 36
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
   },
   "paterson-nj": {
-   "log_csv_image_rows": 44,
-   "mismatch": null,
-   "paired": 43,
-   "scrape_log_runs": 43
-  },
-  "pittsburgh-pa": {
-   "log_csv_image_rows": 41,
-   "mismatch": null,
-   "paired": 39,
-   "scrape_log_runs": 39
-  },
-  "rancagua-chile": {
-   "log_csv_image_rows": 38,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "richmond-va": {
-   "log_csv_image_rows": 44,
-   "mismatch": null,
-   "paired": 43,
-   "scrape_log_runs": 43
-  },
-  "santiago-chile": {
-   "log_csv_image_rows": 38,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "sao-paulo-brazil": {
-   "log_csv_image_rows": 38,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "seattle-wa": {
-   "log_csv_image_rows": 54,
-   "mismatch": null,
-   "paired": 52,
-   "scrape_log_runs": 52
-  },
-  "spgg": {
    "log_csv_image_rows": 43,
    "mismatch": null,
-   "paired": 41,
-   "scrape_log_runs": 41
+   "paired": 43,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 43,
+   "shift1_passes_fully": false
   },
-  "st-louis-mo": {
-   "log_csv_image_rows": 56,
-   "mismatch": null,
-   "paired": 54,
-   "scrape_log_runs": 54
-  },
-  "taichung-tw": {
-   "log_csv_image_rows": 39,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "tainan-tw": {
-   "log_csv_image_rows": 38,
-   "mismatch": null,
-   "paired": 36,
-   "scrape_log_runs": 36
-  },
-  "taipei": {
-   "log_csv_image_rows": 42,
-   "mismatch": null,
-   "paired": 40,
-   "scrape_log_runs": 40
-  },
-  "teaneck-nj": {
-   "log_csv_image_rows": 42,
-   "mismatch": null,
-   "paired": 40,
-   "scrape_log_runs": 40
-  },
-  "tucson-az": {
-   "log_csv_image_rows": 39,
-   "mismatch": null,
-   "paired": 38,
-   "scrape_log_runs": 38
-  },
-  "validation-study": {
-   "log_csv_image_rows": 39,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "vancouver-wa": {
-   "log_csv_image_rows": 49,
-   "mismatch": null,
-   "paired": 47,
-   "scrape_log_runs": 47
-  },
-  "virden-il": {
-   "log_csv_image_rows": 38,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "walla-walla-wa": {
-   "log_csv_image_rows": 46,
-   "mismatch": null,
-   "paired": 44,
-   "scrape_log_runs": 44
-  },
-  "waltham-ma": {
-   "log_csv_image_rows": 38,
-   "mismatch": null,
-   "paired": 37,
-   "scrape_log_runs": 37
-  },
-  "washington-dc": {
-   "log_csv_image_rows": 18,
-   "mismatch": null,
-   "paired": 17,
-   "scrape_log_runs": 17
-  },
-  "west-chester-pa": {
-   "log_csv_image_rows": 41,
+  "pittsburgh-pa": {
+   "log_csv_image_rows": 40,
    "mismatch": null,
    "paired": 39,
-   "scrape_log_runs": 39
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": false
   },
-  "zurich": {
-   "log_csv_image_rows": 39,
+  "rancagua-chile": {
+   "log_csv_image_rows": 37,
    "mismatch": null,
    "paired": 37,
-   "scrape_log_runs": 37
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "richmond-va": {
+   "log_csv_image_rows": 43,
+   "mismatch": null,
+   "paired": 43,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 43,
+   "shift1_passes_fully": false
+  },
+  "santiago-chile": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "sao-paulo-brazil": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "seattle-wa": {
+   "log_csv_image_rows": 53,
+   "mismatch": null,
+   "paired": 52,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 52,
+   "shift1_passes_fully": false
+  },
+  "spgg": {
+   "log_csv_image_rows": 42,
+   "mismatch": null,
+   "paired": 41,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 41,
+   "shift1_passes_fully": false
+  },
+  "st-louis-mo": {
+   "log_csv_image_rows": 55,
+   "mismatch": null,
+   "paired": 54,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 54,
+   "shift1_passes_fully": false
+  },
+  "taichung-tw": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "tainan-tw": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": true
+  },
+  "taipei": {
+   "log_csv_image_rows": 41,
+   "mismatch": null,
+   "paired": 40,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 40,
+   "shift1_passes_fully": false
+  },
+  "teaneck-nj": {
+   "log_csv_image_rows": 41,
+   "mismatch": null,
+   "paired": 40,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 40,
+   "shift1_passes_fully": false
+  },
+  "tucson-az": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 38,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 38,
+   "shift1_passes_fully": false
+  },
+  "validation-study": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "vancouver-wa": {
+   "log_csv_image_rows": 48,
+   "mismatch": null,
+   "paired": 47,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 47,
+   "shift1_passes_fully": true
+  },
+  "virden-il": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "walla-walla-wa": {
+   "log_csv_image_rows": 45,
+   "mismatch": null,
+   "paired": 44,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 44,
+   "shift1_passes_fully": false
+  },
+  "waltham-ma": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "washington-dc": {
+   "log_csv_image_rows": 17,
+   "mismatch": null,
+   "paired": 17,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 17,
+   "shift1_passes_fully": false
+  },
+  "west-chester-pa": {
+   "log_csv_image_rows": 40,
+   "mismatch": null,
+   "paired": 39,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": true
+  },
+  "zurich": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
   }
+ },
+ "alignment_summary": {
+  "cities_shift1_passes_fully": [
+   "auckland",
+   "blackhawk-hills-il",
+   "burnaby",
+   "cliffside-park-nj",
+   "columbus-oh",
+   "cuenca",
+   "fort-wayne-in",
+   "kaohsiung-tw",
+   "keelung-tw",
+   "la-ca",
+   "mendota-il",
+   "new-taipei-tw",
+   "newberg-or",
+   "taichung-tw",
+   "tainan-tw",
+   "validation-study",
+   "vancouver-wa",
+   "virden-il",
+   "west-chester-pa"
+  ],
+  "cities_with_raises_not_identified": [],
+  "cities_with_unpaired_rows": 40,
+  "log_csv_image_rows": 2165,
+  "paired": 2125,
+  "unpaired_rows": 40
  },
  "cities_with_raises": [
   {
@@ -416,20 +556,23 @@
   "scrape_log_black_stitch_lines": 0,
   "scrape_log_raise_lines": 0,
   "stamped_streaks": {
-   "2026-09-24": {
+   "2026-09-24 20:04:41.142876-07:00": {
     "downloaded_0": 469,
     "longest_zero_streak": 280,
+    "night": "2026-09-24",
     "rows": 470
    },
-   "2026-09-25": {
+   "2026-09-25 01:11:38.140210-07:00": {
     "downloaded_0": 880,
     "longest_zero_streak": 880,
+    "night": "2026-09-24",
     "rows": 880
    }
   }
  },
  "frame_disagreement": {
   "cities_scanned": 56,
+  "edge_band_lines": {},
   "lines_scanned": 27642,
   "per_city": {},
   "photometa_lines": {},
@@ -442,6 +585,7 @@
   {
    "answered": 983,
    "city": "chicago-il",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 22986,
    "fallback": 0,
@@ -466,6 +610,7 @@
   {
    "answered": 869,
    "city": "chicago-il",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 22986,
    "fallback": 0,
@@ -490,6 +635,7 @@
   {
    "answered": 96,
    "city": "chicago-il",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 22990,
    "fallback": 0,
@@ -518,6 +664,7 @@
   {
    "answered": 0,
    "city": "chicago-il",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 22990,
    "fallback": 0,
@@ -546,6 +693,7 @@
   {
    "answered": 449,
    "city": "chicago-il",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 22990,
    "fallback": 0,
@@ -574,6 +722,7 @@
   {
    "answered": 0,
    "city": "chicago-il",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 22990,
    "fallback": 0,
@@ -602,6 +751,7 @@
   {
    "answered": 1,
    "city": "chicago-il",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 22990,
    "fallback": 0,
@@ -630,6 +780,7 @@
   {
    "answered": 6,
    "city": "chicago-il",
+   "edge_band_refused": 0,
    "era": "post-deploy",
    "failed": 22990,
    "fallback": 0,
@@ -658,6 +809,7 @@
   {
    "answered": null,
    "city": "richmond-va",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 163,
    "fallback": 0,
@@ -682,6 +834,7 @@
   {
    "answered": 45,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -706,6 +859,7 @@
   {
    "answered": 46,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7864,
    "fallback": 0,
@@ -731,6 +885,7 @@
   {
    "answered": 46,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -755,6 +910,7 @@
   {
    "answered": 48,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -779,6 +935,7 @@
   {
    "answered": 89,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7865,
    "fallback": 0,
@@ -805,6 +962,7 @@
   {
    "answered": 49,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -829,6 +987,7 @@
   {
    "answered": 110,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7867,
    "fallback": 0,
@@ -857,6 +1016,7 @@
   {
    "answered": 51,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -881,6 +1041,7 @@
   {
    "answered": 150,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7864,
    "fallback": 0,
@@ -906,6 +1067,7 @@
   {
    "answered": 275,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7870,
    "fallback": 0,
@@ -937,6 +1099,7 @@
   {
    "answered": 49,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -961,6 +1124,7 @@
   {
    "answered": 299,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7876,
    "fallback": 0,
@@ -998,6 +1162,7 @@
   {
    "answered": 50,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7870,
    "fallback": 0,
@@ -1029,6 +1194,7 @@
   {
    "answered": 75,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7877,
    "fallback": 0,
@@ -1067,6 +1233,7 @@
   {
    "answered": 48,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7864,
    "fallback": 0,
@@ -1092,6 +1259,7 @@
   {
    "answered": 349,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7869,
    "fallback": 0,
@@ -1122,6 +1290,7 @@
   {
    "answered": 273,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7869,
    "fallback": 0,
@@ -1152,6 +1321,7 @@
   {
    "answered": 48,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -1176,6 +1346,7 @@
   {
    "answered": 295,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7864,
    "fallback": 0,
@@ -1201,6 +1372,7 @@
   {
    "answered": 51,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -1225,6 +1397,7 @@
   {
    "answered": 308,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7867,
    "fallback": 0,
@@ -1253,6 +1426,7 @@
   {
    "answered": 346,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7866,
    "fallback": 0,
@@ -1280,6 +1454,7 @@
   {
    "answered": 50,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7864,
    "fallback": 0,
@@ -1305,6 +1480,7 @@
   {
    "answered": 363,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7865,
    "fallback": 0,
@@ -1331,6 +1507,7 @@
   {
    "answered": 511,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7866,
    "fallback": 0,
@@ -1358,6 +1535,7 @@
   {
    "answered": 49,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -1382,6 +1560,7 @@
   {
    "answered": 1094,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7878,
    "fallback": 0,
@@ -1421,6 +1600,7 @@
   {
    "answered": 45,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7865,
    "fallback": 0,
@@ -1447,6 +1627,7 @@
   {
    "answered": 264,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7878,
    "fallback": 0,
@@ -1486,6 +1667,7 @@
   {
    "answered": 48,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7865,
    "fallback": 0,
@@ -1512,6 +1694,7 @@
   {
    "answered": 197,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7878,
    "fallback": 0,
@@ -1551,6 +1734,7 @@
   {
    "answered": 9,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7878,
    "fallback": 0,
@@ -1590,6 +1774,7 @@
   {
    "answered": 0,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "pre-deploy",
    "failed": 7878,
    "fallback": 0,
@@ -1629,6 +1814,7 @@
   {
    "answered": 40,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "post-deploy",
    "failed": 7863,
    "fallback": 0,
@@ -1653,6 +1839,7 @@
   {
    "answered": 513,
    "city": "st-louis-mo",
+   "edge_band_refused": 0,
    "era": "post-deploy",
    "failed": 7878,
    "fallback": 0,

@@ -99,16 +99,55 @@ class TestTheReducer:
         assert ft.night_of('2026-09-25 01:11:38.140210-07:00') == '2026-09-24'
         assert ft.night_of('2026-09-24 20:04:41.142876-07:00') == '2026-09-24'
 
-    def test_zero_streaks_reset_on_a_success_and_on_a_new_date(self):
-        streaks = ft.zero_streaks([('0', '2026-09-24 a'), ('0', '2026-09-24 a'), ('1', '2026-09-24 a'),
-                                   ('0', '2026-09-24 a'), ('0', '2026-09-25 a')])
-        assert streaks['2026-09-24'] == {'rows': 4, 'downloaded_0': 3, 'longest_zero_streak': 2}
-        assert streaks['2026-09-25']['longest_zero_streak'] == 1
+    def test_zero_streaks_are_per_run_and_a_pass_crossing_midnight_is_one_run(self):
+        """Grouping by calendar date split a pass that crossed midnight in two (#208 review, nit 4)."""
+        starts = ['2026-09-24 23:00:00-07:00', '2026-09-25 01:11:00-07:00']
+        streaks = ft.zero_streaks([('0', '2026-09-24 23:50:00-07:00'), ('0', '2026-09-25 00:10:00-07:00'),
+                                   ('1', '2026-09-25 00:20:00-07:00'), ('0', '2026-09-25 00:30:00-07:00'),
+                                   ('0', '2026-09-25 01:20:00-07:00')], starts)
+        assert streaks[starts[0]] == {'night': '2026-09-24', 'rows': 4, 'downloaded_0': 3,
+                                      'longest_zero_streak': 2}
+        assert streaks[starts[1]]['longest_zero_streak'] == 1
 
-    def test_a_mapillary_token_is_redacted(self):
-        line = 'url=https://graph.mapillary.com/1?fields=x&access_token=MLY|123|abcdef rest'
+    @pytest.mark.parametrize('line, secret', [
+        ('url=https://graph.mapillary.com/1?fields=x&access_token=MLY|123|abcdef rest', 'abcdef'),
+        # one case per pattern, so dropping either regex fails (#208 review, nit 3)
+        ('headers: Authorization: OAuth MLY|1|abc123 rest', 'abc123'),
+        ('url=https://graph.mapillary.com/1?access_token=EAAGsecretvalue rest', 'EAAGsecretvalue'),
+    ])
+    def test_a_mapillary_token_is_redacted(self, line, secret):
         out = ft.redact(line)
-        assert 'MLY|123' not in out and 'abcdef' not in out and out.endswith(' rest')
+        assert secret not in out and out.endswith(' rest')
+
+    def test_a_header_row_is_not_a_run(self, tmp_path):
+        """'start_time' >= '2026-09-01' as strings, so the date filter let 53 header rows in (#208 review)."""
+        path = tmp_path / 'log.csv.gz'
+        with gzip.open(path, 'wt', encoding='utf-8') as f:
+            f.write('c,start_time,image_success\nc,2026-10-01 19:00:00-07:00,0,0,9,9,0,1,0,0,0,1,0\n')
+        rows = ft.read_log_csv(str(path))
+        assert [r['ts'] for r in rows['c']] == ['2026-10-01 19:00:00-07:00']
+
+    def test_a_pairing_that_a_shift_also_passes_is_flagged_and_a_raise_run_is_not_identified(self):
+        same = [final(0, 0, 5, 50)] * 4
+        rows = [csv_row('2026-10-0%d 19:00:00-07:00' % (i + 1), 0, 0, 5, 50) for i in range(4)]
+        assert ft.shift_identification(ft.split_image_runs(same), rows)['shift1_passes_fully']
+        # A raise in a stretch of identical tuples cannot be dated by the counts.
+        lines = [final(0, 0, 5, 50), raise_line('A'), final(0, 0, 5, 50), final(0, 0, 5, 50)]
+        assert not ft.shift_identification(ft.split_image_runs(lines), rows)['raise_runs_identified']
+        # Distinct counts pin it.
+        lines = [final(1, 0, 5, 50), raise_line('A'), final(2, 0, 5, 50), final(3, 0, 5, 50)]
+        rows = [csv_row('2026-10-0%d 19:00:00-07:00' % (i + 1), i + 1, 0, 5, 50) for i in range(3)]
+        ident = ft.shift_identification(ft.split_image_runs(lines), rows)
+        assert ident == {'shift1_passes_fully': False, 'raise_runs_identified': True}
+
+    def test_an_edge_band_refusal_is_its_own_bucket_and_an_answer(self):
+        """#213's EdgeBandError message carries 'frame disagreement' too; it is not a frame refusal."""
+        edge = ('ERROR:root:IMAGEDOWNLOAD: Failed to download pano P8 due to error pano P8: frame disagreement: '
+                'the stitch has an exactly-black band 12.0% deep along the bottom')
+        runs = ft.split_image_runs([edge, FRAME, final(0, 0, 2, 5)])
+        assert runs[0]['edge_band'] == ['P8'] and len(runs[0]['frame']) == 1 and not runs[0]['raise_ids']
+        summary = ft.frame_summary([], {'c': [edge, FRAME]})
+        assert summary['refusal_lines'] == 1 and summary['edge_band_lines'] == {'c': 1}
 
 
 class TestTheCommittedArtifact:

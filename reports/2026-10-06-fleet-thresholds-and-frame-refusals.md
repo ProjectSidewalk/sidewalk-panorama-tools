@@ -34,9 +34,23 @@ Read-only, from the production store's own files, on 2026-10-06 before that even
 **scrape.log has no timestamps**, so a raise line cannot be dated directly. Each finished image phase writes
 one `IMAGEDOWNLOAD: Final result: Completed X of Y (s success, f fallback success, F failed, K skipped)` line,
 and the same run writes one `log.csv` row whose fields 7-11 hold the same five counts. The reducer pairs the
-two sequences from the end backwards and checks every pair field by field. **All 2,125 image runs in 56
-cities paired, with no mismatch** (`alignment` in the JSON). Each run's night is its local date twelve hours
-earlier, so a pass-2 run at 01:00 belongs to the night before.
+two sequences from the end backwards and checks every pair field by field. **All 2,125 scrape.log image runs
+in 56 cities paired, with no mismatch** (`alignment` in the JSON). Each run's night is its local date twelve
+hours earlier, so a pass-2 run at 01:00 belongs to the night before.
+
+That check proves less than it sounds, and the reducer measures how much (`alignment_summary`, from
+`shift_identification`). A mature city with nothing new writes the same five counts night after night, so a
+pairing shifted by one run can pass too. **In 19 cities a one-run shift passes every pair**, and in those
+cities the check says nothing about which night a run belongs to. None of those 19 ever raised. For each of
+the three raising cities, every shift of 1 to 3 runs disagrees before it reaches a run with a raise, so
+**every raise is dated by an identified pairing** (`cities_with_raises_not_identified` is empty).
+
+Rows left unpaired: **40 log.csv image rows, one per city in 40 cities**, all stamped 2026-09-01, which
+predate that city's scrape.log. A first version also counted 53 hand-added header rows (`start_time,...`),
+which passed the `2026-09-01` filter only because `'start_time' >= '2026-09-01'` holds as a string comparison.
+Pairing from the end left them unpaired too, so no number moved, but they would have crashed `row_counts`
+had a scrape.log ever been long enough to reach them. The pack and the reader now require a leading date
+(`DATE_RE`), and the committed extract no longer contains them.
 
 **`answered` comes from the ledger arithmetic**, because log.csv's field 9 is seeded from earlier `downloaded=0`
 rows. A run's own permanent verdicts are field 9 minus its raises and frame refusals, minus the previous
@@ -68,7 +82,10 @@ Over 36 nights, **only three cities ever raised in the image phase**:
 | st-louis-mo | 54 | 35 | 16 | 1 | 16 | 16 | 2-2 |
 
 * **All 21 GSV perennial raisers are third-party photospheres.** Every one has a `CAoS...` id: 16 in
-  st-louis-mo and 5 in chicago-il. They are the same panos every night. Before #156 they raised `cannot
+  st-louis-mo and 5 in chicago-il. They are the same panos on every night a city reached the end of its
+  list. **The set is not fixed, though:** st-louis-mo's complete pass on 2026-09-22 raised 15, and from
+  2026-09-30 it raised 16. `CAoS` photospheres enter the pano list as people label them, so the population can
+  grow. That argues for decision 2 below over any fixed margin. Before #156 they raised `cannot
   identify image file` (the tile body is not an image). Since #156 they raise `cbk probe answered 400, not
   200`. Neither error is ledgered, so they come back as candidates every night.
 * **st-louis-mo's nightly raise count is 16 on any night that reaches the end of its list.** On 2026-10-04
@@ -103,9 +120,13 @@ Floor sweep, count arm, runs with 0 answered:
 | post-deploy | 30 | 0 | 0 | - |
 | post-deploy | 50 | 0 | 0 | - |
 
-* **The raises are fast, not slow.** On the 0-answered runs, a raise took at most about 2 s (st-louis-mo,
-  16 in a 0-minute phase) to 6 s (chicago-il). That is an upper bound. The "slow perennial raiser" the 60 s
-  gate was sized against does not appear in this fleet.
+* **Raise durations: measured only before #156, and barely measured.** The three 0-answered runs that bound
+  a raise are all pre-deploy, on the `cannot identify image file` path: chicago-il on 2026-10-01 and
+  2026-10-03, and st-louis-mo on 2026-10-04. Each had a 0-minute image phase, so the bounds (6 s and
+  (0 + 0.5) x 60 / 16 = 1.9 s) come almost entirely from rounding to whole minutes. They say only that the
+  phase took under a minute. **No post-#156 raise has a duration at all.** Since #156 these ids go through a
+  photometa "not found" and then the cbk probe, a different request path, and the one post-deploy night had
+  no 0-answered run. That is exactly the number #178 asks for, and it waits on #178's step 1.
 
 Gate sweep, budget arm (needs 0 answered, a `max-runtime` stop and at least one raise):
 
@@ -122,10 +143,10 @@ Gate sweep, budget arm (needs 0 answered, a `max-runtime` stop and at least one 
 | post-deploy | 120 | 0 | 0 | - |
 | post-deploy | 180 | 0 | 0 | - |
 
-* **The budget arm never could have fired** at any gate from 30 s to 180 s. Every 0-answered run with raises
-  finished its list (stop `none`). The budget arm is therefore driven entirely by the blackhole case it was
-  written for (about 210 s per raise). The 60 s gate is about 10 times the measured upper bound of a real
-  perennial raise and under a third of the blackhole, so the data leaves it where it is.
+* **The budget arm never could have fired** at any gate from 30 s to 180 s, because every 0-answered run with
+  raises finished its list (stop `none`). Nothing here argues for moving the 60 s gate. That is a no-change,
+  not a post-deploy measurement: the gate's lower side (a real post-#156 perennial raise) is unmeasured, and
+  its upper side is still the blackhole estimate (about 210 s per raise).
 
 Every run with a raise:
 
@@ -189,7 +210,8 @@ Every run with a raise:
    outcome, as a frame refusal already is) would remove the whole perennial population. The floor could then
    stay at 10. This needs its own issue and tests. It is a downloader verdict change, so it is not proposed
    inside this PR.
-3. **Gate: keep 60 s.** No measured run comes near it, in either direction.
+3. **Gate: keep 60 s, as a no-change.** No measured run comes near it, but the only durations measured are
+   pre-#156 and rounding-dominated (above). It is not confirmed for the post-#156 raise path.
 4. **Re-measure after #178's step 1 lands.** With durations on the `ERROR` line, a week of post-deploy
    nights can replace the upper bounds here with real per-raise durations.
 
@@ -207,15 +229,20 @@ arm, and no refusal (`post_deploy_frame_refused` = 0). This matches the 0.0% dim
 * **Part 2 is not warranted now.** At a measured rate of 0, keeping a larger original has nothing to keep.
 * **Part 1 is still worth landing.** It is cheap, and it is the only thing that would show the rate leaving
   0. Today a refusal is visible only to a `grep`. Revisit Part 2 when Part 1's count is nonzero on any night.
+* **Once [#213](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/213) lands, a second refusal
+  carries the same words.** Its `EdgeBandError` subclasses `FrameDisagreementError`, and its message contains
+  both `frame disagreement` and `black band`. The reducer now files a `black band` line in its own bucket
+  (`edge_band_lines`, and `edge_band_refused` per run), still counted as an answer, as the runner does. A
+  `grep "frame disagreement"` without that exclusion over-counts. 0 such lines exist today.
 
 ## C. washington-dc's `downloaded=0` rows (#184)
 
 From washington-dc's `pano_id_log.csv` (78,301 rows, all three-field):
 
-| fetched_at date | rows | `downloaded=0` | longest consecutive `downloaded=0` |
-|---|---|---|---|
-| 2026-09-24 | 470 | 469 | 280 |
-| 2026-09-25 | 880 | 880 | 880 |
+| Run (log.csv start) | Night | rows | `downloaded=0` | longest consecutive `downloaded=0` |
+|---|---|---|---|---|
+| 2026-09-24 20:04:41.142876-07:00 | 2026-09-24 | 470 | 469 | 280 |
+| 2026-09-25 01:11:38.140210-07:00 | 2026-09-24 | 880 | 880 | 880 |
 
 * **1,349 `downloaded=0` rows**, all stamped on or after 2026-09-10: 469 on 2026-09-24 and 880 on
   2026-09-25, the first night washington-dc was in the queue (pass 1 and pass 2). No other date has a 0 row.
@@ -234,8 +261,10 @@ The ask was the longest natural streak of consecutive `downloaded=0` rows within
 city's stamped ledger rows, to size a GSV entry in `MAX_CONSECUTIVE_PERMANENT_FAILURES`. **Only washington-dc
 was measured.** The pull of the other cities' ledgers was not run in this session, so it is still open.
 
-washington-dc's streaks are in the table under C: **280** on 2026-09-24 (broken once by its single success)
-and **880** on 2026-09-25. **These are not natural streaks.** They are the dimensionless write-off that D8
+washington-dc's streaks are in the table under C, one row per run: **280** in pass 1 (broken once by its
+single success) and **880** in pass 2. Both passes belong to one night, 2026-09-24. Streaks are bounded by
+run, using the log.csv start stamps, not by calendar date. A pass that crosses midnight would otherwise be
+split in two and reported low, which matters for the fleet pull still to come. **These are not natural streaks.** They are the dimensionless write-off that D8
 now stops before either phase runs. They are the failure a GSV breaker entry would exist to catch, so they
 show that any limit up to 280 would have tripped on that night. They are not the worst *legitimate* streak
 that the limit must sit above. That number still needs the fleet ledgers.
@@ -251,6 +280,12 @@ that the limit must sit above. That number still needs the fleet ledgers.
 * **I read st-louis-mo's 2026-10-05 pass-2 "mean raise upper bound" of 294 s** as a slow raise before I saw
   the 513 successes in the same phase. The bound is only meaningful on 0-answered runs, which is why the
   sweep evaluates only those, and the per-run table prints it for context only.
+* **I read "all 2,125 runs paired" as proof that every run was dated correctly.** For 19 cities a shifted
+  pairing passes as well. The raising cities happen to be identified, which is now measured rather than
+  assumed (`shift_identification`).
+* **The `2026-09-01` filter was a string comparison**, and it let 53 header rows through (above).
+* **I grouped DC's streaks by calendar date.** For DC the two dates happen to be the two passes of one night,
+  but a pass crossing midnight would be split. They are grouped by run now.
 * **The floor sweep's 0 post-deploy hits are not evidence that 10 is safe.** The only post-deploy night
   happened to have new panos in both raising cities. The pre-deploy rows, with the same 21 panos, carry the
   floor argument.

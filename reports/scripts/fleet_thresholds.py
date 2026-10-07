@@ -36,6 +36,7 @@ import argparse
 import collections
 import datetime
 import gzip
+import io
 import json
 import os
 import re
@@ -88,6 +89,9 @@ PHOTOMETA_LINE_RES = collections.OrderedDict([
     ('photometa_refused', re.compile(r'IMAGEDOWNLOAD: pano \S+: Google refused the photometa request')),
     ('photometa_given_up', re.compile(r'IMAGEDOWNLOAD: photometa failed \d+ times in a row')),
 ])
+# A log.csv row starts with its date. Hand-added header rows (`start_time,...`) sort after any date as
+# strings, so a bare `>= LOG_CSV_SINCE` let 53 of them through (#208 review).
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}')
 TOKEN_RES = (re.compile(r'(access_token=)[^&\s\'"]+'), re.compile(r'MLY\|[^\s&\'"]+'))
 
 
@@ -100,17 +104,23 @@ def redact(line):
 # ----------------------------------------------------------------------------------------------- pack
 
 
+def _gz_writer(path):
+    """A text writer for a .gz extract with a zero mtime in its header, so re-packing the same logs
+    rewrites byte-identical files instead of a binary diff per run."""
+    return io.TextIOWrapper(gzip.GzipFile(path, mode='wb', mtime=0), encoding='utf-8', newline='\n')
+
+
 def pack(raw_dir, out_dir):
     """Write the committed extracts from a directory laid out like the store root (<city>/log.csv, ...)."""
     cities = sorted(d for d in os.listdir(raw_dir) if os.path.isfile(os.path.join(raw_dir, d, 'log.csv')))
-    with gzip.open(os.path.join(out_dir, LOG_CSV_FILE), 'wt', encoding='utf-8', newline='\n') as out:
+    with _gz_writer(os.path.join(out_dir, LOG_CSV_FILE)) as out:
         for city in cities:
             with open(os.path.join(raw_dir, city, 'log.csv'), encoding='utf-8', errors='replace') as f:
                 for line in f:
                     line = line.rstrip('\r\n')
-                    if line[:10] >= LOG_CSV_SINCE:
+                    if DATE_RE.match(line) and line[:10] >= LOG_CSV_SINCE:
                         out.write('%s,%s\n' % (city, redact(line)))
-    with gzip.open(os.path.join(out_dir, SCRAPE_LOG_FILE), 'wt', encoding='utf-8', newline='\n') as out:
+    with _gz_writer(os.path.join(out_dir, SCRAPE_LOG_FILE)) as out:
         for city in cities:
             # Oldest rotation first, so the city's lines stay in the order they were written.
             names = sorted((n for n in os.listdir(os.path.join(raw_dir, city)) if n.startswith('scrape.log')),
@@ -119,12 +129,14 @@ def pack(raw_dir, out_dir):
                 with open(os.path.join(raw_dir, city, name), encoding='utf-8', errors='replace') as f:
                     for line in f:
                         out.write('%s\t%s\n' % (city, redact(line.rstrip('\r\n'))))
-    with gzip.open(os.path.join(out_dir, QUEUE_LOG_FILE), 'wt', encoding='utf-8', newline='\n') as out:
+    with _gz_writer(os.path.join(out_dir, QUEUE_LOG_FILE)) as out:
         with open(os.path.join(raw_dir, 'scrape_queue.log'), encoding='utf-8', errors='replace') as f:
             for line in f:
                 out.write(redact(line.rstrip('\r\n')) + '\n')
-    census, zero_rows = dc_ledger_census(os.path.join(raw_dir, 'washington-dc', 'pano_id_log.csv'))
-    with gzip.open(os.path.join(out_dir, DC_ZERO_ROWS_FILE), 'wt', encoding='utf-8', newline='\n') as out:
+    with open(os.path.join(raw_dir, 'washington-dc', 'log.csv'), encoding='utf-8', errors='replace') as f:
+        dc_starts = [ln.split(',', 1)[0] for ln in f if DATE_RE.match(ln) and ln[:10] >= LOG_CSV_SINCE]
+    census, zero_rows = dc_ledger_census(os.path.join(raw_dir, 'washington-dc', 'pano_id_log.csv'), dc_starts)
+    with _gz_writer(os.path.join(out_dir, DC_ZERO_ROWS_FILE)) as out:
         out.write('pano_id,downloaded,fetched_at\n')
         for r in zero_rows:
             out.write(','.join(r) + '\n')
@@ -134,7 +146,7 @@ def pack(raw_dir, out_dir):
     return cities
 
 
-def dc_ledger_census(path):
+def dc_ledger_census(path, run_starts):
     """Counts of an image ledger by verdict and fetched_at date, and its downloaded=0 rows.
 
     A two-field row (written before #129) has no stamp, and a blank stamp is a `skipped` verdict; both are
@@ -160,35 +172,49 @@ def dc_ledger_census(path):
                 zero_rows.append(fields[:3] if len(fields) >= 3 else fields + [''])
     return {'rows': sum(widths.values()), 'row_widths': {str(k): v for k, v in sorted(widths.items())},
             'verdict_by_day': dict(sorted(counts.items())),
-            'stamped_streaks': zero_streaks(stamped)}, zero_rows
+            'stamped_streaks': zero_streaks(stamped, run_starts)}, zero_rows
 
 
-def zero_streaks(stamped):
-    """Per fetched_at date: stamped rows, downloaded=0 rows, and the longest run of consecutive
-    downloaded=0 rows in file order within that date (#166 section D).
+def _instant(ts):
+    t = datetime.datetime.fromisoformat(ts.strip())
+    return t if t.tzinfo is not None else t.replace(tzinfo=datetime.timezone.utc)
 
-    Rows are (verdict, stamp) in file order. A streak never spans two dates, and any non-0 row of the same
-    date ends it - the breaker resets only on a success, and a stamped row is a success or a 0 (a skip is
-    blank-stamped and so not in this input).
 
-        >>> zero_streaks([('0', '2026-09-24 x'), ('1', '2026-09-24 x'), ('0', '2026-09-24 x'),
-        ...               ('0', '2026-09-24 x'), ('0', '2026-09-25 x')])['2026-09-24']['longest_zero_streak']
+def zero_streaks(stamped, run_starts):
+    """Per run: stamped rows, downloaded=0 rows, and the longest run of consecutive downloaded=0 rows in file
+    order within that run (#166 section D).
+
+    `stamped` is (verdict, fetched_at) in file order; `run_starts` is the city's log.csv column 1. A row
+    belongs to the latest run that started at or before its stamp, so a pass that crosses midnight stays one
+    run - grouping by calendar date would split it and under-report its streak (#208 review). A streak never
+    spans two runs, and any non-0 row of the same run ends it: the breaker resets only on a success, and a
+    stamped row is a success or a 0 (a skip is blank-stamped and so not in this input). Keyed by the run's
+    start stamp, with its schedule night beside it.
+
+        >>> zero_streaks([('0', '2026-09-24 20:10:00-07:00'), ('0', '2026-09-25 00:10:00-07:00'),
+        ...               ('0', '2026-09-25 01:20:00-07:00')],
+        ...              ['2026-09-24 20:04:00-07:00', '2026-09-25 01:11:00-07:00'])[
+        ...     '2026-09-24 20:04:00-07:00']['longest_zero_streak']
         2
     """
+    starts = sorted((_instant(t), t) for t in run_starts)
     out = {}
-    run, prev_day = 0, None
+    streak, prev_key = 0, None
     for verdict, stamp in stamped:
-        day = stamp[:10]
-        if day != prev_day:
-            run, prev_day = 0, day
-        d = out.setdefault(day, {'rows': 0, 'downloaded_0': 0, 'longest_zero_streak': 0})
+        at = _instant(stamp)
+        owners = [t for inst, t in starts if inst <= at]
+        key = owners[-1] if owners else '(before any run)'
+        if key != prev_key:
+            streak, prev_key = 0, key
+        d = out.setdefault(key, {'night': night_of(key) if owners else None, 'rows': 0, 'downloaded_0': 0,
+                                 'longest_zero_streak': 0})
         d['rows'] += 1
         if verdict == '0':
-            run += 1
+            streak += 1
             d['downloaded_0'] += 1
-            d['longest_zero_streak'] = max(d['longest_zero_streak'], run)
+            d['longest_zero_streak'] = max(d['longest_zero_streak'], streak)
         else:
-            run = 0
+            streak = 0
     return dict(sorted(out.items()))
 
 
@@ -203,6 +229,8 @@ def read_log_csv(path):
             city, rest = line.rstrip('\n').split(',', 1)
             fields = rest.split(',')
             fields += [''] * (19 - len(fields))
+            if not DATE_RE.match(fields[0]):
+                continue    # a header row, not a run
             rows[city].append({'ts': fields[0], 'fields': fields})
     return dict(rows)
 
@@ -227,14 +255,17 @@ def split_image_runs(lines):
     runs, cur = [], None
 
     def fresh():
-        return {'raise_ids': [], 'raise_kinds': collections.Counter(), 'frame': [], 'tripped': False,
+        return {'raise_ids': [], 'raise_kinds': collections.Counter(), 'frame': [], 'edge_band': [],
+                'tripped': False,
                 'no_success_line': None, 'photometa': collections.Counter()}
 
     cur = fresh()
     for line in lines:
         m = RAISE_RE.search(line)
         if m:
-            if 'frame disagreement' in line:
+            if 'black band' in line:
+                cur['edge_band'].append(m.group(1))     # #213's EdgeBandError: its own bucket, still an answer
+            elif 'frame disagreement' in line:
                 fm = FRAME_RE.search(line)
                 cur['frame'].append({'pano_id': m.group(1), 'line': line, 'kind': frame_kind(fm)})
             else:
@@ -317,6 +348,42 @@ def align_runs(runs, rows):
     return pairs, mismatch
 
 
+def shift_identification(runs, rows, max_shift=3):
+    """Whether the count check actually pins the pairing, for this city (#208 review).
+
+    A mature city with nothing new writes the same five counts night after night, so a pairing shifted by
+    one run can pass every pair and the check proves nothing about the dates. For each shift s in 1..max_shift
+    this pairs the k-th run from the end with the (k+s)-th image row from the end and finds the first pair
+    that disagrees. Returns:
+
+      * shift1_passes_fully - a one-run shift never disagrees (the check identifies nothing here);
+      * raise_runs_identified - every run with a raise lies at or beyond the first disagreement of every
+        shift, so no shifted pairing could carry that run's raises to another row. True when there is no
+        raise to date.
+    """
+    image_idx = [i for i, r in enumerate(rows) if image_row(r)]
+    rev_runs = list(reversed(runs))
+    rev_rows = list(reversed(image_idx))
+    raise_positions = [k for k, run in enumerate(rev_runs) if run['raise_ids']]
+    shift1_full, identified = False, True
+    for shift in range(1, max_shift + 1):
+        first_bad = None
+        for k, run in enumerate(rev_runs):
+            if k + shift >= len(rev_rows):
+                break
+            if run_counts(run) != row_counts(rows[rev_rows[k + shift]]):
+                first_bad = k
+                break
+        if shift == 1 and first_bad is None:
+            shift1_full = True
+        # A raise run is mis-datable under this shift when the shifted pairing reaches it (it has a row to
+        # land on) before any pair disagrees.
+        limit = len(rev_rows) - shift if first_bad is None else first_bad
+        if any(k < limit for k in raise_positions):
+            identified = False
+    return {'shift1_passes_fully': shift1_full, 'raise_runs_identified': identified}
+
+
 def night_of(ts):
     """The schedule night a log.csv stamp belongs to (local date twelve hours earlier).
 
@@ -340,7 +407,7 @@ def build_runs(city, runs, rows):
     for run, idx in pairs:
         row = rows[idx]
         raised = len(run['raise_ids'])
-        frame = len(run['frame'])
+        frame = len(run['frame']) + len(run['edge_band'])   # both are answers for images-no-success
         seed = None
         if prev_rec is not None and prev_idx == idx - 1:
             seed = prev_rec['failed'] - prev_rec['raised'] - prev_rec['frame_refused']
@@ -366,7 +433,7 @@ def build_runs(city, runs, rows):
                'era': 'post-deploy' if night_of(row['ts']) >= DEPLOY_NIGHT else 'pre-deploy',
                'raised': raised, 'raise_ids': sorted(set(run['raise_ids'])),
                'raise_kinds': dict(sorted(run['raise_kinds'].items())), 'frame_refused': frame,
-               'frame_refusals': run['frame'], 'success': run['success'], 'fallback': run['fallback'],
+               'frame_refusals': run['frame'], 'edge_band_refused': len(run['edge_band']), 'success': run['success'], 'fallback': run['fallback'],
                'failed': run['failed'], 'permanent': permanent, 'answered': answered,
                'image_minutes': minutes, 'stop': stop, 'mean_raise_seconds_upper_bound': mean_ub,
                'no_success_line': run['no_success_line'], 'photometa_lines': dict(run['photometa'])}
@@ -445,9 +512,13 @@ def queue_conditions(queue_lines):
 def frame_summary(records, scrape_lines):
     """#185 Part 1: refusals per city with distinct ids and frames, over every scrape.log line."""
     per_city = {}
+    edge_band = {}
     photometa = collections.Counter()
     for city, lines in sorted(scrape_lines.items()):
-        hits = [ln for ln in lines if 'frame disagreement' in ln]
+        hits = [ln for ln in lines if 'frame disagreement' in ln and 'black band' not in ln]
+        edge = sum(1 for ln in lines if 'frame disagreement' in ln and 'black band' in ln)
+        if edge:
+            edge_band[city] = edge
         for ln in lines:
             for key, rx in PHOTOMETA_LINE_RES.items():
                 if rx.search(ln):
@@ -466,6 +537,7 @@ def frame_summary(records, scrape_lines):
     return {'cities_scanned': len(scrape_lines),
             'lines_scanned': sum(len(v) for v in scrape_lines.values()),
             'refusal_lines': sum(c['lines'] for c in per_city.values()), 'per_city': per_city,
+            'edge_band_lines': edge_band,
             'photometa_lines': dict(sorted(photometa.items()))}
 
 
@@ -484,7 +556,10 @@ def analyze(data_dir=DATA_DIR):
         records.extend(recs)
         alignment[city] = {'scrape_log_runs': n_runs, 'log_csv_image_rows': n_rows, 'paired': len(recs),
                            'mismatch': mismatch}
+        alignment[city].update(shift_identification(split_image_runs(scrape.get(city, [])), rows.get(city, [])))
     nights = sorted({r['night'] for r in records})
+    unpaired = {c: a['log_csv_image_rows'] - a['paired'] for c, a in alignment.items()
+                if a['log_csv_image_rows'] != a['paired']}
     post = [r for r in records if r['era'] == 'post-deploy']
     fired_observed = [r for r in records if r['no_success_line'] is not None]
     dc_zero = {k.split('|', 1)[1]: v for k, v in dc['verdict_by_day'].items() if k.startswith('0|')}
@@ -496,6 +571,13 @@ def analyze(data_dir=DATA_DIR):
         'constants': {'IMAGE_NO_SUCCESS_MIN_RAISED': CURRENT_MIN_RAISED,
                       'IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS': CURRENT_MIN_MEAN_RAISE_SECONDS},
         'alignment': alignment,
+        'alignment_summary': {
+            'paired': sum(a['paired'] for a in alignment.values()),
+            'log_csv_image_rows': sum(a['log_csv_image_rows'] for a in alignment.values()),
+            'unpaired_rows': sum(unpaired.values()), 'cities_with_unpaired_rows': len(unpaired),
+            'cities_shift1_passes_fully': sorted(c for c, a in alignment.items() if a['shift1_passes_fully']),
+            'cities_with_raises_not_identified': sorted(c for c, a in alignment.items()
+                                                        if not a['raise_runs_identified'])},
         'totals': {'image_runs': len(records), 'runs_with_raises': sum(1 for r in records if r['raised']),
                    'runs_answered_unknown': sum(1 for r in records if r['answered'] is None),
                    'raise_lines': sum(r['raised'] for r in records),
@@ -560,10 +642,11 @@ def tables(result):
             r['city'], r['night'], r['era'], r['raised'], fmt(r['answered']), r['success'] + r['fallback'],
             fmt(r['image_minutes']), r['stop'] or 'none', fmt(r['mean_raise_seconds_upper_bound'], '.0f'), kinds))
     out.append('')
-    out.append('| fetched_at date | rows | `downloaded=0` | longest consecutive `downloaded=0` |')
-    out.append('|---|---|---|---|')
-    for day, s in result['dc_ledger']['stamped_streaks'].items():
-        out.append('| %s | %d | %d | %d |' % (day, s['rows'], s['downloaded_0'], s['longest_zero_streak']))
+    out.append('| Run (log.csv start) | Night | rows | `downloaded=0` | longest consecutive `downloaded=0` |')
+    out.append('|---|---|---|---|---|')
+    for run, s in result['dc_ledger']['stamped_streaks'].items():
+        out.append('| %s | %s | %d | %d | %d |' % (run, fmt(s['night']), s['rows'], s['downloaded_0'],
+                                                 s['longest_zero_streak']))
     return '\n'.join(out)
 
 
