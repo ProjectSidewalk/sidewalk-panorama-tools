@@ -125,6 +125,15 @@ def cell_mask(cells, shape=(GH, GW)):
     return mask
 
 
+@pytest.fixture(autouse=True)
+def beta_one(crop_runner, monkeypatch):
+    """Every test here is about geometry, and the synthetic scenes are exact at beta 1, so both pose
+    records' betas are pinned to 1.0 whatever the shipped table says (#212 sets them below 1). A test about
+    beta itself sets its own value on top of this."""
+    for source in (pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ):
+        monkeypatch.setitem(crop_runner.TILT_BETA_BY_POSE_SOURCE, source, 1.0)
+
+
 def estimate_for(crop_runner, path, x, y):
     return crop_runner.depth_backed_distance(x, y, W, H, path)
 
@@ -138,6 +147,22 @@ def blend_for(crop_runner, y):
 # ---------------------------------------------------------------------------
 
 class TestKnownGeometry:
+    @pytest.mark.parametrize('band', [(3.0, 5.0), (5.0, 8.0), (8.0, 12.0), (12.0, 20.0), (20.0, 40.0)])
+    def test_off_cell_centre_labels_are_exact_on_a_perfect_plane(self, crop_runner, tmp_path, band):
+        """#211 review should-fix 2: a cell's median depth is the ray length at the CELL's centre, up to
+        half a 0.7-degree cell from the label, which was up to ~11% of distance at 3-5 degrees. The label's
+        own ray is intersected with the chosen plane instead, so sub-cell position costs nothing."""
+        path = write_scene(tmp_path, 'abground0001', [ground()])
+        rng = np.random.default_rng(180)
+        for _ in range(40):
+            depression = rng.uniform(*band)
+            x, y = stored_pixel(rng.uniform(-180.0, 180.0), depression)
+            est = estimate_for(crop_runner, path, x, y)
+            assert est.source == crop_runner.DISTANCE_SOURCE_DEPTH
+            expected = CAMERA_H / math.tan(math.radians(crop_runner.label_depression_deg(y, H)))
+            assert abs(est.distance_m - expected) < 0.01 * expected
+            assert est.distance_m == pytest.approx(expected, rel=1e-4)
+
     @pytest.mark.parametrize('row', [140, 150, 170, 200, 230])
     def test_a_level_ground_plane_is_h_over_tan_depression(self, crop_runner, tmp_path, row):
         """At a cell centre on a level rig the 3x3 median is the centre row's value exactly, so the
@@ -183,8 +208,8 @@ class TestTheLookupIsAtTheRigPixel:
         expected = CAMERA_H / math.tan(math.radians(depression))
         est = estimate_for(crop_runner, path, x, y)
         assert est.source == crop_runner.DISTANCE_SOURCE_DEPTH
-        # Half a 0.35-degree cell of quantisation is about 1% here.
-        assert est.distance_m == pytest.approx(expected, rel=0.015)
+        # Exact: the label's own ray meets the plane (no cell quantisation, #211 review should-fix 2).
+        assert est.distance_m == pytest.approx(expected, rel=1e-4)
 
         # The test's own power: the same artifact sampled at the STORED pixel is far outside that band.
         with np.load(path) as art:
@@ -262,6 +287,21 @@ class TestFallbacks:
         x, y = cell_centre_pixel(200, 5)
         assert_fallback(crop_runner, estimate_for(crop_runner, path, x, y), y, 'unreadable')
 
+    @pytest.mark.parametrize('indices', ['float-nan', 'strings'])
+    def test_non_integer_plane_indices_are_unreadable_not_a_raise(self, crop_runner, tmp_path, indices):
+        """#211 review should-fix 1: the shape checks ran outside the try, so a float raster holding a NaN
+        raised out of a loader documented never to raise."""
+        path = write_scene(tmp_path, 'abground0001', [ground()])
+        if indices == 'float-nan':
+            raster = np.ones((GH, GW), dtype=np.float64)
+            raster[3, 3] = np.nan
+        else:
+            raster = np.full((GH, GW), 'a')
+        resave(path, plane_indices=raster)
+        assert crop_runner.load_depth_grid(path) == (None, 'unreadable')
+        x, y = cell_centre_pixel(200, 5)
+        assert_fallback(crop_runner, estimate_for(crop_runner, path, x, y), y, 'unreadable')
+
     def test_a_pre_v2_artifact_is_old_format(self, crop_runner, tmp_path):
         """No format_version: x-mirrored (#58), so its columns are the wrong ones."""
         path = write_scene(tmp_path, 'abground0001', [ground()])
@@ -311,6 +351,43 @@ class TestFallbacks:
         assert est.source == source
         if source == 'blend':
             assert_fallback(crop_runner, est, y, 'no_plane')
+
+    @pytest.mark.parametrize('row, reason', [(GH // 2 - 1, 'sky'), (GH // 2, 'no_plane')])
+    def test_the_horizon_row_splits_sky_from_no_plane(self, crop_runner, tmp_path, row, reason):
+        """Rows before (h + 1) // 2 point up (gsv.ground_plane_from_artifact's split): the last of them is
+        sky, the first after it is not."""
+        path = write_scene(tmp_path, 'abempty00001', [ground(mask=np.zeros((GH, GW), dtype=bool))])
+        x, y = cell_centre_pixel(row, 40)
+        assert_fallback(crop_runner, estimate_for(crop_runner, path, x, y), y, reason)
+
+    def test_the_centre_cells_plane_wins_over_the_most_common(self, crop_runner, tmp_path):
+        """Decision 6: the plane is the centre cell's when it has one. Here the centre alone is a wall and
+        its eight neighbours are ground - the most common plane would say depth."""
+        row, col = 210, 256
+        centre = cell_mask([(row, col)])
+        path = write_scene(tmp_path, 'abcentre0001', [ground(mask=~centre), facade(3.0, mask=centre)])
+        x, y = cell_centre_pixel(row, col)
+        assert_fallback(crop_runner, estimate_for(crop_runner, path, x, y), y, 'facade')
+
+    def test_an_empty_centre_takes_the_lowest_index_on_a_tie(self, crop_runner, tmp_path):
+        """Decision 6's tie-break: four ground cells (plane 1) against four wall cells (plane 2), centre empty:
+        the lower index, ground, so depth rather than facade."""
+        row, col = 210, 256
+        top = cell_mask([(row - 1, col - 1), (row - 1, col), (row - 1, col + 1), (row, col - 1)])
+        bottom = cell_mask([(row + 1, col - 1), (row + 1, col), (row + 1, col + 1), (row, col + 1)])
+        path = write_scene(tmp_path, 'abtie0000001', [ground(mask=top), facade(3.0, mask=bottom)])
+        x, y = cell_centre_pixel(row, col)
+        assert estimate_for(crop_runner, path, x, y).source == 'depth'
+
+    def test_at_the_top_row_the_centre_is_row_zero(self, crop_runner, tmp_path):
+        """At row 0 the neighbourhood is rows 0 and 1, so the centre cell is the first row of it, not the
+        second. The centre (0, col) is a wall; every other cell a ceiling."""
+        col = 256
+        centre = cell_mask([(0, col)])
+        ceiling = (np.array([0.0, 0.0, 1.0]), -5.0, ~centre)
+        path = write_scene(tmp_path, 'abtoprow0001', [ceiling, facade(3.0, mask=centre)])
+        x, y = cell_centre_pixel(0, col)
+        assert estimate_for(crop_runner, path, x, y).reason == 'facade'
 
     def test_a_facade_is_facade(self, crop_runner, tmp_path):
         """A wall 8 m ahead hides the ground the label's ray would reach 28 m out."""
@@ -545,6 +622,38 @@ class TestInTheCropLoop:
         counts = run(crop_runner, labels, store, out, sizing_rule='v3-depth')
         assert counts['skipped_existing'] == 6 and calls == []
 
+    def test_a_corrupt_artifact_counts_every_crop_on_its_pano_as_blend(self, crop_runner, tmp_path, capsys):
+        """#211 review should-fix 1, end to end: float plane indices with a NaN. Before the fix the first
+        label was an error and the rest were counted distance_depth while sized from the blend."""
+        store, labels = mixed_store(tmp_path)
+        path = str(store / 'ab' / 'abground0001.depth.npz')
+        raster = np.ones((GH, GW), dtype=np.float64)
+        raster[0, 0] = np.nan
+        resave(path, plane_indices=raster)
+        counts = run(crop_runner, labels[:3], store, tmp_path / 'crops', sizing_rule='v3-depth')
+        assert counts['errors'] == 0 and counts['success'] == 3
+        assert distance_counts(crop_runner, counts) == {'distance_blend_unreadable': 3}
+        assert 'sized from the depth artifact, 3 from the blend fallback (unreadable 3)' in capsys.readouterr().out
+
+    def test_a_loader_that_raises_is_unreadable_for_every_label_on_the_pano(self, crop_runner, tmp_path,
+                                                                           monkeypatch):
+        """Belt and braces: whatever the loader does, a blend crop is never counted as depth."""
+        store, labels = mixed_store(tmp_path)
+
+        def boom(path):
+            raise RuntimeError('bug')
+
+        monkeypatch.setattr(crop_runner, 'load_depth_grid', boom)
+        counts = run(crop_runner, labels[:2], store, tmp_path / 'crops', sizing_rule='v3-depth')
+        assert counts['success'] == 2 and counts['errors'] == 0
+        assert distance_counts(crop_runner, counts) == {'distance_blend_unreadable': 2}
+
+    def test_no_grid_without_a_reason_is_refused_not_counted(self, crop_runner):
+        """A blend estimate must carry its reason, or the loop could not file it: a caller that passes neither
+        a grid nor a reason gets a ValueError (one counted error in the loop), never an unlabelled crop."""
+        with pytest.raises(ValueError):
+            crop_runner.label_distance(100, 700, W, H, None, None)
+
     def test_a_raise_in_the_lookup_is_a_counted_error_and_the_run_goes_on(self, crop_runner, tmp_path,
                                                                          monkeypatch):
         store, labels = mixed_store(tmp_path)
@@ -614,6 +723,21 @@ class TestInTheCropLoop:
         capsys.readouterr()
         run(crop_runner, labels, store, out, sizing_rule='v3-depth')
         assert 'v3_depth_lookup_beta=1.0 and this run uses 0.9' in capsys.readouterr().out
+
+    @pytest.mark.parametrize('rule', ['v2', 'v3'])
+    def test_a_v3_depth_constant_never_warns_another_rule(self, crop_runner, tmp_path, capsys, monkeypatch,
+                                                          rule):
+        """#211 review R18: the v3_depth_* keys are recorded at top level for every rule, but only v3-depth
+        compares them, so a v2 or v3 store sees no same-rule warning when one moves (#212 moves the beta)."""
+        store, labels = mixed_store(tmp_path)
+        out = tmp_path / 'crops'
+        run(crop_runner, labels[:2], store, out, sizing_rule=rule)
+        monkeypatch.setitem(crop_runner.TILT_BETA_BY_POSE_SOURCE, pano_pose.POSE_SOURCE_NPZ, 0.5)
+        monkeypatch.setattr(crop_runner, 'V3_DEPTH_MIN_M', 0.7)
+        capsys.readouterr()
+        run(crop_runner, labels, store, out, sizing_rule=rule)
+        assert 'Crop store' not in capsys.readouterr().out
+        assert not [key for key in crop_runner.RULE_MARKER_CONSTANT_KEYS[rule] if key.startswith('v3_depth_')]
 
     def test_main_accepts_the_rule(self, crop_runner, tmp_path):
         store, labels = mixed_store(tmp_path)
