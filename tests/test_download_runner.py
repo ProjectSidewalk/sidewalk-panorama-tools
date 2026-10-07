@@ -3484,7 +3484,10 @@ class TestFrameRefusalsAreCountedAndFailTheNight:
     summary - not in log.csv (Q1). Counted at the image loop's catch site, so every arm that raises
     FrameDisagreementError (photometa, the probe, #181's in-grid check) is counted by the same line."""
 
-    LINE = 'refused for a frame disagreement'
+    # Deliberately NOT the phrase "frame disagreement": `grep "frame disagreement" scrape.log` counts
+    # refusals (docs/ops.md), so only the per-pano lines may carry it (#207 review, finding 1).
+    LINE = 'refused (frame-disagreement condition)'
+    PHRASE = 'frame disagreement'
 
     def refused(self, n):
         return {'refusedPano%03d' % i: downloaders.gsv.FrameDisagreementError(
@@ -3500,7 +3503,7 @@ class TestFrameRefusalsAreCountedAndFailTheNight:
         run summary, the condition, and neither refused pano in the ledger."""
         verdicts = dict(self.refused(2), okPano=downloaders.DownloadResult.success)
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.DEBUG):
             storage, code = call_main_scripted(monkeypatch, tmp_path, verdicts)
 
         assert code == 0, 'a condition fails the night through the queue, never through the runner exit code'
@@ -3508,11 +3511,20 @@ class TestFrameRefusalsAreCountedAndFailTheNight:
         assert summary['frame_refusals'] == 2
         conditions = summary_conditions(tmp_path)
         assert list(conditions) == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
-        assert conditions[DownloadRunner.CONDITION_FRAME_DISAGREEMENT].startswith('2 pano(s) refused')
+        # The whole detail: the count, then the FIRST refusal's own text, which names its pano and its arm.
+        # The loop shuffles, so either refused pano may be first - but it must be one whole exception text.
+        detail = conditions[DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
+        assert detail in {'2 pano(s) refused; first: %s' % e for e in self.refused(2).values()}, detail
+        # Pinned to the order the loop actually attempted them, so a "last refusal wins" detail fails too.
+        first_attempted = next(r.getMessage().split()[4] for r in caplog.records
+                               if r.getMessage().startswith('IMAGEDOWNLOAD: Failed to download pano refusedPano'))
+        assert first_attempted in detail
         out_lines = [l for l in capsys.readouterr().out.splitlines() if self.LINE in l]
         assert len(out_lines) == 1 and 'WARNING - 2 pano(s)' in out_lines[0]
         log_lines = [r.getMessage() for r in caplog.records if self.LINE in r.getMessage()]
         assert len(log_lines) == 1 and '2 pano(s)' in log_lines[0]
+        # The documented ops grep counts exactly the refused panos, end-of-phase line included.
+        assert sum(self.PHRASE in r.getMessage() for r in caplog.records) == 2
         ledger = (storage / 'pano_id_log.csv').read_text()
         assert 'okPano,1,' in ledger
         assert 'refusedPano' not in ledger
@@ -3539,6 +3551,28 @@ class TestFrameRefusalsAreCountedAndFailTheNight:
         assert 'frame_refusals' not in summary
         assert summary['conditions'] == []
         assert self.LINE not in capsys.readouterr().out
+
+    def test_a_subclass_of_the_refusal_is_counted(self, monkeypatch, tmp_path):
+        """isinstance, not an exact type check: a refusal arm may raise a subclass, and a "tidy-up" to
+        `type(e) is FrameDisagreementError` would silently stop counting it (#207 review, finding 2)."""
+        class NarrowerRefusal(downloaders.gsv.FrameDisagreementError):
+            pass
+
+        call_main_scripted(monkeypatch, tmp_path, {
+            'okPano': downloaders.DownloadResult.success,
+            'subPano': NarrowerRefusal('pano subPano: frame disagreement: a narrower arm')})
+
+        assert self.summary(tmp_path)['frame_refusals'] == 1
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
+
+    def test_a_refusal_is_not_counted_as_a_raise(self, monkeypatch, tmp_path):
+        """With the minimum at one, a lone refusal counted as a raise would also report images-no-success,
+        which points at the network, the store or a bug (#207 review, finding 4)."""
+        monkeypatch.setattr(DownloadRunner, 'IMAGE_NO_SUCCESS_MIN_RAISED', 1)
+
+        call_main_scripted(monkeypatch, tmp_path, self.refused(1))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
 
     def test_the_count_keys_on_the_exception_type_not_its_text(self, monkeypatch, tmp_path):
         """A transient whose message happens to mention a frame disagreement is not a refusal: the ops grep
