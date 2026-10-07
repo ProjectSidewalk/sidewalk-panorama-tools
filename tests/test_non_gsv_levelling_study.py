@@ -92,8 +92,18 @@ class TestLevellingTest:
     def test_the_pitch_sign_is_pinned_too(self):
         """pers:pitch is positive-up; levelling with it read as streetlevel's (nose-down) sign doubles the tilt."""
         img = render_poles(W, H, 10.0, 0.0)
-        assert min(ngl.levelling_test(img, -10.0, 0.0).values()) < 0.5
-        assert min(ngl.levelling_test(img, 10.0, 0.0).values()) > 15.0
+        right = ngl.levelling_test(img, -10.0, 0.0)     # pers:pitch -10 = nose down 10 = streetlevel +10
+        assert right['+1'] < 0.5 and right['-1'] < 0.5
+        assert right['pitch-flipped +1'] > 15.0 and right['pitch-flipped -1'] > 15.0
+        wrong = ngl.levelling_test(img, 10.0, 0.0)      # a positive-up 10 would be nose UP
+        assert wrong['+1'] > 15.0 and wrong['-1'] > 15.0
+        assert wrong['pitch-flipped +1'] < 0.5           # ...which only the flipped reading undoes
+
+    def test_the_four_readings_are_the_four_sign_combinations(self):
+        assert ngl.LEVEL_KEYS == {'+1': (-1.0, 1.0), '-1': (-1.0, -1.0),
+                                  'pitch-flipped +1': (1.0, 1.0), 'pitch-flipped -1': (1.0, -1.0)}
+        assert ngl.pers_to_streetlevel(-12.0, 3.0, 1.0) == (12.0, 3.0)
+        assert ngl.pers_to_streetlevel(-12.0, 3.0, -1.0, pitch_sign=1.0) == (-12.0, -3.0)
 
     def test_a_level_picture_gets_worse_under_both_signs(self):
         out = ngl.levelling_test(render_poles(W, H, 0.0, 0.0), -8.0, 4.0)
@@ -134,6 +144,83 @@ class TestPooledSlopes:
 
     def test_too_few_posed_pictures_is_undefined(self):
         assert ngl.pooled_slopes(self._rows(1.0)[:2]) is None
+
+
+class TestAggregation:
+    """analyze()'s aggregation on synthetic rows: the parts the committed artifact alone cannot pin."""
+
+    def test_the_roll_sign_is_the_one_that_leaves_the_least(self):
+        lev = {'+1': {'amp_after_median': 0.4}, '-1': {'amp_after_median': 3.6},
+               'pitch-flipped +1': {'amp_after_median': 0.1}}
+        assert ngl.choose_roll_sign(lev) == '+1'        # min, not max; the pitch-flipped readings never compete
+        lev['-1']['amp_after_median'] = 0.2
+        assert ngl.choose_roll_sign(lev) == '-1'
+        assert ngl.choose_roll_sign({'+1': {'amp_after_median': None}}) is None
+
+    def test_the_summary_reads_medians_not_maxima(self):
+        posed = [{'amp': a, 'amp_levelled': {'+1': b, '-1': a}} for a, b in ((1.0, 0.1), (2.0, 0.2), (9.0, 5.0))]
+        lev = ngl.summarise_levelling(posed)
+        assert lev['+1']['amp_before_median'] == 2.0 and lev['+1']['amp_after_median'] == 0.2
+        assert lev['+1']['amp_after_max'] == 5.0
+        assert lev['+1']['flattened'] == 2 and lev['+1']['lowered'] == 3
+        assert lev['-1']['lowered'] == 0
+        assert lev['pitch-flipped +1']['n'] == 0 and lev['pitch-flipped +1']['amp_after_median'] is None
+
+    def _row(self, pp, pr, ep, er, ps_p=None, ps_r=None):
+        return {'pers_pitch': pp, 'pers_roll': pr, 'exif_pose_pitch': ep, 'exif_pose_roll': er,
+                'ps_camera_pitch': pp if ps_p is None else ps_p, 'ps_camera_roll': pr if ps_r is None else ps_r}
+
+    def test_the_stac_exif_counts(self):
+        rows = [self._row(-5.0, 2.0, 0.0, 0.0),          # explicit 0.0 in the EXIF: counted
+                self._row(-5.0, 2.0, None, None),        # absent from the EXIF: counted too
+                self._row(-5.0, 2.0, -5.0, 2.0),         # the camera wrote it: not counted
+                self._row(0.0, 0.0, 0.0, 0.0),           # a 0/0 STAC pose is not non-zero
+                self._row(-3.0, 1.0, 0.0, 0.0, ps_p=0.0),  # PS disagrees with STAC
+                self._row(None, None, None, None)]
+        c = ngl.stac_exif_counts(rows)
+        assert c == {'stac_pose_present': 5, 'stac_pose_nonzero': 4, 'stac_pose_equals_ps_pose': 4,
+                     'stac_nonzero_but_exif_pose_zero_or_absent': 3}
+
+    def test_labelled_tilt_amplitudes_are_the_labelled_posed_ones(self):
+        panos = [{'camera_pitch': -3.0, 'camera_roll': 4.0, 'has_labels': True},     # 5
+                 {'camera_pitch': -12.0, 'camera_roll': 5.0, 'has_labels': True},    # 13
+                 {'camera_pitch': -1.0, 'camera_roll': 0.0, 'has_labels': True},     # 1
+                 {'camera_pitch': -20.0, 'camera_roll': 0.0, 'has_labels': False},   # unlabelled
+                 {'camera_pitch': 0, 'camera_roll': 0.0, 'has_labels': True},        # pose-zero
+                 {'camera_pitch': 0, 'has_labels': True}]                            # pose-absent
+        t = ngl.labelled_tilt_amplitudes(panos)
+        assert t['n'] == 3 and t['amplitudes_deg'] == [1.0, 5.0, 13.0]
+        assert t['median_deg'] == 5.0 and t['max_deg'] == 13.0
+        assert t['at_least_10_deg'] == 1 and t['at_least_3_deg'] == 2
+
+    @pytest.mark.parametrize('roll_sign', [1.0, -1.0])
+    def test_horizon_rows_follow_the_roll_sign(self, roll_sign):
+        """Streetlevel roll > 0 = left side up, so the gravity horizon sits ABOVE mid-height at b = +90 deg
+        (x = 3w/4) and below it at b = -90 deg. The figure's red line depends on this."""
+        w, h = 720, 360
+        ys = ngl.horizon_rows(w, h, 0.0, 5.0, roll_sign)
+        expect = (0.5 - roll_sign * 5.0 / 180.0) * h
+        assert ys[3 * w // 4] == pytest.approx(expect, abs=0.3)
+        assert ys[w // 4] == pytest.approx(h - expect, abs=0.3)
+
+    def test_horizon_rows_follow_the_pitch_sign(self):
+        """pers:pitch -10 is nose down: the horizon straight ahead (x = w/2) rises above mid-height."""
+        w, h = 720, 360
+        ys = ngl.horizon_rows(w, h, -10.0, 0.0, 1.0)
+        assert ys[w // 2] == pytest.approx((0.5 - 10.0 / 180.0) * h, abs=0.3)
+
+
+class TestImagePinning:
+    def test_a_matching_image_passes_and_any_change_is_refused(self, tmp_path):
+        p = tmp_path / 'x.sd.jpg'
+        p.write_bytes(b'\xff\xd8 pixels \xff\xd9')
+        entry = dict({'pano_id': 'x'}, **ngl.image_record(str(p)))
+        ngl.verify_image(str(p), entry)
+        p.write_bytes(b'\xff\xd8 pixelz \xff\xd9')          # same size, different bytes
+        with pytest.raises(ValueError):
+            ngl.verify_image(str(p), entry)
+        with pytest.raises(ValueError):
+            ngl.verify_image(str(p), {'pano_id': 'x'})       # no recorded hash is refused, not waved through
 
 
 # ---------------------------------------------------------------------------------------- the readers
@@ -222,6 +309,13 @@ class TestTheReportMatchesTheArtifact:
             out['lev %s after' % sign] = '%.2f' % v['amp_after_median']
             out['lev %s after max' % sign] = '%.2f' % v['amp_after_max']
             out['lev %s flattened' % sign] = '%d of %d' % (v['flattened'], v['n'])
+            out['lev %s lowered' % sign] = '%d of %d' % (v['lowered'], v['n'])
+        t = artifact['bayonne_labelled_posed_tilt']
+        out['tilt n'] = str(t['n'])
+        out['tilt median'] = '%.1f' % t['median_deg']
+        out['tilt max'] = '%.1f' % t['max_deg']
+        out['tilt >= 10'] = '%d of %d' % (t['at_least_10_deg'], t['n'])
+        out['tilt >= 3'] = '%d of %d' % (t['at_least_3_deg'], t['n'])
         for k, v in amp.items():
             out['amp %s n' % k] = str(v['n'])
             out['amp %s median' % k] = '%.2f' % v['median']
@@ -252,3 +346,34 @@ class TestTheReportMatchesTheArtifact:
         assert lev['+1']['flattened'] > lev['+1']['n'] / 2 > lev['-1']['flattened']
         assert lev['+1']['amp_after_median'] < 0.25 * lev['+1']['amp_before_median']
         assert px['slopes_posed']['k_pitch_ci95'][0] > 0 and px['slopes_posed']['k_roll_ci95'][0] > 0
+        assert lev['pitch-flipped +1']['flattened'] == 0 and lev['pitch-flipped -1']['flattened'] == 0
+
+
+class TestTheCommittedDataRederives:
+    """No pixels needed: the committed per-picture rows and raw files reproduce the committed summaries.
+    A change to the aggregation that the artifact was not regenerated under fails here, in CI."""
+
+    def test_the_panoramax_block_rederives_from_its_own_rows(self, artifact):
+        px = artifact['panoramax']
+        again = json.loads(json.dumps(ngl.aggregate(px['pictures'])))
+        assert again == {k: v for k, v in px.items() if k != 'pictures'}
+
+    def test_the_labelled_tilt_and_city_summaries_rederive_from_the_raw_adminapi(self, artifact):
+        raw = {c: ngl._read_gz(os.path.join(ngl.RAW_DIR, 'adminapi-panos-%s.json.gz' % c)) for c in ngl.CITIES}
+        assert json.loads(json.dumps(ngl.labelled_tilt_amplitudes(raw['bayonne-fr']))) ==             artifact['bayonne_labelled_posed_tilt']
+        for c, panos in raw.items():
+            assert json.loads(json.dumps(ngl.ps_pose_summary(panos))) == artifact['ps_pose_by_city'][c]
+
+    def test_the_stac_columns_rederive_from_the_raw_items(self, artifact):
+        items = ngl._read_gz(os.path.join(ngl.RAW_DIR, 'panoramax-items.json.gz'))
+        for p in artifact['panoramax']['pictures']:
+            pp, pr, py = ngl.stac_pose(items[p['pano_id']])
+            ep, er = ngl.exif_pose(items[p['pano_id']])
+            assert (p['pers_pitch'], p['pers_roll'], p['pers_yaw'], p['exif_pose_pitch'], p['exif_pose_roll']) ==                 (pp, pr, py, ep, er)
+
+    def test_every_committed_image_is_the_one_recorded(self):
+        with open(os.path.join(ngl.RAW_DIR, 'sample.json'), encoding='utf-8') as f:
+            sample = json.load(f)['sample']
+        assert len(sample) == 24
+        for entry in sample:
+            ngl.verify_image(os.path.join(ngl.IMAGE_DIR, '%s.sd.jpg' % entry['pano_id']), entry)
