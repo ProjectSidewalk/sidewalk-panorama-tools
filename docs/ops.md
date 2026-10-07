@@ -294,9 +294,9 @@ permanent.** Transient failures leave no row and retry automatically on the next
 
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano. A permanent verdict, one per source:
-  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200), or unknowable dimensions. No
-    breaker entry, deliberately: a retired GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4%
-    of a large city's rows.
+  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200), or unknowable dimensions. Its
+    breaker entry is 50, not 3 (#166): a retired GSV pano is a permanent verdict and an ordinary one, at
+    7.9–8.4% of a large city's rows, so the bound is 49 false rows per city per night.
   * **Mapillary** — a 404, or a record that names the image and carries no original-resolution rendition.
     No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured 2026-09-06 — so the
     record with no rendition is the one that fires in practice, and three of them in a row stop the run
@@ -814,14 +814,24 @@ and the exit code are where this lives.
 
 **GSV's threshold is 50, not 3** ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)):
 7.9–8.4% of a large GSV city's ledger is a permanent verdict (retired imagery), so three in a row is routine
-there rather than evidence — about every 1,700 panos at 8.4%, and every few panos in an old-era backlog that
-runs 80–90% retired. What the entry guards is the cbk endpoint answering black 200s across the board, which
-would otherwise write off the city's whole unattempted GSV backlog in one night. A GSV trip prints the same
-two lines with `source gsv` and costs **49** false rows rather than two. Before deleting them, decide whether
-it was that outage or a natural streak in a heavily retired backlog: an outage shows up in every GSV city
-that night, and in an outage a sample of the ids still opens in Street View (they were not retired). A
-natural streak's rows are true
+there rather than evidence — about every 1,700 panos at 8.4%, and far more often in a first-night backfill
+or a re-admitted backlog, where the retired share is that backlog's own (unmeasured; it could be much higher
+than the fleet's ~52% for labelled panos). What the entry guards is the cbk endpoint answering black 200s
+across the board, which would otherwise write off the city's whole unattempted GSV backlog in one night. A
+GSV trip prints the same two lines with `source gsv`, and its summary points here instead of at credentials
+(cbk tiles have none). It costs **49 false rows per city per night**, not two — and the bound is per city
+and per night, not cumulative: a fleet-wide outage costs 49 in every GSV city that runs, and the same again
+every night until it is fixed. Before deleting anything, decide whether it was that outage or a natural
+streak in a heavily retired backlog: an outage shows up in every GSV city that night, and in an outage a
+sample of the ids still opens in Street View (they were not retired). A natural streak's rows are true
 verdicts and stay; report it, because the 50 is provisional and is re-sized from exactly that measurement.
+For an outage, the night's GSV write-offs are the `0` rows with 22-character ids stamped that night:
+
+```
+awk -F, '$2 == 0 && length($1) == 22 && $3 ~ /^2026-10-06/' pano_id_log.csv
+```
+
+Delete those rows (the withheld 50th was never written) and the next run re-attempts them.
 (GSV also has a different breaker, for Google refusing the host:
 [When Google pushes back on the image phase](#when-google-pushes-back-on-the-image-phase).) The
 table is per source, in `DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`; a source with no entry is

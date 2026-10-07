@@ -519,12 +519,12 @@ class ImageLedger:
 # if the cbk endpoint ever answered black 200s across the board, every unattempted GSV pano in the city
 # would be written off in one night with exit 0 and no mail. The push-back breaker below cannot see that: it
 # counts refusals, and a black 200 is not one. Why 50 and not 3: a retired GSV pano is an ordinary verdict
-# (7.9-8.4% of the mature ledgers above, ~52% of labelled panos fleet-wide), and a backlog of old-era panos
-# can run 80-90% retired. The candidates are shuffled (below), so a natural run is a run of independent
+# (7.9-8.4% of the mature ledgers above, ~52% of labelled panos fleet-wide), and a first-night backfill's
+# share is its own - unmeasured, so ASSUME it could be 80-90%. The candidates are shuffled (below), so a natural run is a run of independent
 # draws, and the expected panos between runs of k at retired share p is (1 - p^k) / ((1 - p) p^k): at 0.8, a
 # run of 3 every ~5 panos but a run of 50 every ~350k; at 0.9, every ~1,900 (30 would be every ~230, which
 # is why not the issue's 30). A wholesale black-200 outage still trips within 50 panos on its first night.
-# The cost of a true trip is 49 false rows rather than Mapillary's 2, bounded and filterable by fetched_at.
+# The cost of a true trip is 49 false rows per city per night rather than Mapillary's 2, filterable by fetched_at.
 # PROVISIONAL: the value is to be re-set from a fleet measurement (the longest natural run of consecutive
 # GSV downloaded=0 verdicts per city per night), and this line is the one to change.
 GSV_MAX_CONSECUTIVE_PERMANENT = 50
