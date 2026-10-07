@@ -55,7 +55,7 @@ python3 migrate_depth_artifacts.py <storage-dir> [--dry-run]
 # One-off: re-admit the downloaded=0 rows written for dimensionless GSV panos before #184 (DC: 1,349 on
 # 2026-09-24/25). Dry run by default; a row goes only if it is a 0 on a named --date AND its pano has no
 # width/height in the current list. --apply takes the queue lock, keeps a backup, never touches imagery.
-python3 readmit_dimless_writeoffs.py <storage-dir> (--host <fqdn> | -c <csv>) --date YYYY-MM-DD [--date ...] [--apply]
+.venv/bin/python readmit_dimless_writeoffs.py <storage-dir> (--host <fqdn> | -c <csv>) --date YYYY-MM-DD [--date ...] [--apply]
 
 # One-off, move-only migrator for a pre-#159 flat crop store into <crop-dir>/<city>/ (#159). Never replaces a
 # file: a collision is listed and both are left. Exits 0 done / 1 anything left in place / 2 usage / 3 refused.

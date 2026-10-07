@@ -756,14 +756,16 @@ photometa:
 
 | Photometa says | What happens | Requests | Ledger |
 |---|---|---|---|
-| the served levels, 512 px tiles | the top level **is** the frame: fetched natively at the top zoom and saved at Google's served size. The [#121](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/121) width tripwire runs on that width | 1 photometa + the tiles | `1` |
+| the served levels, 512 px tiles | the top level **is** the frame, saved at Google's served size. The [#121](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/121) width tripwire runs on that width | 1 photometa + the tiles | `1` |
+| the served levels, but the top level's own tile grid is not one of them (a pyramid cut short at the bottom: the stitcher derives its zoom from the width, so it would fetch the top-left quarter and upscale it) | refused as a `frame disagreement`, the same `choose_zoom` check the dimensioned arm runs | 1 | none, retried |
 | the served levels, other tiles | refused as a `frame disagreement`, as for any pano | 1 | none, retried |
-| not found | the zoom probe runs, as for any pano. Two black 200 tiles are the permanent verdict; imagery without a frame is a `frame disagreement` (the probe cannot say how wide the pano is) | 1 + 2 | `0`, or none |
+| not found | the zoom probe runs, as for any pano. Two black 200 tiles are the permanent verdict. Imagery without a frame is `FrameUnknownError`, a transient - **not** a `frame disagreement`: "not found" says nothing about the frame, there is no app frame to disagree with, and nothing on the app side could fix it | 1 + 2 | `0`, or none, retried |
 | nothing: a fresh block latch, given up for the run, failed or refused | `FrameUnknownError`, a transient. The probe is not sent, since it cannot supply a frame | 0, or the 1 that failed | none, retried |
 
 Each such pano leaves one INFO line in `scrape.log` (`frame from photometa: WxH at zoom Z`), and the image
 phase ends with a count on both channels: `N GSV pano(s) took their frame from photometa ...; M GSV pano(s)
-had no frame tonight (photometa unanswered) and retry next run`. A frameless pano raises, so it counts toward
+had no frame tonight (photometa unanswered) and retry next run` - the second count includes the "not found"
+but imagery case. A frameless pano raises, so it counts toward
 `images-no-success`; a `frame disagreement` is Google answering and does not. `refetch_panos.py` is unchanged:
 it works from stored files, which always have dimensions, and `resolve_zoom_and_dims` still returns `None` for
 a record without them, at zero requests.

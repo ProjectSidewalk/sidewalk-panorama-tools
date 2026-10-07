@@ -150,3 +150,72 @@ def test_a_date_is_required(tmp_path, store):
     with pytest.raises(SystemExit) as exited:
         readmit.main([str(store), '-c', pano_csv(tmp_path)])
     assert exited.value.code == 2
+
+
+# --- #216 review N1: the three behaviours a mutant survived ---------------------------------------------------
+
+def test_a_row_appended_after_the_dry_run_read_survives_the_apply(tmp_path, store, monkeypatch):
+    """R5: the ledger is re-read under the lock. A nightly run that appended a row between the first read and
+    the lock must not lose it to a rewrite from the stale copy."""
+    appended = 'lateRowPanoAAAAAAAAAAA,1,2026-10-07 02:00:00.000000-07:00\n'
+    real_lock = scrape_queue.exclusive_lock
+
+    def lock_after_an_append(path):
+        with open(store / 'pano_id_log.csv', 'a', newline='') as f:
+            f.write(appended)
+        return real_lock(path)
+
+    monkeypatch.setattr(scrape_queue, 'exclusive_lock', lock_after_an_append)
+
+    assert run(tmp_path, store, '--apply') == 0
+
+    kept = (store / 'pano_id_log.csv').read_text()
+    assert kept.endswith(appended)
+    assert DIMLESS_A not in kept and DIMLESS_B not in kept
+
+
+def test_one_missing_dimension_is_enough(tmp_path, store):
+    """R8: a record with a width and no height (or the reverse) has no frame either."""
+    csv_path = tmp_path / 'one-dim.csv'
+    csv_path.write_text(HEADER + f'{DIMLESS_A},16384,,38.9,-77.0,180.0,0.0,gsv,True\n'
+                        + f'{DIMLESS_B},,8192,38.9,-77.0,180.0,0.0,gsv,True\n')
+
+    assert readmit.main([str(store), '-c', str(csv_path), '--date', '2026-09-24', '--date', '2026-09-25',
+                         '--lock', str(tmp_path / 'queue.lock'), '--apply']) == 0
+
+    kept = (store / 'pano_id_log.csv').read_text()
+    assert DIMLESS_A not in kept and DIMLESS_B not in kept
+
+
+def test_apply_takes_the_queue_lock_at_the_path_given(tmp_path, store, monkeypatch):
+    """R6, on every platform: the rewrite happens inside the queue's lock, on --lock's path."""
+    taken = []
+    real_lock = scrape_queue.exclusive_lock
+
+    def spy(path):
+        taken.append(path)
+        return real_lock(path)
+
+    monkeypatch.setattr(scrape_queue, 'exclusive_lock', spy)
+
+    run(tmp_path, store, '--apply')
+
+    assert taken == [str(tmp_path / 'queue.lock')]
+
+
+def test_a_held_lock_refuses_and_writes_nothing(tmp_path, store, monkeypatch):
+    def held(path):
+        raise scrape_queue.QueueLocked('held by pid 1234')
+
+    monkeypatch.setattr(scrape_queue, 'exclusive_lock', held)
+    before = sorted(os.listdir(store))
+
+    assert run(tmp_path, store, '--apply') == 3
+
+    assert (store / 'pano_id_log.csv').read_bytes() == LEDGER.encode()
+    assert sorted(os.listdir(store)) == before
+
+
+def test_a_dry_run_never_takes_the_lock(tmp_path, store, monkeypatch):
+    monkeypatch.setattr(scrape_queue, 'exclusive_lock', lambda path: pytest.fail('a dry run takes no lock'))
+    assert run(tmp_path, store) == 0

@@ -343,15 +343,26 @@ removes a row only when it is a three-field `0` row, its `fetched_at` falls on a
 default), **and** its pano is a GSV record without width/height in the pano list as served now:
 
 ```bash
-python3 readmit_dimless_writeoffs.py /mnt/panostore/washington-dc --host sidewalk-dc.cs.washington.edu \
+mount | grep sshfs        # the store's mount must NOT carry workaround=rename (see below)
+.venv/bin/python readmit_dimless_writeoffs.py /mnt/panostore/washington-dc --host sidewalk-dc.cs.washington.edu \
     --date 2026-09-24 --date 2026-09-25            # dry run: prints the count (expect 1349), writes nothing
-python3 readmit_dimless_writeoffs.py ... --apply   # outside the nightly window
+.venv/bin/python readmit_dimless_writeoffs.py ... --apply   # outside the nightly window
 ```
 
-`--apply` takes the nightly queue's lock (exit 3 if a run holds it), keeps the whole ledger as
-`pano_id_log.csv.bak-<stamp>` and the removed rows as `pano_id_log.csv.readmitted-<stamp>.csv`, and replaces
-the ledger atomically; every other line is kept byte for byte. A second run finds nothing. Only run it once
-the #184 build is on the box: on an older one the re-admitted panos are written off again the same night. It
+Run it from the checkout's venv (`.venv/bin/python`, as the cron line does; the system `python3` has no
+`requests`) and **as the cron user, never through `sudo`**: the queue's default lock is
+`/tmp/sidewalk-scrape-queue.lock`, created mode 0664 by whoever opens it first, so a root-created lock (after
+a reboot has cleared `/tmp`, say) would stop the next night's queue from opening it. `--apply` replaces the
+ledger with a rename, which over sshfs is atomic only through OpenSSH's `posix-rename@openssh.com`; sshfs uses
+it whenever the server offers it, and `-o workaround=rename` replaces it with unlink-then-rename, so check the
+mount options first.
+
+`--apply` takes the nightly queue's lock (exit 3 if a run holds it), re-reads the ledger under it, keeps the
+whole ledger as `pano_id_log.csv.bak-<stamp>` and the removed rows as `pano_id_log.csv.readmitted-<stamp>.csv`,
+and replaces the ledger; every other line is kept byte for byte. A second run finds nothing. A manual
+`DownloadRunner.py` run outside the queue does not take that lock, so do not run one alongside. Only run it
+once the #184 build is on the box: on the build deployed before it (c9ff03c) D8 stops DC, so the re-admitted
+panos would wait unscraped, and a build from before D8 would write them off again the same night. It
 never touches imagery, and a retry never overwrites any: every downloader short-circuits on an existing
 `.jpg`, so a pano already on the store is re-registered as skipped. A re-admitted pano Google has retired
 costs its photometa request and two probe tiles once more, and is written off again on that evidence.

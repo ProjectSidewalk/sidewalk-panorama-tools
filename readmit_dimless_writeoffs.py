@@ -14,8 +14,8 @@ Every other line - the header, `1` rows, two-field rows, other dates, retired pa
 other sources, torn rows - is kept byte for byte.
 
 Dry run by default: it reads the ledger and the list and reports what it would remove. With --apply it
-  1. takes the nightly queue's lock (scrape_queue.exclusive_lock), so it can never race a run appending to
-     the same ledger - exit 3 if the queue holds it;
+  1. takes the nightly queue's lock (scrape_queue.exclusive_lock), so it can never race a queue run
+     appending to the same ledger - exit 3 if the queue holds it - and re-reads the ledger under it;
   2. copies the ledger to pano_id_log.csv.bak-<stamp>, and the removed rows to
      pano_id_log.csv.readmitted-<stamp>.csv, so the change can be undone and audited;
   3. writes the kept lines to a temp file beside the ledger and os.replace()s it in.
@@ -25,11 +25,15 @@ downloader short-circuits on the file and re-registers it as skipped.
 Exit codes: 0 done (including "nothing to re-admit"), 2 usage, 3 refused (no ledger, or the queue's lock is
 held).
 
-Example (on the production box, outside the nightly window)::
+Run it on the production box from the checkout's venv, AS THE CRON USER (never through sudo: a root-created
+/tmp/sidewalk-scrape-queue.lock would stop the next night's queue from opening it), outside the nightly window,
+after checking that the store's sshfs mount does not carry -o workaround=rename (os.replace is atomic over
+sshfs only through OpenSSH's posix-rename extension)::
 
-    python3 readmit_dimless_writeoffs.py /mnt/panostore/washington-dc --host sidewalk-dc.cs.washington.edu \\
-        --date 2026-09-24 --date 2026-09-25            # dry run: prints the count, expect 1349
-    python3 readmit_dimless_writeoffs.py ... --apply
+    mount | grep sshfs
+    .venv/bin/python readmit_dimless_writeoffs.py /mnt/panostore/washington-dc \\
+        --host sidewalk-dc.cs.washington.edu --date 2026-09-24 --date 2026-09-25   # dry run: expect 1349
+    .venv/bin/python readmit_dimless_writeoffs.py ... --apply
 """
 
 import argparse
