@@ -3672,7 +3672,8 @@ class TestField20IsTonightsRaisedAttempts:
 
         assert stop_reasons['image_stop'] == DownloadRunner.STOP_BLOCKED, 'the case under test'
         fields = last_log_fields(tmp_path)
-        assert (fields[8], fields[10]) == (str(3 + limit), str(4 + limit)),             'field 9 and the attempt count must differ from field 20'
+        assert (fields[8], fields[10]) == (str(3 + limit), str(4 + limit)), \
+            'field 9 and the attempt count must differ from field 20'
         assert self.field_20(tmp_path) == str(2 + limit)
 
     def test_field_20_is_the_last_one(self):
