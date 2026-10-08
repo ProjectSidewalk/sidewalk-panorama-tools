@@ -1,0 +1,78 @@
+# The production box's frozen dependency set (#167). Generated, not hand-edited: refresh it with the
+# procedure in docs/ops.md, "Refreshing constraints.txt".
+#
+# Source: `.venv/bin/pip freeze` on the production host, Python 3.10.12, repo at c9ff03c, read 2026-10-06.
+# CI's gated job installs `-r requirements.txt -r requirements-dev.txt -c constraints.txt`, so it tests
+# exactly these versions. A constraint only pins a package something else asks for; it never installs one.
+# The dev-only packages the box does not have (pandas, matplotlib, coverage, pytest-cov and their own
+# dependencies) are therefore not pinned here and resolve fresh in CI. The weekly tests-latest.yml job
+# installs without this file and reports drift without gating anything.
+#
+# torch, triton and the cuda-*/nvidia-* wheels are here because streetlevel 0.12.11 pulls pyequilib 0.6.0,
+# which requires torch. No production module imports any of them, and the box's venv is 4.9 GB because of
+# them. Dropping them (streetlevel installed with --no-deps) is a measured follow-up, not part of this file.
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+async-timeout==5.0.1
+attrs==26.1.0
+backoff==2.2.1
+backports.asyncio.runner==1.2.0
+bd09convertor==0.0.3
+certifi==2026.7.22
+charset-normalizer==3.5.1
+CoordinatesConverter==0.1.5
+cuda-bindings==13.3.1
+cuda-pathfinder==1.8.0
+cuda-toolkit==13.0.3.0
+Cython==3.3.0
+exceptiongroup==1.3.1
+filelock==3.32.5
+frozenlist==1.8.0
+fsspec==2026.7.0
+idna==3.19
+iniconfig==2.3.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+mpmath==1.3.0
+multidict==6.7.1
+networkx==3.4.2
+numpy==2.2.6
+nvidia-cublas==13.1.1.3
+nvidia-cuda-cupti==13.0.85
+nvidia-cuda-nvrtc==13.0.88
+nvidia-cuda-runtime==13.0.96
+nvidia-cudnn-cu13==9.20.0.48
+nvidia-cufft==12.0.0.61
+nvidia-cufile==1.15.1.6
+nvidia-curand==10.4.0.35
+nvidia-cusolver==12.0.4.66
+nvidia-cusparse==12.6.3.3
+nvidia-cusparselt-cu13==0.8.1
+nvidia-nccl-cu13==2.29.7
+nvidia-nvjitlink==13.3.33
+nvidia-nvshmem-cu13==3.4.5
+nvidia-nvtx==13.0.85
+packaging==26.3
+pillow==12.3.0
+pluggy==1.6.0
+propcache==0.5.2
+protobuf==7.36.1
+pycryptodome==3.23.0
+pyequilib==0.6.0
+pyexiv2==2.16.0
+pyfrpc==0.2.13
+Pygments==2.21.0
+pyproj==3.7.1
+pytest==9.1.1
+pytest-asyncio==1.4.0
+requests==2.34.2
+scipy==1.15.3
+streetlevel==0.12.11
+sympy==1.14.0
+tomli==2.4.1
+torch==2.13.0
+triton==3.7.1
+typing_extensions==4.16.0
+urllib3==2.7.0
+yarl==1.24.5

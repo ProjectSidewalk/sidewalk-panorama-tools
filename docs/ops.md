@@ -924,7 +924,7 @@ git status --short                                     # must be empty: a local 
 before=$(git rev-parse HEAD)
 git pull --ff-only
 git log --oneline -1                                   # what is live now
-git diff --stat "$before" HEAD -- requirements.txt     # non-empty -> .venv/bin/pip install -r requirements.txt
+git diff --stat "$before" HEAD -- requirements.txt constraints.txt   # non-empty -> .venv/bin/pip install -r requirements.txt -c constraints.txt
 .venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
 .venv/bin/python -c "import DownloadRunner, scrape_queue"
 ```
@@ -932,7 +932,9 @@ git diff --stat "$before" HEAD -- requirements.txt     # non-empty -> .venv/bin/
 The order matters twice: the requirements check comes *before* the import check, because a new dependency
 fails the import first and reads as a broken deploy; and it diffs against a captured SHA rather than `HEAD@{1}`,
 because a pull that brought nothing leaves `HEAD@{1}` pointing at the deploy before, so the diff would report the
-previous deploy's changes again.
+previous deploy's changes again. The install takes `-c constraints.txt` so the box gets the versions CI tested
+([Refreshing `constraints.txt`](#refreshing-constraintstxt)). It is never `-U`: an upgrade is a change to the
+pins, made in a PR and tested by CI, not something the box picks up from PyPI on its own.
 
 - **Pulling while the queue is running is safe; a `pip install` is less so.** Every repo import is at module
   level, so a city already running keeps the code it loaded, the next city starts on the new tree, and the
@@ -950,6 +952,57 @@ previous deploy's changes again.
   `pano_id_log.csv` to three fields, and a pre-#129 reader skips every three-field row — so every permanent
   verdict recorded since that deploy is re-requested nightly, and a store that has only ever seen the new
   build parses as *empty*. Behaviour rolls back by flag (below), not by checkout.
+
+### Refreshing `constraints.txt`
+
+`requirements.txt` has floors only, so before
+[#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167) CI resolved the latest of everything
+on every run, while the box kept whatever resolved when its venv was built and recorded it nowhere. CI never tested
+what production runs. `constraints.txt` is the box's `pip freeze`, committed:
+
+- **CI's gated job** (`tests.yml`) installs `-r requirements.txt -r requirements-dev.txt -c constraints.txt`, so
+  every PR is tested against production's versions. A constraint only pins a package something else asks for, so
+  the dev-only packages the box does not have (pandas, matplotlib, coverage, pytest-cov) still resolve fresh.
+- **A weekly job** (`tests-latest.yml`, Mondays 15:00 UTC, or by hand from the Actions tab) installs with no
+  constraints and runs the same suite. It never runs on a pull request, so it gates nothing. A red run there
+  means a new upstream release breaks the suite, and a fresh install would hit it. Its `pip freeze` step prints
+  what it resolved. **It can go quiet in two ways.** GitHub disables a scheduled workflow in a public repo after
+  60 days without repository activity; the Actions tab then shows it disabled, and *Enable workflow* turns it
+  back on. And a failed scheduled run notifies only the user who last edited the workflow's `cron:` line, so if
+  that person has left, nobody hears about it. Look at the Actions tab whenever you look at the fleet.
+- **`tests/test_constraints.py`** fails when a `requirements.txt` package has no pin or a pin its specifier
+  rejects, so a raised floor and its pin move in the same PR.
+
+**Refresh it** after any install on the box, so the file stays a record of what production runs:
+
+1. On the box: `cd /srv/sidewalk-panorama-tools && .venv/bin/pip freeze > /tmp/box-freeze.txt` (and
+   `.venv/bin/python --version`, `git log --oneline -1`, for the header).
+2. In a branch: keep `constraints.txt`'s comment header, update its `Source:` line (Python version, commit,
+   date), and replace everything below it with the freeze. That includes `pytest` and `pytest-asyncio`: they are
+   not leftovers, because `streetlevel` itself depends on them (CI's log shows `Collecting pytest-asyncio (from
+   streetlevel...)`).
+3. Open a PR. CI installs exactly those pins. A red run means the box is running a set the suite fails on,
+   which is worth knowing whichever way it is fixed.
+
+Two gaps in this loop are known and accepted:
+
+- **A removed dependency stays pinned.** `pip install` never uninstalls, so a package dropped from
+  `requirements.txt` stays in the box's venv, and every refresh pins it again. It is harmless, because a
+  constraint never installs anything, but the file slowly drifts from "what production needs" towards "what
+  production has". When dropping a dependency, delete its pin (and any pins only it pulled in) by hand in the same
+  PR, and `pip uninstall` it on the box at deploy.
+- **`setuptools` is not pinned.** `pip freeze` leaves out `pip`, `setuptools` and `wheel`, and torch declares
+  `setuptools>=77.0.3`, so it is the one runtime dependency that floats. `pip freeze --all` would record it.
+  Use that for a refresh if it ever matters.
+
+**Changing a dependency** goes the other way: edit `requirements.txt` and `constraints.txt` together (pin the
+version you tested), let CI pass, merge, deploy (the install above picks the pin up), then refresh from the box
+to record what pip actually installed alongside it.
+
+The pins carry `torch`, `triton` and about 15 `nvidia-*`/`cuda-*` wheels, 4.9 GB of venv between them.
+`streetlevel` 0.12.11 pulls `pyequilib` 0.6.0, which requires `torch`, and no production module imports any of
+it. Installing `streetlevel` with `--no-deps` and listing its runtime dependencies would drop it; that is a
+measured follow-up and has not been done.
 
 ### The store marker
 

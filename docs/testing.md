@@ -1,7 +1,7 @@
 # Tests
 
 ```bash
-pip3 install -r requirements.txt -r requirements-dev.txt
+pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python3 -m pytest tests
 
 # ... with the coverage report CI publishes and gates on
@@ -9,7 +9,10 @@ python3 -m pytest tests --cov --cov-report=term-missing
 ```
 
 CI runs exactly this on Ubuntu 22.04 / Python 3.10 for every push to `master` and every pull request
-([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)), with a 20-minute job timeout so a test
+([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)), against the production box's pinned versions
+([`constraints.txt`](ops.md#refreshing-constraintstxt), #167). A second workflow,
+[`tests-latest.yml`](../.github/workflows/tests-latest.yml), runs the same suite weekly with no constraints, so
+the latest releases are tested too. It never runs on a pull request and gates nothing. Both jobs have a 20-minute timeout, so a test
 that hangs instead of failing is a red X rather than a runner held for six hours. There is no pytest timeout,
 so a test that loops on an unbounded clock (an instant stand-in `run_one` under a real window) must bound it
 itself: a `FakeClock` the stand-in advances, or a call cap that raises. There is no linter configured.
@@ -77,6 +80,7 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 | The pose-drift re-render proxy in the standing decay census: the wrap applied to the *difference*, an axis neither census carried reported undefined rather than zero, one panorama counted once however many axes moved, the any-axis union that lets "the same panoramas moved on both axes" be asserted rather than inferred from equal counts, and `--resummarize` regenerating a re-fetch census's `decay` block offline | `test_photometa_census.py` (`TestPoseDrift`, `TestResummarize`) |
 | That the docs' internal links and anchors resolve, that cited `docs/` paths exist, that the `log.csv` table in `docs/ops.md` has one row per field, and that every sentence stating the row's width ("19-column `log.csv`" and the like, in the guidance files, the README and `docs/`) says `LOG_CSV_FIELD_COUNT`; and that every `.claude/rules/**/*.md` file is path-scoped (in the one frontmatter shape the test parses) with globs that match real files, that there is no nested `CLAUDE.md`, that every measured module, study test and the log analyzer's test and page load the rules written for them, and that the guidance loaded at startup stays small | `test_docs.py` |
 | That the README's hero figure still builds against the current cropper, and isn't stale | `test_make_banner.py` |
+| [`constraints.txt`](ops.md#refreshing-constraintstxt) (#167): every line an exact `name==version` pin with no duplicates, every `requirements.txt` package pinned at a version its specifier accepts, the gated job installing with `-c constraints.txt` in every install step (block-scalar `run: |` ones included) and keying its pip cache on it, and the weekly `tests-latest.yml` job installing without it (no `-c`, no `PIP_CONSTRAINT`), on a schedule only (no `pull_request*`/`push`/`workflow_run`/`workflow_call`/`merge_group` trigger), with no `if:` switching it off, the hard `streetlevel` import and a timeout | `test_constraints.py` |
 
 ## Four things that are deliberately unusual
 
