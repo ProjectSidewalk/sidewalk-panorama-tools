@@ -926,7 +926,7 @@ git pull --ff-only
 git log --oneline -1                                   # what is live now
 git diff --stat "$before" HEAD -- requirements.txt     # non-empty -> .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
-.venv/bin/python -c "import DownloadRunner, scrape_queue"
+.venv/bin/python -c "import DownloadRunner, scrape_queue, cron_notify"
 ```
 
 The order matters twice: the requirements check comes *before* the import check, because a new dependency
@@ -1004,7 +1004,9 @@ dropped mid-night.
 3. **Re-run one city through the queue's own machinery** (lock, budgets, summary):
    `scrape_queue.py --cities … --store-root … --only <city_id> -- --all-panos`.
 4. **Reinstall an earlier crontab** from the dated backups in the user's home (`crontab <file>`). Take a new
-   backup first; one of the old ones still carries a secret and is mode 600 for that reason.
+   backup first; one of the old ones still carries a secret and is mode 600 for that reason. A backup taken
+   before the [heartbeat](#hearing-about-a-night-that-never-ran) went in has no heartbeat tail, so reinstalling
+   it means the heartbeat alarm fires about 36 hours later. Add the tail back, or silence the alarm as in lever 5.
 5. **Stop everything:** `crontab -r` after backing up — and if a queue is running,
    `pkill -TERM -f '^\S+/python \S+/scrape_queue\.py'` as well, because removing the crontab only cancels future
    starts. SIGTERM is the right signal: the queue translates it into an orderly exit that stops the city it is
@@ -1014,6 +1016,10 @@ dropped mid-night.
    bare `pkill -f scrape_queue.py` would deliver two, and the second lands while the queue is stopping its city.
    The queue then kills the city outright rather than orphaning it (#161), but the kill costs that city's
    `log.csv` row, which the first SIGTERM would have written. The store is untouched by any of this.
+   **The [heartbeat alarm](#hearing-about-a-night-that-never-ran) fires about 36 hours after `crontab -r`.**
+   That is correct, because nothing is running. For a deliberate stop, silence it from an admin shell with
+   `aws cloudwatch disable-alarm-actions --region us-west-2 --alarm-names pano-scraper-heartbeat`. When the
+   crontab is back, run `enable-alarm-actions` with the same arguments.
 
 ### Adding a city
 
@@ -1108,11 +1114,164 @@ a failed night, and would be the `tail -1` [the morning check](#the-morning-afte
 date it was proven in the private runbook; a channel nobody has seen deliver is the one this section exists
 because of.
 
+### Hearing about a night that never ran
+
+`cron_notify` can only report a process that ran. If the box is stopped, cron is dead or the crontab was wiped
+([rollback lever 5](#rolling-back-smallest-blast-radius-first) is `crontab -r`), nothing runs and nothing is
+sent, which is the same silence as a clean night
+([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The dead-man switch is a
+**heartbeat metric** that the box publishes to CloudWatch when the wrapper finishes, plus a CloudWatch alarm that
+fires when no heartbeat has arrived for 36 hours. The alarm treats missing data as breaching and notifies the
+same SNS topic as `cron_notify`.
+
+- **The heartbeat means "the wrapper ran", not "the night passed".** It is published after the wrapper exits,
+  whatever the exit code, because a bad night already has its own channel. A night that exits 1 sends two
+  signals: `cron_notify`'s message, and the heartbeat as usual. The alarm never fires on a bad night that ran.
+- **It is a crontab composition, not code.** The heartbeat is appended to the existing line after a `;`, so it
+  runs whatever the queue's exit code. Nothing in this repo knows about it. A `--heartbeat` option on
+  `cron_notify` was considered and not built. The heartbeat's only failure mode is that no datapoint arrives,
+  and missing data is exactly what the alarm is built to catch, so a broken heartbeat (a missing IAM
+  permission, a moved `aws` binary) cannot fail silently. It shows up as the alarm, and `~/heartbeat.log` says
+  which of the two it was.
+- **It is withheld unless `cron_notify` just wrote its log line.** A failure of the *queue* is reported by
+  `cron_notify`. A failure of `cron_notify` itself is reported by nothing else: the venv's interpreter is gone
+  (an OS upgrade removed the Python the venv links to), `cron_notify.py` fails to import after a bad pull, or
+  the wrapper dies before it finishes. Cron's own mail is discarded on this host, so an ungated heartbeat would
+  report those nights as healthy. `cron_notify` appends its `--log` line on every path it returns by, including
+  exit 127 when the queue cannot start. So the tail publishes only if `~/cron_notify.log` was modified in the
+  last 10 minutes; otherwise it writes `heartbeat withheld` and the alarm fires. The heartbeat therefore means
+  "the wrapper ran to the end". It can no longer say a night ran when the wrapper was what broke.
+- **Why 36 hours, as 36 one-hour periods.** The queue starts at 19:00 Pacific and ends when its 690-minute
+  window closes or when every city is done, whichever is first. So the heartbeat lands anywhere from about
+  19:00 (a night the queue refused at once: no store marker, or the lock still held) to about 06:45 the next
+  morning. Two consecutive heartbeats can therefore be more than 24 hours apart, and a
+  24-hour window would raise a false alarm after any early night followed by a full one. 36 hours means one
+  missed night is reported by the following afternoon or evening. Hourly periods, not one daily period, so the
+  window slides instead of snapping to UTC midnight. CloudWatch allows up to seven days of evaluation range when
+  the period is one hour or longer. **36 hours is a lower bound.** When real datapoints are fewer than the
+  evaluation periods, CloudWatch evaluates over a somewhat wider range and keeps the last real datapoint in it,
+  and AWS does not publish that width. So the alarm fires a little after 36 hours. Record the real lag the first
+  time it fires. The extra time only adds margin against false alarms.
+- **Cost:** one custom metric and one standard alarm, well under a dollar a month.
+
+**1. Instance role permission.** Add this statement to the box's instance-role policy, the one that already
+allows `sns:Publish` to the topic. `PutMetricData` has no resource-level permissions, so `Resource` must be `*`.
+The namespace condition is what limits it:
+
+```json
+{
+  "Sid": "PanoScraperHeartbeat",
+  "Effect": "Allow",
+  "Action": "cloudwatch:PutMetricData",
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": { "cloudwatch:namespace": "SidewalkPanoramaTools" }
+  }
+}
+```
+
+**2. One datapoint by hand, before the alarm exists.** As the cron user on the box, run the publish:
+
+```bash
+aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools --metric-name QueueHeartbeat --value 1 --unit Count
+```
+
+It prints nothing and exits 0. `AccessDenied` means step 1 is missing or names a different namespace. Publish
+before creating the alarm: an alarm with missing data treated as breaching and no datapoint at all goes
+straight to **ALARM** and sends an ALARM message within minutes of being created. With this datapoint in place,
+its first evaluation goes to OK.
+
+**3. The alarm.** Create it from an admin shell, not from the box, because the role above cannot create
+alarms. `<ACCOUNT_ID>` is the account that owns `pano-scraper-alerts`:
+
+```bash
+aws cloudwatch put-metric-alarm --region us-west-2 \
+  --alarm-name pano-scraper-heartbeat \
+  --alarm-description "No nightly scrape_queue heartbeat for 36 h: box stopped, cron dead, or crontab wiped. See docs/ops.md, Hearing about a night that never ran." \
+  --namespace SidewalkPanoramaTools --metric-name QueueHeartbeat \
+  --statistic Sum --period 3600 \
+  --evaluation-periods 36 --datapoints-to-alarm 36 \
+  --threshold 1 --comparison-operator LessThanThreshold \
+  --treat-missing-data breaching \
+  --alarm-actions arn:aws:sns:us-west-2:<ACCOUNT_ID>:pano-scraper-alerts \
+  --ok-actions arn:aws:sns:us-west-2:<ACCOUNT_ID>:pano-scraper-alerts
+```
+
+`--ok-actions` sends one message when the alarm recovers. It fires only on a transition, never nightly. There is
+no `--dimensions` on either side and no `--unit` on the alarm; AWS recommends omitting the unit there. A metric
+alarm compares dimensions exactly, so adding one to the publish later means adding it here too.
+
+**Check the topic's encryption first:** `aws sns get-topic-attributes --region us-west-2 --topic-arn
+arn:aws:sns:us-west-2:<ACCOUNT_ID>:pano-scraper-alerts --query Attributes.KmsMasterKeyId`.
+- `null`: the topic is unencrypted, and there is nothing to do.
+- `alias/aws/sns`: CloudWatch cannot publish to a topic under the AWS-managed key. Switch it to a customer-managed key.
+- A customer-managed key: its key policy needs a statement letting CloudWatch use it, for example:
+
+```json
+{
+  "Sid": "AllowCloudWatchAlarmsToPublish",
+  "Effect": "Allow",
+  "Principal": { "Service": "cloudwatch.amazonaws.com" },
+  "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+  "Resource": "*"
+}
+```
+
+**4. The crontab.** Append this to the **end** of the existing nightly line, on the same line (cron has no line
+continuation; the backslashes in [Nightly deployment](downloader.md#nightly-deployment) are only for display):
+
+```
+ ; if [ -n "$(find /home/ubuntu/cron_notify.log -mmin -10 2>/dev/null)" ]; then aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools --metric-name QueueHeartbeat --value 1 --unit Count >> /home/ubuntu/heartbeat.log 2>&1 && echo "$(date -Is) heartbeat published" >> /home/ubuntu/heartbeat.log || echo "$(date -Is) heartbeat FAILED" >> /home/ubuntu/heartbeat.log; else echo "$(date -Is) heartbeat withheld: cron_notify.log not written" >> /home/ubuntu/heartbeat.log; fi
+```
+
+Bash reads this as `<wrapper> ; if <log fresh>; then ((put && echo published) || echo FAILED); else echo
+withheld; fi`. The 10 minutes is the gap between the wrapper's last write and this check, which is seconds.
+`find ... -mmin -10` prints the path only when the file exists and is that fresh, and `2>/dev/null` keeps a
+missing log quiet. A missing log counts as not written. This was checked under bash, with a stub `aws` and stub
+wrappers on both paths. A wrapper that writes its line and exits 0, 1, 3, 5 or 127 publishes. A missing
+interpreter (with a stale or absent log), a wrapper that exits without its line, and a wrapper killed by
+SIGKILL are each withheld, and `aws` is not called. `date -Is` is used rather than a
+`date +%...` format because cron turns an unescaped `%` into a newline. `aws` is found the same way the sink
+finds it, since both run under the same crontab's environment. Back up the crontab first (`crontab -l >
+~/crontab.<date>`), as for any crontab edit.
+
+**5. Testing it.** Each step proves one link:
+
+1. *Permission:* step 2's manual publish exited 0.
+2. *Alarm wiring:* `aws cloudwatch describe-alarms --region us-west-2 --alarm-names pano-scraper-heartbeat
+   --query 'MetricAlarms[0].StateValue'` turns `OK` within a few minutes of creation, and the OK action
+   delivers one message. If it goes to `ALARM` despite the manual datapoint, the alarm's namespace, metric
+   name or dimensions do not match the publish. With missing data treated as breaching, a metric the alarm
+   never sees reads as `ALARM`, not `INSUFFICIENT_DATA`. If more than 36 hours passed between step 2 and
+   creating the alarm, publish again first.
+3. *Delivery:* `aws cloudwatch set-alarm-state --region us-west-2 --alarm-name pano-scraper-heartbeat
+   --state-value ALARM --state-reason "delivery test"`. An ALARM message arrives. The next evaluation puts it
+   back to `OK` (a second message), because real data is present.
+4. *The crontab:* the morning after the first night, `tail -1 ~/heartbeat.log` says `heartbeat published` with
+   that morning's date, and the alarm is `OK`.
+
+Steps 1 to 3 do not prove that a real missed night fires the alarm. That would take 36 hours of no scraping.
+`set-alarm-state` proves the notification path, and `--treat-missing-data breaching` with no data is what
+CloudWatch documents. Record the date it was proven in the private runbook.
+
+**When it fires:** `ssh` to the box. If it does not answer, the box is down. Otherwise check `systemctl status
+cron`, then `crontab -l` (is the line still there, with its tail?), then `tail ~/cron_notify.log` (did the
+wrapper run?), then `tail ~/heartbeat.log`:
+- **`FAILED`**, with last night's line in `cron_notify.log`: the queue ran and only the publish broke. The `aws`
+  error is in the same file.
+- **`withheld`**, with a stale `cron_notify.log`: cron ran the line but the wrapper never finished. Run the
+  wrapper's command by hand to see why (a missing interpreter, an import error after a pull).
+- **No line for last night at all:** cron never ran the line (cron stopped, the crontab gone, or the box down
+  over 19:00).
+
 ### The morning after a deploy
 
 - No message arrived — and `tail -1 ~/cron_notify.log` carries last night's date and says
   `nothing to publish (clean run, --only-on-failure)`. The message is failure-only, so silence is ambiguous
   on its own: it is a quiet night *or* a wrapper that never ran, and the log line is what tells them apart.
+  A night that never ran at all is also caught off the box, by the [heartbeat
+  alarm](#hearing-about-a-night-that-never-ran), but only after 36 hours, so the log line is still the
+  morning's check.
 - `scrape_queue.log`: every city `ok (exit 0)`, and `pass 2 starting` if any ran out of budget.
 - `scrape_queue.log` ends with `manifest checked against N public and M private cities (roster from …)`, and
   `grep ERROR scrape_queue.log` prints nothing — a `cities missing from the manifest` or
@@ -1149,3 +1308,5 @@ the fleet, beyond the analyzer:
   surfaces. A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
 - `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
   [only there](#hearing-about-a-bad-night).
+- `tail -1 ~/heartbeat.log` says `heartbeat published` with last night's date. A failed heartbeat
+  [raises the alarm](#hearing-about-a-night-that-never-ran) eventually, but this file says so first.
