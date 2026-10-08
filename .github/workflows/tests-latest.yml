@@ -8,7 +8,8 @@ name: Tests (latest dependencies)
 # from the box is a separate step (docs/ops.md, "Refreshing constraints.txt").
 on:
   schedule:
-    # Mondays 15:00 UTC: after the weekend's releases, and well clear of the nightly queue (19:00-06:30 Pacific).
+    # Mondays 15:00 UTC: Monday morning Pacific, so a red run sits at the top of the Actions tab at the start of
+    # the week. (It runs on a GitHub-hosted runner and touches nothing on the production box.)
     - cron: '0 15 * * 1'
   workflow_dispatch:
 

@@ -87,7 +87,7 @@ def _install_lines(path):
     i = 0
     while i < len(lines):
         line = lines[i]
-        block = re.match(r'^(\s*)-?\s*run:\s*[|>][-+]?\s*$', line)
+        block = re.match(r'^(\s*)-?\s*run:\s*[|>][-+]?\s*(#.*)?$', line)
         if block:
             indent = len(line) - len(line.lstrip())
             i += 1
@@ -141,8 +141,9 @@ class TestTheWeeklyJobInstallsLatest:
     def test_it_runs_on_a_schedule_and_never_gates_a_pull_request(self):
         text = _read(LATEST_WORKFLOW)
         assert re.search(r'^\s*schedule:', text, re.M), 'tests-latest.yml has no schedule trigger'
-        # pull_request_target and workflow_run would put it on a PR as surely as pull_request does.
-        assert not re.search(r'^\s*(pull_request\w*|push|workflow_run|merge_group):', text, re.M), \
+        # pull_request_target and workflow_run would put it on a PR as surely as pull_request does, and
+        # workflow_call would let a gated workflow do the same by calling it.
+        assert not re.search(r'^\s*(pull_request\w*|push|workflow_run|workflow_call|merge_group):', text, re.M), \
             'tests-latest.yml must not run on PRs or pushes: it is a drift report, not a gate'
 
     def test_nothing_switches_it_off(self):
