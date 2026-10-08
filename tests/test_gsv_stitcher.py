@@ -944,11 +944,15 @@ class TestDownloadSinglePano:
 
         assert gsv.download_single_pano(str(tmp_path), self.pano_info()) == DownloadResult.skipped
 
-    def test_unknown_dims_fail_before_any_tile_request(self, tmp_path, monkeypatch):
+    def test_unknown_dims_with_no_photometa_raise_before_any_tile_request(self, tmp_path, monkeypatch):
+        """#184: this was DownloadResult.failure - a permanent downloaded=0 at zero requests. stub_probe makes
+        photometa unavailable, so there is no frame tonight: a transient raise, retried next run."""
         stub_probe(monkeypatch, pick_zoom=5)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('no frame, so no fan-out'))
         pano = {'pano_id': 'stitchPanoAAAAAAAAAAAA', 'width': None, 'height': None}
 
-        assert gsv.download_single_pano(str(tmp_path), pano) == DownloadResult.failure
+        with pytest.raises(gsv.FrameUnknownError):
+            gsv.download_single_pano(str(tmp_path), pano)
 
     def test_blank_probes_at_both_zooms_fail_the_pano(self, tmp_path, monkeypatch):
         stub_probe(monkeypatch, pick_zoom=-1)  # every probe zoom comes back blank

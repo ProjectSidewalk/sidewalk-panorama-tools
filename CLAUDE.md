@@ -52,6 +52,11 @@ python3 check_cvmetadata_schema.py --host <fqdn>            # or set PS_CVMETADA
 # One-off migrator for pre-v2 depth artifacts
 python3 migrate_depth_artifacts.py <storage-dir> [--dry-run]
 
+# One-off: re-admit the downloaded=0 rows written for dimensionless GSV panos before #184 (DC: 1,349 on
+# 2026-09-24/25). Dry run by default; a row goes only if it is a 0 on a named --date AND its pano has no
+# width/height in the current list. --apply takes the queue lock, keeps a backup, never touches imagery.
+.venv/bin/python readmit_dimless_writeoffs.py <storage-dir> (--host <fqdn> | -c <csv>) --date YYYY-MM-DD [--date ...] [--apply]
+
 # One-off, move-only migrator for a pre-#159 flat crop store into <crop-dir>/<city>/ (#159). Never replaces a
 # file: a collision is listed and both are left. Exits 0 done / 1 anything left in place / 2 usage / 3 refused.
 python3 migrate_crop_store.py <crop-dir> --city <city_id> [--dry-run]
@@ -129,7 +134,7 @@ The per-module detail lives in the rules files named in "Guidance layout"; the s
 
 **DownloadRunner.py** - orchestrates one city's nightly run: fetch the pano list from `/adminapi/panos` (or a CSV), run the image phase then the depth phase under one monotonic `--max-runtime`, append one 19-column `log.csv` row in a `finally`, and write `--run-summary-file` (the stop reasons plus the run *conditions*, #161) for the queue. Store mode (`--from-store`, #30) pulls already-scraped panos over SFTP instead of scraping. Rules: `.claude/rules/downloader.md`.
 
-**downloaders/** - per-source imagery: `gsv.py` (tile stitching at the photometa-resolved zoom, the tile push-back breaker, and the depth phase), `mapillary.py`, `panoramax.py`, `store_sftp.py`, and `common.py` (shared image primitives, the display-copy switch, the width tripwire). Which answers are permanent ledger verdicts and which raise is a contract, and every entry in it is a measurement. Rules: `.claude/rules/downloader.md`; the depth phase's pacing, block latch and artifacts: `.claude/rules/depth.md`.
+**downloaders/** - per-source imagery: `gsv.py` (tile stitching at the photometa-resolved zoom - and, for a record with no width/height, at photometa's served frame, #184 - the tile push-back breaker, and the depth phase), `mapillary.py`, `panoramax.py`, `store_sftp.py`, and `common.py` (shared image primitives, the display-copy switch, the width tripwire). Which answers are permanent ledger verdicts and which raise is a contract, and every entry in it is a measurement. Rules: `.claude/rules/downloader.md`; the depth phase's pacing, block latch and artifacts: `.claude/rules/depth.md`.
 
 **CropRunner.py** - cuts one 3:2 crop per label from the stored panos into `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`: intake (cvMetadata or a file), grouping by pano, two preflights and a content check, the sizing rule (v2 default, v3 opt-in), an opt-in `--tilt-correction` (#191: the window centred on the rig pixel from the pano's own pose, beta per pose record; a pano with no pose is `no_pose`), a seam-wrapping window, atomic writes, a provenance manifest and a sticky rule marker. Nothing in the crop loop is fatal and the counts reconcile on every path. Rules: `.claude/rules/cropper.md` (also `migrate_crop_store.py`, `check_cvmetadata_schema.py` and the label-type table); the #54 tilt geometry (`pano_pose.py`) and its crop-time correction: `.claude/rules/tilt.md`.
 

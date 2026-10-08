@@ -16,18 +16,29 @@ The two Project Sidewalk endpoints this repo reads, field by field. Both are ser
 | `camera_pitch` | The pitch (in degrees) of the camera with respect to horizontal |
 | `source` | The source of the imagery (`gsv`, `mapillary`, `panoramax`, …) |
 
-**The downloader requires four of these keys: `pano_id`, `source`, `width` and `height`.** When 90% or more
-of the records served lack any one of them (the key absent, not merely blank; counted per record), the run
-treats the list as a schema drift: neither phase runs, nothing is ledgered, and the night fails with the
-condition `pano-schema-drift` (#161). Without the guard a renamed `width`/`height` would make every
-not-yet-downloaded GSV pano a *permanent* `downloaded=0` verdict in one night. The endpoint writes a pano's
-null `width`/`height` by *omitting* the key (Play's `writeNullable`; 106 of Seattle's 183,927 records in
-2026-09), so over the webserver a per-pano null and a renamed field look the same record by record, and the
-90% fraction is what tells them apart. The dims are required of every record, Mapillary and Panoramax
-included, although neither of those downloaders reads them. A renamed `pano_id` never reaches the guard —
-every row is dropped as an empty id, and a city with history reports `pano-list-empty` instead. The same
-rule applies to a `-c` CSV, so a hand-made one must carry the `width` and `height` columns (blank cells are
-fine).
+**The downloader requires two of these keys, `pano_id` and `source`, and reports on two more, `width` and
+`height`.** When 90% or more of the records served lack `pano_id` or `source` (the key absent, not merely
+blank; counted per record), the run treats the list as a schema drift: neither phase runs, nothing is
+ledgered, and the night fails with the condition `pano-schema-drift` (#161). A renamed `pano_id` never
+reaches the guard — every row is dropped as an empty id, and a city with history reports `pano-list-empty`
+instead.
+
+**`width` and `height` are reported, not required, since
+[#184](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/184).** When 90% or more of the
+records lack either, the run prints and logs `WARNING: the pano list's N of M records carry no width/height`
+and scrapes anyway; it is not a run condition, so it does not fail the night. Each new GSV pano without dims
+asks photometa for the frame Google serves (one request) and is saved at that frame; see
+[the GSV downloader](downloader.md#a-gsv-pano-with-no-widthheight). D8 shipped with the dims required,
+because a missing width/height used to be a *permanent* `downloaded=0` at zero requests, so a renamed field
+would have written off every new GSV pano in one night. That is no longer true. The endpoint writes a pano's
+null `width`/`height` by *omitting* the key (Play's `writeNullable`), so a per-pano null and a renamed field
+look the same record by record, and so does a city whose app holds no dims at all: Seattle served 106 of
+183,927 records without them (2026-09), and **washington-dc 78,300 of 78,301** (2026-10-06,
+[SidewalkWebpage#5667](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5667)). The 90% fraction
+cannot tell DC from a rename, and as a stop it kept DC from being scraped at all. What a real rename now costs
+is one photometa request per new GSV pano and [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)'s
+app-vs-Google frame check — there is no app frame to compare — and every label on those panos loses the
+cropper's dims preflight. A `-c` CSV may omit the `width` and `height` columns, or leave cells blank.
 
 The downloader drops empty ids and the literal id `tutorial`, then keeps `gsv` and `panoramax`, plus
 `mapillary` when `MAPILLARY_ACCESS_TOKEN` is set. Panoramax `pano_id`s are UUIDs, so nothing may assume an

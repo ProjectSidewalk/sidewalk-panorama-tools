@@ -187,14 +187,6 @@ class TestResolveFrameUsesPhotometaFirst:
         assert gsv._block_latch_age_hours(gsv.default_block_latch_path()) is None, \
             "only a refusal from Google latches; an ordinary failure says nothing about this host's standing"
 
-    def test_missing_dims_still_cost_nothing(self, monkeypatch):
-        asked = stub_photometa(monkeypatch, TWO_LEVELS)
-        deny_probe(monkeypatch)
-
-        assert gsv.resolve_frame({'pano_id': PANO, 'width': None, 'height': 512}) is None
-        assert gsv.resolve_frame({'pano_id': PANO, 'width': 1024}) is None
-        assert asked == []
-
     def test_a_non_512_tile_size_is_inconsistent(self, monkeypatch):
         stub_photometa(monkeypatch, SERIES_16384, tile_size=(256, 256))
         deny_probe(monkeypatch)
@@ -212,6 +204,230 @@ class TestResolveFrameUsesPhotometaFirst:
 
         assert gsv.resolve_frame(pano_info(13312, 6656)) == \
             gsv.ResolvedFrame(13312, 6656, 5, False, (16384, 8192), 'photometa', 'frame')
+
+
+# --- a pano the app reports no frame for (#184) ---------------------------------------------------------------
+#
+# Before #184, resolve_frame returned None for a record without width/height at zero requests, and
+# download_single_pano ledgered that as a PERMANENT downloaded=0 - a write-off without asking Google. All of
+# washington-dc's /adminapi/panos records but one lack the dims (78,300 of 78,301, measured 2026-10-06), and
+# 1,349 DC panos were written off that way on 2026-09-24/25. Photometa reports the served levels, so the frame
+# is taken from Google instead; only the two black probe tiles may still found a permanent verdict.
+
+def dimless(pano_id=PANO, **dims):
+    """The record /adminapi/panos serves for a pano with no dims: the keys are omitted (Play's writeNullable)."""
+    return dict({'pano_id': pano_id}, **dims)
+
+
+class TestADimensionlessPanoTakesItsFrameFromPhotometa:
+    @pytest.mark.parametrize('record', [dimless(), dimless(width=None, height=None), dimless(height=8192),
+                                        dimless(width=16384)],
+                             ids=['keys-omitted', 'blank-values', 'width-missing', 'height-missing'])
+    def test_the_served_top_level_is_the_frame(self, monkeypatch, record):
+        asked = stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        frame = gsv.resolve_frame(record)
+
+        assert frame == gsv.ResolvedFrame(16384, 8192, 5, True, (16384, 8192), 'photometa-dims')
+        assert asked == [PANO], 'one photometa request, and no probe'
+
+    @pytest.mark.parametrize('sizes', [SERIES_3328, SERIES_5376, SERIES_13312])
+    def test_every_pyramid_shape_fetches_its_native_top_level(self, monkeypatch, sizes):
+        stub_photometa(monkeypatch, sizes)
+        deny_probe(monkeypatch)
+
+        frame = gsv.resolve_frame(dimless())
+
+        assert (frame.width, frame.height, frame.zoom) == (*sizes[-1], len(sizes) - 1)
+        assert frame.consistent is True
+
+    def test_a_non_512_tile_size_is_still_refused(self, monkeypatch):
+        stub_photometa(monkeypatch, SERIES_16384, tile_size=(256, 256))
+        deny_probe(monkeypatch)
+
+        frame = gsv.resolve_frame(dimless())
+
+        assert (frame.consistent, frame.refusal, frame.evidence) == (False, 'tile_size', 'photometa-dims')
+
+    def test_not_found_and_black_probes_is_still_the_permanent_verdict(self, monkeypatch):
+        """Seattle's 106 dimensionless records: photometa knew 3 (2026-09-28). The other 103 still end here -
+        but now on the same two black 200 tiles every other GSV permanent verdict rests on."""
+        asked = stub_photometa(monkeypatch, gone=True)
+        probes = count_probes(monkeypatch, -1)
+
+        assert gsv.resolve_frame(dimless()) is None
+        assert (len(asked), len(probes)) == (1, 2)
+
+    def test_not_found_but_probe_imagery_is_no_frame_tonight_not_a_disagreement(self, monkeypatch):
+        """Imagery at zoom 5 does not say whether the frame is 16384 or 13312 wide, so there is nothing to
+        stitch. It is NOT a frame disagreement (#216 review S2): photometa said "not found", which is no answer
+        about the frame, and there is no app frame to disagree with or app-side remedy - so it must not count as
+        one (#207 alarms on every disagreement). The transient FrameUnknownError, after the probe's two tiles."""
+        stub_photometa(monkeypatch, gone=True)
+        probes = count_probes(monkeypatch, 5)
+
+        with pytest.raises(gsv.FrameUnknownError) as raised:
+            gsv.resolve_frame(dimless())
+
+        assert len(probes) == 2
+        assert 'not found' in str(raised.value) and PANO in str(raised.value)
+        assert gsv._photometa_run.frames_unknown == 1
+
+    # A pyramid one level short at the bottom: five levels topping out at 16384. Its top is NOT at index
+    # _pano_max_zoom(16384) == 5, and the stitcher sizes its grid from the width, so "the top level at zoom
+    # len(sizes) - 1" would request a 16x8 grid at zoom 4 - the top-left quarter of the pano, upscaled (#216
+    # review S1, the #74 failure mode). choose_zoom says (4, False).
+    SHORT_AT_THE_BOTTOM = SERIES_16384[1:]
+
+    def test_a_pyramid_the_stitcher_cannot_fetch_natively_is_refused_at_no_further_request(self, monkeypatch):
+        asked = stub_photometa(monkeypatch, self.SHORT_AT_THE_BOTTOM)
+        deny_probe(monkeypatch)
+
+        frame = gsv.resolve_frame(dimless())
+
+        assert (frame.consistent, frame.refusal, frame.evidence) == (False, 'frame', 'photometa-dims')
+        assert asked == [PANO]
+
+    @pytest.mark.parametrize('sizes', [SERIES_16384, SERIES_16384[:4], SERIES_3328, SERIES_5376, SERIES_13312])
+    def test_every_consistent_pyramid_is_consistent_through_choose_zoom(self, monkeypatch, sizes):
+        """The check is choose_zoom on photometa's own top level, so every observed shape - and a pyramid cut
+        short at the TOP, whose top level is still at its own index - passes it."""
+        stub_photometa(monkeypatch, sizes)
+        deny_probe(monkeypatch)
+
+        frame = gsv.resolve_frame(dimless())
+
+        assert (frame.consistent, frame.zoom) == (True, len(sizes) - 1)
+
+    def test_a_fresh_latch_is_a_transient_raise_at_zero_requests(self, monkeypatch):
+        """Not None: a verdict that depended on this host's standing with Google would be a fact about the
+        host written into a ledger about panos."""
+        fresh_latch()
+        asked = stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        with pytest.raises(gsv.FrameUnknownError) as raised:
+            gsv.resolve_frame(dimless())
+
+        assert asked == []
+        assert PANO in str(raised.value) and 'latch' in str(raised.value)
+
+    @pytest.mark.parametrize('error', [gsv.DepthPayloadError('unrecognized photometa response'),
+                                       requests.ConnectionError('connection reset'),
+                                       gsv.DepthBlockedError('redirected to https://www.google.com/sorry/')])
+    def test_a_photometa_failure_or_refusal_is_a_transient_raise_with_no_probe(self, monkeypatch, error):
+        """The probe cannot supply a frame, so it is not sent: one photometa request, then the raise."""
+        asked = stub_photometa(monkeypatch, error=error)
+        deny_probe(monkeypatch)
+
+        with pytest.raises(gsv.FrameUnknownError):
+            gsv.resolve_frame(dimless())
+
+        assert asked == [PANO]
+
+    def test_a_given_up_photometa_is_a_transient_raise_at_zero_requests(self, monkeypatch):
+        gsv._photometa_run.given_up = True
+        asked = stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        with pytest.raises(gsv.FrameUnknownError):
+            gsv.resolve_frame(dimless())
+        assert asked == []
+
+    def test_the_transient_is_not_a_frame_disagreement(self):
+        """FrameDisagreementError is booked as Google ANSWERING (images-no-success); an unanswered photometa
+        is not an answer, so the two must stay apart."""
+        assert not issubclass(gsv.FrameUnknownError, gsv.FrameDisagreementError)
+        assert gsv.pushback_reason(gsv.FrameUnknownError('x')) is None
+
+    def test_without_photometa_it_is_still_none_at_zero_requests(self, monkeypatch):
+        """refetch_panos.py's seam is unchanged: it works from stored files, which always have dims."""
+        asked = stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        assert gsv.resolve_frame(dimless(), photometa=False) is None
+        assert gsv.resolve_zoom_and_dims(dimless()) is None
+        assert asked == []
+
+    def test_the_width_tripwire_sees_the_photometa_width(self, monkeypatch):
+        """#121: before #184 a pano with no app dims returned before the tripwire, so it was never checked."""
+        seen = []
+        monkeypatch.setattr(gsv.common, 'warn_if_wider_than_viewer_ceiling',
+                            lambda pano_id, width, source: seen.append((pano_id, width, source)))
+        stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        gsv.resolve_frame(dimless())
+
+        assert seen == [(PANO, 16384, 'gsv')]
+
+    def test_one_info_line_names_the_pano_and_the_frame(self, monkeypatch, caplog):
+        stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        with caplog.at_level(logging.INFO):
+            gsv.resolve_frame(dimless())
+
+        lines = [r.getMessage() for r in caplog.records if 'frame from photometa' in r.getMessage()]
+        assert len(lines) == 1 and PANO in lines[0] and '16384x8192' in lines[0]
+
+
+class TestADimensionlessPanoDownloads:
+    def test_it_is_saved_at_googles_frame(self, tmp_path, monkeypatch):
+        stub_photometa(monkeypatch, TWO_LEVELS)
+        deny_probe(monkeypatch)
+        requested = red_tiles(monkeypatch)
+
+        assert gsv.download_single_pano(str(tmp_path), dimless()) == DownloadResult.success
+        assert {(x, y) for x, y, _ in requested} == {(0, 0), (1, 0)}
+        assert all('&zoom=1&' in url for _x, _y, url in requested)
+        assert jpeg_dimensions(str(tmp_path / PANO[:2] / (PANO + '.jpg'))) == (1024, 512)
+        assert gsv._photometa_run.frames_from_photometa == 1
+
+    def test_no_frame_is_transient_and_fans_nothing_out(self, tmp_path, monkeypatch, capsys):
+        stub_photometa(monkeypatch, gone=True)
+        count_probes(monkeypatch, 5)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('a pano with no frame must not fan out'))
+
+        with pytest.raises(gsv.FrameUnknownError) as raised:
+            gsv.download_single_pano(str(tmp_path), dimless())
+
+        assert not isinstance(raised.value, gsv.FrameDisagreementError)
+        assert 'frame disagreement' not in str(raised.value)
+        assert 'frame disagreement' not in capsys.readouterr().out
+        assert list((tmp_path / PANO[:2]).iterdir()) == []
+
+    def test_an_inconsistent_pyramid_is_a_disagreement_and_fans_nothing_out(self, tmp_path, monkeypatch, capsys):
+        """S1 through download_single_pano: refused before the fan-out, never stitched as a quarter."""
+        stub_photometa(monkeypatch, SERIES_16384[1:])
+        deny_probe(monkeypatch)
+        stub_tiles(monkeypatch, lambda tile: pytest.fail('an inconsistent pyramid must not fan out'))
+
+        with pytest.raises(gsv.FrameDisagreementError) as refused:
+            gsv.download_single_pano(str(tmp_path), dimless())
+
+        text = str(refused.value)
+        assert 'frame disagreement' in text and '16384x8192' in text and 'no width/height' in text
+        assert list((tmp_path / PANO[:2]).iterdir()) == []
+
+    def test_a_retired_one_is_the_permanent_verdict(self, tmp_path, monkeypatch):
+        stub_photometa(monkeypatch, gone=True)
+        count_probes(monkeypatch, -1)
+        requested = red_tiles(monkeypatch)
+
+        assert gsv.download_single_pano(str(tmp_path), dimless()) == DownloadResult.failure
+        assert requested == []
+
+    def test_an_unanswered_one_raises_and_is_counted(self, tmp_path, monkeypatch):
+        fresh_latch()
+        stub_photometa(monkeypatch, SERIES_16384)
+        deny_probe(monkeypatch)
+
+        with pytest.raises(gsv.FrameUnknownError):
+            gsv.download_single_pano(str(tmp_path), dimless())
+        assert gsv._photometa_run.frames_unknown == 1
+        assert gsv._photometa_run.frames_from_photometa == 0
 
 
 class TestTheImagePhaseSharesTheBlockLatch:
@@ -449,6 +665,49 @@ class TestRequestsPerPano:
         shard.mkdir()
         (shard / (PANO + '.jpg')).write_bytes(b'already here')
         assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)]) == (0, 0, 0)
+
+    # #184: a pano the app reports no frame for. The extra cost over a dimensioned pano is one photometa request
+    # when photometa answers, and nothing when it cannot be asked - the probe is never a substitute for a frame.
+
+    def run_dimless(self, tmp_path, monkeypatch, **photometa):
+        asked = stub_photometa(monkeypatch, **photometa)
+        probes = count_probes(monkeypatch, 5)
+        tiles = red_tiles(monkeypatch)
+        try:
+            gsv.download_single_pano(str(tmp_path), dimless())
+        except (gsv.FrameUnknownError, gsv.FrameDisagreementError):
+            pass
+        return len(asked), len(probes), len(tiles)
+
+    def test_a_new_dimensionless_live_pano_costs_one_photometa_and_no_probe(self, tmp_path, monkeypatch):
+        assert self.run_dimless(tmp_path, monkeypatch, sizes=TWO_LEVELS) == (1, 0, 2)
+
+    def test_a_new_dimensionless_retired_pano_costs_one_photometa_and_two_probes(self, tmp_path, monkeypatch):
+        asked = stub_photometa(monkeypatch, gone=True)
+        probes = count_probes(monkeypatch, -1)
+        tiles = red_tiles(monkeypatch)
+        assert gsv.download_single_pano(str(tmp_path), dimless()) == DownloadResult.failure
+        assert (len(asked), len(probes), len(tiles)) == (1, 2, 0)
+
+    def test_a_dimensionless_pano_photometa_does_not_know_but_the_probe_sees_costs_three(self, tmp_path,
+                                                                                         monkeypatch):
+        asked = stub_photometa(monkeypatch, gone=True)
+        probes = count_probes(monkeypatch, 5)
+        tiles = red_tiles(monkeypatch)
+        with pytest.raises(gsv.FrameUnknownError):
+            gsv.download_single_pano(str(tmp_path), dimless())
+        assert (len(asked), len(probes), len(tiles)) == (1, 2, 0)
+
+    def test_a_dimensionless_pano_with_an_inconsistent_pyramid_costs_one_photometa(self, tmp_path, monkeypatch):
+        assert self.run_dimless(tmp_path, monkeypatch, sizes=SERIES_16384[1:]) == (1, 0, 0)
+
+    def test_a_dimensionless_pano_under_a_fresh_latch_costs_nothing(self, tmp_path, monkeypatch):
+        fresh_latch()
+        assert self.run_dimless(tmp_path, monkeypatch, sizes=TWO_LEVELS) == (0, 0, 0)
+
+    def test_a_dimensionless_pano_whose_photometa_fails_costs_one_photometa_and_no_probe(self, tmp_path,
+                                                                                         monkeypatch):
+        assert self.run_dimless(tmp_path, monkeypatch, error=gsv.DepthPayloadError('down')) == (1, 0, 0)
 
 
 # --- the probe arm checks the frame too (review item 1) ------------------------------------------------------

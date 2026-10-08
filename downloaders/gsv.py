@@ -584,15 +584,18 @@ StitchedPano = collections.namedtuple('StitchedPano', ['image', 'undersized_tile
 ImageLevels = collections.namedtuple('ImageLevels', ['sizes', 'tile_size'])
 
 # resolve_frame's answer.
-#   width, height - the caller's frame (the app's /adminapi/panos dims), never Google's: it is what gets saved.
+#   width, height - the frame that gets saved: the caller's (the app's /adminapi/panos dims) whenever it has
+#                   one, never Google's. Only when the caller has none is it photometa's top level (#184).
 #   zoom          - the level to fetch.
 #   consistent    - whether the grid the caller's frame implies at `zoom` is exactly a level Google reports
 #                   (choose_zoom). Always True when the probe answered, which cannot tell.
 #   served_dims   - Google's top level, or None when the probe answered.
-#   evidence      - 'photometa' or 'probe'.
-#   refusal       - why photometa's answer is not stitchable, when consistent is False: 'frame' (no reported
-#                   level is the caller's grid) or 'tile_size' (the levels are not cut in 512 px tiles). None
-#                   otherwise, including on the probe arm, whose frame check is download_single_pano's.
+#   evidence      - 'photometa', 'probe', or 'photometa-dims' (the caller had no frame, so photometa's top
+#                   level IS the frame - #184).
+#   refusal       - why the answer is not stitchable, when consistent is False: 'frame' (no reported level is
+#                   the caller's grid - with 'photometa-dims', the served top level's own grid, #184) or
+#                   'tile_size' (the levels are not cut in 512 px tiles). None otherwise, including on the probe
+#                   arm, whose frame check is download_single_pano's.
 ResolvedFrame = collections.namedtuple('ResolvedFrame',
                                        ['width', 'height', 'zoom', 'consistent', 'served_dims', 'evidence',
                                         'refusal'], defaults=(None,))
@@ -611,6 +614,37 @@ class FrameDisagreementError(Exception):
     photometa request (or four probe requests on the fallback). Deliberately not a permanent verdict: the
     app's frame can catch up (a SidewalkWebpage gsv_data refresh is the remedy), and a permanent verdict on a
     brand-new evidence source, for a source with no breaker, is the wrong default.
+    """
+
+
+class FrameUnknownError(Exception):
+    """The pano list has no frame for this GSV pano and photometa gave none tonight (#184).
+
+    Raised by resolve_frame, only on its photometa arm, when the record carries no width/height and either
+    photometa is unanswered (skipped under a fresh block latch, given up earlier in the run, or failed or
+    refused on this pano) or photometa said "not found" while the tile probe found imagery. The tile probe is
+    not a substitute for a frame - it says whether zoom 5 or 3 has imagery, never how wide the pano is (a
+    zoom-5 pano is 16384 or 13312 wide) - so it is not sent when photometa is unanswered, and the pano costs
+    one photometa request at most; after a "not found" it has already run, for the permanent verdict.
+
+    TRANSIENT under the #41 ledger, the contract every raise out of download_pano has: counted in tonight's
+    failures, not ledgered, re-attempted next run. Why that and not the permanent downloaded=0 the
+    dimensionless case used to get, on measurements:
+      * The old verdict was reached without asking Google, and it cost data: washington-dc serves 78,300 of its
+        78,301 /adminapi/panos records without dims (2026-10-06), and its first two nights (2026-09-24/25)
+        ledgered 1,349 panos downloaded=0 at zero requests, 1,348 of them labelled. None is ever re-asked.
+      * Every other GSV permanent verdict rests on two black probe tiles on 200 responses (#166). A verdict
+        that depended on whether a latch file was fresh would be a fact about this HOST written into a ledger
+        about PANOS.
+      * Seattle's 106 dimensionless records (2026-09-28): photometa knew 3 and said "not found" for 103. Those
+        103 still reach the permanent verdict - through the probe, on the usual black-tile evidence - so the
+        population this exception keeps re-asking is only the unanswered nights, which the latch bounds to 6 h.
+
+    Deliberately NOT a FrameDisagreementError: that one is Google answering a question about the FRAME (two
+    frames that disagree), and DownloadRunner books it as an answer for `images-no-success`. This is Google
+    answering nothing about the frame (not asked, or "not found" while the probe saw imagery), which is a
+    raise like any network failure. pushback_reason is None for it: a refusal met on the way here has already
+    latched through _photometa_refused, and counting it again would double-book one refusal.
     """
 
 
@@ -738,6 +772,10 @@ class _PhotometaRunMemory:
         self.consecutive_failures = 0
         self.given_up = False
         self.announced = False
+        # #184: dimensionless GSV panos this run - saved at photometa's frame, and left without a frame
+        # (FrameUnknownError). DownloadRunner's image phase reports both on stdout and scrape.log.
+        self.frames_from_photometa = 0
+        self.frames_unknown = 0
 
 
 _photometa_run = _PhotometaRunMemory()
@@ -862,16 +900,19 @@ def _photometa_failed(pano_id, e):
 def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     """ResolvedFrame for `pano_info`, or None when there is nothing to download.
 
-    None is a PERMANENT verdict about the pano, and covers both of its causes: no reported dimensions (there
-    is no other source for them, so asking again tomorrow asks the same question), and a black tile at both
-    zoom 5 and zoom 3 ON 200 RESPONSES, which is what Google answers for a pano id it no longer serves. Neither
-    is a transient condition, so callers ledger it rather than retrying. A probe answered with any status but
+    None is a PERMANENT verdict about the pano: a black tile at both zoom 5 and zoom 3 ON 200 RESPONSES, which
+    is what Google answers for a pano id it no longer serves, so callers ledger it rather than retrying. The
+    other None - no reported dimensions - survives only with photometa=False (refetch_panos.py's seam); on the
+    nightly path a dimensionless pano asks photometa for its frame (#184, _resolve_frame_from_photometa), and
+    raises FrameUnknownError, a transient, when photometa gives no frame: unanswered, or "not found" while the
+    probe sees imagery. A probe answered with any status but
     200 RAISES requests.HTTPError, whatever its body (#166 option b), and so does a network failure; both stay
     transient. Photometa never founds a None on its own (step 3), so the 200 rule is the whole of what a
     permanent GSV verdict rests on, on either arm.
 
     The decision (#74):
-      1. No dims: None, at zero requests.
+      1. No dims: the frame from photometa (#184, _resolve_frame_from_photometa) - or, with photometa=False,
+         None at zero requests.
       2. Ask photometa, without the depth payload (16 KB), which levels the pano is served at, and pick the
          zoom with choose_zoom. A frame no level admits comes back with consistent=False - reported, never
          raised here: refetch_panos.py composes resolve_zoom_and_dims with its own frame gate, and the nightly
@@ -881,8 +922,9 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
          breaker, so a photometa fault answering "not found" would otherwise write off a city in a night).
       4. Photometa refused, failed, or skipped under a fresh block latch: the probe answers, as it always did.
 
-    Costs one photometa request for a live pano, one photometa plus two probe requests for a retired one, two
-    probe requests under a fresh latch, and nothing at all when the dimensions are missing.
+    Costs one photometa request for a live pano, one photometa plus two probe requests for a retired one, and
+    two probe requests under a fresh latch. A dimensionless pano costs the same minus the probe's fallback:
+    nothing under a fresh latch, one failed photometa request when photometa fails.
 
     @param block_latch_path Where Google's refusals are remembered; None is image_block_latch_path, which
                             DownloadRunner.run sets from --depth-block-latch, else the host default the depth
@@ -905,10 +947,12 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     # the probe and test-fetched, and a black tile returned DownloadResult.failure, which is PERMANENT
     # under the #41 ledger. So stale 2022 metadata could blacklist a pano Google still serves.
 
-    # Without dims we cannot size the tile grid. Checked before anything is opened, so this case costs
-    # nothing.
     if width is None or height is None:
-        return None
+        # No frame from the app. Without photometa (refetch_panos.py's seam, which works from stored files that
+        # always have dims) this is still None at zero requests. With it, Google is asked for the frame (#184).
+        if not photometa:
+            return None
+        return _resolve_frame_from_photometa(pano_id, block_latch_path)
 
     # The reported width is Google's own number and is in hand before any request, so the #121 tripwire runs
     # here: a photometa request or probe that then fails transiently must not swallow the warning. It sits in
@@ -935,6 +979,71 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     zoom, consistent = choose_zoom(levels.sizes, width, height)
     return ResolvedFrame(width, height, zoom, consistent, served_dims, 'photometa',
                          None if consistent else 'frame')
+
+
+def _resolve_frame_from_photometa(pano_id, block_latch_path):
+    """resolve_frame for a record with no width/height (#184): the frame is photometa's top level.
+
+    Until #184 this case was None at zero requests - a permanent downloaded=0 without asking Google, which
+    wrote off 1,349 washington-dc panos (see FrameUnknownError). Now:
+      * photometa answers with 512 px tiles: the top level sizes[-1] is the frame (evidence
+        'photometa-dims'), and choose_zoom(sizes, *sizes[-1]) picks the zoom - the same check the dimensioned
+        arm runs, NOT "zoom len(sizes) - 1". The stitcher sizes its grid from the width (_dims_at_zoom infers
+        the max zoom from it), so a pyramid whose top is not at that index - one cut short at the bottom, say -
+        would fetch the top-left quarter and upscale it (#216 review S1, #74's failure mode). Such a pyramid
+        is refusal 'frame', at no further request. The #121 width tripwire runs on Google's width, since
+        there is no app width to run it on.
+      * photometa answers with other tiles: refused as on the dimensioned arm ('tile_size').
+      * photometa says "not found": the probe runs, exactly as for a dimensioned pano, so a permanent None
+        still rests on two black tiles on 200s (plan decision D5). Imagery at the probe without a frame is
+        FrameUnknownError: nothing to stitch tonight. Deliberately not a frame disagreement (#216 review S2):
+        "not found" is no answer about the frame, there is no app frame to disagree with and no app-side
+        remedy, and #207 alarms on every disagreement - a pano photometa never knows but the tile endpoint
+        serves would fail the night forever.
+      * photometa unanswered (fresh latch, given up, failed, refused): FrameUnknownError, no probe.
+
+    Costs one photometa request for a live pano or an inconsistent pyramid, one plus two probe tiles for a
+    retired one or a probe-only one, and nothing beyond a failed photometa request when photometa is
+    unanswered.
+    """
+    latch_path, _pace_path = image_host_state_paths(block_latch_path)
+    levels = _photometa_levels(pano_id, latch_path)
+    if levels is _PHOTOMETA_UNANSWERED:
+        latched_hours = _block_latch_age_hours(latch_path)
+        if latched_hours is not None and latched_hours < DEPTH_BLOCK_LATCH_HOURS:
+            why = "the block latch %s is fresh (set %.1fh ago), so photometa is not asked" % (latch_path,
+                                                                                            latched_hours)
+        elif _photometa_run.given_up:
+            why = ("photometa was refused, or failed %d times in a row, this run"
+                   % PHOTOMETA_MAX_CONSECUTIVE_FAILURES)
+        else:
+            why = "photometa did not answer"
+        _photometa_run.frames_unknown += 1
+        raise FrameUnknownError("pano %s: the pano list has no width/height and %s; no frame tonight, not "
+                                "ledgered, retried next run" % (pano_id, why))
+    if levels is None:
+        zoom = _probe_zoom(pano_id)
+        if zoom is None:
+            return None
+        _photometa_run.frames_unknown += 1
+        raise FrameUnknownError("pano %s: the pano list has no width/height and photometa says not found, but "
+                                "the tile probe found imagery at zoom %d, which does not say how wide the pano "
+                                "is; no frame tonight, not ledgered, retried next run" % (pano_id, zoom))
+
+    served_dims = tuple(levels.sizes[-1])
+    top = len(levels.sizes) - 1
+    if tuple(levels.tile_size) != (TILE_SIZE, TILE_SIZE):
+        logging.warning("IMAGEDOWNLOAD: pano %s: photometa reports %sx%s tiles, not %d", pano_id,
+                        levels.tile_size[0], levels.tile_size[1], TILE_SIZE)
+        return ResolvedFrame(served_dims[0], served_dims[1], top, False, served_dims, 'photometa-dims',
+                             'tile_size')
+    common.warn_if_wider_than_viewer_ceiling(pano_id, served_dims[0], 'gsv')
+    zoom, consistent = choose_zoom(levels.sizes, *served_dims)
+    if not consistent:
+        return ResolvedFrame(served_dims[0], served_dims[1], zoom, False, served_dims, 'photometa-dims', 'frame')
+    logging.info("IMAGEDOWNLOAD: pano %s: no width/height in the pano list; frame from photometa: %dx%d at "
+                 "zoom %d (#184)", pano_id, served_dims[0], served_dims[1], zoom)
+    return ResolvedFrame(served_dims[0], served_dims[1], zoom, True, served_dims, 'photometa-dims')
 
 
 def resolve_zoom_and_dims(pano_info):
@@ -1171,6 +1280,10 @@ def _frame_refusal(pano_id, frame):
     stitch and permanently ledger exactly the crop a photometa refusal holds off (#74 review item 1).
     """
     served = '%dx%d' % frame.served_dims if frame.served_dims else None
+    if frame.refusal == 'frame' and frame.evidence == 'photometa-dims':
+        return ("frame disagreement: the pano list has no width/height, and photometa serves this pano at %s "
+                "in a pyramid whose top level is not at the zoom this stitcher would fetch it at, so a native "
+                "fetch of that frame is impossible (#184)" % (served,))
     if frame.refusal == 'frame':
         return ("frame disagreement: the app's frame is %dx%d but Google serves this pano at %s, and no "
                 "reported level is that frame's tile grid" % (frame.width, frame.height, served))
@@ -1204,10 +1317,12 @@ def download_single_pano(storage_path, pano_info):
     if os.path.isfile(out_image_name):
         return DownloadResult.skipped
 
+    # A dimensionless pano photometa cannot answer for raises FrameUnknownError here - transient (#184).
     frame = resolve_frame(pano_info)
     if frame is None:
-        # No dims, or no imagery at any zoom - both permanent properties of the pano, so the #41 ledger
-        # writes downloaded=0 and never re-attempts it.
+        # No imagery at any zoom, on 200s - a permanent property of the pano, so the #41 ledger writes
+        # downloaded=0 and never re-attempts it. Since #184 this is the ONLY way here: missing dims ask
+        # photometa instead of returning None.
         return DownloadResult.failure
     refusal = _frame_refusal(pano_id, frame)
     if refusal is not None:
@@ -1223,13 +1338,16 @@ def download_single_pano(storage_path, pano_info):
         raise FrameDisagreementError('pano %s: %s' % (pano_id, refusal))
 
     # fetch_pano_image always receives the APP's frame: the reported levels only ever choose which zoom (and so
-    # which grid) is requested, never what size the saved JPEG is.
+    # which grid) is requested, never what size the saved JPEG is. The one exception is a pano the app has no
+    # frame for (#184), where photometa's top level is the frame and the saved JPEG is Google's served size.
     stitched = fetch_pano_image(pano_id, frame.width, frame.height, frame.zoom)
     # atomic_output_path, not a direct save: an image on disk IS the resume marker, so a mid-write crash
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:
         stitched.image.save(tmp_path, 'jpeg')
     _write_display_copy(stitched.image, out_image_name, pano_id)
+    if frame.evidence == 'photometa-dims':
+        _photometa_run.frames_from_photometa += 1
 
     # log.csv column 8 (#52 item 2): the JPEG on disk holds less imagery than its dimensions advertise. See
     # fetch_pano_image for why the test is not `zoom == 3`.

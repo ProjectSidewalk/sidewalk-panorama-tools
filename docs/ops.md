@@ -294,9 +294,13 @@ permanent.** Transient failures leave no row and retry automatically on the next
 
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano. A permanent verdict, one per source:
-  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200), or unknowable dimensions. No
-    breaker entry, deliberately: a retired GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4%
-    of a large city's rows.
+  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200). No breaker entry,
+    deliberately: a retired GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4% of a large
+    city's rows. A pano with no width/height in the pano list was a second verdict, reached at zero requests,
+    until [#184](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/184); it now asks
+    photometa for the frame, and is retried (no row) on a night photometa gives it no frame (unanswered, or
+    "not found" while the probe sees imagery). Rows that verdict
+    wrote are still in the ledgers: see [Re-admitting the dimensionless write-offs](#re-admitting-the-dimensionless-write-offs).
   * **Mapillary** — a 404, or a record that names the image and carries no original-resolution rendition.
     No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured 2026-09-06 — so the
     record with no rendition is the one that fires in practice, and three of them in a row stop the run
@@ -327,6 +331,42 @@ A [store-mode pull](downloader.md#pulling-from-the-project-sidewalk-pano-store) 
 its absence is never a verdict: it is counted in field 9 for that run, left unledgered, and retried next run.
 It writes nothing to `depth_log.csv` either — a pulled `.depth.npz` is ledgered `saved` by the next scrape's
 depth phase, which finds it on disk, at zero requests.
+
+### Re-admitting the dimensionless write-offs
+
+Before [#184](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/184), a GSV pano the pano list
+gave no width/height for was ledgered `downloaded=0` without a request to Google. Those rows are never
+retried. On the production store, `washington-dc/pano_id_log.csv` holds **1,349** of them (469 stamped
+2026-09-24 and 880 stamped 2026-09-25; 1,348 labelled), and seattle-wa probably holds most of its 106
+dimensionless records. The ledger has no reason column, so the repair is the force-retry lever above,
+narrowed three ways, and it is an operator's decision, never the scraper's. `readmit_dimless_writeoffs.py`
+removes a row only when it is a three-field `0` row, its `fetched_at` falls on a `--date` you name (no
+default), **and** its pano is a GSV record without width/height in the pano list as served now:
+
+```bash
+mount | grep sshfs        # the store's mount must NOT carry workaround=rename (see below)
+.venv/bin/python readmit_dimless_writeoffs.py /mnt/panostore/washington-dc --host sidewalk-dc.cs.washington.edu \
+    --date 2026-09-24 --date 2026-09-25            # dry run: prints the count (expect 1349), writes nothing
+.venv/bin/python readmit_dimless_writeoffs.py ... --apply   # outside the nightly window
+```
+
+Run it from the checkout's venv (`.venv/bin/python`, as the cron line does; the system `python3` has no
+`requests`) and **as the cron user, never through `sudo`**: the queue's default lock is
+`/tmp/sidewalk-scrape-queue.lock`, created mode 0664 by whoever opens it first, so a root-created lock (after
+a reboot has cleared `/tmp`, say) would stop the next night's queue from opening it. `--apply` replaces the
+ledger with a rename, which over sshfs is atomic only through OpenSSH's `posix-rename@openssh.com`; sshfs uses
+it whenever the server offers it, and `-o workaround=rename` replaces it with unlink-then-rename, so check the
+mount options first.
+
+`--apply` takes the nightly queue's lock (exit 3 if a run holds it), re-reads the ledger under it, keeps the
+whole ledger as `pano_id_log.csv.bak-<stamp>` and the removed rows as `pano_id_log.csv.readmitted-<stamp>.csv`,
+and replaces the ledger; every other line is kept byte for byte. A second run finds nothing. A manual
+`DownloadRunner.py` run outside the queue does not take that lock, so do not run one alongside. Only run it
+once the #184 build is on the box: on the build deployed before it (c9ff03c) D8 stops DC, so the re-admitted
+panos would wait unscraped, and a build from before D8 would write them off again the same night. It
+never touches imagery, and a retry never overwrites any: every downloader short-circuits on an existing
+`.jpg`, so a pano already on the store is re-registered as skipped. A re-admitted pano Google has retired
+costs its photometa request and two probe tiles once more, and is written off again on that evidence.
 
 ### `fetched_at`, and the two row widths
 
