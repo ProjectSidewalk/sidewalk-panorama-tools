@@ -476,7 +476,7 @@ class ImageLedger:
 
 
 # Consecutive permanent (downloaded=0) verdicts from ONE source that stop this run ledgering that source
-# (#113). A source absent from this table has no breaker, which is the default and the common case.
+# (#113). A source absent from this table has no breaker at all; every source supported today has an entry.
 #
 # The failure this guards is not a property of any pano: a Mapillary token that has lost the needed scope
 # would be answered the way Meta's Graph family commonly answers a permission-denied field - by OMITTING it
@@ -513,14 +513,31 @@ class ImageLedger:
 # its pictures at once. The candidates are shuffled, so at the ~32% flat rate a broken filter would produce
 # would trip this within about ninety panos on the first night, and a trip is exit 1 and cron mail - the
 # loud, correctable direction. Three legitimate ones adjacent in a shuffled healthy corpus is not.
-MAX_CONSECUTIVE_PERMANENT_FAILURES = {'mapillary': 3, 'panoramax': 3}
+#
+# GSV (#166) takes an entry too, sized for its base rate rather than at 3. Its permanent verdict rests on
+# two black probe tiles that both came back 200 (#175), and a retired pano is answered exactly that way - so
+# if the cbk endpoint ever answered black 200s across the board, every unattempted GSV pano in the city
+# would be written off in one night with exit 0 and no mail. The push-back breaker below cannot see that: it
+# counts refusals, and a black 200 is not one. Why 50 and not 3: a retired GSV pano is an ordinary verdict
+# (7.9-8.4% of the mature ledgers above, ~52% of labelled panos fleet-wide), and a first-night backfill's
+# share is its own - unmeasured, so ASSUME it could be 80-90%. The candidates are shuffled (below), so a natural run is a run of independent
+# draws, and the expected panos between runs of k at retired share p is (1 - p^k) / ((1 - p) p^k): at 0.8, a
+# run of 3 every ~5 panos but a run of 50 every ~350k; at 0.9, every ~1,900 (30 would be every ~230, which
+# is why not the issue's 30). A wholesale black-200 outage still trips within 50 panos on its first night.
+# The cost of a true trip is 49 false rows per city per night rather than Mapillary's 2, filterable by fetched_at.
+# PROVISIONAL: the value is to be re-set from a fleet measurement (the longest natural run of consecutive
+# GSV downloaded=0 verdicts per city per night), and this line is the one to change.
+GSV_MAX_CONSECUTIVE_PERMANENT = 50
+MAX_CONSECUTIVE_PERMANENT_FAILURES = {'mapillary': 3, 'panoramax': 3, 'gsv': GSV_MAX_CONSECUTIVE_PERMANENT}
+# The first thing to check after a GSV trip, in the end-of-phase summary in place of the credentials line.
+GSV_TRIP_CHECK = ("Check whether the cbk endpoint is answering black tiles (a sample of those ids still opening in "
+                  "Street View means it is; docs/ops.md, 'When the image phase stops trusting a source')")
 
 
 # --- The GSV push-back breaker (#162) ---------------------------------------------------------------------
 #
-# NOT an entry in the table above, and `gsv` must still never get one there. #113 counts permanent verdicts,
-# and 8.4% of a mature GSV ledger is an ordinary retired pano, so three in a row is routine. This breaker
-# counts something else: Google REFUSING this host (gsv.pushback_reason - a tile 429/403, an interstitial, or
+# NOT the table entry above. #113 counts permanent verdicts, and 8.4% of a mature GSV ledger is an ordinary
+# retired pano, so GSV's entry there is 50, not 3 (#166). This breaker counts something else: Google REFUSING this host (gsv.pushback_reason - a tile 429/403, an interstitial, or
 # a zoom-probe RetryError carrying 429/403), which is never a verdict and so is never ledgered. The rules differ
 # accordingly: only a GSV success or fallback_success resets the count (a transient, a skip, a permanent verdict
 # and any other source's outcome neither count nor reset); a trip withholds nothing, because there are no rows
@@ -794,10 +811,20 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         # Both channels, like the per-trip message above: this is the half that carries the unattempted count
         # and the repair pointer, which is exactly what someone needs a week later reading scrape.log while
         # editing the ledger. It was print-only until the 2026-09-09 review.
+        # What to check first depends on the source: cbk tiles carry no credentials, so GSV's advice is the
+        # outage #166 guards (#215 review). Any other tripped source keeps the credentials line.
+        checks = []
+        if 'gsv' in verdict_tripped:
+            checks.append(GSV_TRIP_CHECK)
+        others = sorted(verdict_tripped - {'gsv'})
+        if others:
+            checks.append("Check that source's credentials before the next run" if not checks
+                          else "check %s's credentials before the next run" % ', '.join(others))
         summary = ("IMAGEDOWNLOAD: WARNING - breaker tripped for %s; %d pano(s) were left unattempted and "
-                   "nothing was ledgered for them, so they retry next run. Check that source's credentials "
-                   "before the next run, then look for false downloaded=0 rows in pano_id_log.csv."
-                   % (', '.join(sorted(verdict_tripped)), sum(unattempted[s] for s in verdict_tripped)))
+                   "nothing was ledgered for them, so they retry next run. %s, then look for false "
+                   "downloaded=0 rows in pano_id_log.csv."
+                   % (', '.join(sorted(verdict_tripped)), sum(unattempted[s] for s in verdict_tripped),
+                      '; '.join(checks)))
         logging.error("%s", summary)
         print(summary)
     if refused:

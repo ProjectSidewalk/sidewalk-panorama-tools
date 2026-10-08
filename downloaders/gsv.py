@@ -610,7 +610,7 @@ class FrameDisagreementError(Exception):
     under the #41 ledger: counted in tonight's failures, not ledgered, re-attempted next run at the cost of one
     photometa request (or four probe requests on the fallback). Deliberately not a permanent verdict: the
     app's frame can catch up (a SidewalkWebpage gsv_data refresh is the remedy), and a permanent verdict on a
-    brand-new evidence source, for a source with no breaker, is the wrong default.
+    brand-new evidence source, for a source whose breaker allows 49 rows a night (#166), is the wrong default.
     """
 
 
@@ -877,8 +877,8 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
          raised here: refetch_panos.py composes resolve_zoom_and_dims with its own frame gate, and the nightly
          refusal is download_single_pano's policy.
       3. Photometa "not found" does NOT become None on its own: the probe runs first, so a permanent verdict
-         rests on the same two black tiles it always has (plan decision D5 - GSV has no permanent-verdict
-         breaker, so a photometa fault answering "not found" would otherwise write off a city in a night).
+         rests on the same two black tiles it always has (plan decision D5 - GSV's permanent-verdict breaker
+         is 50 (#166), so a photometa fault answering "not found" would still write off 49 a city a night).
       4. Photometa refused, failed, or skipped under a fresh block latch: the probe answers, as it always did.
 
     Costs one photometa request for a live pano, one photometa plus two probe requests for a retired one, two

@@ -294,9 +294,9 @@ permanent.** Transient failures leave no row and retry automatically on the next
 
 * `1` — image on disk, or a prior success.
 * `0` — the source has nothing for this pano. A permanent verdict, one per source:
-  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200), or unknowable dimensions. No
-    breaker entry, deliberately: a retired GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4%
-    of a large city's rows.
+  * **GSV** — no imagery at any zoom (a fully black tile at both, on a 200), or unknowable dimensions. Its
+    breaker entry is 50, not 3 (#166): a retired GSV pano is a permanent verdict and an ordinary one, at
+    7.9–8.4% of a large city's rows, so the bound is 49 false rows per city per night.
   * **Mapillary** — a 404, or a record that names the image and carries no original-resolution rendition.
     No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured 2026-09-06 — so the
     record with no rendition is the one that fires in practice, and three of them in a row stop the run
@@ -779,8 +779,9 @@ cannot tell from a finished backfill — so after drift, check every city's `dep
 ## When the image phase stops trusting a source
 
 A `downloaded=0` row is permanent and is only undone by hand-editing `pano_id_log.csv` on the store, so the
-image loop stops writing them once one source produces three in a row
-([#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113)):
+image loop stops writing them once one source produces three in a row (fifty for GSV)
+([#113](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/113),
+[#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)):
 
 ```
 IMAGEDOWNLOAD: WARNING - 3 consecutive permanent failures from source mapillary. That is a condition of the
@@ -811,9 +812,31 @@ Only the tripped source stops: a city carrying both GSV and Mapillary panos keep
 is unchanged — its fields are counts of work and the breaker is not one of them, so stdout, `scrape.log`
 and the exit code are where this lives.
 
-GSV has no *permanent-verdict* breaker, deliberately: 7.9–8.4% of a large GSV city's ledger is a permanent
-verdict (retired imagery), so three in a row is routine there rather than evidence — about every 1,700 panos
-at 8.4%. (It has a different one, for Google refusing the host:
+**GSV's threshold is 50, not 3** ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)):
+7.9–8.4% of a large GSV city's ledger is a permanent verdict (retired imagery), so three in a row is routine
+there rather than evidence — about every 1,700 panos at 8.4%, and far more often in a first-night backfill
+or a re-admitted backlog, where the retired share is that backlog's own (unmeasured; it could be much higher
+than the fleet's ~52% for labelled panos). What the entry guards is the cbk endpoint answering black 200s
+across the board, which would otherwise write off the city's whole unattempted GSV backlog in one night. A
+GSV trip prints the same two lines with `source gsv`, and its summary points here instead of at credentials
+(cbk tiles have none). It costs **49 false rows per city per night**, not two — and the bound is per city
+and per night, not cumulative: a fleet-wide outage costs 49 in every GSV city that runs, and the same again
+every night until it is fixed. Before deleting anything, decide whether it was that outage or a natural
+streak in a heavily retired backlog: an outage shows up in every GSV city that night, and in an outage a
+sample of the ids still opens in Street View (they were not retired). A natural streak's rows are true
+verdicts and stay; report it, because the 50 is provisional and is re-sized from exactly that measurement.
+For an outage, the night's GSV write-offs are the `0` rows with 22-character ids stamped that night. The
+night starts at 19:00 Pacific and the stamp is host-local, so one night's rows carry **two** calendar dates;
+filter on both (or take the run's start from the city's `log.csv` row and filter from there):
+
+```
+awk -F, '$2 == 0 && length($1) == 22 && $3 ~ /^2026-10-0[67]/' pano_id_log.csv
+```
+
+Delete those rows (the withheld 50th was never written) and the next run re-attempts them. Do not try to
+separate the true retired verdicts stamped earlier that night from the false ones: deleting a true `0` row
+is harmless (the re-attempt costs one photometa plus two probe requests and lands the same verdict).
+(GSV also has a different breaker, for Google refusing the host:
 [When Google pushes back on the image phase](#when-google-pushes-back-on-the-image-phase).) The
 table is per source, in `DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`; a source with no entry is
 unlimited, so **a new source declares its own threshold or gets no breaker at all**.

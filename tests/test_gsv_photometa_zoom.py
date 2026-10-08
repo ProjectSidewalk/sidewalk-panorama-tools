@@ -161,8 +161,8 @@ class TestResolveFrameUsesPhotometaFirst:
                                                (-1, None)])
     def test_not_found_falls_through_to_the_probe_before_a_permanent_verdict(self, monkeypatch, pick, expected):
         """D5: photometa's code 2 is not allowed to found a permanent downloaded=0 on its own. The verdict
-        rests on the two black tiles, as it always has - GSV has no permanent-verdict breaker, so a photometa
-        fault answering "not found" for live panos would otherwise write off a city's new panos in a night."""
+        rests on the two black tiles, as it always has - GSV's permanent-verdict breaker is 50 (#166), so a
+        photometa fault answering "not found" for live panos would still write off 49 a city a night."""
         stub_photometa(monkeypatch, gone=True)
         requested = count_probes(monkeypatch, pick)
 

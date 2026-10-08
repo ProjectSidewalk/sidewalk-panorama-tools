@@ -2030,13 +2030,14 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
     production ledgers on 2026-09-06, the permanent-failure rate is 0 of 9,229 on richmond-va (the only
     Mapillary city, whole corpus, after the 2026-09-05 catch-up) and 7.9-8.4% on the large GSV cities
     (seattle-wa 14,603/183,682; chicago-il 22,985/272,755). At 8.4% a source-blind breaker would trip about
-    every 1,700 panos on ordinary retired-imagery verdicts. test_a_long_run_of_gsv_verdicts_is_still_ledgered
-    below is that measurement as a test.
+    every 1,700 panos on ordinary retired-imagery verdicts. GSV therefore carries its own, much larger
+    threshold (#166), and test_gsv_verdicts_one_short_of_its_threshold_are_all_ledgered is that measurement
+    as a test.
 
     Two tests hold the keying apart, and they catch different mutants (a 2026-09-09 review corrected a claim
     that one of them did it alone): the GSV test catches a breaker that TRIPS source-blind, while
     test_another_sources_verdicts_neither_count_nor_reset catches one that merely COUNTS source-blind and
-    trips per source - which the GSV test passes, because `limit is None` suppresses the trip there anyway.
+    trips per source - which the GSV test passes, because its verdicts stay under GSV's own threshold.
     """
 
     @staticmethod
@@ -2047,17 +2048,22 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
     def mapillary_panos(count):
         return [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(count)]
 
-    def drive(self, monkeypatch, storage, panos, verdicts):
+    @staticmethod
+    def gsv_panos(count):
+        return [{'pano_id': 'gsv-%d' % n, 'source': 'gsv'} for n in range(count)]
+
+    def drive(self, monkeypatch, storage, panos, verdicts, **phase_kwargs):
         """Run the image phase over `panos` in list order, returning (result tuple, attempt order).
 
         The loop shuffles what it attempts (#40/#41), which is right in production and useless here: a
         breaker counts CONSECUTIVE outcomes, so a test that cannot fix the order cannot state what it is
-        testing. Neutralised the same way TestSourceOrdering does it.
+        testing. Neutralised the same way TestSourceOrdering does it. `phase_kwargs` go straight through to
+        download_panorama_images (the out-parameters, the latch paths).
         """
         calls = []
         monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
         monkeypatch.setattr(DownloadRunner, 'download_pano', scripted_download_pano(verdicts, calls))
-        result = DownloadRunner.download_panorama_images(str(storage), panos)
+        result = DownloadRunner.download_panorama_images(str(storage), panos, **phase_kwargs)
         return result, calls
 
     def test_the_verdict_that_trips_the_breaker_is_not_ledgered_and_the_rest_are_not_attempted(
@@ -2167,8 +2173,8 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
         """The counter is keyed on source, not merely the trip.
 
         Without this, a single shared counter with a per-source trip passes every other test in the class -
-        the all-Mapillary tests are identical, the GSV test still passes because `limit is None` suppresses
-        the trip, and the mixed test's GSV panos are successes placed after the trip. In production that
+        the all-Mapillary tests are identical, the GSV test still passes because its verdicts stay under
+        GSV's own threshold, and the mixed test's GSV panos are successes placed after the trip. In production that
         mutant trips Mapillary after two ordinary GSV retired-imagery verdicts plus one Mapillary verdict,
         in exactly the shuffled mixed-source city this design is for.
         """
@@ -2184,21 +2190,132 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
         assert self.ledger_rows(storage) == ['gsv-0,0', 'gsv-1,0', 'mly-0,0'], 'the Mapillary verdict lands'
         assert result == (0, 0, 3, 0, 3)
 
-    def test_a_long_run_of_gsv_verdicts_is_still_ledgered(self, monkeypatch, tmp_path):
-        """The measurement in this class's docstring, as a test: GSV carries no breaker, because 8.4% of
-        chicago-il's ledger is a permanent verdict and three in a row is then routine rather than evidence.
+    def test_gsv_verdicts_one_short_of_its_threshold_are_all_ledgered(self, monkeypatch, tmp_path):
+        """The measurement in this class's docstring, as a test: 8.4% of chicago-il's ledger is a permanent
+        verdict, so three GSV verdicts in a row are routine rather than evidence, and GSV's threshold is far
+        above the other sources' (#166). One short of it is ordinary business and every row is written.
         A breaker that trips source-blind fails this one; one that only COUNTS source-blind passes it, and
         is caught by test_another_sources_verdicts_neither_count_nor_reset instead."""
+        limit = DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES['gsv']
+        assert limit > DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES['mapillary'], \
+            'a GSV threshold of 3 trips a healthy city every ~1,700 panos'
         storage = tmp_path / 'storage'
         storage.mkdir()
-        panos = [{'pano_id': 'gsv-%d' % n, 'source': 'gsv'} for n in range(10)]
+        panos = self.gsv_panos(limit - 1)
         verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
 
         result, calls = self.drive(monkeypatch, storage, panos, verdicts)
 
         assert calls == [p['pano_id'] for p in panos], 'every GSV pano is still attempted'
-        assert self.ledger_rows(storage) == ['gsv-%d,0' % n for n in range(10)]
-        assert result == (0, 0, 10, 0, 10)
+        assert self.ledger_rows(storage) == ['gsv-%d,0' % n for n in range(limit - 1)]
+        assert result == (0, 0, limit - 1, 0, limit - 1)
+
+    def test_the_gsv_verdict_that_reaches_the_threshold_trips_the_breaker(self, monkeypatch, tmp_path, capsys,
+                                                                            caplog):
+        """#166: the cbk endpoint answering black 200s across the board would otherwise write off a city's
+        whole unattempted GSV backlog as permanent downloaded=0, exit 0, and send no mail. The trip is #113's,
+        exactly as for Mapillary and Panoramax - the Nth verdict withheld, the rest unattempted, #113's repair
+        summary - and NOT the push-back breaker's: no 'blocked' stop for scrape_queue to read, and no block
+        latch, because a black 200 is Google answering, not Google refusing this host."""
+        limit = DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES['gsv']
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        latch = tmp_path / 'latch'
+        panos = self.gsv_panos(limit + 5)
+        verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
+        tripped, stop_reasons = set(), {}
+
+        with caplog.at_level(logging.ERROR):
+            result, calls = self.drive(monkeypatch, storage, panos, verdicts, tripped_sources=tripped,
+                                       stop_reasons=stop_reasons, block_latch_path=str(latch),
+                                       pace_state_path=str(tmp_path / 'pace.json'))
+
+        assert calls == ['gsv-%d' % n for n in range(limit)], 'panos after the trip must not be attempted'
+        assert self.ledger_rows(storage) == ['gsv-%d,0' % n for n in range(limit - 1)], \
+            'the verdict that proves the run is broken must not be written off'
+        assert result == (0, 0, limit, 0, limit)
+        assert tripped == {'gsv'}, 'main() turns this into exit 1'
+        assert stop_reasons.get('image_stop') is None, "not 'blocked': the queue must not read it as push-back"
+        assert not latch.exists(), 'a permanent-verdict trip is not Google refusing this host'
+        stdout = capsys.readouterr().out
+        logged = '\n'.join(record.getMessage() for record in caplog.records)
+        for channel in (stdout, logged):
+            assert '%d consecutive permanent failures from source gsv' % limit in channel
+            assert 'breaker tripped for gsv; 5 pano(s) were left unattempted' in channel
+            assert 'false downloaded=0 rows in pano_id_log.csv' in channel
+            assert 'pushed back' not in channel
+        # The advice is GSV's, not #113's credentials line: cbk tiles carry no credentials (#215 review).
+        assert 'cbk endpoint is answering black tiles' in stdout and 'docs/ops.md' in stdout
+        assert 'credentials' not in stdout
+
+    def test_a_summary_for_gsv_and_mapillary_carries_both_checks(self, monkeypatch, tmp_path, capsys):
+        """Both #113 trips in one mixed city: one summary line, GSV's cbk check AND Mapillary's credentials
+        check - neither source's advice may swallow the other's."""
+        limit = DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES['gsv']
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        panos = self.mapillary_panos(3) + self.gsv_panos(limit)
+        verdicts = {p['pano_id']: downloaders.DownloadResult.failure for p in panos}
+
+        self.drive(monkeypatch, storage, panos, verdicts, block_latch_path=str(tmp_path / 'latch'),
+                   pace_state_path=str(tmp_path / 'pace.json'))
+
+        stdout = capsys.readouterr().out
+        assert 'breaker tripped for gsv, mapillary' in stdout
+        assert 'cbk endpoint is answering black tiles' in stdout
+        assert "check mapillary's credentials" in stdout
+
+    def test_gsv_raises_and_skips_neither_count_nor_reset_the_gsv_streak(self, monkeypatch, tmp_path):
+        """The outcomes GSV actually produces between verdicts on a real night: a push-back raise (one, under
+        the push-back limit), a frame disagreement, and a skip. None is a verdict and none is a success, so
+        the streak runs straight through them and the trip lands on the 50th VERDICT. A reset on any of them
+        lets a cbk outage interleaved with the nightly raisers (#208's photospheres) never trip."""
+        limit = DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES['gsv']
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        failure = downloaders.DownloadResult.failure
+        head = ['gsv-%d' % n for n in range(limit - 2)]
+        between = ['gsv-pushback', 'gsv-frame', 'gsv-skip']
+        tail = ['gsv-%d' % n for n in range(limit - 2, limit + 1)]     # the 49th, 50th, and one never reached
+        order = head + between + tail
+        verdicts = {i: failure for i in order}
+        verdicts['gsv-pushback'] = downloaders.gsv.TilePushbackError(429, 0, 0)
+        verdicts['gsv-frame'] = downloaders.gsv.FrameDisagreementError('frame disagreement')
+        verdicts['gsv-skip'] = downloaders.DownloadResult.skipped
+        tripped = set()
+
+        result, calls = self.drive(monkeypatch, storage, [{'pano_id': i, 'source': 'gsv'} for i in order],
+                                   verdicts, tripped_sources=tripped, block_latch_path=str(tmp_path / 'latch'),
+                                   pace_state_path=str(tmp_path / 'pace.json'))
+
+        assert calls == order[:-1], 'trips on the 50th verdict; the pano after it is never attempted'
+        assert tripped == {'gsv'}, 'tripped by #113, not by the single push-back'
+        assert self.ledger_rows(storage) == ['%s,0' % i for i in head] + ['gsv-skip,1', '%s,0' % tail[0]]
+
+    def test_another_sources_outcomes_neither_count_toward_nor_reset_the_gsv_streak(self, monkeypatch,
+                                                                                      tmp_path):
+        """GSV direction of the source keying, in a shuffled mixed city: a Mapillary success must not clear
+        the GSV streak, and a Mapillary verdict must not add to it. After 48 GSV verdicts and one of each
+        from Mapillary, the next GSV verdict is the 49th (ledgered) and the one after it the 50th (trips)."""
+        limit = DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES['gsv']
+        storage = tmp_path / 'storage'
+        storage.mkdir()
+        failure = downloaders.DownloadResult.failure
+        head = ['gsv-%d' % n for n in range(limit - 2)]
+        order = head + ['mly-ok', 'mly-0'] + ['gsv-%d' % n for n in range(limit - 2, limit + 1)]
+        panos = [{'pano_id': i, 'source': 'mapillary' if i.startswith('mly') else 'gsv'} for i in order]
+        verdicts = {i: failure for i in order}
+        verdicts['mly-ok'] = downloaders.DownloadResult.success
+        tripped = set()
+
+        result, calls = self.drive(monkeypatch, storage, panos, verdicts, tripped_sources=tripped,
+                                   block_latch_path=str(tmp_path / 'latch'),
+                                   pace_state_path=str(tmp_path / 'pace.json'))
+
+        assert calls == order[:-1], 'the 49th GSV verdict is not a trip; the 50th is, and nothing follows it'
+        assert tripped == {'gsv'}
+        assert self.ledger_rows(storage) == (['%s,0' % i for i in head] + ['mly-ok,1', 'mly-0,0']
+                                             + ['gsv-%d,0' % (limit - 2)])
 
     def test_the_breaker_stops_one_source_and_not_the_run(self, monkeypatch, tmp_path):
         """A city can carry two sources, and a Mapillary scope failure says nothing about Google. The GSV
@@ -2327,16 +2444,29 @@ class TestASourceThatFailsPermanentlyInARowStopsBeingLedgered:
         """The discrimination for the test above - an unconditional `return 1` would otherwise pass it."""
         assert self.run_main(monkeypatch, tmp_path, downloaders.DownloadResult.success) == 0
 
+    def test_a_gsv_trip_exits_nonzero_through_main(self, monkeypatch, tmp_path, capsys):
+        """#166 rides the same alarm as #113: `tripped` -> main() returns 1 -> scrape_queue books the city
+        `failed` -> the queue exits nonzero -> cron_notify --only-on-failure mails. No `main` edit, no run
+        condition: the exit code is the channel, as it is for Mapillary and Panoramax. GSV threshold-many
+        verdicts in a row exit 1; one fewer exits 0, so an unconditional `return 1` fails here too."""
+        limit = DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES['gsv']
+        failure = downloaders.DownloadResult.failure
+        assert self.run_main(monkeypatch, tmp_path / 'short', failure, count=limit - 1, source='gsv') == 0
+        assert self.run_main(monkeypatch, tmp_path / 'trip', failure, count=limit, source='gsv') == 1
+        assert 'breaker tripped for gsv' in capsys.readouterr().out
+
     @staticmethod
-    def run_main(monkeypatch, tmp_path, verdict):
-        """Drive the whole of main() over four Mapillary panos that all answer with `verdict`."""
+    def run_main(monkeypatch, tmp_path, verdict, count=4, source='mapillary'):
+        """Drive the whole of main() over `count` panos from `source` that all answer with `verdict`."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        ids = ['%s-%d' % (source[:3], n) for n in range(count)]
         csv_path = tmp_path / 'panos.csv'
         csv_path.write_text(CSV_HEADER + ''.join(
-            'mly-%d,4096,2048,47.6,-122.3,180.0,0.0,mapillary,True\n' % n for n in range(4)))
+            '%s,4096,2048,47.6,-122.3,180.0,0.0,%s,True\n' % (i, source) for i in ids))
         monkeypatch.setenv(downloaders.mapillary.TOKEN_ENV_VAR, 'test-token')
         monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
         monkeypatch.setattr(DownloadRunner, 'download_pano',
-                            scripted_download_pano({'mly-%d' % n: verdict for n in range(4)}))
+                            scripted_download_pano({i: verdict for i in ids}))
         monkeypatch.chdir(tmp_path)
         return DownloadRunner.main(['sidewalk-test.invalid', str(tmp_path / 'storage'),
                                     '-c', str(csv_path), '--skip-depth'])
@@ -4179,7 +4309,9 @@ class TestStoreMode:
 
     def test_store_mode_is_not_in_the_breaker_table(self):
         assert store_sftp.STORE_SOURCE_NAME not in DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES
-        assert DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES == {'mapillary': 3, 'panoramax': 3}
+        assert DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES == {
+            'mapillary': 3, 'panoramax': 3, 'gsv': DownloadRunner.GSV_MAX_CONSECUTIVE_PERMANENT}
+        assert DownloadRunner.GSV_MAX_CONSECUTIVE_PERMANENT == 50, 'provisional (#166); move with the docs'
 
 
 class TestTheImageLedgerHoldsWhatTheInlineCodeHeld:
