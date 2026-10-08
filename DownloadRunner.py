@@ -677,7 +677,8 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                     # The one counting path for every arm that refuses a frame (#185): photometa's, the
                     # probe's, and any later check that raises the same exception.
                     frame_refusals += 1
-                    first_frame_refusal = first_frame_refusal or str(e)
+                    if first_frame_refusal is None:
+                        first_frame_refusal = str(e)
                 pushback = gsv.pushback_reason(e) if source == 'gsv' else None
                 if pushback is not None:
                     # The ONE line a refused pano gets (#162): fetch_pano_image raises a refusal without
