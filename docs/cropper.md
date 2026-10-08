@@ -344,7 +344,7 @@ path):
 | Reason | When |
 |---|---|
 | `no_artifact` | No `.depth.npz` beside the pano: every Mapillary and Panoramax pano, and a GSV pano the depth phase has not reached or ledgered `unavailable` |
-| `unreadable` | The file will not load, or its arrays are not the documented shapes |
+| `unreadable` | The file will not load, its arrays are not the documented shapes, or `plane_indices` is not an integer raster |
 | `old_format` | `format_version` absent (pre-v2, x-mirrored) or 2 (no plane fields, so no facade test): the depth source **requires format 3** |
 | `no_pose` | The npz's `pitch` or `roll` is missing or NaN: no rig pixel, and the stored one is never used instead |
 | `sky` | Fewer than 5 of the 9 cells on a plane, at or above the horizon row |

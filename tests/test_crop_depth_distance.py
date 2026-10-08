@@ -360,6 +360,14 @@ class TestFallbacks:
         x, y = cell_centre_pixel(row, 40)
         assert_fallback(crop_runner, estimate_for(crop_runner, path, x, y), y, reason)
 
+    def test_a_ray_parallel_to_the_plane_is_out_of_range_not_a_raise(self, crop_runner, tmp_path):
+        """#211 fix-round review: a label exactly on the horizon row of a level rig has a ray with no vertical
+        component, so it never meets the ground plane. The division is between Python floats, which raise
+        ZeroDivisionError instead of returning inf; the docstring promises out_of_range."""
+        path = write_scene(tmp_path, 'abground0001', [ground()])
+        x, y = stored_pixel(0.0, 0.0)
+        assert_fallback(crop_runner, estimate_for(crop_runner, path, x, y), y, 'out_of_range')
+
     def test_the_centre_cells_plane_wins_over_the_most_common(self, crop_runner, tmp_path):
         """Decision 6: the plane is the centre cell's when it has one. Here the centre alone is a wall and
         its eight neighbours are ground - the most common plane would say depth."""
@@ -634,6 +642,18 @@ class TestInTheCropLoop:
         assert counts['errors'] == 0 and counts['success'] == 3
         assert distance_counts(crop_runner, counts) == {'distance_blend_unreadable': 3}
         assert 'sized from the depth artifact, 3 from the blend fallback (unreadable 3)' in capsys.readouterr().out
+
+    def test_a_horizon_label_is_a_blend_crop_not_an_error(self, crop_runner, tmp_path):
+        """The parallel-ray case through the loop: one success filed under out_of_range and no errors entry,
+        so the label is cut once rather than retried, and failed again, on every run."""
+        store = tmp_path / 'store'
+        put_pano(store, 'abground0001')
+        write_scene(store, 'abground0001', [ground()])
+        x, y = stored_pixel(0.0, 0.0)
+        labels = [label_row(pano_id='abground0001', pano_x=x, pano_y=y, label_id=1)]
+        counts = run(crop_runner, labels, store, tmp_path / 'crops', sizing_rule='v3-depth')
+        assert counts['errors'] == 0 and counts['success'] == 1
+        assert distance_counts(crop_runner, counts) == {'distance_blend_out_of_range': 1}
 
     def test_a_loader_that_raises_is_unreadable_for_every_label_on_the_pano(self, crop_runner, tmp_path,
                                                                            monkeypatch):

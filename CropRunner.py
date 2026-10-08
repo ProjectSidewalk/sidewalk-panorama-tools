@@ -933,7 +933,7 @@ def load_depth_grid(npz_path):
 
     `npz_path` None or absent is no_artifact. A file np.load refuses, or whose arrays are not the documented
     shapes (docs/depth.md, "The artifact": depth and plane_indices one (h, w) raster, planes_n (P, 3), every
-    index inside the plane list), is unreadable. format_version absent (pre-v2, x-mirrored) or below
+    index inside the plane list), or whose plane_indices is not an integer raster, is unreadable. format_version absent (pre-v2, x-mirrored) or below
     V3_DEPTH_MIN_FORMAT_VERSION is old_format, checked before the shapes, since a v2 artifact lacks the plane
     fields by design. The pose is read by pano_pose.pose_from_depth_artifact - the tilt correction's reader,
     so the two can never convert pitch and roll differently - and a missing or NaN one is no_pose.
@@ -1034,8 +1034,13 @@ def label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason=None):
     # The label's own ray in the artifact frame, which is -RFU (pano_pose's module docstring).
     ray = -pano_pose.direction_rfu(*pano_pose.bearing_elevation_from_pixel(lookup_x, lookup_y, pano_width,
                                                                            pano_height))
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ray_length = abs(float(grid.planes_d[plane]) / float(np.dot(ray, normal)))
+    dot = float(np.dot(ray, normal))
+    if dot == 0.0:
+        # A ray exactly parallel to the plane (a label on the horizon row of a level rig) never meets it. Both
+        # operands are Python floats, which raise on this division rather than returning inf, so the case is
+        # answered before dividing (#211 fix-round review).
+        return fallback('out_of_range')
+    ray_length = abs(float(grid.planes_d[plane]) / dot)
     distance = ray_length * math.cos(math.radians(depression))
     if not (math.isfinite(distance) and V3_DEPTH_MIN_M <= distance <= V3_DIST_CAP_M):
         return fallback('out_of_range')
