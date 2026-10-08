@@ -473,7 +473,7 @@ refused and ledgered as `too_black`. `too_black` remains the backstop for any ot
 | `too_black` | the fresh stitch has more black than a real panorama does | full |
 | `replaced` | swapped in | full |
 
-The outcomes that cost requests — every one except `undersized` — are remembered in
+The outcomes that cost requests — every one except `undersized` and `frame_shrank` — are remembered in
 `<storage-dir>/refetch_log.csv`, with the same rule the two nightly ledgers use: **a row means the outcome is
 permanent.** Anything transient — a failed tile, a mostly-black stitch, a full store — is counted, logged, and
 left unledgered, so it retries on the next run.
@@ -485,7 +485,9 @@ work-list was passed. Ledgering them would lock one run's flag values in. Not le
 a re-run after a finished sweep cost nothing even if the ledger is deleted: a repaired file's mtime is newer
 than `--fixed-after`, so it comes back `already_clean`.
 
-`undersized` is the other exception, in the other direction. With `fover` gone no tile should ever come back
+`undersized` and `frame_shrank` are the other two exceptions, in the other direction. `frame_shrank` is not
+ledgered because the answer can change: the app's stored frame or the frame Google serves can move, and a
+re-check costs five requests a pass. `undersized`'s reason is different. With `fover` gone no tile should ever come back
 below 512 px, so one that does means the request is costing resolution again — a property of the URL, not of
 the pano. A permanent row per pano would burn the whole work-list against a bug in the request and exit 0
 while doing it. Instead the run stops after three consecutive undersized fetches, exits 1 if it saw any, and

@@ -509,7 +509,8 @@ def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measureme
         # Google now serves this pano SMALLER than the stored frame (#181): the grid's own last column is
         # black, and the stitch would be ~34% black. An answer about the pano, not a wall, so it is returned
         # rather than raised - a raise would feed the consecutive-failure breaker. Not ledgered by
-        # refetch_store; both channels, since it is worth a person's look.
+        # refetch_store; both channels, since it is worth a person's look. WARNING, not the ERROR the nightly
+        # arm and `undersized` use: it is an answer about the pano, not a tripwire and not a wall.
         logging.warning("REFETCH: pano %s: %s; not swapped, not ledgered", pano_id, smaller)
         print("REFETCH: %s frame_shrank (%s) - not swapped, not ledgered" % (pano_id, smaller))
         return 'frame_shrank'

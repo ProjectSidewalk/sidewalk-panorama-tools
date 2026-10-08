@@ -1793,7 +1793,8 @@ class TestRefetchRefusesAFrameLargerThanServed:
     LARGER = 'aaLargerAAAAAAAAAAAAA'
     RETIRED = 'bbRetiredBBBBBBBBBBB'
 
-    def test_the_frame_is_refused_unledgered_and_the_store_is_untouched(self, tmp_path, monkeypatch, capsys):
+    def test_the_frame_is_refused_unledgered_and_the_store_is_untouched(self, tmp_path, monkeypatch, capsys,
+                                                                          caplog):
         larger_path = store_with_pano(tmp_path, self.LARGER, dims=(16384, 8192))
         retired_path = store_with_pano(tmp_path, self.RETIRED)
         before = {larger_path: open(larger_path, 'rb').read(), retired_path: open(retired_path, 'rb').read()}
@@ -1825,6 +1826,10 @@ class TestRefetchRefusesAFrameLargerThanServed:
         assert len(retired) == 2, 'a retired pano costs the probe only - the frame check is never asked'
         out = capsys.readouterr().out
         assert 'frame disagreement' in out and self.LARGER in out
+        # Both channels (CLAUDE.md): the scrape.log half is a WARNING naming the pano, exactly one of them.
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno == logging.WARNING and 'frame disagreement' in r.getMessage()]
+        assert len(warnings) == 1 and self.LARGER in warnings[0]
 
     def test_six_in_a_row_do_not_trip_the_consecutive_failure_breaker(self, tmp_path, monkeypatch):
         """Review finding 1: as a raise, five of these stopped the pass (`consecutive-failures`) and the sixth
