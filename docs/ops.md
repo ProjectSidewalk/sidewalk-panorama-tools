@@ -825,13 +825,17 @@ every night until it is fixed. Before deleting anything, decide whether it was t
 streak in a heavily retired backlog: an outage shows up in every GSV city that night, and in an outage a
 sample of the ids still opens in Street View (they were not retired). A natural streak's rows are true
 verdicts and stay; report it, because the 50 is provisional and is re-sized from exactly that measurement.
-For an outage, the night's GSV write-offs are the `0` rows with 22-character ids stamped that night:
+For an outage, the night's GSV write-offs are the `0` rows with 22-character ids stamped that night. The
+night starts at 19:00 Pacific and the stamp is host-local, so one night's rows carry **two** calendar dates;
+filter on both (or take the run's start from the city's `log.csv` row and filter from there):
 
 ```
-awk -F, '$2 == 0 && length($1) == 22 && $3 ~ /^2026-10-06/' pano_id_log.csv
+awk -F, '$2 == 0 && length($1) == 22 && $3 ~ /^2026-10-0[67]/' pano_id_log.csv
 ```
 
-Delete those rows (the withheld 50th was never written) and the next run re-attempts them.
+Delete those rows (the withheld 50th was never written) and the next run re-attempts them. Do not try to
+separate the true retired verdicts stamped earlier that night from the false ones: deleting a true `0` row
+is harmless (the re-attempt costs one photometa plus two probe requests and lands the same verdict).
 (GSV also has a different breaker, for Google refusing the host:
 [When Google pushes back on the image phase](#when-google-pushes-back-on-the-image-phase).) The
 table is per source, in `DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES`; a source with no entry is

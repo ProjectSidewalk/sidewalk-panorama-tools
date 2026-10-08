@@ -820,19 +820,19 @@ retired imagery is permanent and ordinary. A source-blind breaker would stop a h
 A new imagery source declares its own threshold there rather than growing a second breaker — and a source
 with no entry has **no breaker at all**, so adding one is part of adding a source.
 
-**GSV has an entry too, at 50** ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)).
-A permanent GSV verdict rests on two black probe tiles that both came back 200, which is how a retired pano
-is answered — so if the cbk endpoint ever answered black 200s everywhere, the city's whole unattempted GSV
-backlog would be ledgered `downloaded=0` in one night, with exit 0. The push-back breaker below cannot see
-that, because a black 200 is not a refusal. The threshold is 50 rather than 3 because retirement is common:
-~52% of labelled panos fleet-wide, and a first-night backfill's share is its own and unmeasured (assume it
-could be 80–90%). The image loop shuffles its
-candidates (`random.shuffle` over the whole list, every source mixed), so a natural streak is a run of
-independent draws: at 80% retired a run of 50 comes about every 350,000 panos and at 90% about every 1,900,
-where a run of 3 comes every few panos. A real outage still trips within 50 panos on its first night, at a
-cost of 49 false rows per city per night instead of Mapillary's two. **The 50 is provisional**: it is to be re-set from a fleet
-measurement of the longest natural run of GSV `downloaded=0` verdicts per city per night, and it is one
-line, `GSV_MAX_CONSECUTIVE_PERMANENT`.
+**GSV has an entry too, at 50**
+([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)). A permanent GSV verdict rests
+on two black probe tiles that both came back 200, which is how a retired pano is answered — so if the cbk
+endpoint ever answered black 200s everywhere, the city's whole unattempted GSV backlog would be ledgered
+`downloaded=0` in one night, with exit 0. The push-back breaker below cannot see that, because a black 200 is
+not a refusal. The threshold is 50 rather than 3 because retirement is common: ~52% of labelled panos
+fleet-wide, and a first-night backfill's share is its own and unmeasured (assume it could be 80–90%). The
+image loop shuffles its candidates (`random.shuffle` over the whole list, every source mixed), so a natural
+streak is a run of independent draws: at 80% retired a run of 50 comes about every 350,000 panos and at 90%
+about every 1,900, where a run of 3 comes every few panos. A real outage still trips within 50 panos on its
+first night, at a cost of 49 false rows per city per night instead of Mapillary's two. **The 50 is
+provisional**: it is to be re-set from a fleet measurement of the longest natural run of GSV `downloaded=0`
+verdicts per city per night, and it is one line, `GSV_MAX_CONSECUTIVE_PERMANENT`.
 
 **Panoramax took its entry with its first city** ([#110](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/110)),
 also at 3, and needs it more than Mapillary does. Mapillary has one permanent verdict shape; Panoramax
