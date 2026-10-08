@@ -813,7 +813,8 @@ below `main()` that passes none.
   only record that a re-cut at a higher beta would change the crop, but the crop is an uncorrected one.
   `CropRunner.manifest_row_is_tilt_corrected(row)` is that test, on a `csv.DictReader` row. The last-row
   filter is exact while the store's `provenance_manifest_known_gaps` (below) is `0`, as far as runs could
-  report: a run killed outright, with no chance to record anything, is the one case the count cannot see.
+  report: a run killed outright, with no chance to record anything, and a run whose own attempt to record
+  the gap failed (said on both channels) are the two cases the count cannot see.
   Read the file with a
   CSV parser (Python's `csv`, pandas), not `awk -F,` or `cut`: `copyright` can hold a quoted comma.
 * **`(city, label_id)` is the key when manifests from more than one city are combined.** `label_id`
