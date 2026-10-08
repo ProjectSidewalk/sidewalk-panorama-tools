@@ -349,6 +349,22 @@ class TestTheReportMatchesTheArtifact:
         assert lev['pitch-flipped +1']['flattened'] == 0 and lev['pitch-flipped -1']['flattened'] == 0
 
 
+def assert_close(actual, expected, rel=1e-9):
+    """A nested dict/list of floats compared with a relative tolerance (pytest.approx does not nest)."""
+    if isinstance(expected, dict):
+        assert actual.keys() == expected.keys()
+        for key in expected:
+            assert_close(actual[key], expected[key], rel)
+    elif isinstance(expected, list):
+        assert len(actual) == len(expected)
+        for a, e in zip(actual, expected):
+            assert_close(a, e, rel)
+    elif isinstance(expected, float):
+        assert actual == pytest.approx(expected, rel=rel)
+    else:
+        assert actual == expected
+
+
 class TestTheCommittedDataRederives:
     """No pixels needed: the committed per-picture rows and raw files reproduce the committed summaries.
     A change to the aggregation that the artifact was not regenerated under fails here, in CI."""
@@ -356,11 +372,17 @@ class TestTheCommittedDataRederives:
     def test_the_panoramax_block_rederives_from_its_own_rows(self, artifact):
         px = artifact['panoramax']
         again = json.loads(json.dumps(ngl.aggregate(px['pictures'])))
-        assert again == {k: v for k, v in px.items() if k != 'pictures'}
+        committed = {k: v for k, v in px.items() if k != 'pictures'}
+        # The through-origin slopes and their bootstrap percentiles differ in the last ulp between numpy
+        # builds (a clean macOS checkout against the CI's Ubuntu), so that block is compared with a tolerance
+        # and everything else exactly.
+        assert_close(again.pop('slopes_posed'), committed.pop('slopes_posed'))
+        assert again == committed
 
     def test_the_labelled_tilt_and_city_summaries_rederive_from_the_raw_adminapi(self, artifact):
         raw = {c: ngl._read_gz(os.path.join(ngl.RAW_DIR, 'adminapi-panos-%s.json.gz' % c)) for c in ngl.CITIES}
-        assert json.loads(json.dumps(ngl.labelled_tilt_amplitudes(raw['bayonne-fr']))) ==             artifact['bayonne_labelled_posed_tilt']
+        assert (json.loads(json.dumps(ngl.labelled_tilt_amplitudes(raw['bayonne-fr'])))
+                == artifact['bayonne_labelled_posed_tilt'])
         for c, panos in raw.items():
             assert json.loads(json.dumps(ngl.ps_pose_summary(panos))) == artifact['ps_pose_by_city'][c]
 
@@ -369,7 +391,8 @@ class TestTheCommittedDataRederives:
         for p in artifact['panoramax']['pictures']:
             pp, pr, py = ngl.stac_pose(items[p['pano_id']])
             ep, er = ngl.exif_pose(items[p['pano_id']])
-            assert (p['pers_pitch'], p['pers_roll'], p['pers_yaw'], p['exif_pose_pitch'], p['exif_pose_roll']) ==                 (pp, pr, py, ep, er)
+            assert ((p['pers_pitch'], p['pers_roll'], p['pers_yaw'], p['exif_pose_pitch'], p['exif_pose_roll'])
+                    == (pp, pr, py, ep, er))
 
     def test_the_images_are_read_from_the_committed_data_dir_not_a_cache(self):
         """The first fix round moved the images into reports/data/ but left IMAGE_DIR on the gitignored
