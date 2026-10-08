@@ -56,9 +56,13 @@ CONDITION_UNSUPPORTED_SOURCE = 'unsupported-source'
 CONDITION_PANO_LIST_EMPTY = 'pano-list-empty'
 CONDITION_IMAGES_NO_SUCCESS = 'images-no-success'
 CONDITION_PANO_SCHEMA_DRIFT = 'pano-schema-drift'
+# One or more panos refused with gsv.FrameDisagreementError (#185 Part 1). No floor: 0 of 651 live labelled
+# panos disagreed in the 2026-08-09 census, so one refusal is news (Jon, 2026-10-06, Q2). The count also goes
+# into the run summary as `frame_refusals`, and deliberately not into log.csv (Q1; #182 owns any widening).
+CONDITION_FRAME_DISAGREEMENT = 'frame-disagreement'
 RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
     CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
-    CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT})
+    CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT, CONDITION_FRAME_DISAGREEMENT})
 
 # `images-no-success` needs at least this many raised attempts and not one answer - or a budget stop with
 # nothing but raises behind it (see download_panorama_images). A floor, because one or two transient
@@ -613,6 +617,8 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # For `images-no-success` (#161): attempts the source answered with a verdict, and attempts that raised.
     # A skip is neither - it never contacted the source.
     answered, raised = 0, 0
+    # Panos refused for a frame disagreement (#185), and the first one's text for the condition's detail.
+    frame_refusals, first_frame_refusal = 0, None
     raise_seconds = 0.0     # monotonic seconds spent in attempts that raised, for the budget arm's duration gate
 
     with ledger, gsv.scoped_image_host_state(latch_path, pace_state_path):
@@ -667,6 +673,12 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 downloaded = None
                 result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
                 frame_refused = isinstance(e, gsv.FrameDisagreementError)
+                if frame_refused:
+                    # The one counting path for every arm that refuses a frame (#185): photometa's, the
+                    # probe's, and any later check that raises the same exception.
+                    frame_refusals += 1
+                    if first_frame_refusal is None:
+                        first_frame_refusal = str(e)
                 pushback = gsv.pushback_reason(e) if source == 'gsv' else None
                 if pushback is not None:
                     # The ONE line a refused pano gets (#162): fetch_pano_image raises a refusal without
@@ -813,6 +825,21 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                    % (last_pushback, sum(unattempted[s] for s in refused), latch_said))
         logging.error("%s", summary)
         print(summary)
+
+    if frame_refusals:
+        # Both channels, the repo's rule for a warning that matters. Each refusal already printed its own
+        # line; this is the count, which before #185 only a grep of scrape.log could produce. Worded WITHOUT the
+        # phrase "frame disagreement" and logged below ERROR, because `grep "frame disagreement" scrape.log`
+        # counts refusals and scrape.log carries one ERROR per refused pano (#207 review, finding 1).
+        message = ("IMAGEDOWNLOAD: WARNING - %d pano(s) refused (frame-disagreement condition); not ledgered, "
+                   "retried next run. See docs/ops.md#a-gsv-pano-refused-for-a-frame-disagreement"
+                   % (frame_refusals,))
+        logging.warning("%s", message)
+        print(message)
+        note_condition(stop_reasons, CONDITION_FRAME_DISAGREEMENT,
+                       '%d pano(s) refused; first: %s' % (frame_refusals, first_frame_refusal))
+        if stop_reasons is not None:
+            stop_reasons['frame_refusals'] = frame_refusals
 
     mean_raise_seconds = raise_seconds / raised if raised else 0.0
     budget_spent_on_raises = (raised >= 1 and mean_raise_seconds >= IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS
