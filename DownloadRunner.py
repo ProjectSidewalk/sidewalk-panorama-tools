@@ -832,8 +832,8 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         # frame is Google's, not the app's - which is what the cropper reads labels against, and which no
         # frame check can compare. Information, not the night's alarm, so no WARNING token.
         summary = ("IMAGEDOWNLOAD: %d GSV pano(s) took their frame from photometa (no width/height in the pano "
-                   "list); %d GSV pano(s) had no frame tonight (photometa unanswered) and retry next run."
-                   % (framed, unframed))
+                   "list); %d GSV pano(s) had no frame tonight (photometa unanswered, or not found while the "
+                   "tile probe saw imagery) and retry next run." % (framed, unframed))
         logging.info("%s", summary)
         print(summary)
 

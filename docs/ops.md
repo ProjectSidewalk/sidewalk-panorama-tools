@@ -298,7 +298,8 @@ permanent.** Transient failures leave no row and retry automatically on the next
     deliberately: a retired GSV pano is a permanent verdict and an ordinary one, at 7.9–8.4% of a large
     city's rows. A pano with no width/height in the pano list was a second verdict, reached at zero requests,
     until [#184](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/184); it now asks
-    photometa for the frame, and is retried (no row) on a night photometa cannot answer. Rows that verdict
+    photometa for the frame, and is retried (no row) on a night photometa gives it no frame (unanswered, or
+    "not found" while the probe sees imagery). Rows that verdict
     wrote are still in the ledgers: see [Re-admitting the dimensionless write-offs](#re-admitting-the-dimensionless-write-offs).
   * **Mapillary** — a 404, or a record that names the image and carries no original-resolution rendition.
     No Mapillary 404 has ever been observed — its "does not exist" is a 400, measured 2026-09-06 — so the

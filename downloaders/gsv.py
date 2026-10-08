@@ -640,8 +640,9 @@ class FrameUnknownError(Exception):
         103 still reach the permanent verdict - through the probe, on the usual black-tile evidence - so the
         population this exception keeps re-asking is only the unanswered nights, which the latch bounds to 6 h.
 
-    Deliberately NOT a FrameDisagreementError: that one is Google ANSWERING (photometa or the probe spoke), and
-    DownloadRunner books it as an answer for `images-no-success`. This is Google not being asked, which is a
+    Deliberately NOT a FrameDisagreementError: that one is Google answering a question about the FRAME (two
+    frames that disagree), and DownloadRunner books it as an answer for `images-no-success`. This is Google
+    answering nothing about the frame (not asked, or "not found" while the probe saw imagery), which is a
     raise like any network failure. pushback_reason is None for it: a refusal met on the way here has already
     latched through _photometa_refused, and counting it again would double-book one refusal.
     """
@@ -903,7 +904,8 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     is what Google answers for a pano id it no longer serves, so callers ledger it rather than retrying. The
     other None - no reported dimensions - survives only with photometa=False (refetch_panos.py's seam); on the
     nightly path a dimensionless pano asks photometa for its frame (#184, _resolve_frame_from_photometa), and
-    raises FrameUnknownError, a transient, when photometa cannot be asked. A probe answered with any status but
+    raises FrameUnknownError, a transient, when photometa gives no frame: unanswered, or "not found" while the
+    probe sees imagery. A probe answered with any status but
     200 RAISES requests.HTTPError, whatever its body (#166 option b), and so does a network failure; both stay
     transient. Photometa never founds a None on its own (step 3), so the 200 rule is the whole of what a
     permanent GSV verdict rests on, on either arm.
