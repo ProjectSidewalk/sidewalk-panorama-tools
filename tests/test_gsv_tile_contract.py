@@ -541,13 +541,15 @@ def test_live_download_fills_the_frame(tmp_path, label, pano_id, width, height):
 def test_live_frame_probe_agrees_with_the_real_grid(label, pano_id, width, height):
     """The frame probe refetch_panos.py refuses on, against live tiles.
 
-    Two directions, and both matter. A pano probed at its own frame must come back True, or the repair
+    Three directions, and all matter. A pano probed at its own frame must come back True, or the repair
     pass refuses every panorama and does nothing. A 16384x8192 pano probed at 13312x6656 must come back
     False, because that is precisely the fetch that would return the top-left 81% of it at the smaller
-    frame's exact dimensions - no undersized tile, no black, nothing else in the tool able to see it.
+    frame's exact dimensions - no undersized tile, no black, nothing else in the tool able to see it. A
+    13312x6656 pano probed at 16384x8192 must raise FrameDisagreementError (#181 Part 1), or that frame
+    stitches ~34% black and is saved.
 
-    The second half is skipped for a pano that is already 13312 or smaller: there is no larger grid to
-    mistake it for.
+    The second check runs only for the 16384 pano and the third only for the 13312 one: each needs a pano
+    of the other size to be mistaken for.
     """
     zoom = gsv._pano_max_zoom(width)
 
@@ -557,6 +559,12 @@ def test_live_frame_probe_agrees_with_the_real_grid(label, pano_id, width, heigh
     if (width, height) == (16384, 8192):
         assert gsv.frame_covers_pano(pano_id, 13312, 6656, zoom) is False, \
             '%s: a short grid must be caught, or a re-fetch silently crops it' % label
+
+    # The third direction (#181 Part 1): a frame LARGER than Google serves. Nothing past its grid has imagery,
+    # so only the last in-grid tile on the middle row - out of range on the real pano, so black - catches it.
+    if (width, height) == (13312, 6656):
+        with pytest.raises(gsv.FrameDisagreementError):
+            gsv.frame_covers_pano(pano_id, 16384, 8192, zoom)
 
 
 # The OBSERVED_PHOTOMETA row each live pano should still match (#74). Sydney 2014 is a different pano from the

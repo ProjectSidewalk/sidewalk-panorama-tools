@@ -449,6 +449,15 @@ rule it out. A probe answered with anything but 200 raises, so the pano counts a
 than as a frame that covers; before [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166),
 a 403 or 404 with a black body passed it.
 
+The same check catches the opposite mismatch with a third request: a stored frame **larger** than Google now
+serves (16384×8192 on a pano served at 13312×6656) has a black tile in its grid's own last column. That pano
+ends as **`frame_shrank`**: not ledgered, stored bytes untouched, asked again on the next pass, as the
+nightly downloader refuses the same frame. It is an answer, not a failure, so it neither counts towards the
+five-in-a-row breaker nor sets the exit code — a work-list made of these would otherwise stop every pass
+after five. Before
+[#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181), it passed the check, spent the full fan-out, and was
+refused and ledgered as `too_black`. `too_black` remains the backstop for any other mostly black stitch.
+
 | Outcome | Meaning | Requests |
 |---|---|---|
 | `absent` | no `.jpg` on disk — nothing to repair | 0 |
@@ -458,12 +467,13 @@ a 403 or 404 with a black body passed it.
 | `dims_changed` | the work-list's frame disagrees with the stored one — see below | 0 |
 | `gone` | Google no longer serves this pano at any zoom | ≤2 |
 | `frame_grew` | Google now serves this pano **larger**, so this frame would fetch a crop of it | ≤4 |
+| `frame_shrank` | Google now serves this pano **smaller** than the stored frame. Not swapped, **not ledgered**, not a failure ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)) | 5 |
 | `upscaled` | only a fallback zoom was available; swapping would be a 4× **downgrade** | zoom-3 grid (≤32) |
 | `undersized` | a tile still came back below 512 px: the CBK request is costing resolution again. Not swapped, **not ledgered**, and three in a row stop the run with exit 1 | full |
 | `too_black` | the fresh stitch has more black than a real panorama does | full |
 | `replaced` | swapped in | full |
 
-The outcomes that cost requests — every one except `undersized` — are remembered in
+The outcomes that cost requests — every one except `undersized` and `frame_shrank` — are remembered in
 `<storage-dir>/refetch_log.csv`, with the same rule the two nightly ledgers use: **a row means the outcome is
 permanent.** Anything transient — a failed tile, a mostly-black stitch, a full store — is counted, logged, and
 left unledgered, so it retries on the next run.
@@ -475,7 +485,9 @@ work-list was passed. Ledgering them would lock one run's flag values in. Not le
 a re-run after a finished sweep cost nothing even if the ledger is deleted: a repaired file's mtime is newer
 than `--fixed-after`, so it comes back `already_clean`.
 
-`undersized` is the other exception, in the other direction. With `fover` gone no tile should ever come back
+`undersized` and `frame_shrank` are the other two exceptions, in the other direction. `frame_shrank` is not
+ledgered because the answer can change: the app's stored frame or the frame Google serves can move, and a
+re-check costs five requests a pass. `undersized`'s reason is different. With `fover` gone no tile should ever come back
 below 512 px, so one that does means the request is costing resolution again — a property of the URL, not of
 the pano. A permanent row per pano would burn the whole work-list against a bug in the request and exit 0
 while doing it. Instead the run stops after three consecutive undersized fetches, exits 1 if it saw any, and

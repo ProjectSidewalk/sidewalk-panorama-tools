@@ -99,10 +99,21 @@ def stub_seams(monkeypatch, resolve=None, fetch=None, covers=True):
         fetched.append((pano_id, width, height, zoom))
         return (fetch or default_fetch)(pano_id, width, height, zoom)
 
+    def frame_check(*args):
+        if isinstance(covers, BaseException):
+            raise covers
+        return covers
+
     monkeypatch.setattr(gsv, 'resolve_zoom_and_dims', resolve or default_resolve)
-    monkeypatch.setattr(gsv, 'frame_covers_pano', lambda *a: covers)
+    monkeypatch.setattr(gsv, 'frame_covers_pano', frame_check)
     monkeypatch.setattr(gsv, 'fetch_pano_image', recording_fetch)
     return fetched
+
+
+# What the real frame_covers_pano raises for a frame larger than Google serves (#181).
+SHRANK = gsv.FrameDisagreementError("frame disagreement: the app's frame is 16384x8192 but tile (31, 8), the "
+                                    "last column of its 32x16 grid at zoom 5, is black, so Google serves this "
+                                    "pano smaller")
 
 
 def no_seams(monkeypatch):
@@ -377,6 +388,27 @@ class TestRefetchPanoRefusals:
         assert after == before
         self.assert_sidecar_survived()
         assert fetched == [], 'the frame probe must run before the 512-tile fan-out'
+
+    def test_a_pano_google_now_serves_smaller_is_frame_shrank_before_the_fan_out(self, tmp_path, monkeypatch):
+        """#181: the opposite mismatch - the stored frame is larger than Google serves - is an ANSWER about
+        the pano, returned as `frame_shrank`, never raised: a raise feeds the consecutive-failure breaker,
+        and a work-list of these (#213's black-band list) stopped every pass after five."""
+        fetched = []
+        outcome, before, after, _shard = self.run(
+            tmp_path, monkeypatch, covers=SHRANK,
+            fetch=lambda p, w, h, z: fetched.append(1) or gsv.StitchedPano(
+                Image.new('RGB', (w, h), (1, 2, 3)), 0, False))
+
+        assert outcome == 'frame_shrank'
+        assert after == before
+        self.assert_sidecar_survived()
+        assert fetched == [], 'the frame check must run before the 512-tile fan-out'
+
+    def test_frame_shrank_is_counted_but_not_ledgered(self):
+        """Retried on the next pass (the app's frame or Google can change), but not a failure."""
+        assert 'frame_shrank' in rp.OUTCOMES
+        assert 'frame_shrank' not in rp.LEDGERED_OUTCOMES
+        assert 'frame_shrank' not in rp.FAN_OUT_OUTCOMES
 
     def test_a_fallback_zoom_is_refused_because_swapping_would_be_a_downgrade(self, tmp_path, monkeypatch):
         outcome, before, after, _shard = self.run(
@@ -1190,6 +1222,19 @@ class TestTheCommandLineSurface:
         assert rp.main([str(tmp_path), '--worklist', self.worklist(tmp_path)]) == 0
         assert 'absent' in capsys.readouterr().out
 
+    def test_frame_shrank_exits_zero_and_is_in_the_summary(self, tmp_path, monkeypatch, capsys):
+        """#181: Google answered; nothing is wrong with the network, the store or the request."""
+        store_with_pano(tmp_path)
+        stub_seams(monkeypatch, covers=SHRANK)
+
+        assert rp.main([str(tmp_path), '--worklist', self.worklist(tmp_path)]) == 0
+
+        out = capsys.readouterr().out
+        assert 'frame_shrank' in out and PANO in out
+        assert 'transient_failures' not in out
+        assert not os.path.exists(str(tmp_path / rp.LEDGER_FILENAME)) or \
+            open(str(tmp_path / rp.LEDGER_FILENAME)).read().strip() == 'pano_id,status'
+
     def test_it_exits_one_when_a_fetch_came_back_undersized(self, tmp_path, monkeypatch, capsys):
         """The tripwire has to reach cron: an undersized body means the CBK request is costing resolution
         again, which is a bug to fix before the pass is worth running."""
@@ -1471,6 +1516,7 @@ class TestTheDisplayCopyFollowsTheSwap:
     @pytest.mark.parametrize('outcome, seams', [
         ('gone', dict(resolve=lambda info: None)),
         ('frame_grew', dict(covers=False)),
+        ('frame_shrank', dict(covers=SHRANK)),
         ('upscaled', dict(fetch=lambda p, w, h, z: gsv.StitchedPano(
             Image.new('RGB', (w, h), (1, 2, 3)), 0, True))),
         ('undersized', dict(fetch=lambda p, w, h, z: gsv.StitchedPano(
@@ -1727,6 +1773,88 @@ class TestTheDisplayCopyFollowsTheSwap:
         assert downscale_panos.sidecar_is_current(pano, self.DIMS, self.CAP) is True
         self.assert_copy_shows(sidecar, self.NEW)
         assert downscale_panos.downscale_store(str(tmp_path), max_width=self.CAP).written == 0
+
+
+class TestRefetchRefusesAFrameLargerThanServed:
+    """#181 Part 1, through refetch_store: a stored 16384x8192 file for a pano Google now serves at
+    13312x6656. Before #181 frame_covers_pano passed it (nothing past a 32x16 grid has imagery), the 512-tile
+    fan-out ran and the `too_black` gate refused the ~34% black stitch - LEDGERED, so the pano was never asked
+    about again. Now the in-grid tile refuses it before the fan-out: three requests after the probe, the
+    outcome `frame_shrank` - not ledgered, and not a failure, so it neither trips the consecutive-failure
+    breaker nor fails the exit code - the stored bytes untouched, so a later pass asks again, by which time
+    the stored file or Google may have changed.
+
+    Driven through the REAL resolve_zoom_and_dims and frame_covers_pano and a real requests.Session; only the
+    socket is canned. The second pano is a genuine 200 retirement - black at every tile - and must still be
+    `gone`: the probe answers before the frame check, which would otherwise read those black 200s as this
+    same refusal.
+    """
+
+    LARGER = 'aaLargerAAAAAAAAAAAAA'
+    RETIRED = 'bbRetiredBBBBBBBBBBB'
+
+    def test_the_frame_is_refused_unledgered_and_the_store_is_untouched(self, tmp_path, monkeypatch, capsys,
+                                                                          caplog):
+        larger_path = store_with_pano(tmp_path, self.LARGER, dims=(16384, 8192))
+        retired_path = store_with_pano(tmp_path, self.RETIRED)
+        before = {larger_path: open(larger_path, 'rb').read(), retired_path: open(retired_path, 'rb').read()}
+
+        def answer(url):
+            if self.RETIRED in url:
+                return 200, BLACK_BODY
+            zoom, x, y = cbk_query(url, 'zoom'), cbk_query(url, 'x'), cbk_query(url, 'y')
+            served = (26, 13) if zoom == 5 else (7, 4)          # Google's 13312x6656 grid at zoom 5 and 3
+            return 200, IMAGERY_BODY if x < served[0] and y < served[1] else BLACK_BODY
+
+        adapter = canned_cbk(monkeypatch, answer)
+        monkeypatch.setattr(gsv, 'fetch_pano_image', lambda *a: pytest.fail('a refused frame must not fan out'))
+
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': self.LARGER}, {'pano_id': self.RETIRED}])
+
+        assert counts['frame_shrank'] == 1
+        assert counts['transient_failures'] == 0
+        assert counts['gone'] == 1
+        assert counts['too_black'] == 0 and counts['frame_grew'] == 0 and counts['replaced'] == 0
+        with open(str(tmp_path / rp.LEDGER_FILENAME), newline='') as f:
+            assert list(csv.reader(f)) == [['pano_id', 'status'], [self.RETIRED, 'gone']]
+        for path, data in before.items():
+            assert open(path, 'rb').read() == data
+        assert not os.path.exists(str(tmp_path / rp.MEASUREMENTS_FILENAME))
+        larger = [(cbk_query(r.url, 'x'), cbk_query(r.url, 'y')) for r in adapter.served if self.LARGER in r.url]
+        assert larger == [(0, 0), (0, 0), (32, 8), (0, 16), (31, 8)]
+        retired = [r for r in adapter.served if self.RETIRED in r.url]
+        assert len(retired) == 2, 'a retired pano costs the probe only - the frame check is never asked'
+        out = capsys.readouterr().out
+        assert 'frame disagreement' in out and self.LARGER in out
+        # Both channels (CLAUDE.md): the scrape.log half is a WARNING naming the pano, exactly one of them.
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno == logging.WARNING and 'frame disagreement' in r.getMessage()]
+        assert len(warnings) == 1 and self.LARGER in warnings[0]
+
+    def test_six_in_a_row_do_not_trip_the_consecutive_failure_breaker(self, tmp_path, monkeypatch):
+        """Review finding 1: as a raise, five of these stopped the pass (`consecutive-failures`) and the sixth
+        was never asked - every pass, for ever, since nothing is ledgered. A work-list made of them (#213's
+        black-band list) is the realistic case. One more than the breaker's limit, all asked, none ledgered."""
+        count = rp.MAX_CONSECUTIVE_FAILURES + 1
+        ids = [('%02dLarger' % i).ljust(20, 'A') for i in range(count)]
+        for pano_id in ids:
+            store_with_pano(tmp_path, pano_id, dims=(16384, 8192))
+
+        def answer(url):
+            zoom, x, y = cbk_query(url, 'zoom'), cbk_query(url, 'x'), cbk_query(url, 'y')
+            served = (26, 13) if zoom == 5 else (7, 4)
+            return 200, IMAGERY_BODY if x < served[0] and y < served[1] else BLACK_BODY
+
+        adapter = canned_cbk(monkeypatch, answer)
+        monkeypatch.setattr(gsv, 'fetch_pano_image', lambda *a: pytest.fail('a refused frame must not fan out'))
+
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': pano_id} for pano_id in ids])
+
+        assert counts['frame_shrank'] == count
+        assert 'stop_reason' not in counts and counts['transient_failures'] == 0
+        assert len(adapter.served) == 5 * count
+        with open(str(tmp_path / rp.LEDGER_FILENAME), newline='') as f:
+            assert list(csv.reader(f)) == [['pano_id', 'status']]
 
 
 class TestARefusedProbeIsTransient:

@@ -679,13 +679,15 @@ show it.
 
 If photometa is unavailable, or says the pano is gone, the older two-tile probe picks the zoom instead (a
 fully black tile at both zoom 5 and zoom 3, **on a 200**, means there is no imagery — still the only evidence
-a permanent "no imagery" verdict rests on; see below). The probe cannot tell a frame from a crop, so on that path two more tiles —
-the ones just past the frame's grid — are checked before the fan-out, and imagery there is the same refusal.
-That check guards only a frame **smaller** than Google serves. A frame **larger** than Google serves (an app
-frame of 16384×8192 on a pano served at 13312×6656) has nothing past its grid, so it passes; about a third of
-its grid then comes back black, which is under the stitcher's 50% limit, and it is stitched and ledgered as a
-success. The photometa path refuses that case (no level admits the frame); on the probe path it is a known
-residual, older than #74 and expected to be rare. The first photometa failure, refusal or fresh latch in a
+a permanent "no imagery" verdict rests on; see below). The probe cannot tell a frame from a crop, so on that path three more tiles
+are checked before the fan-out, and either mismatch is the same refusal. Imagery in a tile just past the
+frame's grid (one column right, one row down) means Google serves the pano **larger** than the app's frame.
+A black tile in the grid's own last column, on its middle row, means Google serves it **smaller**: an app
+frame of 16384×8192 on a pano served at 13312×6656 has nothing past its grid, and before
+[#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181) it passed, stitched about a third black (under the stitcher's 50% limit) and was
+ledgered as a success. "Black" is exact zero luma, the same rule the probe uses. The check runs only after
+the probe found imagery, which matters: Google answers a retired pano with black tiles everywhere, so that
+pano gets the probe's permanent verdict and never reaches the in-grid tile. The first photometa failure, refusal or fresh latch in a
 run is announced once on stdout and in `scrape.log` (photometa saying a pano is gone is not: a retired pano
 is ordinary, and photometa did answer); after three photometa failures in a row that run stops asking
 photometa at all, and after one refusal it stops at once. A refusal *from Google* on that photometa
@@ -755,7 +757,7 @@ counts as tonight's failure, gets no ledger row, and is asked again next run. 42
 get that far, since the retry policy owns them and an exhausted retry raises; one that did would raise here
 like any other non-200. A probe that raises with 403 or 429, or that landed on Google's interstitial (a 200
 captcha page included), is also **push-back** and counts towards [the push-back
-breaker](ops.md#when-google-pushes-back-on-the-image-phase); every other status is an ordinary failure. The same rule covers the frame check past the grid
+breaker](ops.md#when-google-pushes-back-on-the-image-phase); every other status is an ordinary failure. The same rule covers the frame check's three tiles
 (`frame_covers_pano`) — run nightly on the probe path, and by `refetch_panos.py` for every pano — where a non-200
 black edge tile used to read as "the frame covers the pano" ([#166]).
 
