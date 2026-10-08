@@ -926,7 +926,7 @@ git pull --ff-only
 git log --oneline -1                                   # what is live now
 git diff --stat "$before" HEAD -- requirements.txt     # non-empty -> .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
-.venv/bin/python -c "import DownloadRunner, scrape_queue"
+.venv/bin/python -c "import DownloadRunner, scrape_queue, cron_notify"
 ```
 
 The order matters twice: the requirements check comes *before* the import check, because a new dependency
@@ -1120,11 +1120,11 @@ because of.
 ([rollback lever 5](#rolling-back-smallest-blast-radius-first) is `crontab -r`), nothing runs and nothing is
 sent, which is the same silence as a clean night
 ([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The dead-man switch is a
-**heartbeat metric** that the box publishes to CloudWatch when the queue finishes, plus a CloudWatch alarm that
+**heartbeat metric** that the box publishes to CloudWatch when the wrapper finishes, plus a CloudWatch alarm that
 fires when no heartbeat has arrived for 36 hours. The alarm treats missing data as breaching and notifies the
 same SNS topic as `cron_notify`.
 
-- **The heartbeat means "the queue ran", not "the queue passed".** It is published after the queue exits,
+- **The heartbeat means "the wrapper ran", not "the night passed".** It is published after the wrapper exits,
   whatever the exit code, because a bad night already has its own channel. A night that exits 1 sends two
   signals: `cron_notify`'s message, and the heartbeat as usual. The alarm never fires on a bad night that ran.
 - **It is a crontab composition, not code.** The heartbeat is appended to the existing line after a `;`, so it

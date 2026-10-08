@@ -574,6 +574,11 @@ class TestTheHeartbeatGate:
         # And cron's default rule, for the path production does not take.
         run(child, sink, '--log', str(log), spec='', exit_code=0, monkeypatch=monkeypatch)
         one_more('exit 0 nothing to publish')
+        # The sink-failure return under cron's default rule: COMMAND exited 0, so the wrapper's own exit 4.
+        monkeypatch.setenv('SINK_EXIT', '3')
+        run(child, sink, '--log', str(log), spec='o:x', exit_code=0, monkeypatch=monkeypatch)
+        one_more('exit 0 sink failed (exit 3)')
+        monkeypatch.delenv('SINK_EXIT')
 
     def test_the_gate_reads_the_log_the_nightly_writes(self):
         gates = _heartbeat_gates()
