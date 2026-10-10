@@ -350,7 +350,7 @@ path):
 | `sky` | Fewer than 5 of the 9 cells on a plane, at or above the horizon row |
 | `no_plane` | The same below the horizon: something Google did not model (`-1` cannot tell the two apart; the horizon does) |
 | `facade` | The plane under the label is steeper than the 0.7 threshold |
-| `out_of_range` | The distance is outside [0.5 m, `V3_DIST_CAP_M` = 50 m] |
+| `out_of_range` | The distance is outside [0.5 m, `V3_DIST_CAP_M` = 50 m], or the label's ray is exactly parallel to the plane (a label on the horizon row of a level rig) and never meets it |
 
 The counts are `distance_depth` and `distance_blend_<reason>` in the run's counts dict
 (`DISTANCE_SOURCE_COUNTS`). They annotate a **success**: under v3-depth they sum to the crops extracted, and
