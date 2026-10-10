@@ -26,6 +26,7 @@ import os
 import re
 import sys
 
+import numpy as np
 import requests
 from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
@@ -93,11 +94,16 @@ CropBox = collections.namedtuple('CropBox', ['left', 'top', 'width', 'height', '
 # This is the DEFAULT rule, and it stays v2 until switching is decided deliberately: v3 moves ~40% of the
 # 658 gold ramps' windows by more than 10%, so flipping it means re-cutting every store whole (--force,
 # #83), which belongs in the #84 recrop campaign. --sizing-rule selects between the rules below.
+#
+# v3-depth (#180) is v3 with its distance read from the pano's .depth.npz where the artifact can be trusted,
+# and v3's own blend distance everywhere else. Its own rule id rather than a flag, so the marker's sticky
+# rules_seen/constants_seen history tells a v3 store from a v3-depth one with no new machinery.
 CROP_RULE_VERSION = 'v2'
-CROP_RULE_VERSIONS = ('v2', 'v3')
+CROP_RULE_VERSIONS = ('v2', 'v3', 'v3-depth')
 
 # Which distance estimator each rule sizes from; recorded in crop_rule.json beside the version.
-CROP_RULE_DISTANCE_ESTIMATOR = {'v2': 'linear-2013', 'v3': 'lle3-cotangent-blend'}
+CROP_RULE_DISTANCE_ESTIMATOR = {'v2': 'linear-2013', 'v3': 'lle3-cotangent-blend',
+                                'v3-depth': 'depth-npz-rig-pixel-median3x3, lle3-cotangent-blend fallback'}
 
 # ---------------------------------------------------------------------------
 # Sizing rule v2. Measured, not guessed - see reports/2026-08-19-crop-sizing-v2.md for the four-city
@@ -172,6 +178,44 @@ V3_DIST_CAP_M = 50.0
 # the planning pilot's 5.8 reproduced exactly). The band-centre criterion (fill p50 nearest 0.36)
 # gives 6.0; the report says why the matched value is the one shipped.
 V3_CONTEXT_WIDTH_M = 5.8
+
+# ---------------------------------------------------------------------------
+# Sizing rule v3-depth (opt-in, #180): v3's window at a distance read from the depth artifact
+# (docs/depth.md) - the median of the 3x3 depth cells around the label's RIG pixel, projected to the ground -
+# where it can be trusted, and v3's blend distance where it cannot. The spec is #157's decision D4 as filed
+# in #180; the numbers below are its, not fitted here. docs/cropper.md, "Sizing rule v3-depth".
+#
+# A depth cell counts only if it is on a plane: depth > 0 and plane index > 0. -1 is finite and means "no
+# plane" (sky, or anything Google did not model), so a plain finiteness test would count it (#180 point 1).
+V3_DEPTH_MIN_VALID_CELLS = 5
+# The distance's lower limit; the upper one is V3_DIST_CAP_M, the cap the blend constants were copied with.
+V3_DEPTH_MIN_M = 0.5
+# |n_z| / |n| of the plane under the label below this is a facade, not ground: fall back. The same 0.7 as
+# gsv.ground_plane_from_artifact's min_vertical.
+V3_DEPTH_MIN_GROUND_VERTICALITY = 0.7
+# The facade test needs the plane fields, which only format 3 has (#180 point 2): a v2 artifact falls back.
+V3_DEPTH_MIN_FORMAT_VERSION = 3
+# Which pixel the grid is sampled at, for the marker. 'rig': pano_pose.corrected_pixel under the npz's own
+# pose, at TILT_BETA_BY_POSE_SOURCE's npz beta (#180's 2026-10-05 comment, after #158 and #193). The planes
+# are in the rig frame of the npz's capture (#54 F1) and a GSV label's stored pixel is gravity-levelled
+# (endpoint C), so the stored pixel samples the grid off by the tilt at the label's bearing.
+V3_DEPTH_LOOKUP_PIXEL = 'rig'
+
+# Which distance a v3-depth crop was sized from, and why a crop fell back to the blend.
+DISTANCE_SOURCE_DEPTH = 'depth'
+DISTANCE_SOURCE_BLEND = 'blend'
+# In the order the lookup tests them: the first that applies is the reason.
+#   no_artifact   no .depth.npz beside the pano (every Mapillary/Panoramax pano; a GSV pano the depth
+#                 phase has not reached or ledgered unavailable)
+#   unreadable    the file will not load, or its arrays are not the documented shapes
+#   old_format    format_version absent (pre-v2: x-mirrored, #58) or below V3_DEPTH_MIN_FORMAT_VERSION
+#   no_pose       the npz's pitch or roll is missing or NaN, so there is no rig pixel to sample at
+#   sky           fewer than V3_DEPTH_MIN_VALID_CELLS on a plane, at or above the horizon row
+#   no_plane      the same, below the horizon: something Google did not model
+#   facade        the plane under the label is steeper than V3_DEPTH_MIN_GROUND_VERTICALITY allows
+#   out_of_range  the distance is outside [V3_DEPTH_MIN_M, V3_DIST_CAP_M]
+DEPTH_FALLBACK_REASONS = ('no_artifact', 'unreadable', 'old_format', 'no_pose', 'sky', 'no_plane', 'facade',
+                          'out_of_range')
 
 # ---------------------------------------------------------------------------
 # The tilt correction (opt-in, #191). A GSV label's stored pano_x/pano_y is in gravity-levelled pixels
@@ -280,6 +324,11 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch', 'out_of_frame',
                      'black_content', 'no_pose', 'errors')
 COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
+# Under --sizing-rule v3-depth (#180), which distance each SUCCESS was sized from: distance_depth, or the
+# blend fallback under its reason. A third group, outside both sums above, and in the counts dict only under
+# v3-depth (every other rule returns the dict it always did). They partition success:
+#     distance_depth + distance_blend_<reason> for every reason == success
+DISTANCE_SOURCE_COUNTS = ('distance_depth',) + tuple('distance_blend_' + reason for reason in DEPTH_FALLBACK_REASONS)
 
 # The content check (#164): a cut window more than this fraction exactly-black (luma 0) is not written and
 # is counted black_content. The #47 guarantee is about geometry - no crop contains synthetic black the
@@ -397,6 +446,9 @@ def build_parser():
                              'cut before that are v1, #83). v3 sizes from the lle #3 cotangent distance instead of '
                              'the 2013 linear one (#32); it moves ~40%% of the 658 gold ramps\' windows by more '
                              'than 10%%, so a store cut under v2 should be re-cut whole with --force, not topped up. '
+                             'v3-depth (#180) is v3 with the distance read from the pano\'s .depth.npz at the '
+                             'label\'s rig pixel where it can be trusted, and v3\'s own distance everywhere else; '
+                             'each fallback is counted by reason. '
                              'Recorded in crop_rule.json and on every provenance row either way.')
     parser.add_argument('--tilt-correction', action='store_true',
                         help='Move each crop centre from the stored (gravity-levelled) label pixel to the rig '
@@ -860,14 +912,160 @@ def geometric_window_fov_deg(distance_m, context_width_m=None):
     return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
 
 
-def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION):
+# ---------------------------------------------------------------------------
+# Rule v3-depth's distance (#180). Three functions: load_depth_grid reads the artifact once per pano,
+# label_distance samples it for one label, and depth_backed_distance is the two composed from a path - the
+# "one function returning (distance_m, distance_source)" of #180's acceptance criteria.
+
+# The arrays label_distance reads, plus the npz's own pose in degrees (pano_pose.pose_from_depth_artifact's
+# conversion). depth and plane_indices are (h, w) in the stored JPEG's column order (docs/depth.md).
+DepthGrid = collections.namedtuple('DepthGrid', 'depth plane_indices planes_n planes_d pitch_deg roll_deg')
+
+# A label's distance and where it came from. source is DISTANCE_SOURCE_DEPTH or DISTANCE_SOURCE_BLEND;
+# reason is None for depth and one of DEPTH_FALLBACK_REASONS for blend. lookup_x/lookup_y are the pano pixel
+# the grid was sampled at (the rig pixel), None when no grid was sampled.
+DistanceEstimate = collections.namedtuple('DistanceEstimate', 'distance_m source reason lookup_x lookup_y')
+
+
+def load_depth_grid(npz_path):
+    """(DepthGrid, None), or (None, reason) with reason in DEPTH_FALLBACK_REASONS: no_artifact, unreadable,
+    old_format or no_pose. Never raises: whatever the file holds, the crop falls back to the blend.
+
+    `npz_path` None or absent is no_artifact. A file np.load refuses, or whose arrays are not the documented
+    shapes (docs/depth.md, "The artifact": depth and plane_indices one (h, w) raster, planes_n (P, 3), every
+    index inside the plane list), or whose plane_indices is not an integer raster, is unreadable. format_version absent (pre-v2, x-mirrored) or below
+    V3_DEPTH_MIN_FORMAT_VERSION is old_format, checked before the shapes, since a v2 artifact lacks the plane
+    fields by design. The pose is read by pano_pose.pose_from_depth_artifact - the tilt correction's reader,
+    so the two can never convert pitch and roll differently - and a missing or NaN one is no_pose.
+    """
+    if npz_path is None or not os.path.exists(npz_path):
+        return None, 'no_artifact'
+    # One try around the load AND the checks (#211 review): a float raster holding a NaN, or strings, raises
+    # inside the checks, and this function is documented never to raise.
+    try:
+        with np.load(npz_path) as art:
+            if 'format_version' not in art.files or int(art['format_version']) < V3_DEPTH_MIN_FORMAT_VERSION:
+                return None, 'old_format'
+            depth = np.asarray(art['depth'], dtype=np.float64)
+            plane_indices = np.asarray(art['plane_indices'])
+            planes_n = np.asarray(art['planes_n'], dtype=np.float64)
+            planes_d = np.asarray(art['planes_d'], dtype=np.float64)
+        if (depth.ndim != 2 or depth.size == 0 or plane_indices.shape != depth.shape
+                or not np.issubdtype(plane_indices.dtype, np.integer)
+                or planes_n.ndim != 2 or planes_n.shape[1] != 3 or planes_d.shape != (len(planes_n),)
+                or int(plane_indices.min()) < 0 or int(plane_indices.max()) >= len(planes_n)):
+            return None, 'unreadable'
+    except Exception:  # a corrupt zip, a truncated member, a missing array, a non-scalar version, a bad dtype
+        return None, 'unreadable'
+    pose, _ = pano_pose.pose_from_depth_artifact(npz_path)
+    if pose is None:
+        return None, 'no_pose'
+    return DepthGrid(depth, plane_indices, planes_n, planes_d, pose.pitch_deg, pose.roll_deg), None
+
+
+def label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason=None):
+    """Rule v3-depth's distance for one label: a DistanceEstimate.
+
+    With no grid (`reason` says why, from load_depth_grid), the blend: v3's own distance,
+    blend_distance_m(label_depression_deg(pano_y, pano_height)), so a fallback crop is v3's crop exactly.
+
+    With a grid, the spec of #180:
+    1. **The lookup pixel is the rig pixel**, pano_pose.corrected_pixel under the npz's own pose at the npz
+       beta (TILT_BETA_BY_POSE_SOURCE, read at call time) - not the stored pixel, which is gravity-levelled
+       while the planes are in the rig frame (#54 F1, endpoint C). Never an .xml pose: that one poses a
+       2019-22 JPEG, not this grid.
+    2. **Index by truncation** (docs/depth.md, "Sampling depth under a label"): col = int(x / W * w) % w,
+       row = min(int(y / H * h), h - 1).
+    3. **The 3x3 neighbourhood**, columns wrapped at the seam, rows not (the poles are not adjacent). A
+       cell counts when depth > 0 and plane index > 0; fewer than V3_DEPTH_MIN_VALID_CELLS is `sky` when
+       the lookup row is at or above the horizon (rows before (h + 1) // 2, gsv.ground_plane_from_artifact's
+       split), else `no_plane`. -1 cannot tell sky from unmodelled, so the horizon is what does.
+    4. **The plane under the label**: the centre cell's, or when the centre has none the most common plane
+       among the counted cells (lowest index on a tie). |n_z| / |n| below V3_DEPTH_MIN_GROUND_VERTICALITY is
+       `facade`.
+    5. **The distance** is the label's OWN ray - the continuous lookup pixel, not a cell centre - intersected
+       with that plane: |planes_d / (v . planes_n)|, the artifact's reconstruction identity (docs/depth.md)
+       evaluated at the label rather than at a cell (#211 review: a cell's depth is the ray length at its
+       centre, up to half a 0.7-degree cell from the label, which on ground is up to ~11% of the distance at
+       3-5 degrees). The 3x3 count and the plane choice above decide WHETHER and WHICH plane; the plane
+       itself is what the artifact stores, so this is exact on it. That ray length is projected to the
+       ground by cos(label_depression_deg(pano_y)): the label's gravity depression, from the stored y, which
+       is gravity-levelled. The blend it replaces is a ground distance (h / tan d) and V3_CONTEXT_WIDTH_M was
+       fitted on it, so the slant range would size every window ~1/cos(d) too narrow. On level ground at
+       camera height h this is h / tan(d) exactly. Outside [V3_DEPTH_MIN_M, V3_DIST_CAP_M] (or a ray parallel
+       to the plane) is `out_of_range`.
+
+    >>> label_distance(1024, 700, 2048, 1024, None, 'no_artifact').source
+    'blend'
+    """
+    depression = label_depression_deg(pano_y, pano_height)
+    blend = blend_distance_m(depression)
+    if grid is None:
+        # A blend estimate must carry its reason, or the loop cannot file it (#211 review).
+        if reason not in DEPTH_FALLBACK_REASONS:
+            raise ValueError("no depth grid and no fallback reason (%r)" % (reason,))
+        return DistanceEstimate(blend, DISTANCE_SOURCE_BLEND, reason, None, None)
+    lookup_x, lookup_y = pano_pose.corrected_pixel(pano_x, pano_y, pano_width, pano_height, grid.pitch_deg,
+                                                   grid.roll_deg,
+                                                   TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_NPZ])
+
+    def fallback(why):
+        return DistanceEstimate(blend, DISTANCE_SOURCE_BLEND, why, lookup_x, lookup_y)
+
+    h, w = grid.depth.shape
+    col = int(lookup_x / pano_width * w) % w
+    row = max(min(int(lookup_y / pano_height * h), h - 1), 0)
+    rows = [r for r in (row - 1, row, row + 1) if 0 <= r < h]
+    cols = [(col + dc) % w for dc in (-1, 0, 1)]
+    depth = grid.depth[np.ix_(rows, cols)]
+    indices = grid.plane_indices[np.ix_(rows, cols)].astype(np.intp)
+    with np.errstate(invalid='ignore'):
+        counted = np.isfinite(depth) & (depth > 0) & (indices > 0)
+    if int(counted.sum()) < V3_DEPTH_MIN_VALID_CELLS:
+        return fallback('sky' if row < (h + 1) // 2 else 'no_plane')
+
+    centre = (rows.index(row), 1)
+    plane = int(indices[centre]) if counted[centre] else int(np.argmax(np.bincount(indices[counted])))
+    normal = grid.planes_n[plane]
+    length = float(np.linalg.norm(normal))
+    if length == 0.0 or abs(float(normal[2])) / length < V3_DEPTH_MIN_GROUND_VERTICALITY:
+        return fallback('facade')
+
+    # The label's own ray in the artifact frame, which is -RFU (pano_pose's module docstring).
+    ray = -pano_pose.direction_rfu(*pano_pose.bearing_elevation_from_pixel(lookup_x, lookup_y, pano_width,
+                                                                           pano_height))
+    dot = float(np.dot(ray, normal))
+    if dot == 0.0:
+        # A ray exactly parallel to the plane (a label on the horizon row of a level rig) never meets it. Both
+        # operands are Python floats, which raise on this division rather than returning inf, so the case is
+        # answered before dividing (#211 fix-round review).
+        return fallback('out_of_range')
+    ray_length = abs(float(grid.planes_d[plane]) / dot)
+    distance = ray_length * math.cos(math.radians(depression))
+    if not (math.isfinite(distance) and V3_DEPTH_MIN_M <= distance <= V3_DIST_CAP_M):
+        return fallback('out_of_range')
+    return DistanceEstimate(distance, DISTANCE_SOURCE_DEPTH, None, lookup_x, lookup_y)
+
+
+def depth_backed_distance(pano_x, pano_y, pano_width, pano_height, npz_path):
+    """Rule v3-depth's distance for a label, from the pano's depth artifact path (or None): a
+    DistanceEstimate, whose (distance_m, source) is the pair #180 asks for. The crop loop calls the two
+    halves separately so a pano's artifact is read once for all its labels."""
+    grid, reason = load_depth_grid(npz_path)
+    return label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason)
+
+
+def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION, distance_m=None):
     """The sizing rule as what it actually is: an ANGLE. Degrees of the sphere the window spans.
 
     `sizing_rule` selects between the rules in CROP_RULE_VERSIONS; an unknown one is a ValueError.
 
     Rule v3 (opt-in, #32) is three named steps - label_depression_deg, blend_distance_m,
     geometric_window_fov_deg - composed here and nowhere else; a test pins the composition so a refactor
-    that fuses them cannot land silently. Everything below describes rule v2, the default.
+    that fuses them cannot land silently. Rule v3-depth (opt-in, #180) is geometric_window_fov_deg at
+    `distance_m`, which it requires: the caller resolves it (label_distance, falling back to exactly v3's
+    blend distance), because it needs the pano's depth artifact and this function sees only a y. v2 and v3
+    refuse a `distance_m` rather than ignore one. Everything below describes rule v2, the default.
 
     Two steps, each one measured number from reports/2026-08-19-crop-sizing-v2.md:
 
@@ -890,6 +1088,12 @@ def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION):
 
     :return: the window's angular span in degrees, in [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG].
     """
+    if sizing_rule == 'v3-depth':
+        if distance_m is None:
+            raise ValueError("sizing rule v3-depth needs the label's distance_m (see label_distance)")
+        return geometric_window_fov_deg(distance_m)
+    if distance_m is not None:
+        raise ValueError("distance_m is read only by sizing rule v3-depth, not %r" % (sizing_rule,))
     if sizing_rule == 'v2':
         deg = elevation_px_to_deg(predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE, pano_height)
         return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
@@ -898,8 +1102,9 @@ def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION):
     raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
 
 
-def crop_window_width(pano_y, pano_width, pano_height, sizing_rule=CROP_RULE_VERSION):
+def crop_window_width(pano_y, pano_width, pano_height, sizing_rule=CROP_RULE_VERSION, distance_m=None):
     """The window width the selected rule cuts, in native pixels: crop_window_fov_deg as an azimuthal span.
+    `distance_m` is v3-depth's, and only v3-depth's (crop_window_fov_deg).
 
     A width is horizontal, so the conversion is azimuth_deg_to_px against pano_width. The elevation
     form gives the same number on a 2:1 pano and half of it on a square one - the axis slip the unit
@@ -913,7 +1118,7 @@ def crop_window_width(pano_y, pano_width, pano_height, sizing_rule=CROP_RULE_VER
     because that is a property of the image rather than of the rule, and keeping it there means the
     reported window is the one that was cut.
     """
-    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height, sizing_rule), pano_width)
+    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height, sizing_rule, distance_m), pano_width)
 
 
 def compute_crop_box(pano_x, pano_y, crop_width, pano_width, pano_height):
@@ -1609,6 +1814,12 @@ RULE_MARKER_CONSTANT_KEYS = {
            'crop_max_stored_width') + _TILT_BETA_KEYS,
     'v3': ('crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h', 'crop_max_stored_width',
            'v3_camera_height_m', 'v3_blend_deg', 'v3_dist_cap_m', 'v3_context_width_m') + _TILT_BETA_KEYS,
+    # v3's, plus the depth lookup's (#180): its fallback IS v3, so every v3 constant shapes its crops too.
+    'v3-depth': ('crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h', 'crop_max_stored_width',
+                 'v3_camera_height_m', 'v3_blend_deg', 'v3_dist_cap_m', 'v3_context_width_m',
+                 'v3_depth_min_valid_cells', 'v3_depth_min_m', 'v3_depth_min_ground_verticality',
+                 'v3_depth_min_format_version', 'v3_depth_lookup_pixel', 'v3_depth_lookup_beta')
+                + _TILT_BETA_KEYS,
 }
 
 
@@ -1635,7 +1846,15 @@ def _rule_constants(tilt_correction=False):
             'v3_camera_height_m': V3_CAMERA_HEIGHT_M,
             'v3_blend_deg': V3_BLEND_DEG,
             'v3_dist_cap_m': V3_DIST_CAP_M,
-            'v3_context_width_m': V3_CONTEXT_WIDTH_M})
+            'v3_context_width_m': V3_CONTEXT_WIDTH_M,
+            # Rule v3-depth's (#180). The lookup beta is the npz pose record's tilt beta whatever
+            # --tilt-correction says: it places the depth sample, not the window, so it is recorded on its own.
+            'v3_depth_min_valid_cells': V3_DEPTH_MIN_VALID_CELLS,
+            'v3_depth_min_m': V3_DEPTH_MIN_M,
+            'v3_depth_min_ground_verticality': V3_DEPTH_MIN_GROUND_VERTICALITY,
+            'v3_depth_min_format_version': V3_DEPTH_MIN_FORMAT_VERSION,
+            'v3_depth_lookup_pixel': V3_DEPTH_LOOKUP_PIXEL,
+            'v3_depth_lookup_beta': float(TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_NPZ])})
     return constants
 
 
@@ -1961,7 +2180,7 @@ class CropWindowMostlyBlackError(Exception):
 
 
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=CROP_RULE_VERSION,
-                     centre=None):
+                     centre=None, distance_m=None):
     """
     Makes a crop around the object of interest and saves it atomically.
 
@@ -1987,6 +2206,8 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, siz
     :param centre: (x, y) to centre the window on - the tilt-corrected point (#191) - instead of
                    (pano_x, pano_y). The window is still SIZED at the stored pano_y, and the mark goes at
                    the centre, which is where the label is in the stored tiles.
+    :param distance_m: the label's distance under sizing rule v3-depth (#180), which requires it; refused by
+                       every other rule. bulk_extract_crops resolves it with label_distance.
     :return: the CropBox that was cut, so the caller can count a de-centred (shifted) crop without
              recomputing the geometry.
     :raises CropWindowMostlyBlackError: the window is mostly black; nothing was written.
@@ -2002,7 +2223,7 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, siz
         # v3's depression is below the gravity horizon, which is what the stored y encodes.
         centre_x, centre_y = (pano_x, pano_y) if centre is None else centre
         box = compute_crop_box(centre_x, centre_y,
-                               crop_window_width(pano_y, pano_width, pano_height, sizing_rule),
+                               crop_window_width(pano_y, pano_width, pano_height, sizing_rule, distance_m),
                                pano_width, pano_height)
         window = extract_crop(pano, box.left, box.top, box.width, box.height)
         fraction = black_fraction(window)
@@ -2257,6 +2478,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     counts = dict.fromkeys(DISJOINT_OUTCOMES + COUNT_ANNOTATIONS, 0)
     counts['total'] = len(labels_to_crop)
+    if sizing_rule == 'v3-depth':
+        # Only under v3-depth (#180), so every other rule returns the dict it always returned.
+        counts.update(dict.fromkeys(DISTANCE_SOURCE_COUNTS, 0))
 
     # Before the first write of any kind - the makedirs included - because what it protects cannot be
     # regenerated.
@@ -2378,6 +2602,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 pose_looked_up = False
                 pose_reason = pose_error = None
                 no_pose_labels = pose_error_labels = 0
+                # Rule v3-depth's artifact (#180), read like the pose: lazily, once per pano, only for a label
+                # about to be cut. load_depth_grid never raises; it turns any file into a grid or a reason.
+                depth_looked_up = False
+                depth_grid = depth_reason = None
                 for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                     processed += 1
                     print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
@@ -2496,10 +2724,26 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                             os.makedirs(destination_folder, exist_ok=True)
                             made_dirs.add(destination_folder)
                         # centre only when corrected, so a run without the flag makes the call it always
-                        # made (#191).
-                        corrected_centre = {} if pose is None else {'centre': (centre_x, centre_y)}
+                        # made (#191); distance_m only under v3-depth (#180), for the same reason.
+                        extra = {} if pose is None else {'centre': (centre_x, centre_y)}
+                        estimate = None
+                        if sizing_rule == 'v3-depth':
+                            if not depth_looked_up:
+                                depth_looked_up = True
+                                try:
+                                    depth_grid, depth_reason = load_depth_grid(
+                                        os.path.splitext(pano_img_path)[0] + DEPTH_ARTIFACT_SUFFIX)
+                                except Exception:
+                                    # It is documented never to raise; if it does anyway, the artifact is
+                                    # unreadable for every label on the pano, never silently depth (#211).
+                                    depth_grid, depth_reason = None, 'unreadable'
+                            # Inside this try: a raise here is a fault of ours, one counted error like a failed
+                            # write, and the run goes on.
+                            estimate = label_distance(pano_x, pano_y, pano.size[0], pano.size[1], depth_grid,
+                                                      depth_reason)
+                            extra['distance_m'] = estimate.distance_m
                         box = make_single_crop(pano, pano_x, pano_y, crop_destination,
-                                               draw_mark=mark_label, sizing_rule=sizing_rule, **corrected_centre)
+                                               draw_mark=mark_label, sizing_rule=sizing_rule, **extra)
                     except CropWindowMostlyBlackError as e:
                         # Not an error (#164): the pano on disk holds black where imagery should be, and
                         # nothing was written, so a re-run cuts this label once the pano is repaired.
@@ -2523,6 +2767,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         counts['recut'] += 1
                     if pose is not None:
                         corrected_by_source[pose.source] += 1
+                    if estimate is not None:
+                        # Counted on the success, so the sources partition success (DISTANCE_SOURCE_COUNTS).
+                        counts['distance_depth' if estimate.source == DISTANCE_SOURCE_DEPTH
+                               else 'distance_blend_' + estimate.reason] += 1
 
                     # After the crop is on disk and counted, never instead of it (#111). A failed append is
                     # NOT an error: the crop is the resume marker, so a re-run skips it and could never write
@@ -2550,6 +2798,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         logging.info('%s.jpg %s %s %s -> %s %s (pitch %s, roll %s from %s; beta %s)',
                                      label_id, pano_id, pano_x, pano_y, centre_x, centre_y, pose.pitch_deg,
                                      pose.roll_deg, pose.source, beta)
+                    if estimate is not None:
+                        # The per-crop record of which distance sized it (#180), until the provenance
+                        # manifest carries a column for it - a separate line, so the one above is unchanged.
+                        logging.info('%s.jpg %s distance %.3f m from %s', label_id, pano_id, estimate.distance_m,
+                                     estimate.source if estimate.reason is None
+                                     else '%s (%s)' % (estimate.source, estimate.reason))
                 if no_pose_labels:
                     budget.warning('no_pose', "Skipped %d labels on pano %s: no pose for the tilt correction (%s)",
                                    no_pose_labels, pano_id, pose_reason)
@@ -2606,6 +2860,18 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                                             TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_XML],
                                             corrected_by_source[pano_pose.POSE_SOURCE_NPZ],
                                             TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_NPZ]))
+        logging.info('%s', message)
+        print(message)
+    if sizing_rule == 'v3-depth':
+        # Both channels, and only under v3-depth, so every other run prints what it always did. Every
+        # fallback is named with its count, in DEPTH_FALLBACK_REASONS order; they and the depth count sum to
+        # the crops extracted on the next line.
+        fallbacks = [(reason, counts['distance_blend_' + reason]) for reason in DEPTH_FALLBACK_REASONS
+                     if counts['distance_blend_' + reason]]
+        message = ("Distance source (v3-depth): %d crops sized from the depth artifact, %d from the blend "
+                   "fallback%s." % (counts['distance_depth'], sum(n for _, n in fallbacks),
+                                    ' (%s)' % ', '.join('%s %d' % item for item in fallbacks) if fallbacks
+                                    else ''))
         logging.info('%s', message)
         print(message)
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "

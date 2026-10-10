@@ -62,6 +62,15 @@ containing the position, where rounding would pick the pixel whose edge is neare
 shift. The payload is angular (~0.7°/pixel; the horizon at θ = π/2 falls midway between the two middle rows,
 not on a single row), so this scaling works at any pano resolution.
 
+**Tilt caveat.** On a tilted GSV pano the planes, and so this raster, are in the rig frame of the npz's own
+`pitch`/`roll`, while a label's stored `pano_y` is gravity-levelled
+([#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54)'s F1 and endpoint C). Sampling at
+the stored pixel lands off by the tilt at the label's bearing, a few rows on a 3° pano; sample at
+`pano_pose.corrected_pixel(...)` under the npz's pose instead. The cropper's opt-in
+[`--sizing-rule v3-depth`](cropper.md#sizing-rule-v3-depth-opt-in-180) is the in-repo consumer that does, and
+it also shows the other two traps: `-1` is finite, so "finite" must mean `depth > 0`, and only format 3 has the
+plane fields that tell ground from a facade.
+
 **Frame caveat.** `pano_x` and the pano raster are both *heading-centred*: column 0 sits at compass bearing
 `pano_yaw − 180°`, the vehicle's forward direction at image centre. The legacy pre-evolution-179 `sv_image_x`
 is *north-referenced* (`sv_image_x / 13312 × 360` is a true compass bearing). Mixing the legacy value with the

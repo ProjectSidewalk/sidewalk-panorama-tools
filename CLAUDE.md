@@ -36,8 +36,8 @@ python3 cron_notify.py --sink '<shell command>' [--name NAME] [--only-on-failure
 # Cropper (exits 1 if any label errored; missing/untrusted panos alone are not an error). --force re-cuts existing
 # crops (#83); a -o that looks like the production canvas-capture crop store, or that crop_rule.json records as
 # another city's, is refused: exit 3, nothing written. --city is required (label_id restarts per city; #159)
-# and must be an active row of log_analyzer/cities.csv (exit 2 otherwise). --sizing-rule v3 is opt-in (#32).
-python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force] [--sizing-rule {v2,v3}] [--tilt-correction]
+# and must be an active row of log_analyzer/cities.csv (exit 2 otherwise). --sizing-rule v3 is opt-in (#32), and so is v3-depth (#180).
+python3 CropRunner.py (-d <fqdn> | -f <metadata.csv|.json>) -s <pano-dir> -o <crop-dir> --city <city_id> [--mark-label] [--force] [--sizing-rule {v2,v3,v3-depth}] [--tilt-correction]
 
 # flag_panos JSON -> CSV, for one city (one-off tool; see flag_panos/README.md)
 python3 flag_panos/json_to_csv.py --city <city> [--dir <dir>]
@@ -131,7 +131,7 @@ The per-module detail lives in the rules files named in "Guidance layout"; the s
 
 **downloaders/** - per-source imagery: `gsv.py` (tile stitching at the photometa-resolved zoom, the tile push-back breaker, and the depth phase), `mapillary.py`, `panoramax.py`, `store_sftp.py`, and `common.py` (shared image primitives, the display-copy switch, the width tripwire). Which answers are permanent ledger verdicts and which raise is a contract, and every entry in it is a measurement. Rules: `.claude/rules/downloader.md`; the depth phase's pacing, block latch and artifacts: `.claude/rules/depth.md`.
 
-**CropRunner.py** - cuts one 3:2 crop per label from the stored panos into `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`: intake (cvMetadata or a file), grouping by pano, two preflights and a content check, the sizing rule (v2 default, v3 opt-in), an opt-in `--tilt-correction` (#191: the window centred on the rig pixel from the pano's own pose, beta per pose record; a pano with no pose is `no_pose`), a seam-wrapping window, atomic writes, a provenance manifest and a sticky rule marker. Nothing in the crop loop is fatal and the counts reconcile on every path. Rules: `.claude/rules/cropper.md` (also `migrate_crop_store.py`, `check_cvmetadata_schema.py` and the label-type table); the #54 tilt geometry (`pano_pose.py`) and its crop-time correction: `.claude/rules/tilt.md`.
+**CropRunner.py** - cuts one 3:2 crop per label from the stored panos into `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`: intake (cvMetadata or a file), grouping by pano, two preflights and a content check, the sizing rule (v2 default; v3 and v3-depth opt-in, the latter sizing from the pano's depth artifact with a counted blend fallback, #180), an opt-in `--tilt-correction` (#191: the window centred on the rig pixel from the pano's own pose, beta per pose record; a pano with no pose is `no_pose`), a seam-wrapping window, atomic writes, a provenance manifest and a sticky rule marker. Nothing in the crop loop is fatal and the counts reconcile on every path. Rules: `.claude/rules/cropper.md` (also `migrate_crop_store.py`, `check_cvmetadata_schema.py` and the label-type table); the #54 tilt geometry (`pano_pose.py`) and its crop-time correction: `.claude/rules/tilt.md`.
 
 **scrape_queue.py** and **cron_notify.py** - the nightly driver (one cron line walks the city manifest; two composing budgets; an advisory lock; extra passes for cities that stopped on a budget; the roster cross-check; the store marker; an exit code that fails the night on any run condition) and the alarm channel that delivers that exit code through `--sink` on a host with no MTA. Rules: `.claude/rules/queue.md`.
 
