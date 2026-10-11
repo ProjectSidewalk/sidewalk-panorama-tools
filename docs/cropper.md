@@ -530,9 +530,11 @@ label on the last column of a band gets about half black (0.510 measured at 19%,
 consumer who wants those crops out too filters below 0.5 (see
 [Before you train](#before-you-train-on-these-crops)); judging the rows at and below the label, rather than
 the whole window, is a possible stronger check, not made here. The pano-level check catches these thinner
-bands instead ([Ops → Edge black bands](ops.md#edge-black-bands), #179). The downloader refuses to save a
-stitch with a band deeper than 5% of the frame, and `scan_black_bands.py` lists the stored panos that already
-have one, which are the panos whose crops to re-cut.
+bands instead ([Ops → Edge black bands](ops.md#edge-black-bands), #179): it lists these thinner bands when
+they are deeper than 5% of the frame (`EDGE_BAND_MAX_FRACTION`); a band under 5% is neither flagged nor
+listed unless the sweep is run with `--min-band 0`. The downloader saves such a stitch but flags it (the
+`edge-band` run condition), and `scan_black_bands.py` lists the stored panos that have one, which are the
+panos whose crops to re-cut.
 
 **Not an error.** `black_content` is like `dims_mismatch`: the run refused to trust the imagery rather than
 getting anything wrong, so it does not move the exit code or the `SYSTEMIC FAILURE` alarm. It *is* said: one
@@ -552,8 +554,9 @@ imagery — at the wrong scale and position, because the real pano was stretched
 black, its dimensions agree with the metadata, and no crop-level check can see it; a test pins that as a
 known limit. The pano-level check is on the downloader side, not here
 ([Ops → Edge black bands](ops.md#edge-black-bands), #179). Judging the whole pano here would mean an eager
-decode plus a full-frame luma copy (~134 MB at 16384×8192) per pano. The GSV downloader refuses a new stitch
-with a deep edge band, and `scan_black_bands.py` lists the panos already on the store that have one.
+decode plus a full-frame luma copy (~134 MB at 16384×8192) per pano. The GSV downloader saves a new stitch
+with a deep edge band but flags it (the `edge-band` run condition), and `scan_black_bands.py` lists the panos
+on the store that have one.
 The cropper does not read that list; a person deletes the listed panos' crops and re-runs to re-cut them.
 
 ## Outcomes, exit code, and re-runs

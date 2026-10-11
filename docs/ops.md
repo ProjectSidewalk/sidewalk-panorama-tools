@@ -710,19 +710,45 @@ tile grid instead. One zoom-5 tile row is 1/16 = 6.25% of the frame, so any band
 limit with room to spare, while a black cap up to 9° of elevation is under it. The sweep below records every
 pano's depths, so one sweep over a store is the calibration measurement.
 
-### The downloader refuses a stitch with a deep band
+**Exact black depends on the encoder.** The stitcher's canvas is exact RGB 0, so the downloader's own
+check reads it exactly. A *stored* JPEG is another matter: a region written as RGB 0 decodes to luma 1 at 26
+of Pillow's 96 JPEG qualities, and with the DC quantiser Google's own tiles use, and every Mapillary and
+Panoramax pano on the store is the provider's bytes. A sweep that measured only exact black over such files
+would conclude "no caps" from a measurement that cannot see them. So the sweep records a second band beside
+the exact one, of luma at or under `EDGE_BAND_NEAR_BLACK_LUMA` (2), from the same decode
+(`edge_band_report_from_file`). A night scene is luma 1–8 with noise and a near-black nadir written as RGB 2
+sits exactly on that ceiling, which is why the near band is a **recorded measurement** for the calibration,
+not a verdict: the work-list is cut on the exact band, and the downloader's in-memory check is unchanged.
 
-`gsv.download_single_pano` checks the stitch in memory before the atomic save. A deep band raises
-`EdgeBandError`, a subclass of `FrameDisagreementError`, because tiles past what Google serves come back
-black and so a band at the edge is a grid larger than the pano. It is therefore handled exactly like
-[a frame disagreement](#a-gsv-pano-refused-for-a-frame-disagreement): one stdout `WARNING` and one
-`scrape.log` `ERROR`, both containing `frame disagreement` and `black band`. It is counted in field 9, never
-ledgered, retried every run, and counts as an answer for `images-no-success`. To count these refusals alone,
-run `grep "black band" <store>/<city>/scrape.log`.
-The photometa arm already refuses the D4 frame before the fan-out, so this check mostly catches the probe arm's
-residual ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)). Unlike the other
-frame refusals it is decided **after** the fan-out, so a pano refused here costs its whole tile grid every
-night it is retried.
+### The downloader saves and flags a stitch with a deep band
+
+`gsv.download_single_pano` measures the stitch **after** the atomic save and never refuses it
+([#213](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/213) review, decision S1). The store is an archive: a refused pano that Google later retires is
+lost for good, while a saved one with a band costs a work-list row and one alarm, and even a D4 stitch holds
+the real pano losslessly in its top-left. The limit is uncalibrated, and since
+[#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181) both arms refuse a frame
+larger than served *before* the fan-out, so what reaches this check is the class nobody has measured — a
+genuinely black nadir cap deeper than 9°, or Google serving black tiles inside the pano — which a refusal
+could not clear and which the calibration needs to see.
+
+What you see, on a night it happens:
+
+- one `IMAGEDOWNLOAD: WARNING - pano <id>: saved with an exactly-black edge band N% deep along the bottom and
+  M% along the right (limit 5.0%, #179) ...` per pano, on stdout and in `scrape.log`;
+- one end-of-phase line, `IMAGEDOWNLOAD: WARNING - N GSV pano(s) saved with a deep exact-black edge band
+  (edge-band condition) ...`, on both channels;
+- the `edge-band` [condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) in the run
+  summary, whose detail names the first pano. The city stays `ok`; the night exits 1.
+
+The pano is ledgered `downloaded=1`, so it is said **once, ever** — the file is the resume marker, and the
+next night skips it at zero requests. It is **not** a frame disagreement: no exception is raised, the lines
+never contain `frame disagreement`, and the frame-disagreement count ([#207](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/207)) does not move.
+
+**The morning after:** run `python3 scan_black_bands.py <store>/<city>` (or read its ledger if it has run)
+and look at the named pano. A band that is imagery Google really served — a deep black cap — means the limit
+is too low for that source: raise `EDGE_BAND_MAX_FRACTION` per the calibration below, and the pano needs
+nothing. A band that is not imagery is a pano to repair as the work-list describes. To count flagged panos
+over time, `grep "edge band" <store>/<city>/scrape.log`.
 
 ### Sweeping the store: `scan_black_bands.py`
 
@@ -735,11 +761,16 @@ python3 scan_black_bands.py <storage-dir> --min-band 0        # list every pano 
 **It reads, and writes only its own two files.** No panorama is written, moved or deleted. The files are:
 
 - `<storage-dir>/black_bands.csv` (`--ledger`), one row per pano scanned: `pano_id, size, mtime_ns, width,
-  height, bottom_band, right_band`, with the depths as fractions of the frame, whatever they are. Each row is
-  on disk as soon as its verdict lands, so a killed run keeps its progress.
+  height, bottom_band, right_band, near_bottom_band, near_right_band`, with the depths as fractions of the
+  frame, whatever they are — the `bottom`/`right` pair is exact black, the `near_` pair is luma ≤
+  `EDGE_BAND_NEAR_BLACK_LUMA` (above). Each row is on disk as soon as its verdict lands, so a killed run
+  keeps its progress. A row that does not parse (a torn last row, a repeated header) is skipped, counted on
+  stdout, and its pano scanned again; a ledger whose header is another version's is kept aside as
+  `black_bands.csv.stale-N` and a fresh one started.
 - `<storage-dir>/black_band_worklist.csv` (`--worklist`), rewritten from the whole ledger at the end of
-  every run. It lists the panos whose band is deeper than `--min-band` (default `EDGE_BAND_MAX_FRACTION`),
-  with `pano_id, width, height, bottom_band, right_band, side`.
+  every run. It lists the panos whose **exact** band is deeper than `--min-band` (default
+  `EDGE_BAND_MAX_FRACTION`), with `pano_id, width, height, bottom_band, right_band, near_bottom_band,
+  near_right_band, side`.
 
 **Idempotent and resumable.** A pano whose ledger row still matches its size and mtime is not decoded again,
 so a re-run over a finished store costs one `stat` per pano. A pano swapped since then is scanned afresh. A

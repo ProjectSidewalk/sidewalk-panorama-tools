@@ -449,6 +449,7 @@ silenced by it.
 | `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
 | `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |
 | `images-no-success` | No image attempt this run was answered, and either at least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) raised or the phase's budget ran out with only raises behind it *and* those raises took at least `IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS` (60 s) each on average (a blackholed network takes ~3.5 min per raise; a mature city's few slow perennial raisers filling the share are not an outage) — the network, the store, or a bug. Old `downloaded=0` rows in the ledger are not attempts and do not count, and a GSV [frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) is Google answering, so it counts as an answer although it is not ledgered. A GSV push-back (a refused tile, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) counts as a raise; a push-back *trip* records `image_stop: blocked`, which the budget arm does not read as a budget stop, and already fails the city through its own exit 1. The count arm still applies: ten raises with nothing answered, refusals included, are reported alongside a trip that follows them. The duration gate is the *mean*, so one slow raise among fast ones does not pass it. The detail reads `N attempts raised, 0 answered, S s per raise` on both arms, so the queue's summary line carries the duration the thresholds are sized against | the errors in the city's `scrape.log` |
+| `edge-band` | One or more GSV stitches were **saved** with an exact-black band deeper than `EDGE_BAND_MAX_FRACTION` (5% of the frame) along the bottom or right edge ([#179](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/179)). The pano is on the store and ledgered `downloaded=1`, so it fires this once, the night it is downloaded, and costs nothing afterwards. The limit is uncalibrated; the detail names the first pano. It is not a frame disagreement and is not in that count. Judge it against `scan_black_bands.py`'s ledger | [ops: Edge black bands](ops.md#edge-black-bands) |
 | `pano-list-empty` | The pano list was empty as served (a list the source filter emptied is that filter's condition instead) for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
 | `no-run-summary` | *(the queue's own)* An `ok` run left no readable run summary, so its conditions are unknown — a check that did not run has not passed. Also what an operator's own `--run-summary-file` after `--` produces, so do not pass one through the queue | [Extra passes](#extra-passes) |
 | `conditions-unreadable` | *(the queue's own)* The summary's `conditions` was present but not a list of objects with a non-blank string `code`. (An unknown code is kept, with its whitespace collapsed to single spaces, so a newer runner can still fail the night on one line.) | — |
@@ -705,13 +706,19 @@ Google serves now. Expected volume is near zero: all 651 live panos sampled by t
 [2026-08-09 photometa census](../reports/2026-08-09-photometa-census.md) served exactly the dimensions the
 app stores.
 
-**A stitch with a deep black band at its edge is refused the same way**
-([#179](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/179)). The check runs after the
-fan-out and before the save. A band of exact black along the bottom or right edge deeper than
-`common.EDGE_BAND_MAX_FRACTION` (5% of the frame) means the grid was larger than the pano Google served, which
-is the probe arm's residual. It raises `EdgeBandError`, a `FrameDisagreementError` subclass, so it is
-handled like the refusal above. Its lines also contain `black band`. The threshold, its calibration status,
-and the sweep for panos already on the store are in [Ops → Edge black bands](ops.md#edge-black-bands).
+**A stitch with a deep black band at its edge is saved and flagged, never refused**
+([#179](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/179)). After the atomic save,
+`gsv.download_single_pano` measures the band of exact black along the bottom and right edges; one deeper than
+`common.EDGE_BAND_MAX_FRACTION` (5% of the frame) is one `WARNING` per pano on both channels (the lines
+contain `edge band` and `black`, never `frame disagreement`), one end-of-phase line, and the `edge-band`
+[condition](#a-city-can-finish-ok-and-still-fail-the-night), which fails the night. It is **not** a frame
+disagreement and does not touch that count. The pano is ledgered `downloaded=1` like any other success, so
+it is said once, ever. Why saved: the store is an archive, a refused pano that Google later retires is lost
+for good, the limit is uncalibrated, and since the frame checks above both arms refuse a frame larger than
+served before the fan-out, so what reaches this check is the class nobody has measured (a real black nadir
+cap deeper than 9°, or black tiles inside the pano), which a refusal could not clear. The threshold, its
+calibration status, the morning's checklist and the sweep for panos already on the store are in
+[Ops → Edge black bands](ops.md#edge-black-bands).
 
 A new pano costs one photometa request where the probe cost two; a pano the probe has to answer costs the
 two probe tiles plus the two frame-check tiles (plus the photometa request that failed, if one was sent); a
