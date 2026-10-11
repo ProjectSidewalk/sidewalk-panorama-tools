@@ -131,3 +131,13 @@ surfaced survivors of exactly this shape. The one test that regenerates a study 
 provenance plumbing is covered by the synthetic tests in its `TestStudyLogic`.
 
 Tests asserting POSIX file modes skip themselves on Windows; everything else runs on a Windows dev box.
+
+**A rare `PermissionError: [WinError 5]` on Windows is a known flake, not a regression**
+([#202](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/202)). `atomic_output_path` in
+`downloaders/common.py` finishes every artifact write with `os.replace(<final>.part, <final>)`. On Windows that
+rename occasionally fails when the destination was written and read back moments earlier, almost certainly
+because Defender or the search indexer still holds a handle on it. A probe measured 3 failures in 24,000
+back-to-back `write_rule_marker` calls, and a full-suite run once hit the same error at the queue lock in
+`test_scrape_queue.py::TestOnlyOneQueueRunsAtATime`. Both passed on rerun. CI and production are Linux, where
+rename has no such failure mode, so the code deliberately has no Windows retry branch. If a test fails this way,
+rerun it before investigating; a failure that reproduces is a real one.
