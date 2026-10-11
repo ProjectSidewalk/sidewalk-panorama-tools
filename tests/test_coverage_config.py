@@ -37,6 +37,7 @@ PRODUCTION_MODULES = {
     'pano_pose.py',
     'readmit_dimless_writeoffs.py',
     'refetch_panos.py',
+    'scan_black_bands.py',
     'scrape_queue.py',
 }
 

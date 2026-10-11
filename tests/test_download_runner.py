@@ -3720,8 +3720,9 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         assert {DownloadRunner.CONDITION_MAPILLARY_TOKEN, DownloadRunner.CONDITION_UNSUPPORTED_SOURCE,
                 DownloadRunner.CONDITION_PANO_LIST_EMPTY, DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
                 DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT,
-                DownloadRunner.CONDITION_FRAME_DISAGREEMENT} < DownloadRunner.RUN_CONDITIONS
-        assert len(DownloadRunner.RUN_CONDITIONS) == 11
+                DownloadRunner.CONDITION_FRAME_DISAGREEMENT,
+                DownloadRunner.CONDITION_EDGE_BAND} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 12
 
 
 class TestFrameRefusalsAreCountedAndFailTheNight:

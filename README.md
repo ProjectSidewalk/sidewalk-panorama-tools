@@ -23,6 +23,7 @@ out of the panorama. It runs unattended every night, per city, across ~50 deploy
 | [`migrate_depth_artifacts.py`](docs/depth.md#migrating-a-pre-v2-store) | One-off, idempotent rewrite of depth artifacts written before the v2 format. |
 | [`refetch_panos.py`](docs/ops.md#repairing-fover-era-panoramas) | One-off, idempotent re-fetch of panoramas downloaded at half resolution, replacing one only when the replacement is strictly better. |
 | [`readmit_dimless_writeoffs.py`](docs/ops.md#re-admitting-the-dimensionless-write-offs) | One-off: removes the `downloaded=0` ledger rows written for GSV panos that had no width/height before #184, so the next run asks Google for them. Dry run by default; keeps a backup and the removed rows. |
+| [`scan_black_bands.py`](docs/ops.md#edge-black-bands) | Read-only, idempotent sweep that measures the exact-black band along each stored panorama's bottom and right edges and lists the panoramas with a deep one. |
 | [`downscale_panos.py`](docs/ops.md#display-copies-of-wide-panoramas) | Idempotent sweep that writes the 8192 px display copy beside every wider panorama (or, with `--min-width`, only the ones wider than that). **Neither downloader writes one** — that was switched off on 2026-09-09, so this is the only writer that creates one, and it runs only when you run it. |
 
 ## Quick start

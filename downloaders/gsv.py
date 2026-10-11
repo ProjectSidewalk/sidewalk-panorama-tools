@@ -1348,6 +1348,57 @@ def _frame_refusal(pano_id, frame):
     return None
 
 
+class _EdgeBandRunMemory:
+    """How many stitches this run saved with a deep exact-black edge band (#179), and one short detail each.
+
+    Per process, like _PhotometaRunMemory, and reset by DownloadRunner.run for the same reason: an in-process
+    caller of run() must not inherit the last city's count. Its own class rather than fields on
+    _PhotometaRunMemory, so the two memories can change independently. `details[i]` is the i-th flagged pano
+    of the process, so a phase that snapshots `saved` at its start can name ITS first pano, not the process's
+    (#213 review, nit 1).
+    """
+
+    def __init__(self):
+        self.saved = 0
+        self.details = []
+
+
+_edge_band_run = _EdgeBandRunMemory()
+
+
+def _flag_deep_edge_band(image, pano_id):
+    """Say, on both channels, that the stitch just saved has an edge band over the limit (#179), and count it.
+
+    Called AFTER the atomic save, never before it, and it never raises: the pano is on the store, ledgered
+    `downloaded=1`, and the file is the resume marker, so the flag fires once per pano, ever. Save-and-flag
+    rather than refuse (#213 review, S1) because the store is an archive: a refused pano that Google later
+    retires is lost for good, while a saved one with a band costs a work-list row and one alarm, and even a
+    D4 stitch holds the real pano losslessly in its top-left corner. The limit is uncalibrated (#179 item 4),
+    and since #181/#214 both arms refuse a frame larger than served BEFORE the fan-out, so what reaches here
+    is the unmeasured class - a real black nadir cap deeper than 9 degrees, or Google serving black tiles
+    inside the pano - which a refusal could not clear and which the calibration needs to see.
+
+    Deliberately no exception and no FrameDisagreementError subclass: DownloadRunner's image loop counts that
+    type by isinstance (#207), and a band is not a frame disagreement. The message carries `exactly-black edge band`
+    (the grep in docs/ops.md) and never `frame disagreement`. The runner reports the per-run count as the
+    `edge-band` condition from _edge_band_run; a warning that should fail the night goes into the run summary
+    (CLAUDE.md), because production delivers only nonzero exits.
+    """
+    bands = common.edge_black_bands(image)
+    sides = common.deep_edge_bands(bands)
+    if not sides:
+        return
+    # The short form is what the run summary carries (one SNS line); the channels get the full sentence.
+    detail = ("pano %s: saved with an exactly-black edge band %.1f%% bottom / %.1f%% right (limit %.1f%%)"
+              % (pano_id, 100 * bands.bottom, 100 * bands.right, 100 * common.EDGE_BAND_MAX_FRACTION))
+    message = ("%s, #179; ledgered downloaded=1, so this is said once; listed by scan_black_bands.py; see "
+               "docs/ops.md#edge-black-bands" % (detail,))
+    logging.warning("IMAGEDOWNLOAD: WARNING - %s", message)
+    print("IMAGEDOWNLOAD: WARNING - %s" % message)
+    _edge_band_run.saved += 1
+    _edge_band_run.details.append(detail)
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
 
@@ -1396,6 +1447,8 @@ def download_single_pano(storage_path, pano_info):
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:
         stitched.image.save(tmp_path, 'jpeg')
+    # After the save, on purpose: a deep edge band is flagged and counted, never refused (#179, #213 S1).
+    _flag_deep_edge_band(stitched.image, pano_id)
     _write_display_copy(stitched.image, out_image_name, pano_id)
     if frame.evidence == 'photometa-dims':
         _photometa_run.frames_from_photometa += 1

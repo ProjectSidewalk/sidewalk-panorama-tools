@@ -689,6 +689,7 @@ PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape
                       'check_cvmetadata_schema.py', 'cron_notify.py', 'pano_pose.py',
                       'migrate_crop_store.py', 'migrate_depth_artifacts.py', 'refetch_panos.py', 'downscale_panos.py',
                       'readmit_dimless_writeoffs.py',
+                      'scan_black_bands.py',
                       'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
                       'downloaders/gsv.py', 'downloaders/mapillary.py',

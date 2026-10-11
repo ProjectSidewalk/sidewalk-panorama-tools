@@ -2101,6 +2101,20 @@ class TestAnyConditionFailsTheNight:
         """Guard the guard: the fake runner writes `conditions: []` on every run, as the real one does."""
         assert run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate') == 0
 
+    def test_an_edge_band_is_labelled_and_fails_the_night(self, tmp_path, fake_runner, journal, monkeypatch,
+                                                           fleet_in_step, capsys):
+        """#179's `edge-band` (#213 S2): a city that SAVED a stitch with a deep black band is still ok, and the
+        night still fails, with the label naming what to look at."""
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS_BRAVO_BB', 'edge-band=1 pano(s) saved with a deep edge band')
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert '3/3 cities ok' in out
+        assert '[queue] edge-band: GSV stitches saved with a deep exact-black edge band; check the work-list' in out
+        assert '1 pano(s) saved with a deep edge band' in out
+
     def test_the_label_table_is_the_runners_vocabulary(self):
         """Repeated in scrape_queue rather than imported (importing DownloadRunner pulls requests and
         aiohttp into a driver that never touches either), so this is what keeps the two in step. A plain
