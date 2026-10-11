@@ -1,0 +1,150 @@
+{
+ "seed": 190,
+ "fetched": "2026-10-06",
+ "sample": [
+  {
+   "pano_id": "b42a898f-a86c-4130-9a09-c0ebda62bc4d",
+   "stratum": "pose-nonzero",
+   "sha256": "a8d71e31d9df5911ef068576664aa5722e95391f3b6c7d73fac2d8795b28a642",
+   "bytes": 245421
+  },
+  {
+   "pano_id": "a752d58b-a984-41b2-be17-9ef51150a765",
+   "stratum": "pose-nonzero",
+   "sha256": "af081c3fdf8bf00e0a6c721aff2cdc4cb78c06987ab9536c0555c2d847c3a735",
+   "bytes": 267322
+  },
+  {
+   "pano_id": "cdafa20a-e837-486f-b15c-352b6c8c8035",
+   "stratum": "pose-nonzero",
+   "sha256": "6a09a18675892076dc41143b593c78debe603b319f257ba7cccf585b8ed640b6",
+   "bytes": 345560
+  },
+  {
+   "pano_id": "8ae6f346-020d-4867-9b22-aec0c718d83a",
+   "stratum": "pose-nonzero",
+   "sha256": "d804b296f2418cda14448a412d95783f39fae2753ccda0d9b72c61451787ac6c",
+   "bytes": 327560
+  },
+  {
+   "pano_id": "a7af7558-8bc3-40db-b6c3-1a22f20eb628",
+   "stratum": "pose-nonzero",
+   "sha256": "4bbe69b3c5bbfde7b15ddad4ef19eedca2748c75206df33656accdeff55b2243",
+   "bytes": 275996
+  },
+  {
+   "pano_id": "f517c893-ebb9-4a5f-820d-d11c0fd51073",
+   "stratum": "pose-nonzero",
+   "sha256": "43576cf7a2a7d946e43a8a5dc10ad4d17e7b4a68aabe3c556c84d3a8eecf79cb",
+   "bytes": 303697
+  },
+  {
+   "pano_id": "54b725fe-5d63-4f94-a86e-166e1233f683",
+   "stratum": "pose-nonzero",
+   "sha256": "613c8289369872cb52e05be742ac6b5f4a11e1c063021587b100fdce50debb5f",
+   "bytes": 276462
+  },
+  {
+   "pano_id": "fc3f4df1-e95c-42a0-81a6-481b82a40579",
+   "stratum": "pose-nonzero",
+   "sha256": "2d8b8e99cd157b6a1c51ce3290225803c49ab71ef0d8ea63d74c2a84261fe16c",
+   "bytes": 444602
+  },
+  {
+   "pano_id": "ba9c29dc-976e-4da6-b061-f83caabceeef",
+   "stratum": "pose-nonzero",
+   "sha256": "e5aaf1a12ca37fea78e339f4397aa29c066d4615a04787fa417b2bd6e9df8e2c",
+   "bytes": 388724
+  },
+  {
+   "pano_id": "26b65ab0-dbf4-40d6-8975-f732a6badf16",
+   "stratum": "pose-nonzero",
+   "sha256": "c1721356909269cd884f2ab1026284bc6851ba243e12008178f3cf20bc246f17",
+   "bytes": 292441
+  },
+  {
+   "pano_id": "3d41fefe-4ce5-4d9e-893d-ff47cc29ce93",
+   "stratum": "pose-nonzero",
+   "sha256": "93f7f92d1ae798cda59fa46f7ddd9008c2dd4c9c4f2fdc8b754100607b2d2a71",
+   "bytes": 313104
+  },
+  {
+   "pano_id": "6f14d966-d458-4464-aa79-cc23b2228d5c",
+   "stratum": "pose-nonzero",
+   "sha256": "cf4de9cbd7ce5a5ebcb4ac41ba4557cb7dc58579ee4e8f9f078a2726b5b7be27",
+   "bytes": 286223
+  },
+  {
+   "pano_id": "c2ae08ce-75e2-460d-a7a8-ee0e6fe4adc7",
+   "stratum": "pose-nonzero",
+   "sha256": "86a0bb36c5b2a3ae6e9c16df72dce6c2815fc8b8613555a6852e17163e48c1f5",
+   "bytes": 382613
+  },
+  {
+   "pano_id": "6378c59b-c412-4ff0-aa52-adf4ae638b06",
+   "stratum": "pose-nonzero",
+   "sha256": "6fc68fdff508291db954afc482afa0e0b6bad618958723e3b35036d8e545c86b",
+   "bytes": 341019
+  },
+  {
+   "pano_id": "30163e12-bc51-4a2d-9a59-f56a36432fa6",
+   "stratum": "pose-zero",
+   "sha256": "4d190ff41ef0dd633c648e104735397ad904e7c2af5417c14222e654ab56baf3",
+   "bytes": 239268
+  },
+  {
+   "pano_id": "897ca3fa-c08e-4c00-b3c0-17c07976c625",
+   "stratum": "pose-zero",
+   "sha256": "4c05c61d261f3d886139d5052c29d9f985bd4bab4dd5fa068e4552c285f27b86",
+   "bytes": 220851
+  },
+  {
+   "pano_id": "17a240ee-2fe5-4cb2-adc2-c5372bc611aa",
+   "stratum": "pose-zero",
+   "sha256": "0b59b2a137fd0ade9c475868748a74403f7a76039d8c224496962cf5edaf575e",
+   "bytes": 251990
+  },
+  {
+   "pano_id": "0c6d4bde-0a6d-4c7a-8fb8-3795e99e031c",
+   "stratum": "pose-zero",
+   "sha256": "d4d464dc75f7df15ca5a9fe1131d313d23355ef0a541dbf80cdc7d8239cb007e",
+   "bytes": 244957
+  },
+  {
+   "pano_id": "b0bd5431-9e16-484f-9484-11df687200df",
+   "stratum": "pose-zero",
+   "sha256": "73422543b250314d877164ae78fdc23332f382604d9e9b8e39295e66e8fe37ba",
+   "bytes": 239925
+  },
+  {
+   "pano_id": "1bbd2634-d744-44f1-99d8-2960c7a5622a",
+   "stratum": "pose-absent",
+   "sha256": "0990a3a91dab54b8626764be806a2e43446d68f1acf31628090135e88a559c42",
+   "bytes": 226749
+  },
+  {
+   "pano_id": "8b42e5b0-578d-46ed-b969-bc4dfcc8d116",
+   "stratum": "pose-absent",
+   "sha256": "a3c733df6721b031486e9112710b3c749888a06eabd7fd4ba42074d7e9ae0266",
+   "bytes": 244688
+  },
+  {
+   "pano_id": "e2e79e8b-8603-439e-a570-5cddd0083d87",
+   "stratum": "pose-absent",
+   "sha256": "36d9e4783e318f88dc284186e68b2a172defa059845517285b29d18ff9e2eccb",
+   "bytes": 321734
+  },
+  {
+   "pano_id": "3b0d0d56-d59e-4577-ac70-3e872dfef811",
+   "stratum": "pose-absent",
+   "sha256": "431fcbb32bdc6cd1ae2f20adf9688caa9a0ef65c0b3164e1a413a2862926929e",
+   "bytes": 232922
+  },
+  {
+   "pano_id": "ce7388ef-b1a7-41b9-bf1c-f582ad9155ef",
+   "stratum": "pose-absent",
+   "sha256": "e6e472c4f07ec6531391a36641af8eb82648670912b29e2cc1d9f4e9d5399faa",
+   "bytes": 233772
+  }
+ ]
+}
