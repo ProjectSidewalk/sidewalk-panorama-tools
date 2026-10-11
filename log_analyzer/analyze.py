@@ -72,7 +72,7 @@ DEFAULT_ROSTER_HOSTS = ("sidewalk-sea.cs.washington.edu", "sidewalk-chicago.cs.w
 # ---------------------------------------------------------------------------
 # log.csv format
 # ---------------------------------------------------------------------------
-# DownloadRunner appends 19 positional fields per run and never writes a header (see write_log_csv_row and
+# DownloadRunner appends 20 positional fields per run and never writes a header (see write_log_csv_row and
 # the column table in docs/ops.md). Production files carry a header only because it is added by hand when a city is
 # set up, so parsing must work either way - a forgotten header should not turn into a confusing parse error.
 LOG_COLUMNS = [
@@ -84,16 +84,30 @@ LOG_COLUMNS = [
     # The GSV corpus the depth phase was given (#43) - the denominator for everything depth_progress reports.
     # Appended last so no older position moved; blank on every row written before it existed.
     "depth_eligible",
+    # This run's image attempts that RAISED (#182) - unledgered, so retried next run; mostly transient, though some
+    # (a retired Mapillary image) raise on every run - the per-run figure image_fail (cumulative, permanent +
+    # transient) cannot give. Parsed, but no rule reads it yet: the rule
+    # that will is to be sized from this field's own measurements (docs/log-analyzer.md). Blank on every row
+    # written before it existed, and on a run whose image phase did not finish.
+    "image_raised",
 ]
 
 # Fields 2-18 are phase results: a completed run fills every one of them, so a blank there means the run
 # ended early (#49). Field 19 is not a phase result and is blank on every pre-#43 row, so the ended-early
-# rule must not read it - or the whole fleet reads as crashing for a week after the column arrives.
+# rule must not read it - or the whole fleet reads as crashing for a week after the column arrives. Field 20
+# (#182) is left out for the same reason: it is blank on every pre-#182 row.
 PHASE_COLUMNS = LOG_COLUMNS[1:LOG_COLUMNS.index("depth_eligible")]
 
-# The widths a log.csv row is allowed to have: 18 before the corpus column (#43) existed, 19 since. Any
-# other width is a torn or corrupted write, and read_log counts them rather than reshaping them into a run.
-LOG_ROW_WIDTHS = (LOG_COLUMNS.index("depth_eligible"), len(LOG_COLUMNS))
+# The widths a log.csv row is allowed to have: 18 before the corpus column (#43) existed, 19 before the
+# raised-attempts column (#182), 20 since. Any other width is a torn or corrupted write, and read_log counts
+# them rather than reshaping them into a run.
+LOG_ROW_WIDTHS = (LOG_COLUMNS.index("depth_eligible"), LOG_COLUMNS.index("image_raised"), len(LOG_COLUMNS))
+
+
+def _widths_phrase() -> str:
+    """The allowed row widths as the width messages say them: "not one of 18, 19 or 20"."""
+    *head, last = LOG_ROW_WIDTHS
+    return f"not one of {', '.join(str(w) for w in head)} or {last}"
 
 # ---------------------------------------------------------------------------
 # Thresholds (override via CLI flags where applicable)
@@ -225,7 +239,8 @@ def read_log(log_path: Path) -> pd.DataFrame:
     counted and reported (rule 9) and left OUT of the frame - not reshaped into one.
 
     Blank fields (a run that crashed or was stopped before that phase finished, see #49) stay NaN: missing
-    data, never a fabricated 0. So does field 19 on every row older than it.
+    data, never a fabricated 0. So do field 19 and field 20 on every row older than each (#43, #182) - the
+    production files hold 18-, 19- and 20-field rows under one hand-written 18-name header.
     """
     width = len(LOG_COLUMNS)
     # encoding is explicit: read_csv defaulted to UTF-8, open() takes the locale's, and a cron tool should
@@ -319,7 +334,7 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         if malformed:
             return [{"level": "CRITICAL",
                      "msg": (f"Log file has no readable run: {malformed} row(s) have a field count that is "
-                             f"neither {LOG_ROW_WIDTHS[0]} nor {LOG_ROW_WIDTHS[1]}")}]
+                             f"{_widths_phrase()}")}]
         return [{"level": "CRITICAL", "msg": "Log file is empty"}]
 
     # Convenience: calendar date column, in UTC. Rules 2, 3 and 8 and depth_progress's rate all group by it,
@@ -611,7 +626,7 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
         cutoff = now - timedelta(days=MALFORMED_RECENT_DAYS)
         recent = [t for t in starts if pd.isna(t) or t >= cutoff]
         undatable = sum(1 for t in recent if pd.isna(t))
-        widths = f"neither {LOG_ROW_WIDTHS[0]} nor {LOG_ROW_WIDTHS[1]}"
+        widths = _widths_phrase()
         if recent:
             undated = f" ({undatable} with no readable timestamp)" if undatable else ""
             issues.append({
