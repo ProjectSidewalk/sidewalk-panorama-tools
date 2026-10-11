@@ -265,25 +265,51 @@ EDGE_BAND_MAX_FRACTION = 0.05
 #: Band depths as fractions of the frame: `bottom` of its height, `right` of its width. 0.0 is no band.
 EdgeBands = collections.namedtuple('EdgeBands', ['bottom', 'right'])
 
+#: The sweep's second measurement (#213 review, S4): a band of NEAR black, luma at or under this, beside the
+#: exact-black one. Exact black is encoder-dependent: a region written as RGB 0 decodes to luma 1 at 26 of
+#: Pillow's 96 JPEG qualities, and with Google's own DC quantiser (10/12) tiles too, so a store of provider
+#: bytes - every Mapillary and Panoramax pano, and any GSV pano re-encoded on its way in - can hold a band the
+#: exact definition cannot see. 2 is the measured ceiling of that drift; a night scene is luma 1-8 with noise
+#: and a near-black nadir written as RGB 2 sits exactly on it (tests/fixtures/black_bands), which is why this
+#: is a RECORDED measurement for the calibration (#179 item 4) and not a verdict: the downloader's own
+#: in-memory check stays on exact zero, because the stitcher's canvas is exact zero.
+EDGE_BAND_NEAR_BLACK_LUMA = 2
 
-def _edge_band_lines(luma, lines, line_box):
+#: Both measurements of one decode: `exact` is the band of luma 0 (EdgeBands), `near` the band of luma at or
+#: under EDGE_BAND_NEAR_BLACK_LUMA (EdgeBands too). The near band is never shallower than the exact one.
+EdgeBandReport = collections.namedtuple('EdgeBandReport', ['exact', 'near'])
+
+
+def _line_dark_fraction(line, max_luma):
+    """The fraction of `line`'s pixels at or under `max_luma` - black_fraction's shape with a ceiling."""
+    return sum(line.histogram()[:max_luma + 1]) / float(line.width * line.height)
+
+
+def _edge_band_lines(luma, lines, line_box, dark_fraction=None):
     """How many of `lines` - ordered from the edge inward - are band lines, counted until the first that is not.
 
     Contiguous from the edge, deliberately: a black stripe with imagery between it and the edge is not an edge
-    band (a tunnel, a shadow), and an edge band is the shape both failures leave.
+    band (a tunnel, a shadow), and an edge band is the shape both failures leave. `dark_fraction` is what
+    judges one line; the default is black_fraction itself - the one definition of black in this repo - and the
+    sweep's near-black pass supplies _line_dark_fraction with its ceiling.
     """
     count = 0
     for line in lines:
-        if black_fraction(luma.crop(line_box(line))) < EDGE_BAND_LINE_MIN_BLACK:
+        strip = luma.crop(line_box(line))
+        fraction = black_fraction(strip) if dark_fraction is None else dark_fraction(strip)
+        if fraction < EDGE_BAND_LINE_MIN_BLACK:
             break
         count += 1
     return count
 
 
-def _edge_bands_of_luma(luma):
+def _edge_bands_of_luma(luma, max_luma=0):
+    """EdgeBands of a reduced luma image. `max_luma` 0 is exact black through black_fraction; anything higher
+    is the near-black measurement, through _line_dark_fraction."""
     width, height = luma.size
-    bottom = _edge_band_lines(luma, range(height - 1, -1, -1), lambda y: (0, y, width, y + 1))
-    right = _edge_band_lines(luma, range(width - 1, -1, -1), lambda x: (x, 0, x + 1, height))
+    dark = None if max_luma == 0 else (lambda strip: _line_dark_fraction(strip, max_luma))
+    bottom = _edge_band_lines(luma, range(height - 1, -1, -1), lambda y: (0, y, width, y + 1), dark)
+    right = _edge_band_lines(luma, range(width - 1, -1, -1), lambda x: (x, 0, x + 1, height), dark)
     return EdgeBands(bottom / float(height), right / float(width))
 
 
@@ -306,15 +332,19 @@ def edge_black_bands(image):
     return _edge_bands_of_luma(image.reduce(EDGE_BAND_SCALE).convert('L'))
 
 
-def edge_black_bands_from_file(path):
-    """The same answer for a stored JPEG, decoded through draft mode: luma only, at 1/EDGE_BAND_SCALE.
+def edge_band_report_from_file(path, dims=None):
+    """Both band measurements of a stored JPEG from ONE decode through draft mode: luma only, at
+    1/EDGE_BAND_SCALE. `exact` is the band of luma 0, `near` the band of luma <= EDGE_BAND_NEAR_BLACK_LUMA.
 
-    What scan_black_bands.py asks of every stored panorama. The header is read first, with jpeg_dimensions, so
-    a file that is not a readable JPEG is refused before Pillow is asked to decode it.
+    What scan_black_bands.py asks of every stored panorama. The header is read first, with jpeg_dimensions
+    (or taken from `dims`, when the caller has already read it), so a file that is not a readable JPEG is
+    refused before Pillow is asked to decode it.
 
+    @param dims (width, height) from a jpeg_dimensions call the caller already made; None reads the header.
     @raise ValueError when the file is not a readable JPEG; the caller decides what that means.
     """
-    dims = jpeg_dimensions(path)
+    if dims is None:
+        dims = jpeg_dimensions(path)
     if dims is None:
         raise ValueError('%s is not a readable JPEG' % path)
     try:
@@ -325,7 +355,15 @@ def edge_black_bands_from_file(path):
         # A readable header over a truncated or corrupt scan. Pillow raises OSError for most of these and
         # SyntaxError for a few malformed markers.
         raise ValueError('%s is not a readable JPEG: %s' % (path, e)) from e
-    return _edge_bands_of_luma(luma)
+    return EdgeBandReport(_edge_bands_of_luma(luma), _edge_bands_of_luma(luma, EDGE_BAND_NEAR_BLACK_LUMA))
+
+
+def edge_black_bands_from_file(path):
+    """The exact-black answer alone for a stored JPEG - edge_band_report_from_file(path).exact.
+
+    @raise ValueError when the file is not a readable JPEG; the caller decides what that means.
+    """
+    return edge_band_report_from_file(path).exact
 
 
 def deep_edge_bands(bands, limit=None):

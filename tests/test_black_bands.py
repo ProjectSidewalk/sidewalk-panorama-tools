@@ -1,5 +1,7 @@
-"""The pano-level black-band check (#179): the primitive in downloaders/common.py, the GSV downloader's refusal
-to save a stitch with a deep edge band, and scan_black_bands.py, the offline sweep of the existing store.
+"""The pano-level black-band check (#179): the primitive in downloaders/common.py, the GSV downloader saving
+and FLAGGING a stitch with a deep edge band (never refusing it: #213 review S1), the `edge-band` run condition
+that reports the count, and scan_black_bands.py, the offline sweep of the existing store, with its exact and
+near-black measurements.
 
 The fixtures under tests/fixtures/black_bands/ are real-shaped JPEGs (textured imagery, Pillow's default
 quality, bands written as exact RGB 0 before encoding); make_fixtures.py there regenerates them and its
@@ -9,12 +11,14 @@ can a band depth be set to the exact line.
 
 import csv
 import hashlib
+import logging
 import os
 import shutil
 
 import pytest
 from PIL import Image
 
+import DownloadRunner
 import refetch_panos
 import scan_black_bands
 from downloaders import common, gsv
@@ -193,63 +197,252 @@ class TestTheBandDetectorsEdges:
 
         assert calls
 
+    @pytest.mark.parametrize('path', ['memory', 'file'])
+    def test_both_paths_judge_the_frame_at_one_eighth(self, monkeypatch, path):
+        """M4/M5: the reduce and the draft both hand _edge_bands_of_luma a 1024x512 frame as 128x64. A path
+        that skipped its reduction would still be right, at 64x the cost, so pin the size it is judged at."""
+        sizes = []
+        real = common._edge_bands_of_luma
 
-# --- The downloader's refusal --------------------------------------------------------------------------------
+        def spy(luma, *args, **kwargs):
+            sizes.append(luma.size)
+            return real(luma, *args, **kwargs)
+
+        monkeypatch.setattr(common, '_edge_bands_of_luma', spy)
+        if path == 'memory':
+            common.edge_black_bands(framed(1024, 512, bottom=96))
+        else:
+            common.edge_band_report_from_file(fixture('d4.jpg'))
+
+        assert sizes and set(sizes) == {(128, 64)}
+
+
+class TestTheNearBlackMeasurement:
+    """#213 review S4: exact black is encoder-dependent (RGB 0 decodes to luma 1 at 26 of Pillow's 96 JPEG
+    qualities, and with Google's own DC quantiser tiles), so the sweep records a second band at
+    luma <= EDGE_BAND_NEAR_BLACK_LUMA beside the exact one, from the same decode. A measurement for the
+    calibration, never a verdict: the downloader's own check stays on exact zero."""
+
+    def near_of(self, image):
+        return common._edge_bands_of_luma(image.reduce(common.EDGE_BAND_SCALE).convert('L'),
+                                          common.EDGE_BAND_NEAR_BLACK_LUMA)
+
+    def test_a_band_of_rgb_one_is_near_black_and_not_exact(self):
+        assert common.EDGE_BAND_NEAR_BLACK_LUMA == 2
+        image = framed(1024, 512, bottom=96)
+        image.paste(Image.new('RGB', (1024, 96), (1, 1, 1)), (0, 512 - 96))
+
+        assert common.edge_black_bands(image) == common.EdgeBands(0.0, 0.0)
+        assert self.near_of(image) == common.EdgeBands(96 / 512.0, 0.0)
+
+    def test_a_band_of_rgb_three_is_neither(self):
+        image = framed(1024, 512, bottom=96)
+        image.paste(Image.new('RGB', (1024, 96), (3, 3, 3)), (0, 512 - 96))
+
+        assert common.edge_black_bands(image) == common.EdgeBands(0.0, 0.0)
+        assert self.near_of(image) == common.EdgeBands(0.0, 0.0)
+
+    def test_the_near_band_is_never_shallower_than_the_exact_one(self):
+        for name in STORE_PANOS.values():
+            report = common.edge_band_report_from_file(fixture(name))
+            assert report.near.bottom >= report.exact.bottom, name
+            assert report.near.right >= report.exact.right, name
+
+    def test_an_exact_band_through_a_quality_40_encoder_is_only_visible_as_near_black(self):
+        """near_black_band_q40.jpg is thin_bottom_15's exact-0 band saved at quality=40, where the DC quantiser
+        moves 0 to 1: the EXACT measurement reads no band at all, the near one reads the band. This is the
+        failure the review found in the calibration plan - a sweep that measured exact black over provider
+        bytes would conclude "no caps"."""
+        report = common.edge_band_report_from_file(fixture('near_black_band_q40.jpg'))
+
+        assert report.exact == common.EdgeBands(0.0, 0.0)
+        assert 77 / 512.0 - ONE_LINE_TALL <= report.near.bottom <= 77 / 512.0
+        assert report.near.right == 0.0
+
+    def test_both_measurements_come_from_one_decode(self, monkeypatch):
+        opened = []
+        real_open = Image.open
+
+        def counting_open(*args, **kwargs):
+            opened.append(args[0])
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(common.Image, 'open', counting_open)
+        common.edge_band_report_from_file(fixture('d4.jpg'))
+
+        assert len(opened) == 1
+
+    def test_edge_black_bands_from_file_is_the_exact_half_of_the_report(self):
+        assert common.edge_black_bands_from_file(fixture('d4.jpg')) == \
+            common.edge_band_report_from_file(fixture('d4.jpg')).exact
+
+    def test_dims_already_read_are_accepted_and_the_header_is_not_reread(self, monkeypatch):
+        """N5: the sweep has already read the header for its ledger row."""
+        monkeypatch.setattr(common, 'jpeg_dimensions',
+                            lambda path: pytest.fail('the header was read again'))
+
+        report = common.edge_band_report_from_file(fixture('d4.jpg'), dims=(1024, 512))
+
+        assert report.exact.bottom == pytest.approx(0.1875, abs=ONE_LINE_TALL)
+
+
+# --- The downloader saves and flags -------------------------------------------------------------------------
 
 PANO_ID = 'bandPanoAAAAAAAAAAAAAA'
+WARNING = 'IMAGEDOWNLOAD: WARNING'
 
 
-def download_with_stitch(monkeypatch, tmp_path, image):
+def stub_stitch(monkeypatch, image, upscaled=False):
     monkeypatch.setattr(gsv, 'resolve_frame',
                         lambda info: gsv.ResolvedFrame(image.width, image.height, 5, True, image.size, 'photometa'))
-    monkeypatch.setattr(gsv, 'fetch_pano_image', lambda *a: gsv.StitchedPano(image, 0, False))
+    monkeypatch.setattr(gsv, 'fetch_pano_image', lambda *a: gsv.StitchedPano(image, 0, upscaled))
+
+
+def download_with_stitch(monkeypatch, tmp_path, image, upscaled=False):
+    stub_stitch(monkeypatch, image, upscaled)
     return gsv.download_single_pano(str(tmp_path), {'pano_id': PANO_ID, 'width': image.width,
                                                     'height': image.height})
 
 
-class TestTheDownloaderRefusesADeepEdgeBand:
-    """#179 item 2: checked on the stitch before the atomic save, refused unledgered and loud on both channels.
+def pano_file(tmp_path):
+    return tmp_path / PANO_ID[:2] / (PANO_ID + '.jpg')
 
-    Raised as a FrameDisagreementError subclass, so the image loop already treats it as #74's frame refusal:
-    counted, not ledgered, retried next run, and an ANSWER for images-no-success - Google served tiles, the
-    frame is what is wrong."""
+
+class TestTheDownloaderSavesAndFlagsADeepEdgeBand:
+    """#179 item 2 as #213's review resolved it (S1): a stitch with a deep edge band is SAVED, ledgered
+    downloaded=1, and said loudly on both channels - never refused. The store is an archive: a refused pano
+    that Google later retires is lost for good, the limit is uncalibrated, and since #181/#214 both arms
+    refuse a frame larger than served before the fan-out, so what reaches this check is the unmeasured
+    class the calibration needs to see. Because the file is the resume marker, a flagged pano is said once,
+    ever. It is NOT a frame disagreement (S2): no exception, no FrameDisagreementError subclass, which #207
+    counts by isinstance."""
 
     @pytest.mark.parametrize('bottom, right', [(96, 192), (52, 0), (0, 64)])
-    def test_a_deep_band_is_refused_and_nothing_is_written(self, monkeypatch, tmp_path, capsys, bottom, right):
-        with pytest.raises(gsv.EdgeBandError) as refused:
-            download_with_stitch(monkeypatch, tmp_path, framed(1024, 512, bottom=bottom, right=right))
+    def test_a_deep_band_is_saved_and_flagged(self, monkeypatch, tmp_path, capsys, caplog, bottom, right):
+        caplog.set_level(logging.WARNING)
 
-        assert isinstance(refused.value, gsv.FrameDisagreementError)
-        assert 'frame disagreement' in str(refused.value) and 'black band' in str(refused.value)
-        assert PANO_ID in str(refused.value)
-        shard = tmp_path / PANO_ID[:2]
-        assert not shard.exists() or os.listdir(str(shard)) == [], 'no .jpg and no .part'
+        result = download_with_stitch(monkeypatch, tmp_path, framed(1024, 512, bottom=bottom, right=right))
+
+        assert result == DownloadResult.success
+        assert pano_file(tmp_path).is_file()
+        assert sorted(os.listdir(str(tmp_path / PANO_ID[:2]))) == [PANO_ID + '.jpg'], 'no .part left behind'
         out = capsys.readouterr().out
-        assert 'IMAGEDOWNLOAD: WARNING' in out and PANO_ID in out and 'retried next run' in out
+        assert WARNING in out and PANO_ID in out
+        assert 'black' in out and 'edge band' in out
+        assert 'frame disagreement' not in out
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING and 'edge band' in r.getMessage()]
+        assert len(warnings) == 1 and PANO_ID in warnings[0].getMessage()
+        assert 'frame disagreement' not in warnings[0].getMessage()
+        assert gsv._edge_band_run.saved == 1
+        assert gsv._edge_band_run.first.startswith('pano %s' % PANO_ID)
 
-    def test_a_band_at_the_limit_is_saved(self, monkeypatch, tmp_path):
+    def test_the_flag_fires_after_the_save_so_a_flagging_crash_cannot_withhold_the_pano(self, monkeypatch,
+                                                                                         tmp_path):
+        """The archive rule in one assertion: whatever the flag does, the pano is already on disk."""
+        def crashing_flag(image, pano_id):
+            assert pano_file(tmp_path).is_file(), 'flagged before the save'
+            raise RuntimeError('flag crashed')
+
+        monkeypatch.setattr(gsv, '_flag_deep_edge_band', crashing_flag)
+        with pytest.raises(RuntimeError, match='flag crashed'):
+            download_with_stitch(monkeypatch, tmp_path, framed(1024, 512, bottom=96))
+
+        assert pano_file(tmp_path).is_file()
+
+    def test_a_band_at_the_limit_is_saved_silently(self, monkeypatch, tmp_path, capsys, caplog):
         """512 * 0.05 = 25.6 rows; 24 rows (three whole 8-row lines) is under it and is real imagery to us."""
-        assert download_with_stitch(monkeypatch, tmp_path, framed(1024, 512, bottom=24)) == DownloadResult.success
-        assert (tmp_path / PANO_ID[:2] / (PANO_ID + '.jpg')).is_file()
+        caplog.set_level(logging.WARNING)
 
-    def test_the_limit_is_read_at_call_time(self, monkeypatch, tmp_path):
+        assert download_with_stitch(monkeypatch, tmp_path, framed(1024, 512, bottom=24)) == DownloadResult.success
+
+        assert pano_file(tmp_path).is_file()
+        assert WARNING not in capsys.readouterr().out
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert gsv._edge_band_run.saved == 0
+
+    def test_the_limit_is_read_at_call_time(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(common, 'EDGE_BAND_MAX_FRACTION', 0.25)
 
         assert download_with_stitch(monkeypatch, tmp_path, framed(1024, 512, bottom=96)) == DownloadResult.success
+        assert WARNING not in capsys.readouterr().out
+        assert gsv._edge_band_run.saved == 0
 
-    def test_the_image_loop_does_not_ledger_it_and_logs_it(self, monkeypatch, tmp_path):
-        """Through DownloadRunner's real image loop: no pano_id_log row, an ERROR in scrape.log carrying the
-        refusal's text."""
-        from test_download_runner import call_main_scripted
-        error = gsv.EdgeBandError('pano bandPano: frame disagreement: the stitch has a black band')
+    def test_an_upscaled_stitch_keeps_fallback_success_when_flagged(self, monkeypatch, tmp_path):
+        """The flag changes no verdict: log.csv column 8 still says what the stitch was."""
+        result = download_with_stitch(monkeypatch, tmp_path, framed(1024, 512, bottom=96), upscaled=True)
 
-        storage, code = call_main_scripted(monkeypatch, tmp_path, {'bandPano': error})
+        assert result == DownloadResult.fallback_success
+        assert gsv._edge_band_run.saved == 1
 
-        with open(str(storage / 'pano_id_log.csv')) as f:
-            assert 'bandPano' not in f.read()
-        with open(str(storage / 'scrape.log')) as f:
-            assert 'black band' in f.read()
-        assert code == 0
+    def test_no_exception_class_subclasses_frame_disagreement_for_bands(self):
+        """#207 counts FrameDisagreementError by isinstance; a band must never be in that count."""
+        assert not hasattr(gsv, 'EdgeBandError')
+        assert not hasattr(gsv, '_refuse_deep_edge_band')
+
+
+def gsv_pano(pano_id, image):
+    return {'pano_id': pano_id, 'source': 'gsv', 'width': image.width, 'height': image.height}
+
+
+class TestTheEdgeBandCondition:
+    """The real image loop (DownloadRunner.download_panorama_images) over a flagged stitch: ledgered `1`,
+    one end-of-phase line on both channels, and the `edge-band` condition in the run summary - the channel
+    that fails the night (#161), because production delivers only nonzero exits."""
+
+    def run_phase(self, monkeypatch, tmp_path, image, pano_id=PANO_ID, summary=None):
+        tmp_path.mkdir(exist_ok=True)
+        stub_stitch(monkeypatch, image)
+        summary = {'image_stop': None, 'depth_stop': None} if summary is None else summary
+        DownloadRunner.download_panorama_images(str(tmp_path), [gsv_pano(pano_id, image)], stop_reasons=summary)
+        return summary
+
+    def test_a_flagged_stitch_is_ledgered_said_once_at_phase_end_and_is_a_condition(self, monkeypatch, tmp_path,
+                                                                                    capsys, caplog):
+        caplog.set_level(logging.WARNING)
+
+        summary = self.run_phase(monkeypatch, tmp_path, framed(1024, 512, bottom=96))
+
+        with open(str(tmp_path / 'pano_id_log.csv'), newline='') as f:
+            rows = [r for r in csv.reader(f) if r and r[0] == PANO_ID]
+        assert rows and rows[0][1] == '1', 'ledgered downloaded=1: the file is the resume marker'
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_EDGE_BAND]
+        detail = summary['conditions'][0]['detail']
+        assert detail.startswith('1 pano(s) saved') and PANO_ID in detail
+        out = capsys.readouterr().out
+        assert out.count('edge-band condition') == 1
+        phase_lines = [r for r in caplog.records if 'edge-band condition' in r.getMessage()]
+        assert len(phase_lines) == 1 and phase_lines[0].levelno == logging.WARNING
+        assert not [r for r in caplog.records if 'frame disagreement' in r.getMessage()]
+        assert 'frame disagreement' not in out
+
+    def test_a_clean_phase_notes_no_condition_and_says_nothing(self, monkeypatch, tmp_path, capsys):
+        summary = self.run_phase(monkeypatch, tmp_path, framed(1024, 512, bottom=24))
+
+        assert summary.get('conditions', []) == []    # the key is _write_run_summary's; the phase adds none
+        assert 'edge-band' not in capsys.readouterr().out
+
+    def test_a_second_phase_in_the_same_process_reports_only_its_own(self, monkeypatch, tmp_path, capsys):
+        """The count is a before/after difference on the per-process memory, so a phase after a flagged one
+        reports zero, not the total."""
+        self.run_phase(monkeypatch, tmp_path / 'one', framed(1024, 512, bottom=96))
+
+        second = self.run_phase(monkeypatch, tmp_path / 'two', framed(1024, 512, bottom=24),
+                                pano_id='clean' + PANO_ID[5:])
+
+        assert second.get('conditions', []) == []
+        assert capsys.readouterr().out.count('edge-band condition') == 1
+
+    def test_run_resets_the_memory_per_run(self, monkeypatch):
+        gsv._edge_band_run.saved = 7
+        monkeypatch.setattr(DownloadRunner, '_run_phases', lambda *a, **k: None)
+
+        DownloadRunner.run('sidewalk-test.invalid', '/nowhere', skip_depth=True)
+
+        assert gsv._edge_band_run.saved == 0
+
+    def test_the_condition_is_in_the_runners_vocabulary(self):
+        assert DownloadRunner.CONDITION_EDGE_BAND == 'edge-band'
+        assert DownloadRunner.CONDITION_EDGE_BAND in DownloadRunner.RUN_CONDITIONS
 
 
 # --- The sweep ------------------------------------------------------------------------------------------------
@@ -261,6 +454,7 @@ STORE_PANOS = {
     'clPanoAAAAAAAAAAAAAAAA': 'clean.jpg',
     'dkPanoAAAAAAAAAAAAAAAA': 'dark_scene.jpg',
     'ncPanoAAAAAAAAAAAAAAAA': 'nadir_cap_3.jpg',
+    'nbPanoAAAAAAAAAAAAAAAA': 'near_black_band_q40.jpg',
 }
 FLAGGED = {'d4PanoAAAAAAAAAAAAAAAA', 'thPanoAAAAAAAAAAAAAAAA', 'tfPanoAAAAAAAAAAAAAAAA'}
 
@@ -279,13 +473,14 @@ def build_store(root):
 
 
 def digests(root):
+    """Every file under the store root - not just the .jpg files - so a sweep that wrote anything but its own
+    two files, or renamed one, shows up (N1)."""
     out = {}
     for dirpath, _dirs, files in os.walk(str(root)):
         for name in files:
             path = os.path.join(dirpath, name)
-            if name.endswith('.jpg'):
-                with open(path, 'rb') as f:
-                    out[path] = (hashlib.sha256(f.read()).hexdigest(), os.stat(path).st_mtime_ns)
+            with open(path, 'rb') as f:
+                out[path] = (hashlib.sha256(f.read()).hexdigest(), os.stat(path).st_mtime_ns)
     return out
 
 
@@ -301,7 +496,7 @@ class TestTheSweep:
 
         summary = scan_black_bands.scan_store(str(store))
 
-        assert summary == scan_black_bands.Summary(scanned=6, clean=3, banded=3, current=0, failed=0,
+        assert summary == scan_black_bands.Summary(scanned=7, clean=4, banded=3, current=0, failed=0,
                                                    unreached=0)
         worklist = store / scan_black_bands.WORKLIST_FILENAME
         rows = read_rows(worklist)
@@ -323,7 +518,9 @@ class TestTheSweep:
         scan_black_bands.scan_store(str(store))
 
         after = digests(store)
-        changed = sorted(p for p in set(before) | set(after) if before.get(p) != after.get(p))
+        own = {str(store / scan_black_bands.LEDGER_FILENAME), str(store / scan_black_bands.WORKLIST_FILENAME)}
+        assert set(after) == set(before) | own, 'exactly the ledger and the work-list were added'
+        changed = sorted(p for p in before if before[p] != after[p])
         assert not changed, ['%s: %r -> %r' % (p, before.get(p), after.get(p)) for p in changed]
 
     def test_the_ledger_records_every_pano_so_it_is_the_calibration_data(self, tmp_path):
@@ -336,6 +533,24 @@ class TestTheSweep:
         cap = next(r for r in rows if r['pano_id'].startswith('nc'))
         assert 0.0 < float(cap['bottom_band']) < common.EDGE_BAND_MAX_FRACTION
 
+    def test_every_ledger_row_carries_the_near_black_columns_and_the_cut_stays_exact(self, tmp_path):
+        """S4: the near-black band is recorded for every pano (the calibration can see an encoder-moved
+        band), but the work-list is cut on the exact band, so the q40 pano is ledgered deep-near and NOT
+        listed."""
+        store = build_store(tmp_path)
+
+        scan_black_bands.scan_store(str(store))
+
+        rows = read_rows(store / scan_black_bands.LEDGER_FILENAME)
+        assert rows and all(r['near_bottom_band'] and r['near_right_band'] for r in rows)
+        assert all(float(r['near_bottom_band']) >= float(r['bottom_band']) for r in rows)
+        q40 = next(r for r in rows if r['pano_id'].startswith('nb'))
+        assert float(q40['bottom_band']) == 0.0
+        assert float(q40['near_bottom_band']) > common.EDGE_BAND_MAX_FRACTION
+        worklist = read_rows(store / scan_black_bands.WORKLIST_FILENAME)
+        assert {r['pano_id'] for r in worklist} == FLAGGED
+        assert all(r['near_bottom_band'] for r in worklist), 'the work-list carries the near columns too'
+
     def test_a_rerun_decodes_nothing_and_writes_the_same_worklist(self, tmp_path, monkeypatch):
         store = build_store(tmp_path)
         scan_black_bands.scan_store(str(store))
@@ -344,10 +559,10 @@ class TestTheSweep:
         def no_decode(path):
             raise AssertionError('a finished store must cost no decode: %s' % path)
 
-        monkeypatch.setattr(common, 'edge_black_bands_from_file', no_decode)
+        monkeypatch.setattr(common, 'edge_band_report_from_file', no_decode)
         summary = scan_black_bands.scan_store(str(store))
 
-        assert summary.current == 6 and summary.scanned == 6
+        assert summary.current == 7 and summary.scanned == 7
         assert (store / scan_black_bands.WORKLIST_FILENAME).read_bytes() == first
 
     def test_a_changed_pano_is_scanned_again(self, tmp_path):
@@ -359,9 +574,30 @@ class TestTheSweep:
 
         summary = scan_black_bands.scan_store(str(store))
 
-        assert summary.current == 5 and summary.clean == 1
+        assert summary.current == 6 and summary.clean == 1
         assert {r['pano_id'] for r in read_rows(store / scan_black_bands.WORKLIST_FILENAME)} \
             == FLAGGED - {'d4PanoAAAAAAAAAAAAAAAA'}
+
+    def test_a_pano_rewritten_with_the_same_size_is_scanned_again(self, tmp_path, monkeypatch):
+        """N6: resume is keyed on mtime as well as size, so the same bytes with a bumped mtime - a copy that
+        reset timestamps, a refetch that landed identical bytes - are judged afresh, once."""
+        store = build_store(tmp_path)
+        scan_black_bands.scan_store(str(store))
+        target = store / 'cl' / 'clPanoAAAAAAAAAAAAAAAA.jpg'
+        stat = os.stat(str(target))
+        os.utime(str(target), ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        decoded = []
+        real = common.edge_band_report_from_file
+
+        def spy(path, **kwargs):
+            decoded.append(path)
+            return real(path, **kwargs)
+
+        monkeypatch.setattr(common, 'edge_band_report_from_file', spy)
+        summary = scan_black_bands.scan_store(str(store))
+
+        assert decoded == [str(target)]
+        assert summary.current == 6 and summary.clean == 1
 
     def test_a_budget_leaves_the_rest_unreached_and_the_next_run_finishes(self, tmp_path, monkeypatch):
         store = build_store(tmp_path)
@@ -370,35 +606,35 @@ class TestTheSweep:
 
         first = scan_black_bands.scan_store(str(store), max_runtime_minutes=1)
 
-        assert first.scanned == 2 and first.unreached == 4
+        assert first.scanned == 2 and first.unreached == 5
         monkeypatch.undo()
         second = scan_black_bands.scan_store(str(store))
-        assert second.current == 2 and second.scanned == 6
+        assert second.current == 2 and second.scanned == 7
         assert {r['pano_id'] for r in read_rows(store / scan_black_bands.WORKLIST_FILENAME)} == FLAGGED
 
     def test_progress_survives_a_kill(self, tmp_path, monkeypatch):
         """Each verdict is on disk as it lands, so a run killed half way - SIGKILL included, which runs no
         `finally` and closes no file - keeps what it did. Read from disk WHILE the run is still going."""
         store = build_store(tmp_path)
-        real = common.edge_black_bands_from_file
+        real = common.edge_band_report_from_file
         seen = []
         on_disk_at_the_third = []
 
-        def killed_on_the_third(path):
+        def killed_on_the_third(path, **kwargs):
             if len(seen) == 2:
                 on_disk_at_the_third.append(len(read_rows(store / scan_black_bands.LEDGER_FILENAME)))
                 raise KeyboardInterrupt
             seen.append(path)
-            return real(path)
+            return real(path, **kwargs)
 
-        monkeypatch.setattr(common, 'edge_black_bands_from_file', killed_on_the_third)
+        monkeypatch.setattr(common, 'edge_band_report_from_file', killed_on_the_third)
         with pytest.raises(KeyboardInterrupt):
             scan_black_bands.scan_store(str(store))
 
         assert on_disk_at_the_third == [2]
         assert len(read_rows(store / scan_black_bands.LEDGER_FILENAME)) == 2
 
-    @pytest.mark.parametrize('elapsed, scanned', [(59.999, 6), (60.0, 0)])
+    @pytest.mark.parametrize('elapsed, scanned', [(59.999, 7), (60.0, 0)])
     def test_the_budget_is_spent_at_exactly_its_length(self, tmp_path, monkeypatch, elapsed, scanned):
         store = build_store(tmp_path)
         clock = iter([0.0] + [elapsed] * 100)
@@ -406,7 +642,7 @@ class TestTheSweep:
 
         summary = scan_black_bands.scan_store(str(store), max_runtime_minutes=1)
 
-        assert (summary.scanned, summary.unreached) == (scanned, 6 - scanned)
+        assert (summary.scanned, summary.unreached) == (scanned, 7 - scanned)
 
     def test_an_unreadable_pano_is_failed_unledgered_and_retried(self, tmp_path, capsys):
         store = build_store(tmp_path)
@@ -419,6 +655,92 @@ class TestTheSweep:
         assert first.failed == 1 and second.failed == 1
         assert 'zzBroken' not in (store / scan_black_bands.LEDGER_FILENAME).read_text()
         assert 'FAILED' in capsys.readouterr().out
+
+    def test_a_pano_that_vanishes_between_the_walk_and_the_stat_is_failed_not_fatal(self, tmp_path, monkeypatch,
+                                                                                   capsys):
+        """N3: a refetch swap's rename or an operator's rm mid-sweep. One missing file must not end a sweep of
+        a multi-terabyte store, and it is in no ledger, so a re-run sees whatever is there then."""
+        store = build_store(tmp_path)
+        victim = str(store / 'cl' / 'clPanoAAAAAAAAAAAAAAAA.jpg')
+        real_stat = os.stat
+        removed = []
+
+        def stat_after_removal(path, *args, **kwargs):
+            # scan_black_bands.os IS os, so this patches os.stat for everyone: delegate everything but the one
+            # victim, and never call anything that stats from in here.
+            if path == victim and not removed:
+                os.remove(victim)
+                removed.append(path)
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(scan_black_bands.os, 'stat', stat_after_removal)
+        summary = scan_black_bands.scan_store(str(store))
+
+        assert summary.failed == 1 and summary.scanned == 7
+        assert summary.scanned == summary.clean + summary.banded + summary.current + summary.failed
+        assert 'clPano' not in (store / scan_black_bands.LEDGER_FILENAME).read_text()
+        out = capsys.readouterr().out
+        assert 'FAILED' in out and 'vanished' in out
+
+    def test_a_torn_row_and_a_repeated_header_are_skipped_counted_and_rescanned(self, tmp_path, capsys):
+        """N2: the shapes a kill mid-write and a concatenation leave. Neither is a verdict."""
+        store = build_store(tmp_path)
+        scan_black_bands.scan_store(str(store))
+        ledger = store / scan_black_bands.LEDGER_FILENAME
+        rows = read_rows(ledger)
+        clean = next(r for r in rows if r['pano_id'].startswith('cl'))
+        with open(str(ledger), 'a', newline='') as f:
+            f.write(','.join(scan_black_bands.LEDGER_FIELDS) + '\n')         # a repeated header
+            f.write('%s,%s,%s,1024,512,0.00' % (clean['pano_id'], clean['size'], clean['mtime_ns']))   # torn
+
+        loaded, skipped = scan_black_bands.load_ledger(str(ledger))
+        assert skipped == 2
+        assert loaded[clean['pano_id']] == clean, 'the torn row did not displace the sound one'
+        summary = scan_black_bands.scan_store(str(store))
+
+        assert summary.current == 7, 'every sound row still resumes'
+        assert '2 unreadable ledger row(s) skipped' in capsys.readouterr().out
+        # A pano whose ONLY row is torn is simply not in the ledger: scanned again from nothing. (The run above
+        # appended its rows after the torn one, which had no newline - so that line now carries two rows'
+        # fields and is unsound once, which is the one skip already counted; this one is on its own line.)
+        with open(str(ledger), 'a', newline='') as f:
+            f.write('\nnewPanoAAAAAAAAAAAAAAAA,1,2,1024,512,0.0\n')
+        loaded, skipped = scan_black_bands.load_ledger(str(ledger))
+        assert 'newPanoAAAAAAAAAAAAAAAA' not in loaded and skipped == 3
+
+    def test_a_ledger_with_another_versions_columns_is_kept_aside_and_started_afresh(self, tmp_path, capsys):
+        """A ledger from before the near columns: appending 9-field rows under its 7-field header would read
+        every new row with the wrong names. It is renamed, never deleted (a measurement someone took), the
+        operator is told, and every pano is scanned again under the current header."""
+        store = build_store(tmp_path)
+        ledger = store / scan_black_bands.LEDGER_FILENAME
+        target = store / 'cl' / 'clPanoAAAAAAAAAAAAAAAA.jpg'
+        stat = os.stat(str(target))
+        old = ('pano_id,size,mtime_ns,width,height,bottom_band,right_band\n'
+               'clPanoAAAAAAAAAAAAAAAA,%d,%d,1024,512,0.0000,0.0000\n' % (stat.st_size, stat.st_mtime_ns))
+        ledger.write_text(old)
+
+        summary = scan_black_bands.scan_store(str(store))
+
+        assert summary.current == 0 and summary.scanned == 7
+        assert (store / (scan_black_bands.LEDGER_FILENAME + '.stale-1')).read_text() == old
+        assert 'kept aside' in capsys.readouterr().out
+        rows = read_rows(ledger)
+        assert {r['pano_id'] for r in rows} == set(STORE_PANOS)
+        assert all(r['near_bottom_band'] for r in rows)
+        # A second stale ledger does not overwrite the first set-aside copy.
+        ledger.write_text(old)
+        scan_black_bands.scan_store(str(store))
+        assert (store / (scan_black_bands.LEDGER_FILENAME + '.stale-2')).is_file()
+
+    def test_three_sweeps_write_one_header(self, tmp_path):
+        store = build_store(tmp_path)
+        for _ in range(3):
+            scan_black_bands.scan_store(str(store))
+
+        lines = (store / scan_black_bands.LEDGER_FILENAME).read_text().splitlines()
+        assert lines[0] == ','.join(scan_black_bands.LEDGER_FIELDS)
+        assert lines.count(lines[0]) == 1
 
     @pytest.mark.parametrize('min_band, expected', [
         (None, FLAGGED),
@@ -444,7 +766,7 @@ class TestTheSweep:
         s = scan_black_bands.scan_store(str(store))
 
         assert s.scanned == s.clean + s.banded + s.current + s.failed
-        assert (s.scanned, s.clean, s.banded, s.current, s.failed) == (7, 0, 1, 5, 1)
+        assert (s.scanned, s.clean, s.banded, s.current, s.failed) == (8, 0, 1, 6, 1)
 
 
 class TestTheSweepsCommandLine:
@@ -456,7 +778,7 @@ class TestTheSweepsCommandLine:
 
         out = capsys.readouterr().out
         assert code == 0
-        assert 'Examined 6 panorama(s): 3 with an edge band over 5.0%' in out
+        assert 'Examined 7 panorama(s): 3 with an edge band over 5.0%' in out
         assert 'black_band_worklist.csv' in out
 
     def test_main_exits_one_when_a_pano_failed(self, tmp_path):
@@ -482,6 +804,8 @@ class TestTheSweepsCommandLine:
         assert scan_black_bands.main([str(store), '--min-band', '0']) == 0
 
         assert 'with an edge band over 0.0%' in capsys.readouterr().out
+        # The three deep ones plus the 3% nadir cap; the q40 pano has NO exact band, so even --min-band 0 does
+        # not list it - its band is in the ledger's near columns only.
         assert len(read_rows(store / scan_black_bands.WORKLIST_FILENAME)) == 4
 
     @pytest.mark.parametrize('value', ['-0.1', '1.5', 'x'])

@@ -56,9 +56,14 @@ CONDITION_UNSUPPORTED_SOURCE = 'unsupported-source'
 CONDITION_PANO_LIST_EMPTY = 'pano-list-empty'
 CONDITION_IMAGES_NO_SUCCESS = 'images-no-success'
 CONDITION_PANO_SCHEMA_DRIFT = 'pano-schema-drift'
+# One or more GSV stitches were SAVED with an exact-black band deeper than common.EDGE_BAND_MAX_FRACTION along
+# the bottom or right edge (#179): ledgered downloaded=1, so a pano fires this once, the night it is
+# downloaded. Its own code, not an exclusion from a frame-disagreement count (#213 review, S2): a band is not
+# a frame disagreement, the limit is uncalibrated, and the detail names the first pano for the morning.
+CONDITION_EDGE_BAND = 'edge-band'
 RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
     CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
-    CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT})
+    CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT, CONDITION_EDGE_BAND})
 
 # `images-no-success` needs at least this many raised attempts and not one answer - or a budget stop with
 # nothing but raises behind it (see download_panorama_images). A floor, because one or two transient
@@ -558,6 +563,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         same pair for the loop's duration, so the two can never write different files.
     """
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
+    # A before/after difference, not the memory's total: a second phase in the same process (a test, or an
+    # in-process caller) must report only its own flagged stitches. gsv counts there because download_pano's
+    # return value is the ledger contract and must not be widened (#179, #213 S2).
+    edge_bands_before = gsv._edge_band_run.saved
 
     # The attempted-pano ledger, in 'storage' alongside the pano results (see progress_check for semantics).
     # Reading it here; the append handle is opened by the `with` below.
@@ -835,6 +844,20 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         print(message)
         note_condition(stop_reasons, CONDITION_IMAGES_NO_SUCCESS,
                        '%d attempts raised, 0 answered, %.0f s per raise' % (raised, mean_raise_seconds))
+
+    flagged_edge_bands = gsv._edge_band_run.saved - edge_bands_before
+    if flagged_edge_bands:
+        # Each pano already had its own WARNING on both channels as it was saved; this is the one end-of-phase
+        # line and the condition that fails the night (#161). The panos ARE on the store, ledgered, so there is
+        # no retry and no ledger repair: the morning's job is to look at them (docs/ops.md#edge-black-bands).
+        message = ("IMAGEDOWNLOAD: WARNING - %d GSV pano(s) saved with a deep exact-black edge band (edge-band "
+                   "condition); ledgered, listed by scan_black_bands.py. See docs/ops.md#edge-black-bands"
+                   % (flagged_edge_bands,))
+        logging.warning("%s", message)
+        print(message)
+        note_condition(stop_reasons, CONDITION_EDGE_BAND,
+                       '%d pano(s) saved with a deep edge band; first: %s'
+                       % (flagged_edge_bands, gsv._edge_band_run.first))
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -1370,6 +1393,7 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
     # or a second main() in one interpreter - gets this run's paths and not the last run's given_up.
     gsv.image_block_latch_path, gsv.image_pace_state_path = depth_block_latch, depth_pace_state
     gsv._photometa_run = gsv._PhotometaRunMemory()
+    gsv._edge_band_run = gsv._EdgeBandRunMemory()
     try:
         return _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_panos, skip_depth,
                            max_runtime_minutes, min_depth_runtime, max_depth_requests, depth_block_latch,

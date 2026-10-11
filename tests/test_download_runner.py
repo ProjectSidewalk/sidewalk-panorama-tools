@@ -3470,8 +3470,8 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
         assert gsv.DEPTH_CONDITIONS < DownloadRunner.RUN_CONDITIONS
         assert {DownloadRunner.CONDITION_MAPILLARY_TOKEN, DownloadRunner.CONDITION_UNSUPPORTED_SOURCE,
                 DownloadRunner.CONDITION_PANO_LIST_EMPTY, DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
-                DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT} < DownloadRunner.RUN_CONDITIONS
-        assert len(DownloadRunner.RUN_CONDITIONS) == 10
+                DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT, DownloadRunner.CONDITION_EDGE_BAND} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 11
 
 
 # --- log.csv field 19: the depth corpus size (#43) ---------------------------------------------------------

@@ -6,8 +6,12 @@ layout"). It reads each pano and writes two files of its own:
 
 * the **ledger** (default `<storage_path>/black_bands.csv`): one row per pano scanned, with the bottom and right
   band depths as fractions of the frame, whatever they are - so it is also the calibration measurement for
-  `downloaders.common.EDGE_BAND_MAX_FRACTION` (#179 item 4). Rows are appended as each verdict lands, so a run
-  that is killed keeps what it did.
+  `downloaders.common.EDGE_BAND_MAX_FRACTION` (#179 item 4). Two measurements per edge, from one decode: the
+  exact-black band (`bottom_band`, `right_band`, luma 0 - the downloader's own definition) and the NEAR-black
+  band (`near_bottom_band`, `near_right_band`, luma <= `EDGE_BAND_NEAR_BLACK_LUMA`), because exact black is
+  encoder-dependent and a store of provider bytes can hold a band the exact definition cannot see. The
+  work-list cut below is on the EXACT bands; the near columns are recorded for the calibration. Rows are
+  appended as each verdict lands, so a run that is killed keeps what it did.
 * the **work-list** (default `<storage_path>/black_band_worklist.csv`): the panos with a band deeper than
   `--min-band` (default `EDGE_BAND_MAX_FRACTION`), rewritten from the whole ledger at the end of every run.
   Its `pano_id,width,height` columns are what `refetch_panos.py --worklist` reads (the stored frame, so the
@@ -42,8 +46,15 @@ from downloaders.common import atomic_output_path, jpeg_dimensions, walk_store_p
 
 LEDGER_FILENAME = 'black_bands.csv'
 WORKLIST_FILENAME = 'black_band_worklist.csv'
-LEDGER_FIELDS = ['pano_id', 'size', 'mtime_ns', 'width', 'height', 'bottom_band', 'right_band']
-WORKLIST_FIELDS = ['pano_id', 'width', 'height', 'bottom_band', 'right_band', 'side']
+LEDGER_FIELDS = ['pano_id', 'size', 'mtime_ns', 'width', 'height', 'bottom_band', 'right_band',
+                 'near_bottom_band', 'near_right_band']
+WORKLIST_FIELDS = ['pano_id', 'width', 'height', 'bottom_band', 'right_band', 'near_bottom_band',
+                   'near_right_band', 'side']
+# What a ledger row must parse as to be trusted: a pano id, two ints and the band fractions. A row that does
+# not (a torn last row from a kill mid-write, a repeated header from a concatenation) is skipped and counted,
+# never read as a verdict - and its pano is simply scanned again.
+_LEDGER_INT_FIELDS = ('size', 'mtime_ns')
+_LEDGER_FLOAT_FIELDS = ('bottom_band', 'right_band', 'near_bottom_band', 'near_right_band')
 
 # 'clean' and 'banded' are panos decoded THIS run, split at --min-band; 'current' is a pano whose ledger row
 # still matches the file, so it was not decoded; 'failed' is not a readable JPEG; 'unreached' is a pano the
@@ -56,15 +67,61 @@ def _pano_id(path):
     return os.path.basename(path)[:-len('.jpg')]
 
 
-def load_ledger(ledger_path):
-    """{pano_id: row} from the ledger, the LAST row per pano winning (a re-scan appends). {} when absent.
+def _row_is_sound(row):
+    if not row.get('pano_id'):
+        return False
+    try:
+        for field in _LEDGER_INT_FIELDS:
+            int(row[field])
+        for field in _LEDGER_FLOAT_FIELDS:
+            float(row[field])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return True
 
-    Read with `csv`, never pandas: a pano id must never take its type from what the ids look like (#46, #72).
+
+def load_ledger(ledger_path):
+    """({pano_id: row}, skipped) from the ledger, the LAST sound row per pano winning (a re-scan appends).
+    ({}, 0) when absent.
+
+    `skipped` counts the rows that did not parse (_row_is_sound): a torn last row, a repeated header, a row
+    from before the near-black columns. None of them is a verdict, so each is left out and its pano is scanned
+    again. Read with `csv`, never pandas: a pano id must never take its type from what the ids look like
+    (#46, #72).
     """
     if not os.path.isfile(ledger_path):
-        return {}
+        return {}, 0
+    rows, skipped = {}, 0
     with open(ledger_path, newline='', encoding='utf8') as f:
-        return {row['pano_id']: row for row in csv.DictReader(f) if row.get('pano_id')}
+        for row in csv.DictReader(f):
+            if _row_is_sound(row):
+                rows[row['pano_id']] = row
+            else:
+                skipped += 1
+    return rows, skipped
+
+
+def _set_aside_stale_ledger(ledger_path):
+    """Rename a ledger whose header is not LEDGER_FIELDS to `<ledger>.stale-<n>` and return that path; None
+    when the ledger is absent or current.
+
+    Appending this version's rows under another version's header would hand csv.DictReader the wrong names
+    for every new row (the extra columns land under None), so the whole file would read as unsound and be
+    rescanned every run. Kept aside rather than deleted: it is a measurement somebody took.
+    """
+    if not os.path.isfile(ledger_path):
+        return None
+    with open(ledger_path, newline='', encoding='utf8') as f:
+        header = next(csv.reader(f), None)
+    if header == LEDGER_FIELDS:
+        return None
+    n = 1
+    while True:
+        aside = '%s.stale-%d' % (ledger_path, n)
+        if not os.path.exists(aside):
+            os.replace(ledger_path, aside)
+            return aside
+        n += 1
 
 
 def _is_current(row, stat):
@@ -88,6 +145,7 @@ def write_worklist(worklist_path, ledger, min_band):
         if sides:
             rows.append({'pano_id': pano_id, 'width': row['width'], 'height': row['height'],
                          'bottom_band': row['bottom_band'], 'right_band': row['right_band'],
+                         'near_bottom_band': row['near_bottom_band'], 'near_right_band': row['near_right_band'],
                          'side': '+'.join(sides)})
     with atomic_output_path(worklist_path) as tmp_path:
         with open(tmp_path, 'w', newline='', encoding='utf8') as f:
@@ -114,7 +172,13 @@ def scan_store(storage_path, ledger_path=None, worklist_path=None, max_runtime_m
     ledger_path = ledger_path or os.path.join(storage_path, LEDGER_FILENAME)
     worklist_path = worklist_path or os.path.join(storage_path, WORKLIST_FILENAME)
     min_band = common.EDGE_BAND_MAX_FRACTION if min_band is None else min_band
-    ledger = load_ledger(ledger_path)
+    set_aside = _set_aside_stale_ledger(ledger_path)
+    if set_aside:
+        print("ledger %s has another version's columns; kept aside as %s and started afresh"
+              % (ledger_path, set_aside))
+    ledger, skipped_rows = load_ledger(ledger_path)
+    if skipped_rows:
+        print("%d unreadable ledger row(s) skipped in %s; their panos are scanned again" % (skipped_rows, ledger_path))
     started = time.monotonic()
     scanned = clean = banded = current = failed = unreached = 0
 
@@ -130,7 +194,15 @@ def scan_store(storage_path, ledger_path=None, worklist_path=None, max_runtime_m
                 continue
             scanned += 1
             pano_id = _pano_id(path)
-            stat = os.stat(path)
+            try:
+                stat = os.stat(path)
+            except FileNotFoundError:
+                # Gone between the walk and the stat: a refetch swap's rename, or an operator. Not ours to
+                # judge, and not a reason to stop the sweep; it is in no ledger, so a re-run sees whatever is
+                # there then.
+                failed += 1
+                print("FAILED %s: vanished between the walk and the stat" % (path,))
+                continue
             if _is_current(ledger.get(pano_id), stat):
                 current += 1
                 continue
@@ -138,16 +210,18 @@ def scan_store(storage_path, ledger_path=None, worklist_path=None, max_runtime_m
             try:
                 if dims is None:
                     raise ValueError('not a readable JPEG')
-                bands = common.edge_black_bands_from_file(path)
+                report = common.edge_band_report_from_file(path, dims=dims)
             except ValueError as e:
                 # Left for a human and unledgered, so the next run tries again. One bad pano must not stop a
                 # sweep of a multi-terabyte store.
                 failed += 1
                 print("FAILED %s: %s" % (path, e))
                 continue
+            bands = report.exact
             row = {'pano_id': pano_id, 'size': str(stat.st_size), 'mtime_ns': str(stat.st_mtime_ns),
                    'width': str(dims[0]), 'height': str(dims[1]),
-                   'bottom_band': _fmt(bands.bottom), 'right_band': _fmt(bands.right)}
+                   'bottom_band': _fmt(bands.bottom), 'right_band': _fmt(bands.right),
+                   'near_bottom_band': _fmt(report.near.bottom), 'near_right_band': _fmt(report.near.right)}
             writer.writerow(row)
             ledger_file.flush()
             ledger[pano_id] = row
