@@ -12,6 +12,7 @@ says it is. The stored point handed in is derived from the planted one by the IN
 compared with another.
 """
 
+import collections
 import csv
 import json
 import logging
@@ -169,6 +170,14 @@ REGISTRATION_POINTS = {
 
 
 class TestRegistration:
+    """Registration of the full rig transform: the landmark is planted at the rig pixel of the stored point,
+    which is where the window lands at beta 1. The shipped betas are below 1 (#197), so this class pins 1.0
+    for both records; the shipped values are TestBetaPerPoseRecord's."""
+
+    @pytest.fixture(autouse=True)
+    def full_transform(self, crop_runner, monkeypatch):
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 1.0, 'npz': 1.0})
+
     @pytest.mark.parametrize('source', ['xml', 'npz'])
     @pytest.mark.parametrize('where', sorted(REGISTRATION_POINTS))
     def test_the_planted_rig_pixel_is_where_the_geometry_says(self, crop_runner, tmp_path, windows, source,
@@ -546,10 +555,32 @@ class TestBetaPerPoseRecord:
             cx, cy = pano_pose.corrected_pixel(x, y, W, H, PITCH, ROLL, beta)
             assert box[:4] == crop_runner.compute_crop_box(cx, cy, width, W, H)[:4], beta
 
-    def test_the_table_is_both_records_at_one_until_the_default_is_chosen(self, crop_runner):
-        """The shipped values, so a change to them is deliberate (#197 chooses them)."""
-        assert crop_runner.TILT_BETA_BY_POSE_SOURCE == {'xml': 1.0, 'npz': 1.0}
+    def test_the_table_is_the_measured_slope_per_record(self, crop_runner):
+        """The shipped values, so a change to them is deliberate. Jon's #197 decision (2026-10-06): the
+        RampNet slopes, 0.884 (xml pose) and 0.953 (npz pose), SE about 0.02. Both were 1.0 under #193.
+        Swapping the two records, or reverting either to 1.0, fails here."""
+        assert crop_runner.TILT_BETA_BY_POSE_SOURCE == {'xml': 0.88, 'npz': 0.95}
         assert set(crop_runner.TILT_BETA_BY_POSE_SOURCE) == {pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ}
+
+    def test_the_shipped_betas_reach_each_records_crop(self, crop_runner, tmp_path, windows):
+        """End to end with the shipped table, no monkeypatch: an xml-posed pano's window is at beta 0.88 and
+        an npz-posed pano's at 0.95. Fails if the table's two values are swapped (#197), and if the run
+        looked a beta up by anything but the pose that was read."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        x, y = 1024.0, 700.0
+        run(crop_runner, [label_row(pano_id='xmlpano00001', pano_x=x, pano_y=y, label_id=1),
+                          label_row(pano_id='npzpano00001', pano_x=x, pano_y=y, label_id=2)],
+            store, out, tilt_correction=True)
+        width = crop_runner.crop_window_width(y, W, H)
+        boxes = [box[:4] for box, _ in windows]
+        expected = {beta: crop_runner.compute_crop_box(*pano_pose.corrected_pixel(x, y, W, H, PITCH, ROLL, beta),
+                                                       width, W, H)[:4]
+                    for beta in (0.88, 0.95)}
+        # The two betas must give different windows, or a swap could not be seen.
+        assert expected[0.88] != expected[0.95]
+        assert boxes == [expected[0.88], expected[0.95]]
 
     def test_the_tally_counts_only_the_crops_the_correction_cut(self, crop_runner, tmp_path, capsys):
         """One line naming each record's crops and beta. A skipped_existing label and a no_pose label are not
@@ -568,8 +599,8 @@ class TestBetaPerPoseRecord:
                      store, out, tilt_correction=True)
         assert (counts['success'], counts['skipped_existing'], counts['no_pose']) == (3, 1, 1)
         printed = capsys.readouterr().out
-        assert ('Tilt correction on (recorded in crop_rule.json): 1 crops cut from an xml pose (beta 1.0), '
-                '2 from an npz pose (beta 1.0).') in printed
+        assert ('Tilt correction on (recorded in crop_rule.json): 1 crops cut from an xml pose (beta 0.88), '
+                '2 from an npz pose (beta 0.95).') in printed
         assert ' era' not in printed.lower()
 
 
@@ -579,6 +610,11 @@ class TestBetaPerPoseRecord:
 
 def read_marker(crop_runner, out):
     return json.loads((out / crop_runner.CROP_RULE_MARKER).read_text(encoding='utf-8'))
+
+
+# The shipped betas as the marker records them (#197, 2026-10-06). Literal on purpose: a swap in
+# TILT_BETA_BY_POSE_SOURCE must fail these tests, not move them along with it.
+SHIPPED_BETA_BY_MARKER_KEY = {'tilt_beta_xml_pose': 0.88, 'tilt_beta_npz_pose': 0.95}
 
 
 class TestTheMarker:
@@ -601,16 +637,16 @@ class TestTheMarker:
             crop_runner.write_rule_marker(str(tmp_path), sizing_rule=rule, tilt_correction=True)
         printed = capsys.readouterr().out
         for channel in (printed, caplog.text):
-            assert 'tilt_beta_xml_pose=0.0 and this run uses 1.0' in channel
+            assert 'tilt_beta_xml_pose=0.0 and this run uses 0.88' in channel
         seen = read_marker(crop_runner, tmp_path)['constants_seen'][rule]['tilt_beta_xml_pose']
-        assert seen == [0.0, 1.0]
+        assert seen == [0.0, 0.88]
 
     def test_the_history_survives_force(self, crop_runner, tmp_path, caplog):
         crop_runner.write_rule_marker(str(tmp_path))
         crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True, force=True)
         with caplog.at_level(logging.WARNING):
             crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True)
-        assert 'tilt_beta_xml_pose=0.0 and this run uses 1.0' in caplog.text
+        assert 'tilt_beta_xml_pose=0.0 and this run uses 0.88' in caplog.text
 
     @staticmethod
     def pre_pr_marker(crop_runner, store, shape, with_crop=True):
@@ -659,12 +695,12 @@ class TestTheMarker:
         with caplog.at_level(logging.WARNING):
             crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True)
         for channel in (capsys.readouterr().out, caplog.text):
-            assert 'tilt_beta_xml_pose=0.0 and this run uses 1.0' in channel
-            assert 'tilt_beta_npz_pose=0.0 and this run uses 1.0' in channel
+            assert 'tilt_beta_xml_pose=0.0 and this run uses 0.88' in channel
+            assert 'tilt_beta_npz_pose=0.0 and this run uses 0.95' in channel
         marker = read_marker(crop_runner, tmp_path)
         assert marker['tilt_correction'] == 'on'
-        for key in crop_runner.TILT_BETA_MARKER_KEYS.values():
-            assert marker['constants_seen']['v2'][key] == [0.0, 1.0]
+        for key, beta in SHIPPED_BETA_BY_MARKER_KEY.items():
+            assert marker['constants_seen']['v2'][key] == [0.0, beta]
             if shape == 'two-rules':
                 assert marker['constants_seen']['v3'][key] == [0.0]
         # Sticky: a forced pass does not clear it, so the next run still says so.
@@ -672,7 +708,7 @@ class TestTheMarker:
         caplog.clear()
         with caplog.at_level(logging.WARNING):
             crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True)
-        assert 'tilt_beta_xml_pose=0.0 and this run uses 1.0' in caplog.text
+        assert 'tilt_beta_xml_pose=0.0 and this run uses 0.88' in caplog.text
 
     def test_a_top_up_of_a_pre_pr_store_says_the_store_is_mixed(self, crop_runner, tmp_path, capsys):
         """The reviewers' reproduction end to end: one crop cut before the keys existed, then a corrected
@@ -692,8 +728,8 @@ class TestTheMarker:
         counts = run(crop_runner, [label_row(label_id=1), label_row(label_id=2)], store, out,
                      tilt_correction=True)
         assert (counts['success'], counts['skipped_existing']) == (1, 1)
-        assert 'tilt_beta_npz_pose=0.0 and this run uses 1.0' in capsys.readouterr().out
-        assert read_marker(crop_runner, out)['constants_seen']['v2']['tilt_beta_npz_pose'] == [0.0, 1.0]
+        assert 'tilt_beta_npz_pose=0.0 and this run uses 0.95' in capsys.readouterr().out
+        assert read_marker(crop_runner, out)['constants_seen']['v2']['tilt_beta_npz_pose'] == [0.0, 0.95]
 
     @pytest.mark.parametrize('shape', ['stripped', 'pre-history', 'two-rules'])
     def test_a_pre_pr_marker_over_a_store_with_no_crops_is_not_seeded(self, crop_runner, tmp_path, caplog,
@@ -706,8 +742,8 @@ class TestTheMarker:
             crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True)
         assert 'tilt_beta_xml_pose=0.0' not in caplog.text and 'tilt_beta_npz_pose=0.0' not in caplog.text
         marker = read_marker(crop_runner, tmp_path)
-        for key in crop_runner.TILT_BETA_MARKER_KEYS.values():
-            assert marker['constants_seen']['v2'][key] == [1.0]
+        for key, beta in SHIPPED_BETA_BY_MARKER_KEY.items():
+            assert marker['constants_seen']['v2'][key] == [beta]
             assert 0.0 not in marker['constants_seen'].get('v3', {}).get(key, [])
 
     def test_a_fresh_store_has_no_uncorrected_history(self, crop_runner, tmp_path, caplog):
@@ -715,7 +751,7 @@ class TestTheMarker:
         with caplog.at_level(logging.WARNING):
             crop_runner.write_rule_marker(str(tmp_path), tilt_correction=True)
         assert 'this run uses' not in caplog.text
-        assert read_marker(crop_runner, tmp_path)['constants_seen']['v2']['tilt_beta_xml_pose'] == [1.0]
+        assert read_marker(crop_runner, tmp_path)['constants_seen']['v2']['tilt_beta_xml_pose'] == [0.88]
 
     def test_a_non_string_tilt_correction_is_unreadable(self, crop_runner, tmp_path):
         crop_runner.write_rule_marker(str(tmp_path))
@@ -730,4 +766,197 @@ class TestTheMarker:
         write_npz_pose(put_pano(store, 'testpano0001'))
         run(crop_runner, [label_row()], store, out, tilt_correction=True)
         marker = read_marker(crop_runner, out)
-        assert marker['tilt_correction'] == 'on' and marker['tilt_beta_npz_pose'] == 1.0
+        assert marker['tilt_correction'] == 'on' and marker['tilt_beta_npz_pose'] == 0.95
+
+    def test_a_store_corrected_at_one_then_at_the_new_betas_warns_and_keeps_both(self, crop_runner, tmp_path,
+                                                                                  caplog, capsys, monkeypatch):
+        """#197: a store topped up with --tilt-correction under #193's 1.0 and again under 0.88/0.95 holds
+        crops at two betas. The beta is a recorded constant of both rules, so this is the same-rule
+        mixed-store case: a warning on both channels naming each key, never a refusal (the crops are cut),
+        and constants_seen keeps [1.0, new] for good, so crops at 1.0 and 0.88 stay distinguishable at the
+        store level. Which crop is which needs the per-crop column (#196)."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        with monkeypatch.context() as patch:
+            patch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 1.0, 'npz': 1.0})
+            run(crop_runner, [label_row(pano_id='xmlpano00001', label_id=1)], store, out, tilt_correction=True)
+        capsys.readouterr()
+        with caplog.at_level(logging.WARNING):
+            counts = run(crop_runner, [label_row(pano_id='xmlpano00001', label_id=1),
+                                       label_row(pano_id='npzpano00001', label_id=2)],
+                         store, out, tilt_correction=True)
+        assert (counts['success'], counts['skipped_existing']) == (1, 1) and reconciles(counts)
+        for channel in (capsys.readouterr().out, caplog.text):
+            assert 'tilt_beta_xml_pose=1.0 and this run uses 0.88' in channel
+            assert 'tilt_beta_npz_pose=1.0 and this run uses 0.95' in channel
+        marker = read_marker(crop_runner, out)
+        for key, beta in SHIPPED_BETA_BY_MARKER_KEY.items():
+            assert marker[key] == beta
+            assert marker['constants_seen']['v2'][key] == [1.0, beta]
+
+
+# ---------------------------------------------------------------------------
+# The manifest records the correction per crop (#196)
+# ---------------------------------------------------------------------------
+
+def manifest_dicts(crop_runner, out):
+    """The manifest's rows as dicts, in file order, after checking the header is the current one."""
+    with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        assert tuple(reader.fieldnames) == crop_runner.PROVENANCE_COLUMNS
+        return list(reader)
+
+
+def tilt_cells(row):
+    return row['pose_source'], row['tilt_beta'], row['corrected_pano_x'], row['corrected_pano_y']
+
+
+def last_row_per_label(rows):
+    """The filter docs/cropper.md tells a consumer to use: the manifest is append-only, so the LAST row for a
+    (city, label_id) describes the crop on disk."""
+    last = {}
+    for row in rows:
+        last[(row['city'], row['label_id'])] = row
+    return last
+
+
+class TestTheManifestRecordsTheCorrectionPerCrop:
+    """With --tilt-correction a store is mixed by construction - no_pose is mostly permanent, and a --force
+    re-cut leaves those crops stale_kept - while crop_rule.json records only run-level settings. So every
+    manifest row says whether its crop was corrected, from which pose record, at which beta, and where the
+    window was centred: a consumer can then filter a mixed store from the manifest alone."""
+
+    @pytest.mark.parametrize('source', ['xml', 'npz'])
+    def test_a_corrected_row_names_its_record_beta_and_centre(self, crop_runner, tmp_path, source, monkeypatch):
+        # The round trip below plants a rig pixel and derives the stored point by the FULL inverse transform, so
+        # it holds at beta 1.0 only (as TestRegistration pins it); the shipped 0.88/0.95 are covered by
+        # test_a_different_beta_is_recorded_per_record, which tells the betas apart by the recorded centre.
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 1.0, 'npz': 1.0})
+        rig_x, rig_y = REGISTRATION_POINTS['below-horizon']
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_pose(put_lossless_pano(store, 'testpano0001', planted_at=(rig_x, rig_y)), source)
+        stored_x, stored_y = stored_point_for(rig_x, rig_y)
+        counts = run(crop_runner, [label_row(pano_x=stored_x, pano_y=stored_y)], store, out,
+                     tilt_correction=True)
+        assert counts['success'] == 1
+        (row,) = manifest_dicts(crop_runner, out)
+        beta = crop_runner.TILT_BETA_BY_POSE_SOURCE[source]
+        assert (row['pose_source'], row['tilt_beta']) == (source, str(float(beta)))
+        centre = (float(row['corrected_pano_x']), float(row['corrected_pano_y']))
+        assert centre == pytest.approx(pano_pose.corrected_pixel(stored_x, stored_y, W, H, PITCH, ROLL, beta))
+        # A round trip through the geometry, not one derivation compared with itself: the centre recorded is
+        # the planted rig pixel's centre, which the stored point was derived from by the inverse transform.
+        # The xml pose passes through the legacy tilt encoding, so allow a few hundredths of a pixel.
+        assert centre == pytest.approx((rig_x + 0.5, rig_y + 0.5), abs=0.05)
+        # Unrounded: the recorded centre parses back to the very float the window was cut around.
+        assert row['corrected_pano_x'] == repr(centre[0]) and row['corrected_pano_y'] == repr(centre[1])
+
+    def test_an_uncorrected_row_says_none_and_beta_zero(self, crop_runner, tmp_path, monkeypatch):
+        """Flag off, a pose beside the pano: the row says 'not corrected' - and the centre columns are blank,
+        never the stored point copied in under a 'corrected' name - and the pose file is still never read."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        jpg = put_pano(store, 'testpano0001')
+        write_npz_pose(jpg)
+        write_xml_pose(jpg)
+        monkeypatch.setattr(pano_pose, 'resolve_pano_pose',
+                            lambda *a, **k: pytest.fail('pose looked up without --tilt-correction'))
+        run(crop_runner, [label_row(label_id=1), label_row(label_id=2, pano_y=700)], store, out)
+        rows = manifest_dicts(crop_runner, out)
+        assert [tilt_cells(row) for row in rows] == [('none', '0.0', '', '')] * 2
+        assert crop_runner.POSE_SOURCE_NONE == 'none'
+        assert crop_runner.TILT_PROVENANCE_OFF == ('none', '0.0', '', '')
+
+    def test_a_mixed_store_filters_to_corrected_crops_from_the_manifest_alone(self, crop_runner, tmp_path,
+                                                                             capsys):
+        """The issue's 'done when'. Run A without the flag cuts everything; run B with --tilt-correction --force
+        re-cuts what it can correct and leaves the no-pose crop stale_kept. The last row per label then names
+        exactly the corrected crops, and the per-record tally the summary prints is the manifest's count."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'noposepano01')
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        labels = [label_row(pano_id='noposepano01', label_id=1),
+                  label_row(pano_id='npzpano00001', label_id=2),
+                  label_row(pano_id='npzpano00001', label_id=3, pano_y=700),
+                  label_row(pano_id='xmlpano00001', label_id=4)]
+        run(crop_runner, labels, store, out)
+        rows_after_a = len(manifest_dicts(crop_runner, out))
+        capsys.readouterr()
+        counts = run(crop_runner, labels, store, out, tilt_correction=True, force=True)
+        assert (counts['no_pose'], counts['stale_kept'], counts['recut']) == (1, 1, 3) and reconciles(counts)
+
+        rows = manifest_dicts(crop_runner, out)
+        assert rows_after_a == 4 and len(rows) == 7, 'a stale_kept crop gets no new row'
+        last = last_row_per_label(rows)
+        corrected = {label_id for (_, label_id), row in last.items()
+                     if crop_runner.manifest_row_is_tilt_corrected(row)}
+        assert corrected == {'2', '3', '4'}
+        assert tilt_cells(last[(CITY, '1')]) == ('none', '0.0', '', ''), 'the first run still describes label 1'
+
+        printed = capsys.readouterr().out
+        run_b = collections.Counter(row['pose_source'] for row in rows[rows_after_a:])
+        assert run_b == {'npz': 2, 'xml': 1}
+        assert ('%d crops cut from an xml pose (beta 0.88), %d from an npz pose (beta 0.95).'
+                % (run_b['xml'], run_b['npz'])) in printed
+
+    def test_a_different_beta_is_recorded_per_record(self, crop_runner, tmp_path, monkeypatch):
+        """Kills a row that writes the other record's beta, or a constant 1.0, or a centre at another beta."""
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 0.88, 'npz': 0.95})
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        x, y = 1024.0, 700.0
+        run(crop_runner, [label_row(pano_id='xmlpano00001', pano_x=x, pano_y=y, label_id=1),
+                          label_row(pano_id='npzpano00001', pano_x=x, pano_y=y, label_id=2)],
+            store, out, tilt_correction=True)
+        rows = {row['label_id']: row for row in manifest_dicts(crop_runner, out)}
+        for label_id, source, beta in (('1', 'xml', 0.88), ('2', 'npz', 0.95)):
+            row = rows[label_id]
+            assert (row['pose_source'], row['tilt_beta']) == (source, str(beta))
+            expected = pano_pose.corrected_pixel(x, y, W, H, PITCH, ROLL, beta)
+            assert (float(row['corrected_pano_x']), float(row['corrected_pano_y'])) == pytest.approx(expected)
+            other = pano_pose.corrected_pixel(x, y, W, H, PITCH, ROLL, 1.0)
+            assert float(row['corrected_pano_y']) != pytest.approx(other[1]), 'the fixture must tell betas apart'
+
+    def test_a_recut_appends_a_row_and_the_last_names_the_correction(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_npz_pose(put_pano(store, 'testpano0001'))
+        run(crop_runner, [label_row()], store, out)
+        run(crop_runner, [label_row()], store, out, tilt_correction=True, force=True)
+        rows = manifest_dicts(crop_runner, out)
+        assert [row['pose_source'] for row in rows] == ['none', 'npz']
+        assert last_row_per_label(rows)[(CITY, '1')] is rows[-1]
+
+    def test_a_beta_of_zero_keeps_its_row_and_is_not_counted_as_corrected(self, crop_runner, tmp_path,
+                                                                          monkeypatch, capsys):
+        """#200 review finding 1. Beta 0 is the identity (pano_pose.corrected_pixel returns the stored point),
+        and #197 may well choose it for the xml record. The row is still written as it is - `xml`, `0.0`, the
+        stored point - because it is the only record that a re-cut at a higher beta would change the crop, and
+        writing TILT_PROVENANCE_OFF instead would merge "pose found, beta 0" into "flag off". What must not
+        happen is any count calling it corrected: neither the documented filter nor the summary's tally."""
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 0.0, 'npz': 1.0})
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        x, y = 1024.0, 700.0
+        run(crop_runner, [label_row(pano_id='xmlpano00001', pano_x=x, pano_y=y, label_id=1),
+                          label_row(pano_id='npzpano00001', pano_x=x, pano_y=y, label_id=2)],
+            store, out, tilt_correction=True)
+        rows = {row['label_id']: row for row in manifest_dicts(crop_runner, out)}
+        assert (rows['1']['pose_source'], rows['1']['tilt_beta']) == ('xml', '0.0')
+        assert (float(rows['1']['corrected_pano_x']), float(rows['1']['corrected_pano_y'])) == (x, y)
+        assert [crop_runner.manifest_row_is_tilt_corrected(rows[i]) for i in ('1', '2')] == [False, True]
+        assert ('0 crops cut from an xml pose (beta 0.0), 1 from an npz pose (beta 1.0).'
+                in capsys.readouterr().out)
+
+    @pytest.mark.parametrize('cells, corrected', [
+        (('none', '0.0', '', ''), False),
+        (('npz', '1.0', '1.5', '2.5'), True),
+        (('xml', '0.88', '1.5', '2.5'), True),
+        (('xml', '0.0', '1.5', '2.5'), False),
+        (('npz', '-0.0', '1.5', '2.5'), False),
+    ], ids=['off', 'npz', 'xml-partial-beta', 'xml-beta-zero', 'negative-zero'])
+    def test_the_filter_is_pose_found_and_beta_nonzero(self, crop_runner, cells, corrected):
+        row = dict(zip(crop_runner.TILT_PROVENANCE_COLUMNS, cells))
+        assert crop_runner.manifest_row_is_tilt_corrected(row) is corrected

@@ -22,6 +22,7 @@ out of the panorama. It runs unattended every night, per city, across ~50 deploy
 | [`check_cvmetadata_schema.py`](docs/api-fields.md#checking-the-contract-against-a-live-deployment) | Asks a live deployment which `cvMetadata` fields it serves and exits nonzero when one `CropRunner` requires has stopped arriving. The one thing here that talks to a deployment on purpose — the suite is network-free, so nothing else can see an upstream rename. |
 | [`migrate_depth_artifacts.py`](docs/depth.md#migrating-a-pre-v2-store) | One-off, idempotent rewrite of depth artifacts written before the v2 format. |
 | [`refetch_panos.py`](docs/ops.md#repairing-fover-era-panoramas) | One-off, idempotent re-fetch of panoramas downloaded at half resolution, replacing one only when the replacement is strictly better. |
+| [`readmit_dimless_writeoffs.py`](docs/ops.md#re-admitting-the-dimensionless-write-offs) | One-off: removes the `downloaded=0` ledger rows written for GSV panos that had no width/height before #184, so the next run asks Google for them. Dry run by default; keeps a backup and the removed rows. |
 | [`scan_black_bands.py`](docs/ops.md#edge-black-bands) | Read-only, idempotent sweep that measures the exact-black band along each stored panorama's bottom and right edges and lists the panoramas with a deep one. |
 | [`downscale_panos.py`](docs/ops.md#display-copies-of-wide-panoramas) | Idempotent sweep that writes the 8192 px display copy beside every wider panorama (or, with `--min-width`, only the ones wider than that). **Neither downloader writes one** — that was switched off on 2026-09-09, so this is the only writer that creates one, and it runs only when you run it. |
 
@@ -32,8 +33,12 @@ git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git
 cd sidewalk-panorama-tools
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 ```
+
+`-c constraints.txt` installs the exact versions production runs (Python 3.10). Drop it if a pin has no wheel
+for your Python: numpy 2.2.6 and scipy 1.15.3 stop at 3.13, so on 3.14 they would build from source. See
+[docs/downloader.md](docs/downloader.md#install).
 
 Download a city's panoramas and depth maps into `/srv/panos/columbus-oh`:
 
@@ -70,7 +75,7 @@ for the nightly cron form.
 | [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, the nightly queue, and pulling from the pano store |
 | [Cropper](docs/cropper.md) | Crop geometry, the two preflights, outcome taxonomy, and what to know before training on the crops |
 | [Depth maps](docs/depth.md) | The `.npz` artifact format, the plane fields, migration — and **what the depth product is and isn't** |
-| [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 19-column `log.csv`, how a crashed run reads, and operating the production host (deploy, rollback, adding a city) |
+| [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 20-column `log.csv`, how a crashed run reads, and operating the production host (deploy, rollback, adding a city) |
 | [Log analyzer](docs/log-analyzer.md) | SFTP setup, the per-city health checks, and the depth backfill report |
 | [API fields](docs/api-fields.md) | Every column of `/adminapi/panos` and `/adminapi/labels/cvMetadata`, plus the label type IDs |
 | [Testing](docs/testing.md) | What the suite covers and the three ways it is deliberately unusual |
@@ -88,7 +93,7 @@ One directory per city, sharded by the first two characters of the pano id:
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | Display copy of a panorama wider than 8192 px (no longer written by the downloaders) |
 | `pano_id_log.csv` | Image ledger — a row means the outcome is permanent, and carries when the source answered (blank when a file was already on disk) |
 | `depth_log.csv` | Depth ledger — likewise |
-| `log.csv` | One 19-column row per run |
+| `log.csv` | One 20-column row per run |
 | `scrape.log` | Rotating run log |
 
 Transient failures deliberately leave no ledger row, so they retry on the next run; the files on disk are the
@@ -118,7 +123,7 @@ of them.
 ## Tests
 
 ```bash
-pip3 install -r requirements.txt -r requirements-dev.txt
+pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python3 -m pytest tests
 ```
 

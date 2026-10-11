@@ -22,7 +22,17 @@ jobs:
         with:
           python-version: '3.10'
           cache: pip
-      - run: pip install -r requirements.txt -r requirements-dev.txt
+          # The default key is requirements*.txt alone; a refreshed constraints.txt must not reuse the old cache.
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            constraints.txt
+      # -c pins every package the production box has to the versions it runs (#167): constraints.txt is the
+      # box's pip freeze, so this job tests what production runs rather than whatever PyPI served today.
+      # Packages the box does not have (the dev-only ones) resolve fresh. Drift against the latest releases is
+      # tests-latest.yml's job, weekly and not gating. Refreshing the pins: docs/ops.md, "Refreshing
+      # constraints.txt".
+      - run: pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
       # Bare --cov takes its source and omissions from .coveragerc, so there is one place to change them.
       # skip-covered keeps the (already -v, 1400-test) log readable; the step summary below is not skipped,
       # so the PR view still shows every file including the ones at 100%.

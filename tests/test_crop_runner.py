@@ -1264,6 +1264,20 @@ class TestDimsReconciliation:
         counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
         assert counts['success'] == 1
 
+    def test_null_dims_and_a_negative_pano_y_is_out_of_frame_on_a_photometa_framed_pano(self, crop_runner,
+                                                                                        tmp_path):
+        """#184: the downloader now saves a dimensionless pano at Google's served frame, but the label rows
+        for such panos carry null pano_width/pano_height too, and their pano_y is in no frame we can name -
+        193 of seattle's 195 and 248,486 of washington-dc's 248,943 are negative (SidewalkWebpage#5667). With
+        no dims the dims preflight is skipped, so the out_of_frame preflight is what refuses them. Pinned
+        here so the downloader change cannot quietly start producing crops from those coordinates."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        row = label_row(pano_y=-720)
+        row.update(pano_width=None, pano_height=None)
+        counts = crop_runner.bulk_extract_crops([row], str(store), str(out))
+        assert counts['out_of_frame'] == 1 and counts['success'] == 0
+
     def test_nan_dims_metadata_proceeds(self, crop_runner, tmp_path):
         """cvMetadata serves null dims for third-party photospheres; a NaN is absent, not mismatched."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
@@ -2461,7 +2475,7 @@ class TestTheDefaultWindowIsByteIdentical:
         """The flip to v3 is a decision for the #84 recrop campaign (a whole --force re-cut, #83), not
         something this PR takes."""
         assert crop_runner.CROP_RULE_VERSION == 'v2'
-        assert crop_runner.CROP_RULE_VERSIONS == ('v2', 'v3')
+        assert crop_runner.CROP_RULE_VERSIONS == ('v2', 'v3', 'v3-depth')   # v3-depth: opt-in, #180
         args = crop_runner.build_parser().parse_args(['--city', 'seattle-wa', '-d', 'x.invalid', '-s', '/panos',
                                                       '-o', '/out'])
         assert args.sizing_rule == 'v2'
@@ -3072,7 +3086,8 @@ class TestTheMarkerKeepsItsHistory:
         assert caplog.text == ''
         after = _read_marker(crop_runner, tmp_path)
         assert after['rules_seen'] == ['v3']
-        for key in ('city', crop_runner.MANIFEST_NO_KNOWN_GAP, 'provenance_manifest_started_under'):
+        for key in ('city', crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_KNOWN_GAPS,
+                    'provenance_manifest_started_under'):
             assert after[key] == before[key], key
         assert crop.read_bytes() == b'crop'
 
@@ -3242,13 +3257,14 @@ class TestTheMarkerInThePerCityStore:
         assert marker['provenance_manifest_started_under'] == 'v3'
         assert marker['provenance_manifest'] == crop_runner.PROVENANCE_MANIFEST
         assert crop_runner.MANIFEST_PRE_CITY in marker
+        assert crop_runner.MANIFEST_PRE_TILT in marker
 
     def test_a_recorded_gap_leaves_the_marker_readable(self, crop_runner, tmp_path):
         """_record_manifest_gap writes `false` into the marker (building one around it if none exists);
         the rule history must read straight through it."""
         (tmp_path / crop_runner.PROVENANCE_MANIFEST).write_text(
             ','.join(crop_runner.PROVENANCE_COLUMNS) + '\n', encoding='utf-8')
-        crop_runner._record_manifest_gap(str(tmp_path))
+        crop_runner._record_manifest_gap(str(tmp_path), 1)
         assert crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3') is None
         crop_runner.write_rule_marker(str(tmp_path), sizing_rule='v3')
         marker = _read_marker(crop_runner, tmp_path)
@@ -3302,7 +3318,8 @@ class TestTheMarkerInThePerCityStore:
         assert set(crop_runner._rule_constants()) | {
             'crop_rule_version', 'distance_estimator', 'previous_crop_rule_version', 'rules_seen',
             'constants_seen', 'city', 'tilt_correction', 'provenance_manifest', 'provenance_manifest_started_under',
-            crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_PRE_CITY} == set(marker)
+            crop_runner.MANIFEST_NO_KNOWN_GAP, crop_runner.MANIFEST_KNOWN_GAPS, crop_runner.MANIFEST_PRE_CITY,
+            crop_runner.MANIFEST_PRE_TILT} == set(marker)
 
 
 # ---------------------------------------------------------------------------

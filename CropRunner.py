@@ -26,6 +26,7 @@ import os
 import re
 import sys
 
+import numpy as np
 import requests
 from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
@@ -93,11 +94,16 @@ CropBox = collections.namedtuple('CropBox', ['left', 'top', 'width', 'height', '
 # This is the DEFAULT rule, and it stays v2 until switching is decided deliberately: v3 moves ~40% of the
 # 658 gold ramps' windows by more than 10%, so flipping it means re-cutting every store whole (--force,
 # #83), which belongs in the #84 recrop campaign. --sizing-rule selects between the rules below.
+#
+# v3-depth (#180) is v3 with its distance read from the pano's .depth.npz where the artifact can be trusted,
+# and v3's own blend distance everywhere else. Its own rule id rather than a flag, so the marker's sticky
+# rules_seen/constants_seen history tells a v3 store from a v3-depth one with no new machinery.
 CROP_RULE_VERSION = 'v2'
-CROP_RULE_VERSIONS = ('v2', 'v3')
+CROP_RULE_VERSIONS = ('v2', 'v3', 'v3-depth')
 
 # Which distance estimator each rule sizes from; recorded in crop_rule.json beside the version.
-CROP_RULE_DISTANCE_ESTIMATOR = {'v2': 'linear-2013', 'v3': 'lle3-cotangent-blend'}
+CROP_RULE_DISTANCE_ESTIMATOR = {'v2': 'linear-2013', 'v3': 'lle3-cotangent-blend',
+                                'v3-depth': 'depth-npz-rig-pixel-median3x3, lle3-cotangent-blend fallback'}
 
 # ---------------------------------------------------------------------------
 # Sizing rule v2. Measured, not guessed - see reports/2026-08-19-crop-sizing-v2.md for the four-city
@@ -174,6 +180,44 @@ V3_DIST_CAP_M = 50.0
 V3_CONTEXT_WIDTH_M = 5.8
 
 # ---------------------------------------------------------------------------
+# Sizing rule v3-depth (opt-in, #180): v3's window at a distance read from the depth artifact
+# (docs/depth.md) - the median of the 3x3 depth cells around the label's RIG pixel, projected to the ground -
+# where it can be trusted, and v3's blend distance where it cannot. The spec is #157's decision D4 as filed
+# in #180; the numbers below are its, not fitted here. docs/cropper.md, "Sizing rule v3-depth".
+#
+# A depth cell counts only if it is on a plane: depth > 0 and plane index > 0. -1 is finite and means "no
+# plane" (sky, or anything Google did not model), so a plain finiteness test would count it (#180 point 1).
+V3_DEPTH_MIN_VALID_CELLS = 5
+# The distance's lower limit; the upper one is V3_DIST_CAP_M, the cap the blend constants were copied with.
+V3_DEPTH_MIN_M = 0.5
+# |n_z| / |n| of the plane under the label below this is a facade, not ground: fall back. The same 0.7 as
+# gsv.ground_plane_from_artifact's min_vertical.
+V3_DEPTH_MIN_GROUND_VERTICALITY = 0.7
+# The facade test needs the plane fields, which only format 3 has (#180 point 2): a v2 artifact falls back.
+V3_DEPTH_MIN_FORMAT_VERSION = 3
+# Which pixel the grid is sampled at, for the marker. 'rig': pano_pose.corrected_pixel under the npz's own
+# pose, at TILT_BETA_BY_POSE_SOURCE's npz beta (#180's 2026-10-05 comment, after #158 and #193). The planes
+# are in the rig frame of the npz's capture (#54 F1) and a GSV label's stored pixel is gravity-levelled
+# (endpoint C), so the stored pixel samples the grid off by the tilt at the label's bearing.
+V3_DEPTH_LOOKUP_PIXEL = 'rig'
+
+# Which distance a v3-depth crop was sized from, and why a crop fell back to the blend.
+DISTANCE_SOURCE_DEPTH = 'depth'
+DISTANCE_SOURCE_BLEND = 'blend'
+# In the order the lookup tests them: the first that applies is the reason.
+#   no_artifact   no .depth.npz beside the pano (every Mapillary/Panoramax pano; a GSV pano the depth
+#                 phase has not reached or ledgered unavailable)
+#   unreadable    the file will not load, or its arrays are not the documented shapes
+#   old_format    format_version absent (pre-v2: x-mirrored, #58) or below V3_DEPTH_MIN_FORMAT_VERSION
+#   no_pose       the npz's pitch or roll is missing or NaN, so there is no rig pixel to sample at
+#   sky           fewer than V3_DEPTH_MIN_VALID_CELLS on a plane, at or above the horizon row
+#   no_plane      the same, below the horizon: something Google did not model
+#   facade        the plane under the label is steeper than V3_DEPTH_MIN_GROUND_VERTICALITY allows
+#   out_of_range  the distance is outside [V3_DEPTH_MIN_M, V3_DIST_CAP_M]
+DEPTH_FALLBACK_REASONS = ('no_artifact', 'unreadable', 'old_format', 'no_pose', 'sky', 'no_plane', 'facade',
+                          'out_of_range')
+
+# ---------------------------------------------------------------------------
 # The tilt correction (opt-in, #191). A GSV label's stored pano_x/pano_y is in gravity-levelled pixels
 # while the stored tiles are in the rig's own frame, so under --tilt-correction the crop centre moves
 # to the rig pixel (pano_pose.corrected_pixel), by beta times the rig transform - beta scaling the pose.
@@ -186,14 +230,21 @@ V3_CONTEXT_WIDTH_M = 5.8
 # era gap was the pose record's. The record is also always known when a correction is applied, where the era
 # is unknown for every -d label (cvMetadata serves no time_created).
 #
-# Both stay 1.0 here, NOT the measured priors: endpoint C found the direction 79 : 0, the #191 beta batch is
-# corroboration only (it leans below 1 in both arms but, at 5 discordant sheets per arm, had no power to
-# measure beta: reports/data/2026-09-29-tilt-beta-jm/DECISIONS.md, section 5), and choosing the default is
-# its own decision (#197). The priors are named so
-# whoever sets them knows where they came from; they are not applied. Also open: the per-crop provenance
-# column (#196), which must land before the flag is turned on for any consumer store, and re-fitting the
-# sizing rules on corrected coordinates (#186).
-TILT_BETA_BY_POSE_SOURCE = {pano_pose.POSE_SOURCE_XML: 1.0, pano_pose.POSE_SOURCE_NPZ: 1.0}
+# The values are those slopes, rounded: 0.88 (xml) and 0.95 (npz), SE about 0.02 each - Jon's decision of
+# 2026-10-06 on #197 (https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/197), citing
+# https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/191#issuecomment-5922041299. A full-T
+# correction over-corrects by about 13% (xml) and 5% (npz). The #191 beta batch's means, 0.91 and 0.95, agree.
+#
+# History: PR #193 shipped both at 1.0, NOT the measured priors, because endpoint C found the direction
+# 79 : 0, the #191 beta batch is corroboration only (it leans below 1 in both arms but, at 5 discordant
+# sheets per arm, had no power to measure beta: reports/data/2026-09-29-tilt-beta-jm/DECISIONS.md, section 5),
+# and choosing the default was its own decision (#197). crop_rule.json records each beta, so a store
+# corrected at 1.0 and again at these values gets the same-rule mixed-store warning (write_rule_marker).
+#
+# The flag is still OFF by default; turning it on is the rest of #197. The per-crop record of the correction is
+# in the provenance manifest (#196, TILT_PROVENANCE_COLUMNS); still open is re-fitting the sizing rules on
+# corrected coordinates (#186).
+TILT_BETA_BY_POSE_SOURCE = {pano_pose.POSE_SOURCE_XML: 0.88, pano_pose.POSE_SOURCE_NPZ: 0.95}
 TILT_POSE_SOURCES = (pano_pose.POSE_SOURCE_XML, pano_pose.POSE_SOURCE_NPZ)
 
 # crop_rule.json's name for each pose record's beta; 0.0 when the correction is off (beta 0 is the identity).
@@ -235,18 +286,90 @@ PROVENANCE_MANIFEST = 'crop_provenance.csv'
 # pano_data.license, SidewalkWebpage#5202), so a value that arrives under it needs no renaming here.
 PROVENANCE_FIELDS = ('source', 'copyright', 'license')
 
-PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+# What each row says about the tilt correction (#196), since --tilt-correction makes a store mixed by
+# construction (no_pose is mostly permanent, and a --force re-cut leaves those crops stale_kept) while
+# crop_rule.json records only run-level settings: the pose record the window was corrected from, the beta
+# applied, and the corrected centre the window was cut around, unrounded. Appended after the pre-#196
+# columns, so those keep their positions.
+TILT_PROVENANCE_COLUMNS = ('pose_source', 'tilt_beta', 'corrected_pano_x', 'corrected_pano_y')
 
-# The manifest's header before rows carried a city (#159 step 1), and where a manifest still under it is
-# moved so the city-bearing rows never land beneath it. See set_aside_pre_city_manifest.
+# The pose_source of a crop this run did not correct. Defined here, not in pano_pose, whose PanoPose.source
+# is always a record that was read.
+POSE_SOURCE_NONE = 'none'
+
+# The four cells of a row cut without a correction: beta 0.0 is the marker's own "off" value (beta 0 is the
+# identity), and the centre columns are blank because nothing was corrected - never the stored point copied
+# in under a "corrected" name. A row's ABSENCE from the manifest (a crop listed only in a set-aside file) is
+# not this: it means unknown, since a crop cut under #193 with the flag on has no row here.
+TILT_PROVENANCE_OFF = (POSE_SOURCE_NONE, '0.0', '', '')
+
+
+def manifest_row_is_tilt_corrected(row):
+    """Whether a provenance-manifest row (a csv.DictReader dict) describes a tilt-corrected crop (#196).
+
+    A pose record was found (`pose_source` is not `none`) AND the beta applied was not zero. The second
+    half is not redundant (#200 review finding 1): a pose record whose beta is 0 - a plausible #197 choice
+    for the xml record - writes `xml`, `0.0` and the stored point, since corrected_pixel at beta 0 is the
+    identity. That row is kept as it is, because it is the only record that a re-cut at a higher beta would
+    change the crop, but the crop is byte-for-byte an uncorrected one.
+
+    Apply it to the LAST row per (city, label_id); a crop with no row in the current manifest is unknown,
+    and is left out by not being there. Example:
+
+        last = {}
+        with open('crop_provenance.csv', newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                last[(row['city'], row['label_id'])] = row
+        corrected = [key for key, row in last.items() if manifest_row_is_tilt_corrected(row)]
+    """
+    return row['pose_source'] != POSE_SOURCE_NONE and float(row['tilt_beta']) != 0.0
+
+PRE_TILT_PROVENANCE_COLUMNS = ('city', 'label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
+PROVENANCE_COLUMNS = PRE_TILT_PROVENANCE_COLUMNS + TILT_PROVENANCE_COLUMNS
+
+# The manifest's headers before the current one, each with the name a manifest still under it is moved to
+# so rows of the current width never land beneath it (see set_aside_legacy_manifest), and the marker key
+# that records the move:
+# * before rows carried a city (#159 step 1);
+# * before rows carried the tilt correction (#196) - the header written from #159 to #196.
 PRE_CITY_PROVENANCE_COLUMNS = ('label_id', 'pano_id') + PROVENANCE_FIELDS + ('crop_rule_version',)
 PROVENANCE_MANIFEST_PRE_CITY = 'crop_provenance.pre-city.csv'
 MANIFEST_PRE_CITY = 'provenance_manifest_pre_city'
+PROVENANCE_MANIFEST_PRE_TILT = 'crop_provenance.pre-tilt.csv'
+MANIFEST_PRE_TILT = 'provenance_manifest_pre_tilt'
+# (header, set-aside file name, what the old header lacked - for the message), oldest first.
+LEGACY_MANIFEST_HEADERS = (
+    (PRE_CITY_PROVENANCE_COLUMNS, PROVENANCE_MANIFEST_PRE_CITY, 'a city'),
+    (PRE_TILT_PROVENANCE_COLUMNS, PROVENANCE_MANIFEST_PRE_TILT, 'the tilt correction'),
+)
+# The marker key that names each set-aside file once it exists.
+LEGACY_MANIFEST_MARKER_KEYS = {PROVENANCE_MANIFEST_PRE_CITY: MANIFEST_PRE_CITY,
+                               PROVENANCE_MANIFEST_PRE_TILT: MANIFEST_PRE_TILT}
 
 # crop_rule.json's answer to "may the manifest be read as covering every crop here?" (#153 M3). Named for
 # what it records - that no run has KNOWN of a crop without a row - because that is all a marker can
 # record: coverage itself is the manifest's rows against the crops on disk. See write_rule_marker.
 MANIFEST_NO_KNOWN_GAP = 'provenance_manifest_no_known_gap'
+
+# How many crops runs have known, or could not rule out, to have been cut with no row reaching the current
+# manifest (#200 review finding 2; a count by Jon's decision, not a second flag). The flag above also goes
+# false when a manifest is started over crops already on disk - every store's first #196 run, through the
+# set-aside - and that does not make the last-row filter wrong: a crop with no row is unknown and is left
+# out. A crop that lost its row on a --force re-cut does, since the PREVIOUS row is then the last one. So a
+# count above 0 is what makes "last row per (city, label_id)" unsafe, and it bounds how far off it can be:
+# at most that many labels' last rows misdescribe their crops - as far as runs reported, since a run killed
+# outright between a crop and its row records nothing. 0 when a manifest is started, carried forward,
+# added to by _record_manifest_gap and never decreased; null when the marker has no count for the manifest
+# on disk (unknown, not 0).
+MANIFEST_KNOWN_GAPS = 'provenance_manifest_known_gaps'
+
+
+def _gap_count(value):
+    """A recorded MANIFEST_KNOWN_GAPS value if it is a count, else None. A JSON `true` is an int to Python,
+    and adding to it would turn a hand edit into a plausible-looking count."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 # ---------------------------------------------------------------------------
 # The systemic-failure alarm (#136). When cvMetadata changed shape (#123) every label errored, and the
@@ -280,6 +403,11 @@ SYSTEMIC_FAILURE_BANNER = 'SYSTEMIC FAILURE'
 DISJOINT_OUTCOMES = ('success', 'skipped_existing', 'missing_pano', 'dims_mismatch', 'out_of_frame',
                      'black_content', 'no_pose', 'errors')
 COUNT_ANNOTATIONS = ('shifted_vertically', 'recut', 'stale_kept')
+# Under --sizing-rule v3-depth (#180), which distance each SUCCESS was sized from: distance_depth, or the
+# blend fallback under its reason. A third group, outside both sums above, and in the counts dict only under
+# v3-depth (every other rule returns the dict it always did). They partition success:
+#     distance_depth + distance_blend_<reason> for every reason == success
+DISTANCE_SOURCE_COUNTS = ('distance_depth',) + tuple('distance_blend_' + reason for reason in DEPTH_FALLBACK_REASONS)
 
 # The content check (#164): a cut window more than this fraction exactly-black (luma 0) is not written and
 # is counted black_content. The #47 guarantee is about geometry - no crop contains synthetic black the
@@ -397,6 +525,9 @@ def build_parser():
                              'cut before that are v1, #83). v3 sizes from the lle #3 cotangent distance instead of '
                              'the 2013 linear one (#32); it moves ~40%% of the 658 gold ramps\' windows by more '
                              'than 10%%, so a store cut under v2 should be re-cut whole with --force, not topped up. '
+                             'v3-depth (#180) is v3 with the distance read from the pano\'s .depth.npz at the '
+                             'label\'s rig pixel where it can be trusted, and v3\'s own distance everywhere else; '
+                             'each fallback is counted by reason. '
                              'Recorded in crop_rule.json and on every provenance row either way.')
     parser.add_argument('--tilt-correction', action='store_true',
                         help='Move each crop centre from the stored (gravity-levelled) label pixel to the rig '
@@ -860,14 +991,160 @@ def geometric_window_fov_deg(distance_m, context_width_m=None):
     return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
 
 
-def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION):
+# ---------------------------------------------------------------------------
+# Rule v3-depth's distance (#180). Three functions: load_depth_grid reads the artifact once per pano,
+# label_distance samples it for one label, and depth_backed_distance is the two composed from a path - the
+# "one function returning (distance_m, distance_source)" of #180's acceptance criteria.
+
+# The arrays label_distance reads, plus the npz's own pose in degrees (pano_pose.pose_from_depth_artifact's
+# conversion). depth and plane_indices are (h, w) in the stored JPEG's column order (docs/depth.md).
+DepthGrid = collections.namedtuple('DepthGrid', 'depth plane_indices planes_n planes_d pitch_deg roll_deg')
+
+# A label's distance and where it came from. source is DISTANCE_SOURCE_DEPTH or DISTANCE_SOURCE_BLEND;
+# reason is None for depth and one of DEPTH_FALLBACK_REASONS for blend. lookup_x/lookup_y are the pano pixel
+# the grid was sampled at (the rig pixel), None when no grid was sampled.
+DistanceEstimate = collections.namedtuple('DistanceEstimate', 'distance_m source reason lookup_x lookup_y')
+
+
+def load_depth_grid(npz_path):
+    """(DepthGrid, None), or (None, reason) with reason in DEPTH_FALLBACK_REASONS: no_artifact, unreadable,
+    old_format or no_pose. Never raises: whatever the file holds, the crop falls back to the blend.
+
+    `npz_path` None or absent is no_artifact. A file np.load refuses, or whose arrays are not the documented
+    shapes (docs/depth.md, "The artifact": depth and plane_indices one (h, w) raster, planes_n (P, 3), every
+    index inside the plane list), or whose plane_indices is not an integer raster, is unreadable. format_version absent (pre-v2, x-mirrored) or below
+    V3_DEPTH_MIN_FORMAT_VERSION is old_format, checked before the shapes, since a v2 artifact lacks the plane
+    fields by design. The pose is read by pano_pose.pose_from_depth_artifact - the tilt correction's reader,
+    so the two can never convert pitch and roll differently - and a missing or NaN one is no_pose.
+    """
+    if npz_path is None or not os.path.exists(npz_path):
+        return None, 'no_artifact'
+    # One try around the load AND the checks (#211 review): a float raster holding a NaN, or strings, raises
+    # inside the checks, and this function is documented never to raise.
+    try:
+        with np.load(npz_path) as art:
+            if 'format_version' not in art.files or int(art['format_version']) < V3_DEPTH_MIN_FORMAT_VERSION:
+                return None, 'old_format'
+            depth = np.asarray(art['depth'], dtype=np.float64)
+            plane_indices = np.asarray(art['plane_indices'])
+            planes_n = np.asarray(art['planes_n'], dtype=np.float64)
+            planes_d = np.asarray(art['planes_d'], dtype=np.float64)
+        if (depth.ndim != 2 or depth.size == 0 or plane_indices.shape != depth.shape
+                or not np.issubdtype(plane_indices.dtype, np.integer)
+                or planes_n.ndim != 2 or planes_n.shape[1] != 3 or planes_d.shape != (len(planes_n),)
+                or int(plane_indices.min()) < 0 or int(plane_indices.max()) >= len(planes_n)):
+            return None, 'unreadable'
+    except Exception:  # a corrupt zip, a truncated member, a missing array, a non-scalar version, a bad dtype
+        return None, 'unreadable'
+    pose, _ = pano_pose.pose_from_depth_artifact(npz_path)
+    if pose is None:
+        return None, 'no_pose'
+    return DepthGrid(depth, plane_indices, planes_n, planes_d, pose.pitch_deg, pose.roll_deg), None
+
+
+def label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason=None):
+    """Rule v3-depth's distance for one label: a DistanceEstimate.
+
+    With no grid (`reason` says why, from load_depth_grid), the blend: v3's own distance,
+    blend_distance_m(label_depression_deg(pano_y, pano_height)), so a fallback crop is v3's crop exactly.
+
+    With a grid, the spec of #180:
+    1. **The lookup pixel is the rig pixel**, pano_pose.corrected_pixel under the npz's own pose at the npz
+       beta (TILT_BETA_BY_POSE_SOURCE, read at call time) - not the stored pixel, which is gravity-levelled
+       while the planes are in the rig frame (#54 F1, endpoint C). Never an .xml pose: that one poses a
+       2019-22 JPEG, not this grid.
+    2. **Index by truncation** (docs/depth.md, "Sampling depth under a label"): col = int(x / W * w) % w,
+       row = min(int(y / H * h), h - 1).
+    3. **The 3x3 neighbourhood**, columns wrapped at the seam, rows not (the poles are not adjacent). A
+       cell counts when depth > 0 and plane index > 0; fewer than V3_DEPTH_MIN_VALID_CELLS is `sky` when
+       the lookup row is at or above the horizon (rows before (h + 1) // 2, gsv.ground_plane_from_artifact's
+       split), else `no_plane`. -1 cannot tell sky from unmodelled, so the horizon is what does.
+    4. **The plane under the label**: the centre cell's, or when the centre has none the most common plane
+       among the counted cells (lowest index on a tie). |n_z| / |n| below V3_DEPTH_MIN_GROUND_VERTICALITY is
+       `facade`.
+    5. **The distance** is the label's OWN ray - the continuous lookup pixel, not a cell centre - intersected
+       with that plane: |planes_d / (v . planes_n)|, the artifact's reconstruction identity (docs/depth.md)
+       evaluated at the label rather than at a cell (#211 review: a cell's depth is the ray length at its
+       centre, up to half a 0.7-degree cell from the label, which on ground is up to ~11% of the distance at
+       3-5 degrees). The 3x3 count and the plane choice above decide WHETHER and WHICH plane; the plane
+       itself is what the artifact stores, so this is exact on it. That ray length is projected to the
+       ground by cos(label_depression_deg(pano_y)): the label's gravity depression, from the stored y, which
+       is gravity-levelled. The blend it replaces is a ground distance (h / tan d) and V3_CONTEXT_WIDTH_M was
+       fitted on it, so the slant range would size every window ~1/cos(d) too narrow. On level ground at
+       camera height h this is h / tan(d) exactly. Outside [V3_DEPTH_MIN_M, V3_DIST_CAP_M] (or a ray parallel
+       to the plane) is `out_of_range`.
+
+    >>> label_distance(1024, 700, 2048, 1024, None, 'no_artifact').source
+    'blend'
+    """
+    depression = label_depression_deg(pano_y, pano_height)
+    blend = blend_distance_m(depression)
+    if grid is None:
+        # A blend estimate must carry its reason, or the loop cannot file it (#211 review).
+        if reason not in DEPTH_FALLBACK_REASONS:
+            raise ValueError("no depth grid and no fallback reason (%r)" % (reason,))
+        return DistanceEstimate(blend, DISTANCE_SOURCE_BLEND, reason, None, None)
+    lookup_x, lookup_y = pano_pose.corrected_pixel(pano_x, pano_y, pano_width, pano_height, grid.pitch_deg,
+                                                   grid.roll_deg,
+                                                   TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_NPZ])
+
+    def fallback(why):
+        return DistanceEstimate(blend, DISTANCE_SOURCE_BLEND, why, lookup_x, lookup_y)
+
+    h, w = grid.depth.shape
+    col = int(lookup_x / pano_width * w) % w
+    row = max(min(int(lookup_y / pano_height * h), h - 1), 0)
+    rows = [r for r in (row - 1, row, row + 1) if 0 <= r < h]
+    cols = [(col + dc) % w for dc in (-1, 0, 1)]
+    depth = grid.depth[np.ix_(rows, cols)]
+    indices = grid.plane_indices[np.ix_(rows, cols)].astype(np.intp)
+    with np.errstate(invalid='ignore'):
+        counted = np.isfinite(depth) & (depth > 0) & (indices > 0)
+    if int(counted.sum()) < V3_DEPTH_MIN_VALID_CELLS:
+        return fallback('sky' if row < (h + 1) // 2 else 'no_plane')
+
+    centre = (rows.index(row), 1)
+    plane = int(indices[centre]) if counted[centre] else int(np.argmax(np.bincount(indices[counted])))
+    normal = grid.planes_n[plane]
+    length = float(np.linalg.norm(normal))
+    if length == 0.0 or abs(float(normal[2])) / length < V3_DEPTH_MIN_GROUND_VERTICALITY:
+        return fallback('facade')
+
+    # The label's own ray in the artifact frame, which is -RFU (pano_pose's module docstring).
+    ray = -pano_pose.direction_rfu(*pano_pose.bearing_elevation_from_pixel(lookup_x, lookup_y, pano_width,
+                                                                           pano_height))
+    dot = float(np.dot(ray, normal))
+    if dot == 0.0:
+        # A ray exactly parallel to the plane (a label on the horizon row of a level rig) never meets it. Both
+        # operands are Python floats, which raise on this division rather than returning inf, so the case is
+        # answered before dividing (#211 fix-round review).
+        return fallback('out_of_range')
+    ray_length = abs(float(grid.planes_d[plane]) / dot)
+    distance = ray_length * math.cos(math.radians(depression))
+    if not (math.isfinite(distance) and V3_DEPTH_MIN_M <= distance <= V3_DIST_CAP_M):
+        return fallback('out_of_range')
+    return DistanceEstimate(distance, DISTANCE_SOURCE_DEPTH, None, lookup_x, lookup_y)
+
+
+def depth_backed_distance(pano_x, pano_y, pano_width, pano_height, npz_path):
+    """Rule v3-depth's distance for a label, from the pano's depth artifact path (or None): a
+    DistanceEstimate, whose (distance_m, source) is the pair #180 asks for. The crop loop calls the two
+    halves separately so a pano's artifact is read once for all its labels."""
+    grid, reason = load_depth_grid(npz_path)
+    return label_distance(pano_x, pano_y, pano_width, pano_height, grid, reason)
+
+
+def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION, distance_m=None):
     """The sizing rule as what it actually is: an ANGLE. Degrees of the sphere the window spans.
 
     `sizing_rule` selects between the rules in CROP_RULE_VERSIONS; an unknown one is a ValueError.
 
     Rule v3 (opt-in, #32) is three named steps - label_depression_deg, blend_distance_m,
     geometric_window_fov_deg - composed here and nowhere else; a test pins the composition so a refactor
-    that fuses them cannot land silently. Everything below describes rule v2, the default.
+    that fuses them cannot land silently. Rule v3-depth (opt-in, #180) is geometric_window_fov_deg at
+    `distance_m`, which it requires: the caller resolves it (label_distance, falling back to exactly v3's
+    blend distance), because it needs the pano's depth artifact and this function sees only a y. v2 and v3
+    refuse a `distance_m` rather than ignore one. Everything below describes rule v2, the default.
 
     Two steps, each one measured number from reports/2026-08-19-crop-sizing-v2.md:
 
@@ -890,6 +1167,12 @@ def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION):
 
     :return: the window's angular span in degrees, in [CROP_MIN_FOV_DEG, CROP_MAX_FOV_DEG].
     """
+    if sizing_rule == 'v3-depth':
+        if distance_m is None:
+            raise ValueError("sizing rule v3-depth needs the label's distance_m (see label_distance)")
+        return geometric_window_fov_deg(distance_m)
+    if distance_m is not None:
+        raise ValueError("distance_m is read only by sizing rule v3-depth, not %r" % (sizing_rule,))
     if sizing_rule == 'v2':
         deg = elevation_px_to_deg(predict_crop_size(pano_y, pano_height) * CROP_SIZE_SCALE, pano_height)
         return min(max(deg, CROP_MIN_FOV_DEG), CROP_MAX_FOV_DEG)
@@ -898,8 +1181,9 @@ def crop_window_fov_deg(pano_y, pano_height, sizing_rule=CROP_RULE_VERSION):
     raise ValueError("unknown sizing rule %r; expected one of %r" % (sizing_rule, CROP_RULE_VERSIONS))
 
 
-def crop_window_width(pano_y, pano_width, pano_height, sizing_rule=CROP_RULE_VERSION):
+def crop_window_width(pano_y, pano_width, pano_height, sizing_rule=CROP_RULE_VERSION, distance_m=None):
     """The window width the selected rule cuts, in native pixels: crop_window_fov_deg as an azimuthal span.
+    `distance_m` is v3-depth's, and only v3-depth's (crop_window_fov_deg).
 
     A width is horizontal, so the conversion is azimuth_deg_to_px against pano_width. The elevation
     form gives the same number on a 2:1 pano and half of it on a square one - the axis slip the unit
@@ -913,7 +1197,7 @@ def crop_window_width(pano_y, pano_width, pano_height, sizing_rule=CROP_RULE_VER
     because that is a property of the image rather than of the rule, and keeping it there means the
     reported window is the one that was cut.
     """
-    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height, sizing_rule), pano_width)
+    return azimuth_deg_to_px(crop_window_fov_deg(pano_y, pano_height, sizing_rule, distance_m), pano_width)
 
 
 def compute_crop_box(pano_x, pano_y, crop_width, pano_width, pano_height):
@@ -1257,7 +1541,8 @@ class LegacyCropStoreError(Exception):
 
 # The store-level files a pre-#159 store keeps directly in -o. Any one of them there means -o IS a store.
 # crop.log alone is not a signal: it is what any directory a run was pointed at could hold, and a root
-# never writes one of its own - but the migrator moves it with the rest.
+# never writes one of its own - but the migrator moves it with the rest. PROVENANCE_MANIFEST_PRE_TILT is
+# deliberately absent: #196 postdates #159, so only a per-city store can hold one, never a flat root.
 LEGACY_ROOT_FILES = (CROP_RULE_MARKER, PROVENANCE_MANIFEST, PROVENANCE_MANIFEST_PRE_CITY)
 
 
@@ -1368,34 +1653,39 @@ def refuse_legacy_crop_root(crop_dir, city):
 
 class ProvenanceManifestHeaderError(Exception):
     """The provenance manifest on disk carries a header this run must not append under. See
-    set_aside_pre_city_manifest."""
+    set_aside_legacy_manifest."""
 
 
-# How much of the manifest's first line is read to judge its header. Either header is under 80 bytes; a
-# first line longer than this is not one of them.
+# How much of the manifest's first line is read to judge its header. Every known header is under 120 bytes;
+# a first line longer than this is not one of them.
 _MANIFEST_HEADER_READ_LIMIT = 4096
 
 
-def set_aside_pre_city_manifest(destination_dir):
-    """Check the manifest's header before anything is appended under it, and move a pre-city one aside.
+def set_aside_legacy_manifest(destination_dir):
+    """Check the manifest's header before anything is appended under it, and move an older one aside.
 
     ProvenanceManifest writes a header only into an EMPTY file, so it trusts whatever header a non-empty
-    one carries. When `city` became the first column (#153's stopgap for #159) that trust was wrong for
-    every manifest already on disk: seven-field rows appended under the six-field header read with every
-    column shifted by one, and nothing raised. So:
+    one carries. Each time the row grew a column that trust was wrong for every manifest already on disk:
+    when `city` became the first column (#153's stopgap for #159) seven-field rows appended under the
+    six-field header read with every column shifted by one, and when the tilt correction's four columns
+    were appended (#196) eleven-field rows would have landed under a seven-field header, with nothing
+    raised either time. So:
 
     * the current header (or no file, or an empty one, or a torn header with no newline at all - the
       manifest's own open rewrites that) passes untouched;
-    * the pre-city header (PRE_CITY_PROVENANCE_COLUMNS) is MOVED, whole, to PROVENANCE_MANIFEST_PRE_CITY,
-      and the run then starts a fresh manifest. Its rows are never rewritten or given a city: a root cut
-      before #159 may hold more than one city's crops, and a city written onto those rows would be a guess;
-    * anything else raises ProvenanceManifestHeaderError, and so does a pre-city manifest when the
-      set-aside name is already taken - never replaced, since that would lose the older file.
+    * a header in LEGACY_MANIFEST_HEADERS is MOVED, whole, to that entry's set-aside name, and the run
+      then starts a fresh manifest. Its rows are never rewritten: a pre-city row is never given a city (a
+      root cut before #159 may hold more than one city's crops, so a city written onto it would be a
+      guess), and a pre-tilt row is never padded with "not corrected" (a crop cut under #193 with
+      --tilt-correction may be among them, so that would be a guess too - its correction is unknown);
+    * anything else raises ProvenanceManifestHeaderError, and so does a legacy manifest whose set-aside
+      name is already taken - never replaced, since that would lose the older file.
 
     Called before write_rule_marker, which then finds no manifest and records a known gap if the store
-    holds crops - which it will, since the set-aside rows described crops that are still on disk.
+    holds crops - which it will, since the set-aside rows described crops that are still on disk - and
+    names the set-aside file under its LEGACY_MANIFEST_MARKER_KEYS key.
 
-    :return: PROVENANCE_MANIFEST_PRE_CITY if a manifest was moved aside, else None.
+    :return: the set-aside file's name if a manifest was moved aside, else None.
     :raises ProvenanceManifestHeaderError: before anything is written.
     """
     path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
@@ -1411,24 +1701,27 @@ def set_aside_pre_city_manifest(destination_dir):
     if not first_line.endswith(b'\n') and len(first_line) < _MANIFEST_HEADER_READ_LIMIT:
         # Empty, or a header torn before its newline: nothing after it can be a row, and the open cuts it.
         return None
-    if first_line != _csv_line(PRE_CITY_PROVENANCE_COLUMNS):
+    for columns, aside_name, lacked in LEGACY_MANIFEST_HEADERS:
+        if first_line == _csv_line(columns):
+            break
+    else:
         raise ProvenanceManifestHeaderError(
             "%s begins with a header this run does not recognise (%r; expected %s). Appending under it "
             "would misfile every column, so nothing has been cut. Move the file aside or restore it, then "
             "re-run." % (path, first_line[:200], ','.join(PROVENANCE_COLUMNS)))
-    aside = os.path.join(destination_dir, PROVENANCE_MANIFEST_PRE_CITY)
+    aside = os.path.join(destination_dir, aside_name)
     if os.path.lexists(aside):
         raise ProvenanceManifestHeaderError(
-            "%s still has the header written before rows carried a city, and %s already exists, so it "
+            "%s still has the header written before rows carried %s, and %s already exists, so it "
             "cannot be set aside without replacing that file. Nothing has been cut. Merge or rename one of "
-            "the two by hand, then re-run." % (path, aside))
+            "the two by hand, then re-run." % (path, lacked, aside))
     os.rename(path, aside)
-    message = ("%s had the header written before rows carried a city; moved it, unchanged, to %s and "
+    message = ("%s had the header written before rows carried %s; moved it, unchanged, to %s and "
                "started a new manifest. Crops listed only in the old file have no row in the new one."
-               % (path, PROVENANCE_MANIFEST_PRE_CITY))
+               % (path, lacked, aside_name))
     print(message)
     logging.warning('%s', message)
-    return PROVENANCE_MANIFEST_PRE_CITY
+    return aside_name
 
 
 class ProvenanceManifest:
@@ -1440,6 +1733,13 @@ class ProvenanceManifest:
     leave at most the crop in flight without its row (a torn row is cut back at the next open and recorded
     as a gap). Append-only: a row is never rewritten, so every re-cut appends a row and the last one for a
     label describes the file.
+
+    **Each row says whether its crop was tilt-corrected (#196)**: TILT_PROVENANCE_COLUMNS after
+    crop_rule_version - the pose record the correction used (`xml`/`npz`), the beta applied, and the
+    corrected centre the window was cut around, unrounded. A crop the run did not correct carries
+    TILT_PROVENANCE_OFF (`none`, `0.0`, blank, blank). `none` means "this run did not correct it"; a crop
+    with NO row here (listed only in a set-aside manifest, or cut before the manifest existed) is unknown,
+    not uncorrected.
 
     One CropRunner per store: nothing locks the manifest, and a second run's first open would cut this
     run's in-flight row as torn.
@@ -1479,6 +1779,9 @@ class ProvenanceManifest:
         self.sizing_rule = sizing_rule
         self.path = os.path.join(destination_dir, PROVENANCE_MANIFEST)
         self._file = None
+        # Rows this run handed to the file whole: after a failed close, each may not have landed (#200).
+        self.rows_written = 0
+        self.closed = False
         self.torn_rows_cut = int(self._open(first=True))
 
     def _open(self, first=False):
@@ -1501,7 +1804,7 @@ class ProvenanceManifest:
                     # A torn HEADER (keep == 0) cost no crop its row; anything after a header did. A tear
                     # a later reopen finds is this run's own failed append, already counted unrecorded.
                     if keep and first:
-                        _record_manifest_gap(os.path.dirname(self.path))
+                        _record_manifest_gap(os.path.dirname(self.path), 1)
                         cut_row = True
                     f.truncate(keep)
         handle = open(self.path, 'ab', buffering=0)
@@ -1514,8 +1817,11 @@ class ProvenanceManifest:
         self._file = handle
         return cut_row
 
-    def record(self, label_id, pano_id, provenance):
-        """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order.
+    def record(self, label_id, pano_id, provenance, *, tilt):
+        """Append one crop's row. `provenance` is PROVENANCE_FIELDS' values, in order; `tilt` is
+        TILT_PROVENANCE_COLUMNS' values (#196) - TILT_PROVENANCE_OFF for a crop this run did not correct. `tilt`
+        is a required keyword (#200 review): a default would let a caller that forgets it record a corrected
+        crop as `none`, which no width check can catch.
 
         Raises if the row did not reach the file; the handle is dropped first, so nothing of the row
         survives to be written later, and then reopened at once, which cuts any part of the row that did
@@ -1523,11 +1829,18 @@ class ProvenanceManifest:
         tear left by the run's LAST append used to be cut by the next run's first open and reported as a
         previous run killed mid-append, about a row this run had already reported as unrecorded. The
         reopen is best-effort: if it fails, the handle stays dropped and the next call reopens instead."""
-        line = _csv_line((self.city, label_id, pano_id) + tuple(provenance) + (self.sizing_rule,))
+        tilt = tuple(tilt)
+        # A short tuple would shift no column - it would leave the last ones off, and a reader would see a
+        # short row - but a long one would put cells under no header. Either is a caller's bug.
+        if len(tilt) != len(TILT_PROVENANCE_COLUMNS):
+            raise ValueError("tilt provenance needs %d values (%s), got %r"
+                             % (len(TILT_PROVENANCE_COLUMNS), ', '.join(TILT_PROVENANCE_COLUMNS), tilt))
+        line = _csv_line((self.city, label_id, pano_id) + tuple(provenance) + (self.sizing_rule,) + tilt)
         if self._file is None:
             self._open()
         try:
             _write_all(self._file, line)
+            self.rows_written += 1
         except BaseException:
             _close_quietly(self._file)
             self._file = None
@@ -1538,7 +1851,22 @@ class ProvenanceManifest:
             raise
 
     def close(self):
+        """Close the handle; a second call does nothing. No handle on the first call means a failed
+        append's reopen also failed, and no later row reopened it, so the torn fragment may still be on
+        disk: cut it now with one more reopen (#200), best-effort like record()'s. This run has already
+        counted that crop unrecorded, and the next run's first open would count the same crop again as a
+        torn row. If this reopen fails too, the fragment stays and is counted twice - the count is then
+        one high, never low."""
+        if self.closed:
+            return
+        self.closed = True
         handle, self._file = self._file, None
+        if handle is None:
+            try:
+                self._open()
+            except Exception:
+                return
+            handle, self._file = self._file, None
         if handle is not None:
             handle.close()
 
@@ -1609,6 +1937,12 @@ RULE_MARKER_CONSTANT_KEYS = {
            'crop_max_stored_width') + _TILT_BETA_KEYS,
     'v3': ('crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h', 'crop_max_stored_width',
            'v3_camera_height_m', 'v3_blend_deg', 'v3_dist_cap_m', 'v3_context_width_m') + _TILT_BETA_KEYS,
+    # v3's, plus the depth lookup's (#180): its fallback IS v3, so every v3 constant shapes its crops too.
+    'v3-depth': ('crop_min_fov_deg', 'crop_max_fov_deg', 'crop_aspect_w_over_h', 'crop_max_stored_width',
+                 'v3_camera_height_m', 'v3_blend_deg', 'v3_dist_cap_m', 'v3_context_width_m',
+                 'v3_depth_min_valid_cells', 'v3_depth_min_m', 'v3_depth_min_ground_verticality',
+                 'v3_depth_min_format_version', 'v3_depth_lookup_pixel', 'v3_depth_lookup_beta')
+                + _TILT_BETA_KEYS,
 }
 
 
@@ -1635,7 +1969,15 @@ def _rule_constants(tilt_correction=False):
             'v3_camera_height_m': V3_CAMERA_HEIGHT_M,
             'v3_blend_deg': V3_BLEND_DEG,
             'v3_dist_cap_m': V3_DIST_CAP_M,
-            'v3_context_width_m': V3_CONTEXT_WIDTH_M})
+            'v3_context_width_m': V3_CONTEXT_WIDTH_M,
+            # Rule v3-depth's (#180). The lookup beta is the npz pose record's tilt beta whatever
+            # --tilt-correction says: it places the depth sample, not the window, so it is recorded on its own.
+            'v3_depth_min_valid_cells': V3_DEPTH_MIN_VALID_CELLS,
+            'v3_depth_min_m': V3_DEPTH_MIN_M,
+            'v3_depth_min_ground_verticality': V3_DEPTH_MIN_GROUND_VERTICALITY,
+            'v3_depth_min_format_version': V3_DEPTH_MIN_FORMAT_VERSION,
+            'v3_depth_lookup_pixel': V3_DEPTH_LOOKUP_PIXEL,
+            'v3_depth_lookup_beta': float(TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_NPZ])})
     return constants
 
 
@@ -1698,6 +2040,11 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
     re-derivation that could would be a walk of the whole store. So the flag is a record of what runs
     reported, never a coverage check - a run killed between a crop's rename and its row reports nothing.
 
+    Beside the flag, MANIFEST_KNOWN_GAPS counts the crops runs have known to lose their row (#200): 0 when
+    the manifest is started - even over crops already on disk, which turn the flag false but cannot make the
+    last-row filter wrong - then carried forward and added to by _record_manifest_gap. A count it cannot read
+    as one is carried as null.
+
     It records the city the store belongs to (check_store_city, which runs before this and refuses a
     different one). `city` None - a caller below main() that has none to give - carries the recorded city
     forward rather than erasing it, since erasing it would re-open the store to the next city.
@@ -1726,17 +2073,25 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
         marker = {}
     if city is None and isinstance(marker.get('city'), str):
         city = marker['city']
-    # Named once a pre-city manifest has been set aside (#159 step 1), and carried forward after that.
-    pre_city = marker.get(MANIFEST_PRE_CITY)
-    if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST_PRE_CITY)):
-        pre_city = PROVENANCE_MANIFEST_PRE_CITY
+    # Each set-aside manifest is named once it exists - pre-city (#159 step 1), pre-tilt (#196) - and carried
+    # forward after that, so renaming the file away later does not erase the record that rows were moved.
+    set_aside = {}
+    for _, aside_name, _ in LEGACY_MANIFEST_HEADERS:
+        key = LEGACY_MANIFEST_MARKER_KEYS[aside_name]
+        set_aside[key] = marker.get(key)
+        if os.path.exists(os.path.join(destination_dir, aside_name)):
+            set_aside[key] = aside_name
 
     if os.path.exists(os.path.join(destination_dir, PROVENANCE_MANIFEST)):
         manifest_started_under = marker.get('provenance_manifest_started_under')
         no_known_gap = marker.get(MANIFEST_NO_KNOWN_GAP)
+        known_gaps = _gap_count(marker.get(MANIFEST_KNOWN_GAPS))
     else:
         manifest_started_under = sizing_rule
         no_known_gap = not _store_holds_crops(destination_dir)
+        # A new manifest has lost no row yet. Crops already on disk turn the flag false but are not counted:
+        # they have no row in it, so the last-row filter leaves them out rather than misreading them.
+        known_gaps = 0
 
     running = _rule_constants(tilt_correction)
     recorded, unreadable = _read_rule_marker(path)
@@ -1822,7 +2177,8 @@ def write_rule_marker(destination_dir, force=False, city=None, sizing_rule=CROP_
                            city=city,
                            provenance_manifest=PROVENANCE_MANIFEST,
                            provenance_manifest_started_under=manifest_started_under,
-                           **{MANIFEST_NO_KNOWN_GAP: no_known_gap, MANIFEST_PRE_CITY: pre_city}),
+                           **{MANIFEST_NO_KNOWN_GAP: no_known_gap, MANIFEST_KNOWN_GAPS: known_gaps},
+                           **set_aside),
                       f, indent=1, sort_keys=True)
     return previous
 
@@ -1915,12 +2271,17 @@ def _keep_unreadable_marker(path):
     return os.path.basename(kept)
 
 
-def _record_manifest_gap(destination_dir):
-    """Turn crop_rule.json's MANIFEST_NO_KNOWN_GAP false, keeping every other key (#153 M3).
+def _record_manifest_gap(destination_dir, gaps):
+    """Turn crop_rule.json's MANIFEST_NO_KNOWN_GAP false and add `gaps` to MANIFEST_KNOWN_GAPS, keeping every
+    other key (#153 M3, #200).
 
-    Called at the end of a run that knows it left a crop without a row, and by the manifest's first open
-    just before it cuts a previous run's torn row (#153 final F1). Rewritten atomically like the
-    marker itself.
+    Called at the end of a run that knows it left crops without a row, and by the manifest's first open
+    just before it cuts a previous run's torn row (#153 final F1). Each caller passes only the crops it
+    found itself, so no crop is counted twice: the open counts the torn row (1), the end of the run its own
+    failed appends, a row still in flight when it was interrupted, and, after a failed close, the rows it
+    appended - each of which may not have landed - and never the torn row again. A count the marker does not hold (no key, a null, a value that is not a
+    count - _gap_count), or an absent marker, stays null: a gap on top of an unknown total is still an
+    unknown total. Rewritten atomically like the marker itself.
 
     An ABSENT marker is rebuilt around the one key: there is nothing on disk to lose, and
     write_rule_marker restores the rule keys next run. A marker that exists but cannot be read - a
@@ -1942,6 +2303,8 @@ def _record_manifest_gap(destination_dir):
         raise ValueError("%s holds %s, not a JSON object; left as it is"
                          % (CROP_RULE_MARKER, type(marker).__name__))
     marker[MANIFEST_NO_KNOWN_GAP] = False
+    recorded = _gap_count(marker.get(MANIFEST_KNOWN_GAPS))
+    marker[MANIFEST_KNOWN_GAPS] = None if recorded is None else recorded + gaps
     with atomic_output_path(path) as tmp_path:
         with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(marker, f, indent=1, sort_keys=True)
@@ -1961,7 +2324,7 @@ class CropWindowMostlyBlackError(Exception):
 
 
 def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, sizing_rule=CROP_RULE_VERSION,
-                     centre=None):
+                     centre=None, distance_m=None):
     """
     Makes a crop around the object of interest and saves it atomically.
 
@@ -1987,6 +2350,8 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, siz
     :param centre: (x, y) to centre the window on - the tilt-corrected point (#191) - instead of
                    (pano_x, pano_y). The window is still SIZED at the stored pano_y, and the mark goes at
                    the centre, which is where the label is in the stored tiles.
+    :param distance_m: the label's distance under sizing rule v3-depth (#180), which requires it; refused by
+                       every other rule. bulk_extract_crops resolves it with label_distance.
     :return: the CropBox that was cut, so the caller can count a de-centred (shifted) crop without
              recomputing the geometry.
     :raises CropWindowMostlyBlackError: the window is mostly black; nothing was written.
@@ -2002,7 +2367,7 @@ def make_single_crop(pano, pano_x, pano_y, output_filename, draw_mark=False, siz
         # v3's depression is below the gravity horizon, which is what the stored y encodes.
         centre_x, centre_y = (pano_x, pano_y) if centre is None else centre
         box = compute_crop_box(centre_x, centre_y,
-                               crop_window_width(pano_y, pano_width, pano_height, sizing_rule),
+                               crop_window_width(pano_y, pano_width, pano_height, sizing_rule, distance_m),
                                pano_width, pano_height)
         window = extract_crop(pano, box.left, box.top, box.width, box.height)
         fraction = black_fraction(window)
@@ -2208,6 +2573,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     destination_dir is ONE city's store - main() passes <crop-dir>/<city>/ (#159) - and `city` is that
     city, recorded in its marker and on every manifest row. A caller below main() hands a store directly.
 
+    Every crop cut gets a ProvenanceManifest row, which since #196 also says whether this run corrected it
+    for tilt: `pose_source` (`xml`/`npz`, or `none` without --tilt-correction), `tilt_beta` (`0.0` when
+    not corrected) and the corrected centre (blank when not corrected). A no_pose or stale_kept label
+    gets no row, so for a store cut more than once the LAST row per (city, label_id) describes the crop
+    on disk. A manifest under an older header is set aside first (set_aside_legacy_manifest).
+
     Failure taxonomy: nothing here is fatal. A missing pano image is counted as missing_pano; a corrupt
     pano, malformed row, or failed write is counted as an error and logged; both leave the remaining labels
     running (#48 - one truncated JPEG used to kill a job tens of thousands of labels in). A pano whose header
@@ -2257,6 +2628,9 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
 
     counts = dict.fromkeys(DISJOINT_OUTCOMES + COUNT_ANNOTATIONS, 0)
     counts['total'] = len(labels_to_crop)
+    if sizing_rule == 'v3-depth':
+        # Only under v3-depth (#180), so every other rule returns the dict it always returned.
+        counts.update(dict.fromkeys(DISTANCE_SOURCE_COUNTS, 0))
 
     # Before the first write of any kind - the makedirs included - because what it protects cannot be
     # regenerated.
@@ -2269,7 +2643,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     os.makedirs(destination_dir, exist_ok=True)
     # Before the marker, so a refusal leaves it untouched, and so the marker sees the manifest it will
     # actually be appending to (#159 step 1).
-    set_aside_pre_city_manifest(destination_dir)
+    set_aside_legacy_manifest(destination_dir)
     write_rule_marker(destination_dir, force=force, city=city, sizing_rule=sizing_rule,
                       tilt_correction=tilt_correction)
 
@@ -2288,6 +2662,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
     # Opened before the loop, so a run that cuts nothing still leaves the file (and its header) behind.
     manifest = ProvenanceManifest(destination_dir, city, sizing_rule)
     unrecorded = 0
+    # True from a crop landing until its row is recorded or counted unrecorded (#200 second review): a
+    # KeyboardInterrupt in that window is not an Exception, so it skips the count below, and on a --force
+    # re-cut it leaves the previous row last. The finally counts it.
+    row_pending = False
     # The stale_kept labels the content check withheld, for the stale_kept summary's addendum (#164).
     stale_black_content = 0
     # Likewise for the no_pose skips (#191); and the crops the correction cut, per pose record.
@@ -2378,6 +2756,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 pose_looked_up = False
                 pose_reason = pose_error = None
                 no_pose_labels = pose_error_labels = 0
+                # Rule v3-depth's artifact (#180), read like the pose: lazily, once per pano, only for a label
+                # about to be cut. load_depth_grid never raises; it turns any file into a grid or a reason.
+                depth_looked_up = False
+                depth_grid = depth_reason = None
                 for pano_x, pano_y, label_type, label_id, meta_dims, provenance in labels:
                     processed += 1
                     print("Cropping label %d of %d (pano %s)" % (processed, counts['total'], pano_id))
@@ -2496,10 +2878,26 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                             os.makedirs(destination_folder, exist_ok=True)
                             made_dirs.add(destination_folder)
                         # centre only when corrected, so a run without the flag makes the call it always
-                        # made (#191).
-                        corrected_centre = {} if pose is None else {'centre': (centre_x, centre_y)}
+                        # made (#191); distance_m only under v3-depth (#180), for the same reason.
+                        extra = {} if pose is None else {'centre': (centre_x, centre_y)}
+                        estimate = None
+                        if sizing_rule == 'v3-depth':
+                            if not depth_looked_up:
+                                depth_looked_up = True
+                                try:
+                                    depth_grid, depth_reason = load_depth_grid(
+                                        os.path.splitext(pano_img_path)[0] + DEPTH_ARTIFACT_SUFFIX)
+                                except Exception:
+                                    # It is documented never to raise; if it does anyway, the artifact is
+                                    # unreadable for every label on the pano, never silently depth (#211).
+                                    depth_grid, depth_reason = None, 'unreadable'
+                            # Inside this try: a raise here is a fault of ours, one counted error like a failed
+                            # write, and the run goes on.
+                            estimate = label_distance(pano_x, pano_y, pano.size[0], pano.size[1], depth_grid,
+                                                      depth_reason)
+                            extra['distance_m'] = estimate.distance_m
                         box = make_single_crop(pano, pano_x, pano_y, crop_destination,
-                                               draw_mark=mark_label, sizing_rule=sizing_rule, **corrected_centre)
+                                               draw_mark=mark_label, sizing_rule=sizing_rule, **extra)
                     except CropWindowMostlyBlackError as e:
                         # Not an error (#164): the pano on disk holds black where imagery should be, and
                         # nothing was written, so a re-run cuts this label once the pano is repaired.
@@ -2518,23 +2916,35 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         budget.warning('crop_failed', "Failed to crop label %d on pano %s: %s",
                                        label_id, pano_id, e)
                         continue
+                    row_pending = True
                     counts['success'] += 1
                     if existed:
                         counts['recut'] += 1
-                    if pose is not None:
+                    # A beta of 0 is the identity, so that crop is not counted as corrected (#200 review
+                    # finding 1) - the same test manifest_row_is_tilt_corrected applies to its row.
+                    if pose is not None and beta != 0:
                         corrected_by_source[pose.source] += 1
+                    if estimate is not None:
+                        # Counted on the success, so the sources partition success (DISTANCE_SOURCE_COUNTS).
+                        counts['distance_depth' if estimate.source == DISTANCE_SOURCE_DEPTH
+                               else 'distance_blend_' + estimate.reason] += 1
 
                     # After the crop is on disk and counted, never instead of it (#111). A failed append is
                     # NOT an error: the crop is the resume marker, so a re-run skips it and could never write
                     # the row - counting it would break "errors retry next run" and put one label in two
                     # buckets. It is logged per label and totalled in the summary instead.
+                    # The row says whether, and how, this crop was corrected (#196): the window's own centre,
+                    # unrounded, so the row and the crop cannot disagree.
+                    tilt = (TILT_PROVENANCE_OFF if pose is None
+                            else (pose.source, str(float(beta)), str(centre_x), str(centre_y)))
                     try:
-                        manifest.record(label_id, pano_id, provenance)
+                        manifest.record(label_id, pano_id, provenance, tilt=tilt)
                     except Exception as e:
                         unrecorded += 1
                         budget.warning('provenance_unrecorded',
                                        "Label %d on pano %s: cropped, but its provenance row was not written "
                                        "to %s (%s)", label_id, pano_id, PROVENANCE_MANIFEST, e)
+                    row_pending = False
                     if box.shifted:
                         # The crop is real imagery containing the label, but the label is not at its
                         # centre. Counted rather than merely logged: a consumer that assumes centring
@@ -2550,6 +2960,12 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                         logging.info('%s.jpg %s %s %s -> %s %s (pitch %s, roll %s from %s; beta %s)',
                                      label_id, pano_id, pano_x, pano_y, centre_x, centre_y, pose.pitch_deg,
                                      pose.roll_deg, pose.source, beta)
+                    if estimate is not None:
+                        # The per-crop record of which distance sized it (#180), until the provenance
+                        # manifest carries a column for it - a separate line, so the one above is unchanged.
+                        logging.info('%s.jpg %s distance %.3f m from %s', label_id, pano_id, estimate.distance_m,
+                                     estimate.source if estimate.reason is None
+                                     else '%s (%s)' % (estimate.source, estimate.reason))
                 if no_pose_labels:
                     budget.warning('no_pose', "Skipped %d labels on pano %s: no pose for the tilt correction (%s)",
                                    no_pose_labels, pano_id, pose_reason)
@@ -2580,14 +2996,21 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
             print(message)
         # Also in the finally, so a run killed after losing a row still says so in the marker. Each of
         # the two is a crop on disk this run knows has no row, or may not (a failed close). A torn row
-        # found at open is the third, and was recorded before it was cut (ProvenanceManifest._open).
-        if unrecorded or close_failure is not None:
+        # found at open is the third, and was recorded before it was cut (ProvenanceManifest._open), so it
+        # is not counted here again (#200). After a failed close every row this run appended may be lost, so
+        # each is counted: the count bounds how far off the last-row filter can be.
+        # A row in flight when an interrupt arrived is one more (#200 second review); if its write had in
+        # fact landed, the count is one high, never low. A run killed outright runs no finally and reports
+        # nothing - the count is what runs reported, not a coverage check.
+        if unrecorded or row_pending or close_failure is not None:
             try:
-                _record_manifest_gap(destination_dir)
+                _record_manifest_gap(destination_dir, unrecorded + int(row_pending)
+                                     + (manifest.rows_written if close_failure is not None else 0))
             except Exception as e:
-                message = ("CropRunner could not record the gap in %s (%s): its %s still reads as it did "
-                           "when this run started, but this run left crops without a row in %s."
-                           % (CROP_RULE_MARKER, e, MANIFEST_NO_KNOWN_GAP, PROVENANCE_MANIFEST))
+                message = ("CropRunner could not record the gap in %s (%s): its %s and %s still read as they "
+                           "did when this run started, but this run left crops without a row in %s."
+                           % (CROP_RULE_MARKER, e, MANIFEST_NO_KNOWN_GAP, MANIFEST_KNOWN_GAPS,
+                              PROVENANCE_MANIFEST))
                 logging.error('%s', message)
                 print(message)
 
@@ -2606,6 +3029,18 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                                             TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_XML],
                                             corrected_by_source[pano_pose.POSE_SOURCE_NPZ],
                                             TILT_BETA_BY_POSE_SOURCE[pano_pose.POSE_SOURCE_NPZ]))
+        logging.info('%s', message)
+        print(message)
+    if sizing_rule == 'v3-depth':
+        # Both channels, and only under v3-depth, so every other run prints what it always did. Every
+        # fallback is named with its count, in DEPTH_FALLBACK_REASONS order; they and the depth count sum to
+        # the crops extracted on the next line.
+        fallbacks = [(reason, counts['distance_blend_' + reason]) for reason in DEPTH_FALLBACK_REASONS
+                     if counts['distance_blend_' + reason]]
+        message = ("Distance source (v3-depth): %d crops sized from the depth artifact, %d from the blend "
+                   "fallback%s." % (counts['distance_depth'], sum(n for _, n in fallbacks),
+                                    ' (%s)' % ', '.join('%s %d' % item for item in fallbacks) if fallbacks
+                                    else ''))
         logging.info('%s', message)
         print(message)
     print("%d crops extracted, %d already existed, %d skipped because the panorama image was missing, "
