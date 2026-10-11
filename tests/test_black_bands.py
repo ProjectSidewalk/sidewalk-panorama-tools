@@ -235,6 +235,14 @@ class TestTheNearBlackMeasurement:
         assert common.edge_black_bands(image) == common.EdgeBands(0.0, 0.0)
         assert self.near_of(image) == common.EdgeBands(96 / 512.0, 0.0)
 
+    def test_a_band_exactly_at_the_ceiling_is_near_black(self):
+        """luma 2 IS near black (<=, the ceiling is inclusive): the `[:max_luma]` mutant survives the RGB 1
+        and RGB 3 cases either side of it and dies here."""
+        image = framed(1024, 512, bottom=96)
+        image.paste(Image.new('RGB', (1024, 96), (2, 2, 2)), (0, 512 - 96))
+
+        assert self.near_of(image) == common.EdgeBands(96 / 512.0, 0.0)
+
     def test_a_band_of_rgb_three_is_neither(self):
         image = framed(1024, 512, bottom=96)
         image.paste(Image.new('RGB', (1024, 96), (3, 3, 3)), (0, 512 - 96))
