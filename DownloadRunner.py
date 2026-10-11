@@ -56,9 +56,13 @@ CONDITION_UNSUPPORTED_SOURCE = 'unsupported-source'
 CONDITION_PANO_LIST_EMPTY = 'pano-list-empty'
 CONDITION_IMAGES_NO_SUCCESS = 'images-no-success'
 CONDITION_PANO_SCHEMA_DRIFT = 'pano-schema-drift'
+# One or more panos refused with gsv.FrameDisagreementError (#185 Part 1). No floor: 0 of 651 live labelled
+# panos disagreed in the 2026-08-09 census, so one refusal is news (Jon, 2026-10-06, Q2). The count also goes
+# into the run summary as `frame_refusals`, and deliberately not into log.csv (Q1; #182 owns any widening).
+CONDITION_FRAME_DISAGREEMENT = 'frame-disagreement'
 RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
     CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
-    CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT})
+    CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT, CONDITION_FRAME_DISAGREEMENT})
 
 # `images-no-success` needs at least this many raised attempts and not one answer - or a budget stop with
 # nothing but raises behind it (see download_panorama_images). A floor, because one or two transient
@@ -86,16 +90,23 @@ IMAGE_NO_SUCCESS_MIN_RAISED = 10
 IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS = 60.0
 
 # The keys every /adminapi/panos record must carry, and the fraction of records lacking one that makes the
-# list a schema drift rather than a few odd rows (D8, #161). A missing width or height makes
-# gsv.resolve_zoom_and_dims return None before any request, which download_single_pano turns into a
-# PERMANENT failure verdict - so a renamed field would write off every new GSV pano in one night, fleet-wide.
-# A missing KEY counts and a blank VALUE (None) does not - but over /adminapi/panos the two are one shape:
-# the endpoint serialises the dims with Play's writeNullable, which OMITS the key for a null (seattle served
-# 106 of 183,927 records that way, 2026-09). Only the -c intake produces a blank value. So per record a null
-# cannot be told from a rename, and the FRACTION is what separates a few dimensionless panos from a schema.
-# `pano_id` is belt-and-braces: _normalize_pano_records has already dropped every record without one (D9).
-INTAKE_REQUIRED_KEYS = ('pano_id', 'source', 'width', 'height')
+# list a schema drift rather than a few odd rows (D8, #161). A missing KEY counts and a blank VALUE (None)
+# does not. `pano_id` is belt-and-braces: _normalize_pano_records has already dropped every record without one
+# (D9). A renamed `source` would drop every pano as unsupported, which is why it stops the run.
+INTAKE_REQUIRED_KEYS = ('pano_id', 'source')
 INTAKE_SCHEMA_MIN_FRACTION = 0.9
+
+# The frame keys, which since #184 are REPORTED at the same fraction and no longer stop the run. D8 shipped
+# with them in INTAKE_REQUIRED_KEYS because a missing width/height made download_single_pano a PERMANENT
+# downloaded=0 at zero requests, so a renamed field would have written off every new GSV pano in a night. Now
+# a dimensionless GSV pano takes its frame from photometa, one request, and nothing is written off without
+# asking Google. Over /adminapi/panos a null and a rename are ONE shape - Play's writeNullable omits the key for
+# a null (seattle served 106 of 183,927 records that way, 2026-09), and only the -c intake produces a blank
+# value - and a whole city can be dimensionless at the source: washington-dc served 78,300 of 78,301 records
+# without dims (2026-10-06, SidewalkWebpage#5667), so a stop here kept DC from being scraped at all and failed
+# every night. The fraction cannot tell DC from a rename; what a rename now costs is one photometa request
+# per new GSV pano and #74's app-vs-Google frame check, not the panos, and that is what the report says.
+INTAKE_FRAME_KEYS = ('width', 'height')
 
 
 def build_parser():
@@ -555,7 +566,7 @@ STOP_BLOCKED = 'blocked'
 
 def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
                              tripped_sources=None, stop_reasons=None, block_latch_path=None,
-                             pace_state_path=None):
+                             pace_state_path=None, image_stats=None):
     """Download every eligible pano, ledgering each permanent verdict, and return the log.csv counters.
 
     @param tripped_sources An optional set the phase adds each breaker-tripped source to - #113's
@@ -573,6 +584,12 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         depth pace (gsv.record_google_refusal). None falls through gsv.image_host_state_paths - the module
         paths DownloadRunner.run sets, then the host defaults - and photometa's refusals (#74) are held to the
         same pair for the loop's duration, so the two can never write different files.
+    @param image_stats An optional dict the phase sets 'raised' in on its way out: this run's attempts that
+        RAISED - unledgered, so retried next run; mostly transient, though some (a retired Mapillary image)
+        raise on every run - which is log.csv field 20 (#182). Exactly the count `images-no-success` reads: a
+        GSV push-back is a raise, a FrameDisagreementError is not (Google answered), and a skip is neither. Set
+        only at the end, so a phase that crashes leaves it unset and the field blank. An out-parameter for
+        tripped_sources' reason: the return tuple IS fields 7-11.
     """
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
 
@@ -630,7 +647,13 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # For `images-no-success` (#161): attempts the source answered with a verdict, and attempts that raised.
     # A skip is neither - it never contacted the source.
     answered, raised = 0, 0
+    # Panos refused for a frame disagreement (#185), and the first one's text for the condition's detail.
+    frame_refusals, first_frame_refusal = 0, None
     raise_seconds = 0.0     # monotonic seconds spent in attempts that raised, for the budget arm's duration gate
+    # #184: dimensionless GSV panos, counted by gsv on its per-run memory; read as a difference so a caller that
+    # runs the phase twice in one process (the tests, a second city in-process) reports only this phase's.
+    photometa_run = gsv._photometa_run
+    frames_before = photometa_run.frames_from_photometa, photometa_run.frames_unknown
 
     with ledger, gsv.scoped_image_host_state(latch_path, pace_state_path):
         for pano_info in candidates:
@@ -684,6 +707,12 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 downloaded = None
                 result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
                 frame_refused = isinstance(e, gsv.FrameDisagreementError)
+                if frame_refused:
+                    # The one counting path for every arm that refuses a frame (#185): photometa's, the
+                    # probe's, and any later check that raises the same exception.
+                    frame_refusals += 1
+                    if first_frame_refusal is None:
+                        first_frame_refusal = str(e)
                 pushback = gsv.pushback_reason(e) if source == 'gsv' else None
                 if pushback is not None:
                     # The ONE line a refused pano gets (#162): fetch_pano_image raises a refusal without
@@ -841,6 +870,32 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         logging.error("%s", summary)
         print(summary)
 
+    if frame_refusals:
+        # Both channels, the repo's rule for a warning that matters. Each refusal already printed its own
+        # line; this is the count, which before #185 only a grep of scrape.log could produce. Worded WITHOUT the
+        # phrase "frame disagreement" and logged below ERROR, because `grep "frame disagreement" scrape.log`
+        # counts refusals and scrape.log carries one ERROR per refused pano (#207 review, finding 1).
+        message = ("IMAGEDOWNLOAD: WARNING - %d pano(s) refused (frame-disagreement condition); not ledgered, "
+                   "retried next run. See docs/ops.md#a-gsv-pano-refused-for-a-frame-disagreement"
+                   % (frame_refusals,))
+        logging.warning("%s", message)
+        print(message)
+        note_condition(stop_reasons, CONDITION_FRAME_DISAGREEMENT,
+                       '%d pano(s) refused; first: %s' % (frame_refusals, first_frame_refusal))
+        if stop_reasons is not None:
+            stop_reasons['frame_refusals'] = frame_refusals
+    framed = photometa_run.frames_from_photometa - frames_before[0]
+    unframed = photometa_run.frames_unknown - frames_before[1]
+    if framed or unframed:
+        # Both channels (#184's acceptance criterion): the pano list had no width/height for these, so their
+        # frame is Google's, not the app's - which is what the cropper reads labels against, and which no
+        # frame check can compare. Information, not the night's alarm, so no WARNING token.
+        summary = ("IMAGEDOWNLOAD: %d GSV pano(s) took their frame from photometa (no width/height in the pano "
+                   "list); %d GSV pano(s) had no frame tonight (photometa unanswered, or not found while the "
+                   "tile probe saw imagery) and retry next run." % (framed, unframed))
+        logging.info("%s", summary)
+        print(summary)
+
     mean_raise_seconds = raise_seconds / raised if raised else 0.0
     budget_spent_on_raises = (raised >= 1 and mean_raise_seconds >= IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS
                               and stop_reasons is not None
@@ -862,6 +917,11 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         print(message)
         note_condition(stop_reasons, CONDITION_IMAGES_NO_SUCCESS,
                        '%d attempts raised, 0 answered, %.0f s per raise' % (raised, mean_raise_seconds))
+
+    if image_stats is not None:
+        # Field 20 (#182). Here, not seeded before the loop: a phase that never got this far must leave the
+        # field blank, not claim a night with nothing raised.
+        image_stats['raised'] = raised
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",
@@ -965,7 +1025,7 @@ def _partition_for_pull(storage_path, pano_ids, suffix, prefix):
 
 
 def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotonic=None, max_runtime_minutes=None,
-                          tripped_sources=None, stop_reasons=None):
+                          tripped_sources=None, stop_reasons=None, image_stats=None):
     """Store-mode twin of download_panorama_images (#30): copy each pano off the Project Sidewalk store.
 
     Returns the same 5-tuple - log.csv fields 7-11 - with fallback_success fixed at 0, and seeds its counters
@@ -982,6 +1042,10 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
     A failed SESSION stops the phase and adds store_sftp.STORE_SOURCE_NAME to tripped_sources (see
     _pull_in_batches). Candidates are shuffled before chunking, the image loop's reasoning: an absent pano is
     unledgered, so a stable order would put the same absent block in the first batch every night.
+
+    image_stats, as download_panorama_images takes it, gets 'raised' = tonight's unledgered failures (absent,
+    truncated, unplaced, unsafe id): with no permanent verdict here, that is the unledgered set (#182) - mostly
+    transient, though an unsafe id fails every night for as long as it is in the list.
     """
     tripped = set() if tripped_sources is None else tripped_sources
     ledger = ImageLedger(storage_path)
@@ -1039,6 +1103,8 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
         print(message)
     logging.debug("STOREPULL: Final result: Completed %d of %d (%d pulled, %d failed, %d skipped)",
                   total_completed, total_panos, success_count, fail_count, skipped_count)
+    if image_stats is not None:
+        image_stats['raised'] = len(unsafe) + sum(outcome_counts.values())
     return success_count, 0, fail_count, skipped_count, total_completed
 
 
@@ -1081,8 +1147,9 @@ def pull_depth_from_store(storage_path, gsv_pano_infos, settings, run_start_mono
 
 
 # Fields per log.csv row: timestamp, 5 xml-stub, 6 image, 5 depth, 1 total duration, then the depth corpus
-# size (#43). Positional, parsed by our log-analyzer tooling. The full column table lives in docs/ops.md.
-LOG_CSV_FIELD_COUNT = 19
+# size (#43) and tonight's raised image attempts (#182). Positional, parsed by our log-analyzer tooling. The full
+# column table lives in docs/ops.md.
+LOG_CSV_FIELD_COUNT = 20
 
 # 1-based position of the depth corpus size - the number of GSV panos the depth phase was given. It is the one
 # number the analyzer cannot derive from the other 18: field 16 says how many panos are resolved, and only this
@@ -1094,6 +1161,14 @@ LOG_CSV_FIELD_COUNT = 19
 # instant before the count at the top of run_scraper_and_log_results, whose finally writes '' rather than a 0
 # that would read as an empty city.
 DEPTH_ELIGIBLE_FIELD = 19
+
+# 1-based position of this run's image attempts that RAISED - unledgered, so retried next run; mostly transient,
+# though some (a retired Mapillary image) raise on every run. It is the `raised` counter download_panorama_images
+# keeps for `images-no-success`, and the one per-run figure field 9 cannot give (field 9 is prior + tonight,
+# permanent + transient, so a steady set of transient failures adds the same number every night and nothing
+# separates it out; #182). Appended last so no position moves. Blank, never 0, when the image phase did not
+# finish: the phase fills it only on its way out.
+IMAGE_RAISED_FIELD = 20
 
 
 def log_timestamp(now=None):
@@ -1164,7 +1239,9 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     completed phase's counts (a failure in the depth phase must not discard what the image phase downloaded),
     while the phases that never finished stay visibly blank rather than turning into fake zeros (#49). The
     one field that is not a phase result - the depth corpus size, DEPTH_ELIGIBLE_FIELD - is known up front
-    and lands on every row that gets this far, crashed or not. The try opens before the budget split, whose
+    and lands on every row that gets this far, crashed or not. The last, IMAGE_RAISED_FIELD (#182), is the
+    image phase's own report and is written whenever that phase finished, even if the depth phase then
+    crashed. The try opens before the budget split, whose
     depth-ledger read is the slowest thing ahead of the phases, so a stop there still writes the row.
 
     @param storage_location Root of the pano store (log.csv and the ledgers live here).
@@ -1183,8 +1260,9 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
         store_sftp.STORE_SOURCE_NAME when a store-mode session failed (#30), the same alarm for the same
         reason: the run stopped trusting where its imagery comes from. It rides back rather than into
         log.csv: the row's fields are counts of work, parsed by position, and an alarm is not one - the exit
-        code already delivers it through scrape_queue and cron mail. (Field 19, the depth corpus size, IS a
-        count of work, which is why it went into the row and the breaker did not.)
+        code already delivers it through scrape_queue and cron mail. (Fields 19 and 20, the depth corpus size
+        and tonight's raised image attempts, ARE counts of work, which is why they went into the row and the
+        breaker did not.)
     """
     # The wall clock supplies the one thing it is good for - when this run happened, stamped with its offset
     # so a reader knows which clock that is (#101). Everything measuring an INTERVAL - the budgets (#51) and
@@ -1199,6 +1277,7 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
     # it is known must leave it blank, never claim the city has no GSV panos.
     fields = [log_timestamp(start_time)]
     depth_eligible = None
+    image_stats = {}     # field 20 (#182): filled by the image phase on its way out, so a crash leaves it blank
     tripped_sources = set()
     try:
         # Seeded before anything can stop: a key present and None means "this phase finished its list", which is
@@ -1208,8 +1287,9 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
             stop_reasons.setdefault('depth_stop', None)
 
         # Depth maps are GSV-only; the depth phase's view of the corpus is computed up front because the budget
-        # split below needs it too - and because its size is log.csv's last field (#43): the denominator every
-        # progress figure for the backfill needs, and the one number nothing else in the row carries.
+        # split below needs it too - and because its size is log.csv field 19, DEPTH_ELIGIBLE_FIELD (#43): the
+        # denominator every progress figure for the backfill needs, and the one number nothing else in the row
+        # carries.
         gsv_panos = [p for p in depth_pano_infos if p.get('source') == 'gsv']
         depth_eligible = len(gsv_panos)
 
@@ -1254,7 +1334,8 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
                                            run_start_monotonic=run_start_monotonic,
                                            max_runtime_minutes=image_max_runtime,
                                            tripped_sources=tripped_sources,
-                                           stop_reasons=stop_reasons)
+                                           stop_reasons=stop_reasons,
+                                           image_stats=image_stats)
         else:
             im_res = download_panorama_images(storage_location, image_pano_infos,
                                               run_start_monotonic=run_start_monotonic,
@@ -1262,7 +1343,8 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
                                               tripped_sources=tripped_sources,
                                               stop_reasons=stop_reasons,
                                               block_latch_path=depth_block_latch,
-                                              pace_state_path=depth_pace_state)
+                                              pace_state_path=depth_pace_state,
+                                              image_stats=image_stats)
         im_end_monotonic = time.monotonic()
         fields += [im_res[0], im_res[1], im_res[2], im_res[3], im_res[4],
                    _duration_minutes(xml_end_monotonic, im_end_monotonic)]
@@ -1299,9 +1381,11 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
         fields.append(_duration_minutes(run_start_monotonic, depth_end_monotonic))
     finally:
         # Whatever the phases managed to record, then blanks up to the corpus-size field, then the corpus size
-        # itself. On a completed run the padding is empty; on a crashed one it is the unfinished phases.
+        # itself, then the image phase's raised count. On a completed run the padding is empty; on a crashed one
+        # it is the unfinished phases.
         fields += [''] * (DEPTH_ELIGIBLE_FIELD - 1 - len(fields))
         fields.append('' if depth_eligible is None else depth_eligible)
+        fields.append(image_stats.get('raised', ''))
         write_log_csv_row(storage_location, fields)
     return tripped_sources
 
@@ -1312,10 +1396,14 @@ def _store_has_history(storage_location):
     Reads at most two lines of each. A header alone is what any run leaves behind - the image phase creates
     pano_id_log.csv with one even over an empty list - so it is not history. An unreadable ledger is not
     evidence either way and reads as no history: the depth phase reports an unusable ledger itself.
+
+    Both are read as UTF-8 with bad bytes replaced (#189): with the platform default, one undecodable byte in
+    either ledger's first two lines raised UnicodeDecodeError - a ValueError, past the OSError arm - out of the
+    empty-list path, and the run exited 1 instead of answering. A replaced byte still reads as a row, i.e. history.
     """
     for name in ('pano_id_log.csv', gsv.DEPTH_LOG_FILENAME):
         try:
-            with open(os.path.join(storage_location, name), newline='') as f:
+            with open(os.path.join(storage_location, name), newline='', encoding='utf-8', errors='replace') as f:
                 f.readline()
                 if f.readline().strip():
                     return True
@@ -1324,31 +1412,57 @@ def _store_has_history(storage_location):
     return False
 
 
+def _records_lacking(pano_infos, keys):
+    """(records lacking any of `keys`, {key: records lacking it}) - a missing KEY, never a blank value."""
+    missing = {key: 0 for key in keys}
+    lacking = 0
+    for record in pano_infos:
+        absent = [key for key in keys if key not in record]
+        lacking += bool(absent)
+        for key in absent:
+            missing[key] += 1
+    return lacking, missing
+
+
 def _intake_schema_drift(pano_infos):
     """A description of the schema drift in the fetched pano list, or None if it has none (D8, #161).
 
     Drift is INTAKE_SCHEMA_MIN_FRACTION or more of the records lacking any INTAKE_REQUIRED_KEYS key, counted
     per record, not per key. A key present with a blank (None) value is not drift (the -c intake's shape; the
-    webserver omits the key instead, see INTAKE_REQUIRED_KEYS). An empty list is not drift either - it has no
-    schema to have moved, and `pano-list-empty` covers it.
+    webserver omits the key instead). An empty list is not drift either - it has no schema to have moved, and
+    `pano-list-empty` covers it. The frame keys are not drift since #184: see _intake_frame_gap.
 
     Example::
 
-        >>> _intake_schema_drift([{'pano_id': 'a', 'source': 'gsv', 'pano_width': 1, 'pano_height': 1}])
-        '1 of 1 records lack a required key (width: 1, height: 1)'
+        >>> _intake_schema_drift([{'pano_id': 'a', 'kind': 'gsv'}])
+        '1 of 1 records lack a required key (source: 1)'
     """
     if not pano_infos:
         return None
-    missing = {key: 0 for key in INTAKE_REQUIRED_KEYS}
-    lacking = 0
-    for record in pano_infos:
-        absent = [key for key in INTAKE_REQUIRED_KEYS if key not in record]
-        lacking += bool(absent)
-        for key in absent:
-            missing[key] += 1
+    lacking, missing = _records_lacking(pano_infos, INTAKE_REQUIRED_KEYS)
     if lacking < INTAKE_SCHEMA_MIN_FRACTION * len(pano_infos):
         return None
     return "%d of %d records lack a required key (%s)" % (
+        lacking, len(pano_infos), ', '.join('%s: %d' % (k, n) for k, n in missing.items() if n))
+
+
+def _intake_frame_gap(pano_infos):
+    """A description of a list-wide gap in the frame keys, or None (#184) - reported, never a stop.
+
+    The same fraction and the same missing-key rule as _intake_schema_drift, over INTAKE_FRAME_KEYS. A few
+    dimensionless records (seattle's 106) are per-pano facts, counted by the image phase instead.
+
+    Example::
+
+        >>> _intake_frame_gap([{'pano_id': 'a', 'source': 'gsv'}])
+        '1 of 1 records carry no width/height (width: 1, height: 1)'
+    """
+    if not pano_infos:
+        return None
+    lacking, missing = _records_lacking(pano_infos, INTAKE_FRAME_KEYS)
+    if lacking < INTAKE_SCHEMA_MIN_FRACTION * len(pano_infos):
+        return None
+    return "%d of %d records carry no width/height (%s)" % (
         lacking, len(pano_infos), ', '.join('%s: %d' % (k, n) for k, n in missing.items() if n))
 
 
@@ -1429,6 +1543,7 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         # Checked on the list as served, before anything filters it: a renamed `source` would otherwise be
         # reported as an unsupported source per pano. A drifted list goes no further (below).
         schema_drift = _intake_schema_drift(pano_infos)
+        frame_gap = None if schema_drift is not None else _intake_frame_gap(pano_infos)
         if schema_drift is not None:
             pano_infos = []
         # Also read before the filter: a list the FILTER emptied (a Mapillary city without its token, a source
@@ -1439,10 +1554,11 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
         image_pano_infos = select_image_panos(pano_infos, all_panos)
 
         if schema_drift is not None:
-            # The one condition that also stops work (D8, #161): scraping a list whose width/height keys moved
-            # would ledger every new GSV pano downloaded=0 PERMANENTLY, and there is no GSV breaker by design
-            # (#113). So neither phase runs and nothing is ledgered; the log.csv row, written below once this
-            # try is behind us, records a run that started and did nothing, with every phase blank.
+            # The one condition that also stops work (D8, #161): a list whose `source` key moved would drop
+            # every pano as unsupported (and, before #184, a moved width/height would have ledgered every new
+            # GSV pano downloaded=0 PERMANENTLY - those keys are now INTAKE_FRAME_KEYS, reported, not a stop).
+            # So neither phase runs and nothing is ledgered; the log.csv row, written below once this try is
+            # behind us, records a run that started and did nothing, with every phase blank.
             logging.error("Pano list schema drift: %s; required keys %s. Skipping both phases and ledgering "
                           "nothing.", schema_drift, ', '.join(INTAKE_REQUIRED_KEYS))
             print("WARNING: the pano list's schema has moved - %s. Neither phase ran and nothing was ledgered; "
@@ -1466,6 +1582,14 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
 
         # In store mode without --with-depth no depth pass runs at all, so say so rather than read as if one will.
         depth_note = ' (not pulled: no --with-depth)' if store_settings is not None and not with_depth else ''
+        if frame_gap is not None:
+            # #184: not a stop and not a run condition - see INTAKE_FRAME_KEYS. Both channels: a renamed
+            # width/height now costs one photometa request per new GSV pano and #74's frame check, and this line
+            # is where that is said once rather than per pano.
+            message = ("the pano list's %s. Each new GSV pano among them takes its frame from photometa (one "
+                       "request); see docs/api-fields.md." % (frame_gap,))
+            logging.warning("%s", message)
+            print("WARNING: %s" % (message,))
         if schema_drift is None:
             print("Panos: %d supported, %d eligible for image download, %d GSV panos eligible for depth%s"
                   % (len(pano_infos), len(image_pano_infos),

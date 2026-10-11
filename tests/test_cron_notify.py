@@ -527,3 +527,61 @@ class TestTheDocumentedProbe:
         """The log line carries no job name, and the morning check reads `tail -1` of the nightly's log - so a
         probe's `exit 1 published` there reads as a failed night."""
         assert _cron_path(_flag(_probe_argv(), '--log')) != _cron_path(_flag(_production_line(), '--log'))
+
+
+# --- The heartbeat gate (#167) -----------------------------------------------------------------------------------
+
+def _heartbeat_gates():
+    """Every `find <path> -mmin` gate on the heartbeat, in the production line and in the ops.md runbook."""
+    paths = []
+    for page in ('downloader.md', 'ops.md'):
+        with open(os.path.join(REPO_ROOT, 'docs', page), encoding='utf-8') as f:
+            # A real path, not the prose's `find ... -mmin -10`.
+            paths += re.findall(r'find ([/~]\S+) -mmin -\d+', f.read())
+    return paths
+
+
+class TestTheHeartbeatGate:
+    """The crontab publishes the dead-man heartbeat only if cron_notify.log was written in the last few minutes
+    (docs/ops.md, "Hearing about a night that never ran"), so that a wrapper that could not start or died early
+    withholds it rather than reporting a healthy night. That makes two things load-bearing that nothing else
+    checks: main() logs on EVERY path it returns by, and the gate reads the log the nightly actually writes."""
+
+    def test_every_return_path_appends_exactly_one_log_line(self, child, sink, tmp_path, monkeypatch):
+        log = tmp_path / 'notify.log'
+        count = [0]
+
+        def one_more(outcome):
+            count[0] += 1
+            logged = log.read_text().splitlines()
+            assert len(logged) == count[0], (outcome, logged)
+            assert outcome in logged[-1], (outcome, logged[-1])
+
+        # Production's flags first: a clean night under --only-on-failure is the commonest path of all.
+        run(child, sink, '--only-on-failure', '--log', str(log), spec='o:x', exit_code=0, monkeypatch=monkeypatch)
+        one_more('exit 0 nothing to publish (clean run, --only-on-failure)')
+        run(child, sink, '--only-on-failure', '--log', str(log), spec='o:x', exit_code=1, monkeypatch=monkeypatch)
+        one_more('exit 1 published')
+        run(child, sink, '--only-on-failure', '--log', str(log), spec='', exit_code=5, monkeypatch=monkeypatch)
+        one_more('exit 5 published')
+        cron_notify.main(['--sink', sink.command, '--only-on-failure', '--log', str(log), '--',
+                          str(tmp_path / 'no-such-program')])
+        one_more('exit 127 published')
+        monkeypatch.setenv('SINK_EXIT', '3')
+        run(child, sink, '--only-on-failure', '--log', str(log), spec='o:x', exit_code=1, monkeypatch=monkeypatch)
+        one_more('exit 1 sink failed (exit 3)')
+        monkeypatch.delenv('SINK_EXIT')
+        # And cron's default rule, for the path production does not take.
+        run(child, sink, '--log', str(log), spec='', exit_code=0, monkeypatch=monkeypatch)
+        one_more('exit 0 nothing to publish')
+        # The sink-failure return under cron's default rule: COMMAND exited 0, so the wrapper's own exit 4.
+        monkeypatch.setenv('SINK_EXIT', '3')
+        run(child, sink, '--log', str(log), spec='o:x', exit_code=0, monkeypatch=monkeypatch)
+        one_more('exit 0 sink failed (exit 3)')
+        monkeypatch.delenv('SINK_EXIT')
+
+    def test_the_gate_reads_the_log_the_nightly_writes(self):
+        gates = _heartbeat_gates()
+        assert len(gates) == 2, 'expected the gate once in downloader.md and once in ops.md, found %r' % gates
+        nightly = _cron_path(_flag(_production_line(), '--log'))
+        assert all(_cron_path(g) == nightly for g in gates), (gates, nightly)

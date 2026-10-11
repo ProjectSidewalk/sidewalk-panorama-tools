@@ -111,7 +111,8 @@ def _get_response(url, session, stream=False):
     if not stream:
         return response
     # The streamed path is the two probes (_probe_zoom, frame_covers_pano), and both read a black
-    # body as a verdict: "retired" (ledgered downloaded=0, never re-asked) and "the frame covers the pano".
+    # body as a verdict: "retired" (ledgered downloaded=0, never re-asked) and "the frame covers the pano" -
+    # or, for frame_covers_pano's in-grid tile (#181), "Google serves it smaller", a transient refusal.
     # Google answers both of those with a black 200, so only a 200 is evidence (#166 option b, the #99 rule).
     # `== 200`, not raise_for_status(): a 206 or a final 3xx is no more evidence than a 403. The raise is
     # transient wherever it lands. 429/5xx should normally not reach here, since the adapter's Retry owns
@@ -584,15 +585,18 @@ StitchedPano = collections.namedtuple('StitchedPano', ['image', 'undersized_tile
 ImageLevels = collections.namedtuple('ImageLevels', ['sizes', 'tile_size'])
 
 # resolve_frame's answer.
-#   width, height - the caller's frame (the app's /adminapi/panos dims), never Google's: it is what gets saved.
+#   width, height - the frame that gets saved: the caller's (the app's /adminapi/panos dims) whenever it has
+#                   one, never Google's. Only when the caller has none is it photometa's top level (#184).
 #   zoom          - the level to fetch.
 #   consistent    - whether the grid the caller's frame implies at `zoom` is exactly a level Google reports
 #                   (choose_zoom). Always True when the probe answered, which cannot tell.
 #   served_dims   - Google's top level, or None when the probe answered.
-#   evidence      - 'photometa' or 'probe'.
-#   refusal       - why photometa's answer is not stitchable, when consistent is False: 'frame' (no reported
-#                   level is the caller's grid) or 'tile_size' (the levels are not cut in 512 px tiles). None
-#                   otherwise, including on the probe arm, whose frame check is download_single_pano's.
+#   evidence      - 'photometa', 'probe', or 'photometa-dims' (the caller had no frame, so photometa's top
+#                   level IS the frame - #184).
+#   refusal       - why the answer is not stitchable, when consistent is False: 'frame' (no reported level is
+#                   the caller's grid - with 'photometa-dims', the served top level's own grid, #184) or
+#                   'tile_size' (the levels are not cut in 512 px tiles). None otherwise, including on the probe
+#                   arm, whose frame check is download_single_pano's.
 ResolvedFrame = collections.namedtuple('ResolvedFrame',
                                        ['width', 'height', 'zoom', 'consistent', 'served_dims', 'evidence',
                                         'refusal'], defaults=(None,))
@@ -601,16 +605,49 @@ ResolvedFrame = collections.namedtuple('ResolvedFrame',
 class FrameDisagreementError(Exception):
     """The pano Google serves is not the frame the caller asked for, so stitching it would save a crop.
 
-    Three ways to know that: photometa's reported levels do not admit the frame, photometa's tiles are not
-    512 px, or - when the probe answered instead of photometa - a tile past the frame's grid has imagery
-    (frame_covers_pano). The message names which, after the words "frame disagreement", which is what
-    to grep scrape.log for.
+    Four ways to know that: photometa's reported levels do not admit the frame, photometa's tiles are not
+    512 px, or - when the probe answered instead of photometa - frame_covers_pano finds imagery past the
+    frame's grid (Google serves it larger) or black in the grid's own last column (Google serves it smaller,
+    #181). The message names which, after the words "frame disagreement", which is what to grep scrape.log for.
 
-    Raised by download_single_pano - never by resolve_frame or resolve_zoom_and_dims - so it is TRANSIENT
-    under the #41 ledger: counted in tonight's failures, not ledgered, re-attempted next run at the cost of one
-    photometa request (or four probe requests on the fallback). Deliberately not a permanent verdict: the
+    Raised by download_single_pano, and by frame_covers_pano for the smaller case (which download_single_pano
+    turns into its own refusal and refetch_panos returns as its unledgered 'frame_shrank') - never by resolve_frame or
+    resolve_zoom_and_dims - so it is TRANSIENT under the #41 ledger: counted in tonight's failures, not
+    ledgered, re-attempted next run at the cost of one photometa request (or five probe requests on the
+    fallback). Deliberately not a permanent verdict: the
     app's frame can catch up (a SidewalkWebpage gsv_data refresh is the remedy), and a permanent verdict on a
     brand-new evidence source, for a source whose breaker allows 49 rows a night (#166), is the wrong default.
+    """
+
+
+class FrameUnknownError(Exception):
+    """The pano list has no frame for this GSV pano and photometa gave none tonight (#184).
+
+    Raised by resolve_frame, only on its photometa arm, when the record carries no width/height and either
+    photometa is unanswered (skipped under a fresh block latch, given up earlier in the run, or failed or
+    refused on this pano) or photometa said "not found" while the tile probe found imagery. The tile probe is
+    not a substitute for a frame - it says whether zoom 5 or 3 has imagery, never how wide the pano is (a
+    zoom-5 pano is 16384 or 13312 wide) - so it is not sent when photometa is unanswered, and the pano costs
+    one photometa request at most; after a "not found" it has already run, for the permanent verdict.
+
+    TRANSIENT under the #41 ledger, the contract every raise out of download_pano has: counted in tonight's
+    failures, not ledgered, re-attempted next run. Why that and not the permanent downloaded=0 the
+    dimensionless case used to get, on measurements:
+      * The old verdict was reached without asking Google, and it cost data: washington-dc serves 78,300 of its
+        78,301 /adminapi/panos records without dims (2026-10-06), and its first two nights (2026-09-24/25)
+        ledgered 1,349 panos downloaded=0 at zero requests, 1,348 of them labelled. None is ever re-asked.
+      * Every other GSV permanent verdict rests on two black probe tiles on 200 responses (#166). A verdict
+        that depended on whether a latch file was fresh would be a fact about this HOST written into a ledger
+        about PANOS.
+      * Seattle's 106 dimensionless records (2026-09-28): photometa knew 3 and said "not found" for 103. Those
+        103 still reach the permanent verdict - through the probe, on the usual black-tile evidence - so the
+        population this exception keeps re-asking is only the unanswered nights, which the latch bounds to 6 h.
+
+    Deliberately NOT a FrameDisagreementError: that one is Google answering a question about the FRAME (two
+    frames that disagree), and DownloadRunner books it as an answer for `images-no-success`. This is Google
+    answering nothing about the frame (not asked, or "not found" while the probe saw imagery), which is a
+    raise like any network failure. pushback_reason is None for it: a refusal met on the way here has already
+    latched through _photometa_refused, and counting it again would double-book one refusal.
     """
 
 
@@ -738,6 +775,10 @@ class _PhotometaRunMemory:
         self.consecutive_failures = 0
         self.given_up = False
         self.announced = False
+        # #184: dimensionless GSV panos this run - saved at photometa's frame, and left without a frame
+        # (FrameUnknownError). DownloadRunner's image phase reports both on stdout and scrape.log.
+        self.frames_from_photometa = 0
+        self.frames_unknown = 0
 
 
 _photometa_run = _PhotometaRunMemory()
@@ -747,7 +788,7 @@ def _announce_probe_fallback(message):
     """The first time this run the probe answers because photometa could not: one line on BOTH channels.
 
     stdout because a fleet-wide photometa fault silently switches off the frame check photometa gives (the
-    probe arm's frame_covers_pano costs two more requests a pano) and is otherwise only per-pano detail in
+    probe arm's frame_covers_pano costs three more requests a pano) and is otherwise only per-pano detail in
     scrape.log; scrape.log because it is what is still there next week. Once, because the cause is the same for
     every pano after the first. A refusal announces itself with its own WARNING and counts as this line.
     """
@@ -862,16 +903,19 @@ def _photometa_failed(pano_id, e):
 def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     """ResolvedFrame for `pano_info`, or None when there is nothing to download.
 
-    None is a PERMANENT verdict about the pano, and covers both of its causes: no reported dimensions (there
-    is no other source for them, so asking again tomorrow asks the same question), and a black tile at both
-    zoom 5 and zoom 3 ON 200 RESPONSES, which is what Google answers for a pano id it no longer serves. Neither
-    is a transient condition, so callers ledger it rather than retrying. A probe answered with any status but
+    None is a PERMANENT verdict about the pano: a black tile at both zoom 5 and zoom 3 ON 200 RESPONSES, which
+    is what Google answers for a pano id it no longer serves, so callers ledger it rather than retrying. The
+    other None - no reported dimensions - survives only with photometa=False (refetch_panos.py's seam); on the
+    nightly path a dimensionless pano asks photometa for its frame (#184, _resolve_frame_from_photometa), and
+    raises FrameUnknownError, a transient, when photometa gives no frame: unanswered, or "not found" while the
+    probe sees imagery. A probe answered with any status but
     200 RAISES requests.HTTPError, whatever its body (#166 option b), and so does a network failure; both stay
     transient. Photometa never founds a None on its own (step 3), so the 200 rule is the whole of what a
     permanent GSV verdict rests on, on either arm.
 
     The decision (#74):
-      1. No dims: None, at zero requests.
+      1. No dims: the frame from photometa (#184, _resolve_frame_from_photometa) - or, with photometa=False,
+         None at zero requests.
       2. Ask photometa, without the depth payload (16 KB), which levels the pano is served at, and pick the
          zoom with choose_zoom. A frame no level admits comes back with consistent=False - reported, never
          raised here: refetch_panos.py composes resolve_zoom_and_dims with its own frame gate, and the nightly
@@ -881,8 +925,9 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
          is 50 (#166), so a photometa fault answering "not found" would still write off 49 a city a night).
       4. Photometa refused, failed, or skipped under a fresh block latch: the probe answers, as it always did.
 
-    Costs one photometa request for a live pano, one photometa plus two probe requests for a retired one, two
-    probe requests under a fresh latch, and nothing at all when the dimensions are missing.
+    Costs one photometa request for a live pano, one photometa plus two probe requests for a retired one, and
+    two probe requests under a fresh latch. A dimensionless pano costs the same minus the probe's fallback:
+    nothing under a fresh latch, one failed photometa request when photometa fails.
 
     @param block_latch_path Where Google's refusals are remembered; None is image_block_latch_path, which
                             DownloadRunner.run sets from --depth-block-latch, else the host default the depth
@@ -905,10 +950,12 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
     # the probe and test-fetched, and a black tile returned DownloadResult.failure, which is PERMANENT
     # under the #41 ledger. So stale 2022 metadata could blacklist a pano Google still serves.
 
-    # Without dims we cannot size the tile grid. Checked before anything is opened, so this case costs
-    # nothing.
     if width is None or height is None:
-        return None
+        # No frame from the app. Without photometa (refetch_panos.py's seam, which works from stored files that
+        # always have dims) this is still None at zero requests. With it, Google is asked for the frame (#184).
+        if not photometa:
+            return None
+        return _resolve_frame_from_photometa(pano_id, block_latch_path)
 
     # The reported width is Google's own number and is in hand before any request, so the #121 tripwire runs
     # here: a photometa request or probe that then fails transiently must not swallow the warning. It sits in
@@ -937,6 +984,71 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
                          None if consistent else 'frame')
 
 
+def _resolve_frame_from_photometa(pano_id, block_latch_path):
+    """resolve_frame for a record with no width/height (#184): the frame is photometa's top level.
+
+    Until #184 this case was None at zero requests - a permanent downloaded=0 without asking Google, which
+    wrote off 1,349 washington-dc panos (see FrameUnknownError). Now:
+      * photometa answers with 512 px tiles: the top level sizes[-1] is the frame (evidence
+        'photometa-dims'), and choose_zoom(sizes, *sizes[-1]) picks the zoom - the same check the dimensioned
+        arm runs, NOT "zoom len(sizes) - 1". The stitcher sizes its grid from the width (_dims_at_zoom infers
+        the max zoom from it), so a pyramid whose top is not at that index - one cut short at the bottom, say -
+        would fetch the top-left quarter and upscale it (#216 review S1, #74's failure mode). Such a pyramid
+        is refusal 'frame', at no further request. The #121 width tripwire runs on Google's width, since
+        there is no app width to run it on.
+      * photometa answers with other tiles: refused as on the dimensioned arm ('tile_size').
+      * photometa says "not found": the probe runs, exactly as for a dimensioned pano, so a permanent None
+        still rests on two black tiles on 200s (plan decision D5). Imagery at the probe without a frame is
+        FrameUnknownError: nothing to stitch tonight. Deliberately not a frame disagreement (#216 review S2):
+        "not found" is no answer about the frame, there is no app frame to disagree with and no app-side
+        remedy, and #207 alarms on every disagreement - a pano photometa never knows but the tile endpoint
+        serves would fail the night forever.
+      * photometa unanswered (fresh latch, given up, failed, refused): FrameUnknownError, no probe.
+
+    Costs one photometa request for a live pano or an inconsistent pyramid, one plus two probe tiles for a
+    retired one or a probe-only one, and nothing beyond a failed photometa request when photometa is
+    unanswered.
+    """
+    latch_path, _pace_path = image_host_state_paths(block_latch_path)
+    levels = _photometa_levels(pano_id, latch_path)
+    if levels is _PHOTOMETA_UNANSWERED:
+        latched_hours = _block_latch_age_hours(latch_path)
+        if latched_hours is not None and latched_hours < DEPTH_BLOCK_LATCH_HOURS:
+            why = "the block latch %s is fresh (set %.1fh ago), so photometa is not asked" % (latch_path,
+                                                                                            latched_hours)
+        elif _photometa_run.given_up:
+            why = ("photometa was refused, or failed %d times in a row, this run"
+                   % PHOTOMETA_MAX_CONSECUTIVE_FAILURES)
+        else:
+            why = "photometa did not answer"
+        _photometa_run.frames_unknown += 1
+        raise FrameUnknownError("pano %s: the pano list has no width/height and %s; no frame tonight, not "
+                                "ledgered, retried next run" % (pano_id, why))
+    if levels is None:
+        zoom = _probe_zoom(pano_id)
+        if zoom is None:
+            return None
+        _photometa_run.frames_unknown += 1
+        raise FrameUnknownError("pano %s: the pano list has no width/height and photometa says not found, but "
+                                "the tile probe found imagery at zoom %d, which does not say how wide the pano "
+                                "is; no frame tonight, not ledgered, retried next run" % (pano_id, zoom))
+
+    served_dims = tuple(levels.sizes[-1])
+    top = len(levels.sizes) - 1
+    if tuple(levels.tile_size) != (TILE_SIZE, TILE_SIZE):
+        logging.warning("IMAGEDOWNLOAD: pano %s: photometa reports %sx%s tiles, not %d", pano_id,
+                        levels.tile_size[0], levels.tile_size[1], TILE_SIZE)
+        return ResolvedFrame(served_dims[0], served_dims[1], top, False, served_dims, 'photometa-dims',
+                             'tile_size')
+    common.warn_if_wider_than_viewer_ceiling(pano_id, served_dims[0], 'gsv')
+    zoom, consistent = choose_zoom(levels.sizes, *served_dims)
+    if not consistent:
+        return ResolvedFrame(served_dims[0], served_dims[1], zoom, False, served_dims, 'photometa-dims', 'frame')
+    logging.info("IMAGEDOWNLOAD: pano %s: no width/height in the pano list; frame from photometa: %dx%d at "
+                 "zoom %d (#184)", pano_id, served_dims[0], served_dims[1], zoom)
+    return ResolvedFrame(served_dims[0], served_dims[1], zoom, True, served_dims, 'photometa-dims')
+
+
 def resolve_zoom_and_dims(pano_info):
     """(width, height, zoom) for `pano_info`, or None when there is nothing to download - the seam
     refetch_panos.py composes, unchanged in contract AND in answers since #73: the zoom comes from the two-tile
@@ -949,19 +1061,46 @@ def resolve_zoom_and_dims(pano_info):
     five-level 5376x2688 pano ('upscaled' -> a native zoom-4 fetch). Both swaps may well be better imagery,
     but changing what the repair pass does is a separate decision from the nightly zoom, not a side effect
     of it. The probe's answer goes through refetch's own frame_covers_pano gate, which is what turns a frame
-    smaller than Google's into 'frame_grew'.
+    smaller than Google's into 'frame_grew' and refuses one larger as the unledgered 'frame_shrank' (#181).
     """
     frame = resolve_frame(pano_info, photometa=False)
     return None if frame is None else (frame.width, frame.height, frame.zoom)
 
 
-def frame_covers_pano(pano_id, width, height, zoom):
-    """Does a (width, height) grid at `zoom` cover everything Google serves for this pano?
+def _is_exactly_black(image):
+    """True when every pixel of `image` decodes to zero luma: CBK's answer for a tile outside the pano.
 
-    Asked by requesting the two tiles just past the assumed grid - one column right, one row down - and
-    checking both come back blank. An out-of-range tile is answered 200 OK with an all-black body (pinned
-    on real bytes in tests/test_gsv_tile_contract.py), so imagery there means the real pano is larger than
-    the frame we were about to fetch.
+    Exact zero, not a threshold: an out-of-range tile is answered 200 OK with an all-black JPEG whose luma
+    extrema are (0, 0), while a genuine edge tile is black-PADDED but never all black, and dark imagery is
+    not zero after JPEG (both pinned on committed real bytes in tests/test_gsv_tile_contract.py). The rule
+    _probe_zoom applies inline.
+    """
+    return image.convert('L').getextrema() == (0, 0)
+
+
+def frame_covers_pano(pano_id, width, height, zoom):
+    """Is a (width, height) grid at `zoom` exactly what Google serves for this pano?
+
+    True when it is. False when Google serves the pano LARGER (a tile past the grid has imagery). Raises
+    FrameDisagreementError when Google serves it SMALLER (the grid's own last column is black) - #181 Part 1.
+
+    Asked with three tile requests, spent BEFORE the 512-tile fan-out so a bad frame costs three rather than
+    515. An out-of-range tile is answered 200 OK with an all-black body (pinned on real bytes in
+    tests/test_gsv_tile_contract.py), so:
+
+    1. One column past the grid, on the middle row: imagery means the pano is wider. False.
+    2. One row past the grid, in column 0: imagery means the pano is taller. False.
+    3. The grid's own last column, on the same middle row, (tiles_x - 1, tiles_y // 2): BLACK means the pano
+       ends before the grid does. Raises.
+
+    False and the raise are kept apart because their callers treat them differently. A pano Google now serves
+    larger than a stored file is a fact about Google's archive, and refetch_panos.py ledgers it as
+    'frame_grew'. A frame larger than Google serves is the mismatch photometa's arm refuses with
+    FrameDisagreementError (unledgered, retried next run), and this is the same refusal on the probe arm: the
+    app's frame can catch up. Without check 3 that frame passed checks 1 and 2 - nothing past a 32x16 grid
+    has imagery on a 26x13 pano - and stitched ~34% black, under STITCH_MAX_BLACK_FRACTION, saved and
+    ledgered downloaded=1; refetch_panos.py spent the 512-tile fan-out to refuse it as 'too_black' and then
+    ledgered that for good.
 
     The nightly downloader needs this only when the tile probe chose the zoom (_frame_refusal): when photometa
     answers, its reported levels already say whether the app's frame is one of them. /adminapi/panos is not
@@ -972,27 +1111,39 @@ def frame_covers_pano(pano_id, width, height, zoom):
     the stored file's exact dimensions, with no undersized tile and no black to give it away. That is a
     silently cropped panorama saved over a correct one, and this is the only cheap thing that catches it.
 
-    Two requests, spent BEFORE the 512-tile fan-out so a bad frame costs two rather than 514.
+    **Callers must ask the probe first.** CBK answers a retired pano with a black 200 at every tile, which
+    check 3 reads as "smaller". Both callers run this only after the probe found imagery at (0, 0), so a
+    retired pano gets the probe's permanent None and never reaches here; asked first, every retired pano
+    would become a frame disagreement retried every night.
 
-    The one way this can err is toward ACCEPTANCE: an out-of-range tile is recognised by being exactly black,
-    so a real tile past the grid that happened to decode to all-zero luma would read as blank, and the fetch
-    would proceed. That is why the x probe is taken on the grid's middle row rather than on row 0. Row 0 is
-    the zenith cap - the one strip of a panorama where a uniformly black real tile is plausible - while the
-    middle row is horizon-adjacent imagery, which never is. The y probe lands on ground rows for the same
-    reason. Both probes must come back blank for the frame to pass. A probe answered with any status but 200
-    raises requests.HTTPError rather than reading as blank (#166 option b): before that, a 403 or 404 with a
-    black body was exactly this acceptance case.
+    Checks 1 and 2 can err only toward ACCEPTANCE: a real tile past the grid that happened to decode to
+    all-zero luma would read as blank, and the fetch would proceed. That is why the x probe is taken on the
+    grid's middle row rather than on row 0. Row 0 is the zenith cap - the one strip of a panorama where a
+    uniformly black real tile is plausible - while the middle row is horizon-adjacent imagery, which never is.
+    The y probe lands on ground rows for the same reason. Check 3 sits on that middle row too, so it errs only
+    toward REFUSAL - a transient, loud, retried failure - and only for a horizon tile of exact zero luma.
+    Every probe is judged by _is_exactly_black. A probe answered with any status but 200 raises
+    requests.HTTPError rather than reading as blank (#166 option b): before that, a 403 or 404 with a black
+    body was exactly the acceptance case.
     """
     tiles_x, tiles_y = _tile_grid(width, height, zoom)
     with _request_session() as session:
-        for x, y in ((tiles_x, tiles_y // 2), (0, tiles_y)):
+        def tile_is_black(x, y):
             url = f'{_CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}'
-            probe = Image.open(_get_response(url, session, stream=True))
-            if probe.convert('L').getextrema() != (0, 0):
+            return _is_exactly_black(Image.open(_get_response(url, session, stream=True)))
+
+        for x, y in ((tiles_x, tiles_y // 2), (0, tiles_y)):
+            if not tile_is_black(x, y):
                 logging.warning("IMAGEDOWNLOAD: pano %s: tile (%d, %d) past a %dx%d grid at zoom %s has "
                                 "imagery; Google serves this pano larger than %dx%d",
                                 pano_id, x, y, tiles_x, tiles_y, zoom, width, height)
                 return False
+        last = (tiles_x - 1, tiles_y // 2)
+        if tile_is_black(*last):
+            raise FrameDisagreementError(
+                "frame disagreement: the app's frame is %dx%d but tile (%d, %d), the last column of its "
+                "%dx%d grid at zoom %s, is black, so Google serves this pano smaller"
+                % (width, height, last[0], last[1], tiles_x, tiles_y, zoom))
     return True
 
 
@@ -1084,9 +1235,8 @@ def pushback_reason(exc):
       since 403 is not in the forcelist and so never exhausts it (the 403 half is for the day it is). A 5xx
       storm exhausting the policy is Google being ill, not Google refusing us - and a trip writes the
       fleet-wide block latch, so reading an outage as a refusal would stand every city's depth phase down for
-      six hours. The image phase's photometa arm (#74) latches on this same line; the depth phase's own
-      `except (DepthBlockedError, RetryError)` is broader, and its latch predates this breaker (a
-      follow-up). A RetryError whose status cannot be read is None for the same reason. One that gave up
+      six hours. The depth loop (#177) and the image phase's photometa arm (#74/#172) both split on this
+      one predicate. A RetryError whose status cannot be read is None for the same reason. One that gave up
       ON Google's interstitial (its message names the /sorry/ path or the consent host) is 'interstitial'
       whatever its status: the landing is the refusal, and a 503 captcha page is not an outage.
     * requests' HTTPError from the zoom probe, which since #166 raises for any status but 200 and carries
@@ -1166,18 +1316,32 @@ def _frame_refusal(pano_id, frame):
 
     Photometa's two refusals are decided in resolve_frame, at no extra request. The probe arm cannot tell a
     frame from a crop - it only asks whether zoom 5 or 3 has imagery at (0, 0) - so on that arm the frame is
-    checked here with frame_covers_pano: two more tile requests, spent only when photometa did not answer,
-    and before the fan-out. Without it every photometa failure, fresh block latch or "not found" would
-    stitch and permanently ledger exactly the crop a photometa refusal holds off (#74 review item 1).
+    checked here with frame_covers_pano: three more tile requests, spent only when photometa did not answer,
+    and before the fan-out, catching a frame smaller than Google serves (a tile past the grid has imagery)
+    and, since #181, one larger (the grid's last column is black). Without it every photometa failure, fresh
+    block latch or "not found" would stitch and permanently ledger exactly the crop a photometa refusal holds
+    off (#74 review item 1), or, for a frame larger than served, a ~34% black stitch.
     """
     served = '%dx%d' % frame.served_dims if frame.served_dims else None
+    if frame.refusal == 'frame' and frame.evidence == 'photometa-dims':
+        return ("frame disagreement: the pano list has no width/height, and photometa serves this pano at %s "
+                "in a pyramid whose top level is not at the zoom this stitcher would fetch it at, so a native "
+                "fetch of that frame is impossible (#184)" % (served,))
     if frame.refusal == 'frame':
         return ("frame disagreement: the app's frame is %dx%d but Google serves this pano at %s, and no "
                 "reported level is that frame's tile grid" % (frame.width, frame.height, served))
     if frame.refusal == 'tile_size':
         return ("frame disagreement: photometa reports this pano (served at %s) in tiles that are not %d px, "
                 "so no tile grid this stitcher can request fits it" % (served, TILE_SIZE))
-    if frame.evidence == 'probe' and not frame_covers_pano(pano_id, frame.width, frame.height, frame.zoom):
+    if frame.evidence != 'probe':
+        return None
+    try:
+        covers = frame_covers_pano(pano_id, frame.width, frame.height, frame.zoom)
+    except FrameDisagreementError as smaller:
+        # Google serves it SMALLER than the app's frame (#181 Part 1): the check's own words, which already
+        # begin "frame disagreement", plus the arm.
+        return "%s (zoom from the tile probe; photometa did not answer)" % (smaller,)
+    if not covers:
         return ("frame disagreement: the app's frame is %dx%d but a tile past its grid at zoom %d has "
                 "imagery, so Google serves this pano larger (zoom from the tile probe; photometa did not "
                 "answer)" % (frame.width, frame.height, frame.zoom))
@@ -1204,10 +1368,12 @@ def download_single_pano(storage_path, pano_info):
     if os.path.isfile(out_image_name):
         return DownloadResult.skipped
 
+    # A dimensionless pano photometa cannot answer for raises FrameUnknownError here - transient (#184).
     frame = resolve_frame(pano_info)
     if frame is None:
-        # No dims, or no imagery at any zoom - both permanent properties of the pano, so the #41 ledger
-        # writes downloaded=0 and never re-attempts it.
+        # No imagery at any zoom, on 200s - a permanent property of the pano, so the #41 ledger writes
+        # downloaded=0 and never re-attempts it. Since #184 this is the ONLY way here: missing dims ask
+        # photometa instead of returning None.
         return DownloadResult.failure
     refusal = _frame_refusal(pano_id, frame)
     if refusal is not None:
@@ -1223,13 +1389,16 @@ def download_single_pano(storage_path, pano_info):
         raise FrameDisagreementError('pano %s: %s' % (pano_id, refusal))
 
     # fetch_pano_image always receives the APP's frame: the reported levels only ever choose which zoom (and so
-    # which grid) is requested, never what size the saved JPEG is.
+    # which grid) is requested, never what size the saved JPEG is. The one exception is a pano the app has no
+    # frame for (#184), where photometa's top level is the frame and the saved JPEG is Google's served size.
     stitched = fetch_pano_image(pano_id, frame.width, frame.height, frame.zoom)
     # atomic_output_path, not a direct save: an image on disk IS the resume marker, so a mid-write crash
     # would otherwise leave a truncated .jpg that every later run reports as a completed download.
     with atomic_output_path(out_image_name) as tmp_path:
         stitched.image.save(tmp_path, 'jpeg')
     _write_display_copy(stitched.image, out_image_name, pano_id)
+    if frame.evidence == 'photometa-dims':
+        _photometa_run.frames_from_photometa += 1
 
     # log.csv column 8 (#52 item 2): the JPEG on disk holds less imagery than its dimensions advertise. See
     # fetch_pano_image for why the test is not `zoom == 3`.
@@ -1262,6 +1431,21 @@ DEPTH_MAX_CONSECUTIVE_FAILURES = 25
 # the breaker, without pounding while we wait. Storage failures skip the retreat: a full disk cannot clear itself.
 DEPTH_RETREAT_SCHEDULE = {5: 30, 10: 120, 15: 300}
 
+# A network streak at least this long that is still running when a BUDGET stops the phase is booked as the
+# breaker it would have become (#177 review): stop reason DEPTH_STOP_CONSECUTIVE_FAILURES, condition
+# depth-breaker, and DEPTH_ENDED_ON_BUDGET in the breakdown. Each exhausted photometa request costs 6 HTTP
+# requests and ~30 s inside urllib3, so in a 12-minute slot a 5xx storm reaches the budget long before 25
+# failures; without this it ended as a plain max-runtime stop - no alarm, and re-run by the queue's extra passes
+# into the same outage. The floor is the schedule's first step, the streak length the phase itself already
+# treats as more than a blip; it keeps one timeout on a city's last unresolved pano from failing the night.
+# Known limit (#177 second review): the floor counts failures, not time. A blackholed photometa (no SYN-ACK)
+# costs up to ~211 s per failure on Linux (6 connect attempts x 30 s timeout + backoff), so a 12-minute slot
+# ends at a streak of about 4 and the stop stays an unbooked max-runtime. Only a prompt failure (a 5xx, a
+# refused connection, a DNS error) reaches the floor inside a slot.
+DEPTH_OUTAGE_MIN_STREAK = min(DEPTH_RETREAT_SCHEDULE)
+# Fixed, machine-readable token in that breakdown, so a budget-ended streak can be told from a tripped breaker.
+DEPTH_ENDED_ON_BUDGET = 'ended_on_budget'
+
 # Values for download_depth_maps' stop_reason - constants so the set sites and the end-of-phase compare sites
 # can't drift apart via a typo that silently disables a warning arm.
 DEPTH_STOP_BLOCKED = 'blocked'
@@ -1277,7 +1461,7 @@ DEPTH_CONDITION_REFUSED = 'depth-refused'           # Google refused THIS run; t
 DEPTH_CONDITION_STOOD_DOWN = 'depth-stood-down'     # a live latch at phase start (another run's refusal, or this
                                                     # run's image phase: photometa or a push-back trip); no request
 DEPTH_CONDITION_BREAKER = 'depth-breaker'           # DEPTH_MAX_CONSECUTIVE_FAILURES in a row
-DEPTH_CONDITION_LEDGER = 'depth-ledger-unusable'    # depth_log.csv could not be read, or not be written
+DEPTH_CONDITION_LEDGER = 'depth-ledger-unusable'    # depth_log.csv could not be read or parsed, or not be written
 DEPTH_CONDITION_UNAVAILABLE = 'depth-unavailable'   # streetlevel is not importable
 DEPTH_CONDITIONS = frozenset({DEPTH_CONDITION_REFUSED, DEPTH_CONDITION_STOOD_DOWN, DEPTH_CONDITION_BREAKER,
                               DEPTH_CONDITION_LEDGER, DEPTH_CONDITION_UNAVAILABLE})
@@ -1506,8 +1690,8 @@ class DepthPacer:
 
         The narrowing is the block latch's rule, not a second convention (#125.1): *"Only a blocked stop
         latches - the breaker counts storage failures, and a full disk is not Google."* This method is also
-        fed by the phase's `except (requests.RequestException, ValueError)` arm - a DNS blip on the box, one
-        connection reset, a JSONDecodeError from any non-200 body - and by its `except Exception` arm, which
+        fed by the phase's network arm - a DNS blip on the box, one connection reset, a JSONDecodeError from
+        any non-200 body, a 5xx storm that exhausted the retry policy (#177) - and by its `except Exception` arm, which
         catches the DepthPayloadError raised for a pano that has a depth raster but no plane data, a property
         of one pano's upstream payload. Backing THIS run off on any of those is a cheap and correct reflex.
         Writing it to the host's file is not: candidates are shuffled, so one permanently-malformed pano in
@@ -1752,19 +1936,41 @@ def _write_pace_state(path, interval, clean_streak):
             pass
 
 
+# What makes the depth ledger unusable rather than one row bad (#189): it could not be read (OSError), or csv could
+# not parse it (a field over csv.field_size_limit() - what a crash that wrote binary junk looks like).
+# UnicodeDecodeError is kept although _load_depth_log replaces bad bytes and so never raises it: dropping the
+# errors= kwarg can then never reintroduce the crash, only the cost of one bad byte.
+DEPTH_LEDGER_UNUSABLE_ERRORS = (OSError, csv.Error, UnicodeDecodeError)
+
+
 def _load_depth_log(depth_log_path):
     """Read the depth ledger into a set of resolved pano ids.
 
-    Tolerates malformed rows (e.g. a line truncated by a crash mid-append) by skipping them, so a damaged ledger
-    degrades to re-checking a few panos rather than crashing the run.
+    Five kinds of damage, two costs (#189):
+    - A malformed row (e.g. a line truncated by a crash mid-append) is skipped, so that pano is re-checked.
+    - A stray '"' is a literal character, because the ledger is read with QUOTE_NONE: the writer never quotes
+      (ids are [A-Za-z0-9_-]), so nothing legitimate changes. Under csv's default quoting it opened a field that
+      swallowed every later row, future appends included, and the read returned a partial set with no error
+      until that tail outgrew the field-size limit - the silent partial read the last item refuses.
+    - A byte that is not UTF-8 is replaced, not raised: the ledger is ASCII pano ids and two status words, so the
+      replacement lands inside one field and that row either fails the shape check (skipped) or carries an id
+      that matches no pano. Either way that one pano is re-checked; nothing is written off.
+    - A NUL byte - the zero-filled residue a crash most often leaves - is stripped before csv sees it, so it too
+      costs at most its own row. Python 3.10, the production interpreter, raises `line contains NUL` rather than
+      parse such a line, which the callers would read as an unusable ledger; 3.11 accepts it. Stripping makes
+      every version agree, and a run of NULs however long can never trip the field-size limit below.
+    - A field longer than csv.field_size_limit() makes the ledger unusable: csv.Error propagates, and the callers
+      (DEPTH_LEDGER_UNUSABLE_ERRORS) sit the phase out. Returning the rows before the bad line instead would make
+      every pano after it look unresolved and re-request them against a store that just wrote junk.
 
     @return Set of pano ids whose depth outcome is already known ('saved' or 'unavailable').
+    @raises csv.Error on an over-long field; OSError if the file cannot be read.
     """
     resolved = set()
     if not os.path.isfile(depth_log_path):
         return resolved
-    with open(depth_log_path, newline='') as f:
-        for row in csv.reader(f):
+    with open(depth_log_path, newline='', encoding='utf-8', errors='replace') as f:
+        for row in csv.reader((line.replace('\0', '') for line in f), quoting=csv.QUOTE_NONE):
             if len(row) == 2 and row[0] != 'pano_id' and row[1] in ('saved', 'unavailable'):
                 resolved.add(row[0])
     return resolved
@@ -1779,8 +1985,8 @@ def count_unresolved_depth(storage_path, pano_infos):
 
     A pano whose artifact exists but whose ledger row is missing (only possible after manual ledger surgery)
     counts as unresolved even though the phase will self-heal it without a request; that inaccuracy is not
-    worth a directory walk here. An unreadable ledger counts as no backlog: download_depth_maps sits the run
-    out in that state, so there is nothing to reserve for.
+    worth a directory walk here. An unreadable ledger, or one csv cannot parse (#189), counts as no backlog:
+    download_depth_maps sits the run out in that state, so there is nothing to reserve for.
 
     @param storage_path Root of the pano store (depth_log.csv lives here).
     @param pano_infos   Pano dicts (needs 'pano_id'); callers pre-filter to source == 'gsv'.
@@ -1788,7 +1994,7 @@ def count_unresolved_depth(storage_path, pano_infos):
     """
     try:
         resolved = _load_depth_log(os.path.join(storage_path, DEPTH_LOG_FILENAME))
-    except OSError:
+    except DEPTH_LEDGER_UNUSABLE_ERRORS:
         return 0
     return sum(1 for p in pano_infos if p['pano_id'] not in resolved)
 
@@ -2218,7 +2424,9 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
     Unresolved panos are shuffled, so a cluster that fails on every run can't permanently starve max_requests.
     The phase stops early if Google starts refusing requests (see DepthBlockedError) or after
     DEPTH_MAX_CONSECUTIVE_FAILURES transient failures in a row, rather than spending the rest of the budget on a
-    wall. config.depth_min_request_interval paces requests if set.
+    wall. A network streak of at least DEPTH_OUTAGE_MIN_STREAK still running when a budget stops the phase is
+    booked as that breaker too, marked DEPTH_ENDED_ON_BUDGET, and a retreat that would reach the budget stops
+    the phase instead. config.depth_min_request_interval paces requests if set.
 
     Note that 'unavailable' — a permanent, expected, non-actionable outcome — is counted in fail_count, and so
     lands in log.csv's depth failure column. That column is therefore not usable as an alert signal; the split is
@@ -2313,9 +2521,11 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
     log_existed = os.path.isfile(depth_log_path)
     try:
         resolved_ids = _load_depth_log(depth_log_path)
-    except OSError as e:
+    except DEPTH_LEDGER_UNUSABLE_ERRORS as e:
         # Deliberately not degrading to "nothing is resolved": that would re-request the entire corpus against an
-        # already-sick store. If the ledger can't be read, sit this run out.
+        # already-sick store. If the ledger can't be read - or parsed: a field over csv.field_size_limit() is a
+        # crash that wrote binary junk, and a partial read would re-request every pano after the bad line (#189) -
+        # sit this run out. The file is left exactly as it is; the repair is a hand edit (docs/ops.md).
         logging.error("DEPTHDOWNLOAD: Cannot read %s (%s); skipping the depth phase", depth_log_path, str(e))
         print("DEPTHDOWNLOAD: WARNING - cannot read the depth ledger (%s). Skipping the depth phase." % (e))
         common.note_condition(stop_reasons, DEPTH_CONDITION_LEDGER, 'cannot read %s: %s' % (depth_log_path, e))
@@ -2333,7 +2543,7 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
     random.shuffle(candidates)
 
     try:
-        depth_log = open(depth_log_path, 'a', newline='')
+        depth_log = open(depth_log_path, 'a', newline='', encoding='utf-8')  # the reader's encoding; ids are ASCII
         ledger = csv.writer(depth_log)
         if not log_existed:
             ledger.writerow(['pano_id', 'status'])
@@ -2443,20 +2653,27 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
                 consecutive_failures = 0
                 streak_classes.clear()
                 pacer.on_clean()
-            except (DepthBlockedError, requests.exceptions.RetryError) as e:
-                # Google is refusing us: an interstitial, or a 429/5xx that survived every retry. That's a verdict
-                # on the endpoint, not on this pano, so stop rather than spend the rest of the budget on a wall.
-                fail_count += 1
-                stop_reason = DEPTH_STOP_BLOCKED
-                last_error = e
-                logging.error("DEPTHDOWNLOAD: Stopping depth phase, Google is refusing requests (%s)", str(e))
-                print("DEPTHDOWNLOAD: Google is refusing requests (%s). Stopping the depth phase." % (e))
-                break
-            except (requests.RequestException, ValueError) as e:
-                # Transient: connection errors/timeouts, or a non-JSON page that isn't a recognised interstitial -
-                # streetlevel never checks status codes, so non-200 responses surface as JSONDecodeError. Not
-                # ledgered, so the pano retries next run.
-                # NB: requests.RequestException subclasses OSError, so it must be caught above the OSError arm.
+            except (DepthBlockedError, requests.RequestException, ValueError) as e:
+                # NB: requests.RequestException subclasses OSError, so this arm must stay above the OSError one.
+                if isinstance(e, DepthBlockedError) or pushback_reason(e) is not None:
+                    # Google refusing THIS HOST: the hook's DepthBlockedError (403 or an interstitial), a
+                    # RetryError whose urllib3 message is 'too many 429 error responses', or one that gave up on
+                    # a /sorry/ or consent URL. A verdict on the endpoint, not this pano: stop rather than spend
+                    # the rest of the budget on a wall, and the phase end writes the latch. (#177: a 5xx storm
+                    # exhausting the same retry policy is Google being ill, not Google refusing us, and takes
+                    # the arm below - before this it latched the fleet for 6 h.) pushback_reason's HTTPError leg
+                    # would latch a 403/429 HTTPError too; streetlevel never calls raise_for_status, so none can
+                    # arrive here, and the image phase's photometa arm (_photometa_levels) draws the identical
+                    # line - one convention, not two.
+                    fail_count += 1
+                    stop_reason = DEPTH_STOP_BLOCKED
+                    last_error = e
+                    logging.error("DEPTHDOWNLOAD: Stopping depth phase, Google is refusing requests (%s)", str(e))
+                    print("DEPTHDOWNLOAD: Google is refusing requests (%s). Stopping the depth phase." % (e))
+                    break
+                # Transient: connection errors/timeouts, a 5xx storm that outlasted the retry policy, or a
+                # non-JSON page that isn't a recognised interstitial - streetlevel never checks status codes,
+                # so non-200 responses surface as JSONDecodeError. Not ledgered, so the pano retries next run.
                 fail_count += 1
                 consecutive_failures += 1
                 failure_class = 'network'
@@ -2504,12 +2721,37 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
             # cannot clear itself, so storage failures skip the wait (they still count toward the breaker, which
             # then trips fast) instead of burning up to 7.5 minutes of a shared --max-runtime window.
             retreat_seconds = None if failure_class == 'storage' else DEPTH_RETREAT_SCHEDULE.get(consecutive_failures)
+            if retreat_seconds and max_runtime_minutes is not None and run_start_monotonic is not None:
+                # Never past the budget (#177 review): the uncapped 300 s step could carry a city beyond the
+                # queue's --kill-grace and get it booked timed_out, for a reason naming neither Google nor depth.
+                # A retreat that would reach the deadline is a budget stop now, not a sleep up to it: the loop's
+                # budget check would stop the phase straight after without another request, so the sleep only
+                # took up to 5 minutes from the queue's window (#177 second review). Booked below as any budget
+                # stop is, so a streak at the floor is still ended_on_budget.
+                left = max_runtime_minutes * 60.0 - (time.monotonic() - run_start_monotonic)
+                if left <= retreat_seconds:
+                    stop_reason = DEPTH_STOP_MAX_RUNTIME
+                    print("DEPTHDOWNLOAD: %d consecutive failures; the %ds back-off would outlast the %.1f minutes "
+                          "left of the max runtime of %.1f minutes. Stopping."
+                          % (consecutive_failures, retreat_seconds, max(0.0, left) / 60.0, max_runtime_minutes))
+                    break
             if retreat_seconds:
                 print("DEPTHDOWNLOAD: %d consecutive failures, backing off for %ds before continuing."
                       % (consecutive_failures, retreat_seconds))
                 time.sleep(retreat_seconds)
 
     total_completed = success_count + fail_count + skipped_count
+    # A budget that stopped the phase in the middle of a network streak of at least DEPTH_OUTAGE_MIN_STREAK:
+    # the breaker would have tripped given the time, so book it as the breaker (#177 review). Network only - a
+    # storage streak has the breaker it trips fast, since storage skips the retreats. Scoped to a budget stop:
+    # a short list that runs out inside a streak keeps the scattered-errors arm below (a decision for Jon).
+    # After the with, so remember_standing saw the budget stop - it treats both the same (save, no forfeit).
+    ended_on_budget = (stop_reason in (DEPTH_STOP_MAX_RUNTIME, DEPTH_STOP_MAX_REQUESTS)
+                       and streak_classes['network'] >= DEPTH_OUTAGE_MIN_STREAK)
+    if ended_on_budget:
+        logging.error("DEPTHDOWNLOAD: %s stop during %d consecutive failures; booking it as the breaker",
+                      stop_reason, consecutive_failures)
+        stop_reason = DEPTH_STOP_CONSECUTIVE_FAILURES
     # The standing was already remembered by remember_standing on the way out of the with above.
     # Loud on stdout because cron mails it: a phase that stopped early means nothing is progressing, and the
     # per-pano detail is buried in scrape.log.
@@ -2529,10 +2771,19 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         # attribute the trip to Google: break the streak down by class so the dominant cause stays visible even
         # when the last error is the minority class.
         breakdown = ', '.join('%d %s' % (count, cls) for cls, count in streak_classes.most_common())
-        print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early after %d consecutive failures (%s). Last "
-              "error: %s. No panos were lost (unresolved panos are retried next run); check whether the cause "
-              "is the store (full/unmounted) or the network before the next run."
-              % (consecutive_failures, breakdown, last_error))
+        if ended_on_budget:
+            # The token rides inside the brackets, so the detail keeps the breaker's shape and a filter can
+            # match the token rather than prose.
+            breakdown += '; ' + DEPTH_ENDED_ON_BUDGET
+            print("DEPTHDOWNLOAD: WARNING - the depth phase ran out of budget during %d consecutive failures "
+                  "(%s), before the breaker's %d. Last error: %s. No panos were lost (unresolved panos are "
+                  "retried next run); a network outage or a Google 5xx storm is the likely cause."
+                  % (consecutive_failures, breakdown, DEPTH_MAX_CONSECUTIVE_FAILURES, last_error))
+        else:
+            print("DEPTHDOWNLOAD: WARNING - the depth phase stopped early after %d consecutive failures (%s). "
+                  "Last error: %s. No panos were lost (unresolved panos are retried next run); check whether the "
+                  "cause is the store (full/unmounted) or the network before the next run."
+                  % (consecutive_failures, breakdown, last_error))
         common.note_condition(stop_reasons, DEPTH_CONDITION_BREAKER,
                               '%d consecutive failures (%s); last error: %s'
                               % (consecutive_failures, breakdown, last_error))

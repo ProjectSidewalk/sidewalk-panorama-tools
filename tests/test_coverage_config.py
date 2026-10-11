@@ -35,6 +35,7 @@ PRODUCTION_MODULES = {
     'migrate_crop_store.py',
     'migrate_depth_artifacts.py',
     'pano_pose.py',
+    'readmit_dimless_writeoffs.py',
     'refetch_panos.py',
     'scrape_queue.py',
 }
