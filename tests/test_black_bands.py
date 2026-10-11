@@ -423,6 +423,21 @@ class TestTheEdgeBandCondition:
         assert not [r for r in caplog.records if 'frame disagreement' in r.getMessage()]
         assert 'frame disagreement' not in out
 
+    def test_two_flagged_stitches_are_one_condition_naming_the_first(self, monkeypatch, tmp_path, capsys):
+        """The detail names the FIRST pano (the queue's line names the first occurrence); the count says two."""
+        image = framed(1024, 512, bottom=96)
+        stub_stitch(monkeypatch, image)
+        summary = {'image_stop': None, 'depth_stop': None}
+        panos = [gsv_pano('firstPanoAAAAAAAAAAAAA', image), gsv_pano('secondPanoAAAAAAAAAAAA', image)]
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+
+        DownloadRunner.download_panorama_images(str(tmp_path), panos, stop_reasons=summary)
+
+        assert len(summary['conditions']) == 1
+        detail = summary['conditions'][0]['detail']
+        assert detail.startswith('2 pano(s) saved') and 'firstPano' in detail and 'secondPano' not in detail
+        assert capsys.readouterr().out.count(WARNING) == 3, 'one per pano plus the end-of-phase line'
+
     def test_a_clean_phase_notes_no_condition_and_says_nothing(self, monkeypatch, tmp_path, capsys):
         summary = self.run_phase(monkeypatch, tmp_path, framed(1024, 512, bottom=24))
 
@@ -701,20 +716,23 @@ class TestTheSweep:
             f.write(','.join(scan_black_bands.LEDGER_FIELDS) + '\n')         # a repeated header
             f.write('%s,%s,%s,1024,512,0.00' % (clean['pano_id'], clean['size'], clean['mtime_ns']))   # torn
 
+        with open(str(ledger), 'a', newline='') as f:
+            f.write('\n,1,2,1024,512,0.0,0.0,0.0,0.0\n')                            # a row with no pano id
+
         loaded, skipped = scan_black_bands.load_ledger(str(ledger))
-        assert skipped == 2
+        assert skipped == 3
         assert loaded[clean['pano_id']] == clean, 'the torn row did not displace the sound one'
         summary = scan_black_bands.scan_store(str(store))
 
         assert summary.current == 7, 'every sound row still resumes'
-        assert '2 unreadable ledger row(s) skipped' in capsys.readouterr().out
+        assert '3 unreadable ledger row(s) skipped' in capsys.readouterr().out
         # A pano whose ONLY row is torn is simply not in the ledger: scanned again from nothing. (The run above
         # appended its rows after the torn one, which had no newline - so that line now carries two rows'
         # fields and is unsound once, which is the one skip already counted; this one is on its own line.)
         with open(str(ledger), 'a', newline='') as f:
             f.write('\nnewPanoAAAAAAAAAAAAAAAA,1,2,1024,512,0.0\n')
         loaded, skipped = scan_black_bands.load_ledger(str(ledger))
-        assert 'newPanoAAAAAAAAAAAAAAAA' not in loaded and skipped == 3
+        assert 'newPanoAAAAAAAAAAAAAAAA' not in loaded and skipped == 4
 
     def test_a_ledger_with_another_versions_columns_is_kept_aside_and_started_afresh(self, tmp_path, capsys):
         """A ledger from before the near columns: appending 9-field rows under its 7-field header would read
