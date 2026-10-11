@@ -12,7 +12,7 @@ Everything runs from a virtualenv — **there is no Docker in this repo**. The i
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip3 install -r requirements.txt
+pip3 install -r requirements.txt -c constraints.txt   # the production box's pip freeze (#167); drop -c on a Python with no wheel for a pin (3.14)
 
 # Downloader (one city)
 python3 DownloadRunner.py <fqdn> <storage-dir> [-c <csv>] [--all-panos] [--skip-depth] \
@@ -74,12 +74,12 @@ python3 assets/make_banner.py
 Tests:
 
 ```bash
-pip3 install -r requirements.txt -r requirements-dev.txt
+pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python3 -m pytest tests
 python3 -m pytest tests --cov --cov-report=term-missing   # what CI reports and gates on
 ```
 
-CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10, the production baseline. There is no linter configured.
+CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu 22.04 / Python 3.10, the production baseline, against `constraints.txt` (the box's `pip freeze`, #167). `tests-latest.yml` runs it weekly with no constraints and never on a PR, to show drift. A requirement and its pin change together (`tests/test_constraints.py` checks this). The refresh procedure is in `docs/ops.md` under "Refreshing `constraints.txt`". There is no linter configured.
 
 ## Documentation layout
 
@@ -149,7 +149,7 @@ Everything lives under the storage root, with two-char pano-id prefix sharding:
 | `<pano_id[:2]>/<pano_id>.depth.npz` | Depth artifact (see below) |
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | Display copy of a pano wider than 8192 px (#115). **Not written automatically since 2026-09-09** — only by `downscale_panos.py`, plus `refetch_panos` refreshing one that already exists, and deleting it if that refresh fails (#122). Copies written before the switch are still on the store, so: **never list the store's `*.jpg` by hand — call `downloaders.common.walk_store_panos()`**, the one definition of "this file is a panorama"; a walker that forgets `is_downscaled_sidecar()` does not fail, it invents pano ids like `<real id>.w8192` |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at`; two-field rows predate #129 (committed 2026-09-10, on the production store from 2026-09-17) and are never backfilled, and a `skipped` verdict (file already on disk, source never contacted) writes a **blank** stamp rather than laundering an unknown fetch time into today's - blank and absent both mean unknown. `progress_check` accepts **both** widths - a bare `len(row) != 2` silently parses a timestamped ledger as EMPTY. The stamp is last so the verdict stays in column 2; an end-anchored `grep ',0$'` no longer matches a `0` row |
-| `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
+| `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable`. An unparseable ledger (a field over `csv.field_size_limit()`) sits the depth phase out as `depth-ledger-unusable` and never costs the image phase; one bad byte or NUL costs one row (#189) |
 | `log.csv` | One 20-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
 

@@ -27,8 +27,16 @@ git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git
 cd sidewalk-panorama-tools
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 ```
+
+`-c constraints.txt` installs the exact versions the production box runs and CI tests
+([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The file is that box's
+`pip freeze` on Python 3.10, refreshed by the procedure in
+[Refreshing `constraints.txt`](ops.md#refreshing-constraintstxt). Leave it off to take the latest release of
+everything, which is what a weekly CI job tests, or when a pin has no wheel for your platform or Python. For
+example, numpy 2.2.6 and scipy 1.15.3 publish wheels for CPython 3.10 to 3.13 only, so on 3.14 `-c` means building
+numpy from source. (`pyfrpc` has no 3.14 wheel either way; see below.)
 
 Two platform notes:
 
@@ -239,8 +247,21 @@ BASH_ENV=/home/ubuntu/.scraper.env
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
               --max-runtime 690 --city-max-runtime 12 \
-              -- --all-panos --min-depth-runtime 6
+              -- --all-panos --min-depth-runtime 6 \
+              ; if [ -n "$(find /home/ubuntu/cron_notify.log -mmin -10 2>/dev/null)" ]; then \
+              aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools \
+              --metric-name QueueHeartbeat --value 1 --unit Count >> /home/ubuntu/heartbeat.log 2>&1 \
+              && echo "$(date -Is) heartbeat published" >> /home/ubuntu/heartbeat.log \
+              || echo "$(date -Is) heartbeat FAILED" >> /home/ubuntu/heartbeat.log; \
+              else echo "$(date -Is) heartbeat withheld: cron_notify.log not written" >> /home/ubuntu/heartbeat.log; fi
 ```
+
+The tail after the `;` is the [dead-man switch](ops.md#hearing-about-a-night-that-never-ran)
+([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). It publishes a CloudWatch
+heartbeat whenever `cron_notify` has run to the end, whatever the queue's exit code. It is withheld when the
+wrapper did not write its log line, because a broken wrapper is the one failure nothing else reports. An alarm
+fires when no heartbeat has arrived for about 36 hours. The backslashes here are only for display: cron has no line continuation, so on the box
+this is one line.
 
 `--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
 images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the
@@ -444,7 +465,7 @@ silenced by it.
 | `depth-refused` | Google refused this run's depth requests; the 6 h block latch was written | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-stood-down` | A live latch at depth-phase start; the depth phase made no request. The refusal behind it is another run's, or this run's own image phase (a photometa refusal, or a push-back trip, which also exits the city 1). GSV images are not stood down by a latch, only put on probation | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-breaker` | 25 consecutive depth failures; the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
-| `depth-ledger-unusable` | `depth_log.csv` could not be read or written; depth sat the run out | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-ledger-unusable` | `depth_log.csv` could not be read, parsed or written; depth sat the run out (the image phase is unaffected) | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
 | `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
 | `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |

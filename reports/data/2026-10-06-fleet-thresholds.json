@@ -1,0 +1,2113 @@
+{
+ "alignment": {
+  "amsterdam": {
+   "log_csv_image_rows": 40,
+   "mismatch": null,
+   "paired": 39,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": false
+  },
+  "auckland": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "bayonne-fr": {
+   "log_csv_image_rows": 19,
+   "mismatch": null,
+   "paired": 19,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 19,
+   "shift1_passes_fully": false
+  },
+  "blackhawk-hills-il": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "burnaby": {
+   "log_csv_image_rows": 40,
+   "mismatch": null,
+   "paired": 39,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": true
+  },
+  "cdmx": {
+   "log_csv_image_rows": 48,
+   "mismatch": null,
+   "paired": 47,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 47,
+   "shift1_passes_fully": false
+  },
+  "chandigarh-india": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "chicago-il": {
+   "log_csv_image_rows": 55,
+   "mismatch": null,
+   "paired": 54,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 54,
+   "shift1_passes_fully": false
+  },
+  "cliffside-park-nj": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "clifton-nj": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "columbia-sc": {
+   "log_csv_image_rows": 47,
+   "mismatch": null,
+   "paired": 46,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 46,
+   "shift1_passes_fully": false
+  },
+  "columbus-oh": {
+   "log_csv_image_rows": 41,
+   "mismatch": null,
+   "paired": 40,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 40,
+   "shift1_passes_fully": true
+  },
+  "cuenca": {
+   "log_csv_image_rows": 40,
+   "mismatch": null,
+   "paired": 39,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": true
+  },
+  "danville-il": {
+   "log_csv_image_rows": 39,
+   "mismatch": null,
+   "paired": 38,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 38,
+   "shift1_passes_fully": false
+  },
+  "detroit-mi": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "fort-wayne-in": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "gainesville-fl": {
+   "log_csv_image_rows": 40,
+   "mismatch": null,
+   "paired": 40,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 40,
+   "shift1_passes_fully": false
+  },
+  "hackensack-nj": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "houston-tx": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 38,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 38,
+   "shift1_passes_fully": false
+  },
+  "kaohsiung-tw": {
+   "log_csv_image_rows": 51,
+   "mismatch": null,
+   "paired": 50,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 50,
+   "shift1_passes_fully": true
+  },
+  "keelung-tw": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": true
+  },
+  "knox-oh": {
+   "log_csv_image_rows": 39,
+   "mismatch": null,
+   "paired": 38,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 38,
+   "shift1_passes_fully": false
+  },
+  "la-ca": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": true
+  },
+  "la-piedad": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
+  },
+  "la-piedad-old": {
+   "log_csv_image_rows": 14,
+   "mismatch": null,
+   "paired": 14,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 14,
+   "shift1_passes_fully": false
+  },
+  "laurens-ia": {
+   "log_csv_image_rows": 22,
+   "mismatch": null,
+   "paired": 22,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 22,
+   "shift1_passes_fully": false
+  },
+  "madison-wi": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
+  },
+  "maywood-nj": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
+  },
+  "mendota-il": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "new-taipei-tw": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "newberg-or": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": true
+  },
+  "newport-ky": {
+   "log_csv_image_rows": 35,
+   "mismatch": null,
+   "paired": 35,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 35,
+   "shift1_passes_fully": false
+  },
+  "niagara-falls-ny": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
+  },
+  "oradell-nj": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": false
+  },
+  "paterson-nj": {
+   "log_csv_image_rows": 43,
+   "mismatch": null,
+   "paired": 43,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 43,
+   "shift1_passes_fully": false
+  },
+  "pittsburgh-pa": {
+   "log_csv_image_rows": 40,
+   "mismatch": null,
+   "paired": 39,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": false
+  },
+  "rancagua-chile": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "richmond-va": {
+   "log_csv_image_rows": 43,
+   "mismatch": null,
+   "paired": 43,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 43,
+   "shift1_passes_fully": false
+  },
+  "santiago-chile": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "sao-paulo-brazil": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "seattle-wa": {
+   "log_csv_image_rows": 53,
+   "mismatch": null,
+   "paired": 52,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 52,
+   "shift1_passes_fully": false
+  },
+  "spgg": {
+   "log_csv_image_rows": 42,
+   "mismatch": null,
+   "paired": 41,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 41,
+   "shift1_passes_fully": false
+  },
+  "st-louis-mo": {
+   "log_csv_image_rows": 55,
+   "mismatch": null,
+   "paired": 54,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 54,
+   "shift1_passes_fully": false
+  },
+  "taichung-tw": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "tainan-tw": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 36,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 36,
+   "shift1_passes_fully": true
+  },
+  "taipei": {
+   "log_csv_image_rows": 41,
+   "mismatch": null,
+   "paired": 40,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 40,
+   "shift1_passes_fully": false
+  },
+  "teaneck-nj": {
+   "log_csv_image_rows": 41,
+   "mismatch": null,
+   "paired": 40,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 40,
+   "shift1_passes_fully": false
+  },
+  "tucson-az": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 38,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 38,
+   "shift1_passes_fully": false
+  },
+  "validation-study": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "vancouver-wa": {
+   "log_csv_image_rows": 48,
+   "mismatch": null,
+   "paired": 47,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 47,
+   "shift1_passes_fully": true
+  },
+  "virden-il": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": true
+  },
+  "walla-walla-wa": {
+   "log_csv_image_rows": 45,
+   "mismatch": null,
+   "paired": 44,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 44,
+   "shift1_passes_fully": false
+  },
+  "waltham-ma": {
+   "log_csv_image_rows": 37,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  },
+  "washington-dc": {
+   "log_csv_image_rows": 17,
+   "mismatch": null,
+   "paired": 17,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 17,
+   "shift1_passes_fully": false
+  },
+  "west-chester-pa": {
+   "log_csv_image_rows": 40,
+   "mismatch": null,
+   "paired": 39,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 39,
+   "shift1_passes_fully": true
+  },
+  "zurich": {
+   "log_csv_image_rows": 38,
+   "mismatch": null,
+   "paired": 37,
+   "raise_runs_identified": true,
+   "scrape_log_runs": 37,
+   "shift1_passes_fully": false
+  }
+ },
+ "alignment_summary": {
+  "cities_shift1_passes_fully": [
+   "auckland",
+   "blackhawk-hills-il",
+   "burnaby",
+   "cliffside-park-nj",
+   "columbus-oh",
+   "cuenca",
+   "fort-wayne-in",
+   "kaohsiung-tw",
+   "keelung-tw",
+   "la-ca",
+   "mendota-il",
+   "new-taipei-tw",
+   "newberg-or",
+   "taichung-tw",
+   "tainan-tw",
+   "validation-study",
+   "vancouver-wa",
+   "virden-il",
+   "west-chester-pa"
+  ],
+  "cities_with_raises_not_identified": [],
+  "cities_with_unpaired_rows": 40,
+  "log_csv_image_rows": 2165,
+  "paired": 2125,
+  "unpaired_rows": 40
+ },
+ "cities_with_raises": [
+  {
+   "city": "chicago-il",
+   "distinct_raising_panos": 5,
+   "image_runs": 54,
+   "max_raised": 5,
+   "max_raised_answered_0": 5,
+   "mean_raise_upper_bound_answered_0": [
+    6.0,
+    6.0
+   ],
+   "post_deploy_answered": [
+    6
+   ],
+   "post_deploy_raised": [
+    5
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 27,
+    "cbk probe answered 400, not 200": 5
+   },
+   "runs_answered_0_with_raises": 2,
+   "runs_with_raises": 8
+  },
+  {
+   "city": "richmond-va",
+   "distinct_raising_panos": 1,
+   "image_runs": 43,
+   "max_raised": 1,
+   "max_raised_answered_0": null,
+   "mean_raise_upper_bound_answered_0": [],
+   "post_deploy_answered": [],
+   "post_deploy_raised": [],
+   "raise_kinds": {
+    "N Client Error: Bad Request for url: https://graph.mapillary.com/N?fields=thumb_": 1
+   },
+   "runs_answered_0_with_raises": 0,
+   "runs_with_raises": 1
+  },
+  {
+   "city": "st-louis-mo",
+   "distinct_raising_panos": 16,
+   "image_runs": 54,
+   "max_raised": 16,
+   "max_raised_answered_0": 16,
+   "mean_raise_upper_bound_answered_0": [
+    1.875
+   ],
+   "post_deploy_answered": [
+    40,
+    513
+   ],
+   "post_deploy_raised": [
+    1,
+    16
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 188,
+    "cbk probe answered 400, not 200": 17
+   },
+   "runs_answered_0_with_raises": 1,
+   "runs_with_raises": 35
+  }
+ ],
+ "constants": {
+  "IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS": 60.0,
+  "IMAGE_NO_SUCCESS_MIN_RAISED": 10
+ },
+ "dc_ledger": {
+  "downloaded_0": 1349,
+  "downloaded_0_by_day": {
+   "2026-09-24": 469,
+   "2026-09-25": 880
+  },
+  "downloaded_0_on_or_after_2026_09_10": 1349,
+  "rows": 78301,
+  "scrape_log_black_stitch_lines": 0,
+  "scrape_log_raise_lines": 0,
+  "stamped_streaks": {
+   "2026-09-24 20:04:41.142876-07:00": {
+    "downloaded_0": 469,
+    "longest_zero_streak": 280,
+    "night": "2026-09-24",
+    "rows": 470
+   },
+   "2026-09-25 01:11:38.140210-07:00": {
+    "downloaded_0": 880,
+    "longest_zero_streak": 880,
+    "night": "2026-09-24",
+    "rows": 880
+   }
+  }
+ },
+ "frame_disagreement": {
+  "cities_scanned": 56,
+  "edge_band_lines": {},
+  "lines_scanned": 27642,
+  "per_city": {},
+  "photometa_lines": {},
+  "refusal_lines": 0
+ },
+ "queue_conditions": {
+  "pano-schema-drift|washington-dc": 1
+ },
+ "runs": [
+  {
+   "answered": 983,
+   "city": "chicago-il",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 22986,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 120,
+   "mean_raise_seconds_upper_bound": 7230.0,
+   "night": "2026-09-29",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQzVrZTJ1OXdF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 983,
+   "ts": "2026-09-30 02:30:46.843536-07:00"
+  },
+  {
+   "answered": 869,
+   "city": "chicago-il",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 22986,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 105,
+   "mean_raise_seconds_upper_bound": 6330.0,
+   "night": "2026-09-30",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQzVrZTJ1OXdF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": null,
+   "success": 869,
+   "ts": "2026-10-01 02:04:38.710629-07:00"
+  },
+  {
+   "answered": 96,
+   "city": "chicago-il",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 22990,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 12,
+   "mean_raise_seconds_upper_bound": 150.0,
+   "night": "2026-10-01",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQzVrZTJ1OXdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYTc2dmdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYldnOUFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZkxDcHdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZmJQbmdF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 5
+   },
+   "raised": 5,
+   "stop": null,
+   "success": 96,
+   "ts": "2026-10-01 21:43:56.802169-07:00"
+  },
+  {
+   "answered": 0,
+   "city": "chicago-il",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 22990,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 0,
+   "mean_raise_seconds_upper_bound": 6.0,
+   "night": "2026-10-01",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQzVrZTJ1OXdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYTc2dmdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYldnOUFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZkxDcHdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZmJQbmdF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 5
+   },
+   "raised": 5,
+   "stop": null,
+   "success": 0,
+   "ts": "2026-10-02 02:08:20.871294-07:00"
+  },
+  {
+   "answered": 449,
+   "city": "chicago-il",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 22990,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 54,
+   "mean_raise_seconds_upper_bound": 654.0,
+   "night": "2026-10-02",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQzVrZTJ1OXdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYTc2dmdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYldnOUFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZkxDcHdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZmJQbmdF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 5
+   },
+   "raised": 5,
+   "stop": null,
+   "success": 449,
+   "ts": "2026-10-02 19:46:13.737434-07:00"
+  },
+  {
+   "answered": 0,
+   "city": "chicago-il",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 22990,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 0,
+   "mean_raise_seconds_upper_bound": 6.0,
+   "night": "2026-10-03",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQzVrZTJ1OXdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYTc2dmdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYldnOUFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZkxDcHdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZmJQbmdF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 5
+   },
+   "raised": 5,
+   "stop": null,
+   "success": 0,
+   "ts": "2026-10-03 19:03:15.670261-07:00"
+  },
+  {
+   "answered": 1,
+   "city": "chicago-il",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 22990,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 0,
+   "mean_raise_seconds_upper_bound": 6.0,
+   "night": "2026-10-04",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQzVrZTJ1OXdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYTc2dmdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYldnOUFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZkxDcHdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZmJQbmdF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 5
+   },
+   "raised": 5,
+   "stop": null,
+   "success": 1,
+   "ts": "2026-10-04 19:05:50.114236-07:00"
+  },
+  {
+   "answered": 6,
+   "city": "chicago-il",
+   "edge_band_refused": 0,
+   "era": "post-deploy",
+   "failed": 22990,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 1,
+   "mean_raise_seconds_upper_bound": 18.0,
+   "night": "2026-10-05",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQzVrZTJ1OXdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYTc2dmdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwYldnOUFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZkxDcHdF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJRHFwZmJQbmdF"
+   ],
+   "raise_kinds": {
+    "cbk probe answered 400, not 200": 5
+   },
+   "raised": 5,
+   "stop": null,
+   "success": 6,
+   "ts": "2026-10-05 19:18:35.016373-07:00"
+  },
+  {
+   "answered": null,
+   "city": "richmond-va",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 163,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 0,
+   "mean_raise_seconds_upper_bound": 30.0,
+   "night": "2026-08-31",
+   "no_success_line": null,
+   "permanent": null,
+   "photometa_lines": {},
+   "raise_ids": [
+    "702311052407434"
+   ],
+   "raise_kinds": {
+    "N Client Error: Bad Request for url: https://graph.mapillary.com/N?fields=thumb_": 1
+   },
+   "raised": 1,
+   "stop": null,
+   "success": 0,
+   "ts": "2026-09-01 18:32:29.563970"
+  },
+  {
+   "answered": 45,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-12",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 45,
+   "ts": "2026-09-12 21:21:42.545010+00:00"
+  },
+  {
+   "answered": 46,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7864,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 195.0,
+   "night": "2026-09-14",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 2
+   },
+   "raised": 2,
+   "stop": "max-runtime",
+   "success": 46,
+   "ts": "2026-09-14 20:52:13.124361+00:00"
+  },
+  {
+   "answered": 46,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-15",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 46,
+   "ts": "2026-09-15 20:40:19.588103+00:00"
+  },
+  {
+   "answered": 48,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-16",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 48,
+   "ts": "2026-09-16 20:23:51.081998+00:00"
+  },
+  {
+   "answered": 89,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7865,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 11,
+   "mean_raise_seconds_upper_bound": 230.0,
+   "night": "2026-09-17",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 3
+   },
+   "raised": 3,
+   "stop": "max-runtime",
+   "success": 89,
+   "ts": "2026-09-18 00:46:33.613923-07:00"
+  },
+  {
+   "answered": 49,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-18",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 49,
+   "ts": "2026-09-18 19:48:43.925958-07:00"
+  },
+  {
+   "answered": 110,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7867,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 13,
+   "mean_raise_seconds_upper_bound": 162.0,
+   "night": "2026-09-18",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 5
+   },
+   "raised": 5,
+   "stop": "max-runtime",
+   "success": 110,
+   "ts": "2026-09-19 00:26:55.618483-07:00"
+  },
+  {
+   "answered": 51,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-19",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 51,
+   "ts": "2026-09-19 19:48:35.818969-07:00"
+  },
+  {
+   "answered": 150,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7864,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 18,
+   "mean_raise_seconds_upper_bound": 555.0,
+   "night": "2026-09-19",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 2
+   },
+   "raised": 2,
+   "stop": "max-runtime",
+   "success": 150,
+   "ts": "2026-09-19 23:53:16.576401-07:00"
+  },
+  {
+   "answered": 275,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7870,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 33,
+   "mean_raise_seconds_upper_bound": 251.25,
+   "night": "2026-09-20",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 8
+   },
+   "raised": 8,
+   "stop": "max-runtime",
+   "success": 275,
+   "ts": "2026-09-20 22:47:19.658840-07:00"
+  },
+  {
+   "answered": 49,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-21",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF"
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 49,
+   "ts": "2026-09-21 19:12:42.397247-07:00"
+  },
+  {
+   "answered": 299,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7876,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 37,
+   "mean_raise_seconds_upper_bound": 160.71428571428572,
+   "night": "2026-09-21",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 14
+   },
+   "raised": 14,
+   "stop": "max-runtime",
+   "success": 299,
+   "ts": "2026-09-21 21:52:32.545744-07:00"
+  },
+  {
+   "answered": 50,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7870,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 48.75,
+   "night": "2026-09-22",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 8
+   },
+   "raised": 8,
+   "stop": "max-runtime",
+   "success": 50,
+   "ts": "2026-09-22 19:12:36.534960-07:00"
+  },
+  {
+   "answered": 75,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7877,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 10,
+   "mean_raise_seconds_upper_bound": 42.0,
+   "night": "2026-09-22",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 15
+   },
+   "raised": 15,
+   "stop": null,
+   "success": 75,
+   "ts": "2026-09-22 21:47:17.555526-07:00"
+  },
+  {
+   "answered": 48,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7864,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 195.0,
+   "night": "2026-09-23",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 2
+   },
+   "raised": 2,
+   "stop": "max-runtime",
+   "success": 48,
+   "ts": "2026-09-23 19:24:26.936195-07:00"
+  },
+  {
+   "answered": 349,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7869,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 42,
+   "mean_raise_seconds_upper_bound": 364.2857142857143,
+   "night": "2026-09-23",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 7
+   },
+   "raised": 7,
+   "stop": "max-runtime",
+   "success": 349,
+   "ts": "2026-09-23 23:29:32.883157-07:00"
+  },
+  {
+   "answered": 273,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7869,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 32,
+   "mean_raise_seconds_upper_bound": 278.57142857142856,
+   "night": "2026-09-24",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 7
+   },
+   "raised": 7,
+   "stop": "max-runtime",
+   "success": 273,
+   "ts": "2026-09-24 23:04:03.045661-07:00"
+  },
+  {
+   "answered": 48,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-25",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 48,
+   "ts": "2026-09-25 19:25:30.383553-07:00"
+  },
+  {
+   "answered": 295,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7864,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 36,
+   "mean_raise_seconds_upper_bound": 1095.0,
+   "night": "2026-09-25",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 2
+   },
+   "raised": 2,
+   "stop": "max-runtime",
+   "success": 295,
+   "ts": "2026-09-25 23:15:20.611539-07:00"
+  },
+  {
+   "answered": 51,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-26",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 51,
+   "ts": "2026-09-26 19:25:04.381149-07:00"
+  },
+  {
+   "answered": 308,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7867,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 37,
+   "mean_raise_seconds_upper_bound": 450.0,
+   "night": "2026-09-26",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 5
+   },
+   "raised": 5,
+   "stop": "max-runtime",
+   "success": 308,
+   "ts": "2026-09-26 23:04:21.624737-07:00"
+  },
+  {
+   "answered": 346,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7866,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 42,
+   "mean_raise_seconds_upper_bound": 637.5,
+   "night": "2026-09-27",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 4
+   },
+   "raised": 4,
+   "stop": "max-runtime",
+   "success": 346,
+   "ts": "2026-09-27 23:27:53.608811-07:00"
+  },
+  {
+   "answered": 50,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7864,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 195.0,
+   "night": "2026-09-28",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 2
+   },
+   "raised": 2,
+   "stop": "max-runtime",
+   "success": 50,
+   "ts": "2026-09-28 19:28:37.450415-07:00"
+  },
+  {
+   "answered": 363,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7865,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 43,
+   "mean_raise_seconds_upper_bound": 870.0,
+   "night": "2026-09-28",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 3
+   },
+   "raised": 3,
+   "stop": "max-runtime",
+   "success": 363,
+   "ts": "2026-09-28 23:18:36.377510-07:00"
+  },
+  {
+   "answered": 511,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7866,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 63,
+   "mean_raise_seconds_upper_bound": 952.5,
+   "night": "2026-09-29",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 4
+   },
+   "raised": 4,
+   "stop": "max-runtime",
+   "success": 511,
+   "ts": "2026-09-30 00:14:22.452797-07:00"
+  },
+  {
+   "answered": 49,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-09-30",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 49,
+   "ts": "2026-09-30 19:33:44.948360-07:00"
+  },
+  {
+   "answered": 1094,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7878,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 134,
+   "mean_raise_seconds_upper_bound": 504.375,
+   "night": "2026-09-30",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQzhzNldQRWc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 16
+   },
+   "raised": 16,
+   "stop": "max-runtime",
+   "success": 1094,
+   "ts": "2026-09-30 23:49:22.626300-07:00"
+  },
+  {
+   "answered": 45,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7865,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 130.0,
+   "night": "2026-10-01",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 3
+   },
+   "raised": 3,
+   "stop": "max-runtime",
+   "success": 45,
+   "ts": "2026-10-01 19:12:59.526657-07:00"
+  },
+  {
+   "answered": 264,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7878,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 34,
+   "mean_raise_seconds_upper_bound": 129.375,
+   "night": "2026-10-01",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQzhzNldQRWc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 16
+   },
+   "raised": 16,
+   "stop": null,
+   "success": 264,
+   "ts": "2026-10-01 21:09:47.329484-07:00"
+  },
+  {
+   "answered": 48,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7865,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 130.0,
+   "night": "2026-10-02",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 3
+   },
+   "raised": 3,
+   "stop": "max-runtime",
+   "success": 48,
+   "ts": "2026-10-02 19:01:11.291177-07:00"
+  },
+  {
+   "answered": 197,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7878,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 24,
+   "mean_raise_seconds_upper_bound": 91.875,
+   "night": "2026-10-02",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQzhzNldQRWc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 16
+   },
+   "raised": 16,
+   "stop": null,
+   "success": 197,
+   "ts": "2026-10-02 19:22:21.659401-07:00"
+  },
+  {
+   "answered": 9,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7878,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 1,
+   "mean_raise_seconds_upper_bound": 5.625,
+   "night": "2026-10-03",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQzhzNldQRWc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 16
+   },
+   "raised": 16,
+   "stop": null,
+   "success": 9,
+   "ts": "2026-10-03 19:00:58.061516-07:00"
+  },
+  {
+   "answered": 0,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "pre-deploy",
+   "failed": 7878,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 0,
+   "mean_raise_seconds_upper_bound": 1.875,
+   "night": "2026-10-04",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQzhzNldQRWc."
+   ],
+   "raise_kinds": {
+    "cannot identify image file": 16
+   },
+   "raised": 16,
+   "stop": null,
+   "success": 0,
+   "ts": "2026-10-04 19:00:48.819847-07:00"
+  },
+  {
+   "answered": 40,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "post-deploy",
+   "failed": 7863,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 6,
+   "mean_raise_seconds_upper_bound": 390.0,
+   "night": "2026-10-05",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE."
+   ],
+   "raise_kinds": {
+    "cbk probe answered 400, not 200": 1
+   },
+   "raised": 1,
+   "stop": "max-runtime",
+   "success": 40,
+   "ts": "2026-10-05 19:00:55.229030-07:00"
+  },
+  {
+   "answered": 513,
+   "city": "st-louis-mo",
+   "edge_band_refused": 0,
+   "era": "post-deploy",
+   "failed": 7878,
+   "fallback": 0,
+   "frame_refused": 0,
+   "image_minutes": 78,
+   "mean_raise_seconds_upper_bound": 294.375,
+   "night": "2026-10-05",
+   "no_success_line": null,
+   "permanent": 0,
+   "photometa_lines": {},
+   "raise_ids": [
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUtVd0FF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUw4eFFF",
+    "CAoSF0NJSE0wb2dLRUlDQWdJQ1Q1dUxrX3dF",
+    "CAoSFENJSE0wb2dLRUlDQWdJQ1Q1dUlV",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVUUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUtVVUE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUw4SlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwRXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwSXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwUFE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwWXc.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUwwZlE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3R1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3RVE.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQ1Q1dUx3V1E.",
+    "CAoSFkNJSE0wb2dLRUlDQWdJQzhzNldQRWc."
+   ],
+   "raise_kinds": {
+    "cbk probe answered 400, not 200": 16
+   },
+   "raised": 16,
+   "stop": null,
+   "success": 513,
+   "ts": "2026-10-05 19:26:04.615199-07:00"
+  }
+ ],
+ "source": {
+  "cities": 56,
+  "deploy_night": "2026-10-05",
+  "first_night": "2026-08-31",
+  "last_night": "2026-10-05",
+  "log_csv_since": "2026-09-01",
+  "nights": 36,
+  "post_deploy_nights": [
+   "2026-10-05"
+  ]
+ },
+ "sweep": {
+  "floor": [
+   {
+    "cities": [
+     "chicago-il",
+     "st-louis-mo"
+    ],
+    "city_nights": 3,
+    "era": "pre-deploy",
+    "floor": 5,
+    "runs": 3
+   },
+   {
+    "cities": [
+     "st-louis-mo"
+    ],
+    "city_nights": 1,
+    "era": "pre-deploy",
+    "floor": 10,
+    "runs": 1
+   },
+   {
+    "cities": [
+     "st-louis-mo"
+    ],
+    "city_nights": 1,
+    "era": "pre-deploy",
+    "floor": 15,
+    "runs": 1
+   },
+   {
+    "cities": [
+     "st-louis-mo"
+    ],
+    "city_nights": 1,
+    "era": "pre-deploy",
+    "floor": 16,
+    "runs": 1
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "floor": 17,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "floor": 20,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "floor": 25,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "floor": 30,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "floor": 50,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 5,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 10,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 15,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 16,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 17,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 20,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 25,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 30,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "floor": 50,
+    "runs": 0
+   }
+  ],
+  "gate": [
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "gate_seconds": 30.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "gate_seconds": 60.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "gate_seconds": 90.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "gate_seconds": 120.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "pre-deploy",
+    "gate_seconds": 180.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "gate_seconds": 30.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "gate_seconds": 60.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "gate_seconds": 90.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "gate_seconds": 120.0,
+    "runs": 0
+   },
+   {
+    "cities": [],
+    "city_nights": 0,
+    "era": "post-deploy",
+    "gate_seconds": 180.0,
+    "runs": 0
+   }
+  ]
+ },
+ "totals": {
+  "condition_lines_observed": 0,
+  "image_runs": 2125,
+  "post_deploy_frame_refused": 0,
+  "post_deploy_image_runs": 57,
+  "post_deploy_runs_with_raises": 3,
+  "post_deploy_successes": 2066,
+  "raise_lines": 238,
+  "runs_answered_unknown": 62,
+  "runs_with_raises": 44
+ }
+}
