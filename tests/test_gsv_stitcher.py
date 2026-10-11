@@ -675,14 +675,28 @@ def stub_probe(monkeypatch, pick_zoom):
     one of its downloads would send a real photometa request (streetlevel is installed in CI). Returns the
     list of probe URLs requested, in order.
 
-    Only the probe's own tile, (0, 0), has imagery: the pano is exactly the app's frame, so the probe arm's
-    frame check (frame_covers_pano, two tiles just past the grid) finds black there and lets it through."""
+    The pano is exactly the app's frame at `pick_zoom`: the probe's own tile, (0, 0), has imagery, and so does
+    every tile inside the grid the probe arm's frame check (frame_covers_pano) computes, while the two tiles
+    just past that grid are black - so the check lets it through. The grid is read off gsv._tile_grid as the
+    check computes it, because the stub is not told the frame; before the check runs (the probe itself) only
+    (0, 0) is inside. Every other zoom is black."""
     requested = []
+    grid = [(1, 1)]
+    real_tile_grid = gsv._tile_grid
+
+    def recording_tile_grid(width, height, zoom):
+        grid[0] = real_tile_grid(width, height, zoom)
+        return grid[0]
 
     def fake_get_response(url, session, stream=False):
         requested.append(url)
-        color = RED if ('zoom=%d&x=0&y=0&' % pick_zoom) in url else (0, 0, 0)
-        return BytesIO(jpeg_bytes(color, (16, 16)))
+        zoom = int(url.split('&zoom=')[1].split('&')[0])
+        x = int(url.split('&x=')[1].split('&')[0])
+        y = int(url.split('&y=')[1].split('&')[0])
+        inside = zoom == pick_zoom and ((x, y) == (0, 0) or (x < grid[0][0] and y < grid[0][1]))
+        return BytesIO(jpeg_bytes(RED if inside else (0, 0, 0), (16, 16)))
+
+    monkeypatch.setattr(gsv, '_tile_grid', recording_tile_grid)
 
     def photometa_unavailable(pano_id, session):
         raise gsv.DepthPayloadError('stubbed: this test drives the probe path')
@@ -1096,8 +1110,12 @@ class TestDownloadSinglePanoComposesTheSeams:
                                                         'width': 1024, 'height': 512}) == DownloadResult.failure
 
     def test_upscaled_from_the_fetch_seam_becomes_fallback_success(self, tmp_path, monkeypatch):
+        # A probe-arm frame, so the frame check is stubbed too: unstubbed it went to the LIVE cbk endpoint
+        # and passed only because Google answers a made-up pano id with black tiles - which since #181 is a
+        # refusal (the grid's own last column is black).
         monkeypatch.setattr(gsv, 'resolve_frame',
                             lambda pano_info: gsv.ResolvedFrame(1024, 512, 3, True, None, 'probe'))
+        monkeypatch.setattr(gsv, 'frame_covers_pano', lambda *a: True)
         monkeypatch.setattr(gsv, 'fetch_pano_image',
                             lambda *a: gsv.StitchedPano(Image.new('RGB', (1024, 512), RED), 0, True))
 
@@ -1116,14 +1134,21 @@ class TestFrameCoversPano:
     exact dimensions: no undersized tile, no black, nothing downstream can see it.
     """
 
-    def probe_responses(self, monkeypatch, imagery_at=()):
-        """Answer probe requests with imagery at the listed (x, y) and Google's all-black otherwise."""
+    # The last in-grid tile on the middle row of a 26x13 grid: imagery there is what a pano that IS this frame
+    # answers, and what every "covers" case below must serve (#181 Part 1).
+    IN_GRID_13312 = (25, 6)
+
+    def probe_responses(self, monkeypatch, imagery_at=(), body_at=None):
+        """Answer probe requests with imagery at the listed (x, y) and Google's all-black otherwise.
+        `body_at` maps (x, y) to exact bytes, overriding both."""
         asked = []
 
         def fake_get_response(url, session, stream=False):
             x = int(url.split('&x=')[1].split('&')[0])
             y = int(url.split('&y=')[1].split('&')[0])
             asked.append((x, y))
+            if body_at and (x, y) in body_at:
+                return BytesIO(body_at[(x, y)])
             color = RED if (x, y) in imagery_at else (0, 0, 0)
             return BytesIO(jpeg_bytes(color, (16, 16)))
 
@@ -1135,11 +1160,71 @@ class TestFrameCoversPano:
         is taken on the MIDDLE row, not row 0: the probe reads exact-zero luma as "out of range", so if the
         pano has grown, the tile past the right edge is real imagery that must not be uniformly black. Row 0
         is the zenith cap, the one strip of a panorama where it can be. A probe at (26, 0) would pass a
-        grown pano with a black zenith straight through to a cropped swap."""
-        asked = self.probe_responses(monkeypatch)
+        grown pano with a black zenith straight through to a cropped swap. The third request, the last
+        in-grid tile on the same row, is #181's: it must have imagery."""
+        asked = self.probe_responses(monkeypatch, imagery_at=[self.IN_GRID_13312])
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is True
-        assert asked == [(26, 6), (0, 13)]
+        assert asked == [(26, 6), (0, 13), (25, 6)]
+
+    def test_a_black_last_in_grid_tile_means_google_serves_the_pano_smaller(self, monkeypatch):
+        """#181 Part 1: 16384x8192 asked of a pano Google serves at 13312x6656. Everything past a 32x16 grid is
+        black, so the two past-the-grid tiles pass it - and the stitch would be ~34% black, under
+        STITCH_MAX_BLACK_FRACTION, saved and ledgered downloaded=1. (31, 8) is past Google's 26 columns.
+        Not a False: False means "Google serves it larger", which refetch_panos ledgers as frame_grew. This is
+        the opposite mismatch and is refused the way photometa refuses it, transiently."""
+        imagery = [(x, y) for x in range(26) for y in range(13)]       # Google's real 26x13 grid
+        asked = self.probe_responses(monkeypatch, imagery_at=imagery)
+
+        with pytest.raises(gsv.FrameDisagreementError) as refused:
+            gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 16384, 8192, 5)
+
+        assert asked == [(32, 8), (0, 16), (31, 8)]
+        message = str(refused.value)
+        assert message.startswith('frame disagreement'), 'what scrape.log is grepped for'
+        assert '16384x8192' in message and 'smaller' in message and '(31, 8)' in message
+
+    def test_the_in_grid_tile_is_the_last_column_on_the_middle_row(self, monkeypatch):
+        """Discrimination for the position: imagery everywhere in the grid EXCEPT the one tile asked about.
+        Row 0 (the zenith, where a real black tile is plausible) or column 0 (always imagery when the probe
+        answered) would pass this frame."""
+        imagery = [(x, y) for x in range(26) for y in range(13) if (x, y) != self.IN_GRID_13312]
+        self.probe_responses(monkeypatch, imagery_at=imagery)
+
+        with pytest.raises(gsv.FrameDisagreementError):
+            gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5)
+
+    def test_a_grown_pano_is_still_false_and_never_reaches_the_in_grid_tile(self, monkeypatch):
+        """The two directions stay apart: imagery past the grid is "larger" (False, as before #181), decided
+        before the in-grid request is spent, so frame_grew still costs refetch two requests."""
+        asked = self.probe_responses(monkeypatch, imagery_at=[(26, 6), (0, 13), self.IN_GRID_13312])
+
+        assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
+        assert asked == [(26, 6)]
+
+    def test_the_in_grid_tile_uses_the_exact_black_rule_on_real_bytes(self, monkeypatch):
+        """The in-grid tile is judged by the same exact-black rule as the two past the grid and as the probe -
+        CBK's pinned semantics (tests/test_gsv_tile_contract.py), on its committed bytes. The genuine
+        out-of-range body there refuses; a genuine black-PADDED edge tile, mostly black but not exactly, and
+        a near-black (1, 1, 1) tile both pass - this is not a black-fraction threshold."""
+        blank = fixture_bytes('z3_blank_out_of_range.jpg')
+        for body, covers in ((blank, False), (fixture_bytes('z3_edge_bottom.jpg'), True),
+                             (jpeg_bytes((1, 1, 1), (16, 16)), True)):
+            self.probe_responses(monkeypatch, body_at={(26, 6): blank, (0, 13): blank,
+                                                       self.IN_GRID_13312: body})
+            if covers:
+                assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is True
+            else:
+                with pytest.raises(gsv.FrameDisagreementError):
+                    gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5)
+
+    def test_one_exact_black_rule(self):
+        """The probe, the two past-the-grid tiles and the in-grid tile read blackness through one helper, so
+        the three cannot drift apart. Exact zero luma, nothing looser."""
+        assert gsv._is_exactly_black(Image.open(BytesIO(fixture_bytes('z3_blank_out_of_range.jpg'))))
+        assert not gsv._is_exactly_black(Image.open(BytesIO(fixture_bytes('z3_edge_bottom.jpg'))))
+        assert not gsv._is_exactly_black(Image.new('RGB', (16, 16), (1, 1, 1)))
+        assert gsv._is_exactly_black(Image.new('RGB', (16, 16), (0, 0, 0)))
 
     def test_imagery_one_column_past_the_grid_means_the_pano_is_wider(self, monkeypatch):
         self.probe_responses(monkeypatch, imagery_at=[(26, 6)])
@@ -1170,26 +1255,25 @@ class TestFrameCoversPano:
     def test_a_full_16384_frame_probes_its_own_edges(self, monkeypatch):
         """Discrimination: the probe positions must come from the frame asked about, not be constants.
         A 32x16 grid is exactly the case where a 26x13 answer would be a crop."""
-        asked = self.probe_responses(monkeypatch)
+        asked = self.probe_responses(monkeypatch, imagery_at=[(31, 8)])
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 16384, 8192, 5) is True
-        assert asked == [(32, 8), (0, 16)]
+        assert asked == [(32, 8), (0, 16), (31, 8)]
 
     def test_it_probes_the_zoom_it_was_given(self, monkeypatch):
         """At zoom 3 a 13312x6656 pano is served at 3328x1664, i.e. a 7x4 grid, so the edges that
         discriminate are somewhere else entirely - the probe has to come from _tile_grid, not from the
         full-size grid with the zoom ignored."""
-        asked = self.probe_responses(monkeypatch)
+        asked = self.probe_responses(monkeypatch, imagery_at=[(6, 2)])
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 3) is True
-        assert asked == [(7, 2), (0, 4)]
+        assert asked == [(7, 2), (0, 4), (6, 2)]
 
     def test_it_reports_the_real_out_of_range_body_as_blank(self, monkeypatch):
         """Against the committed bytes of a genuine out-of-range CBK response, rather than a synthesised
         black square - the whole probe rests on what Google actually answers there."""
         blank = fixture_bytes('z3_blank_out_of_range.jpg')
-
-        monkeypatch.setattr(gsv, '_get_response', lambda url, session, stream=False: BytesIO(blank))
+        self.probe_responses(monkeypatch, imagery_at=[self.IN_GRID_13312], body_at={(26, 6): blank, (0, 13): blank})
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is True
 
@@ -1922,19 +2006,39 @@ class TestTheFrameProbeNeedsA200:
         assert caught.value.response.status_code == status
         assert 'panoid=%s' % self.PANO in str(caught.value), 'the error must name the URL it refused'
 
-    @pytest.mark.parametrize('refused', [(26, 6), (0, 13)], ids=['x-probe', 'y-probe'])
-    def test_either_probes_status_counts(self, monkeypatch, refused):
-        canned_cbk(monkeypatch, lambda url: (403 if (cbk_query(url, 'x'), cbk_query(url, 'y')) == refused
-                                             else 200, BLACK_BODY))
+    @pytest.mark.parametrize('refused', [(26, 6), (0, 13), (25, 6)], ids=['x-probe', 'y-probe', 'in-grid'])
+    def test_any_probes_status_counts(self, monkeypatch, refused):
+        """The in-grid tile (#181) reads a black body as a REFUSAL, not an acceptance, so a non-200 there
+        would only turn one transient into another - but it is still not evidence, and it still raises."""
+        def answer(url):
+            position = (cbk_query(url, 'x'), cbk_query(url, 'y'))
+            if position == refused:
+                return 403, BLACK_BODY
+            return 200, IMAGERY_BODY if position == (25, 6) else BLACK_BODY
+
+        canned_cbk(monkeypatch, answer)
 
         with pytest.raises(requests.HTTPError):
             gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
 
-    def test_two_200_black_edges_still_cover_the_frame(self, monkeypatch):
-        adapter = canned_cbk(monkeypatch, lambda url: (200, BLACK_BODY))
+    def test_two_200_black_edges_and_a_200_in_grid_tile_cover_the_frame(self, monkeypatch):
+        adapter = canned_cbk(monkeypatch, lambda url: (200, IMAGERY_BODY if (cbk_query(url, 'x'), cbk_query(url, 'y'))
+                                                       == (25, 6) else BLACK_BODY))
 
         assert gsv.frame_covers_pano(self.PANO, 13312, 6656, 5) is True
-        assert [(cbk_query(r.url, 'x'), cbk_query(r.url, 'y')) for r in adapter.served] == [(26, 6), (0, 13)]
+        assert [(cbk_query(r.url, 'x'), cbk_query(r.url, 'y')) for r in adapter.served] == [(26, 6), (0, 13),
+                                                                                               (25, 6)]
+
+    def test_three_200_black_answers_are_a_refusal_not_a_cover(self, monkeypatch):
+        """Black 200s everywhere is what CBK answers a retired pano (pinned in test_gsv_tile_contract.py).
+        Before #181 that read as "covers"; now the in-grid tile refuses it. download_single_pano and
+        refetch_pano never get here for a retired pano - the probe's None answers first (see
+        TestTheProbeArmChecksTheFrame and TestRefetchRefusesAFrameLargerThanServed) - so this is only the
+        check's own answer."""
+        canned_cbk(monkeypatch, lambda url: (200, BLACK_BODY))
+
+        with pytest.raises(gsv.FrameDisagreementError):
+            gsv.frame_covers_pano(self.PANO, 13312, 6656, 5)
 
     def test_the_refused_response_is_closed(self, monkeypatch):
         adapter = canned_cbk(monkeypatch, lambda url: (404, BLACK_BODY))

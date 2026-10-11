@@ -1,0 +1,15 @@
+images/*.sd.jpg - attribution and licence
+
+The 24 JPEGs under images/ are the `sd` (2048 x 1024) derivatives of street-level pictures published on
+Panoramax (https://panoramax.fr) by the producer `sig_bayonne` and hosted on panoramax.ign.fr. Each picture's
+STAC item (panoramax-items.json.gz, `properties.license`) declares the licence `etalab-2.0`:
+Licence Ouverte / Open Licence 2.0, https://www.etalab.gouv.fr/licence-ouverte-open-licence/
+
+Attribution: sig_bayonne via Panoramax, Licence Ouverte / Etalab 2.0.
+
+They are committed unmodified, as served on 2026-10-06, as the measurement input of
+reports/2026-10-06-non-gsv-levelling.md (#190). sample.json records each file's sha256 and size, and
+reports/scripts/non_gsv_levelling.py refuses to analyse a file that does not match.
+
+The remaining files here are API responses: panoramax-items.json.gz (Panoramax STAC items) and
+adminapi-panos-<city>.json.gz (Project Sidewalk's public /adminapi/panos for each city).
