@@ -857,7 +857,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         print(message)
         note_condition(stop_reasons, CONDITION_EDGE_BAND,
                        '%d pano(s) saved with a deep edge band; first: %s'
-                       % (flagged_edge_bands, gsv._edge_band_run.first))
+                       % (flagged_edge_bands, gsv._edge_band_run.details[edge_bands_before]))
 
     logging.debug(
         "IMAGEDOWNLOAD: Final result: Completed %d of %d (%d success, %d fallback success, %d failed, %d skipped)",

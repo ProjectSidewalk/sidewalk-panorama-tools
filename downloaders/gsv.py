@@ -1185,16 +1185,18 @@ def _frame_refusal(pano_id, frame):
 
 
 class _EdgeBandRunMemory:
-    """How many stitches this run saved with a deep exact-black edge band (#179), and the first message.
+    """How many stitches this run saved with a deep exact-black edge band (#179), and one short detail each.
 
     Per process, like _PhotometaRunMemory, and reset by DownloadRunner.run for the same reason: an in-process
     caller of run() must not inherit the last city's count. Its own class rather than fields on
-    _PhotometaRunMemory, so the two memories can change independently.
+    _PhotometaRunMemory, so the two memories can change independently. `details[i]` is the i-th flagged pano
+    of the process, so a phase that snapshots `saved` at its start can name ITS first pano, not the process's
+    (#213 review, nit 1).
     """
 
     def __init__(self):
         self.saved = 0
-        self.first = None
+        self.details = []
 
 
 _edge_band_run = _EdgeBandRunMemory()
@@ -1213,8 +1215,8 @@ def _flag_deep_edge_band(image, pano_id):
     inside the pano - which a refusal could not clear and which the calibration needs to see.
 
     Deliberately no exception and no FrameDisagreementError subclass: DownloadRunner's image loop counts that
-    type by isinstance (#207), and a band is not a frame disagreement. The message carries `black band` and
-    `edge band` (the greps) and never `frame disagreement`. The runner reports the per-run count as the
+    type by isinstance (#207), and a band is not a frame disagreement. The message carries `exactly-black edge band`
+    (the grep in docs/ops.md) and never `frame disagreement`. The runner reports the per-run count as the
     `edge-band` condition from _edge_band_run; a warning that should fail the night goes into the run summary
     (CLAUDE.md), because production delivers only nonzero exits.
     """
@@ -1222,15 +1224,15 @@ def _flag_deep_edge_band(image, pano_id):
     sides = common.deep_edge_bands(bands)
     if not sides:
         return
-    message = ("pano %s: saved with an exactly-black edge band %.1f%% deep along the bottom and %.1f%% along "
-               "the right (limit %.1f%%, #179); ledgered downloaded=1, so this is said once; listed by "
-               "scan_black_bands.py; see docs/ops.md#edge-black-bands"
-               % (pano_id, 100 * bands.bottom, 100 * bands.right, 100 * common.EDGE_BAND_MAX_FRACTION))
+    # The short form is what the run summary carries (one SNS line); the channels get the full sentence.
+    detail = ("pano %s: saved with an exactly-black edge band %.1f%% bottom / %.1f%% right (limit %.1f%%)"
+              % (pano_id, 100 * bands.bottom, 100 * bands.right, 100 * common.EDGE_BAND_MAX_FRACTION))
+    message = ("%s, #179; ledgered downloaded=1, so this is said once; listed by scan_black_bands.py; see "
+               "docs/ops.md#edge-black-bands" % (detail,))
     logging.warning("IMAGEDOWNLOAD: WARNING - %s", message)
     print("IMAGEDOWNLOAD: WARNING - %s" % message)
     _edge_band_run.saved += 1
-    if _edge_band_run.first is None:
-        _edge_band_run.first = message
+    _edge_band_run.details.append(detail)
 
 
 def download_single_pano(storage_path, pano_info):

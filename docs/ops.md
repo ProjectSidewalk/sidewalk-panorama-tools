@@ -748,7 +748,8 @@ never contain `frame disagreement`, and the frame-disagreement count ([#207](htt
 and look at the named pano. A band that is imagery Google really served — a deep black cap — means the limit
 is too low for that source: raise `EDGE_BAND_MAX_FRACTION` per the calibration below, and the pano needs
 nothing. A band that is not imagery is a pano to repair as the work-list describes. To count flagged panos
-over time, `grep "edge band" <store>/<city>/scrape.log`.
+over time, `grep -c "saved with an exactly-black edge band" <store>/<city>/scrape.log` — the per-pano line;
+the end-of-phase line is worded differently (`deep exact-black`) so it does not add one per night.
 
 ### Sweeping the store: `scan_black_bands.py`
 
@@ -765,8 +766,11 @@ python3 scan_black_bands.py <storage-dir> --min-band 0        # list every pano 
   frame, whatever they are — the `bottom`/`right` pair is exact black, the `near_` pair is luma ≤
   `EDGE_BAND_NEAR_BLACK_LUMA` (above). Each row is on disk as soon as its verdict lands, so a killed run
   keeps its progress. A row that does not parse (a torn last row, a repeated header) is skipped, counted on
-  stdout, and its pano scanned again; a ledger whose header is another version's is kept aside as
-  `black_bands.csv.stale-N` and a fresh one started.
+  stdout, and its pano scanned again (a last row torn without its newline is closed before the next run
+  appends, so it costs one row, not two); a ledger whose header is another version's (it starts
+  `pano_id,size,mtime_ns` but is not the current layout) is kept aside as `black_bands.csv.stale-N` and a
+  fresh one started; an empty file is started in place. **A `--ledger` that is not a black-bands ledger at
+  all — a city's `pano_id_log.csv` is one typo away — is refused: exit 3, nothing written, nothing moved.**
 - `<storage-dir>/black_band_worklist.csv` (`--worklist`), rewritten from the whole ledger at the end of
   every run. It lists the panos whose **exact** band is deeper than `--min-band` (default
   `EDGE_BAND_MAX_FRACTION`), with `pano_id, width, height, bottom_band, right_band, near_bottom_band,
