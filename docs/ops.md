@@ -14,7 +14,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at` (rows written by a build older than #129 — on the production store, before 2026-09-17 — have no `fetched_at`) |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
-| `log.csv` | One 19-column row per run |
+| `log.csv` | One 20-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
 | `refetch_log.csv` | Ledger for the [`fover` repair pass](#repairing-fover-era-panoramas), if one has run here |
 | `refetch.log` | That pass's rotating log |
@@ -550,11 +550,11 @@ as the fresh one, so it roughly doubles peak memory and is meant for a pilot.
 
 ## The `log.csv` columns
 
-Each run appends **one row of 19 positional comma-separated fields, with no header**, parsed by the
+Each run appends **one row of 20 positional comma-separated fields, with no header**, parsed by the
 [log analyzer](log-analyzer.md). Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata
 phase — a stub since Google killed that endpoint in 2022, kept at fixed values purely so the column positions
 never shift. Field 19 was added by [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124) (for [#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)); every row written before that
-deployed has 18 fields, and the analyzer reads them with the last one blank.
+deployed has 18 fields. Field 20 was added by [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182); every row written before it has 19 (or 18). The analyzer reads all three widths, with the fields a row lacks blank.
 
 | # | field | notes |
 |---|-------|-------|
@@ -577,6 +577,7 @@ deployed has 18 fields, and the analyzer reads them with the last one blank.
 | 17 | depth phase duration | |
 | 18 | total run duration | |
 | 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a row written before it was counted (the timestamp-only rows: a run that died in the pano-list fetch or between it and the phases, a `pano-schema-drift` stop, which fetched the list but ran neither phase, and a stop just before the count — see [Blank fields mark a crashed or stopped run](#blank-fields-mark-a-crashed-or-stopped-run)) and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
+| 20 | image attempts raised this run | unledgered, so retried next run — mostly transient, though some raise on every run (a [retired Mapillary image](#when-the-image-phase-stops-trusting-a-source)), which is why no rule reads the field yet. The per-run number field 9 cannot give (field 9 is prior + tonight, permanent + transient). A GSV push-back counts; a frame disagreement does not (it is Google answering), nor does a skip — the same count `images-no-success` reads. Store mode writes its unpulled count (absent, truncated, unplaced, unsafe id), since it ledgers no permanent verdict. Blank when the image phase did not finish, and on every row older than the field ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)). The [log analyzer](log-analyzer.md#what-the-analyzer-does-not-report-yet) parses it; no rule reads it yet |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -593,9 +594,9 @@ reported an abnormally long run on the same night, with nothing actually wrong.
 
 ### Blank fields mark a crashed or stopped run
 
-A run that crashes — or is stopped — still appends a full 19-field row: every phase that completed keeps its
+A run that crashes — or is stopped — still appends a full 20-field row: every phase that completed keeps its
 real counts, and every phase field from the first unfinished phase onward is blank. Field 19, the corpus size,
-is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Visibly
+is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Field 20 is the image phase's own report: filled when the image phase finished (a depth-phase crash keeps it), blank when it did not. Visibly
 missing data, never a fabricated `0`. A row that is only a timestamp, field 19 included, means neither phase
 ran, and `scrape.log` says which of four reasons it was:
 
@@ -674,11 +675,23 @@ Since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74
 pano whose app-reported `width`/`height` is not a frame Google serves, rather than stitching the top-left
 corner of a larger one. Each refusal is one stdout `WARNING` and one `scrape.log` `ERROR`, both containing
 `frame disagreement`; it is counted in `log.csv` field 9, never ledgered, and retried every run. Field 9 is
-seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. A
-refusal is Google answering, so it never feeds the `images-no-success` condition, however many there are. The
-remedy is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what
-Google serves now. The stdout line reaches no one on a night that exits 0 (see
-[Hearing about a bad night](#hearing-about-a-bad-night)).
+seeded with older failures, so the count is not readable there. Since
+[#185](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/185) the run counts them itself: a
+nonzero count prints one end-of-phase line on stdout and in `scrape.log` (at WARNING, and worded without the
+words `frame disagreement`, so the grep below still counts exactly the refused panos),
+
+```
+IMAGEDOWNLOAD: WARNING - 2 pano(s) refused (frame-disagreement condition); not ledgered, retried next run. See docs/ops.md#a-gsv-pano-refused-for-a-frame-disagreement
+```
+
+writes `frame_refusals` into the run summary, and raises the `frame-disagreement`
+[condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night), so **one refusal fails the night**
+and reaches the alarm ([Hearing about a bad night](#hearing-about-a-bad-night)). The condition's detail names
+the first refused pano; `grep "frame disagreement" <store>/<city>/scrape.log` still lists the rest. A refusal
+is Google answering, so it never feeds the `images-no-success` condition, however many there are. The remedy
+is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what Google
+serves now. Whether the refused pano should instead be kept at Google's larger frame is #185 Part 2, waiting
+on about 30 nights of these counts.
 
 ## When the depth phase stands itself down
 
@@ -695,7 +708,7 @@ city stays `ok`, but the queue exits 1 and the night's message carries one line 
 | `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | `depth-stood-down` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. If the line says the latch *could not be written*, nothing else on this host stands down for it. A 5xx storm on photometa is not this row: it reads `photometa did not answer` and latches nothing. | As the row above: check for a rate limit before the next night. |
 | `WARNING - Google refused 3 GSV panos in a row (HTTP 429)` earlier in the same run, then the latch line above | `depth-stood-down` | The **image phase's** push-back breaker tripped and set the latch itself ([below](#when-google-pushes-back-on-the-image-phase)). Unlike the other rows the city does not stay `ok`: the trip puts `gsv` in the tripped set, so it exits 1 and is booked `failed`. | As for the row above: the same host, the same refusal, seen from the tile endpoint instead. |
 | `WARNING - the depth phase stopped early after 25 consecutive failures (…)`, or `WARNING - the depth phase ran out of budget during N consecutive failures (… network; ended_on_budget)` | `depth-breaker` | 25 transient failures in a row, or, with `ended_on_budget` in the brackets, at least 5 network failures in a row still going when the budget stopped the phase (#177). The second is the shape a prompt failure takes inside a 12-minute slot: a Google 5xx storm (about 30 s per failure), a refused connection or a DNS error. A **timeout-shaped** outage (photometa blackholed, no answer at all) costs up to ~211 s per failure, reaches about 4 failures in a slot and stays below the floor of 5, so it is **not** booked and raises no condition; a full outage usually still alarms through the image phase (`images-no-success`), but a photometa-only blackhole does not. The breakdown in brackets says whether they were the store or the network. Either way the depth stop is `consecutive-failures`, so the depth phase does not earn the city an extra pass that night; an image-phase budget stop (`image_stop: max-runtime`) in the same run still does, by design. Neither one latches. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. `ended_on_budget`: check this host's network, then Google's status. A last error reading `too many 50x error responses` (urllib3 writes the actual status, e.g. `too many 503 error responses`) is Google's outage, not a refusal. |
-| `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened. The phase sat the run out rather than re-request the whole corpus against a sick store. | Check the mount and the file's permissions. |
+| `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened **or parsed**: an I/O error, or a field longer than `csv.field_size_limit()` (131,072 characters by default), which is what a crash that wrote junk into the file looks like ([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The phase sat the run out rather than re-request the whole corpus against a sick store; the image phase ran as usual. One undecodable byte or a run of NULs is not this, on any Python version: it costs that one row, and that pano is re-checked (one request only if the row was `unavailable`; a `saved` one re-ledgers from its artifact). | `cannot write`, or `cannot read` with an OS error: check the mount and the file's permissions. `cannot read` with `field larger than field limit`: [repair the ledger by hand](#repairing-a-ledger-the-phase-cannot-read). Nothing repairs it for you, so the condition recurs every night until you do. |
 | `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt` into `.venv` (see [Deploying](#deploying)). |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
@@ -775,6 +788,33 @@ Repeat 2–4 for every city the report flags; drift hits the whole fleet at once
 small city can be written off entirely in one night — its phase then walks its whole list, which the analyzer
 cannot tell from a finished backfill — so after drift, check every city's `depth_log.csv` for a tail of
 `unavailable` rows since the date the large cities name, not only the flagged ones.
+
+### Repairing a ledger the phase cannot read
+
+`depth-ledger-unusable` with `field larger than field limit` in its detail means one line of the city's
+`depth_log.csv` is junk that `csv` refuses to parse: a run of binary from a crash mid-append, longer than the
+limit with no line break in it. (A NUL, a stray `"` or an undecodable byte costs only its own row, and is not
+this.) The depth phase leaves the file exactly as it found it and sits every night out until the line is gone —
+no tool moves or truncates the ledger, because it is store state
+([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The image phase is not
+affected. In the city's store directory:
+
+1. **Copy the ledger first**: `cp -p depth_log.csv depth_log.csv.bak-$(date +%F)`.
+2. **List every line that is not a ledger row:**
+
+   `tr -d '\r' < depth_log.csv | grep -naEv '^(pano_id,status|[A-Za-z0-9_-]+,(saved|unavailable))$' | cut -c1-120`
+
+   prints each offending line's number and its first 120 bytes. The `tr` is for the CRLF line endings (the
+   scrub's step 3, above); it removes characters, never lines, so the numbers are the file's. A torn row
+   (`aaaa` with no status) is listed too: it is harmless, but deleting it costs nothing.
+3. **Delete those lines**: `sed -i '<N>d;<M>d' depth_log.csv` with the numbers from step 2. Re-run step 2; it
+   should print nothing.
+4. **What it costs:** a deleted `saved` row costs no request — the artifact is on disk and the next run
+   re-ledgers it without asking Google. A deleted `unavailable` row costs one request. The next night's depth
+   phase runs as normal and the condition stops.
+
+`tests/test_depth_phase.py` runs steps 2 and 3, verbatim from this page, against a ledger the depth phase wrote
+with junk spliced in.
 
 ## When the image phase stops trusting a source
 
@@ -946,6 +986,12 @@ previous deploy's changes again.
 - **Create the [store marker](#the-store-marker) BEFORE pulling #161.** From that deploy on, a queue that
   finds no `<store-root>/.pano-store` exits 5 having run nothing, so the first night after a deploy without
   it scrapes nothing (loudly).
+- **Pull the log analyzer's checkout BEFORE the box takes #182.** #182 widens `log.csv` to 20 fields, and an
+  analyzer from before it knows only 18 and 19: it drops every 20-field row as torn (rule 9) and, once the
+  newest 19-field row is older than `--stale-days`, reports the city CRITICAL stale — every city at once,
+  measured on a mixed 19/20 file. The new analyzer reads all three widths, so running it against the old
+  box's 19-field rows is harmless; the other order is the one deploy mistake here that hits the whole fleet.
+  The same holds for any later change to the width ([log analyzer](log-analyzer.md)).
 - **Roll forward, never back, past 2026-09-17.** [`fetched_at`](#fetched_at-and-the-two-row-widths) widened
   `pano_id_log.csv` to three fields, and a pre-#129 reader skips every three-field row — so every permanent
   verdict recorded since that deploy is re-requested nightly, and a store that has only ever seen the new
@@ -1120,7 +1166,7 @@ because of.
   ([the cross-check](downloader.md#the-manifest-is-cross-checked-against-the-fleet)), whether or not the mail
   arrived. So is a line naming a condition code (`depth-refused: …`, `mapillary-token-missing: …`) —
   [the codes table](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) says what each means.
-- `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
+- `tail -1 <city>/log.csv` has 20 fields (once [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182) is deployed; 19 from 2026-09-17 until then); blanks mean a phase never finished.
 - `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —
   a push-back from Google would be the first sign the pacer's persisted standing is too aggressive. The reason
   in parentheses matters: `(network failure)` and `(unexpected failure)` are the loop's own arms, one timeout
