@@ -2063,6 +2063,19 @@ class TestAnyConditionFailsTheNight:
 
         assert scrape_queue.exit_code_for(results) == 1
 
+    def test_a_frame_refusal_is_labelled_and_fails_the_night(self, tmp_path, fake_runner, journal,
+                                                             monkeypatch, fleet_in_step, capsys):
+        """#185: one refused pano is news at a measured rate of zero, so the night exits 1 and its message
+        names the condition in words, not just by code."""
+        assert 'frame-disagreement' in scrape_queue.CONDITION_LABELS
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS_BRAVO_BB', 'frame-disagreement=1 pano(s) refused')
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert scrape_queue.CONDITION_LABELS['frame-disagreement'] in out, out
+
     def test_a_night_with_no_conditions_is_still_zero(self):
         assert scrape_queue.exit_code_for([result('alpha-aa'), result('bravo-bb')]) == 0
 
