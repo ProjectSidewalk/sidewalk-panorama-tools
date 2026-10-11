@@ -1264,6 +1264,20 @@ class TestDimsReconciliation:
         counts = crop_runner.bulk_extract_crops([label_row()], str(store), str(out))
         assert counts['success'] == 1
 
+    def test_null_dims_and_a_negative_pano_y_is_out_of_frame_on_a_photometa_framed_pano(self, crop_runner,
+                                                                                        tmp_path):
+        """#184: the downloader now saves a dimensionless pano at Google's served frame, but the label rows
+        for such panos carry null pano_width/pano_height too, and their pano_y is in no frame we can name -
+        193 of seattle's 195 and 248,486 of washington-dc's 248,943 are negative (SidewalkWebpage#5667). With
+        no dims the dims preflight is skipped, so the out_of_frame preflight is what refuses them. Pinned
+        here so the downloader change cannot quietly start producing crops from those coordinates."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        row = label_row(pano_y=-720)
+        row.update(pano_width=None, pano_height=None)
+        counts = crop_runner.bulk_extract_crops([row], str(store), str(out))
+        assert counts['out_of_frame'] == 1 and counts['success'] == 0
+
     def test_nan_dims_metadata_proceeds(self, crop_runner, tmp_path):
         """cvMetadata serves null dims for third-party photospheres; a NaN is absent, not mismatched."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
