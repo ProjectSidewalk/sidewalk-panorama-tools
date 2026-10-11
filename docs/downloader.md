@@ -27,8 +27,16 @@ git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git
 cd sidewalk-panorama-tools
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 ```
+
+`-c constraints.txt` installs the exact versions the production box runs and CI tests
+([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The file is that box's
+`pip freeze` on Python 3.10, refreshed by the procedure in
+[Refreshing `constraints.txt`](ops.md#refreshing-constraintstxt). Leave it off to take the latest release of
+everything, which is what a weekly CI job tests, or when a pin has no wheel for your platform or Python. For
+example, numpy 2.2.6 and scipy 1.15.3 publish wheels for CPython 3.10 to 3.13 only, so on 3.14 `-c` means building
+numpy from source. (`pyfrpc` has no 3.14 wheel either way; see below.)
 
 Two platform notes:
 
@@ -239,8 +247,21 @@ BASH_ENV=/home/ubuntu/.scraper.env
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
               --max-runtime 690 --city-max-runtime 12 \
-              -- --all-panos --min-depth-runtime 6
+              -- --all-panos --min-depth-runtime 6 \
+              ; if [ -n "$(find /home/ubuntu/cron_notify.log -mmin -10 2>/dev/null)" ]; then \
+              aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools \
+              --metric-name QueueHeartbeat --value 1 --unit Count >> /home/ubuntu/heartbeat.log 2>&1 \
+              && echo "$(date -Is) heartbeat published" >> /home/ubuntu/heartbeat.log \
+              || echo "$(date -Is) heartbeat FAILED" >> /home/ubuntu/heartbeat.log; \
+              else echo "$(date -Is) heartbeat withheld: cron_notify.log not written" >> /home/ubuntu/heartbeat.log; fi
 ```
+
+The tail after the `;` is the [dead-man switch](ops.md#hearing-about-a-night-that-never-ran)
+([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). It publishes a CloudWatch
+heartbeat whenever `cron_notify` has run to the end, whatever the queue's exit code. It is withheld when the
+wrapper did not write its log line, because a broken wrapper is the one failure nothing else reports. An alarm
+fires when no heartbeat has arrived for about 36 hours. The backslashes here are only for display: cron has no line continuation, so on the box
+this is one line.
 
 `--min-depth-runtime` stays below the per-city cap deliberately: at or above it the runner downloads no
 images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the
@@ -443,12 +464,13 @@ silenced by it.
 |---|---|---|
 | `depth-refused` | Google refused this run's depth requests; the 6 h block latch was written | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-stood-down` | A live latch at depth-phase start; the depth phase made no request. The refusal behind it is another run's, or this run's own image phase (a photometa refusal, or a push-back trip, which also exits the city 1). GSV images are not stood down by a latch, only put on probation | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
-| `depth-breaker` | 25 consecutive depth failures; the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
-| `depth-ledger-unusable` | `depth_log.csv` could not be read or written; depth sat the run out | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-breaker` | 25 consecutive depth failures, or at least 5 network failures in a row when a budget stopped the phase (`ended_on_budget` in the detail, #177); the detail breaks them down by class | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
+| `depth-ledger-unusable` | `depth_log.csv` could not be read, parsed or written; depth sat the run out (the image phase is unaffected) | [ops: depth stands down](ops.md#when-the-depth-phase-stands-itself-down) |
 | `depth-unavailable` | `streetlevel` is not importable in the runner's interpreter | [ops: deploying](ops.md#deploying) |
 | `mapillary-token-missing` | Mapillary panos were skipped because `MAPILLARY_ACCESS_TOKEN` is not set; the detail is the count | [Imagery sources](#imagery-sources) |
 | `unsupported-source` | Panos whose `source` this runner does not know were skipped (the Panoramax shape before #110) | [Imagery sources](#imagery-sources) |
 | `images-no-success` | No image attempt this run was answered, and either at least `IMAGE_NO_SUCCESS_MIN_RAISED` (10) raised or the phase's budget ran out with only raises behind it *and* those raises took at least `IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS` (60 s) each on average (a blackholed network takes ~3.5 min per raise; a mature city's few slow perennial raisers filling the share are not an outage) — the network, the store, or a bug. Old `downloaded=0` rows in the ledger are not attempts and do not count, and a GSV [frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) is Google answering, so it counts as an answer although it is not ledgered. The one exception is a pano photometa reports "not found" while the tile probe sees imagery (#184): that raises `FrameUnknownError`, so it counts as a raise although Google answered twice; any live or retired pano in the same phase clears the condition, so it fires on that alone only in a city whose every dimensionless pano is in that state. A GSV push-back (a refused tile, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) counts as a raise; a push-back *trip* records `image_stop: blocked`, which the budget arm does not read as a budget stop, and already fails the city through its own exit 1. The count arm still applies: ten raises with nothing answered, refusals included, are reported alongside a trip that follows them. The duration gate is the *mean*, so one slow raise among fast ones does not pass it. The detail reads `N attempts raised, 0 answered, S s per raise` on both arms, so the queue's summary line carries the duration the thresholds are sized against | the errors in the city's `scrape.log` |
+| `frame-disagreement` | One or more GSV panos were refused for a [frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) ([#185](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/185)): the app's `width`/`height` is not a frame Google serves. No floor: none of the 651 panos in the 2026-08-09 census disagreed, so one is news. The detail reads `N pano(s) refused; first: <that refusal's text>`, and the run summary carries the count as `frame_refusals` (written only when nonzero). Counted by exception type at the image loop's catch site, so every refusal arm (photometa, the tile probe) shares one counter | [ops: frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) |
 | `pano-list-empty` | The pano list was empty as served (a list the source filter emptied is that filter's condition instead) for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
 | `no-run-summary` | *(the queue's own)* An `ok` run left no readable run summary, so its conditions are unknown — a check that did not run has not passed. Also what an operator's own `--run-summary-file` after `--` produces, so do not pass one through the queue | [Extra passes](#extra-passes) |
 | `conditions-unreadable` | *(the queue's own)* The summary's `conditions` was present but not a list of objects with a non-blank string `code`. (An unknown code is kept, with its whitespace collapsed to single spaces, so a newer runner can still fail the night on one line.) | — |
@@ -490,7 +512,8 @@ Three rules that are load-bearing:
   The other stop reasons are reasons **not** to re-run, and each has to arrive as itself rather than
   collapsed into "stopped early": `blocked` (from either phase — the image phase reports it when Google's
   push-back stopped GSV, [#162](ops.md#when-google-pushes-back-on-the-image-phase)) means the host is standing down for six hours and a re-run would
-  spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again, and
+  spend the slot rediscovering that, `consecutive-failures` is a tripped breaker that would trip again (or,
+  marked `ended_on_budget`, a network streak that ran out the budget, which a re-run would walk back into), and
   `max-requests` is a per-process cap the operator asked for, which re-running would silently multiply. If no
   summary arrives at all the queue falls back to the old elapsed-time rule, which is at least a *necessary*
   condition. That case is narrower than it sounds: a `DownloadRunner` from before the flag existed does not
@@ -679,13 +702,15 @@ show it.
 
 If photometa is unavailable, or says the pano is gone, the older two-tile probe picks the zoom instead (a
 fully black tile at both zoom 5 and zoom 3, **on a 200**, means there is no imagery — still the only evidence
-a permanent "no imagery" verdict rests on; see below). The probe cannot tell a frame from a crop, so on that path two more tiles —
-the ones just past the frame's grid — are checked before the fan-out, and imagery there is the same refusal.
-That check guards only a frame **smaller** than Google serves. A frame **larger** than Google serves (an app
-frame of 16384×8192 on a pano served at 13312×6656) has nothing past its grid, so it passes; about a third of
-its grid then comes back black, which is under the stitcher's 50% limit, and it is stitched and ledgered as a
-success. The photometa path refuses that case (no level admits the frame); on the probe path it is a known
-residual, older than #74 and expected to be rare. The first photometa failure, refusal or fresh latch in a
+a permanent "no imagery" verdict rests on; see below). The probe cannot tell a frame from a crop, so on that path three more tiles
+are checked before the fan-out, and either mismatch is the same refusal. Imagery in a tile just past the
+frame's grid (one column right, one row down) means Google serves the pano **larger** than the app's frame.
+A black tile in the grid's own last column, on its middle row, means Google serves it **smaller**: an app
+frame of 16384×8192 on a pano served at 13312×6656 has nothing past its grid, and before
+[#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181) it passed, stitched about a third black (under the stitcher's 50% limit) and was
+ledgered as a success. "Black" is exact zero luma, the same rule the probe uses. The check runs only after
+the probe found imagery, which matters: Google answers a retired pano with black tiles everywhere, so that
+pano gets the probe's permanent verdict and never reaches the in-grid tile. The first photometa failure, refusal or fresh latch in a
 run is announced once on stdout and in `scrape.log` (photometa saying a pano is gone is not: a retired pano
 is ordinary, and photometa did answer); after three photometa failures in a row that run stops asking
 photometa at all, and after one refusal it stops at once. A refusal *from Google* on that photometa
@@ -697,9 +722,11 @@ earned standing is forfeited, exactly as a depth-phase refusal forfeits it.
 **A refused pano** is a `WARNING` on stdout and one `ERROR` in `scrape.log`, both containing
 `frame disagreement`; it is counted among the night's image failures (`log.csv` field 9, which also carries
 older failures, so the count is not readable from there), is not written to `pano_id_log.csv`, and is
-retried every run. Production mails stdout only on a night that exits nonzero
-([Hearing about a bad night](ops.md#hearing-about-a-bad-night)), so on an ordinary night the `WARNING` is
-not delivered — count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. The remedy is on
+retried every run. Since [#185](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/185) the
+image phase also counts them: a nonzero count prints one end-of-phase `WARNING` on both channels, is written
+to the run summary as `frame_refusals`, and is the `frame-disagreement`
+[condition](#a-city-can-finish-ok-and-still-fail-the-night), so the night exits nonzero and its message
+carries it. The count is deliberately not a `log.csv` column. The remedy is on
 the app side: a SidewalkWebpage `gsv_data` refresh that brings the pano's stored `width`/`height` up to what
 Google serves now. Expected volume is near zero: all 651 live panos sampled by the
 [2026-08-09 photometa census](../reports/2026-08-09-photometa-census.md) served exactly the dimensions the
@@ -788,7 +815,7 @@ counts as tonight's failure, gets no ledger row, and is asked again next run. 42
 get that far, since the retry policy owns them and an exhausted retry raises; one that did would raise here
 like any other non-200. A probe that raises with 403 or 429, or that landed on Google's interstitial (a 200
 captcha page included), is also **push-back** and counts towards [the push-back
-breaker](ops.md#when-google-pushes-back-on-the-image-phase); every other status is an ordinary failure. The same rule covers the frame check past the grid
+breaker](ops.md#when-google-pushes-back-on-the-image-phase); every other status is an ordinary failure. The same rule covers the frame check's three tiles
 (`frame_covers_pano`) — run nightly on the probe path, and by `refetch_panos.py` for every pano — where a non-200
 black edge tile used to read as "the frame covers the pano" ([#166]).
 

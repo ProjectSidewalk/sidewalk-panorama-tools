@@ -14,7 +14,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at` (rows written by a build older than #129 — on the production store, before 2026-09-17 — have no `fetched_at`) |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
-| `log.csv` | One 19-column row per run |
+| `log.csv` | One 20-column row per run |
 | `scrape.log` | Rotating run log (10 MB × 3) |
 | `refetch_log.csv` | Ledger for the [`fover` repair pass](#repairing-fover-era-panoramas), if one has run here |
 | `refetch.log` | That pass's rotating log |
@@ -489,6 +489,15 @@ rule it out. A probe answered with anything but 200 raises, so the pano counts a
 than as a frame that covers; before [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166),
 a 403 or 404 with a black body passed it.
 
+The same check catches the opposite mismatch with a third request: a stored frame **larger** than Google now
+serves (16384×8192 on a pano served at 13312×6656) has a black tile in its grid's own last column. That pano
+ends as **`frame_shrank`**: not ledgered, stored bytes untouched, asked again on the next pass, as the
+nightly downloader refuses the same frame. It is an answer, not a failure, so it neither counts towards the
+five-in-a-row breaker nor sets the exit code — a work-list made of these would otherwise stop every pass
+after five. Before
+[#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181), it passed the check, spent the full fan-out, and was
+refused and ledgered as `too_black`. `too_black` remains the backstop for any other mostly black stitch.
+
 | Outcome | Meaning | Requests |
 |---|---|---|
 | `absent` | no `.jpg` on disk — nothing to repair | 0 |
@@ -498,12 +507,13 @@ a 403 or 404 with a black body passed it.
 | `dims_changed` | the work-list's frame disagrees with the stored one — see below | 0 |
 | `gone` | Google no longer serves this pano at any zoom | ≤2 |
 | `frame_grew` | Google now serves this pano **larger**, so this frame would fetch a crop of it | ≤4 |
+| `frame_shrank` | Google now serves this pano **smaller** than the stored frame. Not swapped, **not ledgered**, not a failure ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)) | 5 |
 | `upscaled` | only a fallback zoom was available; swapping would be a 4× **downgrade** | zoom-3 grid (≤32) |
 | `undersized` | a tile still came back below 512 px: the CBK request is costing resolution again. Not swapped, **not ledgered**, and three in a row stop the run with exit 1 | full |
 | `too_black` | the fresh stitch has more black than a real panorama does | full |
 | `replaced` | swapped in | full |
 
-The outcomes that cost requests — every one except `undersized` — are remembered in
+The outcomes that cost requests — every one except `undersized` and `frame_shrank` — are remembered in
 `<storage-dir>/refetch_log.csv`, with the same rule the two nightly ledgers use: **a row means the outcome is
 permanent.** Anything transient — a failed tile, a mostly-black stitch, a full store — is counted, logged, and
 left unledgered, so it retries on the next run.
@@ -515,7 +525,9 @@ work-list was passed. Ledgering them would lock one run's flag values in. Not le
 a re-run after a finished sweep cost nothing even if the ledger is deleted: a repaired file's mtime is newer
 than `--fixed-after`, so it comes back `already_clean`.
 
-`undersized` is the other exception, in the other direction. With `fover` gone no tile should ever come back
+`undersized` and `frame_shrank` are the other two exceptions, in the other direction. `frame_shrank` is not
+ledgered because the answer can change: the app's stored frame or the frame Google serves can move, and a
+re-check costs five requests a pass. `undersized`'s reason is different. With `fover` gone no tile should ever come back
 below 512 px, so one that does means the request is costing resolution again — a property of the URL, not of
 the pano. A permanent row per pano would burn the whole work-list against a bug in the request and exit 0
 while doing it. Instead the run stops after three consecutive undersized fetches, exits 1 if it saw any, and
@@ -590,11 +602,11 @@ as the fresh one, so it roughly doubles peak memory and is meant for a pilot.
 
 ## The `log.csv` columns
 
-Each run appends **one row of 19 positional comma-separated fields, with no header**, parsed by the
+Each run appends **one row of 20 positional comma-separated fields, with no header**, parsed by the
 [log analyzer](log-analyzer.md). Durations are whole minutes (rounded). Fields 2–6 describe the XML metadata
 phase — a stub since Google killed that endpoint in 2022, kept at fixed values purely so the column positions
 never shift. Field 19 was added by [#124](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/124) (for [#43](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/43)); every row written before that
-deployed has 18 fields, and the analyzer reads them with the last one blank.
+deployed has 18 fields. Field 20 was added by [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182); every row written before it has 19 (or 18). The analyzer reads all three widths, with the fields a row lacks blank.
 
 | # | field | notes |
 |---|-------|-------|
@@ -617,6 +629,7 @@ deployed has 18 fields, and the analyzer reads them with the last one blank.
 | 17 | depth phase duration | |
 | 18 | total run duration | |
 | 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a row written before it was counted (the timestamp-only rows: a run that died in the pano-list fetch or between it and the phases, a `pano-schema-drift` stop, which fetched the list but ran neither phase, and a stop just before the count — see [Blank fields mark a crashed or stopped run](#blank-fields-mark-a-crashed-or-stopped-run)) and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
+| 20 | image attempts raised this run | unledgered, so retried next run — mostly transient, though some raise on every run (a [retired Mapillary image](#when-the-image-phase-stops-trusting-a-source)), which is why no rule reads the field yet. The per-run number field 9 cannot give (field 9 is prior + tonight, permanent + transient). A GSV push-back counts; a frame disagreement does not (it is Google answering), nor does a skip — the same count `images-no-success` reads. Store mode writes its unpulled count (absent, truncated, unplaced, unsafe id), since it ledgers no permanent verdict. Blank when the image phase did not finish, and on every row older than the field ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)). The [log analyzer](log-analyzer.md#what-the-analyzer-does-not-report-yet) parses it; no rule reads it yet |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -633,9 +646,9 @@ reported an abnormally long run on the same night, with nothing actually wrong.
 
 ### Blank fields mark a crashed or stopped run
 
-A run that crashes — or is stopped — still appends a full 19-field row: every phase that completed keeps its
+A run that crashes — or is stopped — still appends a full 20-field row: every phase that completed keeps its
 real counts, and every phase field from the first unfinished phase onward is blank. Field 19, the corpus size,
-is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Visibly
+is not a phase result: it is known before either phase runs, so it is filled on a crashed row too. Field 20 is the image phase's own report: filled when the image phase finished (a depth-phase crash keeps it), blank when it did not. Visibly
 missing data, never a fabricated `0`. A row that is only a timestamp, field 19 included, means neither phase
 ran, and `scrape.log` says which of four reasons it was:
 
@@ -714,11 +727,23 @@ Since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74
 pano whose app-reported `width`/`height` is not a frame Google serves, rather than stitching the top-left
 corner of a larger one. Each refusal is one stdout `WARNING` and one `scrape.log` `ERROR`, both containing
 `frame disagreement`; it is counted in `log.csv` field 9, never ledgered, and retried every run. Field 9 is
-seeded with older failures, so count refusals with `grep "frame disagreement" <store>/<city>/scrape.log`. A
-refusal is Google answering, so it never feeds the `images-no-success` condition, however many there are. The
-remedy is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what
-Google serves now. The stdout line reaches no one on a night that exits 0 (see
-[Hearing about a bad night](#hearing-about-a-bad-night)).
+seeded with older failures, so the count is not readable there. Since
+[#185](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/185) the run counts them itself: a
+nonzero count prints one end-of-phase line on stdout and in `scrape.log` (at WARNING, and worded without the
+words `frame disagreement`, so the grep below still counts exactly the refused panos),
+
+```
+IMAGEDOWNLOAD: WARNING - 2 pano(s) refused (frame-disagreement condition); not ledgered, retried next run. See docs/ops.md#a-gsv-pano-refused-for-a-frame-disagreement
+```
+
+writes `frame_refusals` into the run summary, and raises the `frame-disagreement`
+[condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night), so **one refusal fails the night**
+and reaches the alarm ([Hearing about a bad night](#hearing-about-a-bad-night)). The condition's detail names
+the first refused pano; `grep "frame disagreement" <store>/<city>/scrape.log` still lists the rest. A refusal
+is Google answering, so it never feeds the `images-no-success` condition, however many there are. The remedy
+is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what Google
+serves now. Whether the refused pano should instead be kept at Google's larger frame is #185 Part 2, waiting
+on about 30 nights of these counts.
 
 ## When the depth phase stands itself down
 
@@ -731,11 +756,11 @@ city stays `ok`, but the queue exits 1 and the night's message carries one line 
 | what you see | code in the night's message | what happened | what to do |
 |---|---|---|---|
 | `WARNING - Google refused this host N hours ago, so the depth phase is standing down` | `depth-stood-down` | An earlier run on this host was blocked, and the **block latch** is still fresh. If an `IMAGEDOWNLOAD: WARNING - Google refused a photometa request` line comes before it in the same output, *this* run was refused: that is the third row, not this one. Every city skips depth at **zero requests** until it expires (6 h). GSV images still download meanwhile, but on probation (one refused pano stops them) and with every zoom from the tile probe rather than photometa. | Nothing, usually. It is the fleet declining to walk back into the same wall. If it persists past a day, look for a captcha/consent interstitial from this IP. It alarms even on a night nothing was refused, because the latch outlives the window: a stand-down at 19:00 is a refusal the queue never saw (a manual backfill, say). |
-| `WARNING - the depth phase stopped early because Google stopped answering` | `depth-refused` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. |
+| `WARNING - the depth phase stopped early because Google stopped answering` | `depth-refused` | *This* run was refused. It set the latch, so the next city will skip rather than rediscover. | Check for a rate limit before the next night. The pacer backed off for the rest of that run and forfeited the standing the next run would have inherited, so once the latch expires the next city opens at `depth_start_interval` again. A 5xx storm on photometa is not this row (#177): it counts as network failures and reads as the `depth-breaker` row, in a 12-minute slot usually as `N network; ended_on_budget`, because each failure takes about 30 s. |
 | `IMAGEDOWNLOAD: WARNING - Google refused a photometa request`, then the first row's line with `0.0 hours ago` | `depth-stood-down` | *This* run's GSV image phase was refused on its per-pano photometa request ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)). It set the latch and forfeited the earned depth pace; the rest of the image phase takes its zooms from the tile probe and still downloads. If the line says the latch *could not be written*, nothing else on this host stands down for it. A 5xx storm on photometa is not this row: it reads `photometa did not answer` and latches nothing. | As the row above: check for a rate limit before the next night. |
 | `WARNING - Google refused 3 GSV panos in a row (HTTP 429)` earlier in the same run, then the latch line above | `depth-stood-down` | The **image phase's** push-back breaker tripped and set the latch itself ([below](#when-google-pushes-back-on-the-image-phase)). Unlike the other rows the city does not stay `ok`: the trip puts `gsv` in the tripped set, so it exits 1 and is booked `failed`. | As for the row above: the same host, the same refusal, seen from the tile endpoint instead. |
-| `WARNING - the depth phase stopped early after 25 consecutive failures (…)` | `depth-breaker` | 25 transient failures in a row. The breakdown in brackets says whether they were the store or the network. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. |
-| `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened. The phase sat the run out rather than re-request the whole corpus against a sick store. | Check the mount and the file's permissions. |
+| `WARNING - the depth phase stopped early after 25 consecutive failures (…)`, or `WARNING - the depth phase ran out of budget during N consecutive failures (… network; ended_on_budget)` | `depth-breaker` | 25 transient failures in a row, or, with `ended_on_budget` in the brackets, at least 5 network failures in a row still going when the budget stopped the phase (#177). The second is the shape a prompt failure takes inside a 12-minute slot: a Google 5xx storm (about 30 s per failure), a refused connection or a DNS error. A **timeout-shaped** outage (photometa blackholed, no answer at all) costs up to ~211 s per failure, reaches about 4 failures in a slot and stays below the floor of 5, so it is **not** booked and raises no condition; a full outage usually still alarms through the image phase (`images-no-success`), but a photometa-only blackhole does not. The breakdown in brackets says whether they were the store or the network. Either way the depth stop is `consecutive-failures`, so the depth phase does not earn the city an extra pass that night; an image-phase budget stop (`image_stop: max-runtime`) in the same run still does, by design. Neither one latches. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. `ended_on_budget`: check this host's network, then Google's status. A last error reading `too many 50x error responses` (urllib3 writes the actual status, e.g. `too many 503 error responses`) is Google's outage, not a refusal. |
+| `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened **or parsed**: an I/O error, or a field longer than `csv.field_size_limit()` (131,072 characters by default), which is what a crash that wrote junk into the file looks like ([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The phase sat the run out rather than re-request the whole corpus against a sick store; the image phase ran as usual. One undecodable byte or a run of NULs is not this, on any Python version: it costs that one row, and that pano is re-checked (one request only if the row was `unavailable`; a `saved` one re-ledgers from its artifact). | `cannot write`, or `cannot read` with an OS error: check the mount and the file's permissions. `cannot read` with `field larger than field limit`: [repair the ledger by hand](#repairing-a-ledger-the-phase-cannot-read). Nothing repairs it for you, so the condition recurs every night until you do. |
 | `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt` into `.venv` (see [Deploying](#deploying)). |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
@@ -815,6 +840,33 @@ Repeat 2–4 for every city the report flags; drift hits the whole fleet at once
 small city can be written off entirely in one night — its phase then walks its whole list, which the analyzer
 cannot tell from a finished backfill — so after drift, check every city's `depth_log.csv` for a tail of
 `unavailable` rows since the date the large cities name, not only the flagged ones.
+
+### Repairing a ledger the phase cannot read
+
+`depth-ledger-unusable` with `field larger than field limit` in its detail means one line of the city's
+`depth_log.csv` is junk that `csv` refuses to parse: a run of binary from a crash mid-append, longer than the
+limit with no line break in it. (A NUL, a stray `"` or an undecodable byte costs only its own row, and is not
+this.) The depth phase leaves the file exactly as it found it and sits every night out until the line is gone —
+no tool moves or truncates the ledger, because it is store state
+([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The image phase is not
+affected. In the city's store directory:
+
+1. **Copy the ledger first**: `cp -p depth_log.csv depth_log.csv.bak-$(date +%F)`.
+2. **List every line that is not a ledger row:**
+
+   `tr -d '\r' < depth_log.csv | grep -naEv '^(pano_id,status|[A-Za-z0-9_-]+,(saved|unavailable))$' | cut -c1-120`
+
+   prints each offending line's number and its first 120 bytes. The `tr` is for the CRLF line endings (the
+   scrub's step 3, above); it removes characters, never lines, so the numbers are the file's. A torn row
+   (`aaaa` with no status) is listed too: it is harmless, but deleting it costs nothing.
+3. **Delete those lines**: `sed -i '<N>d;<M>d' depth_log.csv` with the numbers from step 2. Re-run step 2; it
+   should print nothing.
+4. **What it costs:** a deleted `saved` row costs no request — the artifact is on disk and the next run
+   re-ledgers it without asking Google. A deleted `unavailable` row costs one request. The next night's depth
+   phase runs as normal and the condition stops.
+
+`tests/test_depth_phase.py` runs steps 2 and 3, verbatim from this page, against a ledger the depth phase wrote
+with junk spliced in.
 
 ## When the image phase stops trusting a source
 
@@ -964,15 +1016,17 @@ git status --short                                     # must be empty: a local 
 before=$(git rev-parse HEAD)
 git pull --ff-only
 git log --oneline -1                                   # what is live now
-git diff --stat "$before" HEAD -- requirements.txt     # non-empty -> .venv/bin/pip install -r requirements.txt
+git diff --stat "$before" HEAD -- requirements.txt constraints.txt   # non-empty -> .venv/bin/pip install -r requirements.txt -c constraints.txt
 .venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
-.venv/bin/python -c "import DownloadRunner, scrape_queue"
+.venv/bin/python -c "import DownloadRunner, scrape_queue, cron_notify"
 ```
 
 The order matters twice: the requirements check comes *before* the import check, because a new dependency
 fails the import first and reads as a broken deploy; and it diffs against a captured SHA rather than `HEAD@{1}`,
 because a pull that brought nothing leaves `HEAD@{1}` pointing at the deploy before, so the diff would report the
-previous deploy's changes again.
+previous deploy's changes again. The install takes `-c constraints.txt` so the box gets the versions CI tested
+([Refreshing `constraints.txt`](#refreshing-constraintstxt)). It is never `-U`: an upgrade is a change to the
+pins, made in a PR and tested by CI, not something the box picks up from PyPI on its own.
 
 - **Pulling while the queue is running is safe; a `pip install` is less so.** Every repo import is at module
   level, so a city already running keeps the code it loaded, the next city starts on the new tree, and the
@@ -986,10 +1040,67 @@ previous deploy's changes again.
 - **Create the [store marker](#the-store-marker) BEFORE pulling #161.** From that deploy on, a queue that
   finds no `<store-root>/.pano-store` exits 5 having run nothing, so the first night after a deploy without
   it scrapes nothing (loudly).
+- **Pull the log analyzer's checkout BEFORE the box takes #182.** #182 widens `log.csv` to 20 fields, and an
+  analyzer from before it knows only 18 and 19: it drops every 20-field row as torn (rule 9) and, once the
+  newest 19-field row is older than `--stale-days`, reports the city CRITICAL stale — every city at once,
+  measured on a mixed 19/20 file. The new analyzer reads all three widths, so running it against the old
+  box's 19-field rows is harmless; the other order is the one deploy mistake here that hits the whole fleet.
+  The same holds for any later change to the width ([log analyzer](log-analyzer.md)).
 - **Roll forward, never back, past 2026-09-17.** [`fetched_at`](#fetched_at-and-the-two-row-widths) widened
   `pano_id_log.csv` to three fields, and a pre-#129 reader skips every three-field row — so every permanent
   verdict recorded since that deploy is re-requested nightly, and a store that has only ever seen the new
   build parses as *empty*. Behaviour rolls back by flag (below), not by checkout.
+
+### Refreshing `constraints.txt`
+
+`requirements.txt` has floors only, so before
+[#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167) CI resolved the latest of everything
+on every run, while the box kept whatever resolved when its venv was built and recorded it nowhere. CI never tested
+what production runs. `constraints.txt` is the box's `pip freeze`, committed:
+
+- **CI's gated job** (`tests.yml`) installs `-r requirements.txt -r requirements-dev.txt -c constraints.txt`, so
+  every PR is tested against production's versions. A constraint only pins a package something else asks for, so
+  the dev-only packages the box does not have (pandas, matplotlib, coverage, pytest-cov) still resolve fresh.
+- **A weekly job** (`tests-latest.yml`, Mondays 15:00 UTC, or by hand from the Actions tab) installs with no
+  constraints and runs the same suite. It never runs on a pull request, so it gates nothing. A red run there
+  means a new upstream release breaks the suite, and a fresh install would hit it. Its `pip freeze` step prints
+  what it resolved. **It can go quiet in two ways.** GitHub disables a scheduled workflow in a public repo after
+  60 days without repository activity; the Actions tab then shows it disabled, and *Enable workflow* turns it
+  back on. And a failed scheduled run notifies only the user who last edited the workflow's `cron:` line, so if
+  that person has left, nobody hears about it. Look at the Actions tab whenever you look at the fleet.
+- **`tests/test_constraints.py`** fails when a `requirements.txt` package has no pin or a pin its specifier
+  rejects, so a raised floor and its pin move in the same PR.
+
+**Refresh it** after any install on the box, so the file stays a record of what production runs:
+
+1. On the box: `cd /srv/sidewalk-panorama-tools && .venv/bin/pip freeze > /tmp/box-freeze.txt` (and
+   `.venv/bin/python --version`, `git log --oneline -1`, for the header).
+2. In a branch: keep `constraints.txt`'s comment header, update its `Source:` line (Python version, commit,
+   date), and replace everything below it with the freeze. That includes `pytest` and `pytest-asyncio`: they are
+   not leftovers, because `streetlevel` itself depends on them (CI's log shows `Collecting pytest-asyncio (from
+   streetlevel...)`).
+3. Open a PR. CI installs exactly those pins. A red run means the box is running a set the suite fails on,
+   which is worth knowing whichever way it is fixed.
+
+Two gaps in this loop are known and accepted:
+
+- **A removed dependency stays pinned.** `pip install` never uninstalls, so a package dropped from
+  `requirements.txt` stays in the box's venv, and every refresh pins it again. It is harmless, because a
+  constraint never installs anything, but the file slowly drifts from "what production needs" towards "what
+  production has". When dropping a dependency, delete its pin (and any pins only it pulled in) by hand in the same
+  PR, and `pip uninstall` it on the box at deploy.
+- **`setuptools` is not pinned.** `pip freeze` leaves out `pip`, `setuptools` and `wheel`, and torch declares
+  `setuptools>=77.0.3`, so it is the one runtime dependency that floats. `pip freeze --all` would record it.
+  Use that for a refresh if it ever matters.
+
+**Changing a dependency** goes the other way: edit `requirements.txt` and `constraints.txt` together (pin the
+version you tested), let CI pass, merge, deploy (the install above picks the pin up), then refresh from the box
+to record what pip actually installed alongside it.
+
+The pins carry `torch`, `triton` and about 15 `nvidia-*`/`cuda-*` wheels, 4.9 GB of venv between them.
+`streetlevel` 0.12.11 pulls `pyequilib` 0.6.0, which requires `torch`, and no production module imports any of
+it. Installing `streetlevel` with `--no-deps` and listing its runtime dependencies would drop it; that is a
+measured follow-up and has not been done.
 
 ### The store marker
 
@@ -1044,7 +1155,9 @@ dropped mid-night.
 3. **Re-run one city through the queue's own machinery** (lock, budgets, summary):
    `scrape_queue.py --cities … --store-root … --only <city_id> -- --all-panos`.
 4. **Reinstall an earlier crontab** from the dated backups in the user's home (`crontab <file>`). Take a new
-   backup first; one of the old ones still carries a secret and is mode 600 for that reason.
+   backup first; one of the old ones still carries a secret and is mode 600 for that reason. A backup taken
+   before the [heartbeat](#hearing-about-a-night-that-never-ran) went in has no heartbeat tail, so reinstalling
+   it means the heartbeat alarm fires about 36 hours later. Add the tail back, or silence the alarm as in lever 5.
 5. **Stop everything:** `crontab -r` after backing up — and if a queue is running,
    `pkill -TERM -f '^\S+/python \S+/scrape_queue\.py'` as well, because removing the crontab only cancels future
    starts. SIGTERM is the right signal: the queue translates it into an orderly exit that stops the city it is
@@ -1054,6 +1167,10 @@ dropped mid-night.
    bare `pkill -f scrape_queue.py` would deliver two, and the second lands while the queue is stopping its city.
    The queue then kills the city outright rather than orphaning it (#161), but the kill costs that city's
    `log.csv` row, which the first SIGTERM would have written. The store is untouched by any of this.
+   **The [heartbeat alarm](#hearing-about-a-night-that-never-ran) fires about 36 hours after `crontab -r`.**
+   That is correct, because nothing is running. For a deliberate stop, silence it from an admin shell with
+   `aws cloudwatch disable-alarm-actions --region us-west-2 --alarm-names pano-scraper-heartbeat`. When the
+   crontab is back, run `enable-alarm-actions` with the same arguments.
 
 ### Adding a city
 
@@ -1148,11 +1265,164 @@ a failed night, and would be the `tail -1` [the morning check](#the-morning-afte
 date it was proven in the private runbook; a channel nobody has seen deliver is the one this section exists
 because of.
 
+### Hearing about a night that never ran
+
+`cron_notify` can only report a process that ran. If the box is stopped, cron is dead or the crontab was wiped
+([rollback lever 5](#rolling-back-smallest-blast-radius-first) is `crontab -r`), nothing runs and nothing is
+sent, which is the same silence as a clean night
+([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The dead-man switch is a
+**heartbeat metric** that the box publishes to CloudWatch when the wrapper finishes, plus a CloudWatch alarm that
+fires when no heartbeat has arrived for 36 hours. The alarm treats missing data as breaching and notifies the
+same SNS topic as `cron_notify`.
+
+- **The heartbeat means "the wrapper ran", not "the night passed".** It is published after the wrapper exits,
+  whatever the exit code, because a bad night already has its own channel. A night that exits 1 sends two
+  signals: `cron_notify`'s message, and the heartbeat as usual. The alarm never fires on a bad night that ran.
+- **It is a crontab composition, not code.** The heartbeat is appended to the existing line after a `;`, so it
+  runs whatever the queue's exit code. Nothing in this repo knows about it. A `--heartbeat` option on
+  `cron_notify` was considered and not built. The heartbeat's only failure mode is that no datapoint arrives,
+  and missing data is exactly what the alarm is built to catch, so a broken heartbeat (a missing IAM
+  permission, a moved `aws` binary) cannot fail silently. It shows up as the alarm, and `~/heartbeat.log` says
+  which of the two it was.
+- **It is withheld unless `cron_notify` just wrote its log line.** A failure of the *queue* is reported by
+  `cron_notify`. A failure of `cron_notify` itself is reported by nothing else: the venv's interpreter is gone
+  (an OS upgrade removed the Python the venv links to), `cron_notify.py` fails to import after a bad pull, or
+  the wrapper dies before it finishes. Cron's own mail is discarded on this host, so an ungated heartbeat would
+  report those nights as healthy. `cron_notify` appends its `--log` line on every path it returns by, including
+  exit 127 when the queue cannot start. So the tail publishes only if `~/cron_notify.log` was modified in the
+  last 10 minutes; otherwise it writes `heartbeat withheld` and the alarm fires. The heartbeat therefore means
+  "the wrapper ran to the end". It can no longer say a night ran when the wrapper was what broke.
+- **Why 36 hours, as 36 one-hour periods.** The queue starts at 19:00 Pacific and ends when its 690-minute
+  window closes or when every city is done, whichever is first. So the heartbeat lands anywhere from about
+  19:00 (a night the queue refused at once: no store marker, or the lock still held) to about 06:45 the next
+  morning. Two consecutive heartbeats can therefore be more than 24 hours apart, and a
+  24-hour window would raise a false alarm after any early night followed by a full one. 36 hours means one
+  missed night is reported by the following afternoon or evening. Hourly periods, not one daily period, so the
+  window slides instead of snapping to UTC midnight. CloudWatch allows up to seven days of evaluation range when
+  the period is one hour or longer. **36 hours is a lower bound.** When real datapoints are fewer than the
+  evaluation periods, CloudWatch evaluates over a somewhat wider range and keeps the last real datapoint in it,
+  and AWS does not publish that width. So the alarm fires a little after 36 hours. Record the real lag the first
+  time it fires. The extra time only adds margin against false alarms.
+- **Cost:** one custom metric and one standard alarm, well under a dollar a month.
+
+**1. Instance role permission.** Add this statement to the box's instance-role policy, the one that already
+allows `sns:Publish` to the topic. `PutMetricData` has no resource-level permissions, so `Resource` must be `*`.
+The namespace condition is what limits it:
+
+```json
+{
+  "Sid": "PanoScraperHeartbeat",
+  "Effect": "Allow",
+  "Action": "cloudwatch:PutMetricData",
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": { "cloudwatch:namespace": "SidewalkPanoramaTools" }
+  }
+}
+```
+
+**2. One datapoint by hand, before the alarm exists.** As the cron user on the box, run the publish:
+
+```bash
+aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools --metric-name QueueHeartbeat --value 1 --unit Count
+```
+
+It prints nothing and exits 0. `AccessDenied` means step 1 is missing or names a different namespace. Publish
+before creating the alarm: an alarm with missing data treated as breaching and no datapoint at all goes
+straight to **ALARM** and sends an ALARM message within minutes of being created. With this datapoint in place,
+its first evaluation goes to OK.
+
+**3. The alarm.** Create it from an admin shell, not from the box, because the role above cannot create
+alarms. `<ACCOUNT_ID>` is the account that owns `pano-scraper-alerts`:
+
+```bash
+aws cloudwatch put-metric-alarm --region us-west-2 \
+  --alarm-name pano-scraper-heartbeat \
+  --alarm-description "No nightly scrape_queue heartbeat for 36 h: box stopped, cron dead, or crontab wiped. See docs/ops.md, Hearing about a night that never ran." \
+  --namespace SidewalkPanoramaTools --metric-name QueueHeartbeat \
+  --statistic Sum --period 3600 \
+  --evaluation-periods 36 --datapoints-to-alarm 36 \
+  --threshold 1 --comparison-operator LessThanThreshold \
+  --treat-missing-data breaching \
+  --alarm-actions arn:aws:sns:us-west-2:<ACCOUNT_ID>:pano-scraper-alerts \
+  --ok-actions arn:aws:sns:us-west-2:<ACCOUNT_ID>:pano-scraper-alerts
+```
+
+`--ok-actions` sends one message when the alarm recovers. It fires only on a transition, never nightly. There is
+no `--dimensions` on either side and no `--unit` on the alarm; AWS recommends omitting the unit there. A metric
+alarm compares dimensions exactly, so adding one to the publish later means adding it here too.
+
+**Check the topic's encryption first:** `aws sns get-topic-attributes --region us-west-2 --topic-arn
+arn:aws:sns:us-west-2:<ACCOUNT_ID>:pano-scraper-alerts --query Attributes.KmsMasterKeyId`.
+- `null`: the topic is unencrypted, and there is nothing to do.
+- `alias/aws/sns`: CloudWatch cannot publish to a topic under the AWS-managed key. Switch it to a customer-managed key.
+- A customer-managed key: its key policy needs a statement letting CloudWatch use it, for example:
+
+```json
+{
+  "Sid": "AllowCloudWatchAlarmsToPublish",
+  "Effect": "Allow",
+  "Principal": { "Service": "cloudwatch.amazonaws.com" },
+  "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+  "Resource": "*"
+}
+```
+
+**4. The crontab.** Append this to the **end** of the existing nightly line, on the same line (cron has no line
+continuation; the backslashes in [Nightly deployment](downloader.md#nightly-deployment) are only for display):
+
+```
+ ; if [ -n "$(find /home/ubuntu/cron_notify.log -mmin -10 2>/dev/null)" ]; then aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools --metric-name QueueHeartbeat --value 1 --unit Count >> /home/ubuntu/heartbeat.log 2>&1 && echo "$(date -Is) heartbeat published" >> /home/ubuntu/heartbeat.log || echo "$(date -Is) heartbeat FAILED" >> /home/ubuntu/heartbeat.log; else echo "$(date -Is) heartbeat withheld: cron_notify.log not written" >> /home/ubuntu/heartbeat.log; fi
+```
+
+Bash reads this as `<wrapper> ; if <log fresh>; then ((put && echo published) || echo FAILED); else echo
+withheld; fi`. The 10 minutes is the gap between the wrapper's last write and this check, which is seconds.
+`find ... -mmin -10` prints the path only when the file exists and is that fresh, and `2>/dev/null` keeps a
+missing log quiet. A missing log counts as not written. This was checked under bash, with a stub `aws` and stub
+wrappers on both paths. A wrapper that writes its line and exits 0, 1, 3, 5 or 127 publishes. A missing
+interpreter (with a stale or absent log), a wrapper that exits without its line, and a wrapper killed by
+SIGKILL are each withheld, and `aws` is not called. `date -Is` is used rather than a
+`date +%...` format because cron turns an unescaped `%` into a newline. `aws` is found the same way the sink
+finds it, since both run under the same crontab's environment. Back up the crontab first (`crontab -l >
+~/crontab.<date>`), as for any crontab edit.
+
+**5. Testing it.** Each step proves one link:
+
+1. *Permission:* step 2's manual publish exited 0.
+2. *Alarm wiring:* `aws cloudwatch describe-alarms --region us-west-2 --alarm-names pano-scraper-heartbeat
+   --query 'MetricAlarms[0].StateValue'` turns `OK` within a few minutes of creation, and the OK action
+   delivers one message. If it goes to `ALARM` despite the manual datapoint, the alarm's namespace, metric
+   name or dimensions do not match the publish. With missing data treated as breaching, a metric the alarm
+   never sees reads as `ALARM`, not `INSUFFICIENT_DATA`. If more than 36 hours passed between step 2 and
+   creating the alarm, publish again first.
+3. *Delivery:* `aws cloudwatch set-alarm-state --region us-west-2 --alarm-name pano-scraper-heartbeat
+   --state-value ALARM --state-reason "delivery test"`. An ALARM message arrives. The next evaluation puts it
+   back to `OK` (a second message), because real data is present.
+4. *The crontab:* the morning after the first night, `tail -1 ~/heartbeat.log` says `heartbeat published` with
+   that morning's date, and the alarm is `OK`.
+
+Steps 1 to 3 do not prove that a real missed night fires the alarm. That would take 36 hours of no scraping.
+`set-alarm-state` proves the notification path, and `--treat-missing-data breaching` with no data is what
+CloudWatch documents. Record the date it was proven in the private runbook.
+
+**When it fires:** `ssh` to the box. If it does not answer, the box is down. Otherwise check `systemctl status
+cron`, then `crontab -l` (is the line still there, with its tail?), then `tail ~/cron_notify.log` (did the
+wrapper run?), then `tail ~/heartbeat.log`:
+- **`FAILED`**, with last night's line in `cron_notify.log`: the queue ran and only the publish broke. The `aws`
+  error is in the same file.
+- **`withheld`**, with a stale `cron_notify.log`: cron ran the line but the wrapper never finished. Run the
+  wrapper's command by hand to see why (a missing interpreter, an import error after a pull).
+- **No line for last night at all:** cron never ran the line (cron stopped, the crontab gone, or the box down
+  over 19:00).
+
 ### The morning after a deploy
 
 - No message arrived — and `tail -1 ~/cron_notify.log` carries last night's date and says
   `nothing to publish (clean run, --only-on-failure)`. The message is failure-only, so silence is ambiguous
   on its own: it is a quiet night *or* a wrapper that never ran, and the log line is what tells them apart.
+  A night that never ran at all is also caught off the box, by the [heartbeat
+  alarm](#hearing-about-a-night-that-never-ran), but only after 36 hours, so the log line is still the
+  morning's check.
 - `scrape_queue.log`: every city `ok (exit 0)`, and `pass 2 starting` if any ran out of budget.
 - `scrape_queue.log` ends with `manifest checked against N public and M private cities (roster from …)`, and
   `grep ERROR scrape_queue.log` prints nothing — a `cities missing from the manifest` or
@@ -1160,7 +1430,7 @@ because of.
   ([the cross-check](downloader.md#the-manifest-is-cross-checked-against-the-fleet)), whether or not the mail
   arrived. So is a line naming a condition code (`depth-refused: …`, `mapillary-token-missing: …`) —
   [the codes table](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) says what each means.
-- `tail -1 <city>/log.csv` has 19 fields (2026-09-17 and later); blanks mean a phase never finished.
+- `tail -1 <city>/log.csv` has 20 fields (once [#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182) is deployed; 19 from 2026-09-17 until then); blanks mean a phase never finished.
 - `grep -h "backing off" */scrape.log | grep -E "\((HTTP [0-9]+|[0-9]+ retries were needed)\)"` prints nothing —
   a push-back from Google would be the first sign the pacer's persisted standing is too aggressive. The reason
   in parentheses matters: `(network failure)` and `(unexpected failure)` are the loop's own arms, one timeout
@@ -1189,3 +1459,5 @@ the fleet, beyond the analyzer:
   surfaces. A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
 - `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
   [only there](#hearing-about-a-bad-night).
+- `tail -1 ~/heartbeat.log` says `heartbeat published` with last night's date. A failed heartbeat
+  [raises the alarm](#hearing-about-a-night-that-never-ran) eventually, but this file says so first.

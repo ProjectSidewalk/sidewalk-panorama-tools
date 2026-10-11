@@ -12,6 +12,7 @@ says it is. The stored point handed in is derived from the planted one by the IN
 compared with another.
 """
 
+import collections
 import csv
 import json
 import logging
@@ -731,3 +732,165 @@ class TestTheMarker:
         run(crop_runner, [label_row()], store, out, tilt_correction=True)
         marker = read_marker(crop_runner, out)
         assert marker['tilt_correction'] == 'on' and marker['tilt_beta_npz_pose'] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# The manifest records the correction per crop (#196)
+# ---------------------------------------------------------------------------
+
+def manifest_dicts(crop_runner, out):
+    """The manifest's rows as dicts, in file order, after checking the header is the current one."""
+    with open(os.path.join(str(out), crop_runner.PROVENANCE_MANIFEST), newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        assert tuple(reader.fieldnames) == crop_runner.PROVENANCE_COLUMNS
+        return list(reader)
+
+
+def tilt_cells(row):
+    return row['pose_source'], row['tilt_beta'], row['corrected_pano_x'], row['corrected_pano_y']
+
+
+def last_row_per_label(rows):
+    """The filter docs/cropper.md tells a consumer to use: the manifest is append-only, so the LAST row for a
+    (city, label_id) describes the crop on disk."""
+    last = {}
+    for row in rows:
+        last[(row['city'], row['label_id'])] = row
+    return last
+
+
+class TestTheManifestRecordsTheCorrectionPerCrop:
+    """With --tilt-correction a store is mixed by construction - no_pose is mostly permanent, and a --force
+    re-cut leaves those crops stale_kept - while crop_rule.json records only run-level settings. So every
+    manifest row says whether its crop was corrected, from which pose record, at which beta, and where the
+    window was centred: a consumer can then filter a mixed store from the manifest alone."""
+
+    @pytest.mark.parametrize('source', ['xml', 'npz'])
+    def test_a_corrected_row_names_its_record_beta_and_centre(self, crop_runner, tmp_path, source):
+        rig_x, rig_y = REGISTRATION_POINTS['below-horizon']
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_pose(put_lossless_pano(store, 'testpano0001', planted_at=(rig_x, rig_y)), source)
+        stored_x, stored_y = stored_point_for(rig_x, rig_y)
+        counts = run(crop_runner, [label_row(pano_x=stored_x, pano_y=stored_y)], store, out,
+                     tilt_correction=True)
+        assert counts['success'] == 1
+        (row,) = manifest_dicts(crop_runner, out)
+        beta = crop_runner.TILT_BETA_BY_POSE_SOURCE[source]
+        assert (row['pose_source'], row['tilt_beta']) == (source, str(float(beta)))
+        centre = (float(row['corrected_pano_x']), float(row['corrected_pano_y']))
+        assert centre == pytest.approx(pano_pose.corrected_pixel(stored_x, stored_y, W, H, PITCH, ROLL, beta))
+        # A round trip through the geometry, not one derivation compared with itself: the centre recorded is
+        # the planted rig pixel's centre, which the stored point was derived from by the inverse transform.
+        # The xml pose passes through the legacy tilt encoding, so allow a few hundredths of a pixel.
+        assert centre == pytest.approx((rig_x + 0.5, rig_y + 0.5), abs=0.05)
+        # Unrounded: the recorded centre parses back to the very float the window was cut around.
+        assert row['corrected_pano_x'] == repr(centre[0]) and row['corrected_pano_y'] == repr(centre[1])
+
+    def test_an_uncorrected_row_says_none_and_beta_zero(self, crop_runner, tmp_path, monkeypatch):
+        """Flag off, a pose beside the pano: the row says 'not corrected' - and the centre columns are blank,
+        never the stored point copied in under a 'corrected' name - and the pose file is still never read."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        jpg = put_pano(store, 'testpano0001')
+        write_npz_pose(jpg)
+        write_xml_pose(jpg)
+        monkeypatch.setattr(pano_pose, 'resolve_pano_pose',
+                            lambda *a, **k: pytest.fail('pose looked up without --tilt-correction'))
+        run(crop_runner, [label_row(label_id=1), label_row(label_id=2, pano_y=700)], store, out)
+        rows = manifest_dicts(crop_runner, out)
+        assert [tilt_cells(row) for row in rows] == [('none', '0.0', '', '')] * 2
+        assert crop_runner.POSE_SOURCE_NONE == 'none'
+        assert crop_runner.TILT_PROVENANCE_OFF == ('none', '0.0', '', '')
+
+    def test_a_mixed_store_filters_to_corrected_crops_from_the_manifest_alone(self, crop_runner, tmp_path,
+                                                                             capsys):
+        """The issue's 'done when'. Run A without the flag cuts everything; run B with --tilt-correction --force
+        re-cuts what it can correct and leaves the no-pose crop stale_kept. The last row per label then names
+        exactly the corrected crops, and the per-record tally the summary prints is the manifest's count."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'noposepano01')
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        labels = [label_row(pano_id='noposepano01', label_id=1),
+                  label_row(pano_id='npzpano00001', label_id=2),
+                  label_row(pano_id='npzpano00001', label_id=3, pano_y=700),
+                  label_row(pano_id='xmlpano00001', label_id=4)]
+        run(crop_runner, labels, store, out)
+        rows_after_a = len(manifest_dicts(crop_runner, out))
+        capsys.readouterr()
+        counts = run(crop_runner, labels, store, out, tilt_correction=True, force=True)
+        assert (counts['no_pose'], counts['stale_kept'], counts['recut']) == (1, 1, 3) and reconciles(counts)
+
+        rows = manifest_dicts(crop_runner, out)
+        assert rows_after_a == 4 and len(rows) == 7, 'a stale_kept crop gets no new row'
+        last = last_row_per_label(rows)
+        corrected = {label_id for (_, label_id), row in last.items()
+                     if crop_runner.manifest_row_is_tilt_corrected(row)}
+        assert corrected == {'2', '3', '4'}
+        assert tilt_cells(last[(CITY, '1')]) == ('none', '0.0', '', ''), 'the first run still describes label 1'
+
+        printed = capsys.readouterr().out
+        run_b = collections.Counter(row['pose_source'] for row in rows[rows_after_a:])
+        assert run_b == {'npz': 2, 'xml': 1}
+        assert ('%d crops cut from an xml pose (beta 1.0), %d from an npz pose (beta 1.0).'
+                % (run_b['xml'], run_b['npz'])) in printed
+
+    def test_a_different_beta_is_recorded_per_record(self, crop_runner, tmp_path, monkeypatch):
+        """Kills a row that writes the other record's beta, or a constant 1.0, or a centre at another beta."""
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 0.88, 'npz': 0.95})
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        x, y = 1024.0, 700.0
+        run(crop_runner, [label_row(pano_id='xmlpano00001', pano_x=x, pano_y=y, label_id=1),
+                          label_row(pano_id='npzpano00001', pano_x=x, pano_y=y, label_id=2)],
+            store, out, tilt_correction=True)
+        rows = {row['label_id']: row for row in manifest_dicts(crop_runner, out)}
+        for label_id, source, beta in (('1', 'xml', 0.88), ('2', 'npz', 0.95)):
+            row = rows[label_id]
+            assert (row['pose_source'], row['tilt_beta']) == (source, str(beta))
+            expected = pano_pose.corrected_pixel(x, y, W, H, PITCH, ROLL, beta)
+            assert (float(row['corrected_pano_x']), float(row['corrected_pano_y'])) == pytest.approx(expected)
+            other = pano_pose.corrected_pixel(x, y, W, H, PITCH, ROLL, 1.0)
+            assert float(row['corrected_pano_y']) != pytest.approx(other[1]), 'the fixture must tell betas apart'
+
+    def test_a_recut_appends_a_row_and_the_last_names_the_correction(self, crop_runner, tmp_path):
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_npz_pose(put_pano(store, 'testpano0001'))
+        run(crop_runner, [label_row()], store, out)
+        run(crop_runner, [label_row()], store, out, tilt_correction=True, force=True)
+        rows = manifest_dicts(crop_runner, out)
+        assert [row['pose_source'] for row in rows] == ['none', 'npz']
+        assert last_row_per_label(rows)[(CITY, '1')] is rows[-1]
+
+    def test_a_beta_of_zero_keeps_its_row_and_is_not_counted_as_corrected(self, crop_runner, tmp_path,
+                                                                          monkeypatch, capsys):
+        """#200 review finding 1. Beta 0 is the identity (pano_pose.corrected_pixel returns the stored point),
+        and #197 may well choose it for the xml record. The row is still written as it is - `xml`, `0.0`, the
+        stored point - because it is the only record that a re-cut at a higher beta would change the crop, and
+        writing TILT_PROVENANCE_OFF instead would merge "pose found, beta 0" into "flag off". What must not
+        happen is any count calling it corrected: neither the documented filter nor the summary's tally."""
+        monkeypatch.setattr(crop_runner, 'TILT_BETA_BY_POSE_SOURCE', {'xml': 0.0, 'npz': 1.0})
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        write_xml_pose(put_pano(store, 'xmlpano00001'))
+        write_npz_pose(put_pano(store, 'npzpano00001'))
+        x, y = 1024.0, 700.0
+        run(crop_runner, [label_row(pano_id='xmlpano00001', pano_x=x, pano_y=y, label_id=1),
+                          label_row(pano_id='npzpano00001', pano_x=x, pano_y=y, label_id=2)],
+            store, out, tilt_correction=True)
+        rows = {row['label_id']: row for row in manifest_dicts(crop_runner, out)}
+        assert (rows['1']['pose_source'], rows['1']['tilt_beta']) == ('xml', '0.0')
+        assert (float(rows['1']['corrected_pano_x']), float(rows['1']['corrected_pano_y'])) == (x, y)
+        assert [crop_runner.manifest_row_is_tilt_corrected(rows[i]) for i in ('1', '2')] == [False, True]
+        assert ('0 crops cut from an xml pose (beta 0.0), 1 from an npz pose (beta 1.0).'
+                in capsys.readouterr().out)
+
+    @pytest.mark.parametrize('cells, corrected', [
+        (('none', '0.0', '', ''), False),
+        (('npz', '1.0', '1.5', '2.5'), True),
+        (('xml', '0.88', '1.5', '2.5'), True),
+        (('xml', '0.0', '1.5', '2.5'), False),
+        (('npz', '-0.0', '1.5', '2.5'), False),
+    ], ids=['off', 'npz', 'xml-partial-beta', 'xml-beta-zero', 'negative-zero'])
+    def test_the_filter_is_pose_found_and_beta_nonzero(self, crop_runner, cells, corrected):
+        row = dict(zip(crop_runner.TILT_PROVENANCE_COLUMNS, cells))
+        assert crop_runner.manifest_row_is_tilt_corrected(row) is corrected
