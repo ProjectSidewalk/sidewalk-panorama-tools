@@ -342,7 +342,9 @@ class TestTheDownloaderSavesAndFlagsADeepEdgeBand:
         assert len(warnings) == 1 and PANO_ID in warnings[0].getMessage()
         assert 'frame disagreement' not in warnings[0].getMessage()
         assert gsv._edge_band_run.saved == 1
-        assert gsv._edge_band_run.first.startswith('pano %s' % PANO_ID)
+        detail, = gsv._edge_band_run.details    # the short form; depths are measured at 1/8 scale, so not asserted
+        assert detail.startswith('pano %s: saved with an exactly-black edge band ' % PANO_ID)
+        assert detail.endswith('%% bottom / %.1f%% right (limit 5.0%%)' % (100 * right / 1024,)) and ' bottom / ' in detail
 
     def test_the_flag_fires_after_the_save_so_a_flagging_crash_cannot_withhold_the_pano(self, monkeypatch,
                                                                                          tmp_path):
@@ -455,13 +457,35 @@ class TestTheEdgeBandCondition:
         assert second.get('conditions', []) == []
         assert capsys.readouterr().out.count('edge-band condition') == 1
 
+    def test_a_second_flagged_phase_names_its_own_first_pano(self, monkeypatch, tmp_path):
+        """Nit 1 of the #213 fix-round review: the count was a difference but `first` was the process's, so a
+        second flagged phase in one process named the first phase's pano."""
+        image = framed(1024, 512, bottom=96)
+        self.run_phase(monkeypatch, tmp_path / 'one', image, pano_id='firstPanoAAAAAAAAAAAAA')
+
+        second = self.run_phase(monkeypatch, tmp_path / 'two', image, pano_id='secondPanoAAAAAAAAAAAA')
+
+        detail = second['conditions'][0]['detail']
+        assert detail.startswith('1 pano(s) saved') and 'secondPano' in detail and 'firstPano' not in detail
+        assert gsv._edge_band_run.saved == 2
+
+    def test_the_detail_is_short_and_names_the_pano_both_depths_and_the_limit(self, monkeypatch, tmp_path):
+        """Nit 6: the run summary's detail is one SNS line, not the per-pano sentence with its pointers."""
+        summary = self.run_phase(monkeypatch, tmp_path, framed(1024, 512, bottom=96, right=128))
+
+        detail = summary['conditions'][0]['detail']
+        assert detail == ('1 pano(s) saved with a deep edge band; first: pano %s: saved with an exactly-black '
+                          'edge band 18.8%% bottom / 12.5%% right (limit 5.0%%)' % PANO_ID)
+        assert 'docs/ops.md' not in detail and 'ledgered' not in detail
+
     def test_run_resets_the_memory_per_run(self, monkeypatch):
         gsv._edge_band_run.saved = 7
         monkeypatch.setattr(DownloadRunner, '_run_phases', lambda *a, **k: None)
 
+        gsv._edge_band_run.details.append('pano x')
         DownloadRunner.run('sidewalk-test.invalid', '/nowhere', skip_depth=True)
 
-        assert gsv._edge_band_run.saved == 0
+        assert gsv._edge_band_run.saved == 0 and gsv._edge_band_run.details == []
 
     def test_the_condition_is_in_the_runners_vocabulary(self):
         assert DownloadRunner.CONDITION_EDGE_BAND == 'edge-band'
@@ -600,6 +624,10 @@ class TestTheSweep:
         assert summary.current == 6 and summary.clean == 1
         assert {r['pano_id'] for r in read_rows(store / scan_black_bands.WORKLIST_FILENAME)} \
             == FLAGGED - {'d4PanoAAAAAAAAAAAAAAAA'}
+        # The swapped pano now has two sound rows; the LAST wins, so a third sweep decodes nothing. (With the
+        # first winning it would be rescanned every run - nit 4 of the #213 fix-round review.)
+        third = scan_black_bands.scan_store(str(store))
+        assert third.current == 7 and third.clean == 0 and third.banded == 0
 
     def test_a_pano_rewritten_with_the_same_size_is_scanned_again(self, tmp_path, monkeypatch):
         """N6: resume is keyed on mtime as well as size, so the same bytes with a bumped mtime - a copy that
@@ -714,25 +742,24 @@ class TestTheSweep:
         clean = next(r for r in rows if r['pano_id'].startswith('cl'))
         with open(str(ledger), 'a', newline='') as f:
             f.write(','.join(scan_black_bands.LEDGER_FIELDS) + '\n')         # a repeated header
-            f.write('%s,%s,%s,1024,512,0.00' % (clean['pano_id'], clean['size'], clean['mtime_ns']))   # torn
-
-        with open(str(ledger), 'a', newline='') as f:
-            f.write('\n,1,2,1024,512,0.0,0.0,0.0,0.0\n')                            # a row with no pano id
+            f.write(',1,2,1024,512,0.0,0.0,0.0,0.0\n')                        # a row with no pano id
+            f.write('%s,%s,%s,1024,512,0.00' % (clean['pano_id'], clean['size'], clean['mtime_ns']))   # torn,
+            # and torn WITHOUT its newline: the shape a kill mid-write leaves
 
         loaded, skipped = scan_black_bands.load_ledger(str(ledger))
         assert skipped == 3
         assert loaded[clean['pano_id']] == clean, 'the torn row did not displace the sound one'
+        (store / 'nw').mkdir()
+        shutil.copy(fixture('clean.jpg'), str(store / 'nw' / 'nwPanoAAAAAAAAAAAAAAAA.jpg'))   # a new pano
         summary = scan_black_bands.scan_store(str(store))
 
-        assert summary.current == 7, 'every sound row still resumes'
+        assert summary.current == 7 and summary.clean == 1, 'every sound row still resumes; the new pano is scanned'
         assert '3 unreadable ledger row(s) skipped' in capsys.readouterr().out
-        # A pano whose ONLY row is torn is simply not in the ledger: scanned again from nothing. (The run above
-        # appended its rows after the torn one, which had no newline - so that line now carries two rows'
-        # fields and is unsound once, which is the one skip already counted; this one is on its own line.)
-        with open(str(ledger), 'a', newline='') as f:
-            f.write('\nnewPanoAAAAAAAAAAAAAAAA,1,2,1024,512,0.0\n')
+        # Nit 2 of the #213 fix-round review: the torn line is closed before the new row is appended, so the
+        # new pano's row is sound and the torn one is still exactly one skip - not two rows glued into one.
         loaded, skipped = scan_black_bands.load_ledger(str(ledger))
-        assert 'newPanoAAAAAAAAAAAAAAAA' not in loaded and skipped == 4
+        assert 'nwPanoAAAAAAAAAAAAAAAA' in loaded and skipped == 3
+        assert scan_black_bands.scan_store(str(store)).current == 8
 
     def test_a_ledger_with_another_versions_columns_is_kept_aside_and_started_afresh(self, tmp_path, capsys):
         """A ledger from before the near columns: appending 9-field rows under its 7-field header would read
@@ -758,6 +785,42 @@ class TestTheSweep:
         ledger.write_text(old)
         scan_black_bands.scan_store(str(store))
         assert (store / (scan_black_bands.LEDGER_FILENAME + '.stale-2')).is_file()
+
+    def test_an_empty_ledger_file_is_started_in_place(self, tmp_path):
+        """Nit 3: a file created and never written (a kill between open and the header) is not another
+        version - the header goes in place, and no `.stale-` copy of nothing is made."""
+        store = build_store(tmp_path)
+        ledger = store / scan_black_bands.LEDGER_FILENAME
+        ledger.write_bytes(b'')
+
+        summary = scan_black_bands.scan_store(str(store))
+
+        assert summary.scanned == 7 and summary.current == 0
+        lines = ledger.read_text().splitlines()
+        assert lines[0] == ','.join(scan_black_bands.LEDGER_FIELDS) and len(lines) == 8
+        assert not list(store.glob(scan_black_bands.LEDGER_FILENAME + '.stale-*'))
+        assert scan_black_bands.scan_store(str(store)).current == 7
+
+    def test_a_ledger_this_tool_did_not_write_is_refused_untouched(self, tmp_path, capsys):
+        """SF1 of the #213 fix-round review: `--ledger <store>/pano_id_log.csv` is a typo away, and that file
+        is the image phase's resume ledger. The old rule (header != LEDGER_FIELDS) renamed it aside and wrote
+        black-band rows in its place. Now anything whose header does not start `pano_id,size,mtime_ns` is
+        refused: exit 3, nothing written, nothing moved, the file byte-for-byte as it was."""
+        store = build_store(tmp_path)
+        resume_ledger = store / 'pano_id_log.csv'
+        before = b'pano_id,downloaded,fetched_at\r\nretiredPanoAAAAAAAAAAA,0,\r\n'
+        resume_ledger.write_bytes(before)
+        paths_before = sorted(p for p in store.rglob('*'))
+
+        with pytest.raises(scan_black_bands.ForeignLedgerError):
+            scan_black_bands.scan_store(str(store), ledger_path=str(resume_ledger))
+        code = scan_black_bands.main([str(store), '--ledger', str(resume_ledger)])
+
+        assert code == scan_black_bands.EXIT_REFUSED_LEDGER == 3
+        assert resume_ledger.read_bytes() == before
+        assert sorted(p for p in store.rglob('*')) == paths_before, 'no .stale-*, no work-list, nothing'
+        out = capsys.readouterr().out
+        assert 'REFUSED' in out and 'pano_id_log.csv' in out and 'pano_id,downloaded,fetched_at' in out
 
     def test_three_sweeps_write_one_header(self, tmp_path):
         store = build_store(tmp_path)

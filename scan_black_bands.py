@@ -25,7 +25,9 @@ its bands at all. Every crop cut from such a pano inherits the problem, so the p
 Idempotent and resumable: a pano whose ledger row matches its current size and mtime is not decoded again, so
 a re-run over a finished store costs one `stat` per pano, and a run cut short by `--max-runtime` picks up where
 it left off. A pano replaced since (a refetch swap) is scanned afresh. A pano that is not a readable JPEG is
-reported FAILED and left unledgered, so it is tried again next run; the bytes are left for a human.
+reported FAILED and left unledgered, so it is tried again next run; the bytes are left for a human. A
+`--ledger` that names a CSV this tool did not write (`pano_id_log.csv` is a typo away) is refused, exit 3,
+nothing written or moved; a ledger of another version of this tool is kept aside as `.stale-N` and restarted.
 
 The work per pano is a luma-only JPEG decode at 1/8 scale (Pillow's draft mode), not a full decode. Run it on
 the host that owns the store rather than over sshfs, for downscale_panos.py's reason: the read is the slow part.
@@ -55,6 +57,17 @@ WORKLIST_FIELDS = ['pano_id', 'width', 'height', 'bottom_band', 'right_band', 'n
 # never read as a verdict - and its pano is simply scanned again.
 _LEDGER_INT_FIELDS = ('size', 'mtime_ns')
 _LEDGER_FLOAT_FIELDS = ('bottom_band', 'right_band', 'near_bottom_band', 'near_right_band')
+# What every version of this ledger has opened with. A file whose header starts otherwise is not a black-bands
+# ledger of any version, so it is nobody's to rename: `--ledger <store>/pano_id_log.csv` is a typo away, and
+# that file is the image phase's resume ledger (#213 review, SF1).
+_LEDGER_KEY_FIELDS = ('pano_id', 'size', 'mtime_ns')
+# main()'s exit status when --ledger names a file this tool did not write. Not 1 (a pano failed, the sweep
+# ran) - the CropRunner -o pattern: refused before anything is written.
+EXIT_REFUSED_LEDGER = 3
+
+
+class ForeignLedgerError(ValueError):
+    """--ledger names a CSV that is not a black-bands ledger of any version; nothing was written or moved."""
 
 # 'clean' and 'banded' are panos decoded THIS run, split at --min-band; 'current' is a pano whose ledger row
 # still matches the file, so it was not decoded; 'failed' is not a readable JPEG; 'unreached' is a pano the
@@ -102,19 +115,27 @@ def load_ledger(ledger_path):
 
 
 def _set_aside_stale_ledger(ledger_path):
-    """Rename a ledger whose header is not LEDGER_FIELDS to `<ledger>.stale-<n>` and return that path; None
-    when the ledger is absent or current.
+    """Rename a black-bands ledger of ANOTHER version to `<ledger>.stale-<n>` and return that path; None when
+    the ledger is absent, empty or current. Raises ForeignLedgerError for a CSV that is not a black-bands
+    ledger at all.
 
     Appending this version's rows under another version's header would hand csv.DictReader the wrong names
     for every new row (the extra columns land under None), so the whole file would read as unsound and be
-    rescanned every run. Kept aside rather than deleted: it is a measurement somebody took.
+    rescanned every run. Kept aside rather than deleted: it is a measurement somebody took. The test is the
+    header's first three columns, which every version has shared: a file that fails it was not written by
+    this tool, and a tool that never touches a stored file must not move one either (#213 review, SF1). An
+    empty file is a ledger that was created and never written: started in place, nothing to keep.
     """
     if not os.path.isfile(ledger_path):
         return None
     with open(ledger_path, newline='', encoding='utf8') as f:
         header = next(csv.reader(f), None)
-    if header == LEDGER_FIELDS:
+    if header is None or header == LEDGER_FIELDS:
         return None
+    if tuple(header[:len(_LEDGER_KEY_FIELDS)]) != _LEDGER_KEY_FIELDS:
+        raise ForeignLedgerError("%s is not a black-bands ledger (its columns start %s, not %s); refusing to "
+                                 "write to or move a file this tool did not write. Check --ledger."
+                                 % (ledger_path, ','.join(header[:3]) or '(blank)', ','.join(_LEDGER_KEY_FIELDS)))
     n = 1
     while True:
         aside = '%s.stale-%d' % (ledger_path, n)
@@ -182,11 +203,21 @@ def scan_store(storage_path, ledger_path=None, worklist_path=None, max_runtime_m
     started = time.monotonic()
     scanned = clean = banded = current = failed = unreached = 0
 
-    new_ledger = not os.path.isfile(ledger_path)
+    new_ledger = not os.path.isfile(ledger_path) or os.path.getsize(ledger_path) == 0
+    # A row torn without its newline (a kill mid-write) would otherwise absorb this run's first row, making
+    # two rows unsound instead of one (#213 review, nit 2). Close the line before appending to it.
+    needs_newline = False
+    if not new_ledger:
+        with open(ledger_path, 'rb') as f:
+            f.seek(-1, os.SEEK_END)
+            needs_newline = f.read(1) != b'\n'
     with open(ledger_path, 'a', newline='', encoding='utf8') as ledger_file:
         writer = csv.DictWriter(ledger_file, fieldnames=LEDGER_FIELDS)
         if new_ledger:
             writer.writeheader()
+            ledger_file.flush()
+        elif needs_newline:
+            ledger_file.write('\r\n')
             ledger_file.flush()
         for path in walk_store_panos(storage_path):
             if max_runtime_minutes is not None and time.monotonic() - started >= max_runtime_minutes * 60:
@@ -274,8 +305,12 @@ def main(argv=None):
     min_band = common.EDGE_BAND_MAX_FRACTION if args.min_band is None else args.min_band
     worklist_path = args.worklist or os.path.join(args.storage_path, WORKLIST_FILENAME)
 
-    summary = scan_store(args.storage_path, ledger_path=args.ledger, worklist_path=worklist_path,
-                         max_runtime_minutes=args.max_runtime, min_band=min_band)
+    try:
+        summary = scan_store(args.storage_path, ledger_path=args.ledger, worklist_path=worklist_path,
+                             max_runtime_minutes=args.max_runtime, min_band=min_band)
+    except ForeignLedgerError as e:
+        print("REFUSED: %s" % (e,))
+        return EXIT_REFUSED_LEDGER
     print("Examined %d panorama(s): %d with an edge band over %.1f%%, %d without, %d already ledgered, "
           "%d failed, %d unreached. Work-list: %s"
           % (summary.scanned, summary.banded, 100 * min_band, summary.clean, summary.current, summary.failed,
