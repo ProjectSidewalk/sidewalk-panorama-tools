@@ -31,8 +31,12 @@ git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git
 cd sidewalk-panorama-tools
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 ```
+
+`-c constraints.txt` installs the exact versions production runs (Python 3.10). Drop it if a pin has no wheel
+for your Python: numpy 2.2.6 and scipy 1.15.3 stop at 3.13, so on 3.14 they would build from source. See
+[docs/downloader.md](docs/downloader.md#install).
 
 Download a city's panoramas and depth maps into `/srv/panos/columbus-oh`:
 
@@ -117,7 +121,7 @@ of them.
 ## Tests
 
 ```bash
-pip3 install -r requirements.txt -r requirements-dev.txt
+pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python3 -m pytest tests
 ```
 

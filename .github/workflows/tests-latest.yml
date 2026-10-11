@@ -1,0 +1,32 @@
+name: Tests (latest dependencies)
+
+# The drift report for constraints.txt (#167). tests.yml installs the production box's pinned versions and gates
+# every PR; this job installs requirements.txt's floors with NO constraints, so pip takes the latest release of
+# everything, and runs the same suite. It never runs on a PR or a push, so it gates nothing. A red run here
+# means a new upstream release breaks the suite, and production would hit it the next time it reinstalls from
+# scratch. Read the failure, then either fix the code or tighten requirements.txt. Refreshing constraints.txt
+# from the box is a separate step (docs/ops.md, "Refreshing constraints.txt").
+on:
+  schedule:
+    # Mondays 15:00 UTC: Monday morning Pacific, so a red run sits at the top of the Actions tab at the start of
+    # the week. (It runs on a GitHub-hosted runner and touches nothing on the production box.)
+    - cron: '0 15 * * 1'
+  workflow_dispatch:
+
+jobs:
+  pytest-latest:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      # No pip cache and no -c: the point is a fresh resolve.
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      # The resolved set, in the log, so a red run can be diffed against constraints.txt.
+      - run: pip freeze
+      # No --cov: the coverage floor is tests.yml's gate, and this job is about whether the suite passes.
+      - run: python -m pytest tests -v --continue-on-collection-errors
+        env:
+          SIDEWALK_REQUIRE_STREETLEVEL: '1'
