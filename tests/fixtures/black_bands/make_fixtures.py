@@ -17,6 +17,8 @@ encoding, as the stitcher's black canvas is.
 | dark_scene.jpg        | a night-dark frame, luma ~1-8, never encoded as exact 0               |
 | nadir_cap_3.jpg       | a genuinely black nadir cap 3% deep (15 rows): must not be flagged    |
 | near_black_nadir.jpg  | a nadir 15% deep at RGB (2,2,2): dark, not black, must not be flagged |
+| near_black_band_q40.jpg | thin_bottom_15's exact-0 band saved at quality=40: decodes to luma 1, so the  |
+|                       | EXACT band reads 0.0 and only the near-black measurement (#213 S4) sees it  |
 """
 
 import os
@@ -36,8 +38,8 @@ def imagery(seed, low=40, high=220):
     return np.clip(noisy, 0, 255).astype(np.uint8)
 
 
-def save(array, name):
-    Image.fromarray(array, 'RGB').save(os.path.join(HERE, name), 'jpeg')
+def save(array, name, **options):
+    Image.fromarray(array, 'RGB').save(os.path.join(HERE, name), 'jpeg', **options)
 
 
 def main():
@@ -64,6 +66,14 @@ def main():
     near = imagery(6)
     near[HEIGHT - 77:, :] = 2
     save(near, 'near_black_nadir.jpg')
+
+    # The same exact-0 band as thin_bottom_15.jpg, through an encoder whose DC quantiser moves 0 to 1 (#213
+    # review S4 measured 26 of Pillow's 96 qualities doing so; 40 is one of them). Regenerating this fixture
+    # on a Pillow whose quality-40 table differs would make its test fail, which is the point: the test is
+    # about what encoders do to exact black.
+    q40 = imagery(3)
+    q40[HEIGHT - 77:, :] = 0
+    save(q40, 'near_black_band_q40.jpg', quality=40)
 
 
 if __name__ == '__main__':
