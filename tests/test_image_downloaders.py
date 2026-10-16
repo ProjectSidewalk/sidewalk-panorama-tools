@@ -1354,6 +1354,19 @@ class TestPanoramaxTransientConditions:
         assert redirect.closed
         assert os.listdir(tmp_path / PANORAMAX_SHARD) == []
 
+    def test_a_later_hop_is_held_to_the_https_rule_too(self, monkeypatch, tmp_path):
+        session = panoramax_session(monkeypatch,
+                                    FakeResponse(payload=PANORAMIC_ITEM),
+                                    FakeResponse(status_code=302,
+                                                 headers={'Location': 'https://storage.example/a'}),
+                                    FakeResponse(status_code=302,
+                                                 headers={'Location': 'http://169.254.169.254/latest/meta-data/'}),
+                                    FakeResponse(chunks=[jpeg_bytes(120)]))
+
+        with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='not absolute https'):
+            downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+        assert len(session.calls) == 3
+
     def test_a_redirect_with_no_location_raises(self, monkeypatch, tmp_path):
         panoramax_session(monkeypatch,
                           FakeResponse(payload=PANORAMIC_ITEM),

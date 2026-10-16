@@ -276,12 +276,16 @@ def fetch_hd_following_safe_redirects(session, image_url, pano_id):
     with no Location, or too many hops.
     """
     url = image_url
-    for _ in range(MAX_HD_REDIRECTS + 1):
+    for hops in range(MAX_HD_REDIRECTS + 1):
         resp = session.get(url, stream=True, timeout=120, allow_redirects=False)
         if resp.status_code not in REDIRECT_STATUSES:
             return resp
-        location = session.get_redirect_target(resp)  # fixes up non-ASCII Location headers
         resp.close()
+        if hops == MAX_HD_REDIRECTS:
+            raise PanoramaxErrorResponse(
+                "Panoramax hd asset for picture %s redirected more than %d times; not following further"
+                % (pano_id, MAX_HD_REDIRECTS))
+        location = session.get_redirect_target(resp)  # fixes up non-ASCII Location headers
         if not location:
             raise PanoramaxErrorResponse(
                 "Panoramax hd asset for picture %s redirected (%s) with no Location" % (pano_id, resp.status_code))
@@ -290,12 +294,8 @@ def fetch_hd_following_safe_redirects(session, image_url, pano_id):
             raise PanoramaxErrorResponse(
                 "Panoramax hd asset for picture %s redirected (%s) to a URL that is not absolute https; not "
                 "following it: %.200r" % (pano_id, resp.status_code, url))
-        # The host only: the full URL could contain an access token.
         logging.info("Panoramax picture %s: hd asset redirected (%s) to host %s",
-                     pano_id, resp.status_code, urlsplit(url).netloc)
-    raise PanoramaxErrorResponse(
-        "Panoramax hd asset for picture %s redirected more than %d times; not following further"
-        % (pano_id, MAX_HD_REDIRECTS))
+                     pano_id, resp.status_code, urlsplit(url).hostname)
 
 
 def _write_display_copy(out_image_name, pano_id):
