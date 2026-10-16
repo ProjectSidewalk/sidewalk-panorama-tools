@@ -317,8 +317,9 @@ permanent.** Transient failures leave no row and retry automatically on the next
   ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)), a Mapillary error envelope
   on a 200, a 404 whose envelope carries the auth signature (code 190 / `OAuthException`), a body that does
   not name the image, an image body that is not a JPEG, a Panoramax 404 *without* the catalog's body, a
-  malformed or empty assets block, and a redirect off a published `hd` href are none of them verdicts and
-  leave no row.
+  malformed or empty assets block, and an `hd` redirect that is not followed (one to a non-https URL, one
+  with no `Location`, or more than `MAX_HD_REDIRECTS` hops; an https redirect is
+  [followed](downloader.md#imagery-sources)) are none of them verdicts and leave no row.
 * **no row** — never attempted, the last attempt failed transiently (a network blip, a failed tile, a full
   store), or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both
   the withheld tripping verdict and every pano skipped after it). Retried next run.

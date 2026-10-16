@@ -180,8 +180,10 @@ class TestDownloadResultIsARealEnum:
 
 
 class FakeResponse:
-    # requests exposes these two on every response and panoramax reads them, because it fetches the hd href
-    # with allow_redirects=False and follows a redirect only by hand, after checking where it goes.
+    # panoramax fetches the hd href with allow_redirects=False and follows a redirect only by hand, through
+    # session.get_redirect_target. That reads these exactly as requests defines them: headers case-insensitive,
+    # and is_redirect true only for a redirect status WITH a Location (2026-10-16 PR #220 review - a double
+    # that dropped the Location requirement made the no-Location branch look reachable when it was not).
     REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
     def __init__(self, status_code=200, payload=None, body=None, chunks=None, headers=None):
@@ -189,7 +191,7 @@ class FakeResponse:
         self._payload = payload
         self.text = body or ''
         self._chunks = chunks or []
-        self.headers = headers or {}
+        self.headers = requests.structures.CaseInsensitiveDict(headers or {})
         self.closed = False
 
     def close(self):
@@ -197,11 +199,7 @@ class FakeResponse:
 
     @property
     def is_redirect(self):
-        return self.status_code in self.REDIRECT_STATUSES
-
-    @property
-    def is_permanent_redirect(self):
-        return self.status_code in (301, 308)
+        return 'location' in self.headers and self.status_code in self.REDIRECT_STATUSES
 
     def json(self):
         if self._payload is None:
@@ -213,6 +211,10 @@ class FakeResponse:
             raise requests.HTTPError('%s' % self.status_code, response=self)
 
     def iter_content(self, chunk_size=None):
+        # A real streamed response has no body left to read once closed; without this, closing the
+        # response the caller is about to stream would pass every test.
+        if self.closed:
+            raise RuntimeError('iter_content on a closed response')
         for chunk in self._chunks:
             if isinstance(chunk, Exception):
                 raise chunk
@@ -245,6 +247,10 @@ class FakeSession:
 
     def __exit__(self, *args):
         return False
+
+    # requests' own implementation, so the Location is read and repaired (latin-1 to UTF-8) exactly as in
+    # production; it touches only resp.is_redirect and resp.headers.
+    get_redirect_target = requests.Session.get_redirect_target
 
     def get(self, url, **kwargs):
         merged_headers = {**self.headers, **(kwargs.get('headers') or {})}
@@ -1280,33 +1286,67 @@ class TestPanoramaxTransientConditions:
         'https://panoramax-storage-public-fast.s3.gra.perf.cloud.ovh.net/main-pictures/'
         'd8/09/d2/14/4314-46b4-9d54-9a1cc9288750.jpg')
 
-    @pytest.mark.parametrize('status', [301, 302, 303, 307, 308])
-    def test_an_https_redirect_off_the_published_href_is_followed(self, monkeypatch, tmp_path, status):
-        """The instance serving its own pictures from storage is not the catalog changing shape. The hop is
-        followed by hand with allow_redirects=False on EVERY request, so requests itself never chooses the
-        next host - that is what keeps the next test's refusal possible."""
-        storage = self.OBSERVED_IGN_HD_REDIRECT_2026_10_16[2]
-        redirect = FakeResponse(status_code=status, headers={'Location': storage})
+    def test_the_measured_ign_redirect_is_followed_and_its_host_logged(self, monkeypatch, tmp_path, caplog):
+        """The instance serving its own pictures from storage is not the catalog changing shape. Every
+        element of the measurement is used: the published href, its status and its Location."""
+        href, status, storage = self.OBSERVED_IGN_HD_REDIRECT_2026_10_16
+        assets = dict(PANORAMIC_ITEM['assets'], hd={'type': 'image/jpeg', 'href': href})
+        redirect = FakeResponse(status_code=status, headers={'location': storage})
         session = panoramax_session(monkeypatch,
-                                    FakeResponse(payload=PANORAMIC_ITEM),
+                                    FakeResponse(payload=dict(PANORAMIC_ITEM, assets=assets)),
                                     redirect,
                                     FakeResponse(chunks=[jpeg_bytes(120)]))
 
-        assert (downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
-                == DownloadResult.success)
-        assert [url for url, _ in session.calls[1:]] == [PANORAMIC_ITEM['assets']['hd']['href'], storage]
-        assert all(kwargs['allow_redirects'] is False for _, kwargs in session.calls[1:])
+        with caplog.at_level(logging.INFO):
+            assert (downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+                    == DownloadResult.success)
+        assert [url for url, _ in session.calls[1:]] == [href, storage]
         assert redirect.closed
+        # The host, never the URL: a redirect target can be presigned.
+        assert 'panoramax-storage-public-fast.s3.gra.perf.cloud.ovh.net' in caplog.text
+        assert '/main-pictures/' not in caplog.text
 
-    def test_a_relative_location_is_resolved_against_the_hop_that_sent_it(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize('status', [301, 302, 303, 307, 308])
+    def test_an_https_redirect_off_the_published_href_is_followed(self, monkeypatch, tmp_path, status):
+        """Followed by hand with allow_redirects=False on EVERY request, so requests itself never chooses
+        the next host - that is what keeps the refusals below possible."""
         session = panoramax_session(monkeypatch,
                                     FakeResponse(payload=PANORAMIC_ITEM),
-                                    FakeResponse(status_code=302, headers={'Location': '/storage/hd.jpg'}),
+                                    FakeResponse(status_code=status, 
+                                                 headers={'Location': 'https://storage.example/a.jpg'}),
                                     FakeResponse(chunks=[jpeg_bytes(120)]))
 
         assert (downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
                 == DownloadResult.success)
-        assert session.calls[2][0] == 'https://panoramax.ign.fr/storage/hd.jpg'
+        assert session.calls[2][0] == 'https://storage.example/a.jpg'
+        assert all(kwargs['allow_redirects'] is False for _, kwargs in session.calls[1:])
+
+    def test_a_relative_location_is_resolved_against_the_hop_that_sent_it(self, monkeypatch, tmp_path):
+        """Two hops, so resolving against the published href instead of the previous hop is caught: the
+        relative Location arrives from storage.example, not from the instance."""
+        session = panoramax_session(monkeypatch,
+                                    FakeResponse(payload=PANORAMIC_ITEM),
+                                    FakeResponse(status_code=302, 
+                                                 headers={'Location': 'https://storage.example/a/b.jpg'}),
+                                    FakeResponse(status_code=302, headers={'Location': '/c/d.jpg'}),
+                                    FakeResponse(chunks=[jpeg_bytes(120)]))
+
+        assert (downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+                == DownloadResult.success)
+        assert session.calls[3][0] == 'https://storage.example/c/d.jpg'
+
+    def test_a_non_ascii_location_is_repaired_the_way_requests_repairs_it(self, monkeypatch, tmp_path):
+        """http.client decodes headers as latin-1, so a UTF-8 Location arrives mangled; requests'
+        get_redirect_target re-encodes it. Read raw, café.jpg would be requested as caf%C3%83%C2%A9.jpg."""
+        mangled = 'https://storage.example/café.jpg'.encode('utf-8').decode('latin-1')
+        session = panoramax_session(monkeypatch,
+                                    FakeResponse(payload=PANORAMIC_ITEM),
+                                    FakeResponse(status_code=302, headers={'Location': mangled}),
+                                    FakeResponse(chunks=[jpeg_bytes(120)]))
+
+        assert (downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
+                == DownloadResult.success)
+        assert session.calls[2][0] == 'https://storage.example/café.jpg'
 
     @pytest.mark.parametrize('location', ['http://169.254.169.254/latest/meta-data/', 'http://10.0.0.5/x.jpg',
                                           'file:///etc/passwd', 'ftp://panoramax.ign.fr/x.jpg'],
@@ -1326,9 +1366,11 @@ class TestPanoramaxTransientConditions:
 
         # Matched on the reason, and the hop must never be requested: with a body queued behind it, a
         # mutant that drops the check would follow it and succeed.
+        redirect = session.responses[1]
         with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='not absolute https'):
             downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
         assert len(session.calls) == 2
+        assert redirect.closed
         assert os.listdir(tmp_path / PANORAMAX_SHARD) == []
 
     def test_a_redirect_with_no_location_raises(self, monkeypatch, tmp_path):
