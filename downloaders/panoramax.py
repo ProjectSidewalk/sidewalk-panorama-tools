@@ -11,6 +11,7 @@
 import logging
 import os
 import stat
+from urllib.parse import urljoin, urlsplit
 
 from . import common
 from .common import (DownloadResult, atomic_output_path, jpeg_dimensions, retrying_session,
@@ -27,6 +28,10 @@ CATALOG_API_BASE = 'https://api.panoramax.xyz/api'
 # (Bayonne's own survey, producer sig_bayonne, etalab-2.0) and 323 are flat 92-degree GoPro HERO8 pictures
 # from unrelated contributors under CC-BY-SA-4.0. See declared_field_of_view for why that matters here.
 PANORAMIC_FIELD_OF_VIEW_DEG = 360
+
+# panoramax.ign.fr redirects once, to its file storage (2026-10-16); two leaves a little headroom.
+MAX_HD_REDIRECTS = 2
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 class PanoramaxErrorResponse(RuntimeError):
@@ -259,6 +264,40 @@ def hd_asset_url(payload):
     return href
 
 
+def fetch_hd_following_safe_redirects(session, image_url, pano_id):
+    """GET the hd href, following up to MAX_HD_REDIRECTS redirects, but only to https URLs.
+
+    We follow redirects ourselves instead of letting requests do it, because requests will follow one to
+    any address, including plain-http ones like the cloud metadata server (http://169.254.169.254/). The
+    href comes from a catalog anyone can contribute to, so that matters. Since 2026-10, panoramax.ign.fr
+    redirects to its file storage (refusing that cost Bayonne 15 panos a night).
+
+    Raises PanoramaxErrorResponse, so the pano is retried next run, for a non-https target, a redirect
+    with no Location, or too many hops.
+    """
+    url = image_url
+    for hops in range(MAX_HD_REDIRECTS + 1):
+        resp = session.get(url, stream=True, timeout=120, allow_redirects=False)
+        if resp.status_code not in REDIRECT_STATUSES:
+            return resp
+        resp.close()
+        if hops == MAX_HD_REDIRECTS:
+            raise PanoramaxErrorResponse(
+                "Panoramax hd asset for picture %s redirected more than %d times; not following further"
+                % (pano_id, MAX_HD_REDIRECTS))
+        location = session.get_redirect_target(resp)  # fixes up non-ASCII Location headers
+        if not location:
+            raise PanoramaxErrorResponse(
+                "Panoramax hd asset for picture %s redirected (%s) with no Location" % (pano_id, resp.status_code))
+        url = urljoin(url, location)
+        if not url.startswith('https://'):
+            raise PanoramaxErrorResponse(
+                "Panoramax hd asset for picture %s redirected (%s) to a URL that is not absolute https; not "
+                "following it: %.200r" % (pano_id, resp.status_code, url))
+        logging.info("Panoramax picture %s: hd asset redirected (%s) to host %s",
+                     pano_id, resp.status_code, urlsplit(url).hostname)
+
+
 def _write_display_copy(out_image_name, pano_id):
     """The viewer's copy of a pano wider than it can texture (#115), beside the native file.
 
@@ -356,21 +395,9 @@ def download_single_pano(storage_path, pano_info):
             logging.error("Panoramax knows picture %s but publishes no hd asset", pano_id)
             return DownloadResult.failure
 
-        # allow_redirects=False, deliberately (2026-09-09 review). This is the one URL in the repo that is
-        # taken from a remote response rather than built, on a public commons anyone can contribute to, and
-        # requests follows up to 30 redirects to ANY scheme and host by default - so the https check above
-        # would cover the first hop only, and a 302 to http://169.254.169.254/ or a private address would be
-        # followed and its body streamed into the store. A federated instance serving its own pictures has
-        # no reason to redirect; if one starts, that is the catalog changing shape and belongs in a review,
-        # not in a silent fetch.
-        image_resp = session.get(image_url, stream=True, timeout=120, allow_redirects=False)
-        if image_resp.is_redirect or image_resp.is_permanent_redirect:
-            raise PanoramaxErrorResponse(
-                "Panoramax hd asset for picture %s redirected (%s); not following a redirect off the href "
-                "the catalog published" % (pano_id, image_resp.status_code))
+        image_resp = fetch_hd_following_safe_redirects(session, image_url, pano_id)
         # A non-200 here is the instance being unreachable or mid-deploy, never a property of the pano - the
-        # metadata request above already proved the imagery exists (#41). Unlike Mapillary's, this URL is a
-        # plain public path with no signature in it, so nothing secret reaches scrape.log via the HTTPError.
+        # metadata request above already proved the imagery exists (#41).
         image_resp.raise_for_status()
 
         # .part + rename: iter_content can die mid-stream (reset connection, full store), and a truncated

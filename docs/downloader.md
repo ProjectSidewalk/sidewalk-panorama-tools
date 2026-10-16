@@ -971,6 +971,11 @@ follows the `assets.hd` href to whichever instance holds the pixels (`panoramax.
 survey, `panoramax.openstreetmap.fr` for contributor pictures on the same streets). The href is followed,
 never built.
 
+**Redirects are followed only to https URLs.** Since October 2026, `panoramax.ign.fr` redirects some hd
+images to its file storage. The downloader follows up to `MAX_HD_REDIRECTS` (2) of them itself, rather than
+letting `requests` follow any redirect anywhere (including the plain-http cloud metadata server). A redirect
+it won't follow raises, and the pano is retried next run.
+
 Ids are UUIDs, so a Panoramax city shards over at most 256 `<pano_id[:2]>` directories.
 
 **What the ledger learns from Panoramax.** Three answers are permanent and write a `downloaded=0` row:
