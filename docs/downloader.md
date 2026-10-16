@@ -971,6 +971,16 @@ follows the `assets.hd` href to whichever instance holds the pixels (`panoramax.
 survey, `panoramax.openstreetmap.fr` for contributor pictures on the same streets). The href is followed,
 never built.
 
+**Redirects off the href are followed by hand, and only to https.** Since at least 2026-10-11,
+`panoramax.ign.fr` answers some hd hrefs with a 302 to its own public object store
+(`panoramax-storage-public-fast.s3.gra.perf.cloud.ovh.net`, measured 2026-10-16). Until then every redirect
+was refused, which raised for 15 of Bayonne's 88 panos every night and failed the night through
+`images-no-success`. Now each request goes out with `allow_redirects=False`. Each `Location` is resolved
+against the hop that sent it and must be an absolute https URL, and at most `MAX_HD_REDIRECTS` (2) hops are
+taken. Requests' certificate verification then rules out the plain-http metadata endpoint and internal
+addresses, which is what the refusal was protecting against. A hop that breaks a rule raises, ledgers
+nothing, and the pano retries the next night.
+
 Ids are UUIDs, so a Panoramax city shards over at most 256 `<pano_id[:2]>` directories.
 
 **What the ledger learns from Panoramax.** Three answers are permanent and write a `downloaded=0` row:
