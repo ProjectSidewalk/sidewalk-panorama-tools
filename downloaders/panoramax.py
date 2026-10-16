@@ -29,12 +29,8 @@ CATALOG_API_BASE = 'https://api.panoramax.xyz/api'
 # from unrelated contributors under CC-BY-SA-4.0. See declared_field_of_view for why that matters here.
 PANORAMIC_FIELD_OF_VIEW_DEG = 360
 
-# How many redirects the hd fetch follows (fetch_hd_following_safe_redirects). Measured 2026-10-16:
-# panoramax.ign.fr takes one, to its object store. Two is headroom for one more layer, not a guess at a chain.
+# panoramax.ign.fr redirects once, to its file storage (2026-10-16); two leaves a little headroom.
 MAX_HD_REDIRECTS = 2
-
-# The statuses requests itself treats as redirects (requests.models.REDIRECT_STATI), copied rather than
-# imported from a module-internal name.
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
@@ -269,48 +265,22 @@ def hd_asset_url(payload):
 
 
 def fetch_hd_following_safe_redirects(session, image_url, pano_id):
-    """GET the hd href, following at most MAX_HD_REDIRECTS redirects, each held to the href's own rule.
+    """GET the hd href, following up to MAX_HD_REDIRECTS redirects, but only to https URLs.
 
-    Redirects are followed BY HAND, never by requests (2026-09-09 review). The href is taken from a remote
-    response rather than built, on a public commons anyone can contribute to, and requests follows up to 30
-    redirects to ANY scheme and host by default - so the https check in hd_asset_url would cover the first
-    hop only, and a 302 to http://169.254.169.254/ or a private address would be followed and its body
-    streamed into the store. (Mapillary's thumb_original_url is the other URL in the repo taken from a
-    response, and it is still fetched with requests' default following; that is a separate gap.)
+    We follow redirects ourselves instead of letting requests do it, because requests will follow one to
+    any address, including plain-http ones like the cloud metadata server (http://169.254.169.254/). The
+    href comes from a catalog anyone can contribute to, so that matters. Since 2026-10, panoramax.ign.fr
+    redirects to its file storage (refusing that cost Bayonne 15 panos a night).
 
-    Until 2026-10 every redirect was refused, on the reasoning that a federated instance serving its own
-    pictures has no reason to redirect. panoramax.ign.fr started to: measured 2026-10-16, its
-    /api/pictures/<id>/hd.jpg answers 302 to its public object store
-    (https://panoramax-storage-public-fast.s3.gra.perf.cloud.ovh.net/main-pictures/...), which is the
-    instance serving its own pictures from storage, not the catalog changing shape. Refusing it cost bayonne-fr
-    15 of its 88 panos, retried and raised every night from at least 2026-10-11, and failed the night through
-    images-no-success.
-
-    So each hop must be what the published href already had to be - an absolute https URL. That check is
-    what refuses plain http, the metadata endpoint included; do not drop it as redundant. Given it,
-    requests' certificate verification (on by default) means every hop lands on a host holding a publicly
-    trusted certificate for its own name, which keeps internal addresses out of reach. A hop's host is not
-    otherwise restricted, because the first hop's is not either: the catalog can already name any https
-    host, so allowing an https redirect grants a commons contributor nothing the href did not. A relative
-    Location is resolved against the hop that sent it (urljoin), and the result is held to the same https
-    rule - a scheme-relative //other.host/ can still move host, as an absolute one can.
-
-    The target comes from session.get_redirect_target, not the raw header, for requests' latin-1 to UTF-8
-    repair of a non-ASCII Location. A redirect is recognised by its status alone, because requests'
-    is_redirect also requires a Location, and a 3xx without one would otherwise fall through to the JPEG
-    check and be misreported as "not a JPEG". Each followed hop logs its host (not its URL, which could be
-    presigned), so scrape.log records which host actually served a stored pano.
-
-    Raises PanoramaxErrorResponse - never a verdict, so the pano retries untouched - for a hop that is not
-    https, a redirect with no Location, or more than MAX_HD_REDIRECTS hops. Returns the first non-redirect
-    response, streamed; the caller checks its status and its body.
+    Raises PanoramaxErrorResponse, so the pano is retried next run, for a non-https target, a redirect
+    with no Location, or too many hops.
     """
     url = image_url
     for _ in range(MAX_HD_REDIRECTS + 1):
         resp = session.get(url, stream=True, timeout=120, allow_redirects=False)
         if resp.status_code not in REDIRECT_STATUSES:
             return resp
-        location = session.get_redirect_target(resp)
+        location = session.get_redirect_target(resp)  # fixes up non-ASCII Location headers
         resp.close()
         if not location:
             raise PanoramaxErrorResponse(
@@ -320,6 +290,7 @@ def fetch_hd_following_safe_redirects(session, image_url, pano_id):
             raise PanoramaxErrorResponse(
                 "Panoramax hd asset for picture %s redirected (%s) to a URL that is not absolute https; not "
                 "following it: %.200r" % (pano_id, resp.status_code, url))
+        # The host only: the full URL could contain an access token.
         logging.info("Panoramax picture %s: hd asset redirected (%s) to host %s",
                      pano_id, resp.status_code, urlsplit(url).netloc)
     raise PanoramaxErrorResponse(
@@ -426,10 +397,7 @@ def download_single_pano(storage_path, pano_info):
 
         image_resp = fetch_hd_following_safe_redirects(session, image_url, pano_id)
         # A non-200 here is the instance being unreachable or mid-deploy, never a property of the pano - the
-        # metadata request above already proved the imagery exists (#41). The HTTPError's message carries the
-        # final URL into scrape.log. Every target measured is a plain public path (the published href, and
-        # IGN's object-store redirect, 2026-10-16); an instance that redirected to a presigned URL would put
-        # that short-lived read signature for a public picture in the log, which is not worth redacting for.
+        # metadata request above already proved the imagery exists (#41).
         image_resp.raise_for_status()
 
         # .part + rename: iter_content can die mid-stream (reset connection, full store), and a truncated

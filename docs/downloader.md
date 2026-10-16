@@ -971,18 +971,10 @@ follows the `assets.hd` href to whichever instance holds the pixels (`panoramax.
 survey, `panoramax.openstreetmap.fr` for contributor pictures on the same streets). The href is followed,
 never built.
 
-**Redirects off the href are followed by hand, and only to https.** Since at least 2026-10-11,
-`panoramax.ign.fr` answers some hd hrefs with a 302 to its own public object store
-(`panoramax-storage-public-fast.s3.gra.perf.cloud.ovh.net`, measured 2026-10-16). Until then every redirect
-was refused, which raised for 15 of Bayonne's 88 panos every night and failed the night through
-`images-no-success`. Now each request goes out with `allow_redirects=False`. Each `Location` is read
-through requests' `get_redirect_target` (which repairs a non-ASCII one), resolved against the hop that sent
-it, and must be an absolute https URL, and at most `MAX_HD_REDIRECTS` (2) hops are taken. **The https check
-is what refuses the plain-http metadata endpoint**; requests' certificate verification, which applies only
-because every hop is https, is what keeps internal addresses out. Both are needed. A hop that breaks a rule
-raises, ledgers nothing, and the pano retries the next night. Each followed hop logs its host (never the
-URL, which could be presigned) at INFO in `scrape.log`, so the log records which host served a stored pano.
-Mapillary's `thumb_original_url` is still fetched with requests' default redirect following.
+**Redirects are followed only to https URLs.** Since October 2026, `panoramax.ign.fr` redirects some hd
+images to its file storage. The downloader follows up to `MAX_HD_REDIRECTS` (2) of them itself, rather than
+letting `requests` follow any redirect anywhere (including the plain-http cloud metadata server). A redirect
+it won't follow raises, and the pano is retried next run.
 
 Ids are UUIDs, so a Panoramax city shards over at most 256 `<pano_id[:2]>` directories.
 

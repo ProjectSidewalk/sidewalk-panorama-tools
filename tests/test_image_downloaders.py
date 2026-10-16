@@ -180,10 +180,7 @@ class TestDownloadResultIsARealEnum:
 
 
 class FakeResponse:
-    # panoramax fetches the hd href with allow_redirects=False and follows a redirect only by hand, through
-    # session.get_redirect_target. That reads these exactly as requests defines them: headers case-insensitive,
-    # and is_redirect true only for a redirect status WITH a Location (2026-10-16 PR #220 review - a double
-    # that dropped the Location requirement made the no-Location branch look reachable when it was not).
+    # Mirrors requests: case-insensitive headers, and is_redirect needs a Location header.
     REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
     def __init__(self, status_code=200, payload=None, body=None, chunks=None, headers=None):
@@ -211,8 +208,7 @@ class FakeResponse:
             raise requests.HTTPError('%s' % self.status_code, response=self)
 
     def iter_content(self, chunk_size=None):
-        # A real streamed response has no body left to read once closed; without this, closing the
-        # response the caller is about to stream would pass every test.
+        # Like a real response, a closed one can't be read.
         if self.closed:
             raise RuntimeError('iter_content on a closed response')
         for chunk in self._chunks:
@@ -248,8 +244,7 @@ class FakeSession:
     def __exit__(self, *args):
         return False
 
-    # requests' own implementation, so the Location is read and repaired (latin-1 to UTF-8) exactly as in
-    # production; it touches only resp.is_redirect and resp.headers.
+    # requests' own method, so a Location is read exactly as in production.
     get_redirect_target = requests.Session.get_redirect_target
 
     def get(self, url, **kwargs):
@@ -1277,9 +1272,7 @@ class TestPanoramaxTransientConditions:
         with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='absolute https'):
             downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
 
-    # Measured 2026-10-16 on the production host: panoramax.ign.fr answers a Bayonne picture's published hd
-    # href with this 302, to its own public object store. Refusing it raised for 15 of bayonne-fr's 88 panos
-    # every night from at least 2026-10-11 and failed the night through images-no-success.
+    # Measured 2026-10-16 on the production host.
     OBSERVED_IGN_HD_REDIRECT_2026_10_16 = (
         'https://panoramax.ign.fr/api/pictures/d809d214-4314-46b4-9d54-9a1cc9288750/hd.jpg',
         302,
@@ -1287,8 +1280,6 @@ class TestPanoramaxTransientConditions:
         'd8/09/d2/14/4314-46b4-9d54-9a1cc9288750.jpg')
 
     def test_the_measured_ign_redirect_is_followed_and_its_host_logged(self, monkeypatch, tmp_path, caplog):
-        """The instance serving its own pictures from storage is not the catalog changing shape. Every
-        element of the measurement is used: the published href, its status and its Location."""
         href, status, storage = self.OBSERVED_IGN_HD_REDIRECT_2026_10_16
         assets = dict(PANORAMIC_ITEM['assets'], hd={'type': 'image/jpeg', 'href': href})
         redirect = FakeResponse(status_code=status, headers={'location': storage})
@@ -1302,14 +1293,11 @@ class TestPanoramaxTransientConditions:
                     == DownloadResult.success)
         assert [url for url, _ in session.calls[1:]] == [href, storage]
         assert redirect.closed
-        # The host, never the URL: a redirect target can be presigned.
         assert 'panoramax-storage-public-fast.s3.gra.perf.cloud.ovh.net' in caplog.text
         assert '/main-pictures/' not in caplog.text
 
     @pytest.mark.parametrize('status', [301, 302, 303, 307, 308])
     def test_an_https_redirect_off_the_published_href_is_followed(self, monkeypatch, tmp_path, status):
-        """Followed by hand with allow_redirects=False on EVERY request, so requests itself never chooses
-        the next host - that is what keeps the refusals below possible."""
         session = panoramax_session(monkeypatch,
                                     FakeResponse(payload=PANORAMIC_ITEM),
                                     FakeResponse(status_code=status, 
@@ -1322,8 +1310,7 @@ class TestPanoramaxTransientConditions:
         assert all(kwargs['allow_redirects'] is False for _, kwargs in session.calls[1:])
 
     def test_a_relative_location_is_resolved_against_the_hop_that_sent_it(self, monkeypatch, tmp_path):
-        """Two hops, so resolving against the published href instead of the previous hop is caught: the
-        relative Location arrives from storage.example, not from the instance."""
+        # Two hops, so resolving against the original href instead would land on the wrong host.
         session = panoramax_session(monkeypatch,
                                     FakeResponse(payload=PANORAMIC_ITEM),
                                     FakeResponse(status_code=302, 
@@ -1336,8 +1323,7 @@ class TestPanoramaxTransientConditions:
         assert session.calls[3][0] == 'https://storage.example/c/d.jpg'
 
     def test_a_non_ascii_location_is_repaired_the_way_requests_repairs_it(self, monkeypatch, tmp_path):
-        """http.client decodes headers as latin-1, so a UTF-8 Location arrives mangled; requests'
-        get_redirect_target re-encodes it. Read raw, café.jpg would be requested as caf%C3%83%C2%A9.jpg."""
+        # http.client decodes headers as latin-1, so a UTF-8 Location arrives garbled until requests fixes it.
         mangled = 'https://storage.example/café.jpg'.encode('utf-8').decode('latin-1')
         session = panoramax_session(monkeypatch,
                                     FakeResponse(payload=PANORAMIC_ITEM),
@@ -1353,19 +1339,14 @@ class TestPanoramaxTransientConditions:
                              ids=['metadata endpoint', 'private address over http', 'file', 'ftp'])
     def test_a_redirect_that_is_not_https_is_refused_rather_than_followed(self, monkeypatch, tmp_path,
                                                                          location):
-        """The hd href is the one URL in this repo taken from a remote response rather than built, on a
-        public commons anyone can contribute to - and requests follows up to 30 redirects to ANY scheme and
-        host by default, so the href's https check covers the first hop only. A 302 to
-        http://169.254.169.254/ or to a private address would be followed and its body streamed into the
-        store; if it happened to start with a JPEG SOF it would be renamed in and ledgered downloaded=1
-        (2026-09-09 review). Each hop is held to the href's own rule, and the pano retries untouched."""
+        """requests would follow these; we must not, or e.g. the cloud metadata server's reply could be
+        saved into the store."""
         session = panoramax_session(monkeypatch,
                                     FakeResponse(payload=PANORAMIC_ITEM),
                                     FakeResponse(status_code=302, headers={'Location': location}),
                                     FakeResponse(chunks=[jpeg_bytes(120)]))
 
-        # Matched on the reason, and the hop must never be requested: with a body queued behind it, a
-        # mutant that drops the check would follow it and succeed.
+        # A JPEG is queued behind the bad hop, so following it would succeed instead of raising.
         redirect = session.responses[1]
         with pytest.raises(downloaders.panoramax.PanoramaxErrorResponse, match='not absolute https'):
             downloaders.panoramax.download_single_pano(str(tmp_path), PANORAMAX_PANO)
