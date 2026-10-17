@@ -276,10 +276,62 @@ def test_render_view_antialiases_with_the_views_k():
     k = view.reduction_factor(W)
     assert k > 1
     sx, sy = g.sampling_grid(view, None, W, H)
-    assert np.array_equal(g.render_view(pano, view), g.sample_bilinear(g.box_reduce(pano, k), sx / k, sy / k))
+    assert np.array_equal(g.render_view(pano, view), g.sample_grid(pano, sx, sy, k))
     assert np.array_equal(g.render_view(pano, view, antialias=False), g.sample_bilinear(pano, sx, sy))
     assert np.abs(g.render_view(pano, view).astype(int) - 128).max() <= 1
     assert g.render_view(pano, view, antialias=False).astype(float).std() > 20
+
+
+def test_the_reduced_seam_is_continuous_when_k_does_not_divide_w():
+    """W = 8192, k = 11 drops 8192 % 11 = 8 columns (more than k / 2). The reduced pano is sampled at
+    sx * (W // k) / W, so its wrap period is its own width: approaching the seam from either side gives the
+    same value, and the far edge (sx = W - 0.5) is a blend of the reduced pano's last and first columns."""
+    W, H, k = 8192, 44, 11
+    assert W % k > k / 2
+    rng = np.random.default_rng(21)
+    pano = rng.uniform(0, 255, (H, W))
+    sy = np.full(4, 20.0)
+    left, right, edge, start = g.sample_grid(pano, np.array([W - 1e-9, 1e-9, W - 0.5, 0.0]), sy, k)
+    assert left == pytest.approx(right, abs=1e-6)
+    # sx = W - 0.5 and sx = 0 sit between the reduced pano's last and first columns (rows 1-2 at sy = 20),
+    # never on a column the wrap skipped or read twice
+    reduced = g.box_reduce(pano, k)
+    around = reduced[1:3][:, [-1, 0]]
+    assert around.min() <= edge <= around.max() and around.min() <= start <= around.max()
+    # and an interior point is the ordinary bilinear sample of the reduced pano at the rescaled coordinate
+    Wr, Hr = W // k, H // k
+    mid = g.sample_grid(pano, np.array([4000.3]), np.array([17.7]), k)[0]
+    assert mid == pytest.approx(g.sample_bilinear(reduced, np.array([4000.3 * Wr / W]),
+                                                  np.array([17.7 * Hr / H]))[0], abs=1e-9)
+    with pytest.raises(ValueError):
+        g.sample_grid(pano, sy, sy, 0)
+
+
+def test_an_integer_pano_is_rounded_once():
+    """render_view reduces in float and rounds at the end: the uint8 render is exactly the rounded float
+    render of the same values (box_reduce's own uint8 output would round twice)."""
+    rng = np.random.default_rng(22)
+    pano = rng.integers(0, 256, (512, 1024, 3), dtype=np.uint8)
+    view = g.View(10.0, -30.0, 90.0, 64, 64)
+    k = view.reduction_factor(1024)
+    assert k > 1
+    once = g.render_view(pano, view)
+    assert once.dtype == np.uint8
+    assert np.array_equal(once, np.clip(np.rint(g.render_view(pano.astype(np.float32), view)), 0, 255))
+
+
+def test_pose_refuses_a_stray_pano_pose(monkeypatch):
+    """pano_pose installs under a generic name; a different pano_pose first on sys.path must fail loudly."""
+    import importlib
+    import sys
+    import types
+    assert pose.PANO_POSE_FINGERPRINT == pose.EXPECTED_PANO_POSE_FINGERPRINT == pano_pose.PANO_POSE_FINGERPRINT
+    monkeypatch.setitem(sys.modules, 'pano_pose', types.ModuleType('pano_pose'))
+    monkeypatch.delitem(sys.modules, 'sidewalk_panorama_tools.pose')
+    with pytest.raises(ImportError, match='shadowing'):
+        importlib.import_module('sidewalk_panorama_tools.pose')
+    monkeypatch.undo()
+    assert importlib.import_module('sidewalk_panorama_tools.pose') is pose
 
 
 def test_render_view_antialias_keeps_the_label_at_centre():
@@ -363,9 +415,10 @@ class TestTiltMatrixIsPanoPosesSign:
                 assert got[1] == pytest.approx(want[1], abs=1e-6)
 
     def test_it_agrees_with_rampnets_viewer_tilt(self):
-        """RampNet's VIEWER_TILT = "mm" (image_lat = level_lat + camera_pitch cos phi + camera_roll sin phi),
-        measured there against the HF viewport crops, is the same physical relation as pano_pose's +T(b), at
-        beta 1. With one axis (every GSV label: PS stores no roll) the two rotations are identical. With both,
+        """RampNet's VIEWER_TILT = "mm" (image_lat = level_lat + camera_pitch cos phi + camera_roll sin phi) is
+        the same relation as pano_pose's +T(b) at beta 1. RampNet's HF-crop validation confirms the PITCH sign
+        independently; its roll sign is untested (its own docstring: no GSV row carries a roll), so the roll
+        sign here rests on #54 endpoint F1, and this test only shows the two formulas agree. With one axis (every GSV label: PS stores no roll) the two rotations are identical. With both,
         they differ only in composition order (pano_pose pitches then rolls about the pitched forward axis;
         RampNet's Rz @ Rx the other way round), which is a rotation about the vertical of about
         pitch * roll (radians): elevation agrees to 0.01 deg, and the direction to within that bound."""

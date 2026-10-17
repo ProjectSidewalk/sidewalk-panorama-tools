@@ -17,8 +17,8 @@ Conventions (all pano_pose's; degrees in and out):
 
 * **Pano point.** Normalized ``X = pano_x / pano_width``, ``Y = pano_y / pano_height``;
   ``lon = (X - 0.5) * 360`` (pano_pose's bearing: clockwise from the pano's centre column, which looks
-  along ``camera_heading``) and ``lat = (0.5 - Y) * 180`` (pano_pose's elevation, up positive). The same
-  mapping as Project Sidewalk's ``calculatePanoXYFromPov``. Resolution-independent: a stored JPEG at another
+  along ``camera_heading``) and ``lat = (0.5 - Y) * 180`` (pano_pose's elevation, up positive). This is the
+  inverse of Project Sidewalk's ``calculatePanoXYFromPov``. Resolution-independent: a stored JPEG at another
   resolution than the label's ``pano_width`` is sampled at the same normalized point.
 * **Pixels** are continuous with pixel *i*'s centre at ``i + 0.5``; only x wraps (column 0 and column
   ``pano_width`` are the same place; the poles are not).
@@ -35,9 +35,10 @@ Conventions (all pano_pose's; degrees in and out):
   elevation, to first order, ``lat + beta * (camera_pitch * cos b + camera_roll * sin b)`` = ``lat +
   beta * T(b)``. With ``camera_pitch = 3`` and beta 0.95 a level ray straight ahead (b = 0) is at rig
   elevation +2.85 deg and one behind (b = 180) at -2.85; with ``camera_roll = 3`` one at b = 90 is at +2.85.
-  tests/test_geometry.py pins those numbers. This is the same physical relation as RampNet's
-  ``VIEWER_TILT = "mm"`` (``image_lat = level_lat + camera_pitch cos phi + camera_roll sin phi``), measured
-  there independently against the HF viewport crops; a test pins the agreement.
+  tests/test_geometry.py pins those numbers. RampNet's ``VIEWER_TILT = "mm"`` (``image_lat = level_lat +
+  camera_pitch cos phi + camera_roll sin phi``), measured there against the HF viewport crops, independently
+  **confirms the pitch sign**; RampNet's own docstring says its roll sign is untested (no GSV row carries a
+  roll), so the roll sign rests on this repo's #54 endpoint F1 alone. A test pins the agreement.
 * **Beta** is the fraction of the rig tilt that leaked into the stored click (it scales the pose, as
   ``pano_pose.corrected_pixel`` does). Measured per pose record in this repo (#191, #197) on 3,518 pairs:
   0.953 (SE 0.020) under streetlevel's modern pose record (the ``.depth.npz`` pose) and 0.884 under the
@@ -51,9 +52,17 @@ Conventions (all pano_pose's; degrees in and out):
   and a pixel past it, the reading CropRunner documents too); ``y_norm`` does not wrap.
 * **Anti-aliasing is owned here.** :func:`render_view` box-reduces the pano by
   ``k = view.reduction_factor(pano_width)`` (:func:`reduction_factor`, :func:`box_reduce`) before bilinear
-  sampling whenever k > 1. A torch consumer applies ``avg_pool2d(kernel_size=k, stride=k)`` with the same k
-  before ``grid_sample`` (docs/geometry.md). For both current consumers (an 8192-wide pano, a 2048 px
-  90 deg view) k = 1, so nothing is reduced and their output is unchanged.
+  sampling whenever k > 1, and samples the reduced pano at ``sx * (W // k) / W``, ``sy * (H // k) / H``
+  (:func:`sample_grid`), so its wrap period is the reduced width and the seam stays continuous. A torch
+  consumer applies ``avg_pool2d(kernel_size=k, stride=k)`` with the same k before ``grid_sample`` and passes
+  k to ``torch_geometry.normalized_grid_torch`` (docs/geometry.md). For both current consumers (an
+  8192-wide pano, a 2048 px 90 deg view) k = 1, so nothing is reduced and their output is unchanged. k is
+  judged at the equator (the pano's W / 360 px/deg against the view centre's): towards the poles the pano's
+  horizontal density rises by 1/cos(lat), so a steep view stays oversampled horizontally (the #221 review
+  measured 1.8x at -45 deg).
+* **Cost.** :func:`render_view` is plain numpy on the CPU: about 1.1 s and 554 MB peak for an 8192 pano into
+  a 2048 x 2048 view (the grid alone about 0.3 s; #221 review). The torch path
+  (``sidewalk_panorama_tools.torch_geometry``) is the fast one.
 
 Rendering with the tilt puts the stored point at the exact centre of a :func:`centered_view` of the rig-frame
 pano; rendering without it centres the raw pixel at those coordinates, which is off the click by the tilt.
@@ -209,7 +218,8 @@ def label_view(x_norm, y_norm, fov_h_deg=90.0, size=2048, camera_pitch=None, cam
     Example: a label at the pano's centre column, 20 deg below the horizon, on a pano with camera_pitch 3::
 
         view, tilt = label_view(0.5, 0.5 + 20 / 180, fov_h_deg=90, size=512, camera_pitch=3)
-        # view == View(yaw_deg=0.0, pitch_deg=-20.0, fov_h_deg=90.0, width=512, height=512)
+        # view.yaw_deg == 0.0 and view.pitch_deg is -20.0 to rounding (-20.000000000000014);
+        # (view.fov_h_deg, view.width, view.height) == (90.0, 512, 512)
     """
     x_norm, y_norm = float(x_norm), float(y_norm)
     if not math.isfinite(x_norm):
@@ -348,29 +358,57 @@ def _to_dtype(out: np.ndarray, dtype) -> np.ndarray:
     return out.astype(dtype)
 
 
-def box_reduce(pano: np.ndarray, k: int) -> np.ndarray:
-    """Mean of each k x k block of ``pano`` (H, W[, C]): the anti-aliasing step before sampling.
-
-    Trailing remainder rule: the last ``W % k`` columns and ``H % k`` rows, which do not fill a block, are
-    dropped (as torch ``avg_pool2d(kernel_size=k, stride=k)`` drops them). :func:`render_view` samples the
-    reduced pano at the source coordinates divided by k, so reduced pixel j covers source pixels
-    [j k, (j + 1) k) exactly and the geometry is unchanged everywhere except inside the dropped strip, at the
-    seam (x wraps over W // k) and the bottom edge (y clamps). k = 1 returns ``pano`` itself. The result
-    keeps the input dtype (integers rounded and clipped).
-    """
-    k = int(k)
-    if k < 1:
-        raise ValueError(f"k must be >= 1, got {k}")
-    if k == 1:
-        return pano
+def _box_mean(pano: np.ndarray, k: int) -> np.ndarray:
+    """Mean of each k x k block, in a float at least as wide as the input; the trailing remainder dropped."""
     H, W = pano.shape[:2]
     Hr, Wr = H // k, W // k
     if Hr < 1 or Wr < 1:
         raise ValueError(f"a {W}x{H} pano is smaller than one {k}x{k} block")
     src = pano if pano.ndim == 3 else pano[..., None]
     blocks = src[:Hr * k, :Wr * k].reshape(Hr, k, Wr, k, src.shape[2])
-    out = _to_dtype(blocks.mean(axis=(1, 3), dtype=np.result_type(pano.dtype, np.float32)), pano.dtype)
+    out = blocks.mean(axis=(1, 3), dtype=np.result_type(pano.dtype, np.float32))
     return out if pano.ndim == 3 else out[..., 0]
+
+
+def _check_k(k) -> int:
+    k = int(k)
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
+    return k
+
+
+def box_reduce(pano: np.ndarray, k: int) -> np.ndarray:
+    """Mean of each k x k block of ``pano`` (H, W[, C]): the anti-aliasing step before sampling.
+
+    Trailing remainder rule: the last ``W % k`` columns and ``H % k`` rows, which do not fill a block, are
+    dropped (as torch ``avg_pool2d(kernel_size=k, stride=k)`` drops them). The result keeps the input dtype
+    (integers rounded and clipped); k = 1 returns ``pano`` itself. :func:`render_view` does not call this:
+    it reduces in float and rounds once, at the end (:func:`sample_grid`).
+    """
+    k = _check_k(k)
+    if k == 1:
+        return pano
+    return _to_dtype(_box_mean(pano, k), pano.dtype)
+
+
+def sample_grid(pano: np.ndarray, sx: np.ndarray, sy: np.ndarray, k: int = 1) -> np.ndarray:
+    """Sample ``pano`` at full-resolution continuous coordinates (:func:`sampling_grid`'s), anti-aliased by k.
+
+    k = 1 is :func:`sample_bilinear`. For k > 1 the pano is box-reduced in float to (H // k, W // k) and
+    sampled at ``sx * (W // k) / W``, ``sy * (H // k) / H``: the reduced pano's wrap period is its own width,
+    so the seam is continuous and this agrees with the torch recipe (docs/geometry.md). When ``W % k != 0``
+    the dropped columns' angle is spread over the whole width (content moves by under one reduced pixel at
+    most, never by a jump at the seam). The result is rounded once, to the input dtype.
+    """
+    k = _check_k(k)
+    if k == 1:
+        return sample_bilinear(pano, sx, sy)
+    H, W = pano.shape[:2]
+    reduced = _box_mean(pano, k)
+    Hr, Wr = reduced.shape[:2]
+    out = sample_bilinear(reduced, np.asarray(sx, dtype=np.float64) * (Wr / W),
+                          np.asarray(sy, dtype=np.float64) * (Hr / H))
+    return _to_dtype(out, pano.dtype)
 
 
 def reduction_factor(pano_width: int, view: View) -> int:
@@ -388,11 +426,8 @@ def reduction_factor(pano_width: int, view: View) -> int:
 def sampling_grid(view: View, tilt: Optional[np.ndarray], pano_width, pano_height):
     """The continuous source pixel of every output pixel: ``(sx, sy)``, each (view.height, view.width)
     float64, pixel *i*'s centre at ``i + 0.5``, x in [0, pano_width), in the FULL-resolution pano's pixels.
-    Exactly what :func:`render_view` samples (divided by k when it box-reduces), so a torch consumer can
-    build a ``grid_sample`` grid from identical geometry (docs/geometry.md: after ``avg_pool2d`` by
-    ``k = view.reduction_factor(W)``, ``gx = 2 * (sx / k) / (W // k) - 1``, ``gy = 2 * (sy / k) / (H // k) - 1``
-    with ``align_corners=False``; x does not wrap in ``grid_sample``, so pad the pano by a column on each side
-    or wrap it yourself).
+    Exactly what :func:`render_view` hands :func:`sample_grid`, so a torch consumer can build a
+    ``grid_sample`` grid from identical geometry (``torch_geometry.normalized_grid_torch``, with the same k).
     """
     lon, lat = rays_to_lonlat(view_rays(view), tilt)
     return lonlat_to_pano_px(lon, lat, pano_width, pano_height)
@@ -402,13 +437,11 @@ def render_view(pano: np.ndarray, view: View, tilt: Optional[np.ndarray] = None,
                 antialias: bool = True) -> np.ndarray:
     """Render ``view`` from an equirect pano array (H, W[, C]), rig frame.
 
-    With ``antialias`` (the default) the pano is first box-reduced by ``k = view.reduction_factor(W)``
-    (:func:`box_reduce`) when k > 1, and sampled at the source coordinates divided by k; k = 1 (the case
-    for an 8192-wide pano and a 2048 px 90 deg view) samples the pano as given. ``antialias=False`` always
-    samples the full-resolution pano."""
+    With ``antialias`` (the default) the pano is box-reduced by ``k = view.reduction_factor(W)`` when k > 1
+    and sampled by :func:`sample_grid` (reduced in float, rounded once); k = 1 (the case for an 8192-wide pano
+    and a 2048 px 90 deg view) samples the pano as given. ``antialias=False`` always samples the
+    full-resolution pano. Cost: about 1.1 s / 554 MB peak for 8192 -> 2048 x 2048 on the CPU; the torch path
+    is the fast one (module docstring)."""
     H, W = pano.shape[:2]
     sx, sy = sampling_grid(view, tilt, W, H)
-    k = view.reduction_factor(W) if antialias else 1
-    if k > 1:
-        return sample_bilinear(box_reduce(pano, k), sx / k, sy / k)
-    return sample_bilinear(pano, sx, sy)
+    return sample_grid(pano, sx, sy, view.reduction_factor(W) if antialias else 1)

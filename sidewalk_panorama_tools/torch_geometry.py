@@ -21,13 +21,15 @@ Recipe (the one :func:`normalized_grid_torch` is written for)::
     if k > 1:                                             # the anti-aliasing render_view does in numpy
         pano = F.avg_pool2d(pano, k)                      # drops the trailing W % k, H % k, as box_reduce does
     sx, sy = sampling_grid_torch(view, tilt, W, H, device=pano.device)
-    grid = normalized_grid_torch(sx / k, sy / k, W // k, H // k)
+    grid = normalized_grid_torch(sx, sy, W, H, k=k)       # full-resolution sx, sy; k rescales to the pooled size
     crop = F.grid_sample(wrap_pad_torch(pano), grid, mode='bilinear', padding_mode='border', align_corners=False)
+    crop = crop.round().clamp(0, 255).to(torch.uint8)     # for a uint8 pano: round once, here (not (x*255).byte())
 
 Precision: float64 matches the numpy grid to well under 1e-4 px. float32 is limited by its own resolution
-(an x near 8192 has a float32 spacing of about 5e-4 px): at an 8192-wide pano it agrees to under 1e-3 px in
-y and in arc length, while the raw x error grows towards the poles (up to about 1e-2 px at 86 deg, where a
-column is a sliver of the sphere). tests/test_torch_geometry.py pins both. MPS has no float64.
+(an x near 8192 has a float32 spacing of about 5e-4 px): at an 8192-wide pano the error is 1.0-1.05e-3 px of
+arc at ordinary latitudes, while the raw x error grows towards the poles (0.03-0.08 px within 0.05 deg of
+the pole, where a column is a sliver of the sphere; #221 review). tests/test_torch_geometry.py holds float32
+to 2e-3 px in y and in arc length. MPS has no float64.
 
 Speed (M1 Max, 2048 x 2048 view, 8192 pano, measured 2026-10-17): numpy sampling_grid 262 ms, this on the
 CPU 75 ms, on MPS 19 ms.
@@ -74,17 +76,27 @@ def sampling_grid_torch(view: 'geometry.View', tilt: Optional[np.ndarray], pano_
     return sx, sy
 
 
-def normalized_grid_torch(sx, sy, pano_width, pano_height):
+def normalized_grid_torch(sx, sy, pano_width, pano_height, k=1):
     """The ``grid_sample`` grid, (1, H, W, 2), for ``align_corners=False`` on a pano padded by one wrapped
-    column on each side (:func:`wrap_pad_torch`, width ``pano_width + 2``):
-    ``gx = 2 (sx + 1) / (pano_width + 2) - 1``, ``gy = 2 sy / pano_height - 1``. So sx = 0.5 (the centre of
-    column 0) lands on the centre of the first real column of the padded tensor, and sx = W - 0.5 on the
-    last; a sample between the last column and the first reads the padding, which is the other edge.
-    For a box-reduced pano pass ``sx / k``, ``sy / k`` and the reduced ``W // k``, ``H // k``.
+    column on each side (:func:`wrap_pad_torch`).
+
+    ``sx``, ``sy`` are full-resolution coordinates (:func:`sampling_grid_torch`) of a ``pano_width`` x
+    ``pano_height`` pano; ``k`` is the box reduction applied to it (``avg_pool2d(pano, k)``, k = 1 for none).
+    With ``Wr = pano_width // k``, ``Hr = pano_height // k`` the coordinates are rescaled to
+    ``sxr = sx * Wr / pano_width``, ``syr = sy * Hr / pano_height`` - the wrap period is the pooled width, as in
+    numpy's :func:`geometry.sample_grid` - and then ``gx = 2 (sxr + 1) / (Wr + 2) - 1``, ``gy = 2 syr / Hr - 1``.
+    So sxr = 0.5 (the centre of column 0) lands on the centre of the first real column of the padded tensor,
+    and sxr = Wr - 0.5 on the last; a sample between them reads the padding, which is the other edge.
     """
     torch = _torch()
-    gx = 2.0 * (sx + 1.0) / (pano_width + 2.0) - 1.0
-    gy = 2.0 * sy / pano_height - 1.0
+    k = int(k)
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
+    wr, hr = pano_width // k, pano_height // k
+    sxr = sx * (wr / pano_width)
+    syr = sy * (hr / pano_height)
+    gx = 2.0 * (sxr + 1.0) / (wr + 2.0) - 1.0
+    gy = 2.0 * syr / hr - 1.0
     return torch.stack([gx, gy], dim=-1)[None]
 
 

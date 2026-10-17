@@ -1,7 +1,8 @@
 """Tests for sidewalk_panorama_tools.torch_geometry, the optional torch sampling grid (docs/geometry.md).
 
-torch is an optional extra and CI does not install it, so this whole module skips cleanly without it (and
-.coveragerc omits torch_geometry.py from the gate for the same reason). With torch installed it checks the
+torch is an optional extra of the package, so this whole module skips cleanly without it. CI has it:
+requirements.txt pulls torch in through streetlevel -> pyequilib, so the gated job runs these tests and
+measures torch_geometry.py, and the `package` job reruns them on the CPU-only torch build. With torch it checks the
 torch grid against the numpy one over seven label points - both sides of the seam, the centre, +-72 deg and
 +-86 deg elevation - with and without tilt, in float32 and float64, and checks the wrap-padded grid_sample
 normalization against the padded tensor's columns and against geometry.render_view.
@@ -28,10 +29,11 @@ POINTS = [(0.001, 0.55), (0.999, 0.55), (0.5, 0.5),
 
 # float64 is the numpy computation in another library: 1e-4 px on both axes. float32 cannot reach that: its
 # spacing near x = 8192 is about 5e-4 px, and towards the poles a longitude error is magnified in x by
-# 1/cos(lat) (14x at 86 deg), where a whole column is a sliver of the sphere. So float32 is held to 1e-3 px in
-# y and in x times cos(lat) - the error as arc length on the sphere, in pano pixels (measured 2026-10-17:
-# 3.8e-4 px in y, 9.3e-4 px of arc, against a raw x error of up to 9.5e-3 px at 86 deg).
-TOLERANCE_PX = {'float64': 1e-4, 'float32': 1e-3}
+# 1/cos(lat), where a whole column is a sliver of the sphere. So float32 is held to 2e-3 px in y and in
+# x times cos(lat) - the error as arc length on the sphere, in pano pixels. Measured: 1.0-1.05e-3 px of arc at
+# ordinary latitudes (#221 review; 9.3e-4 px over these points, 2026-10-17), and a raw x error of 0.03-0.08 px
+# within 0.05 deg of the pole.
+TOLERANCE_PX = {'float64': 1e-4, 'float32': 2e-3}
 
 
 def _x_error(a, b):
@@ -108,7 +110,7 @@ def test_the_recipe_with_a_box_reduction_matches_render_view():
     want = g.render_view(pano, view, tilt)
     t = F.avg_pool2d(torch.as_tensor(pano).permute(2, 0, 1)[None], k)
     sx, sy = tg.sampling_grid_torch(view, tilt, w, h, dtype=torch.float64)
-    got = F.grid_sample(tg.wrap_pad_torch(t), tg.normalized_grid_torch(sx / k, sy / k, w // k, h // k),
+    got = F.grid_sample(tg.wrap_pad_torch(t), tg.normalized_grid_torch(sx, sy, w, h, k=k),
                         mode='bilinear', padding_mode='border', align_corners=False)[0].permute(1, 2, 0).numpy()
     assert np.abs(got - want).max() < 1e-6
 
@@ -120,3 +122,54 @@ def test_a_tilt_matrix_is_used_not_ignored():
     # 0.95 * 3 deg of nose-down pitch puts the level view's centre (pixel 4 of 9) 2.85 deg higher in the rig
     shift = (flat - tilted)[4, 4].item()
     assert shift == pytest.approx(2.85 / 180 * H, rel=0.01) and not math.isnan(shift)
+
+
+def _torch_sample(pano, sx, sy, k, dtype=torch.float64):
+    """The docs recipe on an (H, W[, C]) numpy pano at full-resolution coordinates sx, sy (any shape)."""
+    h, w = pano.shape[:2]
+    t = torch.as_tensor(pano, dtype=dtype)
+    t = (t[..., None] if t.ndim == 2 else t).permute(2, 0, 1)[None]
+    if k > 1:
+        t = F.avg_pool2d(t, k)
+    sx_t = torch.as_tensor(np.atleast_2d(sx), dtype=dtype)
+    sy_t = torch.as_tensor(np.atleast_2d(sy), dtype=dtype)
+    out = F.grid_sample(tg.wrap_pad_torch(t), tg.normalized_grid_torch(sx_t, sy_t, w, h, k=k), mode='bilinear',
+                        padding_mode='border', align_corners=False)[0]
+    return out.permute(1, 2, 0)
+
+
+def test_numpy_and_torch_agree_at_the_seam_when_k_does_not_divide_w():
+    """W = 8192, k = 11 (8 dropped columns, more than k / 2): sampled directly at W - 0.5 and across the seam,
+    numpy's sample_grid and the torch recipe agree, and both are continuous across sx = W == 0."""
+    W, H, k = 8192, 44, 11
+    rng = np.random.default_rng(23)
+    pano = rng.uniform(0, 255, (H, W))
+    sx = np.array([W - 0.5, W - 1e-9, 1e-9, 0.5, W - 30.0, 4000.3])
+    sy = np.array([20.0, 20.0, 20.0, 20.0, 3.0, 40.0])
+    want = g.sample_grid(pano, sx, sy, k)
+    got = _torch_sample(pano, sx, sy, k).numpy()[0, :, 0]
+    assert np.abs(got - want).max() < 1e-9
+    assert got[1] == pytest.approx(got[2], abs=1e-6)
+
+
+def test_a_uint8_pano_at_k2_matches_numpy_to_one_lsb():
+    """Single rounding on both sides: numpy reduces in float and rounds once; the torch recipe ends with
+    .round().clamp(0, 255).to(torch.uint8). Run in float32 (as a GPU would), they differ by at most one LSB
+    and only where float32 lands within rounding of a half - not the 16.6% the double-rounded numpy path
+    disagreed on before the #221 review."""
+    rng = np.random.default_rng(24)
+    pano = rng.integers(0, 256, (512, 1024, 3), dtype=np.uint8)
+    view, tilt = g.label_view(0.3, 0.6, fov_h_deg=90.0, size=128, camera_pitch=2.0)
+    k = view.reduction_factor(1024)
+    assert k == 2
+    want = g.render_view(pano, view, tilt).astype(int)
+    sx, sy = g.sampling_grid(view, tilt, 1024, 512)
+    got = _torch_sample(pano, sx, sy, k, dtype=torch.float32).round().clamp(0, 255).to(torch.uint8).numpy()
+    diff = np.abs(got.astype(int) - want)
+    assert diff.max() <= 1
+    assert (diff > 0).mean() < 0.01, (diff > 0).mean()
+
+
+def test_the_normalized_grid_refuses_a_bad_k():
+    with pytest.raises(ValueError):
+        tg.normalized_grid_torch(torch.zeros(1, 1), torch.zeros(1, 1), 16, 8, k=0)
