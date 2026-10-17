@@ -10,9 +10,25 @@ checkout and in an install alike. tests/test_geometry.py asserts every name here
 
 One difference for an installed consumer: ``resolve_pano_pose`` imports ``downloaders.gsv`` when called
 without ``depth_suffix``, and ``downloaders`` is not installed. Pass the suffix (``'.depth.npz'``).
+
+``pano_pose`` installs under a generic top-level name, so this module checks its ``PANO_POSE_FINGERPRINT``
+on import and raises ImportError when another ``pano_pose`` shadows the installed one.
 """
 
-from pano_pose import (  # noqa: F401
+import pano_pose as _pano_pose
+
+#: The pano_pose this package was written against (pano_pose.PANO_POSE_FINGERPRINT).
+EXPECTED_PANO_POSE_FINGERPRINT = 'sidewalk-panorama-tools/pano_pose/rfu-pitch-nose-down-roll-left-up/1'
+
+if getattr(_pano_pose, 'PANO_POSE_FINGERPRINT', None) != EXPECTED_PANO_POSE_FINGERPRINT:
+    raise ImportError(
+        'sidewalk_panorama_tools.pose imported a pano_pose that is not this package\'s: %r (fingerprint %r, '
+        'expected %r). A stray pano_pose.py earlier on sys.path is shadowing the installed one.'
+        % (getattr(_pano_pose, '__file__', None), getattr(_pano_pose, 'PANO_POSE_FINGERPRINT', None),
+           EXPECTED_PANO_POSE_FINGERPRINT))
+
+from pano_pose import (  # noqa: E402,F401
+    PANO_POSE_FINGERPRINT,
     POSE_SOURCE_NPZ,
     POSE_SOURCE_XML,
     XML_SUFFIX,
@@ -39,7 +55,7 @@ from pano_pose import (  # noqa: F401
 )
 
 __all__ = [
-    'POSE_SOURCE_NPZ', 'POSE_SOURCE_XML', 'XML_SUFFIX', 'PanoPose',
+    'PANO_POSE_FINGERPRINT', 'POSE_SOURCE_NPZ', 'POSE_SOURCE_XML', 'XML_SUFFIX', 'PanoPose',
     'artifact_normal_bearing_elevation', 'bearing_elevation', 'bearing_elevation_from_pixel', 'corrected_pixel',
     'direction_rfu', 'gravity_pixel_from_rig_pixel', 'gravity_to_rig', 'pitch_roll_to_xml_tilt',
     'pixel_from_bearing_elevation', 'pose_from_depth_artifact', 'pose_from_xml', 'resolve_pano_pose',
