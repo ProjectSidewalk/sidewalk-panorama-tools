@@ -37,14 +37,23 @@ crop = render_view(pano, view, tilt)                            # (512, 512, 3) 
 `label_view` validates its input: a finite `x` (it wraps modulo 1, because `pano_x` is periodic and real rows
 carry `pano_x == pano_width` and a pixel past it), `0 <= y <= 1` (never wrapped), `0 < fov < 180`, and an
 integer `size`. It returns a square view aimed at the label and the tilt matrix, which is None when there is
-no pose. `render_view` samples bilinearly, wrapping x at the seam and clamping y at the poles.
+no pose. A bad input raises `ValueError`; a server should answer it with a 400, not a 500. `render_view`
+samples bilinearly, wrapping x at the seam and clamping y at the poles. It is plain numpy on the CPU: about
+1.1 s and 554 MB peak for an 8192 pano into a 2048² view, about 0.3 s of it the grid (#221 review). The
+torch path below is the fast one. The two consumers must move to a new tag together, because a model
+trained on one release's framing and served another's fails without an error.
 
 **Anti-aliasing belongs to the package.** `render_view` box-reduces the pano by
 `k = view.reduction_factor(W)` before sampling whenever k > 1 (`box_reduce`; pass `antialias=False` to turn
-it off). The last `W % k` columns and `H % k` rows, which do not fill a block, are dropped, and the
-reduced pano is sampled at the full-resolution coordinates divided by k, so the geometry is unchanged
-outside that strip. For both current consumers, an 8192-wide pano and a 2048 px 90° view, k = 1: nothing is
-reduced. A smaller output or a 16384-wide pano does reduce (a test pins both cases).
+it off). The last `W % k` columns and `H % k` rows, which do not fill a block, are dropped. The reduced
+pano is sampled at `sx · (W // k) / W` and `sy · (H // k) / H` (`sample_grid`), so its wrap period is its own
+width and the seam is continuous even when k does not divide W. The dropped columns' angle is spread across
+the width, and nothing moves by more than a reduced pixel. The reduction is done in float and rounded once, at
+the end. For both current consumers, an 8192-wide pano and a 2048 px 90° view, k = 1: nothing is reduced. A
+smaller output or a 16384-wide pano does reduce (a test pins both cases); at 8192, a 512 px view gives k = 5
+and a 224 px view k = 11. k is judged at the equator, comparing the pano's W / 360 px per degree with the
+view centre's. Towards the poles the pano's horizontal density rises by 1/cos(lat), so a steep view stays
+oversampled horizontally (the #221 review measured 1.8× at −45°).
 
 **For torch**, install the `[torch]` extra
 (`pip install "sidewalk-panorama-tools[torch] @ git+https://github.com/ProjectSidewalk/sidewalk-panorama-tools@<tag>"`)
@@ -59,19 +68,25 @@ k = view.reduction_factor(W)                 # the anti-aliasing render_view doe
 if k > 1:
     pano = F.avg_pool2d(pano, k)             # drops the trailing W % k, H % k, as box_reduce does
 sx, sy = sampling_grid_torch(view, tilt, W, H, device=pano.device)    # full-resolution pixels, float32
-grid = normalized_grid_torch(sx / k, sy / k, W // k, H // k)
+grid = normalized_grid_torch(sx, sy, W, H, k=k)                       # rescales to the pooled size
 crop = F.grid_sample(wrap_pad_torch(pano), grid, mode="bilinear", padding_mode="border", align_corners=False)
+crop = crop.round().clamp(0, 255).to(torch.uint8)                     # pano in 0-255: round once, here
 ```
+
+The last line matters for a uint8 pano. `(x * 255).byte()` truncates instead of rounding, a −0.5 LSB bias.
 
 `sampling_grid_torch` has the same semantics as the numpy `sampling_grid`: pixel *i*'s centre is at `i + 0.5`,
 x is wrapped into [0, W), and y is left for the sampler to clamp. The tilt stays the numpy 3×3 and is
-converted on the way in. `normalized_grid_torch` is the wrap-padding convention: the pano is padded by one
-wrapped column on each side (`wrap_pad_torch`), and `gx = 2 (sx + 1) / (W + 2) − 1`, `gy = 2 sy / H − 1`. So
-sx = 0.5 lands on the first real column and sx = W − 0.5 on the last. Tests check that this recipe
-reproduces `render_view`, with and without a box reduction. On an M1 Max the grid for a 2048² view takes
-262 ms in numpy, 75 ms in torch on the CPU, and 19 ms on MPS. float32 agrees with numpy to under 1e-3 px in
-y and in arc length. Near the poles the raw x error reaches about 1e-2 px, where a column covers almost none
-of the sphere.
+converted on the way in. `normalized_grid_torch` is the wrap-padding convention: the pano (pooled, if k > 1)
+is padded by one wrapped column on each side (`wrap_pad_torch`). With `Wr = W // k` and `Hr = H // k`, the
+coordinates are rescaled exactly as numpy's `sample_grid` rescales them, `sxr = sx · Wr / W` and
+`syr = sy · Hr / H`. Then `gx = 2 (sxr + 1) / (Wr + 2) − 1` and `gy = 2 syr / Hr − 1`. So sxr = 0.5 lands on
+the first real column and sxr = Wr − 0.5 on the last. Tests check that this recipe reproduces `render_view`,
+with and without a box reduction. They also check it at the seam with W = 8192, k = 11, and against numpy's
+uint8 output to one LSB at k = 2. On an M1 Max the grid for a 2048² view takes 262 ms in numpy, 75 ms in
+torch on the CPU, and 19 ms on MPS. In float32 the error against numpy is 1.0–1.05e-3 px of arc at
+ordinary latitudes, and the test allows 2e-3 px in y and in arc length. Within 0.05° of the pole the raw x
+error is 0.03–0.08 px, because there a column covers almost none of the sphere.
 
 ## The convention
 
@@ -89,9 +104,10 @@ Every convention here is `pano_pose.py`'s (its module docstring is the reference
   level ray into the rig frame. It is `pano_pose.rig_from_gravity` at `beta` times the pose, so it uses the
   measured sign: **pitch > 0 means the nose points down**, and a level ray at bearing b sits at rig elevation
   `lat + beta * (camera_pitch * cos b + camera_roll * sin b)`. With `camera_pitch = 3` and the default beta 0.95, a
-  level ray straight ahead is at +2.85°, and one behind is at −2.85°. RampNet's crop cutter measured the same
-  relation independently against the HF viewport crops (its `VIEWER_TILT = "mm"`), and a test pins the
-  agreement.
+  level ray straight ahead is at +2.85°, and one behind is at −2.85°. RampNet's crop cutter (its `VIEWER_TILT = "mm"`,
+  the same formula) independently confirms the pitch sign against the HF viewport crops. Its roll sign is
+  untested: no GSV row there carries a roll, as its own docstring says. So the roll sign rests on this repo's
+  #54 endpoint F1. A test pins the agreement of the two formulas.
 * **Beta** is the fraction of the rig tilt that leaked into the stored click. It scales the pose, as
   `pano_pose.corrected_pixel` does. On 3,518 pairs this repo measured 0.884 under the 2019 XML pose record and
   0.953 (SE 0.020) under streetlevel's modern pose record, the `.depth.npz` pose ([the cropper's tilt correction](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/blob/master/docs/cropper.md#the-tilt-correction-opt-in-191)). The package

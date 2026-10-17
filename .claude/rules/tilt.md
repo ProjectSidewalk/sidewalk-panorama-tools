@@ -73,19 +73,22 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   makelab2 on its own beside `tilt_geometry.py`; `sidewalk_panorama_tools/pose.py` only re-exports it
   (`tests/test_geometry.py` checks every name IS pano_pose's). `geometry.tilt_matrix` is
   `pano_pose.rig_from_gravity` at `beta` times the pose, so its sign is the measured F1 one; RampNet's
-  `VIEWER_TILT = "mm"` is the same relation, and a test pins the agreement (identical for one axis, within
+  `VIEWER_TILT = "mm"` is the same formula and independently confirms the PITCH sign only (its roll sign is
+  untested, per its own docstring, so roll rests on F1), and a test pins the agreement (identical for one axis, within
   the composition-order term `pitch * roll` for two). Do not reintroduce RampNet's four-way convention table.
 - **Beta default 0.95**, because the label's DB `camera_pitch` equals streetlevel's modern pose record
   exactly (sidewalk-auto-labeler#113, all 2,952 paired Gainesville labels), and beta under that record is
   0.953 (SE 0.020) on 3,518 pairs (0.884 under the XML record; Gainesville alone 0.951). CropRunner's
   per-pose-record betas (xml 0.88, npz 0.95) are unchanged and are not read from here.
 - **Anti-aliasing and wrapping are the package's.** `render_view` box-reduces by `view.reduction_factor(W)`
-  (trailing remainder dropped, grid divided by k), and a torch consumer `avg_pool2d`s by the same k; k = 1 for
+  (in float, rounded once; trailing remainder dropped; grid rescaled by `(W // k) / W` so the reduced wrap period
+  is the reduced width - `normalized_grid_torch(..., k=k)` does the same), and a torch consumer `avg_pool2d`s by the same k; k = 1 for
   both current consumers. `label_view` wraps `x_norm` modulo 1; `wrap180` is `pano_pose.wrap_deg`.
 - **The torch twin** (`torch_geometry.py`, the `[torch]` extra) imports torch lazily and reuses
-  `geometry._basis` and the numpy tilt matrix, so it adds no second definition of where a view looks. CI has no
-  torch: its test skips and `.coveragerc` omits the module. Run `tests/test_torch_geometry.py` locally with
-  torch installed after touching either module.
+  `geometry._basis` and the numpy tilt matrix, so it adds no second definition of where a view looks. CI has torch
+  (requirements.txt pulls it in through streetlevel -> pyequilib), so its test runs and is measured in the gated
+  job; a checkout without torch skips it. The `package` job in `tests.yml` also builds the wheel and imports it
+  from a fresh venv.
 - **Changing it is a release.** Consumers pin a tag; bump `version` in `pyproject.toml` and `__version__`
   together (a test checks), and say in the PR what a consumer re-pinning will see change.
 
