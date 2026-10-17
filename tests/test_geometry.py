@@ -51,9 +51,10 @@ def red_centroid(arr):
     return xs.mean() + 0.5, ys.mean() + 0.5
 
 
-def rig_elevation(bearing, camera_pitch=None, camera_roll=None, beta=0.9):
-    """Rig-frame elevation of a LEVEL ray at `bearing` on the horizon, through tilt_matrix."""
-    T = g.tilt_matrix(camera_pitch, camera_roll, beta)
+def rig_elevation(bearing, camera_pitch=None, camera_roll=None, beta=None):
+    """Rig-frame elevation of a LEVEL ray at `bearing` on the horizon, through tilt_matrix (its default beta
+    when `beta` is None)."""
+    T = g.tilt_matrix(camera_pitch, camera_roll) if beta is None else g.tilt_matrix(camera_pitch, camera_roll, beta)
     return float(g.rays_to_lonlat(g.lonlat_to_ray(bearing, 0.0)[None, :], T)[1][0])
 
 
@@ -76,9 +77,11 @@ def rampnet_image_lonlat(lon, lat, camera_pitch, camera_roll):
 # ----------------------------------------------------------------------------- the package
 
 def test_the_version_matches_pyproject():
+    """A release is a two-file edit (docs/geometry.md): pyproject.toml's version and __version__ move together."""
     with open(os.path.join(REPO_ROOT, 'pyproject.toml'), encoding='utf-8') as f:
         declared = re.search(r'^version = "([^"]+)"$', f.read(), re.MULTILINE).group(1)
-    assert sidewalk_panorama_tools.__version__ == declared == '1.0.0'
+    assert sidewalk_panorama_tools.__version__ == declared
+    assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', declared), declared
 
 
 def test_pose_is_pano_pose_not_a_copy():
@@ -86,10 +89,17 @@ def test_pose_is_pano_pose_not_a_copy():
     is exported, so a function added there cannot go missing here."""
     for name in pose.__all__:
         assert getattr(pose, name) is getattr(pano_pose, name), name
-    public = {name for name, value in vars(pano_pose).items()
-              if not name.startswith('_') and not isinstance(value, type(os))
-              and getattr(value, '__module__', 'pano_pose') == 'pano_pose'}
-    public -= {'collections', 'math', 'os', 'ET', 'np'}
+    # Modules are imports, and so is a function or class whose __module__ is another module's. Every other
+    # public value is pano_pose's own and must be exported: its functions and classes (__module__ 'pano_pose'),
+    # and every constant whatever its type - a str has no __module__, but an np.float64 or a Path reports
+    # its class's ('numpy', 'pathlib'), so constants are not filtered on __module__ at all.
+    def defined_here(value):
+        if isinstance(value, type(os)):
+            return False
+        if callable(value):
+            return getattr(value, '__module__', None) in (None, 'pano_pose')
+        return True
+    public = {name for name, value in vars(pano_pose).items() if not name.startswith('_') and defined_here(value)}
     assert public == set(pose.__all__)
 
 
@@ -107,7 +117,8 @@ def test_view_size_and_vertical_fov():
 
 
 def test_wrap180_and_the_pixel_mapping_is_pano_poses():
-    assert g.wrap180(180.0) == -180.0 and g.wrap180(-190.0) == 170.0
+    assert g.wrap180 is pose.wrap_deg                     # one wrap helper, closed at +180
+    assert g.wrap180(180.0) == 180.0 and g.wrap180(-180.0) == 180.0 and g.wrap180(-190.0) == 170.0
     lon, lat = g.pano_px_to_lonlat(13740, 4754, 16384, 8192)
     assert (lon, lat) == pytest.approx((121.904296875, -14.4580078125))
     assert (lon, lat) == pose.bearing_elevation_from_pixel(13740, 4754, 16384, 8192)
@@ -216,7 +227,8 @@ def test_fov_scaling(fov):
     d = g.lonlat_to_ray(lon + off, lat)
     fwd, right, up = g._basis(view.yaw_deg, view.pitch_deg)
     assert x - 150 == pytest.approx(view.focal_px * (d @ right) / (d @ fwd), abs=1e-6)
-    cx, cy = red_centroid(g.render_view(marker_pano(W, H, [(mx, my)], radius=4), view))
+    # geometry, not anti-aliasing: at fov 90 the box reduction would dilute the marker below red_centroid's cut
+    cx, cy = red_centroid(g.render_view(marker_pano(W, H, [(mx, my)], radius=4), view, antialias=False))
     assert abs(cx - x) < 1.5 + 4 * view.focal_px * math.pi / 180 * 360 / W  # within the marker size
     assert view.focal_px == pytest.approx(150 / math.tan(math.radians(fov / 2)))
 
@@ -225,6 +237,82 @@ def test_reduction_factor():
     assert g.reduction_factor(16384, g.View(0, 0, 90.0, 1440, 960)) == 3
     assert g.reduction_factor(16384, g.View(0, 0, 20.0, 1440, 960)) == 1
     assert g.reduction_factor(16384, g.View(0, 0, 90.0, 224, 149)) == 23
+    assert g.View(0, 0, 90.0, 224, 149).reduction_factor(16384) == 23
+
+
+def test_the_current_consumers_are_not_reduced():
+    """The module docstring's claim: an 8192-wide pano and a 2048 px 90 deg label_view give k = 1, so the
+    anti-aliasing changes nothing for sidewalk-validator-ai or sidewalk-ai-api."""
+    view, _ = g.label_view(0.3, 0.6)
+    assert (view.width, view.fov_h_deg) == (2048, 90.0)
+    assert view.reduction_factor(8192) == 1
+    assert view.reduction_factor(16384) == 2     # a 16384 pano would be: the reduction is not a no-op
+
+
+def test_box_reduce_means_blocks_and_drops_the_trailing_remainder():
+    img = np.arange(7 * 5, dtype=np.float64).reshape(7, 5)        # 7 rows, 5 cols; k = 2 drops row 6, col 4
+    out = g.box_reduce(img, 2)
+    assert out.shape == (3, 2) and out.dtype == np.float64
+    assert out[0, 0] == pytest.approx((0 + 1 + 5 + 6) / 4) and out[2, 1] == pytest.approx((22 + 23 + 27 + 28) / 4)
+    rgb = np.zeros((4, 4, 3), np.uint8)
+    rgb[0, 0] = (255, 1, 2)
+    red = g.box_reduce(rgb, 2)
+    assert red.dtype == np.uint8 and red.shape == (2, 2, 3) and red[0, 0].tolist() == [64, 0, 0]  # rint(63.75)
+    assert g.box_reduce(rgb, 1) is rgb
+    for bad in (0, -1):
+        with pytest.raises(ValueError):
+            g.box_reduce(rgb, bad)
+    with pytest.raises(ValueError):
+        g.box_reduce(rgb, 5)
+
+
+def test_render_view_antialiases_with_the_views_k():
+    """render_view = sample the k-reduced pano at the full-resolution grid / k; antialias=False samples the
+    full pano. On a one-pixel checkerboard the anti-aliased render is the flat mean, the other is noise."""
+    W, H = 1024, 512
+    yy, xx = np.mgrid[0:H, 0:W]
+    pano = np.where((xx + yy) % 2 == 0, 255, 0).astype(np.uint8)[..., None].repeat(3, -1)
+    view = g.View(30.0, -20.0, 90.0, 40, 40)
+    k = view.reduction_factor(W)
+    assert k > 1
+    sx, sy = g.sampling_grid(view, None, W, H)
+    assert np.array_equal(g.render_view(pano, view), g.sample_bilinear(g.box_reduce(pano, k), sx / k, sy / k))
+    assert np.array_equal(g.render_view(pano, view, antialias=False), g.sample_bilinear(pano, sx, sy))
+    assert np.abs(g.render_view(pano, view).astype(int) - 128).max() <= 1
+    assert g.render_view(pano, view, antialias=False).astype(float).std() > 20
+
+
+def test_render_view_antialias_keeps_the_label_at_centre():
+    """Dividing the grid by k keeps the geometry: a block-aligned marker still lands at the centre."""
+    W, H = 4096, 2048
+    px, py = 1000.0, 1300.0
+    pano = marker_pano(W, H, [(px, py)], radius=8)
+    view = g.centered_view(px, py, W, H, 90.0, width=120)
+    assert view.reduction_factor(W) > 1
+    crop = g.render_view(pano, view)
+    m = crop[..., 0].astype(int) - crop[..., 1].astype(int)
+    ys, xs = np.nonzero(m > 40)
+    assert abs(xs.mean() + 0.5 - 60) < 1.5 and abs(ys.mean() + 0.5 - 40) < 1.5
+
+
+def test_sample_bilinear_refuses_non_finite_coordinates():
+    img = np.zeros((4, 8, 3), np.uint8)
+    for sx, sy in ((np.nan, 1.0), (1.0, np.inf), (-np.inf, 1.0)):
+        with pytest.raises(ValueError):
+            g.sample_bilinear(img, np.array([sx]), np.array([sy]))
+
+
+def test_sample_bilinear_rounds_every_integer_dtype_and_keeps_float64_precision():
+    row = np.array([[0, 3]], dtype=np.uint16)
+    assert g.sample_bilinear(row, np.array([1.0]), np.array([0.5])).tolist() == [2]        # rint(1.5) = 2
+    neg = np.array([[-5, -2]], dtype=np.int16)
+    assert g.sample_bilinear(neg, np.array([0.75]), np.array([0.5])).tolist() == [-4]      # rint(-4.25)
+    big = np.array([[2 ** 31 - 2, 2 ** 31 - 1]], dtype=np.int32)
+    out = g.sample_bilinear(big, np.array([1.0]), np.array([0.5]))
+    assert out.dtype == np.int32 and out.tolist() == [2 ** 31 - 2]   # rint(2**31 - 1.5): float64 math, no overflow
+    fine = np.array([[1.0, 1.0 + 1e-12]], dtype=np.float64)
+    got = g.sample_bilinear(fine, np.array([1.0]), np.array([0.5]))[0]
+    assert got.dtype == np.float64 and got == pytest.approx(1.0 + 0.5e-12, abs=1e-15)   # float32 would lose it
 
 
 def test_sample_bilinear_keeps_shape_and_dtype():
@@ -244,11 +332,16 @@ class TestTiltMatrixIsPanoPosesSign:
     elevation +T(b)). Signed values, so a flipped convention fails."""
 
     def test_the_pinned_numbers(self):
+        """At the default beta, 0.95 (the label's camera_pitch is streetlevel's modern pose record)."""
+        assert g.DEFAULT_BETA == 0.95
+        assert rig_elevation(0.0, 3.0) == pytest.approx(2.85, abs=0.01)
+        assert rig_elevation(180.0, 3.0) == pytest.approx(-2.85, abs=0.01)
+        assert rig_elevation(90.0, None, 3.0) == pytest.approx(2.85, abs=0.01)
+        assert rig_elevation(-90.0, None, 3.0) == pytest.approx(-2.85, abs=0.01)
+        assert rig_elevation(90.0, 3.0) == pytest.approx(0.0, abs=1e-9)   # pitch is inert at the side
+        # and an explicit beta is honoured
         assert rig_elevation(0.0, 3.0, beta=0.9) == pytest.approx(2.7, abs=0.01)
-        assert rig_elevation(180.0, 3.0, beta=0.9) == pytest.approx(-2.7, abs=0.01)
         assert rig_elevation(90.0, None, 3.0, beta=0.9) == pytest.approx(2.7, abs=0.01)
-        assert rig_elevation(-90.0, None, 3.0, beta=0.9) == pytest.approx(-2.7, abs=0.01)
-        assert rig_elevation(90.0, 3.0, beta=0.9) == pytest.approx(0.0, abs=1e-9)   # pitch is inert at the side
 
     def test_first_order_is_beta_times_pano_poses_T(self):
         for b in (-150.0, -40.0, 0.0, 33.0, 121.9):
@@ -367,11 +460,11 @@ def test_label_view_defaults():
     view, tilt = g.label_view(0.75, 0.5 + 20 / 180, fov_h_deg=60.0, size=512, camera_pitch=3.0)
     assert (view.yaw_deg, view.pitch_deg) == pytest.approx((90.0, -20.0))
     assert (view.width, view.height, view.fov_h_deg) == (512, 512, 60.0)
-    assert np.array_equal(tilt, g.tilt_matrix(3.0, None, 0.9))
+    assert np.array_equal(tilt, g.tilt_matrix(3.0, None, 0.95))
     assert np.array_equal(g.label_view(0.5, 0.5, camera_pitch=3.0, beta=0.95)[1], g.tilt_matrix(3.0, None, 0.95))
 
 
-@pytest.mark.parametrize('kwargs', [dict(x_norm=-0.01, y_norm=0.5), dict(x_norm=1.01, y_norm=0.5),
+@pytest.mark.parametrize('kwargs', [dict(x_norm=float('-inf'), y_norm=0.5),
                                     dict(x_norm=0.5, y_norm=-1e-9), dict(x_norm=0.5, y_norm=1.5),
                                     dict(x_norm=float('nan'), y_norm=0.5), dict(x_norm=0.5, y_norm=float('inf')),
                                     dict(x_norm=0.5, y_norm=0.5, fov_h_deg=0.0),
@@ -382,6 +475,14 @@ def test_label_view_defaults():
 def test_label_view_refuses_bad_input(kwargs):
     with pytest.raises(ValueError):
         g.label_view(**kwargs)
+
+
+def test_label_view_wraps_x_modulo_one():
+    """pano_x is periodic: real rows carry pano_x == pano_width and a pixel past it."""
+    assert g.label_view(1.0, 0.5)[0] == g.label_view(0.0, 0.5)[0]
+    assert g.label_view(1.0 + 1 / 16384, 0.6)[0].yaw_deg == pytest.approx(g.label_view(1 / 16384, 0.6)[0].yaw_deg)
+    assert g.label_view(-0.25, 0.5)[0].yaw_deg == pytest.approx(90.0)
+    assert g.label_view(1.25, 0.5)[0].yaw_deg == pytest.approx(-90.0)
 
 
 @pytest.mark.parametrize('x,y', [(0.0, 0.5), (1.0, 0.5), (0.5, 0.0), (0.5, 1.0)])
@@ -401,9 +502,10 @@ def _sample_rows():
 
 def test_the_committed_sample_replays_into_centred_views():
     """Every real row of RampNet's 200-label validation sample (its test_committed_sample_replays_into_its_
-    viewport reads the same file): the stored point is at the exact centre of a centred view, of a
-    label_view built from the normalized point, and - rendered with the pano's own camera_pitch as both the
-    true and the render tilt - of a tilted one."""
+    viewport reads the same file): the stored point is at the exact centre of a centred view and of a
+    label_view built from the normalized point; and, for every row with a camera_pitch, the rig pixel
+    pano_pose.corrected_pixel gives at the default beta - an independent route to where the content sits -
+    projects to the exact centre of the TILTED label_view, and not to the centre of the untilted one."""
     rows = _sample_rows()
     assert len(rows) == 200
     tilted = 0
@@ -416,6 +518,12 @@ def test_the_committed_sample_replays_into_centred_views():
                                 camera_pitch=float(r['camera_pitch']) if r['camera_pitch'] else None,
                                 camera_roll=float(r['camera_roll']) if r['camera_roll'] else None)
         assert g.label_pixel(px, py, w, h, lview) == pytest.approx((1024.0, 1024.0), abs=1e-6)
-        assert g.label_pixel(px, py, w, h, lview, T, T) == pytest.approx((1024.0, 1024.0), abs=1e-6)
-        tilted += T is not None
-    assert tilted > 150   # the sample really exercises the tilted path (rows with a nonzero camera_pitch)
+        if T is None:
+            continue
+        rx, ry = pose.corrected_pixel(px, py, w, h, float(r['camera_pitch']),
+                                      float(r['camera_roll']) if r['camera_roll'] else 0.0, g.DEFAULT_BETA)
+        rlon, rlat = g.pano_px_to_lonlat(rx, ry, w, h)
+        assert g.project_lonlat(rlon, rlat, lview, T) == pytest.approx((1024.0, 1024.0), abs=1e-6)
+        moved = math.hypot(*np.subtract(g.project_lonlat(rlon, rlat, lview), (1024.0, 1024.0)))
+        tilted += moved > 1.0
+    assert tilted > 150   # most rows' tilt moves the content by more than an output pixel
