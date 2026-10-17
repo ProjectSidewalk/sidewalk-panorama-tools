@@ -74,8 +74,13 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   `pano_pose.rig_from_gravity` at `beta` times the pose, so its sign is the measured F1 one; RampNet's
   `VIEWER_TILT = "mm"` is the same relation, and a test pins the agreement (identical for one axis, within
   the composition-order term `pitch * roll` for two). Do not reintroduce RampNet's four-way convention table.
-- **Beta default 0.9** is for the label's DB `camera_pitch` (which equals the xml pitch); CropRunner's
+- **Beta default 0.95**, because the label's DB `camera_pitch` equals streetlevel's modern pose record
+  exactly (sidewalk-auto-labeler#113, all 2,952 paired Gainesville labels), and beta under that record is
+  0.953 (SE 0.020) on 3,518 pairs (0.884 under the XML record; Gainesville alone 0.951). CropRunner's
   per-pose-record betas (xml 0.88, npz 0.95) are unchanged and are not read from here.
+- **Anti-aliasing and wrapping are the package's.** `render_view` box-reduces by `view.reduction_factor(W)`
+  (trailing remainder dropped, grid divided by k), and a torch consumer `avg_pool2d`s by the same k; k = 1 for
+  both current consumers. `label_view` wraps `x_norm` modulo 1; `wrap180` is `pano_pose.wrap_deg`.
 - **Changing it is a release.** Consumers pin a tag; bump `version` in `pyproject.toml` and `__version__`
   together (a test checks), and say in the PR what a consumer re-pinning will see change.
 
