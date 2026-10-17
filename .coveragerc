@@ -55,10 +55,6 @@ omit =
     # What `pip wheel .` / `pip install .` leave in a checkout (pyproject.toml): build/lib/ holds a second copy
     # of pano_pose.py and the package, which would join the measured set and fail the exact-set test.
     ${SIDEWALK_COVERAGE_ROOT-.}/build/*
-    # The optional torch twin of the sampling grid (the package's [torch] extra, docs/geometry.md). CI installs
-    # no torch, so tests/test_torch_geometry.py skips there and this file would read as dead; it is at 100%
-    # wherever torch is installed and the test runs.
-    ${SIDEWALK_COVERAGE_ROOT-.}/sidewalk_panorama_tools/torch_geometry.py
     ${SIDEWALK_COVERAGE_ROOT-.}/*.egg-info/*
     ${SIDEWALK_COVERAGE_ROOT-.}/.venv/*
 
