@@ -64,9 +64,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      # torch's own dependencies from PyPI at the production pins, then the CPU-only torch wheel at the pinned
-      # version with --no-deps: the CPU index does not carry every pinned dependency version.
-      - run: pip install -c constraints.txt numpy pytest filelock typing_extensions sympy networkx jinja2 fsspec
+      # tests/conftest.py imports CropRunner for every test, so the runtime requirements come too - all but
+      # streetlevel (which the conftest stubs), whose pyequilib dependency would pull the multi-GB CUDA torch.
+      # Then torch's own dependencies from PyPI at the production pins, and the CPU-only torch wheel at the
+      # pinned version with --no-deps: the CPU index does not carry every pinned dependency version.
+      - run: pip install -c constraints.txt numpy pytest Pillow requests urllib3 aiohttp backoff filelock typing_extensions sympy networkx jinja2 fsspec
       - run: pip install -c constraints.txt --no-deps torch --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pytest tests/test_torch_geometry.py -v
       - name: Build the wheel and import it from a fresh venv
