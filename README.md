@@ -62,6 +62,12 @@ re-running skips whatever is already on disk, so an interrupted run costs nothin
 Budget a run with `--max-runtime MINUTES`, and see [the downloader docs](docs/downloader.md#nightly-deployment)
 for the nightly cron form.
 
+**Perspective views of a label from another project.** `CropRunner.py` cuts equirect windows. A project that
+needs a true perspective (gnomonic) view of a label instead, with the rig-tilt correction from #54, can
+`pip install` this repo's `sidewalk_panorama_tools` package (numpy only) and call `label_view` /
+`render_view`. sidewalk-validator-ai and sidewalk-ai-api pin it so training and serving use the same
+framing. See [docs/geometry.md](docs/geometry.md).
+
 > **Requirements:** Python 3.10+ and ~2 GB RAM (a 16384×8192 panorama is 384 MB decoded). Linux is the
 > supported production platform; macOS and Windows are fine for development, though the depth phase's
 > `pyfrpc` dependency ships wheels for Linux only. **No Docker** — the image and its sshfs entrypoint were
@@ -74,6 +80,7 @@ for the nightly cron form.
 |---|---|
 | [Downloader](docs/downloader.md) | Install, options, runtime budgets, imagery sources, `config.py`, the nightly queue, and pulling from the pano store |
 | [Cropper](docs/cropper.md) | Crop geometry, the two preflights, outcome taxonomy, and what to know before training on the crops |
+| [Geometry package](docs/geometry.md) | The pip-installable `sidewalk_panorama_tools`: a perspective view of a label with rig-tilt correction, for other projects |
 | [Depth maps](docs/depth.md) | The `.npz` artifact format, the plane fields, migration — and **what the depth product is and isn't** |
 | [Ops](docs/ops.md) | Storage layout, the resume ledgers, the 20-column `log.csv`, how a crashed run reads, and operating the production host (deploy, rollback, adding a city) |
 | [Log analyzer](docs/log-analyzer.md) | SFTP setup, the per-city health checks, and the depth backfill report |

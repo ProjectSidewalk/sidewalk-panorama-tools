@@ -98,6 +98,7 @@ The README is a front door only; the reference material lives in `docs/` and eac
 |---|---|
 | `docs/downloader.md` | install, options, runtime budgets, imagery sources, `config.py`, the nightly queue and its cron line, pulling from the pano store |
 | `docs/cropper.md` | crop geometry, preflights, outcome taxonomy, consumer warnings |
+| `docs/geometry.md` | the pip-installable `sidewalk_panorama_tools` package: the gnomonic label view, its tilt convention and beta, its two consumers |
 | `docs/depth.md` | artifact format, plane fields, ledger, migration, rate-limit behaviour, what depth is/isn't |
 | `docs/ops.md` | storage layout, resume ledgers, the 20-column `log.csv`, crashed-run semantics, the `fover` repair pass, operating the production host (deploy, rollback, adding a city, the missing-MTA alarm gap) |
 | `docs/log-analyzer.md` | SFTP settings, the per-city checks, and the depth backfill report |
@@ -116,7 +117,7 @@ The frontmatter is the definition of when each file loads; the table says what i
 | `.claude/rules/downloader.md` | the nightly run, the image phase, the per-source verdict contracts, store mode, the two breakers | the runner, `downloaders/`, `config.py` |
 | `.claude/rules/depth.md` | adaptive pacing, the block latch, the artifact format and its migrator | `downloaders/gsv.py`, the runner, the depth migrator |
 | `.claude/rules/cropper.md` | the crop pipeline end to end, the label-type table | `CropRunner.py`, its migrator and schema tripwire, `samples/` |
-| `.claude/rules/tilt.md` | the #54 frames and signs, the adjudication data, the crop-time correction | `CropRunner.py`, the tilt scripts (never inside a judge folder) |
+| `.claude/rules/tilt.md` | the #54 frames and signs, the adjudication data, the crop-time correction, the installable geometry package | `CropRunner.py`, `sidewalk_panorama_tools/`, `pyproject.toml`, the tilt scripts (never inside a judge folder) |
 | `.claude/rules/queue.md` | the nightly queue and the alarm channel | `scrape_queue.py`, `cron_notify.py`, `docs/ops.md` |
 | `.claude/rules/store-repair.md` | the refetch gates, the display-copy sweep, the width tripwire, the edge black-band sweep | `refetch_panos.py`, `downscale_panos.py`, `scan_black_bands.py`, `downloaders/common.py` |
 | `.claude/rules/log-analyzer.md` | the analyzer's rules and the depth backfill report | `log_analyzer/`, its test, `docs/log-analyzer.md` |
@@ -141,6 +142,8 @@ The per-module detail lives in the rules files named in "Guidance layout"; the s
 **downloaders/** - per-source imagery: `gsv.py` (tile stitching at the photometa-resolved zoom - and, for a record with no width/height, at photometa's served frame, #184 - the tile push-back breaker, and the depth phase), `mapillary.py`, `panoramax.py`, `store_sftp.py`, and `common.py` (shared image primitives - including the #179 edge black-band detector the GSV save flags on (the `edge-band` condition) - the display-copy switch, the width tripwire). Which answers are permanent ledger verdicts and which raise is a contract, and every entry in it is a measurement. Rules: `.claude/rules/downloader.md`; the depth phase's pacing, block latch and artifacts: `.claude/rules/depth.md`.
 
 **CropRunner.py** - cuts one 3:2 crop per label from the stored panos into `<crop-dir>/<city>/<label_type_id>/<label_id>.jpg`: intake (cvMetadata or a file), grouping by pano, two preflights and a content check, the sizing rule (v2 default; v3 and v3-depth opt-in, the latter sizing from the pano's depth artifact with a counted blend fallback, #180), an opt-in `--tilt-correction` (#191: the window centred on the rig pixel from the pano's own pose, beta per pose record; a pano with no pose is `no_pose`), a seam-wrapping window, atomic writes, a provenance manifest and a sticky rule marker. Nothing in the crop loop is fatal and the counts reconcile on every path. Rules: `.claude/rules/cropper.md` (also `migrate_crop_store.py`, `check_cvmetadata_schema.py` and the label-type table); the #54 tilt geometry (`pano_pose.py`) and its crop-time correction: `.claude/rules/tilt.md`.
+
+**sidewalk_panorama_tools/** - the one part of the repo that is pip-installable (`pyproject.toml`, numpy only): `geometry.py`'s gnomonic label view with rig-tilt correction (`label_view`, `render_view`, `sampling_grid`; ported from RampNet `crops.py`), pinned by sidewalk-validator-ai and sidewalk-ai-api. `pose.py` re-exports `pano_pose.py`, which stays the one definition and is installed beside it. Rules: `.claude/rules/tilt.md`; account: `docs/geometry.md`.
 
 **scrape_queue.py** and **cron_notify.py** - the nightly driver (one cron line walks the city manifest; two composing budgets; an advisory lock; extra passes for cities that stopped on a budget; the roster cross-check; the store marker; an exit code that fails the night on any run condition) and the alarm channel that delivers that exit code through `--sink` on a host with no MTA. Rules: `.claude/rules/queue.md`.
 

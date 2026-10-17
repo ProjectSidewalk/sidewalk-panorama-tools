@@ -39,10 +39,17 @@ PRODUCTION_MODULES = {
     'refetch_panos.py',
     'scan_black_bands.py',
     'scrape_queue.py',
+    'sidewalk_panorama_tools/__init__.py',
+    'sidewalk_panorama_tools/geometry.py',
+    'sidewalk_panorama_tools/pose.py',
+    # Measured in CI: requirements.txt installs torch (streetlevel -> pyequilib), so its test runs there.
+    'sidewalk_panorama_tools/torch_geometry.py',
 }
 
 # Walked but never measured, and not worth listing in .coveragerc's omit: no .py lives under them.
-_PRUNE_DIRS = {'.git', '__pycache__', '.pytest_cache'}
+# build/ is also in .coveragerc's omit (what `pip wheel .` leaves behind); pruning it keeps the walk from
+# descending into a second copy of the package.
+_PRUNE_DIRS = {'.git', '__pycache__', '.pytest_cache', 'build'}
 
 
 @pytest.fixture(scope='module')
@@ -120,6 +127,8 @@ class TestEveryProductionModuleIsMeasured:
         assert is_omitted('reports/scripts/rawlabels.py', patterns)
         assert is_omitted('flag_panos/json_to_csv.py', patterns)
         assert is_omitted('assets/make_banner.py', patterns)
+        assert is_omitted('build/lib/pano_pose.py', patterns)
+        assert is_omitted('sidewalk_panorama_tools.egg-info/top_level.txt', patterns)
 
 
 class TestTheSettingsThatMakeSubprocessCoverageWork:

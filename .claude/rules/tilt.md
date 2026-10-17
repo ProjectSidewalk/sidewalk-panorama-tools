@@ -2,6 +2,11 @@
 paths:
   - "CropRunner.py"
   - "pano_pose.py"
+  - "sidewalk_panorama_tools/*.py"
+  - "tests/test_geometry.py"
+  - "tests/test_torch_geometry.py"
+  - "docs/geometry.md"
+  - "pyproject.toml"
   - "tests/test_pano_pose.py"
   - "tests/test_crop_tilt.py"
   - "reports/scripts/tilt_*.py"
@@ -57,6 +62,35 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   `tilt_geometry.xml_tilt_to_pitch_roll` is the one conversion (fitted on 3,594 panos with both files, median
   residual about 0.1 deg). Pose a JPEG by the file of its own scrape era: an `.xml` JPEG is a 2019-22 stitch, and a 2026
   `.npz` may describe a re-render. PS's `camera_pitch` equals this pitch; PS stores **no** roll for GSV labels.
+
+## The installable geometry package (`sidewalk_panorama_tools`, docs/geometry.md)
+
+- **What it is.** `pyproject.toml` installs `sidewalk_panorama_tools` (the gnomonic label view,
+  `geometry.label_view` / `render_view` / `sampling_grid`, ported from RampNet `rampnet/crops.py`) plus
+  `pano_pose` as a top-level module; sidewalk-validator-ai and sidewalk-ai-api pin it by tag. Nothing else in
+  the repo is installed, and the suite never imports from an install (conftest's `sys.path` insert).
+- **One convention.** `pano_pose.py` stays the home of the frames and the sign, because it is uploaded to
+  makelab2 on its own beside `tilt_geometry.py`; `sidewalk_panorama_tools/pose.py` only re-exports it
+  (`tests/test_geometry.py` checks every name IS pano_pose's). `geometry.tilt_matrix` is
+  `pano_pose.rig_from_gravity` at `beta` times the pose, so its sign is the measured F1 one; RampNet's
+  `VIEWER_TILT = "mm"` is the same formula and independently confirms the PITCH sign only (its roll sign is
+  untested, per its own docstring, so roll rests on F1), and a test pins the agreement (identical for one axis, within
+  the composition-order term `pitch * roll` for two). Do not reintroduce RampNet's four-way convention table.
+- **Beta default 0.95**, because the label's DB `camera_pitch` equals streetlevel's modern pose record
+  exactly (sidewalk-auto-labeler#113, all 2,952 paired Gainesville labels), and beta under that record is
+  0.953 (SE 0.020) on 3,518 pairs (0.884 under the XML record; Gainesville alone 0.951). CropRunner's
+  per-pose-record betas (xml 0.88, npz 0.95) are unchanged and are not read from here.
+- **Anti-aliasing and wrapping are the package's.** `render_view` box-reduces by `view.reduction_factor(W)`
+  (in float, rounded once; trailing remainder dropped; grid rescaled by `(W // k) / W` so the reduced wrap period
+  is the reduced width - `normalized_grid_torch(..., k=k)` does the same), and a torch consumer `avg_pool2d`s by the same k; k = 1 for
+  both current consumers. `label_view` wraps `x_norm` modulo 1; `wrap180` is `pano_pose.wrap_deg`.
+- **The torch twin** (`torch_geometry.py`, the `[torch]` extra) imports torch lazily and reuses
+  `geometry._basis` and the numpy tilt matrix, so it adds no second definition of where a view looks. CI has torch
+  (requirements.txt pulls it in through streetlevel -> pyequilib), so its test runs and is measured in the gated
+  job; a checkout without torch skips it. The `package` job in `tests.yml` also builds the wheel and imports it
+  from a fresh venv.
+- **Changing it is a release.** Consumers pin a tag; bump `version` in `pyproject.toml` and `__version__`
+  together (a test checks), and say in the PR what a consumer re-pinning will see change.
 
 ## Also easy to get wrong
 

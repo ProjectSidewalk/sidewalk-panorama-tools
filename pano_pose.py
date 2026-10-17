@@ -48,6 +48,12 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
+# Identifies this file as sidewalk-panorama-tools' pano_pose. The installed package re-exports it as
+# sidewalk_panorama_tools.pose under a generic top-level name, so pose.py checks this value on import: a stray
+# `pano_pose.py` earlier on sys.path (another checkout, an old upload) fails loudly instead of being used.
+# Change it only with a change to the frames or the sign, together with pose.py's expected value.
+PANO_POSE_FINGERPRINT = 'sidewalk-panorama-tools/pano_pose/rfu-pitch-nose-down-roll-left-up/1'
+
 
 def wrap_deg(a):
     """Wrap degrees to (-180, 180]. photometa serves roll in [0, 360), so 359.6 means -0.4."""

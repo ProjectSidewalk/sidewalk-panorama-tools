@@ -9,3 +9,5 @@ reports/data/2026-09-29-tilt-adjudication-jm/** -text
 reports/data/2026-09-30-tilt-adjudication-jm-b2/** -text
 reports/data/2026-08-09-photometa-census.json -text
 reports/data/2026-08-12-crop-corpus-gsv.csv.gz -text
+# Pinned by sha256 in tests/test_geometry.py: a byte-for-byte copy of RampNet's validation sample.
+tests/fixtures/rampnet_crop_cutter/* -text

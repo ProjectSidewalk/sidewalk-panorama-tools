@@ -1,10 +1,12 @@
 # Coverage settings for `pytest --cov` (#57). See .github/workflows/tests.yml and the README's "Tests".
 #
-# Not pyproject.toml: adding one changes pytest's rootdir anchoring for nothing, and coverage reads a
-# pyproject only when a TOML parser is importable - which on the CI Python (3.10) arrives as a transitive
-# dependency rather than a guarantee, so a bare `coverage report` could ignore the config with no error.
-# Not setup.cfg either: conftest.py opens by saying the repo is not an installed package, and a setup.cfg
-# invites `pip install -e .`, which would break the sys.path-insert import model every test file relies on.
+# Not pyproject.toml: coverage reads a pyproject only when a TOML parser is importable - which on the CI
+# Python (3.10) arrives as a transitive dependency rather than a guarantee, so a bare `coverage report` could
+# ignore the config with no error. A pyproject.toml now exists, for packaging the geometry
+# (docs/geometry.md), and it deliberately carries no [tool.coverage] table: coverage reads this file first.
+# Not setup.cfg either. The repo's scripts are still not an installed package: pyproject.toml installs only
+# sidewalk_panorama_tools/ and pano_pose.py, and the suite imports everything through conftest.py's sys.path
+# insert, never from an install.
 
 [run]
 # The whole tree minus the omissions below, NOT a hand-listed set of files: a new production module has to
@@ -50,6 +52,10 @@ omit =
     # `pytest --cov` run from there would walk a full second copy of the repo.
     ${SIDEWALK_COVERAGE_ROOT-.}/.claude/*
     ${SIDEWALK_COVERAGE_ROOT-.}/venv/*
+    # What `pip wheel .` / `pip install .` leave in a checkout (pyproject.toml): build/lib/ holds a second copy
+    # of pano_pose.py and the package, which would join the measured set and fail the exact-set test.
+    ${SIDEWALK_COVERAGE_ROOT-.}/build/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/*.egg-info/*
     ${SIDEWALK_COVERAGE_ROOT-.}/.venv/*
 
 [report]
