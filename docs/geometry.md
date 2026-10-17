@@ -46,13 +46,32 @@ reduced pano is sampled at the full-resolution coordinates divided by k, so the 
 outside that strip. For both current consumers, an 8192-wide pano and a 2048 px 90° view, k = 1: nothing is
 reduced. A smaller output or a 16384-wide pano does reduce (a test pins both cases).
 
-**For torch**, `sampling_grid(view, tilt, W, H)` returns the continuous source pixel `(sx, sy)` of every
-output pixel, in full-resolution pixels. With `k = view.reduction_factor(W)`, apply
-`avg_pool2d(pano, kernel_size=k, stride=k)` when k > 1 (it drops the same trailing remainder). Then
-normalize for `torch.nn.functional.grid_sample(..., align_corners=False)` with
-`gx = 2 * (sx / k) / (W // k) - 1` and `gy = 2 * (sy / k) / (H // k) - 1`. This is exactly what
-`render_view` samples (a test checks it). `grid_sample` does not wrap x, so either pad the pooled pano by one
-column on each side (and normalize against the padded width, with `sx / k + 1`) or accept a half-pixel seam.
+**For torch**, install the `[torch]` extra
+(`pip install "sidewalk-panorama-tools[torch] @ git+https://github.com/ProjectSidewalk/sidewalk-panorama-tools@<tag>"`)
+and use `sidewalk_panorama_tools.torch_geometry`. It imports torch lazily, so the package never needs it.
+
+```python
+import torch.nn.functional as F
+from sidewalk_panorama_tools.torch_geometry import normalized_grid_torch, sampling_grid_torch, wrap_pad_torch
+
+pano = ...                                   # (1, C, H, W) float tensor on the GPU, rig frame
+k = view.reduction_factor(W)                 # the anti-aliasing render_view does
+if k > 1:
+    pano = F.avg_pool2d(pano, k)             # drops the trailing W % k, H % k, as box_reduce does
+sx, sy = sampling_grid_torch(view, tilt, W, H, device=pano.device)    # full-resolution pixels, float32
+grid = normalized_grid_torch(sx / k, sy / k, W // k, H // k)
+crop = F.grid_sample(wrap_pad_torch(pano), grid, mode="bilinear", padding_mode="border", align_corners=False)
+```
+
+`sampling_grid_torch` has the same semantics as the numpy `sampling_grid`: pixel *i*'s centre is at `i + 0.5`,
+x is wrapped into [0, W), and y is left for the sampler to clamp. The tilt stays the numpy 3×3 and is
+converted on the way in. `normalized_grid_torch` is the wrap-padding convention: the pano is padded by one
+wrapped column on each side (`wrap_pad_torch`), and `gx = 2 (sx + 1) / (W + 2) − 1`, `gy = 2 sy / H − 1`. So
+sx = 0.5 lands on the first real column and sx = W − 0.5 on the last. Tests check that this recipe
+reproduces `render_view`, with and without a box reduction. On an M1 Max the grid for a 2048² view takes
+262 ms in numpy, 75 ms in torch on the CPU, and 19 ms on MPS. float32 agrees with numpy to under 1e-3 px in
+y and in arc length. Near the poles the raw x error reaches about 1e-2 px, where a column covers almost none
+of the sphere.
 
 ## The convention
 

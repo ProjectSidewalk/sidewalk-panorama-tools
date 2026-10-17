@@ -200,7 +200,8 @@ def test_seeded_facade_sample_is_deterministic():
 
 @pytest.mark.parametrize('name', ['tilt_geometry.py', 'tilt_pose_scan.py', 'tilt_frame.py', 'tilt_remote_crop.py',
                                   '../../pano_pose.py', '../../sidewalk_panorama_tools/__init__.py',
-                                  '../../sidewalk_panorama_tools/pose.py', '../../sidewalk_panorama_tools/geometry.py'])
+                                  '../../sidewalk_panorama_tools/pose.py', '../../sidewalk_panorama_tools/geometry.py',
+                                  '../../sidewalk_panorama_tools/torch_geometry.py'])
 def test_runs_under_python39_syntax(name):
     """makelab2 runs Python 3.9; a `match` or an `X | None` annotation would fail there after upload.
     pano_pose.py lives at the repo root (CropRunner imports it, #191) and is uploaded beside tilt_geometry.py,

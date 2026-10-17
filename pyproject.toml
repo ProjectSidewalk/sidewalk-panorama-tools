@@ -19,6 +19,10 @@ readme = "docs/geometry.md"
 requires-python = ">=3.9"
 dependencies = ["numpy"]
 
+[project.optional-dependencies]
+# sidewalk_panorama_tools.torch_geometry: the sampling grid on the GPU. Imported lazily; never required.
+torch = ["torch"]
+
 [project.urls]
 Source = "https://github.com/ProjectSidewalk/sidewalk-panorama-tools"
 

@@ -126,6 +126,8 @@ class TestEveryProductionModuleIsMeasured:
         assert is_omitted('flag_panos/json_to_csv.py', patterns)
         assert is_omitted('assets/make_banner.py', patterns)
         assert is_omitted('build/lib/pano_pose.py', patterns)
+        assert is_omitted('sidewalk_panorama_tools/torch_geometry.py', patterns)   # optional torch extra
+        assert not is_omitted('sidewalk_panorama_tools/geometry.py', patterns)
         assert is_omitted('sidewalk_panorama_tools.egg-info/top_level.txt', patterns)
 
 

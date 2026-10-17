@@ -4,6 +4,7 @@ paths:
   - "pano_pose.py"
   - "sidewalk_panorama_tools/*.py"
   - "tests/test_geometry.py"
+  - "tests/test_torch_geometry.py"
   - "docs/geometry.md"
   - "pyproject.toml"
   - "tests/test_pano_pose.py"
@@ -81,6 +82,10 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
 - **Anti-aliasing and wrapping are the package's.** `render_view` box-reduces by `view.reduction_factor(W)`
   (trailing remainder dropped, grid divided by k), and a torch consumer `avg_pool2d`s by the same k; k = 1 for
   both current consumers. `label_view` wraps `x_norm` modulo 1; `wrap180` is `pano_pose.wrap_deg`.
+- **The torch twin** (`torch_geometry.py`, the `[torch]` extra) imports torch lazily and reuses
+  `geometry._basis` and the numpy tilt matrix, so it adds no second definition of where a view looks. CI has no
+  torch: its test skips and `.coveragerc` omits the module. Run `tests/test_torch_geometry.py` locally with
+  torch installed after touching either module.
 - **Changing it is a release.** Consumers pin a tag; bump `version` in `pyproject.toml` and `__version__`
   together (a test checks), and say in the PR what a consumer re-pinning will see change.
 
