@@ -52,6 +52,10 @@ omit =
     # `pytest --cov` run from there would walk a full second copy of the repo.
     ${SIDEWALK_COVERAGE_ROOT-.}/.claude/*
     ${SIDEWALK_COVERAGE_ROOT-.}/venv/*
+    # What `pip wheel .` / `pip install .` leave in a checkout (pyproject.toml): build/lib/ holds a second copy
+    # of pano_pose.py and the package, which would join the measured set and fail the exact-set test.
+    ${SIDEWALK_COVERAGE_ROOT-.}/build/*
+    ${SIDEWALK_COVERAGE_ROOT-.}/*.egg-info/*
     ${SIDEWALK_COVERAGE_ROOT-.}/.venv/*
 
 [report]
