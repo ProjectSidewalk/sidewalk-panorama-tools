@@ -1,6 +1,8 @@
 """Shared fixtures for the test suite.
 
-The repo is not an installed package, so tests import modules (downloaders, config) straight from the repo root.
+The repo's scripts are not an installed package, so tests import modules (downloaders, config) straight from the
+repo root. pyproject.toml installs only sidewalk_panorama_tools/ and pano_pose.py, for other projects
+(docs/geometry.md); the tests import those from the checkout too.
 streetlevel itself is never exercised: tests install a stub module so the suite is network-free and runs without
 streetlevel's heavy dependency tree.
 """

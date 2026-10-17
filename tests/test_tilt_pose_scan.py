@@ -199,11 +199,13 @@ def test_seeded_facade_sample_is_deterministic():
 
 
 @pytest.mark.parametrize('name', ['tilt_geometry.py', 'tilt_pose_scan.py', 'tilt_frame.py', 'tilt_remote_crop.py',
-                                  '../../pano_pose.py'])
+                                  '../../pano_pose.py', '../../sidewalk_panorama_tools/__init__.py',
+                                  '../../sidewalk_panorama_tools/pose.py', '../../sidewalk_panorama_tools/geometry.py'])
 def test_runs_under_python39_syntax(name):
     """makelab2 runs Python 3.9; a `match` or an `X | None` annotation would fail there after upload.
     pano_pose.py lives at the repo root (CropRunner imports it, #191) and is uploaded beside tilt_geometry.py,
-    which re-exports it.
+    which re-exports it. The installable package (pyproject.toml, docs/geometry.md) declares
+    requires-python >= 3.9 and imports pano_pose, so it is held to the same grammar.
 
     GRAMMAR ONLY: ast.parse(feature_version=(3, 9)) cannot see a 3.10+ standard-library call
     (zip(strict=...), itertools.pairwise, int.bit_count) - those would pass here and fail on the host.

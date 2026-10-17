@@ -39,6 +39,9 @@ PRODUCTION_MODULES = {
     'refetch_panos.py',
     'scan_black_bands.py',
     'scrape_queue.py',
+    'sidewalk_panorama_tools/__init__.py',
+    'sidewalk_panorama_tools/geometry.py',
+    'sidewalk_panorama_tools/pose.py',
 }
 
 # Walked but never measured, and not worth listing in .coveragerc's omit: no .py lives under them.
