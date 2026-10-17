@@ -267,7 +267,7 @@ def test_box_reduce_means_blocks_and_drops_the_trailing_remainder():
 
 
 def test_render_view_antialiases_with_the_views_k():
-    """render_view = sample the k-reduced pano at the full-resolution grid / k; antialias=False samples the
+    """render_view = sample the k-reduced pano at the full-resolution grid rescaled by (W//k)/W; antialias=False samples the
     full pano. On a one-pixel checkerboard the anti-aliased render is the flat mean, the other is noise."""
     W, H = 1024, 512
     yy, xx = np.mgrid[0:H, 0:W]

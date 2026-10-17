@@ -60,6 +60,7 @@ oversampled horizontally (the #221 review measured 1.8× at −45°).
 and use `sidewalk_panorama_tools.torch_geometry`. It imports torch lazily, so the package never needs it.
 
 ```python
+import torch
 import torch.nn.functional as F
 from sidewalk_panorama_tools.torch_geometry import normalized_grid_torch, sampling_grid_torch, wrap_pad_torch
 

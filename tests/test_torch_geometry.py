@@ -173,3 +173,13 @@ def test_a_uint8_pano_at_k2_matches_numpy_to_one_lsb():
 def test_the_normalized_grid_refuses_a_bad_k():
     with pytest.raises(ValueError):
         tg.normalized_grid_torch(torch.zeros(1, 1), torch.zeros(1, 1), 16, 8, k=0)
+
+
+@pytest.mark.parametrize('dtype', ['float64', 'float32'])
+def test_sampling_grid_torch_x_is_in_zero_to_w(dtype):
+    """x is wrapped into [0, W) like the numpy grid's - including a view straddling the seam and one at the
+    nadir, where every bearing appears - so normalized_grid_torch never sees a coordinate past the pad."""
+    for point in ((0.0, 0.6), (0.9999, 0.5), (0.4, 1.0)):
+        view, tilt = g.label_view(*point, fov_h_deg=120.0, size=64, camera_pitch=3.0)
+        sx, _ = tg.sampling_grid_torch(view, tilt, W, H, dtype=getattr(torch, dtype))
+        assert sx.min().item() >= 0.0 and sx.max().item() < W
