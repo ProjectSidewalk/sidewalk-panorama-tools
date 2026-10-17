@@ -2,6 +2,10 @@
 paths:
   - "CropRunner.py"
   - "pano_pose.py"
+  - "sidewalk_panorama_tools/*.py"
+  - "tests/test_geometry.py"
+  - "docs/geometry.md"
+  - "pyproject.toml"
   - "tests/test_pano_pose.py"
   - "tests/test_crop_tilt.py"
   - "reports/scripts/tilt_*.py"
@@ -57,6 +61,23 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   `tilt_geometry.xml_tilt_to_pitch_roll` is the one conversion (fitted on 3,594 panos with both files, median
   residual about 0.1 deg). Pose a JPEG by the file of its own scrape era: an `.xml` JPEG is a 2019-22 stitch, and a 2026
   `.npz` may describe a re-render. PS's `camera_pitch` equals this pitch; PS stores **no** roll for GSV labels.
+
+## The installable geometry package (`sidewalk_panorama_tools`, docs/geometry.md)
+
+- **What it is.** `pyproject.toml` installs `sidewalk_panorama_tools` (the gnomonic label view,
+  `geometry.label_view` / `render_view` / `sampling_grid`, ported from RampNet `rampnet/crops.py`) plus
+  `pano_pose` as a top-level module; sidewalk-validator-ai and sidewalk-ai-api pin it by tag. Nothing else in
+  the repo is installed, and the suite never imports from an install (conftest's `sys.path` insert).
+- **One convention.** `pano_pose.py` stays the home of the frames and the sign, because it is uploaded to
+  makelab2 on its own beside `tilt_geometry.py`; `sidewalk_panorama_tools/pose.py` only re-exports it
+  (`tests/test_geometry.py` checks every name IS pano_pose's). `geometry.tilt_matrix` is
+  `pano_pose.rig_from_gravity` at `beta` times the pose, so its sign is the measured F1 one; RampNet's
+  `VIEWER_TILT = "mm"` is the same relation, and a test pins the agreement (identical for one axis, within
+  the composition-order term `pitch * roll` for two). Do not reintroduce RampNet's four-way convention table.
+- **Beta default 0.9** is for the label's DB `camera_pitch` (which equals the xml pitch); CropRunner's
+  per-pose-record betas (xml 0.88, npz 0.95) are unchanged and are not read from here.
+- **Changing it is a release.** Consumers pin a tag; bump `version` in `pyproject.toml` and `__version__`
+  together (a test checks), and say in the PR what a consumer re-pinning will see change.
 
 ## Also easy to get wrong
 
