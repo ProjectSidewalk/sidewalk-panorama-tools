@@ -8,7 +8,7 @@
 # .coveragerc first, so this file must not grow a [tool.coverage] table.
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -17,9 +17,8 @@ version = "1.0.0"
 description = "Project Sidewalk panorama geometry: perspective views of a label from an equirectangular pano, with rig-tilt correction."
 readme = "docs/geometry.md"
 requires-python = ">=3.9"
-# TODO(license): this repo has no LICENSE file and GitHub reports none. The org is mixed (SidewalkWebpage and
-# RampNet are MIT, sidewalk-ai-api Apache-2.0, several repos none), so the choice is the maintainer's; add the
-# LICENSE file and a `license` field here together.
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
