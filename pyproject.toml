@@ -1,0 +1,39 @@
+# Packaging for the shared panorama geometry (docs/geometry.md): `pip install` gives another project the
+# `sidewalk_panorama_tools` package (the gnomonic label view, with rig-tilt correction) plus `pano_pose`,
+# the one definition of the #54 frames and pose sign that the package re-exports. Nothing else in this repo
+# is installed: the runners, downloaders/ and the desk studies still run from a checkout, and the test suite
+# still imports them through tests/conftest.py's sys.path insert, never from an install.
+#
+# Coverage is configured in .coveragerc, not here (see the note at the top of that file): coverage reads
+# .coveragerc first, so this file must not grow a [tool.coverage] table.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sidewalk-panorama-tools"
+version = "1.0.0"
+description = "Project Sidewalk panorama geometry: perspective views of a label from an equirectangular pano, with rig-tilt correction."
+readme = "docs/geometry.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+# sidewalk_panorama_tools.torch_geometry: the sampling grid on the GPU. Imported lazily; never required.
+torch = ["torch"]
+
+[project.urls]
+Source = "https://github.com/ProjectSidewalk/sidewalk-panorama-tools"
+
+[tool.setuptools]
+# Explicit, never auto-discovered: the repo root holds a dozen top-level scripts that must not be installed.
+# pano_pose stays a top-level module because it is also uploaded to makelab2 on its own, beside
+# reports/scripts/tilt_geometry.py, and must import there without this package (its module docstring).
+packages = ["sidewalk_panorama_tools"]
+py-modules = ["pano_pose"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

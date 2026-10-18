@@ -51,3 +51,36 @@ jobs:
         run: |
           echo '## Coverage' >> "$GITHUB_STEP_SUMMARY"
           python -m coverage report --format=markdown --fail-under=0 >> "$GITHUB_STEP_SUMMARY"
+
+  # The installable package as a consumer gets it (docs/geometry.md). The job above already runs
+  # tests/test_torch_geometry.py and gates its coverage: requirements.txt pulls torch in through streetlevel ->
+  # pyequilib (constraints.txt pins it). What it never does is build the wheel the consumers pin, or run the
+  # torch path on the CPU-only build an API box would install. This job does both, outside the checkout.
+  package:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      # tests/conftest.py imports CropRunner for every test, so the runtime requirements come too - all but
+      # streetlevel (which the conftest stubs), whose pyequilib dependency would pull the multi-GB CUDA torch.
+      # Then torch's own dependencies from PyPI at the production pins, and the CPU-only torch wheel at the
+      # pinned version with --no-deps: the CPU index does not carry every pinned dependency version.
+      - run: pip install -c constraints.txt numpy pytest Pillow requests urllib3 aiohttp backoff filelock typing_extensions sympy networkx jinja2 fsspec
+      - run: pip install -c constraints.txt --no-deps torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pytest tests/test_torch_geometry.py -v
+      - name: Build the wheel and import it from a fresh venv
+        run: |
+          pip wheel --no-deps -w "$RUNNER_TEMP/dist" .
+          python -m venv "$RUNNER_TEMP/wheelcheck"
+          "$RUNNER_TEMP/wheelcheck/bin/pip" install -c constraints.txt "$RUNNER_TEMP"/dist/sidewalk_panorama_tools-*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheelcheck/bin/python" -c "
+          import pano_pose, sidewalk_panorama_tools, sidewalk_panorama_tools.geometry as g, sidewalk_panorama_tools.torch_geometry as tg
+          for m in (pano_pose, sidewalk_panorama_tools, g, tg):
+              assert 'site-packages' in m.__file__, m.__file__
+          view, tilt = g.label_view(0.5, 0.6, size=8, camera_pitch=3.0)
+          print(sidewalk_panorama_tools.__version__, view, tilt is not None)
+          "

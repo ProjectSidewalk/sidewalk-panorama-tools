@@ -693,7 +693,9 @@ PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape
                       'flag_panos/json_to_csv.py',
                       'downloaders/__init__.py', 'downloaders/common.py',
                       'downloaders/gsv.py', 'downloaders/mapillary.py',
-                      'downloaders/panoramax.py', 'downloaders/store_sftp.py']
+                      'downloaders/panoramax.py', 'downloaders/store_sftp.py',
+                      'sidewalk_panorama_tools/__init__.py', 'sidewalk_panorama_tools/geometry.py',
+                      'sidewalk_panorama_tools/pose.py', 'sidewalk_panorama_tools/torch_geometry.py']
 
 
 def imported_names(source):
@@ -723,6 +725,8 @@ class TestPandasStaysOutOfProduction:
                     if name.endswith('.py')}
         on_disk |= {'flag_panos/' + name for name in os.listdir(os.path.join(REPO_ROOT, 'flag_panos'))
                     if name.endswith('.py')}
+        on_disk |= {'sidewalk_panorama_tools/' + name
+                    for name in os.listdir(os.path.join(REPO_ROOT, 'sidewalk_panorama_tools')) if name.endswith('.py')}
 
         assert on_disk == set(PRODUCTION_MODULES)
 

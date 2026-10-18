@@ -27,3 +27,7 @@ reports/scripts/.cache/
 # A shared .claude/settings.json is deliberately still trackable; only the .local. override is ignored.
 .claude/worktrees/
 .claude/settings.local.json
+
+# Build output of `pip install .` / `pip wheel .` from a checkout (pyproject.toml, docs/geometry.md).
+build/
+*.egg-info/
