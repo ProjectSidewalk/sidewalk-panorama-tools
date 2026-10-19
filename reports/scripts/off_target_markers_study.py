@@ -1,4 +1,4 @@
-"""Record-staleness study: decompose the in-window canvas/POV record misses, price what Validate
+"""Off-target-markers study: decompose the in-window canvas/POV record misses, price what Validate
 shows, and measure how much of the record is repairable from pano_x/pano_y.
 
 Successor to the era replay study (reports/2026-08-09-era-replay-study.md), which established the
