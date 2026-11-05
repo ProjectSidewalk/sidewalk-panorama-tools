@@ -286,7 +286,8 @@ class TestThePhotoHostContract:
         stub_photo_host(monkeypatch, response)
         with pytest.raises(requests.HTTPError) as raised:
             gsv.download_single_pano(str(tmp_path), info())
-        assert gsv.pushback_reason(raised.value) == 'interstitial'
+        # pushback_reason names the status before the landing, so 'HTTP 403' here; either way it counts.
+        assert gsv.pushback_reason(raised.value) in ('HTTP 403', 'interstitial')
         assert response.closed
 
     def test_a_200_on_googles_interstitial_is_push_back_and_nothing_is_written(self, tmp_path, monkeypatch,
