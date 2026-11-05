@@ -27,8 +27,8 @@ Outcomes:
     already_clean the file was written after --fixed-after, so it never carried `fover`
     dims_changed  the work-list's frame disagrees with the stored one; see --allow-dims-change
     gone          Google no longer serves this panorama at any zoom
-    frame_grew    Google now serves this panorama larger, so this frame would fetch a CROP of it
-    frame_shrank  Google now serves this panorama SMALLER than the stored frame (#181). Not swapped, not
+    frame_grew    Google serves this panorama larger than the stored frame, so it would fetch a CROP of it
+    frame_shrank  Google serves this panorama SMALLER than the stored frame (#181). Not swapped, not
                   ledgered (asked again next pass), and not a failure
     upscaled      only a fallback zoom was available - swapping would be a 4x DOWNGRADE
     undersized    a tile still came back below 512px: the request is costing resolution again (#73). Not
@@ -109,9 +109,11 @@ OUTCOMES = ('absent', 'unreadable', 'not_affected', 'already_clean', 'dims_chang
 # would lock a run's flag values in: run once with the default --fixed-after, learn the box picked the fix up
 # two weeks later, re-run with the right date - and every file in that window would be skipped for good.
 # `too_black` does move with --max-black, but it cost a full fan-out to learn, so it is kept. `undersized` is
-# the other exclusion, for the reason MAX_CONSECUTIVE_UNDERSIZED gives. So is `frame_shrank` (#181): the app's
-# frame or Google's can change, and at five requests asking again next pass is cheap. It is still an ANSWER,
-# not a transient failure - it never feeds MAX_CONSECUTIVE_FAILURES or the exit code, or a work-list made of
+# the other exclusion, for the reason MAX_CONSECUTIVE_UNDERSIZED gives. So is `frame_shrank` (#181): it is a
+# fact about the stored file, whose frame is larger than the pano's (a pano's frame does not change, #217), so
+# a swap or a hand repair of that file changes the answer, and at five requests asking again next pass is
+# cheap. It is still an ANSWER, not a transient failure - it never feeds MAX_CONSECUTIVE_FAILURES or the exit
+# code, or a work-list made of
 # these would stop every pass after five of them.
 LEDGERED_OUTCOMES = ('gone', 'frame_grew', 'upscaled', 'too_black', 'replaced')
 
@@ -506,7 +508,7 @@ def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measureme
     try:
         covers = gsv.frame_covers_pano(pano_id, width, height, zoom)
     except gsv.FrameDisagreementError as smaller:
-        # Google now serves this pano SMALLER than the stored frame (#181): the grid's own last column is
+        # Google serves this pano SMALLER than the stored frame (#181): the grid's own last column is
         # black, and the stitch would be ~34% black. An answer about the pano, not a wall, so it is returned
         # rather than raised - a raise would feed the consecutive-failure breaker. Not ledgered by
         # refetch_store; both channels, since it is worth a person's look. WARNING, not the ERROR the nightly
@@ -515,11 +517,13 @@ def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measureme
         print("REFETCH: %s frame_shrank (%s) - not swapped, not ledgered" % (pano_id, smaller))
         return 'frame_shrank'
     if not covers:
-        # Google now serves this pano larger than the frame we are fetching at, so that grid would return
-        # the top-left corner of it - at the right dimensions, with no undersized tile and no black. The
-        # only gate that can see a silently cropped panorama, and it runs before the fan-out (two requests
-        # to reach this answer; a third only for frame_shrank). Permanent: the frame is a property of what
-        # Google holds, not of the network.
+        # Google serves this pano larger than the frame we are fetching at - the stored file was stitched
+        # at a frame that was never the pano's (e.g. the 13312x6656 the app hardcoded until evolution 135,
+        # 2022-03; a pano's frame does not change, #217) - so that grid would return the top-left corner of
+        # it, at the right dimensions, with no undersized tile and no black. The only gate that can see a
+        # silently cropped panorama, and
+        # it runs before the fan-out (two requests to reach this answer; a third only for frame_shrank).
+        # Permanent: the frame is a property of what Google holds, not of the network.
         return 'frame_grew'
 
     stitched = gsv.fetch_pano_image(pano_id, width, height, zoom)

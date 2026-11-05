@@ -520,14 +520,16 @@ it cuts exactly what it did before.
 Two checks reject a label rather than emit a quietly wrong crop.
 
 **Pano dimensions (`dims_mismatch`).** If the label metadata's pano dimensions disagree with the image on
-disk, the label is skipped with a warning. This is a **store-integrity** check: the metadata describes the
-pano as it is served *now*, the image was stitched to whatever the API reported when it was downloaded, so a
-disagreement means the store is stale (or, on the Mapillary path, that `thumb_original_url` served a
-different size than was recorded). It does **not** detect a label whose `pano_x`/`pano_y` went stale under a
-pano re-served at a new resolution: those dimensions are a per-pano value that gets refreshed along with the
-pano, so such a row looks perfectly consistent. Separating those needs the click→pano replay
-([#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54)). Measured over 438,410 labels /
-172,790 panos, no pano carries two frames.
+disk, the label is skipped with a warning. This is a **store-integrity** check: the metadata records the
+pano's frame (a record that can itself be wrong, see [#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)), the
+image was stitched to whatever the API reported when it was downloaded, so a disagreement most often means the
+stored file's frame is not the pano's — for example one stitched at the 13312×6656 the app hardcoded for every
+pano until 2022-03 (or, on the Mapillary path, that `thumb_original_url` served a
+different size than was recorded). Measured over 438,410 labels / 172,790 panos, no pano carries two frames,
+and a pano's frame does not change ([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)).
+What it does **not** detect is a label whose `pano_x`/`pano_y` were recorded in a frame other than the
+pano's true one: the dimensions are a per-pano value, so such a row looks perfectly consistent. Separating
+those needs the click→pano replay ([#54](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/54)).
 
 Dimensions are read from `pano_width`/`pano_height`, or from `width`/`height` for the older CSV export shape
 (`samples/metadata-seattle.csv`). Those latter names are generic — if you supply your own CSV where
@@ -701,7 +703,7 @@ flood's own lines with it. Two bounds now apply, and both are needed:
   the `SYSTEMIC FAILURE` line, which stays the last thing written. The kinds are `malformed_row`,
   `crop_failed` (a failed write: a full or read-only store), `cannot_open` (a pano that exists but will not
   open: a dead mount that still answers a stat; or whose body cannot be decoded — a truncated file behind a
-  good header — one line per pano), `dims_mismatch` (a city re-served wider than the store),
+  good header — one line per pano), `dims_mismatch` (a stored file whose frame is not the pano's),
   `out_of_frame`, `black_content` (a window withheld by the content check), and `provenance_unrecorded` (a crop whose manifest row could not be written). Each has its
   own budget, so a flood of one cannot hide the first lines of another, which may be the actual cause.
 
