@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -1295,7 +1296,8 @@ def test_the_ledger_scrub_recipe_keeps_the_header_when_nothing_was_ever_saved(tm
     assert out.stdout.strip() == '1', out
 
 
-@pytest.mark.skipif(os.name != 'posix' or not all(shutil.which(t) for t in ('bash', 'tr', 'grep', 'cut', 'sed')),
+@pytest.mark.skipif(os.name != 'posix'
+                    or not all(shutil.which(t) for t in ('bash', 'tr', 'grep', 'cut', 'sed', 'cp', 'mv')),
                     reason="the recipe is a POSIX pipeline; on Windows 'bash' may be WSL's. CI runs it")
 def test_the_unusable_ledger_repair_recipe_finds_and_removes_exactly_the_junk(tmp_path, fake_streetview):
     """docs/ops.md's "Repairing a ledger the phase cannot read" (#189), steps 2 and 3 verbatim from the page,
@@ -1304,11 +1306,17 @@ def test_the_unusable_ledger_repair_recipe_finds_and_removes_exactly_the_junk(tm
     only their own rows now (QUOTE_NONE, errors='replace'), but they are not ledger rows either, and a hand
     repair that is already in the file should take them out with the line that matters. Step 2 must name
     exactly those lines - not the header, not a good row - and after step 3 the phase must read the ledger and
-    keep every good row."""
+    keep every good row.
+
+    The recipe has to run on an operator's Mac with the store mounted, not only on the Ubuntu box (#219): BSD
+    `tr` under a UTF-8 locale dies on the undecodable byte (`Illegal byte sequence`, empty output) and BSD
+    `sed -i` takes a mandatory suffix, so the page pins `LC_ALL=C` and replaces the file instead of editing it.
+    The replacement must keep the ledger's group-writable mode - other lab users' runs append to it - which is
+    what the `cp -p` is for: a file the `sed` redirect created would take the umask."""
     with open(OPS_MD, encoding='utf-8') as f:
         page = f.read()
-    finders = re.findall(r"`(tr -d '\\r' < depth_log\.csv [^`]*)`", page)
-    deleters = re.findall(r"`(sed -i '<N>d;<M>d' depth_log\.csv)`", page)
+    finders = re.findall(r"`(LC_ALL=C tr -d '\\r' < depth_log\.csv [^`]*)`", page)
+    deleters = re.findall(r"`(cp -p depth_log\.csv depth_log\.csv\.new && [^`]*'<N>d;<M>d'[^`]*)`", page)
     assert len(finders) == 1 and len(deleters) == 1, (finders, deleters)
 
     storage = str(tmp_path)
@@ -1328,13 +1336,20 @@ def test_the_unusable_ledger_repair_recipe_finds_and_removes_exactly_the_junk(tm
         f.write(b'\r\n'.join(lines))
     with pytest.raises(csv.Error):
         gsv._load_depth_log(ledger)  # the premise: the phase would sit this ledger out
+    os.chmod(ledger, 0o664)  # the store's group-writable mode, which step 3's replacement must keep
+    assert stat.S_IMODE(os.stat(ledger).st_mode) == 0o664  # the premise, whatever this host's umask
 
     found = subprocess.run(['bash', '-c', finders[0]], cwd=storage, capture_output=True, check=True)
     numbers = [int(line.split(b':', 1)[0]) for line in found.stdout.splitlines()]
     assert numbers == sorted(junk), found.stdout[:400]
 
     deleter = deleters[0].replace('<N>d;<M>d', ';'.join('%dd' % n for n in numbers))
-    subprocess.run(['bash', '-c', deleter], cwd=storage, check=True)
+    # umask 077 so a replacement that did not carry the mode over would fail here on any host, not only on one
+    # whose umask happens to differ from 0664's; the command itself still runs verbatim.
+    subprocess.run(['bash', '-c', 'umask 077; ' + deleter], cwd=storage, check=True)
+
+    assert stat.S_IMODE(os.stat(ledger).st_mode) == 0o664
+    assert not os.path.exists(ledger + '.new')  # moved into place, not left beside it
 
     assert subprocess.run(['bash', '-c', finders[0]], cwd=storage, capture_output=True).stdout == b''
     assert gsv._load_depth_log(ledger) == set(good)

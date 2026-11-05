@@ -981,13 +981,26 @@ affected. In the city's store directory:
 1. **Copy the ledger first**: `cp -p depth_log.csv depth_log.csv.bak-$(date +%F)`.
 2. **List every line that is not a ledger row:**
 
-   `tr -d '\r' < depth_log.csv | grep -naEv '^(pano_id,status|[A-Za-z0-9_-]+,(saved|unavailable))$' | cut -c1-120`
+   `LC_ALL=C tr -d '\r' < depth_log.csv | LC_ALL=C grep -naEv '^(pano_id,status|[A-Za-z0-9_-]+,(saved|unavailable))$' | cut -b1-120`
 
    prints each offending line's number and its first 120 bytes. The `tr` is for the CRLF line endings (the
    scrub's step 3, above); it removes characters, never lines, so the numbers are the file's. A torn row
-   (`aaaa` with no status) is listed too: it is harmless, but deleting it costs nothing.
-3. **Delete those lines**: `sed -i '<N>d;<M>d' depth_log.csv` with the numbers from step 2. Re-run step 2; it
-   should print nothing.
+   (`aaaa` with no status) is listed too: it is harmless, but deleting it costs nothing. `LC_ALL=C` makes
+   each tool that reads the junk treat it as bytes, not characters, so macOS's BSD `tr` and `grep` do not
+   refuse the undecodable byte the recipe exists to find (`tr: Illegal byte sequence`, empty output), and
+   `cut -b` counts bytes in every locale
+   ([#219](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/219)).
+3. **Delete those lines** with the numbers from step 2:
+
+   `cp -p depth_log.csv depth_log.csv.new && LC_ALL=C sed '<N>d;<M>d' depth_log.csv > depth_log.csv.new && mv depth_log.csv.new depth_log.csv`
+
+   The `cp -p` is there so the replacement keeps the ledger's mode bits, whatever they are on the store: the
+   phase creates the file group-writable (0664, `os.chmod` in `download_depth_maps`) so other lab users' runs
+   can append to it, and a file `sed` created on its own would take your umask instead. It cannot keep the
+   owner, so run step 3 as the account the nightly run writes the store with, or compare `ls -l` against the
+   step 1 copy afterwards. Writing a new file and moving it into place also keeps [the archive rule](#the-store-is-an-archive-not-a-cache) —
+   nothing is edited in place, and the step 1 copy still stands — and avoids `sed -i`, whose syntax differs
+   between GNU and BSD `sed`. Re-run step 2; it should print nothing.
 4. **What it costs:** a deleted `saved` row costs no request — the artifact is on disk and the next run
    re-ledgers it without asking Google. A deleted `unavailable` row costs one request. The next night's depth
    phase runs as normal and the condition stops.
