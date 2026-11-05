@@ -92,7 +92,10 @@ def partition_ledger(lines, dimless_ids, dates):
     """(kept lines, removed lines) - every line verbatim, newline included; see the module docstring."""
     kept, removed = [], []
     for line in lines:
-        rows = list(csv.reader(io.StringIO(line)))
+        try:
+            rows = list(csv.reader(io.StringIO(line)))
+        except csv.Error:        # a NUL byte: Python 3.10's reader refuses the line; it is kept (#223 review)
+            rows = []
         row = rows[0] if len(rows) == 1 else None
         if (row is not None and len(row) == 3 and row[1] == '0' and row[2][:10] in dates
                 and row[0] in dimless_ids):

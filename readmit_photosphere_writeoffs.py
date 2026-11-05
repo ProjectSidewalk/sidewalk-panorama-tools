@@ -10,12 +10,13 @@ refuses those forms (628 of 628), and since #223's follow-up a 400 for one of th
 already are.
 
 A row is re-admitted only when ALL of these hold:
-  * its verdict is `0` (two- or three-field: no rule now in force writes a `0` for a form in --form, so a
-    three-field one, if any ever appears, is as stale as a two-field one);
+  * it is a TWO-field `0` row - the shape every one of the 1,752 measured rows has, and the shape no code since
+    2026-09-17 can write. A three-field `0` is a verdict the current code wrote with a stamp (since #223's
+    follow-up, exactly what a CIHM or CIAB 400 writes), and this tool never eats one;
   * its pano id decodes to a photosphere photo id (gsv.photosphere_photo_id), and
   * that photo id's form (gsv.photosphere_form) is one named by --form (default: AF1Qip, the served form).
-Every other line - the header, `1` rows, other forms, non-photosphere ids, torn rows - is kept byte for byte.
-No pano list is read: the decision is a property of the id itself.
+Every other line - the header, `1` rows, three-field rows, other forms, non-photosphere ids, torn rows, a line
+csv cannot parse - is kept byte for byte. No pano list is read: the decision is a property of the id itself.
 
 Dry run by default: it reads each ledger and reports what it would remove. With --apply it
   1. takes the nightly queue's lock (scrape_queue.exclusive_lock), so it can never race a queue run appending
@@ -30,10 +31,11 @@ re-registers it as skipped.
 Exit codes: 0 done (including "nothing to re-admit"), 2 usage, 3 refused (a storage dir with no ledger, or the
 queue's lock is held). Several storage dirs may be given; the lock is taken once for all of them.
 
-Run it on the production box from the checkout's venv, AS THE CRON USER (never through sudo), outside the
-nightly window, once the #223 follow-up build is deployed (an earlier build raises on every re-admitted
-CIHM/CIAB id rather than ledgering it, and fetches the AF1Qip ones either way), after checking that the store's
-sshfs mount does not carry -o workaround=rename::
+Run it on the production box from the checkout's venv, AS THE CRON USER (never through sudo: a root-created
+/tmp/sidewalk-scrape-queue.lock would stop the next night's queue from opening it), outside the nightly window,
+once the #223 follow-up build is deployed (an earlier build raises on every re-admitted CIHM/CIAB id rather than
+ledgering it, and fetches the AF1Qip ones either way), after checking that the store's sshfs mount does not carry
+-o workaround=rename (os.replace is atomic over sshfs only through OpenSSH's posix-rename extension)::
 
     mount | grep sshfs
     .venv/bin/python readmit_photosphere_writeoffs.py /mnt/panostore/chicago-il /mnt/panostore/knox-oh ...  # dry run
@@ -65,10 +67,17 @@ def build_parser():
 
 
 def is_writeoff_of(line, forms):
-    """Whether one ledger line is a `0` row for a photosphere whose photo id is of a form in `forms`."""
-    rows = list(csv.reader(io.StringIO(line)))
+    """Whether one ledger line is a two-field `0` row for a photosphere whose photo id is of a form in `forms`.
+
+    A line csv cannot parse (a NUL byte, which Python 3.10's reader refuses outright) is not a write-off: it is
+    kept, as progress_check keeps re-attempting the pano behind it, rather than crashing a pass over 25 cities.
+    """
+    try:
+        rows = list(csv.reader(io.StringIO(line)))
+    except csv.Error:
+        return False
     row = rows[0] if len(rows) == 1 else None
-    if row is None or len(row) not in (2, 3) or row[1] != '0':
+    if row is None or len(row) != 2 or row[1] != '0':
         return False
     photo_id = gsv.photosphere_photo_id(row[0])
     return photo_id is not None and gsv.photosphere_form(photo_id) in forms
@@ -118,6 +127,9 @@ def main(argv=None):
                 if removed:
                     rewrite_ledger(ledger, lines, kept, removed)
                 total += len(removed)
+                # One line per ledger as it lands, so a failure over sshfs half way says where it stopped;
+                # the .bak-<stamp> beside each rewritten ledger is the way back.
+                print('%s: re-admitted %d row(s)' % (ledger, len(removed)))
     except scrape_queue.QueueLocked as e:
         print('REFUSED: the nightly queue holds its lock (%s); nothing written. Run outside the window.' % (e,))
         return 3

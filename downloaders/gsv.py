@@ -1421,10 +1421,11 @@ PHOTOSPHERE_ID_PREFIX = 'CAoS'
 PHOTOSPHERE_URL = 'https://lh3.ggpht.com/p/%s=s0'
 
 # The forms a photo id comes in, by its leading letters, and the ones the photo host refuses AS FORMS
-# (reports/2026-11-05-photosphere-forms.md). Every one of chicago-il's 598 CIHM and 30 CIAB ids answered 400 with
-# the same 1,555-byte page, from lh3.ggpht.com and from the two googleusercontent hosts that serve the AF1Qip
-# control, so a 400 for one of these forms is the host's answer about the FORM, not about one pano: the one
-# permanent verdict that rests on the photo host. A 400 for the AF1Qip form has never been seen (served 24 of
+# (reports/2026-11-05-photosphere-forms.md). Every one of chicago-il's 598 CIHM and 30 CIAB ids answered 400 at
+# lh3.ggpht.com with the same 1,555-byte text/html page, twice in one day, and one id of each form was refused the
+# same way at the two googleusercontent hosts that serve the AF1Qip control, so a 400 for one of these forms is
+# the host's answer about the FORM, not about one pano: the one permanent verdict that rests on the photo host,
+# and it asks for the host's own error page (text/html) as the Panoramax verdict asks for the catalog's body. A 400 for the AF1Qip form has never been seen (served 24 of
 # 24), so it is unmeasured and stays a transient raise (#166). A form not listed here is 'other' and transient
 # too. The fleet's ledgers already held 851 CIHM/CIAB rows as `0` when this was measured, so the verdict changes
 # nothing they say; it stops the 276 unledgered ones in chicago-il raising every night.
@@ -1449,8 +1450,8 @@ class PhotosphereHostError(Exception):
 
     TRANSIENT under the #41 ledger: nothing written, not ledgered, retried next run - a 403, a 404, a 5xx, and a
     400 for the AF1Qip form, which has never been seen. The one non-200 that does NOT land here is a 400 for a
-    form in PHOTOSPHERE_REFUSED_FORMS: that is the host refusing the form, measured 628 of 628, and
-    _download_photosphere returns DownloadResult.failure for it. Deliberately NOT a requests.HTTPError:
+    form in PHOTOSPHERE_REFUSED_FORMS with the host's text/html error page: that is the host refusing the form,
+    measured 628 of 628, and _download_photosphere returns DownloadResult.failure for it. Deliberately NOT a requests.HTTPError:
     pushback_reason reads an HTTPError's 403 as Google refusing THIS HOST and the #162 breaker trips on three
     in a row, writing the fleet-wide block latch - and a photo host's 403 is one photo's answer (private,
     removed), not the host's, so three of them in a row would stand every city's depth phase down for six hours
@@ -1547,11 +1548,12 @@ def _download_photosphere(pano_info, photo_id, out_image_name):
         _get_response raises it, so pushback_reason reads it as push-back (#162). A 429 never reaches this
         function: the session's retry policy retries it and gives up with a RetryError, which pushback_reason
         reads as 'HTTP 429'.
-      * A 400 for a photo id of a form in PHOTOSPHERE_REFUSED_FORMS (CIHM, CIAB): DownloadResult.failure, the
-        permanent `downloaded=0` - the host refuses the form, 628 of 628 and from three hosts
-        (reports/2026-11-05-photosphere-forms.md), so asking again tomorrow asks the same question. Nothing
-        written. The one permanent verdict that rests on the photo host, and it rests on the status AND the
-        form: an AF1Qip 400 has never been seen and is the next line.
+      * A 400 with a text/html body for a photo id of a form in PHOTOSPHERE_REFUSED_FORMS (CIHM, CIAB):
+        DownloadResult.failure, the permanent `downloaded=0` - the host refuses the form, 628 of 628 at this
+        host and one id per form at two more (reports/2026-11-05-photosphere-forms.md), so asking again tomorrow
+        asks the same question. Nothing written. The one permanent verdict that rests on the photo host, and it
+        rests on the status, the form AND the host's own error page together: an AF1Qip 400 has never been seen
+        and is the next line, as is a 400 of another content type.
       * Any other non-200 - an AF1Qip 400, a 403, a 404, a 5xx: PhotosphereHostError, transient and
         unledgered (#166) and NOT push-back (see the class). A 200 whose body is not a complete JPEG is
         PhotosphereBodyError, also transient.
@@ -1571,7 +1573,8 @@ def _download_photosphere(pano_info, photo_id, out_image_name):
         if response.status_code != 200:
             response.close()
             form = photosphere_form(photo_id)
-            if response.status_code == 400 and form in PHOTOSPHERE_REFUSED_FORMS:
+            error_page = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower() == 'text/html'
+            if response.status_code == 400 and form in PHOTOSPHERE_REFUSED_FORMS and error_page:
                 # The verdict is logged, not printed: the ledger row is its durable record, and stdout is for
                 # what someone should hear about tonight - a form the host refuses is not that.
                 logging.info("IMAGEDOWNLOAD: pano %s: the photo host refuses the %s form of photo id (400); "

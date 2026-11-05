@@ -42,6 +42,7 @@ CIHM_PANO = 'CAoSF0NJSE0wb2dLRUlDQWdJQ0U0ZXpLOXdF'
 CIHM_PHOTO = 'CIHM0ogKEICAgICE4ezK9wE'
 CIAB_PANO = 'CAoSHENJQUJJaEFEeWNLejZoTFNPbWY2MWNzQUJ6RDA.'
 CIAB_PHOTO = 'CIABIhADycKz6hLSOmf61csABzD0'
+OTHER_PHOTO = 'ZZZZsomeUnseenForm'          # no such form has been seen; built below so its 400 can be tested
 
 FRAME = (64, 32)
 
@@ -52,6 +53,9 @@ def caos(photo_id_bytes, length=None, pad='.'):
     n = len(photo_id_bytes) if length is None else length
     encoded = base64.urlsafe_b64encode(b'\x08\x0a\x12' + bytes([n]) + photo_id_bytes).decode()
     return encoded.replace('=', pad)
+
+
+OTHER_PANO = caos(OTHER_PHOTO.encode())
 
 
 def photosphere_jpeg(size=FRAME, color=(40, 120, 200)):
@@ -256,7 +260,8 @@ class TestThePhotoHostContract:
     @pytest.mark.parametrize('pano_id, photo_id, status', [
         (AF1Q_PANO, AF1Q_PHOTO, 400), (AF1Q_PANO, AF1Q_PHOTO, 403), (AF1Q_PANO, AF1Q_PHOTO, 404),
         (AF1Q_PANO, AF1Q_PHOTO, 500), (CIHM_PANO, CIHM_PHOTO, 403), (CIHM_PANO, CIHM_PHOTO, 404),
-        (CIHM_PANO, CIHM_PHOTO, 500), (CIAB_PANO, CIAB_PHOTO, 403)])
+        (CIHM_PANO, CIHM_PHOTO, 500), (CIAB_PANO, CIAB_PHOTO, 403), (CIAB_PANO, CIAB_PHOTO, 404),
+        (CIAB_PANO, CIAB_PHOTO, 500), (OTHER_PANO, OTHER_PHOTO, 400)])
     def test_a_non_200_raises_unledgerable_and_is_not_push_back(self, tmp_path, monkeypatch, pano_id, photo_id,
                                                                  status, cbk_untouched):
         """Transient, as the cbk probe's non-200 is (#166) - every status for the AF1Qip form, whose 400 has never
@@ -280,8 +285,9 @@ class TestThePhotoHostContract:
     def test_a_400_for_a_refused_form_is_the_permanent_verdict(self, tmp_path, monkeypatch, caplog, pano_id,
                                                               photo_id, form, cbk_untouched):
         """The one permanent verdict that rests on the photo host: 628 of 628 CIHM and CIAB ids in chicago-il
-        answered 400 with one error page, from three hosts (reports/2026-11-05-photosphere-forms.md). Keyed on
-        the status AND the form: the AF1Qip 400 above stays a raise."""
+        answered 400 with one text/html error page, and one id per form the same at two more hosts
+        (reports/2026-11-05-photosphere-forms.md). Keyed on the status, the form AND the error page: the AF1Qip
+        400 above stays a raise, and so does a 400 of another content type (below)."""
         response = FakeResponse(400, b'<html>Error 400</html>', 'text/html')
         host = stub_photo_host(monkeypatch, response)
 
@@ -294,6 +300,24 @@ class TestThePhotoHostContract:
         assert list(tmp_path.rglob('*.jpg*')) == []
         assert any('refuses the %s form' % form in r.getMessage() and pano_id in r.getMessage()
                    for r in caplog.records)
+
+    @pytest.mark.parametrize('content_type', ['image/jpeg', 'application/json', None])
+    def test_a_400_for_a_refused_form_without_the_hosts_error_page_still_raises(self, tmp_path, monkeypatch,
+                                                                             content_type, cbk_untouched):
+        """The verdict asks for the host's own text/html error page, as the Panoramax verdict asks for the
+        catalog's body: a 400 of another shape is something else and stays a transient."""
+        stub_photo_host(monkeypatch, FakeResponse(400, b'', content_type))
+        with pytest.raises(gsv.PhotosphereHostError):
+            gsv.download_single_pano(str(tmp_path), info(CIHM_PANO))
+        assert list(tmp_path.rglob('*.jpg*')) == []
+
+    def test_a_refused_form_pano_already_on_disk_costs_no_request(self, tmp_path, monkeypatch, cbk_untouched):
+        host = stub_photo_host(monkeypatch, lambda url: pytest.fail('a stored pano must not be asked for'))
+        target = stored(tmp_path, CIHM_PANO)
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'stored')
+        assert gsv.download_single_pano(str(tmp_path), info(CIHM_PANO)) == DownloadResult.skipped
+        assert host.requests == []
 
     def test_an_interstitial_at_a_400_for_a_refused_form_is_still_push_back(self, tmp_path, monkeypatch,
                                                                             cbk_untouched):

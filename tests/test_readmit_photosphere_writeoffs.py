@@ -14,12 +14,13 @@ import scrape_queue
 from downloaders import gsv
 
 AF1QIP_A = 'CAoSLEFGMVFpcE05ZHg3dFhIa1htX193c1JDUW10UmRKd1J4dDY1Ujk5cDFGYWlu'     # two-field 0: re-admitted
-AF1QIP_B = 'CAoSLEFGMVFpcE1ub2YyODJZRzVNY3J0OVJjUHhhSGc5ZXNPNExmTnI0WExqOTBJ'     # three-field 0: re-admitted
+AF1QIP_B = 'CAoSLEFGMVFpcE1ub2YyODJZRzVNY3J0OVJjUHhhSGc5ZXNPNExmTnI0WExqOTBJ'     # another two-field 0: re-admitted
 AF1QIP_OK = 'CAoSLEFGMVFpcE51ZXBzb1lXeGpraURXNzBGSTZHbnRDUlUzT0prMjN1MlZSMWFu'    # a 1 row: kept
 CIHM = 'CAoSF0NJSE0wb2dLRUlDQWdJQ0U0ZXpLOXdF'                                     # a refused form's 0: kept
 CIAB = 'CAoSHENJQUJJaEFEeWNLejZoTFNPbWY2MWNzQUJ6RDA.'                             # likewise
 UNDECODABLE = 'CAoSnot-a-protobuf'                                                # the prefix alone: kept
 GSV = 'ordinaryGsvPanoIdAAAAA'                                                    # not a photosphere: kept
+STAMPED = 'CAoSLEFGMVFpcE5Nd1V0TUpuaWpqRHk2WHo0bzlhMm10TlQ2Nnl1UzBtR1VDWC0t'      # a three-field 0: a current verdict, kept
 
 LEDGER = ('pano_id,downloaded\n'
           f'{AF1QIP_A},0\n'
@@ -29,7 +30,9 @@ LEDGER = ('pano_id,downloaded\n'
           f'{AF1QIP_OK},1,\n'
           f'{CIAB},0\n'
           'torn,row,with,too,many,fields\n'
-          f'{AF1QIP_B},0,2026-11-06 02:14:00.000000-08:00\n')
+          f'{STAMPED},0,2026-11-06 02:14:00.000000-08:00\n'
+          'nul\x00byte,0\n'
+          f'{AF1QIP_B},0\n')
 
 
 @pytest.fixture
@@ -44,8 +47,15 @@ def run(tmp_path, *args):
     return readmit.main([*args, '--lock', str(tmp_path / 'queue.lock')])
 
 
-def test_the_forms_are_the_downloaders_and_the_default_is_the_served_one():
-    assert set(readmit.build_parser().parse_args(['x']).forms or ()) == set()
+def test_the_forms_are_the_downloaders_and_the_default_is_the_served_one(tmp_path, store, capsys):
+    parser = readmit.build_parser()
+    assert parser.parse_args(['x']).forms is None, 'no --form given: main() falls back to the served form'
+    choices = next(a for a in parser._actions if a.dest == 'forms').choices
+    assert tuple(choices) == gsv.PHOTOSPHERE_FORMS
+    assert run(tmp_path, str(store)) == 0
+    assert 'of the AF1Qip form(s): 2' in capsys.readouterr().out
+    assert readmit.is_writeoff_of(f'{STAMPED},0,2026-11-06 02:14:00.000000-08:00\n', ('AF1Qip',)) is False
+    assert readmit.is_writeoff_of('nul\x00byte,0\n', gsv.PHOTOSPHERE_FORMS) is False
     assert readmit.is_writeoff_of(f'{AF1QIP_A},0\n', ('AF1Qip',))
     assert not readmit.is_writeoff_of(f'{CIHM},0\n', ('AF1Qip',))
     assert readmit.is_writeoff_of(f'{CIHM},0\n', gsv.PHOTOSPHERE_REFUSED_FORMS)
@@ -71,13 +81,12 @@ def test_apply_removes_exactly_the_af1qip_zero_rows_and_keeps_both_copies(tmp_pa
     kept = (store / 'pano_id_log.csv').read_text()
     expected = ''.join(line for line in LEDGER.splitlines(keepends=True)
                        if not line.startswith((AF1QIP_A, AF1QIP_B)))
-    assert kept == expected, 'every other line, the header, the torn row and the refused forms included'
+    assert kept == expected, 'every other line: the header, the torn row, the NUL line, the stamped verdict, the refused forms'
     backups = [n for n in os.listdir(store) if n.startswith('pano_id_log.csv.bak-')]
     removed = [n for n in os.listdir(store) if n.startswith('pano_id_log.csv.readmitted-')]
     assert len(backups) == 1 and (store / backups[0]).read_bytes() == LEDGER.encode()
     assert len(removed) == 1
-    assert (store / removed[0]).read_text().splitlines() == [
-        f'{AF1QIP_A},0', f'{AF1QIP_B},0,2026-11-06 02:14:00.000000-08:00']
+    assert (store / removed[0]).read_text().splitlines() == [f'{AF1QIP_A},0', f'{AF1QIP_B},0']
     assert 're-admitted 2 row(s)' in capsys.readouterr().out
 
 
@@ -101,7 +110,8 @@ def test_several_storage_dirs_share_one_lock_and_one_report(tmp_path, store, mon
 
     assert taken == [str(tmp_path / 'queue.lock')]
     assert AF1QIP_OK not in (other / 'pano_id_log.csv').read_text()
-    assert 're-admitted 3 row(s)' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert 're-admitted 3 row(s)' in out and 'knox-oh' in out.split('Done')[0], 'one line per ledger as it lands'
 
 
 def test_the_downloader_then_sees_them_as_unattempted(tmp_path, store):
@@ -111,7 +121,7 @@ def test_the_downloader_then_sees_them_as_unattempted(tmp_path, store):
     ids, _total, _ok, _fail = DownloadRunner.progress_check(str(store / 'pano_id_log.csv'))
 
     assert AF1QIP_A not in ids and AF1QIP_B not in ids
-    assert {CIHM, CIAB, GSV, UNDECODABLE, AF1QIP_OK} <= ids
+    assert {CIHM, CIAB, GSV, UNDECODABLE, AF1QIP_OK, STAMPED} <= ids
 
 
 def test_imagery_is_never_touched(tmp_path, store):

@@ -841,11 +841,11 @@ decode to exactly that protobuf takes the cbk path as before, with one INFO line
 | the same, at a frame the app disagrees with | refused as a `frame disagreement`, the same `WARNING`/`ERROR` and the same `frame-disagreement` condition as a stitch's refusal; nothing written | none, retried |
 | the same, and the app has no width/height | the served size **is** the frame, as photometa's top level is for a stitch; one INFO line, `frame from the photo host: WxH`. Not counted in the image phase's "took their frame from photometa" line, since photometa was not asked | `1` |
 | a landing on Google's interstitial, at any status; or a 429, which the session's retry policy retries and gives up on | raises as push-back to the [image-phase breaker](ops.md#when-google-pushes-back-on-the-image-phase), as a probe's would | none, retried |
-| **400, for a photo id of the `CIHM…` or `CIAB…` form** | the host refuses the *form*, not the pano: the one permanent verdict that rests on the photo host (below). One INFO line, `refuses the CIHM form of photo id`; nothing written | **`0`** |
-| any other status (a 400 for the `AF1Qip…` form, a 403, a 404, a 5xx) | raises `PhotosphereHostError`: transient, and deliberately **not** push-back. A 403 here is one photo's answer (private, removed), not the host's, and three in a row would otherwise trip the breaker and stand every city's depth phase down for six hours | none, retried |
+| **400 with a `text/html` body, for a photo id of the `CIHM…` or `CIAB…` form** | the host refuses the *form*, not the pano: the one permanent verdict that rests on the photo host (below). One INFO line, `refuses the CIHM form of photo id`; nothing written | **`0`** |
+| any other status (a 400 for the `AF1Qip…` form or with another content type, a 403, a 404, a 5xx) | raises `PhotosphereHostError`: transient, and deliberately **not** push-back. A 403 here is one photo's answer (private, removed), not the host's, and three in a row would otherwise trip the breaker and stand every city's depth phase down for six hours | none, retried |
 | 200 with a body that is not a complete JPEG (HTML, another Content-Type, cut short) | raises; nothing written | none, retried |
 
-**One permanent verdict rests on the photo host, and it is keyed on the status and the form together.** Photo
+**One permanent verdict rests on the photo host, and it is keyed on the status, the form and the host's own error page together** (the body signature, as the Panoramax verdict asks for the catalog's). Photo
 ids come in three forms, read off their leading letters (`gsv.photosphere_form`). The `AF1Qip…` form is served:
 200 with dimensions equal to `/adminapi/panos`'s in 24 of 24 measured (21 on 2026-10-21, 3 on 2026-11-04), and
 every one of chicago-il's 285 answered 200 in the 2026-11-05 sweep. The older `CIHM…` form and the `CIAB…`
@@ -856,8 +856,9 @@ form are refused **as forms**: all 598 CIHM and 30 CIAB ids in chicago-il's list
 `downloaded=0`, like a pano cbk answers black tiles for, and asked once rather than every night: it is an
 exception to [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)'s "a non-200 is
 never a verdict", carved out on that measurement and no wider. A 400 for the `AF1Qip` form has never been seen,
-so it is unmeasured and stays a raise; a new CIHM or CIAB id is still asked once, so a host that starts serving
-the form is noticed. The verdict does not count toward the
+so it is unmeasured and stays a raise. A new CIHM or CIAB id is still asked once, so if the host ever serves the
+form the new ids simply download, with no signal of their own; the ones already ledgered stay written off until
+someone notices and re-admits them. The verdict does not count toward the
 [consecutive-permanent-failure breaker](ops.md#when-the-image-phase-stops-trusting-a-source) either, nor reset
 it: that breaker guards against cbk answering black tiles across the board, and a photosphere's answer comes
 from the photo host, so a quiet night's 276 of them in a row (chicago-il) is normal, not a trip. What the verdict does *not* say is that the picture is gone: three Google hosts refuse the

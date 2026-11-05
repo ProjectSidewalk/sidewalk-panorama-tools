@@ -385,9 +385,10 @@ written before the `fetched_at` column reached the store on 2026-09-17, under wh
 failed `CAoS` fetch. **901** of them decode to the `AF1Qip` form of photo id, the form
 [the photo host serves](downloader.md#a-gsv-user-photosphere-caos-id), in 19 cities (chicago-il 285, knox-oh
 124, spgg 112, zurich 105). A ledgered pano is never attempted again, so #227 downloads none of them until these
-rows go. `readmit_photosphere_writeoffs.py` removes a row only when it is a `0` row whose id decodes to a
-photosphere photo id of a `--form` you name (default `AF1Qip`); no rule now in force writes a `0` for that form,
-so no date is needed, and no pano list either. The `CIHM` and `CIAB` rows stay: the host refuses those forms,
+rows go. `readmit_photosphere_writeoffs.py` removes a row only when it is a **two-field** `0` row whose id decodes to a
+photosphere photo id of a `--form` you name (default `AF1Qip`): the shape every measured row has and the shape no
+code since 2026-09-17 can write, so no date is needed, and no pano list either. A three-field `0` is a verdict
+the current code wrote, and is never touched. The `CIHM` and `CIAB` rows stay: the host refuses those forms,
 and a 400 for one of them is now exactly the `0` row they already are.
 
 ```bash
@@ -405,7 +406,10 @@ kept byte for byte, a second run a no-op, imagery never touched. chicago-il's `C
 it only once the build with the form-gated verdict is on the box: an earlier build fetches the re-admitted
 `AF1Qip` ids all the same, but would raise on every re-admitted `CIHM`/`CIAB` id rather than ledger it, had any
 been named. The first night after, a city with many re-admitted ids downloads them all in one image phase
-(chicago-il: 285 photospheres of a few MB each).
+(chicago-il: 285 photospheres of a few MB each). It prints one line per ledger as it is rewritten, so a failure
+half way over sshfs says where it stopped. **The morning after the deploy**, the confirming measurement for the
+verdict is the count of `refuses the CIHM form` / `refuses the CIAB form` INFO lines in chicago-il's `scrape.log`:
+about 276 on the first complete pass, from the production address, and the same ids never again.
 
 ### `fetched_at`, and the two row widths
 
