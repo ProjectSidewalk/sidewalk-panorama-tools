@@ -1018,9 +1018,14 @@ is store state. In the city's store directory:
    `<id>,<0|1>,<stamp>` where the stamp is the `log_timestamp()` rendering
    (`2026-09-10 11:04:05.123456-07:00`) or blank (a `skipped` verdict). Ids are GSV, Mapillary and Panoramax
    ids alike, all within `[A-Za-z0-9_-]`. `LC_ALL=C` makes those ranges mean ASCII and lets `tr`, `grep` and `sed`
-   read binary junk byte by byte on BSD tools too (macOS, [#219](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/219)), and `cut -b` counts bytes in every locale; the `tr` removes characters, never lines, so the numbers are the file's. A torn row, or
-   a float such as `1.0` from the old rewrite path, is listed too: the reader already skips it, so deleting it costs
-   nothing.
+   read binary junk byte by byte on BSD tools too (macOS,
+   [#219](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/219)), and `cut -b` counts bytes in
+   every locale; the `tr` removes characters, never lines, so the numbers are the file's. A torn row, or a float
+   such as `1.0` from the old rewrite path, is listed too. One torn before its verdict (`abc` or `abc,`) the
+   reader already skips, so deleting it costs nothing; one torn inside its stamp (`abc,0,2026-09-10 11:0`) the
+   reader still counts, since the id and the verdict are intact, so deleting it un-ledgers that pano: a `1`
+   re-registers at zero requests, a `0` costs one attempt. Keep such a row if that matters, or delete it and
+   accept the cost.
 3. **Delete those lines**, with the numbers from step 2:
 
    `cp -p pano_id_log.csv pano_id_log.csv.new && LC_ALL=C sed '<N>d;<M>d' pano_id_log.csv > pano_id_log.csv.new && mv pano_id_log.csv.new pano_id_log.csv`
