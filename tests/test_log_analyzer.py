@@ -661,6 +661,21 @@ class TestRule11ReportsASteadySetOfRaisers:
 
         assert self.rule_11(tmp_path, night_rows(values)) == []
 
+    def test_a_stale_log_is_silent_so_a_stopped_city_is_not_reported_as_current(self, tmp_path):
+        """#229 review: the window ends at the log's newest night. A city that stopped running (the newest row
+        older than --stale-days) gets rule 1's CRITICAL, not a "last 7 nights" WARNING every morning."""
+        values = {age + 5: (200,) for age in range(analyze.STEADY_RAISE_NIGHTS)}
+        found = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', night_rows(values)), stale_days=3)
+
+        assert [i['level'] for i in found] == ['CRITICAL'], found
+        assert not [i for i in found if i['msg'].startswith('Steady raisers')]
+
+    def test_a_log_exactly_at_the_staleness_limit_still_fires(self, tmp_path):
+        values = {age + 3: (200,) for age in range(analyze.STEADY_RAISE_NIGHTS)}
+        found = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', night_rows(values)), stale_days=3)
+
+        assert [i['msg'][:15] for i in found] == ['Steady raisers:'], found
+
     def test_too_short_a_log_is_silent(self, tmp_path):
         assert self.rule_11(tmp_path, night_rows(self.nights(200, count=analyze.STEADY_RAISE_NIGHTS - 1))) == []
 

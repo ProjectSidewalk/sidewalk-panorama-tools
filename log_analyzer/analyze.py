@@ -619,7 +619,10 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
     # not finish, or a row older than the field) is no evidence: a night with no value is unknown, never 0, and
     # it breaks the streak. Deliberately NO "nothing downloaded" gate: chicago downloaded while raising.
     # WARNING, not CRITICAL: the work is retried, not lost - rule 7's tier (see rule 10).
-    steady = steady_raisers(df)
+    # Silent once the log is stale (rule 1's own test): the window ends at the log's newest night, so a city
+    # that stopped running would otherwise report "the last 7 nights" every morning beside rule 1's CRITICAL,
+    # worded as current, for as long as it stays stopped (#229 review).
+    steady = steady_raisers(df) if days_old <= stale_days else None
     if steady:
         low, high = steady
         count = f"{low:,}" if low == high else f"{low:,} to {high:,}"
