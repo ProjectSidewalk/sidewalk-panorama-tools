@@ -79,8 +79,12 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheelcheck/bin/python" -c "
           import pano_pose, sidewalk_panorama_tools, sidewalk_panorama_tools.geometry as g, sidewalk_panorama_tools.torch_geometry as tg
-          for m in (pano_pose, sidewalk_panorama_tools, g, tg):
+          import sidewalk_panorama_tools.store as store, sidewalk_panorama_tools.ps_math as pm, sidewalk_panorama_tools.labels as lb
+          import PIL.Image  # pillow is a package dependency since 1.1.0 (store.read_pano); a wheel without it fails here
+          for m in (pano_pose, sidewalk_panorama_tools, g, tg, store, pm, lb):
               assert 'site-packages' in m.__file__, m.__file__
           view, tilt = g.label_view(0.5, 0.6, size=8, camera_pitch=3.0)
-          print(sidewalk_panorama_tools.__version__, view, tilt is not None)
+          assert store.shard('abcdef') == 'ab' and float(pm.get_3d_fov(1)) == 89.75
+          assert lb.label_uid('seattle-wa', 1) == 'seattle-wa:1'
+          print(sidewalk_panorama_tools.__version__, view, tilt is not None, PIL.__version__)
           "

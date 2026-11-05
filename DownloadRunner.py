@@ -814,7 +814,6 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                                   pano_id, str(e), attempt_seconds)
             else:
                 frame_refused = False
-                attempt_seconds = time.monotonic() - attempt_start
 
             # A push-back (#162) counts as RAISED: it is Google refusing this host, not an answer about any
             # pano, so a night of refusals and network errors with nothing answered is still no success. The
