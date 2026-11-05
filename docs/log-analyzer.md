@@ -104,6 +104,7 @@ splits into a row for `laurens-ia`) would silence the very city it is about.
 | 🔴 CRITICAL | **Depth phase saved nothing and is writing panos off**: the WARNING below, and the ledger grew by at least half of the failures before the newest run — they are coming back as `unavailable` rows, which are never re-requested. That is upstream drift (a depth payload `streetlevel` can no longer read), and every night it runs costs those panos their depth until the ledger is scrubbed: see [When the depth phase saves nothing](ops.md#when-the-depth-phase-saves-nothing) |
 | 🟡 WARNING | **Depth phase saved nothing** on the last 3 nights it made requests (nights with no row, or a stand-down's five zeros, are not counted — they are no evidence either way) despite ≥10 requests, with panos unresolved and the newest requesting run stopping short of its list ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)). The stall rule above counts *requests*, and a failed request is a request, so a phase whose every attempt fails used to read as healthy. The failures are transient: less than half came back as ledger skips, so the panos retry. A city whose last few panos fail every night walks its whole list (field 16 = field 19) and is not reported: that is the ordinary end of a backfill. Once requests stop altogether the night is the stall rule's, so one outage is never reported twice |
 | 🟡 WARNING | **The newest GSV corpus size is not believable** — a `0` in field 19, which is what an empty or source-less `/adminapi/panos` answer writes. The backfill is measured against the newest earlier row instead, rather than the city silently dropping out of the report |
+| 🟡 WARNING | **Steady raisers** ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)): field 20, the image attempts that raised (unledgered, so retried every run), was at least 3 on each of the last 7 calendar nights, taking the most of each night's passes. A night with no field 20 is unknown and breaks the streak. Fires on a city that still downloads, which `images-no-success` cannot see — [details](#a-steady-set-of-raisers-and-what-field-20-was-needed-for) |
 | 🟡 WARNING | **Rows that are not runs**, from the last 7 days — a field count that is not one of 18, 19 or 20, i.e. a torn or corrupted write. Every count in such a row is shifted, so it is left out of every figure rather than read as a run (a file holding nothing else is CRITICAL, and says so). Dated by the row's own field 1, which is written first and so survives a tear; a row whose stamp did not survive whole counts as recent, because that is exactly what tonight's tear can look like. "Whole" means the full `YYYY-MM-DD HH:MM:SS`: a date parser accepts a prefix, and would read `2026-09-2` as 2 September |
 | 🔵 INFO | **Historical rows that are not runs** — the same, when every such row is older than 7 days: one line with the total and the newest date, recorded rather than alerted ([#163](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/163)). On 2026-09-19, 20 of the morning's 26 warnings were torn rows dated 2022 to 2026-05, which nothing on the current build wrote |
 
@@ -113,25 +114,44 @@ blue icon and counts as OK.
 A healthy mature city looks like: `image_success` small or zero most days, stable `image_fail`,
 `image_skip ≈ image_total`.
 
-### What the analyzer does not report yet
+### A steady set of raisers, and what field 20 was needed for
 
-**A steady set of panos failing the image phase transiently every night goes unreported once it has been
-steady for a week.** Field 9 mixes the
+**Before field 20, a steady set of panos failing the image phase transiently every night went unreported once
+it had been steady for a week.** Field 9 mixes the
 permanent failures already ledgered, tonight's permanent ones and tonight's transient ones, so a transient set
 of constant size T adds T to every night's figure and the night-to-night change the growing-failures check
 reads is about zero. The one exception is onset: the night T first appears, field 9 jumps by T, and the
 growing-failures check averages that jump over 7 nights, so a set of T ≥ 140 (7 × its threshold of 20) is
-flagged for up to a week — mislabelled as `new permanent failures/day`, but flagged. A smaller set is never
-reported, and a larger one stops being reported after the week. Field 5 − field 11 does not see it either, because those panos *are* attempted and field
-11 counts attempts. Measured: 30 nights of 200 transient failures each, no downloads and a flat corpus
-return no finding. **This is a gap #163 opened, not one it found:** before it, the zero-new-images check
-fired on exactly that city after 30 nights, because it asked for no evidence of work. The evidence gate
-cannot tell this city from a mature one with nothing new to fetch (field 5 flat, field 5 − field 11 = 0 in
-both), and silencing the second is what the gate is for. Detecting it would need the runner to write tonight's transient count as a field 20 — and `LOG_COLUMNS` here
-and `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` move together, which a test asserts. The depth phase does not
-have this blind spot: a phase that requests and saves nothing is reported above.
+flagged for up to a week — mislabelled as `new permanent failures/day`, but flagged. Field 5 − field 11 does
+not see it either, because those panos *are* attempted and field 11 counts attempts. Measured: 30 nights of
+200 transient failures each, no downloads and a flat corpus returned no finding. **This was a gap #163
+opened, not one it found:** before it, the zero-new-images check fired on exactly that city after 30 nights,
+because it asked for no evidence of work. The evidence gate cannot tell this city from a mature one with
+nothing new to fetch (field 5 flat, field 5 − field 11 = 0 in both), and silencing the second is what the gate
+is for. The depth phase never had this blind spot: a phase that requests and saves nothing is reported above.
 
-**Field 20 now carries that count** ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182), from [#169](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/169)'s open item 3): each run writes its image attempts that raised — the runner's `images-no-success` counter, so a push-back counts and a frame disagreement does not. The analyzer parses it, and **no rule reads it yet**. A rule needs a floor — how many panos may raise every night before it is a finding — and the number that floor has to clear is one only field 20 can measure: some panos raise on every run and never stop, a Mapillary image that has been retired among them ([it answers with an error that raises, every run](ops.md#when-the-image-phase-stops-trusting-a-source)), so a city with enough of those would warn every morning about something nobody can fix. The rule is to be sized from a few weeks of field 20 on the fleet ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182) stays open for it). Until it lands the measured case above is still unreported here, with or without field 20. One part of it is reported tonight, by the runner rather than here: a night on which at least 10 attempts raised and nothing was answered is the `images-no-success` condition, which fails the night through the queue ([the codes table](downloader.md#a-city-can-finish-ok-and-still-fail-the-night)). A steady set on a city that also answers something each night is seen by neither.
+**Field 20 carries that count** ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182), from [#169](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/169)'s open item 3): each run writes its image attempts that raised — the runner's `images-no-success` counter, so a push-back counts and a frame disagreement does not. **The steady-raisers WARNING reads it**: field 20 at least `STEADY_RAISE_MIN_RAISED` (3) on each of the last `STEADY_RAISE_NIGHTS` (7) calendar nights. Four choices in it are load-bearing:
+
+- **A night's value is the max of its rows, never the sum.** The queue's extra passes re-attempt the same
+  unledgered set, and a pass that stopped on its budget saw only part of it: chicago-il wrote 99 and then 276
+  on one night. Passes of 200 and 3 read 200; so do passes of 200 and a blank.
+- **A night with no value is unknown, never 0, and breaks the streak.** That covers a night with no row, a row
+  written before field 20 (19 fields), and a run whose image phase did not finish (blank field 20).
+- **There is no "nothing downloaded" gate.** The city this exists for downloads: chicago-il raised the same
+  276 photospheres for 25 nights while downloading on 23 of them, and no other check saw it. The night on
+  which nothing is answered is the runner's `images-no-success` condition, which fails the night through the
+  queue ([the codes table](downloader.md#a-city-can-finish-ok-and-still-fail-the-night)); this rule is the city
+  that still downloads, or that raises fewer than that condition's floor of 10.
+- **It is a WARNING**, because the work is retried rather than lost (the depth rule's tier for its transient
+  arm).
+
+**How it was sized** ([`reports/2026-11-05-field20-fleet-raisers.md`](../reports/2026-11-05-field20-fleet-raisers.md)):
+over 25 nights of the whole fleet, field 20 was nonzero in 8 of 57 cities, and every steady set was a real,
+fixable fault — user photospheres the legacy endpoint refuses (#223) and Panoramax's redirect (#220), not the
+"perennial raiser nobody can fix" a floor had to clear. The floor of 3 sits above the one-photosphere sets
+(seattle-wa, houston-tx, sao-paulo-brazil) and below every multi-pano set seen. The trade of the 7-night window:
+bayonne-fr's 5-night set would not have reached it, but `images-no-success` failed the night the first time.
+Re-read the field after #223's photosphere fix deploys: most of that population should disappear.
 
 ## The depth backfill
 

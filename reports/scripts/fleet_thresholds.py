@@ -50,12 +50,24 @@ from studyfmt import fmt, num  # noqa: E402
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(REPO_ROOT, 'reports', 'data')
 
+
+
+def extract_names(prefix):
+    """The committed extract names for one pull, keyed by role. A later pull of the same store logs (the
+    2026-11-05 field-20 read, field20_raisers.py) packs under its own date prefix through the same packer."""
+    return {'log_csv': prefix + 'fleet-log-csv.csv.gz', 'scrape_log': prefix + 'fleet-scrape-log.tsv.gz',
+            'queue_log': prefix + 'fleet-scrape-queue-log.txt.gz',
+            'dc_zero_rows': prefix + 'dc-ledger-downloaded-0.csv.gz', 'dc_census': prefix + 'dc-ledger-census.json'}
+
+
+# This report's pull (2026-10-06).
 PREFIX = '2026-10-06-'
-LOG_CSV_FILE = PREFIX + 'fleet-log-csv.csv.gz'
-SCRAPE_LOG_FILE = PREFIX + 'fleet-scrape-log.tsv.gz'
-QUEUE_LOG_FILE = PREFIX + 'fleet-scrape-queue-log.txt.gz'
-DC_ZERO_ROWS_FILE = PREFIX + 'dc-ledger-downloaded-0.csv.gz'
-DC_CENSUS_FILE = PREFIX + 'dc-ledger-census.json'
+_NAMES = extract_names(PREFIX)
+LOG_CSV_FILE = _NAMES['log_csv']
+SCRAPE_LOG_FILE = _NAMES['scrape_log']
+QUEUE_LOG_FILE = _NAMES['queue_log']
+DC_ZERO_ROWS_FILE = _NAMES['dc_zero_rows']
+DC_CENSUS_FILE = _NAMES['dc_census']
 RESULT_FILE = PREFIX + 'fleet-thresholds.json'
 
 # log.csv rows older than this are not packed: the scraper moved to the venv box on 2026-09-01, and its
@@ -114,17 +126,22 @@ def _gz_writer(path):
     return io.TextIOWrapper(gzip.GzipFile(path, mode='wb', mtime=0), encoding='utf-8', newline='\n')
 
 
-def pack(raw_dir, out_dir):
-    """Write the committed extracts from a directory laid out like the store root (<city>/log.csv, ...)."""
+def pack(raw_dir, out_dir, prefix=PREFIX, since=LOG_CSV_SINCE, dc_ledger=True):
+    """Write the committed extracts from a directory laid out like the store root (<city>/log.csv, ...).
+
+    `prefix` names the pull (extract_names), `since` drops older log.csv rows, and `dc_ledger=False` skips
+    washington-dc's ledger census, which only this report's #184 section reads. Every line is redacted.
+    """
+    files = extract_names(prefix)
     cities = sorted(d for d in os.listdir(raw_dir) if os.path.isfile(os.path.join(raw_dir, d, 'log.csv')))
-    with _gz_writer(os.path.join(out_dir, LOG_CSV_FILE)) as out:
+    with _gz_writer(os.path.join(out_dir, files['log_csv'])) as out:
         for city in cities:
             with open(os.path.join(raw_dir, city, 'log.csv'), encoding='utf-8', errors='replace') as f:
                 for line in f:
                     line = line.rstrip('\r\n')
-                    if DATE_RE.match(line) and line[:10] >= LOG_CSV_SINCE:
+                    if DATE_RE.match(line) and line[:10] >= since:
                         out.write('%s,%s\n' % (city, redact(line)))
-    with _gz_writer(os.path.join(out_dir, SCRAPE_LOG_FILE)) as out:
+    with _gz_writer(os.path.join(out_dir, files['scrape_log'])) as out:
         for city in cities:
             # Oldest rotation first, so the city's lines stay in the order they were written.
             names = sorted((n for n in os.listdir(os.path.join(raw_dir, city)) if n.startswith('scrape.log')),
@@ -133,18 +150,20 @@ def pack(raw_dir, out_dir):
                 with open(os.path.join(raw_dir, city, name), encoding='utf-8', errors='replace') as f:
                     for line in f:
                         out.write('%s\t%s\n' % (city, redact(line.rstrip('\r\n'))))
-    with _gz_writer(os.path.join(out_dir, QUEUE_LOG_FILE)) as out:
+    with _gz_writer(os.path.join(out_dir, files['queue_log'])) as out:
         with open(os.path.join(raw_dir, 'scrape_queue.log'), encoding='utf-8', errors='replace') as f:
             for line in f:
                 out.write(redact(line.rstrip('\r\n')) + '\n')
+    if not dc_ledger:
+        return cities
     with open(os.path.join(raw_dir, 'washington-dc', 'log.csv'), encoding='utf-8', errors='replace') as f:
-        dc_starts = [ln.split(',', 1)[0] for ln in f if DATE_RE.match(ln) and ln[:10] >= LOG_CSV_SINCE]
+        dc_starts = [ln.split(',', 1)[0] for ln in f if DATE_RE.match(ln) and ln[:10] >= since]
     census, zero_rows = dc_ledger_census(os.path.join(raw_dir, 'washington-dc', 'pano_id_log.csv'), dc_starts)
-    with _gz_writer(os.path.join(out_dir, DC_ZERO_ROWS_FILE)) as out:
+    with _gz_writer(os.path.join(out_dir, files['dc_zero_rows'])) as out:
         out.write('pano_id,downloaded,fetched_at\n')
         for r in zero_rows:
             out.write(','.join(r) + '\n')
-    with open(os.path.join(out_dir, DC_CENSUS_FILE), 'w', encoding='utf-8', newline='\n') as f:
+    with open(os.path.join(out_dir, files['dc_census']), 'w', encoding='utf-8', newline='\n') as f:
         json.dump(census, f, indent=1, sort_keys=True, allow_nan=False)
         f.write('\n')
     return cities
@@ -666,12 +685,16 @@ def main(argv=None):
     p = sub.add_parser('pack', help='raw store logs -> committed extracts')
     p.add_argument('raw_dir')
     p.add_argument('--out-dir', default=DATA_DIR)
+    p.add_argument('--prefix', default=PREFIX, help='date prefix naming the pull (default: the 2026-10-06 one)')
+    p.add_argument('--since', default=LOG_CSV_SINCE, help='oldest log.csv date packed (YYYY-MM-DD)')
+    p.add_argument('--no-dc-ledger', dest='dc_ledger', action='store_false',
+                   help="skip washington-dc's ledger census (only this report's #184 section reads it)")
     a = sub.add_parser('analyze', help='committed extracts -> tables (and --write the JSON)')
     a.add_argument('--data-dir', default=DATA_DIR)
     a.add_argument('--write', action='store_true')
     args = parser.parse_args(argv)
     if args.cmd == 'pack':
-        cities = pack(args.raw_dir, args.out_dir)
+        cities = pack(args.raw_dir, args.out_dir, prefix=args.prefix, since=args.since, dc_ledger=args.dc_ledger)
         print('packed %d cities into %s' % (len(cities), args.out_dir))
         return 0
     result = analyze(args.data_dir)
