@@ -187,12 +187,15 @@ class TestReadPano:
             store.read_pano(small_pano(str(tmp_path / 'p.jpg')))
 
     def test_a_truncated_body_raises_and_is_not_returned(self, tmp_path):
-        path = small_pano(str(tmp_path / 'p.jpg'), size=(256, 128))
+        """A good header in front of half a scan: the header check passes, so it is the decode that fails."""
+        path = str(tmp_path / 'p.jpg')
+        Image.frombytes('RGB', (256, 128), os.urandom(256 * 128 * 3)).save(path, quality=90)
         with open(path, 'rb') as f:
             data = f.read()
         with open(path, 'wb') as f:
             f.write(data[:len(data) // 2])
-        with pytest.raises(OSError):
+        assert store.jpeg_dimensions(path) == (256, 128)
+        with pytest.raises(OSError, match='truncated'):
             store.read_pano(path, 256, 128)
 
     def test_the_sample_pano_reads_at_its_own_dims(self, tmp_path):
