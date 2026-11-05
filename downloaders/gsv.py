@@ -1412,7 +1412,7 @@ def _flag_deep_edge_band(image, pano_id):
 PHOTOSPHERE_ID_PREFIX = 'CAoS'
 
 # `=s0` is the original size; `=w{W}-h{H}` returned the same bytes (#223). Measured on the AF1Qip form: 200,
-# image/jpeg, header dims equal to /adminapi/panos' width/height in 24 of 24.
+# image/jpeg, header dims equal to /adminapi/panos' width/height in 24 of 24 (21 on 2026-10-21, 3 on 2026-11-04).
 PHOTOSPHERE_URL = 'https://lh3.ggpht.com/p/%s=s0'
 
 # The protobuf a CAoS id decodes to: field 1 varint 10 (08 0a), then field 2 length-delimited (12) with a
@@ -1426,6 +1426,23 @@ _PHOTOSPHERE_HEADER = b'\x08\x0a\x12'
 # forms measured (AF1Qip..., CIHM0og...) are base64url.
 _PHOTOSPHERE_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+\.*')
 _PHOTO_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+')
+
+
+class PhotosphereHostError(Exception):
+    """The photo host answered a photosphere with a status other than 200 (#223).
+
+    TRANSIENT under the #41 ledger: nothing written, not ledgered, retried next run - the CIHM form's 400 (9 of
+    9) lands here every night, as it landed on the cbk probe's 400 before. Deliberately NOT a requests.HTTPError:
+    pushback_reason reads an HTTPError's 403 as Google refusing THIS HOST and the #162 breaker trips on three
+    in a row, writing the fleet-wide block latch - and a photo host's 403 is one photo's answer (private,
+    removed), not the host's, so three of them in a row would stand every city's depth phase down for six hours
+    over three dead photos (#227 review). What still counts as push-back: a 429, which the session's retry policy
+    retries and surfaces as a RetryError that pushback_reason already reads, and a landing on Google's
+    interstitial at any status, raised as HTTPError below."""
+
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class PhotosphereBodyError(Exception):
@@ -1490,12 +1507,15 @@ def _download_photosphere(pano_info, photo_id, out_image_name):
       * The app has no width/height (#184's shape): the served dimensions ARE the frame, as photometa's top
         level is on the tile path. Logged; not counted in _photometa_run.frames_from_photometa, since the
         frame did not come from photometa.
-      * Any non-200 - the CIHM form's 400 included: requests.HTTPError carrying the Response, exactly as
-        _get_response raises it, so it is transient and unledgered (#166), and a 429/403 or an interstitial
-        landing reads as Google push-back in pushback_reason (#162). A 200 whose body is not a complete JPEG
-        is PhotosphereBodyError, also transient. NO permanent verdict rests on the photo host: a CIHM-form
-        400 (9 of 9 measured, probably deleted, not confirmed) costs one request a night, as the cbk probe's
-        400 did before.
+      * A landing on Google's interstitial, at any status: requests.HTTPError carrying the Response, as
+        _get_response raises it, so pushback_reason reads it as push-back (#162). A 429 never reaches this
+        function: the session's retry policy retries it and gives up with a RetryError, which pushback_reason
+        reads as 'HTTP 429'.
+      * Any other non-200 - the CIHM form's 400 included, and a 403: PhotosphereHostError, transient and
+        unledgered (#166) and NOT push-back (see the class). A 200 whose body is not a complete JPEG is
+        PhotosphereBodyError, also transient. NO permanent verdict rests on the photo host: a CIHM-form 400
+        (9 of 9 measured: 6 on 2026-10-21, 3 on 2026-11-04; probably deleted, not confirmed) costs one
+        request a night, as the cbk probe's 400 did before.
     """
     pano_id = pano_info['pano_id']
     url = PHOTOSPHERE_URL % (photo_id,)
@@ -1503,15 +1523,16 @@ def _download_photosphere(pano_info, photo_id, out_image_name):
     with _photosphere_session() as session:
         # A filtered copy of the proxies, as _get_response makes it (#51).
         response = session.get(url, headers=_random_header(), proxies={k: v for k, v in _proxies.items() if v})
-        if response.status_code != 200:
-            response.close()
-            raise requests.HTTPError('photo host answered %s, not 200, for photosphere %s: %s'
-                                     % (response.status_code, pano_id, url), response=response)
+        # The interstitial first, at ANY status: a captcha page wearing a 403 is still Google's refusal.
         landing_url = _interstitial_url(_requests_response_urls(response))
         if landing_url is not None:
             response.close()
             raise requests.HTTPError('photo host landed on %s for photosphere %s: %s'
                                      % (landing_url, pano_id, url), response=response)
+        if response.status_code != 200:
+            response.close()
+            raise PhotosphereHostError('photo host answered %s, not 200, for photosphere %s: %s'
+                                       % (response.status_code, pano_id, url), response.status_code)
         content_type = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower()
         body = response.content
     if content_type != 'image/jpeg':

@@ -839,12 +839,14 @@ decode to exactly that protobuf takes the cbk path as before, with one INFO line
 | 200, `image/jpeg`, a complete JPEG (SOI first, EOI last, a decodable frame) at the app's width/height | the response bytes are saved **verbatim** (the host's own encode, no re-encode); the width tripwire, the edge-band flag and the display-copy switch run as for a stitch | `1` |
 | the same, at a frame the app disagrees with | refused as a `frame disagreement`, the same `WARNING`/`ERROR` and the same `frame-disagreement` condition as a stitch's refusal; nothing written | none, retried |
 | the same, and the app has no width/height | the served size **is** the frame, as photometa's top level is for a stitch; one INFO line, `frame from the photo host: WxH`. Not counted in the image phase's "took their frame from photometa" line, since photometa was not asked | `1` |
-| any other status (the older form's 400 included) | raises, exactly as a probe's non-200 does; a 429 or 403, or a landing on Google's interstitial, is push-back to the [image-phase breaker](ops.md#when-google-pushes-back-on-the-image-phase) | none, retried |
+| a landing on Google's interstitial, at any status; or a 429, which the session's retry policy retries and gives up on | raises as push-back to the [image-phase breaker](ops.md#when-google-pushes-back-on-the-image-phase), as a probe's would | none, retried |
+| any other status (the older form's 400 included, and a 403) | raises `PhotosphereHostError`: transient, and deliberately **not** push-back. A 403 here is one photo's answer (private, removed), not the host's, and three in a row would otherwise trip the breaker and stand every city's depth phase down for six hours | none, retried |
 | 200 with a body that is not a complete JPEG (HTML, another Content-Type, cut short) | raises; nothing written | none, retried |
 
 **No permanent verdict rests on the photo host.** Photo ids come in two forms. The `AF1Qip…` form answered 200
-with dimensions equal to `/adminapi/panos`'s in 24 of 24 measured. The older `CIHM…` form answered 400 from
-`lh3.ggpht.com`, `lh5.googleusercontent.com` and the `streetviewpixels-pa` tile endpoint in 9 of 9: probably
+with dimensions equal to `/adminapi/panos`'s in 24 of 24 measured (21 on 2026-10-21, 3 on 2026-11-04). The
+older `CIHM…` form answered 400 from `lh3.ggpht.com`, `lh5.googleusercontent.com` and the `streetviewpixels-pa`
+tile endpoint in 9 of 9 (6 and 3 on the same dates): probably
 deleted, not confirmed. chicago-il's pano list held 913 `CAoS` ids on 2026-11-04 (105 labelled): 598 of the
 `CIHM` form, 285 `AF1Qip`, 30 of some other form. The `CIHM` ones still raise every night, now one photo-host
 request each where they used to cost one cbk probe request each, so the cost is unchanged; writing them off

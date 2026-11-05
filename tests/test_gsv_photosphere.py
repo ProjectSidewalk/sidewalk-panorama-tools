@@ -9,9 +9,10 @@ equirectangular original for the photo id inside. What these tests hold:
   None for every shape that is not exactly that protobuf, which sends the pano down the cbk path unchanged.
 * **The contract, with its request count** - ONE photo-host request, and never photometa, the probe or a tile:
   a complete JPEG at the app's frame is saved byte for byte; a frame the app disagrees with is the tile path's
-  FrameDisagreementError; no app frame means the served one is the frame; any non-200 raises the HTTPError
-  _get_response would (so a 429/403 is push-back to the #162 breaker); a 200 that is not a complete JPEG
-  raises. No permanent verdict rests on the photo host.
+  FrameDisagreementError; no app frame means the served one is the frame; an interstitial landing raises the
+  HTTPError _get_response would (push-back to the #162 breaker), a retried-out 429 is the RetryError that breaker
+  already reads, and any other non-200 (a 403 included) is PhotosphereHostError, never push-back; a 200 that is
+  not a complete JPEG raises. No permanent verdict rests on the photo host.
 * **The composition through DownloadRunner's image loop** into pano_id_log.csv and the run summary.
 
 Network-free: the photo host is stubbed at gsv._photosphere_session, photometa at gsv._fetch_image_levels,
@@ -89,6 +90,8 @@ class PhotoHost:
     def get(self, url, **kwargs):
         self.requests.append(dict(kwargs, url=url))
         response = self.answer(url) if callable(self.answer) else self.answer
+        if isinstance(response, BaseException):
+            raise response            # what the session itself raises: a retry policy that gave up
         if response.url is None:
             response.url = url
         self.responses.append(response)
@@ -246,28 +249,45 @@ class TestThePhotoHostContract:
         assert gsv._photometa_run.frames_from_photometa == 0
         assert any('frame from the photo host: 96x48' in r.getMessage() for r in caplog.records)
 
-    @pytest.mark.parametrize('status', [400, 404, 500])
+    @pytest.mark.parametrize('status', [400, 403, 404, 500])
     def test_a_non_200_raises_unledgerable_and_is_not_push_back(self, tmp_path, monkeypatch, status,
                                                                  cbk_untouched):
-        """The CIHM form's measured answer is 400 (9 of 9): transient, as the cbk probe's 400 was."""
+        """The CIHM form's measured answer is 400 (9 of 9): transient, as the cbk probe's 400 was. A 403 is in
+        the list on purpose: it is one photo's answer, and must never read as the host refusing us (#162), or
+        three dead photos would stand the fleet's depth phase down (#227 review)."""
         response = FakeResponse(status, b'<html>Error 400</html>', 'text/html')
         host = stub_photo_host(monkeypatch, response)
 
-        with pytest.raises(requests.HTTPError) as raised:
+        with pytest.raises(gsv.PhotosphereHostError) as raised:
             gsv.download_single_pano(str(tmp_path), info(CIHM_PANO))
 
-        assert raised.value.response is response
+        assert raised.value.status_code == status
+        assert not isinstance(raised.value, requests.HTTPError), 'pushback_reason reads an HTTPError 403 as push-back'
         assert response.closed
         assert gsv.pushback_reason(raised.value) is None
         assert [r['url'] for r in host.requests] == ['https://lh3.ggpht.com/p/%s=s0' % CIHM_PHOTO]
         assert list(tmp_path.rglob('*.jpg*')) == []
 
-    @pytest.mark.parametrize('status', [403, 429])
-    def test_a_refusal_status_is_push_back(self, tmp_path, monkeypatch, status, cbk_untouched):
-        stub_photo_host(monkeypatch, FakeResponse(status, b'', 'text/html'))
+    @pytest.mark.parametrize('status, reason', [(429, 'HTTP 429'), (503, None)])
+    def test_a_retried_out_status_is_the_sessions_retry_error(self, tmp_path, monkeypatch, status, reason,
+                                                               cbk_untouched):
+        """The photo host rides _request_session, whose policy retries 429 and 5xx and gives up with a RetryError
+        before _download_photosphere sees a status - so a 429 is push-back through the shape pushback_reason
+        already reads, and a 5xx storm is weather, exactly as on the zoom probe (#162, #177)."""
+        stub_photo_host(monkeypatch, requests.exceptions.RetryError('too many %d error responses' % status))
+        with pytest.raises(requests.exceptions.RetryError) as raised:
+            gsv.download_single_pano(str(tmp_path), info())
+        assert gsv.pushback_reason(raised.value) == reason
+        assert list(tmp_path.rglob('*.jpg*')) == []
+
+    def test_an_interstitial_at_a_403_is_still_push_back(self, tmp_path, monkeypatch, cbk_untouched):
+        """A captcha page wearing a 403 is Google's refusal, whatever the status: the landing is checked first."""
+        response = FakeResponse(403, b'', 'text/html', url='https://www.google.com/sorry/index?continue=x')
+        stub_photo_host(monkeypatch, response)
         with pytest.raises(requests.HTTPError) as raised:
             gsv.download_single_pano(str(tmp_path), info())
-        assert gsv.pushback_reason(raised.value) == 'HTTP %d' % status
+        assert gsv.pushback_reason(raised.value) == 'interstitial'
+        assert response.closed
 
     def test_a_200_on_googles_interstitial_is_push_back_and_nothing_is_written(self, tmp_path, monkeypatch,
                                                                                cbk_untouched):
