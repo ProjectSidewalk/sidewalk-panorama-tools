@@ -5,14 +5,16 @@ cbk has no tiles for a photosphere: its probe answered 400 for every one of 27 i
 A CAoS id is base64url of a small protobuf (08 0a 12 <len> <photo id>), and the photo host serves the full-size
 equirectangular original for the photo id inside. What these tests hold:
 
-* **The decode** - both measured forms (AF1Qip..., the older CIHM...), `.` as `=` padding, omitted padding, and
-  None for every shape that is not exactly that protobuf, which sends the pano down the cbk path unchanged.
+* **The decode** - the three measured forms (AF1Qip..., the older CIHM... and CIAB...), `.` as `=` padding,
+  omitted padding, and None for every shape that is not exactly that protobuf, which sends the pano down the
+  cbk path unchanged; and the form read off the photo id's leading letters.
 * **The contract, with its request count** - ONE photo-host request, and never photometa, the probe or a tile:
   a complete JPEG at the app's frame is saved byte for byte; a frame the app disagrees with is the tile path's
   FrameDisagreementError; no app frame means the served one is the frame; an interstitial landing raises the
   HTTPError _get_response would (push-back to the #162 breaker), a retried-out 429 is the RetryError that breaker
-  already reads, and any other non-200 (a 403 included) is PhotosphereHostError, never push-back; a 200 that is
-  not a complete JPEG raises. No permanent verdict rests on the photo host.
+  already reads; a 400 for the CIHM or CIAB form is the ONE permanent verdict that rests on the photo host
+  (DownloadResult.failure, 628 of 628 measured in reports/2026-11-05-photosphere-forms.md) and any other non-200
+  (an AF1Qip 400, a 403) is PhotosphereHostError, never push-back; a 200 that is not a complete JPEG raises.
 * **The composition through DownloadRunner's image loop** into pano_id_log.csv and the run summary.
 
 Network-free: the photo host is stubbed at gsv._photosphere_session, photometa at gsv._fetch_image_levels,
@@ -38,6 +40,8 @@ AF1Q_PANO = 'CAoSLEFGMVFpcE05ZHg3dFhIa1htX193c1JDUW10UmRKd1J4dDY1Ujk5cDFGYWlu'
 AF1Q_PHOTO = 'AF1QipM9dx7tXHkXm__wsRCQmtRdJwRxt65R99p1Fain'
 CIHM_PANO = 'CAoSF0NJSE0wb2dLRUlDQWdJQ0U0ZXpLOXdF'
 CIHM_PHOTO = 'CIHM0ogKEICAgICE4ezK9wE'
+CIAB_PANO = 'CAoSHENJQUJJaEFEeWNLejZoTFNPbWY2MWNzQUJ6RDA.'
+CIAB_PHOTO = 'CIABIhADycKz6hLSOmf61csABzD0'
 
 FRAME = (64, 32)
 
@@ -249,24 +253,63 @@ class TestThePhotoHostContract:
         assert gsv._photometa_run.frames_from_photometa == 0
         assert any('frame from the photo host: 96x48' in r.getMessage() for r in caplog.records)
 
-    @pytest.mark.parametrize('status', [400, 403, 404, 500])
-    def test_a_non_200_raises_unledgerable_and_is_not_push_back(self, tmp_path, monkeypatch, status,
-                                                                 cbk_untouched):
-        """The CIHM form's measured answer is 400 (9 of 9): transient, as the cbk probe's 400 was. A 403 is in
-        the list on purpose: it is one photo's answer, and must never read as the host refusing us (#162), or
-        three dead photos would stand the fleet's depth phase down (#227 review)."""
-        response = FakeResponse(status, b'<html>Error 400</html>', 'text/html')
+    @pytest.mark.parametrize('pano_id, photo_id, status', [
+        (AF1Q_PANO, AF1Q_PHOTO, 400), (AF1Q_PANO, AF1Q_PHOTO, 403), (AF1Q_PANO, AF1Q_PHOTO, 404),
+        (AF1Q_PANO, AF1Q_PHOTO, 500), (CIHM_PANO, CIHM_PHOTO, 403), (CIHM_PANO, CIHM_PHOTO, 404),
+        (CIHM_PANO, CIHM_PHOTO, 500), (CIAB_PANO, CIAB_PHOTO, 403)])
+    def test_a_non_200_raises_unledgerable_and_is_not_push_back(self, tmp_path, monkeypatch, pano_id, photo_id,
+                                                                 status, cbk_untouched):
+        """Transient, as the cbk probe's non-200 is (#166) - every status for the AF1Qip form, whose 400 has never
+        been seen, and every status but 400 for the refused forms. A 403 is in the list on purpose: it is one
+        photo's answer, and must never read as the host refusing us (#162), or three dead photos would stand the
+        fleet's depth phase down (#227 review)."""
+        response = FakeResponse(status, b'<html>Error</html>', 'text/html')
         host = stub_photo_host(monkeypatch, response)
 
         with pytest.raises(gsv.PhotosphereHostError) as raised:
-            gsv.download_single_pano(str(tmp_path), info(CIHM_PANO))
+            gsv.download_single_pano(str(tmp_path), info(pano_id))
 
         assert raised.value.status_code == status
         assert not isinstance(raised.value, requests.HTTPError), 'pushback_reason reads an HTTPError 403 as push-back'
         assert response.closed
         assert gsv.pushback_reason(raised.value) is None
-        assert [r['url'] for r in host.requests] == ['https://lh3.ggpht.com/p/%s=s0' % CIHM_PHOTO]
+        assert [r['url'] for r in host.requests] == ['https://lh3.ggpht.com/p/%s=s0' % photo_id]
         assert list(tmp_path.rglob('*.jpg*')) == []
+
+    @pytest.mark.parametrize('pano_id, photo_id, form', [(CIHM_PANO, CIHM_PHOTO, 'CIHM'), (CIAB_PANO, CIAB_PHOTO, 'CIAB')])
+    def test_a_400_for_a_refused_form_is_the_permanent_verdict(self, tmp_path, monkeypatch, caplog, pano_id,
+                                                              photo_id, form, cbk_untouched):
+        """The one permanent verdict that rests on the photo host: 628 of 628 CIHM and CIAB ids in chicago-il
+        answered 400 with one error page, from three hosts (reports/2026-11-05-photosphere-forms.md). Keyed on
+        the status AND the form: the AF1Qip 400 above stays a raise."""
+        response = FakeResponse(400, b'<html>Error 400</html>', 'text/html')
+        host = stub_photo_host(monkeypatch, response)
+
+        with caplog.at_level(logging.INFO):
+            result = gsv.download_single_pano(str(tmp_path), info(pano_id))
+
+        assert result == DownloadResult.failure
+        assert response.closed
+        assert [r['url'] for r in host.requests] == ['https://lh3.ggpht.com/p/%s=s0' % photo_id]
+        assert list(tmp_path.rglob('*.jpg*')) == []
+        assert any('refuses the %s form' % form in r.getMessage() and pano_id in r.getMessage()
+                   for r in caplog.records)
+
+    def test_an_interstitial_at_a_400_for_a_refused_form_is_still_push_back(self, tmp_path, monkeypatch,
+                                                                            cbk_untouched):
+        """The landing is checked before the status: a captcha page wearing a 400 is Google's refusal, not the
+        form's, and must not be written off as the pano's verdict."""
+        response = FakeResponse(400, b'', 'text/html', url='https://www.google.com/sorry/index?continue=x')
+        stub_photo_host(monkeypatch, response)
+        with pytest.raises(requests.HTTPError):
+            gsv.download_single_pano(str(tmp_path), info(CIHM_PANO))
+        assert list(tmp_path.rglob('*.jpg*')) == []
+
+    @pytest.mark.parametrize('photo_id, form', [
+        (AF1Q_PHOTO, 'AF1Qip'), (CIHM_PHOTO, 'CIHM'), (CIAB_PHOTO, 'CIAB'), ('ZZZZsomething', 'other')])
+    def test_the_form_is_the_photo_ids_leading_letters(self, photo_id, form):
+        assert gsv.photosphere_form(photo_id) == form
+        assert set(gsv.PHOTOSPHERE_REFUSED_FORMS) == {'CIHM', 'CIAB'} and 'AF1Qip' not in gsv.PHOTOSPHERE_REFUSED_FORMS
 
     @pytest.mark.parametrize('status, reason', [(429, 'HTTP 429'), (503, None)])
     def test_a_retried_out_status_is_the_sessions_retry_error(self, tmp_path, monkeypatch, status, reason,
@@ -378,8 +421,8 @@ def ledger_rows(storage_path):
 class TestThroughTheImageLoop:
     def test_success_400_and_disagreement_land_where_the_ledger_contract_says(self, tmp_path, monkeypatch,
                                                                              cbk_untouched):
-        """A success is a `1` row with a fetch stamp; the CIHM 400 leaves no row (retried next run); a frame
-        disagreement leaves no row and is counted as a frame refusal under its condition (#207)."""
+        """A success is a `1` row with a fetch stamp; the CIHM 400 is a `0` row with one (the verdict, never
+        retried); a frame disagreement leaves no row and is counted as a frame refusal under its condition (#207)."""
         import DownloadRunner
 
         wrong = caos(b'AF1QipWRONGFRAMEWRONGFRAME')
@@ -393,16 +436,18 @@ class TestThroughTheImageLoop:
             return serve()
 
         host = stub_photo_host(monkeypatch, answer)
-        stop_reasons = {}
+        stop_reasons, image_stats = {}, {}
         pano_infos = [dict(info(pano_id), source='gsv') for pano_id in (AF1Q_PANO, CIHM_PANO, wrong)]
 
-        DownloadRunner.download_panorama_images(str(tmp_path), pano_infos, stop_reasons=stop_reasons)
+        DownloadRunner.download_panorama_images(str(tmp_path), pano_infos, stop_reasons=stop_reasons,
+                                                image_stats=image_stats)
 
         assert len(host.requests) == 3, 'one photo-host request each'
-        rows = ledger_rows(tmp_path)
-        assert [row[:2] for row in rows] == [[AF1Q_PANO, '1']]
-        assert rows[0][2], 'a fetched pano carries its fetch stamp (#129)'
+        rows = ledger_rows(tmp_path)       # the loop shuffles its candidates, so order is not asserted
+        assert sorted(row[:2] for row in rows) == sorted([[AF1Q_PANO, '1'], [CIHM_PANO, '0']])
+        assert all(row[2] for row in rows), 'a fetched pano and a written-off one both carry their stamp (#129)'
         assert stored(tmp_path).is_file() and not stored(tmp_path, CIHM_PANO).exists()
+        assert image_stats['raised'] == 0, 'the verdict is an answer, not a raise (field 20)'
         assert stop_reasons['frame_refusals'] == 1
         codes = [c['code'] for c in stop_reasons['conditions']]
         assert codes == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]

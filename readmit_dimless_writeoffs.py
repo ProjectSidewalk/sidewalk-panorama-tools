@@ -134,7 +134,7 @@ def main(argv=None):
                 lines = f.readlines()
             kept, removed = partition_ledger(lines, dimless, dates)
             if removed:
-                _rewrite(ledger, lines, kept, removed)
+                rewrite_ledger(ledger, lines, kept, removed)
     except scrape_queue.QueueLocked as e:
         print('REFUSED: the nightly queue holds its lock (%s); nothing written. Run outside the window.' % (e,))
         return 3
@@ -142,7 +142,7 @@ def main(argv=None):
     return 0
 
 
-def _rewrite(ledger, lines, kept, removed):
+def rewrite_ledger(ledger, lines, kept, removed):
     """Backup, removed-rows file, then an atomic replace of the ledger. Never in place."""
     stamp = datetime.now().strftime('%Y%m%dT%H%M%S')
     with open('%s.bak-%s' % (ledger, stamp), 'w', newline='') as f:
