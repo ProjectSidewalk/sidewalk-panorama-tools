@@ -26,10 +26,11 @@ Usage::
 Pure stdlib except :func:`read_pano`, which needs Pillow (a dependency of the package since 1.1.0).
 """
 
+import errno
+import math
 import os
 import re
 import struct
-import warnings
 
 __all__ = ['MAX_PANO_PIXELS', 'PanoDimsMismatch', 'depth_path', 'is_downscaled_sidecar', 'jpeg_dimensions',
            'pano_path', 'raise_decompression_bomb_ceiling', 'read_pano', 'shard', 'sidecar_path',
@@ -171,7 +172,7 @@ def raise_decompression_bomb_ceiling():
     Process-level policy, so a `main()` calls it and no library function does: this rewrites a PIL global
     that belongs to whoever imported us, and since #52.1 that can be another program. A library caller who
     wants the ceiling calls this itself; one who doesn't gets a warning, not a failure. (:func:`read_pano`
-    does not call it: it honours MAX_PANO_PIXELS for its own read without touching the global.)
+    does not call it, and installs no warnings filter either: a consumer reading 134 MP panos calls this once.)
 
     Every entry point that opens a stored panorama needs it - CropRunner, downscale_panos, refetch_panos'
     --measure, scan_black_bands, and DownloadRunner. That last one is currently a policy for a path nothing
@@ -206,36 +207,55 @@ def read_pano(path, expected_width=None, expected_height=None):
     """Open a stored pano and decode it, after checking its header against the label's frame.
 
     With ``expected_width``/``expected_height`` (both or neither; a label's ``pano_width``/``pano_height``),
-    a header whose ``(width, height)`` differs raises :class:`PanoDimsMismatch` **before** any pixel is
-    decoded, so refusing a mis-framed 16384x8192 pano costs a header read, not 384 MB. The comparison is
-    CropRunner's dims preflight: the header Pillow reads, against the expected pair as integers.
+    a header whose ``(width, height)`` differs raises :class:`PanoDimsMismatch` **before** anything is
+    decoded: the check is :func:`jpeg_dimensions`, stdlib only, so refusing a mis-framed 16384x8192 pano costs
+    a few header reads, not 384 MB, and never touches Pillow. The comparison is CropRunner's dims preflight:
+    the expected pair read as ``int(float(value))``, as ``CropRunner._metadata_dims`` reads it (so ``'64.0'``
+    from a pandas-written CSV is 64), against the stored header. An expected value that is not a positive
+    finite number raises ``ValueError`` - a bad argument, never a ``PanoDimsMismatch``.
 
-    Returns a loaded ``PIL.Image.Image``; the caller closes it. A pano up to MAX_PANO_PIXELS decodes without
-    Pillow's DecompressionBombWarning, and without changing ``Image.MAX_IMAGE_PIXELS`` (process policy;
-    see raise_decompression_bomb_ceiling); a header claiming more raises ``Image.DecompressionBombError``.
-    An unreadable file raises what Pillow raises (``OSError``, ``FileNotFoundError``).
+    Returns a loaded ``PIL.Image.Image``; the caller closes it. A header claiming more than MAX_PANO_PIXELS
+    raises ``Image.DecompressionBombError`` before decoding. Below it, the decode is Pillow's own: a pano over
+    Pillow's default threshold (89 MP; a 16384x8192 one is 134 MP) warns unless the process called
+    :func:`raise_decompression_bomb_ceiling` once at startup. This function deliberately installs no
+    per-call warnings filter: ``warnings.catch_warnings`` rewrites the process-wide filter list and is not
+    thread-safe, and a server reading panos on several threads is exactly the consumer this is for.
+
+    A missing file raises ``FileNotFoundError``; a file whose JPEG header cannot be read raises ``OSError``.
     """
-    from PIL import Image
-
     if (expected_width is None) != (expected_height is None):
         raise ValueError('give both expected_width and expected_height, or neither')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', Image.DecompressionBombWarning)
-        image = Image.open(path)                 # header only; nothing is decoded yet
+    expected = None
+    if expected_width is not None:
+        expected = (_frame_dimension(expected_width), _frame_dimension(expected_height))
+    stored = jpeg_dimensions(path)
+    if stored is None:
+        if not os.path.exists(path):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+        raise OSError('%s: not a readable JPEG header' % (path,))
+    if expected is not None and expected != stored:
+        raise PanoDimsMismatch(path, expected, stored)
+
+    from PIL import Image
+    if stored[0] * stored[1] > MAX_PANO_PIXELS:
+        raise Image.DecompressionBombError(
+            '%s: %dx%d is over the %d-pixel ceiling for a stored pano' % (path, stored[0], stored[1],
+                                                                          MAX_PANO_PIXELS))
+    image = Image.open(path)
     try:
-        stored = image.size
-        if expected_width is not None:
-            expected = (int(expected_width), int(expected_height))
-            if expected != stored:
-                raise PanoDimsMismatch(path, expected, stored)
-        if stored[0] * stored[1] > MAX_PANO_PIXELS:
-            raise Image.DecompressionBombError(
-                '%s: %dx%d is over the %d-pixel ceiling for a stored pano' % (path, stored[0], stored[1],
-                                                                              MAX_PANO_PIXELS))
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', Image.DecompressionBombWarning)
-            image.load()
+        image.load()
     except BaseException:
         image.close()
         raise
     return image
+
+
+def _frame_dimension(value):
+    """A label's pano_width/pano_height as CropRunner._metadata_dims reads it: float, then int."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError('a frame dimension is a number, not %r' % (value,)) from None
+    if not (math.isfinite(number) and number > 0):
+        raise ValueError('a frame dimension is a positive finite number, not %r' % (value,))
+    return int(number)

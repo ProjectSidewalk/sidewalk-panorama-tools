@@ -7,6 +7,7 @@ below are what make both suites test one definition.
 
 import os
 import shutil
+import warnings
 
 import pytest
 from PIL import Image, ImageFile
@@ -116,27 +117,46 @@ class TestReadPano:
         image = store.read_pano(small_pano(str(tmp_path / 'p.jpg')))
         image.close()
 
-    def test_string_dims_from_a_csv_compare_as_integers(self, tmp_path):
-        """CropRunner's _metadata_dims turns '64' and '64.0' into 64; read_pano accepts the same values."""
-        store.read_pano(small_pano(str(tmp_path / 'p.jpg')), expected_width='64', expected_height=32.0).close()
+    @pytest.mark.parametrize('width, height', [('64', '32'), ('64.0', '32.0'), (64.0, 32), (' 64 ', '32.0')])
+    def test_dims_from_a_csv_read_as_croprunner_reads_them(self, tmp_path, width, height):
+        """CropRunner._metadata_dims reads float() then int(), so '64.0' from a pandas-written CSV is 64 (#229
+        review: int('64.0') raised a bare ValueError that `except PanoDimsMismatch` missed)."""
+        store.read_pano(small_pano(str(tmp_path / 'p.jpg')), expected_width=width, expected_height=height).close()
+        with pytest.raises(store.PanoDimsMismatch):
+            store.read_pano(str(tmp_path / 'p.jpg'), expected_width='13312.0', expected_height='6656.0')
 
-    def test_a_mismatch_raises_before_anything_is_decoded(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize('bad', ['x', '', None, 'nan', 0, -64, float('inf')])
+    def test_an_expected_dimension_that_is_not_a_frame_is_a_bad_argument(self, tmp_path, bad):
+        with pytest.raises(ValueError) as caught:
+            store.read_pano(small_pano(str(tmp_path / 'p.jpg')), expected_width=bad, expected_height=32)
+        assert not isinstance(caught.value, store.PanoDimsMismatch)
+
+    def test_a_mismatch_is_refused_without_touching_pillow(self, tmp_path, monkeypatch):
+        """#229 review: the refusal is jpeg_dimensions, stdlib only - no Image.open, no decode, no warnings
+        filter (catch_warnings rewrites process-wide state and is not thread-safe)."""
         path = small_pano(str(tmp_path / 'p.jpg'))
-        loads = []
-        real_load = ImageFile.ImageFile.load
 
-        def counting_load(self):
-            loads.append(self)
-            return real_load(self)
-        monkeypatch.setattr(ImageFile.ImageFile, 'load', counting_load)
+        def no_pillow(*args, **kwargs):
+            raise AssertionError('the refusal path must not open the image with Pillow')
+        monkeypatch.setattr(Image, 'open', no_pillow)
+        filters_before = list(warnings.filters)
 
         with pytest.raises(store.PanoDimsMismatch) as caught:
             store.read_pano(path, expected_width=13312, expected_height=6656)
 
-        assert loads == [], 'the refusal must cost a header read, never a decode'
         assert caught.value.expected == (13312, 6656) and caught.value.stored == (64, 32)
         assert caught.value.path == path and '13312x6656' in str(caught.value)
         assert isinstance(caught.value, ValueError)
+        assert list(warnings.filters) == filters_before
+        assert not hasattr(store, 'warnings'), 'store must not use the warnings module at all'
+
+    def test_a_missing_file_and_an_unreadable_header(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            store.read_pano(str(tmp_path / 'absent.jpg'))
+        bad = tmp_path / 'bad.jpg'
+        bad.write_bytes(b'not a jpeg at all')
+        with pytest.raises(OSError):
+            store.read_pano(str(bad), 64, 32)
 
     def test_the_counting_load_does_see_a_real_decode(self, tmp_path, monkeypatch):
         """Guards the guard above: the patched load is the one read_pano's decode goes through."""
@@ -155,13 +175,11 @@ class TestReadPano:
         with pytest.raises(ValueError, match='both'):
             store.read_pano(small_pano(str(tmp_path / 'p.jpg')), expected_width=64)
 
-    def test_a_134mp_header_reads_without_touching_the_global_or_warning(self, tmp_path, monkeypatch, recwarn):
-        """Pillow's default threshold is 89 MP; our 16384x8192 panos are 134 MP. Faked with a small file and a
-        lowered threshold, so the test does not decode 384 MB: the read must neither warn nor rewrite it."""
-        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 64 * 32 - 1)
+    def test_a_read_leaves_the_pixel_ceiling_to_the_process(self, tmp_path, monkeypatch):
+        """read_pano never rewrites Image.MAX_IMAGE_PIXELS (process policy, raise_decompression_bomb_ceiling)."""
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 10 ** 9)
         store.read_pano(small_pano(str(tmp_path / 'p.jpg')), 64, 32).close()
-        assert Image.MAX_IMAGE_PIXELS == 64 * 32 - 1
-        assert not [w for w in recwarn if issubclass(w.category, Image.DecompressionBombWarning)]
+        assert Image.MAX_IMAGE_PIXELS == 10 ** 9
 
     def test_a_header_over_the_ceiling_is_refused_before_decoding(self, tmp_path, monkeypatch):
         monkeypatch.setattr(store, 'MAX_PANO_PIXELS', 64 * 32 - 1)

@@ -174,9 +174,12 @@ for pano_file in walk_store_panos("/mnt/panostore/seattle-wa"):
   `pano_width`/`pano_height` and raises `PanoDimsMismatch` **before decoding** when they differ, then
   returns the loaded `PIL.Image`. It is the cropper's dims preflight (`docs/cropper.md`): a stored file whose
   frame is not the pano's, most often one stitched at the 13312×6656 the app hardcoded until 2022-03, would put
-  every label in the wrong place. It reads panos up to `MAX_PANO_PIXELS` (16384 × 8192) without Pillow's
-  decompression-bomb warning and without changing `Image.MAX_IMAGE_PIXELS`, which is process policy
-  (`raise_decompression_bomb_ceiling()`, for a `main()` to call), and refuses a header claiming more.
+  every label in the wrong place. The check is `jpeg_dimensions`, so a refusal never touches Pillow, and the
+  expected values are read as CropRunner reads them (`int(float(x))`, so `"64.0"` is 64; a value that is not a
+  positive number raises `ValueError`, never `PanoDimsMismatch`). A header over `MAX_PANO_PIXELS`
+  (16384 × 8192) is refused. **Call `raise_decompression_bomb_ceiling()` once at startup** if you read 134 MP
+  panos: otherwise Pillow warns on each. `read_pano` installs no per-call warnings filter, because
+  `warnings.catch_warnings` rewrites process-wide state and is not thread-safe in a server.
 
 `CropRunner.py` makes the same comparison but does not call `read_pano`: it opens a pano once for all its
 labels, checks each label's dims against the one header, and decodes lazily only when a crop is about to be
