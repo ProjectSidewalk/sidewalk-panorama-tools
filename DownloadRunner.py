@@ -92,9 +92,10 @@ IMAGE_LEDGER_UNUSABLE_ERRORS = (OSError, csv.Error, UnicodeDecodeError)
 # TODO(#161): the GSV fleet is not yet measured - GSV perennial raisers (a stitch persistently >50% black
 # raises every night) are the likelier population; `grep -c "IMAGEDOWNLOAD: Failed to download pano"
 # /mnt/panostore/*/scrape.log` on the box closes it - together with each raise's duration, which since #178
-# step 1 (2026-11-05) is the `(after S s)` suffix on that same scrape.log ERROR line (the `--- N seconds ---`
-# line is a print and never reached the file), and which sizes IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS below
-# (#174 final review). Lines written before 2026-11-05 carry no suffix.
+# step 1 (from the deploy of #229) is the `(after S s)` suffix on that same scrape.log ERROR line (the
+# `--- N seconds ---` line is a print and never reached the file), and which sizes
+# IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS below (#174 final review). Lines written before that deploy carry no
+# suffix, so a suffix-less raise line from before it is NOT a frame disagreement.
 IMAGE_NO_SUCCESS_MIN_RAISED = 10
 
 # The budget arm of `images-no-success` also needs the raises to have taken at least this long ON AVERAGE
@@ -795,9 +796,11 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 pushback = gsv.pushback_reason(e) if source == 'gsv' else None
                 # A raise's own duration rides on its ERROR line (#178 step 1): scrape.log is the one durable
                 # per-raise record, and the `--- N seconds ---` line below is a print, so it never reaches the
-                # file. Same monotonic clock as raise_seconds, and only on the lines that count as a raise
-                # below (a frame refusal is an answer, so its line is unchanged). A SUFFIX, so the text before
-                # it (the ops grep's `(HTTP N)`, fleet_thresholds' RAISE_RE) is unchanged.
+                # file. Read ONCE here and added to raise_seconds below as the same value, so the logged
+                # figure and the budget arm's are identical by construction (#229 review; a second clock read
+                # also counted the logging call). Only on the lines that count as a raise (a frame refusal is
+                # an answer, so its line is unchanged). A SUFFIX, so the text before it (the ops grep's
+                # `(HTTP N)`, fleet_thresholds' RAISE_RE) is unchanged.
                 attempt_seconds = time.monotonic() - attempt_start
                 if pushback is not None:
                     # The ONE line a refused pano gets (#162): fetch_pano_image raises a refusal without
@@ -811,6 +814,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                                   pano_id, str(e), attempt_seconds)
             else:
                 frame_refused = False
+                attempt_seconds = time.monotonic() - attempt_start
 
             # A push-back (#162) counts as RAISED: it is Google refusing this host, not an answer about any
             # pano, so a night of refusals and network errors with nothing answered is still no success. The
@@ -821,7 +825,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             # through `tripped` either way.
             if result_code is None and not frame_refused:
                 raised += 1
-                raise_seconds += time.monotonic() - attempt_start
+                raise_seconds += attempt_seconds
             elif result_code != DownloadResult.skipped:
                 # A frame disagreement (#74) is unledgered like a raise, but it is Google ANSWERING - the pano
                 # has its own WARNING and an app-side remedy - so for `images-no-success` it is an answer: ten

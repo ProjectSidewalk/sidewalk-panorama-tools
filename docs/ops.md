@@ -1681,8 +1681,10 @@ the fleet, beyond the analyzer:
   [#178](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/178) sizes `images-no-success` from:
   `grep -hE "Failed to download pano .*\(after [0-9.]+ s\)$" */scrape.log | sed -E 's/.*\(after ([0-9.]+) s\)$/\1/' | awk '{n++; t+=$1} END {print n, (n ? t/n : "n/a")}'`
   for the fleet, or one city's `scrape.log` at a time. Each raise's ERROR line ends `(after S s)`, the attempt's
-  own duration, since 2026-11-05; older lines carry none and are left out of the mean, never read as 0. A frame
-  disagreement's line carries no suffix, because it is an answer, not a raise.
+  own duration, from the deploy of [#229](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/229) on;
+  lines written before that deploy carry none and are left out of the mean, never read as 0. After it, a frame
+  disagreement's line is the one raise-shaped line with no suffix, because it is an answer, not a raise; before it,
+  no line has one, so a missing suffix there says nothing.
 - `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
   [only there](#hearing-about-a-bad-night).
 - `tail -1 ~/heartbeat.log` says `heartbeat published` with last night's date. A failed heartbeat

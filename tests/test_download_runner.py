@@ -2997,6 +2997,38 @@ class TestARaisesDurationIsOnItsScrapeLogLine(_PushbackHarness):
         assert sum(1 for m in errors if self.AFTER.search(m)) == 2
 
 
+    def test_the_logged_duration_is_the_one_the_budget_arm_sums(self, monkeypatch, caplog):
+        """#229 review: the duration was read from the clock twice, once for the line and again for
+        raise_seconds, so the two disagreed by the logging call. A clock that moves 7 s on EVERY read makes a
+        second read visible: the condition's mean must equal the mean of the logged suffixes."""
+        clock = [1000.0]
+
+        def ticking():
+            clock[0] += 7.0
+            return clock[0]
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', ticking)
+        scripted = scripted_download_pano({'gsv-%d' % n: RuntimeError('boom') for n in range(10)})
+
+        def slow(storage_path, pano_info):
+            clock[0] += 100.0
+            return scripted(storage_path, pano_info)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', slow)
+        stop_reasons = {'image_stop': None, 'depth_stop': None}
+
+        with caplog.at_level(logging.ERROR):
+            DownloadRunner.download_panorama_images(
+                str(self.storage), self.gsv_panos(10), tripped_sources=set(), stop_reasons=stop_reasons,
+                block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+
+        logged = [float(self.AFTER.search(r.getMessage()).group(1)) for r in caplog.records
+                  if self.AFTER.search(r.getMessage())]
+        assert len(logged) == 10 and logged[0] == 107.0
+        detail = [c['detail'] for c in stop_reasons['conditions']
+                  if c['code'] == DownloadRunner.CONDITION_IMAGES_NO_SUCCESS][0]
+        assert detail.endswith('%.0f s per raise' % (sum(logged) / len(logged)))
+
+
 class TestAFreshLatchPutsGsvImagesOnProbation(_PushbackHarness):
     """#162 D5: a fresh block latch drops the push-back threshold to 1 - it does NOT stand the image phase down.
 
