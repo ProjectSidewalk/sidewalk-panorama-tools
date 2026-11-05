@@ -636,11 +636,11 @@ class TestDownloadSinglePanoWithReportedLevels:
 class TestRequestsPerPano:
     """Plan §3.5, asserted: (photometa, probe, tile) requests per pano."""
 
-    def run(self, tmp_path, monkeypatch, *, sizes=None, gone=False, pick=5, frame=(1024, 512)):
+    def run(self, tmp_path, monkeypatch, *, sizes=None, gone=False, pick=5, frame=(1024, 512), pano_id=PANO):
         asked = stub_photometa(monkeypatch, sizes, gone=gone)
         probes = count_probes(monkeypatch, pick)
         tiles = red_tiles(monkeypatch)
-        gsv.download_single_pano(str(tmp_path), pano_info(*frame))
+        gsv.download_single_pano(str(tmp_path), pano_info(*frame, pano_id=pano_id))
         return len(asked), len(probes), len(tiles)
 
     def test_a_new_live_pano_costs_one_photometa_and_no_probe(self, tmp_path, monkeypatch):
@@ -671,6 +671,14 @@ class TestRequestsPerPano:
         shard.mkdir()
         (shard / (PANO + '.jpg')).write_bytes(b'already here')
         assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)]) == (0, 0, 0)
+
+    def test_a_photosphere_costs_one_photo_host_request_and_no_photometa_probe_or_tile(self, tmp_path,
+                                                                                         monkeypatch):
+        """#223: a CAoS id is fetched whole from the photo host; cbk has no tiles for it."""
+        from test_gsv_photosphere import AF1Q_PANO, FRAME, serve, stub_photo_host
+        host = stub_photo_host(monkeypatch, serve())
+        assert self.run(tmp_path, monkeypatch, sizes=TWO_LEVELS, frame=FRAME, pano_id=AF1Q_PANO) == (0, 0, 0)
+        assert len(host.requests) == 1
 
     # #184: a pano the app reports no frame for. The extra cost over a dimensioned pano is one photometa request
     # when photometa answers, and nothing when it cannot be asked - the probe is never a substitute for a frame.
