@@ -482,8 +482,16 @@ records the one case these gates do not cover. Every outcome but `replaced` leav
 and the swap itself goes through the same `.part`-and-rename as a download.
 
 The subtlest of the refusals is `frame_grew`, and it is the reason the tool probes before it fetches. The
-store is a scrape-time archive and Google re-serves panos larger, so a grid sized from a stored 13312×6656
-file can be too small for what Google now holds. That fetch does not return a smaller version of the pano —
+pre-2024 scraper sized its tile grid from the app's `width`/`height`, and before SidewalkWebpage evolution 135
+(2022-03) the app recorded 13312×6656 for every pano, so a grid sized from a stored 13312×6656 file can be
+too small for the pano Google holds. Google does not re-serve a pano larger
+([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)): scrape-time dimensions matched the
+app's later record on 300 of 300 Seattle panos (SidewalkWebpage #4587's store calibration), live dimensions
+drifted 0.0% twice ([census](../reports/2026-08-09-photometa-census.md),
+[decay](../reports/2026-09-06-photometa-decay.md)), and no pano carries two frames
+([crop-geometry review](../reports/2026-08-10-crop-geometry-review.md)). So the 61 of 62 stored 13312×6656
+files under an app record of 16384×8192 in [the store-coverage study](../reports/2026-08-10-store-coverage.md)
+are most likely hardcoded-frame stitches of 16384×8192 panos. That fetch does not return a smaller version of the pano —
 it returns the **top-left 81% of it**, at exactly the stored file's dimensions, with no undersized tile and
 no black anywhere. Nothing downstream could ever see it. Two requests, spent before the 512-tile fan-out,
 rule it out. A probe answered with anything but 200 raises, so the pano counts as a transient failure rather
@@ -507,8 +515,8 @@ refused and ledgered as `too_black`. `too_black` remains the backstop for any ot
 | `already_clean` | the file was written on or after `--fixed-after`, so it never carried `fover` | 0 |
 | `dims_changed` | the work-list's frame disagrees with the stored one — see below | 0 |
 | `gone` | Google no longer serves this pano at any zoom | ≤2 |
-| `frame_grew` | Google now serves this pano **larger**, so this frame would fetch a crop of it | ≤4 |
-| `frame_shrank` | Google now serves this pano **smaller** than the stored frame. Not swapped, **not ledgered**, not a failure ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)) | 5 |
+| `frame_grew` | Google serves this pano **larger** than the stored frame, so this frame would fetch a crop of it | ≤4 |
+| `frame_shrank` | Google serves this pano **smaller** than the stored frame. Not swapped, **not ledgered**, not a failure ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)) | 5 |
 | `upscaled` | only a fallback zoom was available; swapping would be a 4× **downgrade** | zoom-3 grid (≤32) |
 | `undersized` | a tile still came back below 512 px: the CBK request is costing resolution again. Not swapped, **not ledgered**, and three in a row stop the run with exit 1 | full |
 | `too_black` | the fresh stitch has more black than a real panorama does | full |
@@ -742,8 +750,9 @@ writes `frame_refusals` into the run summary, and raises the `frame-disagreement
 and reaches the alarm ([Hearing about a bad night](#hearing-about-a-bad-night)). The condition's detail names
 the first refused pano; `grep "frame disagreement" <store>/<city>/scrape.log` still lists the rest. A refusal
 is Google answering, so it never feeds the `images-no-success` condition, however many there are. The remedy
-is on the app side: a SidewalkWebpage `gsv_data` refresh that brings the stored dimensions up to what Google
-serves now. Whether the refused pano should instead be kept at Google's larger frame is #185 Part 2, waiting
+is on the app side: a SidewalkWebpage `gsv_data` refresh that corrects the stored dimensions to what Google
+serves: a pano's frame does not change, so a disagreement means the app's record is wrong
+([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)). Whether the refused pano should instead be kept at Google's larger frame is #185 Part 2, waiting
 on about 30 nights of these counts.
 
 ## Edge black bands
