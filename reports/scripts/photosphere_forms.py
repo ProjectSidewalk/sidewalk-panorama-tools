@@ -74,10 +74,11 @@ LOG_TAIL_FILE = PREFIX + '-chicago-log-tail.csv'
 STORE_FILES_FILE = PREFIX + '-chicago-caos-files.txt'
 RESULT_FILE = PREFIX + '.json'
 
-# The forms a photo id has been seen in, by its leading letters. The host's answer turned out to depend on
-# nothing else, which is why a form is the unit this study counts in. Anything else decodable is `other`;
-# a CAoS id that does not decode to a photo id at all is `undecodable` (none were, in chicago-il).
-FORMS = ('AF1Qip', 'CIHM', 'CIAB')
+# The forms a photo id has been seen in, by its leading letters: the downloader's own list, since the #223
+# follow-up keyed its verdict on them (one definition, imported back here). The host's answer turned out to depend
+# on nothing else, which is why a form is the unit this study counts in. Anything else decodable is `other`; a
+# CAoS id that does not decode to a photo id at all is `undecodable` (none were, in chicago-il).
+FORMS = gsv.PHOTOSPHERE_FORMS
 MEASURED_CITY = 'chicago-il'
 
 # The hosts asked in `probe`: the production URL first, then the two googleusercontent hosts that serve the
@@ -103,12 +104,7 @@ DEPTH_LEDGER_COLUMNS = ['pano_id', 'depth']
 
 def form_of(photo_id):
     """The form of a decoded photo id, by its leading letters; 'undecodable' for None, 'other' otherwise."""
-    if photo_id is None:
-        return 'undecodable'
-    for form in FORMS:
-        if photo_id.startswith(form):
-            return form
-    return 'other'
+    return 'undecodable' if photo_id is None else gsv.photosphere_form(photo_id)
 
 
 def caos_rows(panos):

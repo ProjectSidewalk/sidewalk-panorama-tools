@@ -566,7 +566,8 @@ class ImageLedger:
 # loud, correctable direction. Three legitimate ones adjacent in a shuffled healthy corpus is not.
 #
 # GSV (#166) takes an entry too, sized for its base rate rather than at 3. Its permanent verdict rests on
-# two black probe tiles that both came back 200 (#175), and a retired pano is answered exactly that way - so
+# two black probe tiles that both came back 200 (#175) - the one other GSV verdict, a photo host's 400 for a
+# photosphere of a refused form (#223), is excluded from this count below - and a retired pano is answered exactly that way - so
 # if the cbk endpoint ever answered black 200s across the board, every unattempted GSV pano in the city
 # would be written off in one night with exit 0 and no mail. The push-back breaker below cannot see that: it
 # counts refusals, and a black 200 is not one. Why 50 and not 3: a retired GSV pano is an ordinary verdict
@@ -836,7 +837,15 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 #
                 # A skip does not reset either, and for a stronger reason: it is os.path.isfile() returning
                 # true, so the source was never contacted.
-                if downloaded == 0:
+                #
+                # A GSV photosphere's verdict neither counts nor resets (#223). It comes from the photo host
+                # refusing the photo id's form, never from cbk, so it is no evidence about the fault this breaker
+                # exists to catch - cbk answering black 200s across the board. chicago-il holds 276 unledgered
+                # ids of the refused forms and the candidates are shuffled, so on a quiet night the first run
+                # after the verdict shipped would otherwise trip at 50 and leave the rest unattempted for nights.
+                if downloaded == 0 and source == 'gsv' and gsv.photosphere_photo_id(pano_id) is not None:
+                    pass        # a CAoS id that does not decode took the cbk path, so its verdict counts
+                elif downloaded == 0:
                     consecutive_permanent[source] = consecutive_permanent.get(source, 0) + 1
                     if consecutive_permanent[source] >= limit:
                         tripped.add(source)

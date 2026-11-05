@@ -92,7 +92,10 @@ def partition_ledger(lines, dimless_ids, dates):
     """(kept lines, removed lines) - every line verbatim, newline included; see the module docstring."""
     kept, removed = [], []
     for line in lines:
-        rows = list(csv.reader(io.StringIO(line)))
+        try:
+            rows = list(csv.reader(io.StringIO(line)))
+        except csv.Error:        # a NUL byte: Python 3.10's reader refuses the line; it is kept (#223 review)
+            rows = []
         row = rows[0] if len(rows) == 1 else None
         if (row is not None and len(row) == 3 and row[1] == '0' and row[2][:10] in dates
                 and row[0] in dimless_ids):
@@ -134,7 +137,7 @@ def main(argv=None):
                 lines = f.readlines()
             kept, removed = partition_ledger(lines, dimless, dates)
             if removed:
-                _rewrite(ledger, lines, kept, removed)
+                rewrite_ledger(ledger, lines, kept, removed)
     except scrape_queue.QueueLocked as e:
         print('REFUSED: the nightly queue holds its lock (%s); nothing written. Run outside the window.' % (e,))
         return 3
@@ -142,7 +145,7 @@ def main(argv=None):
     return 0
 
 
-def _rewrite(ledger, lines, kept, removed):
+def rewrite_ledger(ledger, lines, kept, removed):
     """Backup, removed-rows file, then an atomic replace of the ledger. Never in place."""
     stamp = datetime.now().strftime('%Y%m%dT%H%M%S')
     with open('%s.bak-%s' % (ledger, stamp), 'w', newline='') as f:

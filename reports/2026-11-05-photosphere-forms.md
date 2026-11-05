@@ -223,10 +223,16 @@ The depth side is settled: chicago-il's `depth_log.csv` holds all **913** as `un
 
 ## What changed in the code
 
-Nothing in this PR. The two recommendations are a follow-up PR against the downloader
-(`.claude/rules/downloader.md` carries the verdict contract) and a one-off script; this report is the
-measurement they cite. The form classifier lives in this script until that PR, which should move it into
-`downloaders/gsv.py` and import it back here, so there is one definition (the desk-study rule).
+Both recommendations, in the follow-up PR to the one that added this report:
+
+* `downloaders/gsv.py`: `photosphere_form` and `PHOTOSPHERE_FORMS` / `PHOTOSPHERE_REFUSED_FORMS`; in
+  `_download_photosphere`, a 400 for a refused form returns `DownloadResult.failure` (the `0` row), checked after
+  the interstitial so a captcha wearing a 400 is still push-back; every other non-200 raises as before. The form
+  classifier moved there from this script, which imports it back (one definition, the desk-study rule).
+* `readmit_photosphere_writeoffs.py`: the one-off for recommendation 2, several cities under one queue lock,
+  sharing `readmit_dimless_writeoffs.rewrite_ledger`. Not yet run on the store when this was written.
+* `docs/downloader.md` (the photosphere table and the verdict paragraph), `docs/ops.md` ("Re-admitting the
+  photosphere write-offs"), `.claude/rules/downloader.md`, `docs/testing.md`, `CLAUDE.md`.
 
 ## Wrong turns
 

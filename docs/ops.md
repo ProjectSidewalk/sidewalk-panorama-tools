@@ -376,6 +376,41 @@ never touches imagery, and a retry never overwrites any: every downloader short-
 `.jpg`, so a pano already on the store is re-registered as skipped. A re-admitted pano Google has retired
 costs its photometa request and two probe tiles once more, and is written off again on that evidence.
 
+### Re-admitting the photosphere write-offs
+
+The same lever, for a different incident. Every `CAoS` row in every city's `pano_id_log.csv` on the production
+store was a two-field `downloaded=0` when the
+[2026-11-05 study](../reports/2026-11-05-photosphere-forms.md) read them: **1,752** rows in **25** cities, all
+written before the `fetched_at` column reached the store on 2026-09-17, under whatever rule then governed a
+failed `CAoS` fetch. **901** of them decode to the `AF1Qip` form of photo id, the form
+[the photo host serves](downloader.md#a-gsv-user-photosphere-caos-id), in 19 cities (chicago-il 285, knox-oh
+124, spgg 112, zurich 105). A ledgered pano is never attempted again, so #227 downloads none of them until these
+rows go. `readmit_photosphere_writeoffs.py` removes a row only when it is a **two-field** `0` row whose id decodes to a
+photosphere photo id of a `--form` you name (default `AF1Qip`): the shape every measured row has and the shape no
+code since 2026-09-17 can write, so no date is needed, and no pano list either. A three-field `0` is a verdict
+the current code wrote, and is never touched. The `CIHM` and `CIAB` rows stay: the host refuses those forms,
+and a 400 for one of them is now exactly the `0` row they already are.
+
+```bash
+mount | grep sshfs        # the store's mount must NOT carry workaround=rename (above)
+.venv/bin/python readmit_photosphere_writeoffs.py /mnt/panostore/chicago-il /mnt/panostore/knox-oh \
+    /mnt/panostore/spgg /mnt/panostore/zurich ...        # dry run: one count per city, writes nothing
+.venv/bin/python readmit_photosphere_writeoffs.py ... --apply   # outside the nightly window
+```
+
+Everything said of the dimensionless tool holds here: the checkout's venv, the cron user, the queue's lock
+taken once for every directory given (exit 3 if a run holds it, or if any directory has no ledger), the ledger
+re-read under it, the `.bak-<stamp>` and `.readmitted-<stamp>.csv` copies beside each ledger, every other line
+kept byte for byte, a second run a no-op, imagery never touched. chicago-il's `CA/` shard already holds five
+`AF1Qip` JPEGs left by #223's development measurement; each is re-registered as `skipped` on the next run. Run
+it only once the build with the form-gated verdict is on the box: an earlier build fetches the re-admitted
+`AF1Qip` ids all the same, but would raise on every re-admitted `CIHM`/`CIAB` id rather than ledger it, had any
+been named. The first night after, a city with many re-admitted ids downloads them all in one image phase
+(chicago-il: 285 photospheres of a few MB each). It prints one line per ledger as it is rewritten, so a failure
+half way over sshfs says where it stopped. **The morning after the deploy**, the confirming measurement for the
+verdict is the count of `refuses the CIHM form` / `refuses the CIAB form` INFO lines in chicago-il's `scrape.log`:
+about 276 on the first complete pass, from the production address, and the same ids never again.
+
 ### `fetched_at`, and the two row widths
 
 The third field is when the source answered: for a `1` row written by a download, the moment the file
