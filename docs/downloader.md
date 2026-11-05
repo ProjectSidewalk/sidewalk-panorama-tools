@@ -818,6 +818,43 @@ cvMetadata labels all carry null dims, and 248,486 a negative `pano_y`, so the `
 refuses nearly all of them: the coordinates are in no frame anyone can name, which is an upstream question
 (SidewalkWebpage#5667), not one the downloader can settle.
 
+#### A GSV user photosphere (`CAoS…` id)
+
+A GSV pano id that begins `CAoS` is a user-contributed photosphere, not a Street View capture, and the cbk
+tile endpoint has nothing for it: the zoom probe answered **400** for every one of 27 such ids (2026-10-21).
+Since [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166) a non-200 probe is a
+transient raise, so before [#223](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/223)
+they were retried every night and never reached the store, though labels sit on them: 27 of the 102 labelled
+panos missing from the store when panos were staged for the validator retrain (2026-10-20).
+
+The id is base64url (with `.` standing for `=` padding) of a small protobuf, `08 0a 12 <len>` followed by
+`<len>` bytes of the photo host's own photo id, and `https://lh3.ggpht.com/p/<photo id>=s0` serves the
+full-size equirectangular original. So `gsv.download_single_pano` takes a photosphere down its own branch,
+after the on-disk check and before photometa: **one request** to the photo host (the probe's retry policy and
+30 s timeout), and never photometa, the probe, a tile, the block latch or the pace file. An id that does not
+decode to exactly that protobuf takes the cbk path as before, with one INFO line.
+
+| The photo host answers | What happens | Ledger |
+|---|---|---|
+| 200, `image/jpeg`, a complete JPEG (SOI first, EOI last, a decodable frame) at the app's width/height | the response bytes are saved **verbatim** (the host's own encode, no re-encode); the width tripwire, the edge-band flag and the display-copy switch run as for a stitch | `1` |
+| the same, at a frame the app disagrees with | refused as a `frame disagreement`, the same `WARNING`/`ERROR` and the same `frame-disagreement` condition as a stitch's refusal; nothing written | none, retried |
+| the same, and the app has no width/height | the served size **is** the frame, as photometa's top level is for a stitch; one INFO line, `frame from the photo host: WxH`. Not counted in the image phase's "took their frame from photometa" line, since photometa was not asked | `1` |
+| any other status (the older form's 400 included) | raises, exactly as a probe's non-200 does; a 429 or 403, or a landing on Google's interstitial, is push-back to the [image-phase breaker](ops.md#when-google-pushes-back-on-the-image-phase) | none, retried |
+| 200 with a body that is not a complete JPEG (HTML, another Content-Type, cut short) | raises; nothing written | none, retried |
+
+**No permanent verdict rests on the photo host.** Photo ids come in two forms. The `AF1Qip…` form answered 200
+with dimensions equal to `/adminapi/panos`'s in 24 of 24 measured. The older `CIHM…` form answered 400 from
+`lh3.ggpht.com`, `lh5.googleusercontent.com` and the `streetviewpixels-pa` tile endpoint in 9 of 9: probably
+deleted, not confirmed. chicago-il's pano list held 913 `CAoS` ids on 2026-11-04 (105 labelled): 598 of the
+`CIHM` form, 285 `AF1Qip`, 30 of some other form. The `CIHM` ones still raise every night, now one photo-host
+request each where they used to cost one cbk probe request each, so the cost is unchanged; writing them off
+is a separate decision on more measurements. `refetch_panos.py` keeps its probe-only path, so a `CAoS` id
+there is still a transient 400.
+
+**Depth:** photometa answers "not found" (code 2) for a photosphere, 2 of 2 measured on 2026-11-04 (one of each
+form), so photospheres carry no GSV depth payload as far as photometa is concerned. The depth phase ledgers
+them `unavailable` at one request, once, with no code of its own for them.
+
 **What the ledger learns from GSV.** One answer is permanent and writes a `downloaded=0` row: no imagery at
 either zoom, which means **both** zoom probes came back **200** with a fully black tile (Google's answer for a
 pano id it has retired). Until [#184](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/184)
