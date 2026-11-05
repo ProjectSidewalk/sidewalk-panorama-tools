@@ -1092,8 +1092,8 @@ is damage.
 They are **not** necessarily the last rows *in the file*. Only the tripped source stops; a city carrying both
 GSV and Mapillary keeps downloading and ledgering GSV afterwards, so the tail can be thousands of GSV rows.
 `pano_id_log.csv` has no source column, so match on the id shape — Mapillary ids are
-all-numeric, GSV's are 22-character base64, Panoramax's are UUIDs. Delete those two rows, fix the
-credentials, and the next run picks up everything the breaker skipped, because none of it was ledgered.
+all-numeric, GSV's are base64 (22 characters, or longer and beginning `CAoS` for a user photosphere, #223),
+Panoramax's are UUIDs. Delete those two rows, fix the credentials, and the next run picks up everything the breaker skipped, because none of it was ledgered.
 
 The run **exits nonzero**, so `scrape_queue.py` books the city as `failed` and the night's message
 ([Hearing about a bad night](#hearing-about-a-bad-night)) carries the queue summary.

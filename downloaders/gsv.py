@@ -1404,6 +1404,192 @@ def _flag_deep_edge_band(image, pano_id):
     _edge_band_run.details.append(detail)
 
 
+# --- User photospheres (#223) ------------------------------------------------------------------------------
+#
+# A pano id beginning `CAoS` is not a Street View capture but a user-contributed photosphere, and cbk has no
+# tiles for one: the probe answers 400 for every one of them (27 of 27, 2026-10-21), which since #166 is a
+# transient raise, so they were re-attempted every night and never reached the store - with labels on them
+# (27 of the 102 labelled panos missing from the store in the 2026-10-20 validator-retrain staging). The id is
+# base64url of a small protobuf whose field 2 is the photo host's own photo id, and the photo host serves the
+# full-size equirectangular original for it, so a photosphere is fetched from there in ONE request and never
+# touches photometa, the probe, the tile fan-out, the block latch or the pace file.
+
+PHOTOSPHERE_ID_PREFIX = 'CAoS'
+
+# `=s0` is the original size; `=w{W}-h{H}` returned the same bytes (#223). Measured on the AF1Qip form: 200,
+# image/jpeg, header dims equal to /adminapi/panos' width/height in 24 of 24 (21 on 2026-10-21, 3 on 2026-11-04).
+PHOTOSPHERE_URL = 'https://lh3.ggpht.com/p/%s=s0'
+
+# The protobuf a CAoS id decodes to: field 1 varint 10 (08 0a), then field 2 length-delimited (12) with a
+# one-byte length, then that many bytes of photo id. CAoS is exactly the base64 of 08 0a 12, so every id
+# with the prefix starts this way; the length byte and the remainder are what is checked.
+_PHOTOSPHERE_HEADER = b'\x08\x0a\x12'
+
+# What a CAoS id may be made of before decoding (base64url, with `.` standing for `=` padding), and what the
+# photo id inside may be made of. The second is stricter than "ASCII" on purpose: the photo id is pasted into
+# a URL path, so a `/`, `?` or `=` inside it would ask the host a different question than the one meant. Both
+# forms measured (AF1Qip..., CIHM0og...) are base64url.
+_PHOTOSPHERE_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+\.*')
+_PHOTO_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+')
+
+
+class PhotosphereHostError(Exception):
+    """The photo host answered a photosphere with a status other than 200 (#223).
+
+    TRANSIENT under the #41 ledger: nothing written, not ledgered, retried next run - the CIHM form's 400 (9 of
+    9) lands here every night, as it landed on the cbk probe's 400 before. Deliberately NOT a requests.HTTPError:
+    pushback_reason reads an HTTPError's 403 as Google refusing THIS HOST and the #162 breaker trips on three
+    in a row, writing the fleet-wide block latch - and a photo host's 403 is one photo's answer (private,
+    removed), not the host's, so three of them in a row would stand every city's depth phase down for six hours
+    over three dead photos (#227 review). What still counts as push-back: a 429, which the session's retry policy
+    retries and surfaces as a RetryError that pushback_reason already reads, and a landing on Google's
+    interstitial at any status, raised as HTTPError below."""
+
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class PhotosphereBodyError(Exception):
+    """The photo host answered 200 with a body that is not a complete JPEG (#223).
+
+    An HTML page, a wrong Content-Type, a body without SOI first or EOI last, or one PIL cannot decode.
+    TRANSIENT under the #41 ledger like every raise out of download_pano: nothing is written, so no resume
+    marker either. Deliberately not a FrameDisagreementError - DownloadRunner counts that type by isinstance
+    (#207), and a bad body is not an answer about the frame."""
+
+
+def is_photosphere_id(pano_id):
+    """Whether `pano_id` is a GSV user photosphere (#223): the `CAoS` prefix, nothing more."""
+    return pano_id.startswith(PHOTOSPHERE_ID_PREFIX)
+
+
+def photosphere_photo_id(pano_id):
+    """The photo host's photo id wrapped in a CAoS pano id, or None when the id is not exactly that shape.
+
+    Usage::
+
+        photosphere_photo_id('CAoSLEFGMVFpcE05ZHg3dFhIa1htX193c1JDUW10UmRKd1J4dDY1Ujk5cDFGYWlu')
+        # -> 'AF1QipM9dx7tXHkXm__wsRCQmtRdJwRxt65R99p1Fain'
+
+    The id is base64url, with `.` for `=` padding and the rest of the padding omitted. None for anything that
+    does not decode to 08 0a 12 <len> followed by exactly <len> bytes of URL-safe photo id: a base64 error, a
+    wrong header, a length byte that disagrees with the remainder (a multi-byte varint length lands here
+    too), an empty or non-URL-safe photo id. No form-specific logic: the AF1Qip and the older CIHM form are
+    both just "whatever is inside", and the photo host decides. None sends the pano down the cbk path,
+    unchanged - which is exactly what every CAoS id got before #223.
+    """
+    if not is_photosphere_id(pano_id) or not _PHOTOSPHERE_ID_CHARS.fullmatch(pano_id):
+        return None
+    text = pano_id.replace('.', '=')
+    text += '=' * (-len(text) % 4)
+    try:
+        raw = base64.b64decode(text, altchars=b'-_', validate=True)
+    except ValueError:      # binascii.Error is a ValueError
+        return None
+    if raw[:3] != _PHOTOSPHERE_HEADER or len(raw) < 5 or raw[3] != len(raw) - 4:
+        return None
+    photo_id = raw[4:].decode('ascii', errors='replace')
+    return photo_id if _PHOTO_ID_CHARS.fullmatch(photo_id) else None
+
+
+def _photosphere_session():
+    """The session a photosphere fetch rides on: _request_session's retries and 30 s timeout. A named seam
+    so tests patch the photo host without touching the cbk probe's session."""
+    return _request_session()
+
+
+def _download_photosphere(pano_info, photo_id, out_image_name):
+    """Fetch a photosphere (#223) from the photo host in one request and save it, or raise.
+
+    The contract, each line a measurement in #223 or the house rule:
+      * 200, Content-Type image/jpeg, a complete JPEG (SOI first, EOI last, a SOF PIL reads, a full decode)
+        whose dimensions equal the app's width/height: the response BYTES are written verbatim through
+        atomic_output_path - the host's own encode, strictly better than a PIL re-encode of it - then the
+        #179 edge-band flag and the display copy run as on the tile path. DownloadResult.success.
+      * The same with dimensions the app disagrees with: FrameDisagreementError, the tile path's loud
+        refusal, nothing written - counted under `frame-disagreement` like any other refusal (#207).
+      * The app has no width/height (#184's shape): the served dimensions ARE the frame, as photometa's top
+        level is on the tile path. Logged; not counted in _photometa_run.frames_from_photometa, since the
+        frame did not come from photometa.
+      * A landing on Google's interstitial, at any status: requests.HTTPError carrying the Response, as
+        _get_response raises it, so pushback_reason reads it as push-back (#162). A 429 never reaches this
+        function: the session's retry policy retries it and gives up with a RetryError, which pushback_reason
+        reads as 'HTTP 429'.
+      * Any other non-200 - the CIHM form's 400 included, and a 403: PhotosphereHostError, transient and
+        unledgered (#166) and NOT push-back (see the class). A 200 whose body is not a complete JPEG is
+        PhotosphereBodyError, also transient. NO permanent verdict rests on the photo host: a CIHM-form 400
+        (9 of 9 measured: 6 on 2026-10-21, 3 on 2026-11-04; probably deleted, not confirmed) costs one
+        request a night, as the cbk probe's 400 did before.
+    """
+    pano_id = pano_info['pano_id']
+    url = PHOTOSPHERE_URL % (photo_id,)
+    # Context-managed for the probe's reason (#51): one pool per pano, released now rather than at GC.
+    with _photosphere_session() as session:
+        # A filtered copy of the proxies, as _get_response makes it (#51).
+        response = session.get(url, headers=_random_header(), proxies={k: v for k, v in _proxies.items() if v})
+        # The interstitial first, at ANY status: a captcha page wearing a 403 is still Google's refusal.
+        landing_url = _interstitial_url(_requests_response_urls(response))
+        if landing_url is not None:
+            response.close()
+            raise requests.HTTPError('photo host landed on %s for photosphere %s: %s'
+                                     % (landing_url, pano_id, url), response=response)
+        if response.status_code != 200:
+            response.close()
+            raise PhotosphereHostError('photo host answered %s, not 200, for photosphere %s: %s'
+                                       % (response.status_code, pano_id, url), response.status_code)
+        content_type = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+        body = response.content
+    if content_type != 'image/jpeg':
+        raise PhotosphereBodyError('pano %s: the photo host answered 200 with Content-Type %r, not image/jpeg: %s'
+                                   % (pano_id, content_type, url))
+    # EOI LAST, not merely present: the body is saved verbatim, so it must be the whole image. (Store mode's
+    # is_complete_jpeg tolerates a trailer after the EOI for camera originals; nothing measured here has one,
+    # and a refusal is only a retry.)
+    if body[:2] != b'\xff\xd8' or body[-2:] != b'\xff\xd9':
+        raise PhotosphereBodyError('pano %s: the photo host answered 200 with %d bytes that are not a complete '
+                                   'JPEG (no SOI first or no EOI last): %s' % (pano_id, len(body), url))
+    try:
+        image = Image.open(BytesIO(body))
+    except (OSError, SyntaxError) as e:
+        # PIL's UnidentifiedImageError is an OSError; a broken header can surface as SyntaxError.
+        raise PhotosphereBodyError('pano %s: the photo host body is not a readable JPEG (%r): %s'
+                                   % (pano_id, e, url)) from e
+    # No image.format check: PIL picks its plugin by the leading bytes, and FF D8 was checked above.
+    served = image.size                 # from the SOF header, before any decode
+
+    # The #121 tripwire, which resolve_frame runs on the tile path and this branch bypasses. On the SERVED
+    # width: it is Google's own number, and the file about to be stored has exactly it.
+    common.warn_if_wider_than_viewer_ceiling(pano_id, served[0], 'gsv')
+
+    app_w, app_h = pano_info.get('width'), pano_info.get('height')
+    if app_w is not None and app_h is not None:
+        if (int(app_w), int(app_h)) != served:
+            # The tile path's refusal, the same words and the same two channels: the print here, and the
+            # ERROR DownloadRunner's image loop logs with the exception text.
+            refusal = ("frame disagreement: the app's frame is %dx%d but the photo host serves this photosphere "
+                       "at %dx%d (#223)" % (int(app_w), int(app_h), served[0], served[1]))
+            print("IMAGEDOWNLOAD: WARNING - pano %s: %s; not downloaded, retried next run" % (pano_id, refusal))
+            raise FrameDisagreementError('pano %s: %s' % (pano_id, refusal))
+    else:
+        logging.info("IMAGEDOWNLOAD: pano %s: no width/height in the pano list; frame from the photo host: "
+                     "%dx%d (#223)", pano_id, served[0], served[1])
+
+    try:
+        image.load()                    # the full decode: a body that cannot be read is not stored
+    except (OSError, SyntaxError) as e:
+        raise PhotosphereBodyError('pano %s: the photo host body does not decode (%r): %s'
+                                   % (pano_id, e, url)) from e
+
+    with atomic_output_path(out_image_name) as tmp_path:
+        with open(tmp_path, 'wb') as f:
+            f.write(body)
+    # After the save, as on the tile path (#179, #213 S1).
+    _flag_deep_edge_band(image, pano_id)
+    _write_display_copy(image, out_image_name, pano_id)
+    return DownloadResult.success
+
+
 def download_single_pano(storage_path, pano_info):
     pano_id = pano_info['pano_id']
 
@@ -1423,6 +1609,16 @@ def download_single_pano(storage_path, pano_info):
     # resume marker, so a pano already downloaded must cost zero requests.
     if os.path.isfile(out_image_name):
         return DownloadResult.skipped
+
+    # A user photosphere has no cbk tiles; it comes from the photo host in one request, after the skip check
+    # (so a stored one still costs nothing) and before photometa and the probe, neither of which can fetch it
+    # (#223). An id that does not decode to the photosphere protobuf goes down the cbk path below, unchanged.
+    if is_photosphere_id(pano_id):
+        photo_id = photosphere_photo_id(pano_id)
+        if photo_id is not None:
+            return _download_photosphere(pano_info, photo_id, out_image_name)
+        logging.info("IMAGEDOWNLOAD: pano %s has the photosphere prefix but does not decode to a photo id; "
+                     "trying cbk (#223)", pano_id)
 
     # A dimensionless pano photometa cannot answer for raises FrameUnknownError here - transient (#184).
     frame = resolve_frame(pano_info)
