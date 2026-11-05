@@ -61,6 +61,17 @@ def run_downloader(tmp_path, *extra_args):
     return storage, result
 
 
+def unappendable_ledger(storage):
+    """A healthy, read-only pano_id_log.csv: the read succeeds and the image phase's append open raises
+    PermissionError - an uncaught crash inside the phase, after the XML-stub fields are known and before any
+    image or depth field exists. (A directory in the file's place used to be this crash; since #203 the read
+    that fails on it is an unusable ledger, which the phase sits out instead of raising.) Read-only works as
+    non-root on Linux and through the read-only attribute on Windows."""
+    path = storage / 'pano_id_log.csv'
+    path.write_text('pano_id,downloaded,fetched_at\n')
+    os.chmod(path, 0o444)
+
+
 def last_log_fields(storage):
     with open(storage / 'log.csv') as f:
         return f.read().strip().splitlines()[-1].split(',')
@@ -101,10 +112,11 @@ def test_crash_mid_run_still_writes_a_full_width_log_row(tmp_path):
     """
     storage = tmp_path / 'storage'
     storage.mkdir()
-    # A directory where pano_id_log.csv belongs crashes the image phase on its first ledger open - after the
-    # xml-stub fields are known, before any image or depth fields exist. (A malformed ledger no longer
-    # crashes: the row-tolerant reader skips bad lines, see test_damaged_ledger_rows_are_skipped_not_fatal.)
-    (storage / 'pano_id_log.csv').mkdir()
+    # A ledger the image phase can read but not append to crashes it on the append open - after the xml-stub
+    # fields are known, before any image or depth fields exist. (A malformed ledger no longer crashes: the
+    # row-tolerant reader skips bad lines, see test_damaged_ledger_rows_are_skipped_not_fatal, and an unusable
+    # one is sat out, #203.)
+    unappendable_ledger(storage)
 
     _, result = run_downloader(tmp_path)
 
@@ -3709,8 +3721,8 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
                 DownloadRunner.CONDITION_PANO_LIST_EMPTY, DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
                 DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT,
                 DownloadRunner.CONDITION_FRAME_DISAGREEMENT,
-                DownloadRunner.CONDITION_EDGE_BAND} < DownloadRunner.RUN_CONDITIONS
-        assert len(DownloadRunner.RUN_CONDITIONS) == 12
+                DownloadRunner.CONDITION_EDGE_BAND, DownloadRunner.CONDITION_IMAGE_LEDGER} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 13
 
 
 class TestFrameRefusalsAreCountedAndFailTheNight:
@@ -3852,7 +3864,7 @@ class TestTheDepthCorpusSizeReachesLogCsv:
         an analyzer reading a crashed night can still tell how much work the city has."""
         storage = tmp_path / 'storage'
         storage.mkdir()
-        (storage / 'pano_id_log.csv').mkdir()  # the image phase's first ledger open raises
+        unappendable_ledger(storage)  # the image phase's append open raises
 
         with pytest.raises(OSError):
             call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
@@ -3920,7 +3932,7 @@ class TestField20IsTonightsRaisedAttempts:
         phase ran - is still written."""
         storage = tmp_path / 'storage'
         storage.mkdir()
-        (storage / 'pano_id_log.csv').mkdir()  # the image phase's first ledger open raises
+        unappendable_ledger(storage)  # the image phase's append open raises
 
         with pytest.raises(OSError):
             call_main_scripted(monkeypatch, tmp_path, scripted_verdicts(raised=3))
@@ -4219,6 +4231,181 @@ class TestADamagedDepthLedgerDoesNotCostTheImagePhase:
         (storage / 'pano_id_log.csv').write_bytes(b'pano_id,downloaded,fetched_at\r\naa\x81a,1,\r\n')
 
         assert DownloadRunner._store_has_history(str(storage)) is True
+
+
+class TestADamagedImageLedger:
+    """#203, the image-ledger twin of #189. progress_check read pano_id_log.csv with the platform encoding, csv's
+    default quoting and no NUL handling, and ImageLedger called it with no guard before the image loop - so one
+    undecodable byte, one NUL (on 3.10, production's interpreter), a stray quote grown past the field limit or an
+    over-long field ended the night, every night until someone hand-edited the file. The first four now cost one
+    row each; the fifth sits the image phase out under `image-ledger-unusable`, leaving the file untouched.
+
+    `\\x81` is the bad byte because it is undefined in cp1252 AND invalid UTF-8, so the tests discriminate on a
+    Windows box as well as on CI."""
+
+    HEADER = b'pano_id,downloaded,fetched_at\n'
+    STAMP = b'2026-09-10 11:04:05.123456-07:00'
+
+    def ledger(self, tmp_path, body):
+        path = tmp_path / 'pano_id_log.csv'
+        path.write_bytes(self.HEADER + body)
+        return str(path)
+
+    def overlong(self, tmp_path):
+        """A ledger csv cannot parse: a run of junk longer than the field-size limit, with no line break."""
+        storage = tmp_path / 'storage'
+        storage.mkdir(exist_ok=True)
+        (storage / 'pano_id_log.csv').write_bytes(
+            self.HEADER + b'gsvPanoIdZZZZZZZZZZZZZ,0,\n' + b'x' * (csv.field_size_limit() + 1) + b',1,\n')
+        return storage
+
+    def test_a_healthy_mixed_width_ledger_reads_unchanged(self, tmp_path):
+        """Both legal widths (docs/ops.md#fetched_at-and-the-two-row-widths), both headers, a blank stamp (the
+        skipped verdict) and the three id shapes: what the reader returned before #203 it still returns."""
+        path = tmp_path / 'pano_id_log.csv'
+        path.write_bytes(b'pano_id,downloaded\n'
+                         b'old-gsv_Id,1\n'
+                         b'123456789012,0\n'
+                         b'pano_id,downloaded,fetched_at\n'
+                         b'0b5ad5a2-6d5c-4b7a-9a3e-2f1c0d9e8b7a,1,' + self.STAMP + b'\n'
+                         b'skippedOne,1,\n'
+                         b'newFailure,0,' + self.STAMP + b'\n')
+
+        ledgered, total, success, failure = DownloadRunner.progress_check(str(path))
+
+        assert ledgered == {'old-gsv_Id', '123456789012', '0b5ad5a2-6d5c-4b7a-9a3e-2f1c0d9e8b7a', 'skippedOne',
+                            'newFailure'}
+        assert (total, success, failure) == (5, 3, 2)
+
+    def test_an_undecodable_byte_costs_its_row_only(self, tmp_path):
+        path = self.ledger(tmp_path, b'aa0001,1,\naa\x81002,0,\naa0003,0,' + self.STAMP + b'\n')
+
+        ledgered, total, success, failure = DownloadRunner.progress_check(path)
+
+        assert {'aa0001', 'aa0003'} <= ledgered
+        assert 'aa�002' in ledgered, 'the damaged id matches no pano, so that one pano is re-attempted'
+        assert (total, success, failure) == (3, 1, 2)
+
+    def test_a_nul_costs_its_row_only_under_python_3_10_csv(self, tmp_path, csv_refuses_nul):
+        """A zero-filled tail and a NUL-tailed torn row. On 3.10 csv raises `line contains NUL`, which was the
+        crash; csv_refuses_nul gives every interpreter that answer, so this fails off CI too without the strip."""
+        path = self.ledger(tmp_path, b'aa0001,1,\naa0002\0\0\0\n\0\0\0\0\naa0003,0,\n')
+
+        ledgered, total, success, failure = DownloadRunner.progress_check(path)
+
+        assert ledgered == {'aa0001', 'aa0003'}
+        assert (total, success, failure) == (2, 1, 1)
+
+    def test_a_nul_costs_its_row_only_on_this_interpreter(self, tmp_path):
+        """No emulation: discriminates on CI's 3.10 only, where the NUL is real."""
+        path = self.ledger(tmp_path, b'aa0001,1,\n\0\0\0\0\naa0003,0,\n')
+
+        assert DownloadRunner.progress_check(path)[0] == {'aa0001', 'aa0003'}
+
+    def test_a_stray_quote_is_literal_and_the_rows_after_it_are_read(self, tmp_path):
+        """Under csv's default quoting `"aa0001` opened a field that swallowed every later row: the read returned
+        {} here, so every pano after the quote - permanent 0 verdicts included - went back to the provider."""
+        path = self.ledger(tmp_path, b'"aa0001,1,\naa0002,1,\naa0003,0,' + self.STAMP + b'\naa0004,0\n')
+
+        ledgered, total, success, failure = DownloadRunner.progress_check(path)
+
+        assert ledgered == {'"aa0001', 'aa0002', 'aa0003', 'aa0004'}
+        assert (total, success, failure) == (4, 2, 2)
+
+    def test_an_overlong_field_still_raises(self, tmp_path):
+        """The degradation lives in the callers (_read_image_ledger): a partial set from the reader would make
+        every pano after the bad line look unattempted."""
+        storage = self.overlong(tmp_path)
+
+        with pytest.raises(csv.Error):
+            DownloadRunner.progress_check(str(storage / 'pano_id_log.csv'))
+
+    @pytest.mark.parametrize('damage', ['overlong', 'unreadable'])
+    def test_the_image_phase_sits_the_run_out_at_zero_attempts(self, monkeypatch, tmp_path, capsys, caplog,
+                                                                damage):
+        """Both arms of IMAGE_LEDGER_UNUSABLE_ERRORS: csv.Error, and an OSError (a directory where the file
+        should be - IsADirectoryError on Linux, PermissionError on Windows)."""
+        if damage == 'overlong':
+            storage = self.overlong(tmp_path)
+        else:
+            storage = tmp_path / 'storage'
+            (storage / 'pano_id_log.csv').mkdir(parents=True)
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+        stop_reasons, image_stats = {'image_stop': None, 'depth_stop': None}, {}
+
+        with caplog.at_level(logging.ERROR):
+            result = DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos(),
+                                                             stop_reasons=stop_reasons, image_stats=image_stats)
+
+        assert result is None
+        assert calls == []
+        assert stop_reasons['image_stop'] is None, 'D3: the depth phase leaves depth_stop alone on its twin exit'
+        assert [c['code'] for c in stop_reasons['conditions']] == [DownloadRunner.CONDITION_IMAGE_LEDGER]
+        assert stop_reasons['conditions'][0]['detail'].startswith('cannot read ')
+        assert image_stats == {}, 'field 20 stays blank: the phase never finished'
+        assert 'IMAGEDOWNLOAD: WARNING - cannot read the image ledger' in capsys.readouterr().out
+        assert any('Cannot read' in r.getMessage() and 'skipping the image phase' in r.getMessage()
+                   for r in caplog.records if r.levelno == logging.ERROR)
+
+    def test_the_unusable_ledger_is_never_touched(self, monkeypatch, tmp_path):
+        storage = self.overlong(tmp_path)
+        before = (storage / 'pano_id_log.csv').read_bytes()
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano([]))
+
+        DownloadRunner.download_panorama_images(str(storage), gsv_pano_infos())
+
+        assert (storage / 'pano_id_log.csv').read_bytes() == before
+        assert sorted(os.listdir(storage)) == ['pano_id_log.csv']
+
+    def test_through_main_the_night_writes_blank_image_fields_and_still_runs_depth(self, monkeypatch, tmp_path,
+                                                                                    fake_streetview, capsys):
+        """The whole run: exit 0 (the condition is what fails the night, through scrape_queue), one full-width
+        row with fields 7-11 BLANK - never zeros, which would read as an image corpus of 0 and a drop in prior
+        failures - the timestamp and field 19 present, field 20 blank, the depth phase run over its own ledger,
+        the condition in the run summary, both channels carrying the warning, and the store as it was."""
+        storage = self.overlong(tmp_path)
+        # A fully resolved depth ledger: the depth phase runs, skips all three, and makes no request.
+        (storage / DownloadRunner.gsv.DEPTH_LOG_FILENAME).write_bytes(
+            b'pano_id,status\r\n' + b''.join(b'%s,unavailable\r\n' % p.encode() for p in GSV_PANO_IDS))
+        snapshot = {name: (storage / name).read_bytes() for name in os.listdir(storage)}
+        csv_path = tmp_path / 'panos.csv'
+        csv_path.write_text(CSV_HEADER + GSV_CSV_ROWS)
+        calls = []
+        monkeypatch.setattr(DownloadRunner, 'download_pano', recording_download_pano(calls))
+
+        def no_request(*args, **kwargs):
+            raise AssertionError('every pano is resolved in the depth ledger')
+
+        fake_streetview.find_panorama_by_id = no_request
+        monkeypatch.chdir(tmp_path)
+
+        code = DownloadRunner.main(['sidewalk-test.invalid', str(storage), '-c', str(csv_path),
+                                    '--run-summary-file', str(tmp_path / 'summary.json')])
+
+        assert code == 0
+        assert calls == []
+        rows = log_rows(storage)
+        assert len(rows) == 1
+        fields = rows[0]
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert datetime.fromisoformat(fields[0]).tzinfo is not None
+        assert fields[4] == str(len(GSV_PANO_IDS)), 'the XML stub is written before the image phase'
+        assert fields[6:11] == [''] * 5
+        assert fields[11] != '', 'field 12, the phase duration: it did end, at once'
+        assert fields[12:16] == ['0', '0', str(len(GSV_PANO_IDS)), str(len(GSV_PANO_IDS))], 'the depth phase ran'
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(GSV_PANO_IDS))
+        assert fields[DownloadRunner.IMAGE_RAISED_FIELD - 1] == ''
+        with open(tmp_path / 'summary.json') as f:
+            summary = json.load(f)
+        assert [c['code'] for c in summary['conditions']] == ['image-ledger-unusable']
+        assert 'field larger than field limit' in summary['conditions'][0]['detail']
+        assert summary['image_stop'] is None
+        assert 'IMAGEDOWNLOAD: WARNING - cannot read the image ledger' in capsys.readouterr().out
+        assert 'skipping the image phase' in (storage / 'scrape.log').read_text(encoding='utf-8')
+        after = {name: (storage / name).read_bytes() for name in os.listdir(storage)
+                 if name != 'log.csv' and not name.startswith('scrape.log')}
+        assert after == snapshot
 
 
 class TestField5IsTheImageListsLength:
@@ -4799,6 +4986,52 @@ class TestTheImageLedgerHoldsWhatTheInlineCodeHeld:
         assert self.gsv_main(monkeypatch, tmp_path, peeking) == 0
         assert len(seen) == len(GSV_PANO_IDS)
         assert seen == [1 + i for i in range(len(seen))]
+
+
+class TestStoreModeOverAnUnusableImageLedger:
+    """#203 in store mode: pull_panos_from_store builds the same ImageLedger, so it read the same damaged file
+    the same way. It sits the run out as the image loop does - no sftp session, nothing pulled, nothing
+    registered - rather than re-pull every pano after the bad line."""
+
+    def test_the_pull_sits_the_run_out_and_the_night_still_writes_its_row(self, monkeypatch, tmp_path, capsys):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.storage.mkdir()
+        ledger = run.storage / 'pano_id_log.csv'
+        ledger.write_bytes(b'pano_id,downloaded,fetched_at\n' + b'x' * (csv.field_size_limit() + 1) + b',1,\n')
+        before = ledger.read_bytes()
+
+        code = run.main(store_csv_rows(), '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert code == 0, 'no session ran, so none failed: the condition is what fails the night'
+        assert sessions(run.record) == []
+        assert ledger.read_bytes() == before
+        assert not any(name.endswith('.jpg') for _, _, names in os.walk(run.storage) for name in names)
+        fields = run.fields()
+        assert len(fields) == DownloadRunner.LOG_CSV_FIELD_COUNT
+        assert fields[6:11] == [''] * 5
+        assert fields[12:16] == ['0'] * 4, 'store mode without --with-depth: the depth phase is (0, 0, 0, 0)'
+        assert fields[DownloadRunner.DEPTH_ELIGIBLE_FIELD - 1] == str(len(STORE_IDS))
+        assert fields[DownloadRunner.IMAGE_RAISED_FIELD - 1] == ''
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGE_LEDGER]
+        assert 'STOREPULL: WARNING - cannot read the image ledger' in capsys.readouterr().out
+        assert 'STOREPULL: Cannot read' in (run.storage / 'scrape.log').read_text(encoding='utf-8')
+
+    def test_the_pull_returns_none_at_zero_sessions(self, monkeypatch, tmp_path):
+        run = StoreRun(monkeypatch, tmp_path, jpgs())
+        run.storage.mkdir()
+        (run.storage / 'pano_id_log.csv').mkdir()  # unreadable: the OSError arm
+        stop_reasons = {'image_stop': None}
+
+        result = DownloadRunner.pull_panos_from_store(
+            str(run.storage), [{'pano_id': p, 'source': 'gsv'} for p in STORE_IDS],
+            store_sftp.StoreSettings(host=STORE_HOST, base=run.base, user=STORE_USER, port=None, key=run.key,
+                                     remote_city=STORE_CITY),
+            stop_reasons=stop_reasons)
+
+        assert result is None
+        assert sessions(run.record) == []
+        assert stop_reasons['image_stop'] is None
+        assert [c['code'] for c in stop_reasons['conditions']] == [DownloadRunner.CONDITION_IMAGE_LEDGER]
 
 
 STORE_PROCESS_DRIVER = '''\

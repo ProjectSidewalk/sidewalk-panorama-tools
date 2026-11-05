@@ -2115,6 +2115,22 @@ class TestAnyConditionFailsTheNight:
         assert '[queue] edge-band: GSV stitches saved with a deep exact-black edge band; check the work-list' in out
         assert '1 pano(s) saved with a deep edge band' in out
 
+    def test_an_unusable_image_ledger_is_labelled_and_fails_the_night(self, tmp_path, fake_runner, journal,
+                                                                      monkeypatch, fleet_in_step, capsys):
+        """#203: the image phase sat the run out over a pano_id_log.csv it could not parse. The runner exits 0
+        (the depth phase still ran), so the condition is the only thing that fails the night, and its label
+        must say which ledger and that images were skipped."""
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS_BRAVO_BB',
+                           'image-ledger-unusable=cannot read pano_id_log.csv: field larger than field limit')
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert '3/3 cities ok' in out
+        assert '[queue] image-ledger-unusable: image ledger unreadable or unparseable; image phase skipped' in out
+        assert 'field larger than field limit' in out
+
     def test_the_label_table_is_the_runners_vocabulary(self):
         """Repeated in scrape_queue rather than imported (importing DownloadRunner pulls requests and
         aiohttp into a driver that never touches either), so this is what keeps the two in step. A plain
