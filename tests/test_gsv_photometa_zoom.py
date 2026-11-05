@@ -623,8 +623,9 @@ class TestDownloadSinglePanoWithReportedLevels:
         assert requested == []
 
     def test_a_disagreement_is_transient_not_a_verdict(self, tmp_path, monkeypatch):
-        """Raised, so DownloadRunner counts it in tonight's failures and does NOT ledger it - the app's frame
-        may catch up, and permanence with no GSV breaker is the wrong default for a new evidence source."""
+        """Raised, so DownloadRunner counts it in tonight's failures and does NOT ledger it - the app's record
+        is what is wrong (#217) and a gsv_data refresh corrects it, and permanence with no GSV breaker is the
+        wrong default for a new evidence source."""
         stub_photometa(monkeypatch, SERIES_3328)
         deny_probe(monkeypatch)
 

@@ -2767,18 +2767,18 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     destination_folder = os.path.join(destination_dir, str(label_type))
                     crop_destination = os.path.join(destination_folder, str(label_id) + ".jpg")
 
-                    # Store integrity: the metadata's pano dims describe the CURRENT pano, and the image on
+                    # Store integrity: the metadata's pano dims describe the pano's frame, and the image on
                     # disk was stitched to whatever /adminapi/panos reported when it was downloaded. A
-                    # disagreement means the store is stale relative to the metadata (or, on the Mapillary
-                    # path, that thumb_original_url served something other than the recorded size) - so the
-                    # stored pixel coordinates would land in the wrong frame. Loud skip, never silent poison.
+                    # disagreement means the stored file's frame is not the pano's - e.g. one stitched at the
+                    # 13312x6656 the app recorded for every pano before 2022 (or, on the Mapillary path, that
+                    # thumb_original_url served something other than the recorded size) - so the stored
+                    # pixel coordinates would land in the wrong frame. Loud skip, never silent poison.
                     #
-                    # This does NOT catch a label whose pano_x/pano_y went stale under a pano that was
-                    # re-served at a new resolution: the dims field is a per-pano join and gets refreshed
-                    # along with the pano, so such a row presents perfectly consistent dims. Measured over
-                    # 438,410 labels / 172,790 panos, no pano carries two frames - see
-                    # reports/2026-08-10-crop-geometry-review.md. Separating those rows needs the POV replay,
-                    # not a dims comparison (#54).
+                    # A pano's frame does not change (#217): measured over 438,410 labels / 172,790 panos, no
+                    # pano carries two frames - see reports/2026-08-10-crop-geometry-review.md. What this does
+                    # NOT catch is a label whose pano_x/pano_y were recorded in a frame other than the pano's
+                    # true one: the dims field is a per-pano join, so such a row presents perfectly
+                    # consistent dims. Separating those rows needs the POV replay, not a dims comparison (#54).
                     if meta_dims is not None and meta_dims != pano.size:
                         counts['dims_mismatch'] += 1
                         if force and os.path.exists(crop_destination):

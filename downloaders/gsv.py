@@ -614,8 +614,10 @@ class FrameDisagreementError(Exception):
     turns into its own refusal and refetch_panos returns as its unledgered 'frame_shrank') - never by resolve_frame or
     resolve_zoom_and_dims - so it is TRANSIENT under the #41 ledger: counted in tonight's failures, not
     ledgered, re-attempted next run at the cost of one photometa request (or five probe requests on the
-    fallback). Deliberately not a permanent verdict: the
-    app's frame can catch up (a SidewalkWebpage gsv_data refresh is the remedy), and a permanent verdict on a
+    fallback). Deliberately not a permanent verdict: a pano's frame does not change (#217), so a served frame
+    other than the app's means the app's record is wrong (the pre-2022 hardcoded 13312x6656, or an inferred
+    value from SidewalkWebpage evolution 366 part 1), and a SidewalkWebpage gsv_data refresh is the remedy
+    that clears it; and a permanent verdict on a
     brand-new evidence source, for a source whose breaker allows 49 rows a night (#166), is the wrong default.
     """
 
@@ -1093,23 +1095,26 @@ def frame_covers_pano(pano_id, width, height, zoom):
     3. The grid's own last column, on the same middle row, (tiles_x - 1, tiles_y // 2): BLACK means the pano
        ends before the grid does. Raises.
 
-    False and the raise are kept apart because their callers treat them differently. A pano Google now serves
-    larger than a stored file is a fact about Google's archive, and refetch_panos.py ledgers it as
-    'frame_grew'. A frame larger than Google serves is the mismatch photometa's arm refuses with
-    FrameDisagreementError (unledgered, retried next run), and this is the same refusal on the probe arm: the
-    app's frame can catch up. Without check 3 that frame passed checks 1 and 2 - nothing past a 32x16 grid
-    has imagery on a 26x13 pano - and stitched ~34% black, under STITCH_MAX_BLACK_FRACTION, saved and
-    ledgered downloaded=1; refetch_panos.py spent the 512-tile fan-out to refuse it as 'too_black' and then
-    ledgered that for good.
+    False and the raise are kept apart because their callers treat them differently. A stored file smaller
+    than the frame Google serves is a fact about the store (a pano's frame does not change, #217), and
+    refetch_panos.py ledgers it as 'frame_grew'. A frame larger than Google serves is the mismatch photometa's
+    arm refuses with FrameDisagreementError (unledgered, retried next run), and this is the same refusal on the
+    probe arm: the app's record is what is wrong, and a gsv_data refresh corrects it. Without check 3 that
+    frame passed checks 1 and 2 - nothing past a 32x16 grid has imagery on a 26x13 pano - and stitched ~34%
+    black, under STITCH_MAX_BLACK_FRACTION, saved and ledgered downloaded=1; refetch_panos.py spent the
+    512-tile fan-out to refuse it as 'too_black' and then ledgered that for good.
 
     The nightly downloader needs this only when the tile probe chose the zoom (_frame_refusal): when photometa
     answers, its reported levels already say whether the app's frame is one of them. /adminapi/panos is not
     always Google's current number (#74, #121). refetch_panos.py needs it for every pano, because it fetches
-    at the frame the STORED file has, which is a scrape-time archive - and Google re-serves panos larger (measured at
-    4.6% of a sampled store, reports/2026-08-10-store-coverage.md). Fetching a 26x13 grid for a pano Google
-    now holds at 32x16 does not return a smaller version of the pano; it returns the top-left 81% of it, at
-    the stored file's exact dimensions, with no undersized tile and no black to give it away. That is a
-    silently cropped panorama saved over a correct one, and this is the only cheap thing that catches it.
+    at the frame the STORED file has, which is a scrape-time archive - and part of it was stitched at the
+    13312x6656 the app recorded for every pano before SidewalkWebpage evolution 135 (2022-03), so a 16384x8192
+    pano can sit on the store as its own top-left 81% (the likely reading of most of the 4.6% store-vs-app
+    mismatch measured in reports/2026-08-10-store-coverage.md; Google does not re-serve a pano larger, #217).
+    Fetching a 26x13 grid for a pano Google holds at 32x16 does not return a smaller version of the pano; it
+    returns the top-left 81% of it, at the stored file's exact dimensions, with no undersized tile and no black
+    to give it away. That is a silently cropped panorama saved over a correct one, and this is the only cheap
+    thing that catches it.
 
     **Callers must ask the probe first.** CBK answers a retired pano with a black 200 at every tile, which
     check 3 reads as "smaller". Both callers run this only after the probe found imagery at (0, 0), so a

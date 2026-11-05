@@ -272,7 +272,8 @@ class TestCommittedFindings:
         assert summary['headers_unreadable'] == 0
 
     def test_the_mismatch_is_the_store_holding_an_older_smaller_frame(self, summary):
-        """Direction matters: the store is a scrape-time archive, so it lags Google's re-serves."""
+        """Direction matters: the store holds files stitched at the app's pre-2022 hardcoded 13312x6656 over
+        16384x8192 panos (a pano's frame does not change, #217)."""
         m = summary['frame_mismatches']
         assert m['16384x8192->13312x6656'] >= 50
         assert m['16384x8192->13312x6656'] > sum(
