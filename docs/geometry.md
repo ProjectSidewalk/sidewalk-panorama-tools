@@ -183,6 +183,37 @@ labels, checks each label's dims against the one header, and decodes lazily only
 written, which a one-shot read cannot express. `downloaders/common.py` re-exports the walker, the sidecar
 predicate, the header reader and the ceiling from this module, so the scraper and the consumers share them.
 
+## The front end's click math — `sidewalk_panorama_tools.ps_math`
+
+The projection the Project Sidewalk front end runs when it stores a label's `pano_x`/`pano_y`, ported once.
+sidewalk-auto-labeler (`ps_placement.py`) and RampNet (`rampnet/crops.py`) each carried a port; they pin this.
+It is numpy, vectorised, degrees in and out, and has no I/O. `reports/scripts/pov_replay.py`, where it was
+written for the desk studies, now re-exports it.
+
+| Function | What it is |
+|---|---|
+| `get_3d_fov(zoom)` | `get3dFov`: the viewer's field of view at a zoom (89.75° at 1, 53° at 2, 27.68° at 3) |
+| `pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom, canvas_width=720, canvas_height=480)` | `calculatePovIfCentered`: the POV a click would have at the canvas centre |
+| `exact_depression_deg(...)` | the same click's depression below the horizon, `-pov_pitch` |
+| `pano_xy_from_pov(pov_heading, pov_pitch, camera_heading, pano_width, pano_height)` | `calculatePanoXYFromPov` with evolution 179's round-then-wrap: integer pano pixels |
+| `pov_from_pano_xy(pano_x, pano_y, camera_heading, pano_width, pano_height)` | its inverse, continuous. The forward map rounds, so pixel → POV → pixel is exact and POV → pixel → POV is back within one pixel (360 / `pano_width` degrees) |
+| `depression_from_pano_y(pano_y, pano_height)` | the depression a stored row implies |
+| `predict_blend_distance(depression_deg)` | label-latlng-estimation #3's distance: a cotangent on the camera height above `BLEND_DEG` (11.25°) of depression, a linear tail below it, capped at `DIST_CAP_M` (50 m) |
+
+The frames, the same in every function:
+
+* `pov_heading` is degrees **clockwise from north**, in (−180°, 180°]; `pov_pitch` is degrees, **positive up**.
+* The pano raster is **heading-centred**: its centre column looks along `camera_heading` (the photographer's
+  heading), so column zero is at bearing `camera_heading − 180`, and the horizon is row `pano_height / 2`.
+* **Depression is positive down**: `depression = −pov_pitch`.
+* There is no rig pitch or roll: the front end ignores the pose. That is #54, and what `geometry.label_view`'s
+  tilt corrects.
+
+`tests/test_ps_math.py` pins `pov_if_centered` and the unrounded `calculatePanoXYFromPov` against a line-by-line
+transcription of `UtilitiesPanomarker.js` at SidewalkWebpage tag `v7.19.10`, and the round trips on a grid that
+crosses the seam and both hemispheres. `viewport_view` (RampNet's on-screen view of a label) is not here; it
+stays in RampNet.
+
 ## Provenance and releases
 
 The view geometry is ported from RampNet `rampnet/crops.py` at commit
@@ -197,6 +228,8 @@ that they match), tag it, and say in the release what a consumer will see change
 **Releases.**
 
 * **1.1.0** (2026-11-05, #222 steps 4-6): adds `store` (the pano store's layout, moved here from
-  `downloaders/common.py`, which re-exports it), and `pillow` as a dependency. Nothing in `geometry`, `pose`
+  `downloaders/common.py`, which re-exports it), `ps_math` (the front end's click math, moved here from
+  `reports/scripts/pov_replay.py`, with the new inverse `pov_from_pano_xy`), and `pillow` as a dependency.
+  Nothing in `geometry`, `pose`
   or `torch_geometry` changed, so a consumer re-pinning sees the same views byte for byte.
 * **1.0.0**: the gnomonic label view, `pose`, and the torch twin.

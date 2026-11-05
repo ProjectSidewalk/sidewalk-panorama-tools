@@ -3,6 +3,7 @@ paths:
   - "CropRunner.py"
   - "pano_pose.py"
   - "sidewalk_panorama_tools/*.py"
+  - "tests/test_ps_math.py"
   - "tests/test_geometry.py"
   - "tests/test_torch_geometry.py"
   - "docs/geometry.md"

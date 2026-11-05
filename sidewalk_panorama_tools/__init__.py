@@ -1,6 +1,6 @@
 """Project Sidewalk panorama geometry, installable (docs/geometry.md).
 
-Four modules:
+Five modules:
 
 * :mod:`sidewalk_panorama_tools.geometry` - a perspective (gnomonic) view of a label from its
   equirectangular panorama, with rig-tilt correction. :func:`~sidewalk_panorama_tools.geometry.label_view`
@@ -11,6 +11,9 @@ Four modules:
   ``.depth.npz`` and ``.w<N>.jpg`` display copy), the one store walker, the JPEG header reader, and
   :func:`~sidewalk_panorama_tools.store.read_pano`, which refuses a stored pano whose frame is not the
   label's (:class:`~sidewalk_panorama_tools.store.PanoDimsMismatch`) before decoding it.
+* :mod:`sidewalk_panorama_tools.ps_math` - the Project Sidewalk front end's click and POV math
+  (``calculatePovIfCentered``, ``calculatePanoXYFromPov`` and its inverse, ``get3dFov``) and the label
+  distance blend, ported once (``reports/scripts/pov_replay.py`` re-exports it).
 * :mod:`sidewalk_panorama_tools.torch_geometry` - optional (the ``[torch]`` extra): the same sampling grid
   built with torch on any device, and the ``grid_sample`` normalization for a wrap-padded pano.
 

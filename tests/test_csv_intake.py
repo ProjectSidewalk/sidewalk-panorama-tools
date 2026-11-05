@@ -696,7 +696,7 @@ PRODUCTION_MODULES = ['DownloadRunner.py', 'CropRunner.py', 'config.py', 'scrape
                       'downloaders/panoramax.py', 'downloaders/store_sftp.py',
                       'sidewalk_panorama_tools/__init__.py', 'sidewalk_panorama_tools/geometry.py',
                       'sidewalk_panorama_tools/pose.py', 'sidewalk_panorama_tools/torch_geometry.py',
-                      'sidewalk_panorama_tools/store.py']
+                      'sidewalk_panorama_tools/store.py', 'sidewalk_panorama_tools/ps_math.py']
 
 
 def imported_names(source):
