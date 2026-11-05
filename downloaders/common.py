@@ -5,8 +5,6 @@ import errno
 import importlib
 import logging
 import os
-import re
-import struct
 import tempfile
 from datetime import datetime, timezone
 
@@ -127,84 +125,16 @@ def exclusive_host_lock(path):
         # way out and mask the caller's own exception.
         os.close(fd)
 
-# Start-of-frame markers whose payload carries the image dimensions. DHT/DAC/RST/SOS are excluded;
-# 0xC4/0xC8/0xCC look like SOF numerically and are not.
-SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
-                         0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
-
-# Markers that stand alone: no length field follows, so the scanner must not try to skip a segment.
-STANDALONE_JPEG_MARKERS = frozenset({0x01, 0xD8, 0xD9}) | frozenset(range(0xD0, 0xD8))
-
-
-def jpeg_dimensions(path):
-    """(width, height) from a JPEG's SOF header, or None if the file is not a readable JPEG.
-
-    Header-only: a 10 MB equirectangular pano costs a few reads instead of a full decode, which is what
-    makes sweeping a whole store practical - Pillow would decode 16384 x 8192 x 3 = 384 MB to answer the
-    same question. Returns None rather than raising, because every caller is a sweep that must survive a
-    truncated file at pano 1300 of 1400 rather than dying on it.
-
-    Lives here rather than in the script that first needed it (reports/scripts/store_coverage.py, which
-    now imports it) because refetch_panos.py needs the same answer for every pano it considers, and a
-    second copy of a hand-rolled marker scanner is exactly the kind of duplicate this repo has been bitten
-    by before.
-    """
-    try:
-        with open(path, 'rb') as f:
-            if f.read(2) != b'\xff\xd8':
-                return None
-            while True:
-                byte = f.read(1)
-                while byte and byte != b'\xff':
-                    byte = f.read(1)
-                while byte == b'\xff':          # fill bytes: 0xFF may repeat before the marker
-                    byte = f.read(1)
-                if not byte:
-                    return None
-                marker = byte[0]
-                if marker in STANDALONE_JPEG_MARKERS:
-                    continue
-                header = f.read(2)
-                if len(header) < 2:
-                    return None
-                seglen = struct.unpack('>H', header)[0]
-                if marker in SOF_MARKERS:
-                    body = f.read(5)
-                    if len(body) < 5:
-                        return None
-                    height, width = struct.unpack('>HH', body[1:5])
-                    return width, height
-                if seglen < 2:
-                    return None
-                f.seek(seglen - 2, os.SEEK_CUR)
-    except OSError:
-        return None
-
-
-# The largest panoramas our own downloader writes are 16384 x 8192 = 134 MP, over Pillow's 89 MP
-# DecompressionBombWarning default. A named ceiling rather than None: the store is trusted, but "no limit at
-# all" would also swallow a genuinely corrupt header claiming absurd dimensions - and Pillow only hard-fails
-# above 2x its threshold, so the untouched default turns a routine modern pano into a warning per file.
-MAX_PANO_PIXELS = 16384 * 8192
-
-
-def raise_decompression_bomb_ceiling():
-    """Let Pillow decode our own 134 MP panoramas without a DecompressionBombWarning on every one.
-
-    Process-level policy, so a `main()` calls it and no library function does: this rewrites a PIL global
-    that belongs to whoever imported us, and since #52.1 that can be another program. A library caller who
-    wants the ceiling calls this itself; one who doesn't gets a warning, not a failure.
-
-    Every entry point that opens a stored panorama needs it - CropRunner, downscale_panos, refetch_panos'
-    --measure, and DownloadRunner. That last one is currently a policy for a path nothing takes: #115 put an
-    Image.open on the Mapillary download path, and WRITE_DISPLAY_COPIES (below) has been False since
-    2026-09-09, so nothing reaches it. It is kept because it is correct either way and is needed the moment
-    the switch is flipped - see DownloadRunner.main. It lives
-    here rather than in CropRunner, where it was written, because that list stopped being one script's
-    concern; CropRunner re-exports the name for the two reports/scripts callers that reach for it there.
-    """
-    if Image.MAX_IMAGE_PIXELS is not None and Image.MAX_IMAGE_PIXELS < MAX_PANO_PIXELS:
-        Image.MAX_IMAGE_PIXELS = MAX_PANO_PIXELS
+# The JPEG header reader and the decompression-bomb ceiling are defined in the installable package
+# (sidewalk_panorama_tools/store.py, #222 step 5) and re-exported here, so every existing caller, test and
+# rules-file sentence that names `common.<name>` stays true and there is still one definition of each.
+from sidewalk_panorama_tools.store import (  # noqa: E402,F401  (re-exports)
+    MAX_PANO_PIXELS,                    # defined in sidewalk_panorama_tools/store.py
+    SOF_MARKERS,                        # defined in sidewalk_panorama_tools/store.py
+    STANDALONE_JPEG_MARKERS,            # defined in sidewalk_panorama_tools/store.py
+    jpeg_dimensions,                    # defined in sidewalk_panorama_tools/store.py
+    raise_decompression_bomb_ceiling,   # defined in sidewalk_panorama_tools/store.py
+)
 
 
 def black_fraction(image):
@@ -477,44 +407,23 @@ DOWNSCALED_MAX_WIDTH = 8192
 #: since an existing sidecar is its own resume marker and is never re-encoded.
 DOWNSCALED_JPEG_QUALITY = 85
 
-_SIDECAR_SUFFIX = re.compile(r'\.w(\d+)\.jpg$')
+# The store's naming rules live in the installable package (sidewalk_panorama_tools/store.py, #222 step 5),
+# which sidewalk-ai-api, RampNet and the auto-labeler pin; these names are re-exported so nothing that says
+# `common.walk_store_panos` moved. walk_store_panos stays "the one definition of this file is a panorama".
+from sidewalk_panorama_tools.store import (  # noqa: E402,F401  (re-exports)
+    is_downscaled_sidecar,              # defined in sidewalk_panorama_tools/store.py
+    walk_store_panos,                   # defined in sidewalk_panorama_tools/store.py
+)
+from sidewalk_panorama_tools.store import sidecar_path as _sidecar_path  # noqa: E402
 
 
 def downscaled_sidecar_path(pano_path, max_width=None):
-    """'<pano stem>.w<max_width>.jpg', beside the pano."""
-    if max_width is None:
-        max_width = DOWNSCALED_MAX_WIDTH
-    stem, _ = os.path.splitext(pano_path)
-    return '%s.w%d.jpg' % (stem, max_width)
+    """'<pano stem>.w<max_width>.jpg', beside the pano (`store.sidecar_path` at this repo's cap).
 
-
-def is_downscaled_sidecar(filename):
-    """Whether a store filename is a display copy rather than a panorama."""
-    return _SIDECAR_SUFFIX.search(os.path.basename(filename)) is not None
-
-
-def walk_store_panos(storage_path):
-    """Yield the path of every stored panorama under `storage_path`, in a stable order.
-
-    Only `<storage_path>/<2 chars>/<id>.jpg` with the shard matching id[:2] is a panorama - the layout
-    gsv.download_single_pano writes. Anything else carrying a .jpg suffix is not: a crops tree, a stray file
-    at the top level, a `.part` left by a crashed writer (not a .jpg at all), and above all a `.w8192.jpg`
-    display copy, whose name shares the pano's first two characters and whose stem would otherwise be handed
-    on as a pano id like `<real id>.w8192`.
-
-    ONE definition, deliberately (#115). This predicate was written twice - refetch_panos.walk_store and the
-    backfill's own sweep - and the sidecar exclusion is the kind of clause a third copy forgets: a walker
-    that skips it does not fail, it invents pano ids, which is silent everywhere it matters. Same reasoning
-    as jpeg_dimensions above, which moved here the moment it had a second caller. A new store walker calls
-    this rather than re-deriving the filter, and shapes the result however it likes.
+    The default is read from this module's DOWNSCALED_MAX_WIDTH at call time, so the cap stays a common.py
+    decision (a disk choice) and a test that moves it moves the name too.
     """
-    for shard in sorted(os.listdir(storage_path)):
-        shard_path = os.path.join(storage_path, shard)
-        if len(shard) != 2 or not os.path.isdir(shard_path):
-            continue
-        for filename in sorted(os.listdir(shard_path)):
-            if filename.endswith('.jpg') and filename[:2] == shard and not is_downscaled_sidecar(filename):
-                yield os.path.join(shard_path, filename)
+    return _sidecar_path(pano_path, DOWNSCALED_MAX_WIDTH if max_width is None else max_width)
 
 
 def downscaled_size(width, height, max_width):

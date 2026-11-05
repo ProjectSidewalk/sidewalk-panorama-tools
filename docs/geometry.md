@@ -2,7 +2,9 @@
 
 One shared implementation of "render a perspective (gnomonic) view of a Project Sidewalk label from its
 equirectangular panorama, with rig-tilt correction", installable with pip so other projects pin it instead of
-copying it. It is numpy-only and has no I/O. Two projects use it:
+copying it. The geometry is numpy-only and has no I/O; since 1.1.0 the package also carries
+[the pano store's layout](#the-pano-store--sidewalk_panorama_toolsstore), the one module that touches files. Two
+projects use the geometry:
 
 * **sidewalk-validator-ai**, the training pipeline, which cuts its training views with it.
 * **sidewalk-ai-api**, the production API, which renders the same view of a label at inference time.
@@ -17,7 +19,8 @@ pip install "sidewalk-panorama-tools @ git+https://github.com/ProjectSidewalk/si
 ```
 
 Pin a tag, never a branch. The distribution installs two things: the `sidewalk_panorama_tools` package and
-`pano_pose`, a top-level module. Its only dependency is `numpy`, and it needs Python 3.9 or newer. None of the
+`pano_pose`, a top-level module. It depends on `numpy` and, since 1.1.0, `pillow` (`store.read_pano` decodes a
+stored pano; the geometry modules never import it), and it needs Python 3.9 or newer. None of the
 runners (`DownloadRunner.py`, `CropRunner.py`, ...) is installed; they still run from a checkout.
 
 ## Usage
@@ -133,6 +136,53 @@ corrects the tilt by rotating every ray rather than shifting a window, so at the
 of a tilted `label_view` is the same rig pixel that `--tilt-correction` centres on. Both rest on the same `pano_pose`
 definitions, so the sign and the frames cannot diverge.
 
+## The pano store — `sidewalk_panorama_tools.store`
+
+The layout every consumer of the panorama store reads, defined once. sidewalk-ai-api, RampNet and the
+auto-labeler scripts each hardcoded it (#222); they pin this module instead. One directory per city, and inside
+it one shard per pano, named for the id's first two characters whatever the source (base64url GSV ids,
+all-digit Mapillary ids, UUID Panoramax ids):
+
+```
+<store>/<city>/<id[:2]>/<id>.jpg          the panorama, as stitched (rig frame)
+<store>/<city>/<id[:2]>/<id>.depth.npz    its GSV depth artifact (docs/depth.md)
+<store>/<city>/<id[:2]>/<id>.w8192.jpg    a display copy (#115): not a panorama, never cut from
+```
+
+```python
+from sidewalk_panorama_tools.store import (pano_path, depth_path, walk_store_panos, jpeg_dimensions,
+                                           read_pano, PanoDimsMismatch)
+
+path = pano_path("/mnt/panostore", pano_id, city="seattle-wa")
+try:
+    pano = read_pano(path, expected_width=label["pano_width"], expected_height=label["pano_height"])
+except PanoDimsMismatch as e:        # e.expected, e.stored: (width, height)
+    ...                              # skip the label: its pano_x/pano_y are in another frame
+for pano_file in walk_store_panos("/mnt/panostore/seattle-wa"):
+    width, height = jpeg_dimensions(pano_file)      # header only; None for an unreadable file
+```
+
+* `shard`, `pano_path`, `depth_path`, `sidecar_path(pano_file, max_width)` build paths; pass `city=` with the
+  store root, or leave it out with a city's own directory. `is_downscaled_sidecar(name)` says whether a file
+  is a display copy.
+* **`walk_store_panos(city_dir)` is the one definition of "this file is a panorama".** Only
+  `<id[:2]>/<id>.jpg` in its own shard counts. A walker that forgets the display-copy rule does not fail, it
+  invents pano ids like `<id>.w8192`, so never list `*.jpg` by hand.
+* `jpeg_dimensions(path)` reads `(width, height)` from the JPEG header without decoding: a 16384×8192 pano
+  costs a few reads instead of 384 MB.
+* **`read_pano(path, expected_width=None, expected_height=None)`** checks the header against the label's
+  `pano_width`/`pano_height` and raises `PanoDimsMismatch` **before decoding** when they differ, then
+  returns the loaded `PIL.Image`. It is the cropper's dims preflight (`docs/cropper.md`): a stored file whose
+  frame is not the pano's, most often one stitched at the 13312×6656 the app hardcoded until 2022-03, would put
+  every label in the wrong place. It reads panos up to `MAX_PANO_PIXELS` (16384 × 8192) without Pillow's
+  decompression-bomb warning and without changing `Image.MAX_IMAGE_PIXELS`, which is process policy
+  (`raise_decompression_bomb_ceiling()`, for a `main()` to call), and refuses a header claiming more.
+
+`CropRunner.py` makes the same comparison but does not call `read_pano`: it opens a pano once for all its
+labels, checks each label's dims against the one header, and decodes lazily only when a crop is about to be
+written, which a one-shot read cannot express. `downloaders/common.py` re-exports the walker, the sidecar
+predicate, the header reader and the ceiling from this module, so the scraper and the consumers share them.
+
 ## Provenance and releases
 
 The view geometry is ported from RampNet `rampnet/crops.py` at commit
@@ -143,3 +193,10 @@ uploaded to makelab2 by itself; `sidewalk_panorama_tools.pose` re-exports it.
 
 A geometry change is a release. Bump `version` in `pyproject.toml` and `__version__` together (a test checks
 that they match), tag it, and say in the release what a consumer will see change when it re-pins.
+
+**Releases.**
+
+* **1.1.0** (2026-11-05, #222 steps 4-6): adds `store` (the pano store's layout, moved here from
+  `downloaders/common.py`, which re-exports it), and `pillow` as a dependency. Nothing in `geometry`, `pose`
+  or `torch_geometry` changed, so a consumer re-pinning sees the same views byte for byte.
+* **1.0.0**: the gnomonic label view, `pose`, and the torch twin.

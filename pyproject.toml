@@ -13,13 +13,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sidewalk-panorama-tools"
-version = "1.0.0"
-description = "Project Sidewalk panorama geometry: perspective views of a label from an equirectangular pano, with rig-tilt correction."
+version = "1.1.0"
+description = "Project Sidewalk panorama geometry: perspective views of a label from an equirectangular pano, with rig-tilt correction, and the pano store layout."
 readme = "docs/geometry.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = ["numpy"]
+# pillow since 1.1.0: sidewalk_panorama_tools.store.read_pano decodes a stored pano (imported lazily there).
+dependencies = ["numpy", "pillow"]
 
 [project.optional-dependencies]
 # sidewalk_panorama_tools.torch_geometry: the sampling grid on the GPU. Imported lazily; never required.

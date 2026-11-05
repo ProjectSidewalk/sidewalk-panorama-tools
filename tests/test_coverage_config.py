@@ -42,6 +42,8 @@ PRODUCTION_MODULES = {
     'sidewalk_panorama_tools/__init__.py',
     'sidewalk_panorama_tools/geometry.py',
     'sidewalk_panorama_tools/pose.py',
+    # The store layout (#222 step 5): downloaders/common.py re-exports from it, so it is production code.
+    'sidewalk_panorama_tools/store.py',
     # Measured in CI: requirements.txt installs torch (streetlevel -> pyequilib), so its test runs there.
     'sidewalk_panorama_tools/torch_geometry.py',
 }
