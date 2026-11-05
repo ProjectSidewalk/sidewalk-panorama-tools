@@ -1,0 +1,397 @@
+{
+ "chicago_join": {
+  "by_form": {
+   "AF1Qip": {
+    "ids": 285,
+    "ledgered": 285,
+    "ledgered_labelled": 52,
+    "ledgered_verdicts": {
+     "0": 285
+    },
+    "unledgered": 0,
+    "unledgered_labelled": 0
+   },
+   "CIAB": {
+    "ids": 30,
+    "ledgered": 22,
+    "ledgered_labelled": 5,
+    "ledgered_verdicts": {
+     "0": 22
+    },
+    "unledgered": 8,
+    "unledgered_labelled": 2
+   },
+   "CIHM": {
+    "ids": 598,
+    "ledgered": 330,
+    "ledgered_labelled": 46,
+    "ledgered_verdicts": {
+     "0": 330
+    },
+    "unledgered": 268,
+    "unledgered_labelled": 0
+   }
+  },
+  "ledgered_not_in_list": [],
+  "ledgered_total": 637,
+  "unledgered_non_af1qip": 276,
+  "unledgered_total": 276
+ },
+ "chicago_list": {
+  "by_form": {
+   "AF1Qip": {
+    "ids": 285,
+    "labelled": 52
+   },
+   "CIAB": {
+    "ids": 30,
+    "labelled": 7
+   },
+   "CIHM": {
+    "ids": 598,
+    "labelled": 46
+   }
+  },
+  "caos_count": 913,
+  "city": "chicago-il",
+  "labelled_count": 64087,
+  "pano_count": 288959
+ },
+ "chicago_log_tail": {
+  "max_raised": 276,
+  "rows": 8,
+  "runs": [
+   {
+    "image_eligible": 288015,
+    "raised": 276,
+    "start": "2026-10-31 19:00:24.048098-07:00"
+   },
+   {
+    "image_eligible": 288129,
+    "raised": 99,
+    "start": "2026-11-01 19:00:26.466804-08:00"
+   },
+   {
+    "image_eligible": 288129,
+    "raised": 276,
+    "start": "2026-11-01 19:22:04.764084-08:00"
+   },
+   {
+    "image_eligible": 288510,
+    "raised": 40,
+    "start": "2026-11-02 19:00:30.593036-08:00"
+   },
+   {
+    "image_eligible": 288510,
+    "raised": 276,
+    "start": "2026-11-02 19:44:41.298569-08:00"
+   },
+   {
+    "image_eligible": 288513,
+    "raised": 276,
+    "start": "2026-11-03 19:00:14.430318-08:00"
+   },
+   {
+    "image_eligible": 288959,
+    "raised": 18,
+    "start": "2026-11-04 19:55:37.287218-08:00"
+   },
+   {
+    "image_eligible": 289073,
+    "raised": 276,
+    "start": "2026-11-04 23:21:28.404563-08:00"
+   }
+  ],
+  "runs_at_max": 5
+ },
+ "chicago_store_files": {
+  "count": 5,
+  "listing": [
+   "-rw-r--r--    1 jonf  makelab  5407050 2026-10-20 17:02 CAoSLEFGMVFpcE1ub2YyODJZRzVNY3J0OVJjUHhhSGc5ZXNPNExmTnI0WExqOTBJ.jpg",
+   "-rw-r--r--    1 jonf  makelab  2242486 2026-10-20 17:02 CAoSLEFGMVFpcE51ZXBzb1lXeGpraURXNzBGSTZHbnRDUlUzT0prMjN1MlZSMWFu.jpg",
+   "-rw-r--r--    1 jonf  makelab  1051859 2026-10-20 17:02 CAoSLEFGMVFpcE5Nd1V0TUpuaWpqRHk2WHo0bzlhMm10TlQ2Nnl1UzBtR1VDWC0t.jpg",
+   "-rw-r--r--    1 jonf  makelab  1227783 2026-10-20 17:02 CAoSLEFGMVFpcFAzZDAzQlR2cWR1VlhpbzI4VEZKSlZiOFllM0JrQVpndjhuVGRs.jpg",
+   "-rw-r--r--    1 jonf  makelab  1469534 2026-10-20 17:02 CAoSLEFGMVFpcFBXMFZ5LWs5YmJsUEhsNEswVUhMSjV2U0UxajU5QnA0NmRQQVBE.jpg"
+  ]
+ },
+ "fleet_ledger": {
+  "by_form": {
+   "AF1Qip": {
+    "by_verdict": {
+     "0": 901
+    },
+    "cities": 19,
+    "rows": 901
+   },
+   "CIAB": {
+    "by_verdict": {
+     "0": 58
+    },
+    "cities": 6,
+    "rows": 58
+   },
+   "CIHM": {
+    "by_verdict": {
+     "0": 793
+    },
+    "cities": 14,
+    "rows": 793
+   }
+  },
+  "by_row_fields": {
+   "2": 1752
+  },
+  "by_verdict": {
+   "0": 1752
+  },
+  "cities": 25,
+  "dated_rows": 0,
+  "per_city": {
+   "amsterdam": {
+    "AF1Qip": 8,
+    "CIHM": 11,
+    "total": 19
+   },
+   "burnaby": {
+    "AF1Qip": 47,
+    "total": 47
+   },
+   "chicago-il": {
+    "AF1Qip": 285,
+    "CIAB": 22,
+    "CIHM": 330,
+    "total": 637
+   },
+   "columbia-sc": {
+    "AF1Qip": 2,
+    "CIAB": 3,
+    "total": 5
+   },
+   "columbus-oh": {
+    "AF1Qip": 6,
+    "total": 6
+   },
+   "cuenca": {
+    "AF1Qip": 25,
+    "total": 25
+   },
+   "gainesville-fl": {
+    "CIAB": 1,
+    "CIHM": 173,
+    "total": 174
+   },
+   "houston-tx": {
+    "CIAB": 1,
+    "total": 1
+   },
+   "kaohsiung-tw": {
+    "AF1Qip": 15,
+    "CIAB": 27,
+    "CIHM": 204,
+    "total": 246
+   },
+   "keelung-tw": {
+    "AF1Qip": 1,
+    "total": 1
+   },
+   "knox-oh": {
+    "AF1Qip": 124,
+    "CIHM": 16,
+    "total": 140
+   },
+   "mendota-il": {
+    "AF1Qip": 3,
+    "total": 3
+   },
+   "new-taipei-tw": {
+    "AF1Qip": 2,
+    "total": 2
+   },
+   "newport-ky": {
+    "CIHM": 9,
+    "total": 9
+   },
+   "paterson-nj": {
+    "CIHM": 3,
+    "total": 3
+   },
+   "pittsburgh-pa": {
+    "AF1Qip": 19,
+    "CIHM": 1,
+    "total": 20
+   },
+   "seattle-wa": {
+    "AF1Qip": 61,
+    "CIHM": 9,
+    "total": 70
+   },
+   "spgg": {
+    "AF1Qip": 112,
+    "total": 112
+   },
+   "st-louis-mo": {
+    "AF1Qip": 21,
+    "CIHM": 2,
+    "total": 23
+   },
+   "taichung-tw": {
+    "AF1Qip": 5,
+    "total": 5
+   },
+   "taipei": {
+    "AF1Qip": 59,
+    "CIHM": 2,
+    "total": 61
+   },
+   "tucson-az": {
+    "CIHM": 14,
+    "total": 14
+   },
+   "walla-walla-wa": {
+    "AF1Qip": 1,
+    "CIHM": 1,
+    "total": 2
+   },
+   "waltham-ma": {
+    "CIAB": 4,
+    "total": 4
+   },
+   "zurich": {
+    "AF1Qip": 105,
+    "CIHM": 18,
+    "total": 123
+   }
+  },
+  "rows": 1752
+ },
+ "host_probe": {
+  "AF1Qip": {
+   "https://lh3.ggpht.com/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   },
+   "https://lh3.ggpht.com/p/%s=s0": {
+    "content_length": "3364286",
+    "content_type": "image/jpeg",
+    "status": "200"
+   },
+   "https://lh3.googleusercontent.com/p/%s=s0": {
+    "content_length": "3364286",
+    "content_type": "image/jpeg",
+    "status": "200"
+   },
+   "https://lh5.googleusercontent.com/p/%s=s0": {
+    "content_length": "3364286",
+    "content_type": "image/jpeg",
+    "status": "200"
+   }
+  },
+  "CIAB": {
+   "https://lh3.ggpht.com/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   },
+   "https://lh3.ggpht.com/p/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   },
+   "https://lh3.googleusercontent.com/p/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   },
+   "https://lh5.googleusercontent.com/p/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   }
+  },
+  "CIHM": {
+   "https://lh3.ggpht.com/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   },
+   "https://lh3.ggpht.com/p/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   },
+   "https://lh3.googleusercontent.com/p/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   },
+   "https://lh5.googleusercontent.com/p/%s=s0": {
+    "content_length": "1555",
+    "content_type": "text/html; charset=UTF-8",
+    "status": "400"
+   }
+  }
+ },
+ "measurements": {
+  "by_form": {
+   "CIAB": {
+    "content_lengths": {
+     "1555": 30
+    },
+    "content_types": {
+     "text/html; charset=UTF-8": 30
+    },
+    "final_hosts": {
+     "lh3.ggpht.com": 30
+    },
+    "labelled": 7,
+    "measured": 30,
+    "status": {
+     "400": 30
+    }
+   },
+   "CIHM": {
+    "content_lengths": {
+     "1555": 598
+    },
+    "content_types": {
+     "text/html; charset=UTF-8": 598
+    },
+    "final_hosts": {
+     "lh3.ggpht.com": 598
+    },
+    "labelled": 46,
+    "measured": 598,
+    "status": {
+     "400": 598
+    }
+   }
+  },
+  "rows": 628,
+  "unmeasured_non_af1qip": []
+ },
+ "source": {
+  "files": [
+   "2026-11-05-photosphere-forms-chicago-list.json",
+   "2026-11-05-photosphere-forms-chicago-caos-ids.csv.gz",
+   "2026-11-05-photosphere-forms-measurements.csv.gz",
+   "2026-11-05-photosphere-forms-host-probe.csv",
+   "2026-11-05-photosphere-forms-fleet-ledger.csv.gz",
+   "2026-11-05-photosphere-forms-chicago-log-tail.csv",
+   "2026-11-05-photosphere-forms-chicago-caos-files.txt"
+  ],
+  "measured_city": "chicago-il",
+  "measured_on": "2026-11-05",
+  "pace_seconds": [
+   0.5,
+   1.0
+  ],
+  "photosphere_url": "https://lh3.ggpht.com/p/%s=s0",
+  "probe_hosts": [
+   "https://lh3.ggpht.com/p/%s=s0",
+   "https://lh3.googleusercontent.com/p/%s=s0",
+   "https://lh5.googleusercontent.com/p/%s=s0",
+   "https://lh3.ggpht.com/%s=s0"
+  ]
+ }
+}
