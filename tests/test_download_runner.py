@@ -5138,3 +5138,69 @@ class TestStoreModeCli:
         assert 'The default, without this flag, is to download from the provider yourself' in text
         assert 'collaborators' in text
         assert 'PS_SFTP_HOST' in text
+
+
+OPS_MD = os.path.join(REPO_ROOT, 'docs', 'ops.md')
+
+
+def _recipe_tools_present():
+    import shutil
+    return all(shutil.which(t) for t in ('bash', 'tr', 'grep', 'cut', 'sed', 'cp', 'mv'))
+
+
+@pytest.mark.skipif(os.name != 'posix' or not _recipe_tools_present(),
+                    reason="the recipe is a POSIX pipeline; on Windows 'bash' may be WSL's. CI runs it")
+@pytest.mark.parametrize('header', ['pre-#129', 'current'])
+def test_the_unusable_image_ledger_repair_recipe_finds_and_removes_exactly_the_junk(tmp_path, header):
+    """docs/ops.md's "Repairing an image ledger the phase cannot read" (#203), steps 2 and 3 verbatim from the
+    page, against a ledger ImageLedger appended to - both row widths, a stamped row and a blank-stamp one, every
+    id shape (GSV, Mapillary digits, a Panoramax UUID) - with three kinds of junk spliced in: an over-long run of
+    binary (the case that makes the ledger unusable), a stray quote and an undecodable byte. The last two cost
+    only their own rows, but they are not ledger rows either, and a hand repair should take them out with the
+    line that matters. Step 2 must name exactly those lines - neither header, no good row of either width - and
+    after step 3 progress_check must read every good row and the file must keep its group-writable mode."""
+    with open(OPS_MD, encoding='utf-8') as f:
+        page = f.read()
+    finders = re.findall(r"`(LC_ALL=C tr -d '\\r' < pano_id_log\.csv [^`]*)`", page)
+    deleters = re.findall(r"`(cp -p pano_id_log\.csv pano_id_log\.csv\.new && sed '<N>d;<M>d' [^`]*)`", page)
+    assert len(finders) == 1 and len(deleters) == 1, (finders, deleters)
+
+    storage = str(tmp_path)
+    path = os.path.join(storage, 'pano_id_log.csv')
+    old = ['oldGsvId_-A1', '123456789012']   # two-field rows, as a pre-#129 build wrote them
+    if header == 'pre-#129':
+        with open(path, 'w', newline='') as f:
+            f.write('pano_id,downloaded\n%s,1\n%s,0\n' % tuple(old))
+        os.chmod(path, 0o664)
+    with DownloadRunner.ImageLedger(storage) as ledger:
+        ledger.record('newGsvId-B2', 1, DownloadRunner.log_timestamp())
+        ledger.record('0b5ad5a2-6d5c-4b7a-9a3e-2f1c0d9e8b7a', 0, DownloadRunner.log_timestamp())
+        ledger.record('skippedGsvId_C3', 1, '')
+    good = {'newGsvId-B2', '0b5ad5a2-6d5c-4b7a-9a3e-2f1c0d9e8b7a', 'skippedGsvId_C3'}
+    if header == 'pre-#129':
+        good |= set(old)
+    with open(path, 'rb') as f:
+        lines = f.read().split(b'\n')
+    assert lines[-1] == b'' and len(lines) == len(good) + 2, lines  # the premise: header + rows, LF
+    assert os.stat(path).st_mode & 0o777 == 0o664
+    junk = {3: b'\x9f\x80' * (csv.field_size_limit() // 2 + 1) + b',1,',
+            5: b'"quotedGsvId,1,',
+            6: b'bad\x81GsvId,0,'}
+    for number in sorted(junk):  # 1-based line numbers in the final file
+        lines.insert(number - 1, junk[number])
+    with open(path, 'wb') as f:
+        f.write(b'\n'.join(lines))
+    with pytest.raises(csv.Error):
+        DownloadRunner.progress_check(path)  # the premise: the phase would sit this ledger out
+
+    found = subprocess.run(['bash', '-c', finders[0]], cwd=storage, capture_output=True, check=True)
+    numbers = [int(line.split(b':', 1)[0]) for line in found.stdout.splitlines()]
+    assert numbers == sorted(junk), found.stdout[:400]
+
+    deleter = deleters[0].replace('<N>d;<M>d', ';'.join('%dd' % n for n in numbers))
+    subprocess.run(['bash', '-c', deleter], cwd=storage, check=True)
+
+    assert subprocess.run(['bash', '-c', finders[0]], cwd=storage, capture_output=True).stdout == b''
+    assert DownloadRunner.progress_check(path)[0] == good
+    assert os.stat(path).st_mode & 0o777 == 0o664, 'the next lab user must still be able to append'
+    assert not os.path.exists(path + '.new')

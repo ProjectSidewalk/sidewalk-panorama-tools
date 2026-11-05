@@ -323,6 +323,13 @@ permanent.** Transient failures leave no row and retry automatically on the next
   store), or [the breaker](#when-the-image-phase-stops-trusting-a-source) stopped trusting the source (both
   the withheld tripping verdict and every pano skipped after it). Retried next run.
 
+**A damaged line costs its row, not the night** ([#203](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/203)): the reader decodes UTF-8 with bad bytes replaced,
+strips NULs and reads a `"` as a literal character, so a torn row, an undecodable byte, a NUL or a stray quote
+costs only that row, and that pano is attempted again. The fifth kind of damage, a field longer than
+`csv.field_size_limit()`, makes the ledger unusable: the image phase sits the run out under
+`image-ledger-unusable` until the line is removed by hand. See
+[Repairing an image ledger the phase cannot read](#repairing-an-image-ledger-the-phase-cannot-read).
+
 Deleting `0` rows, or the whole file, is the manual force-retry lever; existing `.jpg`s are simply
 re-registered as skipped rather than re-downloaded — with a **blank** `fetched_at`, because the ledger has
 no evidence of when they were fetched (next section).
@@ -666,6 +673,11 @@ ran, and `scrape.log` says which of four reasons it was:
 A stop or crash *after* the count, in the budget split below, leaves every phase field blank but field 19
 filled, and also logs `Run failed`.
 
+One kind of row is blank in the middle rather than from a point onward: an
+[image ledger the phase cannot read](#repairing-an-image-ledger-the-phase-cannot-read) leaves fields 7–11 and
+20 blank, while field 12 (the phase's near-zero duration), the depth fields and field 19 are filled, because the
+image phase sat the run out and the depth phase still ran ([#203](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/203)).
+
 Blanks are new as of [#49](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/49) — historical
 rows are all-integer — so readers must treat them as missing data (`pandas.read_csv` surfaces them as `NaN`,
 turning those columns `float64`) rather than feeding them to `int()`.
@@ -983,6 +995,46 @@ affected. In the city's store directory:
 
 `tests/test_depth_phase.py` runs steps 2 and 3, verbatim from this page, against a ledger the depth phase wrote
 with junk spliced in.
+
+### Repairing an image ledger the phase cannot read
+
+| what you see | code in the night's message | what happened | what to do |
+|---|---|---|---|
+| `IMAGEDOWNLOAD: WARNING - cannot read the image ledger` (`STOREPULL:` in [store mode](downloader.md#pulling-from-the-project-sidewalk-pano-store)) | `image-ledger-unusable` | `pano_id_log.csv` could not be opened **or parsed**: an I/O error, or a field longer than `csv.field_size_limit()` (131,072 characters by default), which is what a crash that wrote junk into the file looks like ([#203](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/203)). The image phase sat the run out without attempting a pano; the depth phase ran as usual. The `log.csv` row has fields 7–11 **blank**, not `0` (field 12, the phase's duration, is filled; field 20 is blank), and the city's exit code is unchanged: the condition is what fails the night. One undecodable byte, a NUL, a stray `"` or a torn row is not this, on any Python version: it costs that one row, and that pano is attempted again. | `cannot read` with an OS error: check the mount and the file's permissions. `field larger than field limit`: repair the ledger by hand, below. Nothing repairs it for you, so the condition recurs every night until you do. |
+
+Why sit out rather than scrape on: the alternatives are to read the rows before the bad line, or none at all,
+and both send every pano the reader missed back to its provider, every night until the file is repaired. That
+includes the permanent `downloaded=0` verdicts, the ones a provider has already said it has nothing for. It is
+the depth ledger's policy ([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)), and the same file rule: no tool moves or truncates the ledger, because it
+is store state. In the city's store directory:
+
+1. **Copy the ledger first**: `cp -p pano_id_log.csv pano_id_log.csv.bak-$(date +%F)`.
+2. **List every line that is not a ledger row:**
+
+   `LC_ALL=C tr -d '\r' < pano_id_log.csv | LC_ALL=C grep -naEv '^(pano_id,downloaded(,fetched_at)?|[A-Za-z0-9_-]+,(0|1)(,([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}[+-][0-9]{2}:[0-9]{2})?)?)$' | cut -c1-120`
+
+   prints each offending line's number and its first 120 bytes. The pattern accepts both
+   [legal widths](#fetched_at-and-the-two-row-widths) and both headers: `<id>,<0|1>`, and
+   `<id>,<0|1>,<stamp>` where the stamp is the `log_timestamp()` rendering
+   (`2026-09-10 11:04:05.123456-07:00`) or blank (a `skipped` verdict). Ids are GSV, Mapillary and Panoramax
+   ids alike, all within `[A-Za-z0-9_-]`. `LC_ALL=C` makes those ranges mean ASCII and lets `grep` read binary
+   junk byte by byte; the `tr` removes characters, never lines, so the numbers are the file's. A torn row, or
+   a float such as `1.0` from the old rewrite path, is listed too: the reader already skips it, so deleting it costs
+   nothing.
+3. **Delete those lines**, with the numbers from step 2:
+
+   `cp -p pano_id_log.csv pano_id_log.csv.new && sed '<N>d;<M>d' pano_id_log.csv > pano_id_log.csv.new && mv pano_id_log.csv.new pano_id_log.csv`
+
+   The `cp -p` first is what keeps the file's mode: the ledger is group-writable (`0664`) so that other lab
+   users' runs can append to it, and a file `sed` created on its own would take your umask instead. Re-run
+   step 2; it should print nothing.
+4. **What it costs:** nothing the reader was using, since it could not read the file at all. If the junk
+   overwrote real rows, those panos are now unledgered: a `1` whose `.jpg` is on disk is re-registered as
+   `skipped` at zero requests (blank stamp), and a `0` costs one attempt. The next night's image phase runs
+   as normal and the condition stops.
+
+`tests/test_download_runner.py` runs steps 2 and 3, verbatim from this page, against a ledger with both row
+widths and junk spliced in.
 
 ## When the image phase stops trusting a source
 
