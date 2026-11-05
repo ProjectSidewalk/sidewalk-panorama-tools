@@ -21,9 +21,11 @@ Why the measurement is built this way, since the obvious route does not exist:
   those same five counts. So the image runs in scrape.log are paired with the image rows of log.csv from the
   END backwards, and every pair is checked field for field (`align_runs`). A pair that disagrees stops the
   pairing for that city rather than being trusted.
-* **There is no per-raise duration in these extracts.** #178's step 1 landed on 2026-11-05 (the raise's ERROR
-  line now ends `(after S s)`), but every extract packed before that deploy carries none, the 2026-10-06 ones
-  included; the reader accepts lines with and without the suffix (`AFTER_RE`, `raise_seconds`). The bound
+* **There is no per-raise duration in these extracts.** #178's step 1 (the raise's ERROR line ends
+  `(after S s)`) ships with the deploy of #229, and every extract packed before that deploy carries none, the
+  2026-10-06 ones included. The reader is ready for it: `raise_seconds` reads the suffix per line, `build_runs`
+  adds `mean_raise_seconds_logged` and `raises_without_seconds` to a run with any such line, and `budget_arm`
+  uses the logged mean when every raise carries one. On these extracts none does, so the bound
   used here is the image phase's whole duration (`log.csv` field 12, whole minutes) divided by
   its raises, on runs where nothing was answered. It is an upper bound on the mean raise: the phase also
   spends time on the candidate loop's own sshfs round trips.
@@ -88,7 +90,7 @@ GATE_SWEEP = (30.0, 60.0, 90.0, 120.0, 180.0)
 
 FINAL_RE = re.compile(r'IMAGEDOWNLOAD: Final result: Completed (\d+) of (\d+) \((\d+) success, (\d+) fallback '
                       r'success, (\d+) failed, (\d+) skipped\)')
-# #178 step 1's suffix on a raise line, written from 2026-11-05: the attempt's own monotonic duration.
+# #178 step 1's suffix on a raise line, written from the deploy of #229: the attempt's own monotonic duration.
 AFTER_RE = re.compile(r' \(after (\d+(?:\.\d+)?) s\)$')
 RAISE_RE = re.compile(r'IMAGEDOWNLOAD: Failed to download pano (\S+) (?:due to error |\((.*?)\): refused by Google)')
 NO_SUCCESS_RE = re.compile(r'IMAGEDOWNLOAD: WARNING - all (\d+) attempted panos raised and none was answered')
@@ -278,7 +280,7 @@ def split_image_runs(lines):
     runs, cur = [], None
 
     def fresh():
-        return {'raise_ids': [], 'raise_kinds': collections.Counter(), 'frame': [], 'edge_band': [],
+        return {'raise_ids': [], 'raise_kinds': collections.Counter(), 'raise_seconds': [], 'frame': [], 'edge_band': [],
                 'tripped': False,
                 'no_success_line': None, 'photometa': collections.Counter()}
 
@@ -294,6 +296,7 @@ def split_image_runs(lines):
             else:
                 cur['raise_ids'].append(m.group(1))
                 cur['raise_kinds'][raise_kind(line)] += 1
+                cur['raise_seconds'].append(raise_seconds(line))    # None on a line written before #178 step 1
             continue
         m = NO_SUCCESS_RE.search(line)
         if m:
@@ -458,6 +461,7 @@ def build_runs(city, runs, rows):
         mean_ub = None
         if raised and minutes is not None:
             mean_ub = num((minutes + 0.5) * 60.0 / raised)
+        logged = [s for s in run['raise_seconds'] if s is not None]
         rec = {'city': city, 'ts': row['ts'], 'night': night_of(row['ts']),
                'era': 'post-deploy' if night_of(row['ts']) >= DEPLOY_NIGHT else 'pre-deploy',
                'raised': raised, 'raise_ids': sorted(set(run['raise_ids'])),
@@ -466,6 +470,12 @@ def build_runs(city, runs, rows):
                'failed': run['failed'], 'permanent': permanent, 'answered': answered,
                'image_minutes': minutes, 'stop': stop, 'mean_raise_seconds_upper_bound': mean_ub,
                'no_success_line': run['no_success_line'], 'photometa_lines': dict(run['photometa'])}
+        if logged:
+            # #178 step 1's per-raise duration, measured rather than bounded. Added only when a line carries
+            # it, so a record built from an extract older than that deploy (the 2026-10-06 one) is unchanged;
+            # lines without it are counted, never read as 0 s.
+            rec['mean_raise_seconds_logged'] = num(sum(logged) / len(logged))
+            rec['raises_without_seconds'] = raised - len(logged)
         out.append(rec)
         prev_idx, prev_rec = idx, rec
     return out, mismatch, len(runs), sum(1 for r in rows if image_row(r))
@@ -475,11 +485,19 @@ def count_arm(rec, floor):
     return rec['answered'] == 0 and rec['raised'] >= floor
 
 
+def run_mean_raise_seconds(rec):
+    """The mean raise a run's budget arm would read: the logged per-raise mean when EVERY raise carries #178
+    step 1's `(after S s)` (the runner's own figure), else the field-12 upper bound (or None)."""
+    if 'mean_raise_seconds_logged' in rec and rec['raises_without_seconds'] == 0:
+        return rec['mean_raise_seconds_logged']
+    return rec['mean_raise_seconds_upper_bound']
+
+
 def budget_arm(rec, gate):
-    """Whether the budget arm COULD fire: the mean raise is only bounded from above here."""
+    """Whether the budget arm COULD fire: measured when every raise logged its duration, else bounded above."""
+    mean = run_mean_raise_seconds(rec)
     return (rec['answered'] == 0 and rec['stop'] == 'max-runtime' and rec['raised'] >= 1
-            and rec['mean_raise_seconds_upper_bound'] is not None
-            and rec['mean_raise_seconds_upper_bound'] >= gate)
+            and mean is not None and mean >= gate)
 
 
 def sweep(records):

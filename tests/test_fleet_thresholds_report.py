@@ -54,7 +54,7 @@ class TestTheReducer:
         assert runs[0]['frame'][0]['kind'] == 'frame'
 
     def test_a_raise_line_with_178s_duration_suffix_reads_as_one_without_it(self):
-        """#178 step 1 appends `(after S s)` from 2026-11-05; the extracts before it carry none."""
+        """#178 step 1 appends `(after S s)` from the deploy of #229; the extracts before it carry none."""
         old = raise_line('CAoSx', 'cbk probe answered 400, not 200')
         new = old + ' (after 12.3 s)'
         refused = ('ERROR:root:IMAGEDOWNLOAD: Failed to download pano Q (HTTP 429): refused by Google: tile (3, 1) '
@@ -65,6 +65,27 @@ class TestTheReducer:
         assert ft.raise_seconds(new) == 12.3 and ft.raise_seconds(refused) == 0.4
         assert ft.raise_seconds(old) is None, 'a pre-#178 line has no duration, never 0'
         assert len(ft.split_image_runs([new, old, final(0, 0, 2, 0)])[0]['raise_ids']) == 2
+
+    def test_a_runs_logged_durations_feed_the_budget_arm_and_unlogged_lines_are_counted(self):
+        """#229 review: raise_seconds is the measurement, not decoration. A run whose every raise logged its
+        duration is judged on the logged mean; one with a line from before the deploy keeps the upper bound."""
+        logged = [raise_line('A', 'boom') + ' (after 90.0 s)', raise_line('B', 'boom') + ' (after 30.0 s)']
+        runs = ft.split_image_runs(logged + [final(0, 0, 2, 0, total=9)])
+        rows = [csv_row('2026-10-01 19:00:00-07:00', 0, 0, 2, 0, minutes=1)]
+        (rec,), _, _, _ = ft.build_runs('c', runs, rows)
+        assert rec['mean_raise_seconds_logged'] == 60.0 and rec['raises_without_seconds'] == 0
+        assert ft.run_mean_raise_seconds(rec) == 60.0
+        rec['answered'] = 0     # `answered` needs the previous row's seed; a lone run leaves it unknown
+        assert ft.budget_arm(rec, 60.0) and not ft.budget_arm(rec, 61.0)
+
+        mixed = ft.split_image_runs(logged[:1] + [raise_line('C', 'boom'), final(0, 0, 2, 0, total=9)])
+        (rec,), _, _, _ = ft.build_runs('c', mixed, rows)
+        assert rec['mean_raise_seconds_logged'] == 90.0 and rec['raises_without_seconds'] == 1
+        assert ft.run_mean_raise_seconds(rec) == rec['mean_raise_seconds_upper_bound']
+
+        old = ft.split_image_runs([raise_line('D', 'boom'), final(0, 0, 1, 0, total=9)])
+        (rec,), _, _, _ = ft.build_runs('c', old, [csv_row('2026-10-01 19:00:00-07:00', 0, 0, 1, 0, minutes=1)])
+        assert 'mean_raise_seconds_logged' not in rec, 'a pre-deploy record is unchanged (the 10-06 JSON pins it)'
 
     def test_runs_pair_from_the_end_and_a_disagreeing_pair_stops_the_pairing(self):
         runs = ft.split_image_runs([final(1, 0, 0, 0), final(2, 0, 0, 0), final(3, 0, 0, 0)])
