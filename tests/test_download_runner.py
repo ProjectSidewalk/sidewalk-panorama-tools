@@ -66,7 +66,10 @@ def unappendable_ledger(storage):
     PermissionError - an uncaught crash inside the phase, after the XML-stub fields are known and before any
     image or depth field exists. (A directory in the file's place used to be this crash; since #203 the read
     that fails on it is an unusable ledger, which the phase sits out instead of raising.) Read-only works as
-    non-root on Linux and through the read-only attribute on Windows."""
+    non-root on Linux and through the read-only attribute on Windows; root ignores the mode, so a run as root
+    (a container) skips rather than fails with a crash that never came (#226 review)."""
+    if hasattr(os, 'geteuid') and os.geteuid() == 0:
+        pytest.skip('a read-only ledger does not stop root from appending; the crash this stages cannot happen')
     path = storage / 'pano_id_log.csv'
     path.write_text('pano_id,downloaded,fetched_at\n')
     os.chmod(path, 0o444)
