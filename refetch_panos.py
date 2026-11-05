@@ -111,8 +111,9 @@ OUTCOMES = ('absent', 'unreadable', 'not_affected', 'already_clean', 'dims_chang
 # `too_black` does move with --max-black, but it cost a full fan-out to learn, so it is kept. `undersized` is
 # the other exclusion, for the reason MAX_CONSECUTIVE_UNDERSIZED gives. So is `frame_shrank` (#181): it is a
 # fact about the stored file, whose frame is larger than the pano's (a pano's frame does not change, #217), so
-# a swap or a hand repair of that file changes the answer, and at five requests asking again next pass is cheap. It is still an ANSWER,
-# not a transient failure - it never feeds MAX_CONSECUTIVE_FAILURES or the exit code, or a work-list made of
+# a swap or a hand repair of that file changes the answer, and at five requests asking again next pass is
+# cheap. It is still an ANSWER, not a transient failure - it never feeds MAX_CONSECUTIVE_FAILURES or the exit
+# code, or a work-list made of
 # these would stop every pass after five of them.
 LEDGERED_OUTCOMES = ('gone', 'frame_grew', 'upscaled', 'too_black', 'replaced')
 
@@ -518,8 +519,9 @@ def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measureme
     if not covers:
         # Google serves this pano larger than the frame we are fetching at - the stored file was stitched
         # at a frame that was never the pano's (e.g. the 13312x6656 the app hardcoded until evolution 135,
-        # 2022-03; a pano's frame does not change, #217) - so that grid would return the top-left corner of it, at the right dimensions,
-        # with no undersized tile and no black. The only gate that can see a silently cropped panorama, and
+        # 2022-03; a pano's frame does not change, #217) - so that grid would return the top-left corner of
+        # it, at the right dimensions, with no undersized tile and no black. The only gate that can see a
+        # silently cropped panorama, and
         # it runs before the fan-out (two requests to reach this answer; a third only for frame_shrank).
         # Permanent: the frame is a property of what Google holds, not of the network.
         return 'frame_grew'
