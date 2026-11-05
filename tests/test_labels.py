@@ -37,7 +37,8 @@ class TestLabelUid:
         assert L.label_uid('seattle-wa', 7) != L.label_uid('cdmx', 7)
 
     @pytest.mark.parametrize('city, label_id', [('', 1), ('a:b', 1), ('seattle-wa', 'x'), ('seattle-wa', None),
-                                                ('seattle-wa', 1.5), ('seattle-wa', True)])
+                                                ('seattle-wa', 1.5), ('seattle-wa', True), ('seattle-wa', 0),
+                                                ('seattle-wa', -1), ('seattle-wa', '0')])
     def test_an_incomplete_or_ambiguous_reference_is_refused(self, city, label_id):
         with pytest.raises(ValueError):
             L.label_uid(city, label_id)
@@ -107,6 +108,29 @@ class TestIsValidated:
                                                   (VoteCounts(3, 1, 9), True)])    # unsure abstains
     def test_thresholds_at_the_boundary(self, counts, expected):
         assert L.is_validated(counts, min_votes=4, min_agree_fraction=0.75) is expected
+
+    @pytest.mark.parametrize('agree, disagree, fraction', [(7, 18, 0.28), (14, 11, 0.56), (1, 2, 1 / 3)])
+    def test_a_share_exactly_at_the_threshold_passes(self, agree, disagree, fraction):
+        """#229 review: `0.28 * 25` is 7.000000000000001, so the product form failed 7 of 25 at 0.28."""
+        assert L.is_validated(VoteCounts(agree, disagree, 0), min_votes=1, min_agree_fraction=fraction)
+        assert not L.is_validated(VoteCounts(agree - 1, disagree + 1, 0), min_votes=1, min_agree_fraction=fraction)
+
+    def test_every_split_up_to_forty_votes_agrees_with_exact_arithmetic(self):
+        from fractions import Fraction
+        for decisive in range(1, 41):
+            for agree in range(decisive + 1):
+                share = agree / decisive                   # the double a caller would type for that share
+                counts = VoteCounts(agree, decisive - agree, 0)
+                assert L.is_validated(counts, min_votes=1, min_agree_fraction=share)
+                for other in range(decisive + 1):
+                    expected = Fraction(other, decisive) >= Fraction(agree, decisive)
+                    assert L.is_validated(VoteCounts(other, decisive - other, 0), min_votes=1,
+                                          min_agree_fraction=share) is expected
+
+    def test_a_numpy_integer_is_an_integer(self):
+        np = pytest.importorskip('numpy')
+        assert L.is_validated(VoteCounts(2, 0, 0), min_votes=np.int64(2), min_agree_fraction=np.float64(1.0))
+        assert L.label_uid('seattle-wa', np.int64(12327)) == 'seattle-wa:12327'
 
     def test_the_vote_floor_is_inclusive(self):
         assert L.is_validated(VoteCounts(2, 0, 0), min_votes=2, min_agree_fraction=1.0)

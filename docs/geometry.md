@@ -232,7 +232,8 @@ key = label_uid("seattle-wa", props["label_id"])             # "seattle-wa:12327
 
 * **`label_uid(city, label_id)`** is `"<city>:<label_id>"`. `label_id` is a per-city serial, so a label
   reference without its city is incomplete, and a join keyed on `label_id` alone silently merges labels from
-  different cities. The uid and `pano_id` are the only safe cross-city keys.
+  different cities. The uid and `pano_id` are the only safe cross-city keys. A `label_id` below 1 (a fill
+  value: every city's serial starts at 1) is refused.
 * **`vote_counts(validations, *, include_ai=False)`** tallies the API's `validations` array. Each element is
   `{"validation": "Agree" | "Disagree" | "Unsure", "validator_type": "Human" | "AI", "user_id": ...}` (read from
   a live Seattle response on 2026-11-05). The AI validator is excluded by default and is identified by
@@ -241,7 +242,8 @@ key = label_uid("seattle-wa", props["label_id"])             # "seattle-wa:12327
 * **`majority(counts, *, tie)`** compares agree with disagree; unsure abstains. `tie` is required: `"agree"`,
   `"disagree"`, `"unsure"` or `"none"`. No decisive vote at all is a tie too.
 * **`is_validated(counts, *, min_votes, min_agree_fraction)`** passes a label with at least `min_votes` decisive
-  votes (at least 1) whose agree share is at or above the fraction.
+  votes (at least 1; any integer type, numpy's included) whose agree share `agree / decisive` is at or above the
+  fraction, compared as that quotient so a share exactly on the threshold passes.
 
 **What the API's own fields mean**, measured on that response: `agree_count`, `disagree_count` and
 `unsure_count` **include the AI validator's votes** (they equal `vote_counts(..., include_ai=True)` on all 85
