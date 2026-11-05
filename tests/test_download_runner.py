@@ -5162,7 +5162,7 @@ def test_the_unusable_image_ledger_repair_recipe_finds_and_removes_exactly_the_j
     with open(OPS_MD, encoding='utf-8') as f:
         page = f.read()
     finders = re.findall(r"`(LC_ALL=C tr -d '\\r' < pano_id_log\.csv [^`]*)`", page)
-    deleters = re.findall(r"`(cp -p pano_id_log\.csv pano_id_log\.csv\.new && sed '<N>d;<M>d' [^`]*)`", page)
+    deleters = re.findall(r"`(cp -p pano_id_log\.csv pano_id_log\.csv\.new && LC_ALL=C sed '<N>d;<M>d' [^`]*)`", page)
     assert len(finders) == 1 and len(deleters) == 1, (finders, deleters)
 
     storage = str(tmp_path)

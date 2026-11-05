@@ -1011,19 +1011,19 @@ is store state. In the city's store directory:
 1. **Copy the ledger first**: `cp -p pano_id_log.csv pano_id_log.csv.bak-$(date +%F)`.
 2. **List every line that is not a ledger row:**
 
-   `LC_ALL=C tr -d '\r' < pano_id_log.csv | LC_ALL=C grep -naEv '^(pano_id,downloaded(,fetched_at)?|[A-Za-z0-9_-]+,(0|1)(,([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}[+-][0-9]{2}:[0-9]{2})?)?)$' | cut -c1-120`
+   `LC_ALL=C tr -d '\r' < pano_id_log.csv | LC_ALL=C grep -naEv '^(pano_id,downloaded(,fetched_at)?|[A-Za-z0-9_-]+,(0|1)(,([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}[+-][0-9]{2}:[0-9]{2})?)?)$' | cut -b1-120`
 
    prints each offending line's number and its first 120 bytes. The pattern accepts both
    [legal widths](#fetched_at-and-the-two-row-widths) and both headers: `<id>,<0|1>`, and
    `<id>,<0|1>,<stamp>` where the stamp is the `log_timestamp()` rendering
    (`2026-09-10 11:04:05.123456-07:00`) or blank (a `skipped` verdict). Ids are GSV, Mapillary and Panoramax
-   ids alike, all within `[A-Za-z0-9_-]`. `LC_ALL=C` makes those ranges mean ASCII and lets `grep` read binary
-   junk byte by byte; the `tr` removes characters, never lines, so the numbers are the file's. A torn row, or
+   ids alike, all within `[A-Za-z0-9_-]`. `LC_ALL=C` makes those ranges mean ASCII and lets `tr`, `grep` and `sed`
+   read binary junk byte by byte on BSD tools too (macOS, [#219](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/219)), and `cut -b` counts bytes in every locale; the `tr` removes characters, never lines, so the numbers are the file's. A torn row, or
    a float such as `1.0` from the old rewrite path, is listed too: the reader already skips it, so deleting it costs
    nothing.
 3. **Delete those lines**, with the numbers from step 2:
 
-   `cp -p pano_id_log.csv pano_id_log.csv.new && sed '<N>d;<M>d' pano_id_log.csv > pano_id_log.csv.new && mv pano_id_log.csv.new pano_id_log.csv`
+   `cp -p pano_id_log.csv pano_id_log.csv.new && LC_ALL=C sed '<N>d;<M>d' pano_id_log.csv > pano_id_log.csv.new && mv pano_id_log.csv.new pano_id_log.csv`
 
    The `cp -p` first is what keeps the file's mode: the ledger is group-writable (`0664`) so that other lab
    users' runs can append to it, and a file `sed` created on its own would take your umask instead. Re-run
