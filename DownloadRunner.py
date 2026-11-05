@@ -65,10 +65,21 @@ CONDITION_FRAME_DISAGREEMENT = 'frame-disagreement'
 # downloaded. Its own code, not an exclusion from a frame-disagreement count (#213 review, S2): a band is not
 # a frame disagreement, the limit is uncalibrated, and the detail names the first pano for the morning.
 CONDITION_EDGE_BAND = 'edge-band'
+# pano_id_log.csv could not be read, or csv could not parse it (a field over csv.field_size_limit(): a crash that
+# wrote binary junk), so the image phase - or the store pull - sat the run out without attempting a pano (#203).
+# The twin of gsv.DEPTH_CONDITION_LEDGER (#189), and its own code because the remedy is a different file. Nothing
+# repairs the ledger for us (it is store state), so this recurs every night until someone does (docs/ops.md).
+CONDITION_IMAGE_LEDGER = 'image-ledger-unusable'
 RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
     CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
     CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT, CONDITION_FRAME_DISAGREEMENT,
-    CONDITION_EDGE_BAND})
+    CONDITION_EDGE_BAND, CONDITION_IMAGE_LEDGER})
+
+# What makes the image ledger unusable rather than one row bad (#203): gsv.DEPTH_LEDGER_UNUSABLE_ERRORS' twin, for
+# the same reasons. OSError: it could not be read. csv.Error: a field over csv.field_size_limit(), the one damage
+# class progress_check still raises on. UnicodeDecodeError is kept although progress_check replaces bad bytes and
+# so never raises it: dropping the errors= kwarg can then never reintroduce the crash, only the cost of one bad byte.
+IMAGE_LEDGER_UNUSABLE_ERRORS = (OSError, csv.Error, UnicodeDecodeError)
 
 # `images-no-success` needs at least this many raised attempts and not one answer - or a budget stop with
 # nothing but raises behind it (see download_panorama_images). A floor, because one or two transient
@@ -204,10 +215,31 @@ def progress_check(csv_pano_log_path):
 
     The depth and refetch ledgers keep their own `!= 2`: neither gained a column, and a shared helper here
     would let a future widening of one silently widen all three.
+
+    Five kinds of damage, two costs - gsv._load_depth_log's list, which this reader mirrors (#189, #203):
+    - A malformed row (a line torn by a crash mid-append) is skipped, above, so that pano is re-attempted.
+    - A stray '"' is a literal character, because the ledger is read with QUOTE_NONE: the writer never quotes
+      (ids are [A-Za-z0-9_-]; fetched_at is digits and ' ', '-', ':', '.', '+' - never a quote or a comma), so
+      nothing legitimate changes. Under csv's default quoting it opened a field that swallowed every later row,
+      future appends included, and the read returned a partial set with no error - every pano after the quote
+      read as unattempted, and its permanent downloaded=0 verdict went back to the provider every night - until
+      that tail outgrew the field-size limit and became the last item.
+    - A byte that is not UTF-8 is replaced, not raised (the platform default encoding raised UnicodeDecodeError
+      and ended the night): the replacement lands inside one field, so that row either fails the shape check or
+      carries an id that matches no pano. Either way that one pano is re-attempted; nothing is written off.
+    - A NUL byte - the zero-filled residue a crash most often leaves - is stripped before csv sees it, so it too
+      costs at most its own row. Python 3.10, the production interpreter, raises `line contains NUL` rather than
+      parse such a line; 3.11 accepts it. Stripping makes every version agree.
+    - A field longer than csv.field_size_limit() raises csv.Error, deliberately. The callers
+      (IMAGE_LEDGER_UNUSABLE_ERRORS, in _read_image_ledger) sit the phase out under `image-ledger-unusable`.
+      Returning the rows before the bad line instead would re-request every pano after it - the permanent
+      downloaded=0 verdicts included - against the providers, every night until the file is repaired.
+
+    @raises csv.Error on an over-long field; OSError if the file cannot be read.
     """
     ledgered_ids, total_processed, total_success = set(), 0, 0
-    with open(csv_pano_log_path, newline='') as f:
-        for row in csv.reader(f):
+    with open(csv_pano_log_path, newline='', encoding='utf-8', errors='replace') as f:
+        for row in csv.reader((line.replace('\0', '') for line in f), quoting=csv.QUOTE_NONE):
             if len(row) not in (2, 3) or row[0] == 'pano_id' or row[1] not in ('0', '1'):
                 continue
             ledgered_ids.add(row[0])
@@ -445,6 +477,8 @@ class ImageLedger:
     """
 
     def __init__(self, storage_path):
+        """@raises IMAGE_LEDGER_UNUSABLE_ERRORS when the ledger cannot be read or parsed (see progress_check);
+        the phases construct it through _read_image_ledger, which turns that into a sat-out phase."""
         self.path = os.path.join(storage_path, "pano_id_log.csv")
         if exists(self.path):
             self.ids, self.prior_total, self.prior_success, self.prior_fail = progress_check(self.path)
@@ -570,6 +604,33 @@ GSV_PUSHBACK_PROBATION = 1
 STOP_BLOCKED = 'blocked'
 
 
+def _read_image_ledger(storage_path, stop_reasons, tag):
+    """Construct the phase's ImageLedger, or report why it cannot be and return None (#203).
+
+    Both image phases - the scrape and the store pull - read the ledger here, so the unusable arm has one
+    definition. None means "sit the run out": the caller returns before attempting a pano, so the ledger is left
+    byte-for-byte as it was (store state; the repair is a hand edit, docs/ops.md) and nothing is requested.
+    Degrading to "nothing is ledgered" instead would re-request the whole corpus, and a partial read every pano
+    after the bad line - permanent downloaded=0 verdicts included - against the providers, every night. The
+    depth phase's policy for its own ledger (#189), and the same two channels plus a condition: stdout for
+    tonight's message, scrape.log for next week, and `image-ledger-unusable` so the night fails although the
+    exit code does not change. image_stop is left as it was (None): the depth phase leaves depth_stop alone on
+    its own unusable-ledger exit, and None keeps scrape_queue from spending an extra pass on a phase that would
+    only sit out again.
+
+    @param tag The phase's log prefix ('IMAGEDOWNLOAD' or 'STOREPULL').
+    @return The ImageLedger, or None when the ledger cannot be read or parsed.
+    """
+    try:
+        return ImageLedger(storage_path)
+    except IMAGE_LEDGER_UNUSABLE_ERRORS as e:
+        path = os.path.join(storage_path, "pano_id_log.csv")
+        logging.error("%s: Cannot read %s (%s); skipping the image phase", tag, path, str(e))
+        print("%s: WARNING - cannot read the image ledger (%s). Skipping the image phase." % (tag, e))
+        note_condition(stop_reasons, CONDITION_IMAGE_LEDGER, 'cannot read %s: %s' % (path, e))
+        return None
+
+
 def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None, max_runtime_minutes=None,
                              tripped_sources=None, stop_reasons=None, block_latch_path=None,
                              pace_state_path=None, image_stats=None):
@@ -596,6 +657,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         GSV push-back is a raise, a FrameDisagreementError is not (Google answered), and a skip is neither. Set
         only at the end, so a phase that crashes leaves it unset and the field blank. An out-parameter for
         tripped_sources' reason: the return tuple IS fields 7-11.
+    @return log.csv fields 7-11 (success, fallback success, failed, skipped, total), or None when the image
+        ledger could not be read or parsed and the phase sat the run out without attempting a pano (#203;
+        _read_image_ledger). None, not five zeros: zeros would read as an image corpus of 0 and a drop in prior
+        failures, where blank fields say the phase never finished. image_stats and image_stop are left unset.
     """
     success_count, skipped_count, fallback_success_count, fail_count, total_completed = 0, 0, 0, 0, 0
     # A before/after difference, not the memory's total: a second phase in the same process (a test, or an
@@ -604,8 +669,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     edge_bands_before = gsv._edge_band_run.saved
 
     # The attempted-pano ledger, in 'storage' alongside the pano results (see progress_check for semantics).
-    # Reading it here; the append handle is opened by the `with` below.
-    ledger = ImageLedger(storage_path)
+    # Reading it here; the append handle is opened by the `with` below. Unusable: sit the run out (#203).
+    ledger = _read_image_ledger(storage_path, stop_reasons, 'IMAGEDOWNLOAD')
+    if ledger is None:
+        return None
     df_id_set, prior_total = ledger.ids, ledger.prior_total
     prior_success, prior_fail = ledger.prior_success, ledger.prior_fail
     # Seed counters from the log so "skipped" in the progress line includes panos already
@@ -1070,9 +1137,14 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
     image_stats, as download_panorama_images takes it, gets 'raised' = tonight's unledgered failures (absent,
     truncated, unplaced, unsafe id): with no permanent verdict here, that is the unledgered set (#182) - mostly
     transient, though an unsafe id fails every night for as long as it is in the list.
+
+    An unusable ledger returns None before any session, as the image loop does (#203; _read_image_ledger): a
+    partial read would re-pull every pano after the bad line, and an empty one the whole corpus.
     """
     tripped = set() if tripped_sources is None else tripped_sources
-    ledger = ImageLedger(storage_path)
+    ledger = _read_image_ledger(storage_path, stop_reasons, 'STOREPULL')
+    if ledger is None:
+        return None
     success_count = 0
     skipped_count = ledger.prior_success
     fail_count = ledger.prior_fail
@@ -1370,6 +1442,13 @@ def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_i
                                               pace_state_path=depth_pace_state,
                                               image_stats=image_stats)
         im_end_monotonic = time.monotonic()
+        if im_res is None:
+            # The image ledger was unusable and the phase sat the run out (#203). Fields 7-11 stay blank - "the
+            # phase never finished", which log_analyzer's rule 5 reports - and never zeros, which would claim an
+            # image corpus of 0 and a drop in prior failures. Field 12 is still the phase's duration (it did
+            # end, at once); field 20 stays blank because the phase never set image_stats; and the depth phase
+            # still runs below, since its ledger is a different file.
+            im_res = ('',) * 5
         fields += [im_res[0], im_res[1], im_res[2], im_res[3], im_res[4],
                    _duration_minutes(xml_end_monotonic, im_end_monotonic)]
 
