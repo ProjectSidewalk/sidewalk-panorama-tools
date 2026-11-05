@@ -857,7 +857,10 @@ form are refused **as forms**: all 598 CIHM and 30 CIAB ids in chicago-il's list
 exception to [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)'s "a non-200 is
 never a verdict", carved out on that measurement and no wider. A 400 for the `AF1Qip` form has never been seen,
 so it is unmeasured and stays a raise; a new CIHM or CIAB id is still asked once, so a host that starts serving
-the form is noticed. What the verdict does *not* say is that the picture is gone: three Google hosts refuse the
+the form is noticed. The verdict does not count toward the
+[consecutive-permanent-failure breaker](ops.md#when-the-image-phase-stops-trusting-a-source) either, nor reset
+it: that breaker guards against cbk answering black tiles across the board, and a photosphere's answer comes
+from the photo host, so a quiet night's 276 of them in a row (chicago-il) is normal, not a trip. What the verdict does *not* say is that the picture is gone: three Google hosts refuse the
 form, and whether a fourth serves it is an open question in the study. The same study found every `CAoS` row
 the fleet had ever ledgered to be a `0` from before 2026-09-17, 901 of them `AF1Qip`, which is what
 [`readmit_photosphere_writeoffs.py`](ops.md#re-admitting-the-photosphere-write-offs) is for.

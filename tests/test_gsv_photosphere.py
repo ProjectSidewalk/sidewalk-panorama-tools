@@ -452,3 +452,28 @@ class TestThroughTheImageLoop:
         codes = [c['code'] for c in stop_reasons['conditions']]
         assert codes == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
         assert wrong in stop_reasons['conditions'][0]['detail']
+
+    def test_a_run_of_refused_form_verdicts_does_not_trip_the_gsv_permanent_failure_breaker(self, tmp_path,
+                                                                                            monkeypatch, capsys,
+                                                                                            cbk_untouched):
+        """chicago-il holds 276 unledgered CIHM/CIAB ids and the loop shuffles its candidates, so a quiet night
+        is 276 permanent verdicts with no success between them - well past GSV_MAX_CONSECUTIVE_PERMANENT (#113).
+        That breaker guards against cbk answering black 200s across the board; a photosphere's verdict comes from
+        the photo host refusing its form and says nothing about cbk, so it neither counts nor resets."""
+        import DownloadRunner
+
+        n = DownloadRunner.GSV_MAX_CONSECUTIVE_PERMANENT + 10
+        panos = [caos(b'CIHM0ogKE' + ('%04d' % i).encode()) for i in range(n)]
+        assert all(gsv.photosphere_form(gsv.photosphere_photo_id(p)) == 'CIHM' for p in panos)
+        host = stub_photo_host(monkeypatch, FakeResponse(400, b'<html>Error 400</html>', 'text/html'))
+        stop_reasons, tripped = {}, set()
+        pano_infos = [dict(info(p), source='gsv') for p in panos]
+
+        DownloadRunner.download_panorama_images(str(tmp_path), pano_infos, tripped_sources=tripped,
+                                                stop_reasons=stop_reasons)
+
+        assert len(host.requests) == n, 'every id asked once'
+        assert sorted(row[0] for row in ledger_rows(tmp_path)) == sorted(panos), 'every id ledgered'
+        assert all(row[1] == '0' for row in ledger_rows(tmp_path))
+        assert tripped == set()
+        assert 'consecutive permanent failures' not in capsys.readouterr().out
