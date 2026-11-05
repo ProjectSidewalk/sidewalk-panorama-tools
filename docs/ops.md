@@ -483,7 +483,7 @@ and the swap itself goes through the same `.part`-and-rename as a download.
 
 The subtlest of the refusals is `frame_grew`, and it is the reason the tool probes before it fetches. The
 pre-2024 scraper sized its tile grid from the app's `width`/`height`, and before SidewalkWebpage evolution 135
-(2022-03) the app recorded 13312×6656 for every pano, so a grid sized from a stored 13312×6656 file can be
+(2022-03) the app hardcoded 13312×6656 for every pano, so a grid sized from a stored 13312×6656 file can be
 too small for the pano Google holds. Google does not re-serve a pano larger
 ([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)): scrape-time dimensions matched the
 app's later record on 300 of 300 Seattle panos (SidewalkWebpage #4587's store calibration), live dimensions
@@ -491,8 +491,8 @@ drifted 0.0% twice ([census](../reports/2026-08-09-photometa-census.md),
 [decay](../reports/2026-09-06-photometa-decay.md)), and no pano carries two frames
 ([crop-geometry review](../reports/2026-08-10-crop-geometry-review.md)). So the 61 of 62 stored 13312×6656
 files under an app record of 16384×8192 in [the store-coverage study](../reports/2026-08-10-store-coverage.md)
-are most likely hardcoded-frame stitches of 16384×8192 panos. That fetch does not return a smaller version of the pano —
-it returns the **top-left 81% of it**, at exactly the stored file's dimensions, with no undersized tile and
+are most likely hardcoded-frame stitches of 16384×8192 panos. Fetching the stored file's grid for such a pano does
+not return a smaller version of it — it returns the **top-left 81% of it**, at exactly the stored file's dimensions, with no undersized tile and
 no black anywhere. Nothing downstream could ever see it. Two requests, spent before the 512-tile fan-out,
 rule it out. A probe answered with anything but 200 raises, so the pano counts as a transient failure rather
 than as a frame that covers; before [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166),
