@@ -2767,10 +2767,11 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                     destination_folder = os.path.join(destination_dir, str(label_type))
                     crop_destination = os.path.join(destination_folder, str(label_id) + ".jpg")
 
-                    # Store integrity: the metadata's pano dims describe the pano's frame, and the image on
-                    # disk was stitched to whatever /adminapi/panos reported when it was downloaded. A
-                    # disagreement means the stored file's frame is not the pano's - e.g. one stitched at the
-                    # 13312x6656 the app recorded for every pano before 2022 (or, on the Mapillary path, that
+                    # Store integrity: the metadata's pano dims record the pano's frame (a record that can
+                    # itself be wrong, #217), and the image on disk was stitched to whatever /adminapi/panos
+                    # reported when it was downloaded. A disagreement most often means the stored file's frame
+                    # is not the pano's - e.g. one stitched at the 13312x6656 the app hardcoded for every pano
+                    # until 2022-03 (or, on the Mapillary path, that
                     # thumb_original_url served something other than the recorded size) - so the stored
                     # pixel coordinates would land in the wrong frame. Loud skip, never silent poison.
                     #

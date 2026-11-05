@@ -491,9 +491,9 @@ drifted 0.0% twice ([census](../reports/2026-08-09-photometa-census.md),
 [decay](../reports/2026-09-06-photometa-decay.md)), and no pano carries two frames
 ([crop-geometry review](../reports/2026-08-10-crop-geometry-review.md)). So the 61 of 62 stored 13312×6656
 files under an app record of 16384×8192 in [the store-coverage study](../reports/2026-08-10-store-coverage.md)
-are most likely hardcoded-frame stitches of 16384×8192 panos. Fetching the stored file's grid for such a pano does
-not return a smaller version of it — it returns the **top-left 81% of it**, at exactly the stored file's dimensions, with no undersized tile and
-no black anywhere. Nothing downstream could ever see it. Two requests, spent before the 512-tile fan-out,
+are most likely hardcoded-frame stitches of 16384×8192 panos. Fetching the stored file's grid for such a pano
+does not return a smaller version of it — it returns the **top-left 81% of it**, at exactly the stored file's
+dimensions, with no undersized tile and no black anywhere. Nothing downstream could ever see it. Two requests, spent before the 512-tile fan-out,
 rule it out. A probe answered with anything but 200 raises, so the pano counts as a transient failure rather
 than as a frame that covers; before [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166),
 a 403 or 404 with a black body passed it.
@@ -535,8 +535,9 @@ a re-run after a finished sweep cost nothing even if the ledger is deleted: a re
 than `--fixed-after`, so it comes back `already_clean`.
 
 `undersized` and `frame_shrank` are the other two exceptions, in the other direction. `frame_shrank` is not
-ledgered because the answer can change: the app's stored frame or the frame Google serves can move, and a
-re-check costs five requests a pass. `undersized`'s reason is different. With `fover` gone no tile should ever come back
+ledgered because the answer can change: it is a fact about the stored file, whose frame is larger than the
+pano's (a pano's frame does not change, [#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)), so a
+swap or a hand repair of that file changes it, and a re-check costs five requests a pass. `undersized`'s reason is different. With `fover` gone no tile should ever come back
 below 512 px, so one that does means the request is costing resolution again — a property of the URL, not of
 the pano. A permanent row per pano would burn the whole work-list against a bug in the request and exit 0
 while doing it. Instead the run stops after three consecutive undersized fetches, exits 1 if it saw any, and
@@ -751,9 +752,9 @@ and reaches the alarm ([Hearing about a bad night](#hearing-about-a-bad-night)).
 the first refused pano; `grep "frame disagreement" <store>/<city>/scrape.log` still lists the rest. A refusal
 is Google answering, so it never feeds the `images-no-success` condition, however many there are. The remedy
 is on the app side: a SidewalkWebpage `gsv_data` refresh that corrects the stored dimensions to what Google
-serves: a pano's frame does not change, so a disagreement means the app's record is wrong
-([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)). Whether the refused pano should instead be kept at Google's larger frame is #185 Part 2, waiting
-on about 30 nights of these counts.
+serves. A pano's frame does not change, so a disagreement means the app's record is wrong
+([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)). Whether the refused pano
+should instead be kept at Google's larger frame is #185 Part 2, waiting on about 30 nights of these counts.
 
 ## Edge black bands
 

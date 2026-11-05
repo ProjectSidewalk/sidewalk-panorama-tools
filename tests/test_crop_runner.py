@@ -1224,8 +1224,8 @@ class TestEdgeClampBehaviour:
 class TestDimsReconciliation:
     """Stored pano_x/pano_y are pixels in the metadata's pano_width x pano_height frame. If the image
     on disk has different dimensions, every crop from it is silently mis-centred (the Mapillary path
-    saves whatever thumb_original_url serves; GSV files stitched at the app's pre-2022 hardcoded
-    13312x6656 frame are not the pano's frame, #217). Metadata dims,
+    saves whatever thumb_original_url serves; GSV files stitched at the 13312x6656 the app hardcoded
+    until 2022-03 are not in the pano's frame, #217). Metadata dims,
     when present, must be reconciled against the file — a loud skip, not silent poison."""
 
     def test_mismatched_dims_are_a_loud_skip(self, crop_runner, tmp_path, caplog):

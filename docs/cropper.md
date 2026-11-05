@@ -520,10 +520,11 @@ it cuts exactly what it did before.
 Two checks reject a label rather than emit a quietly wrong crop.
 
 **Pano dimensions (`dims_mismatch`).** If the label metadata's pano dimensions disagree with the image on
-disk, the label is skipped with a warning. This is a **store-integrity** check: the metadata describes the
-pano's frame, the image was stitched to whatever the API reported when it was downloaded, so a
-disagreement means the stored file's frame is not the pano's — for example one stitched at the 13312×6656 the
-app recorded for every pano before 2022 (or, on the Mapillary path, that `thumb_original_url` served a
+disk, the label is skipped with a warning. This is a **store-integrity** check: the metadata records the
+pano's frame (a record that can itself be wrong, see [#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)), the
+image was stitched to whatever the API reported when it was downloaded, so a disagreement most often means the
+stored file's frame is not the pano's — for example one stitched at the 13312×6656 the app hardcoded for every
+pano until 2022-03 (or, on the Mapillary path, that `thumb_original_url` served a
 different size than was recorded). Measured over 438,410 labels / 172,790 panos, no pano carries two frames,
 and a pano's frame does not change ([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)).
 What it does **not** detect is a label whose `pano_x`/`pano_y` were recorded in a frame other than the

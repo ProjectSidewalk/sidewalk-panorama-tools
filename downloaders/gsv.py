@@ -615,7 +615,7 @@ class FrameDisagreementError(Exception):
     resolve_zoom_and_dims - so it is TRANSIENT under the #41 ledger: counted in tonight's failures, not
     ledgered, re-attempted next run at the cost of one photometa request (or five probe requests on the
     fallback). Deliberately not a permanent verdict: a pano's frame does not change (#217), so a served frame
-    other than the app's means the app's record is wrong (the pre-2022 hardcoded 13312x6656, or an inferred
+    other than the app's means the app's record is wrong (the 13312x6656 hardcoded until 2022-03, or an inferred
     value from SidewalkWebpage evolution 366 part 1), and a SidewalkWebpage gsv_data refresh is the remedy
     that clears it; and a permanent verdict on a
     brand-new evidence source, for a source whose breaker allows 49 rows a night (#166), is the wrong default.

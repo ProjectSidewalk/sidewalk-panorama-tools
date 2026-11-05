@@ -1133,8 +1133,8 @@ class TestFrameCoversPano:
     Google serves for this pano?
 
     The nightly downloader never needs this - it sizes the grid from Google's own current number. A repair
-    pass sizes it from a stored file, and part of the store was stitched at the app's pre-2022 hardcoded
-    13312x6656 frame, smaller than the pano Google holds (a pano's frame does not change, #217).
+    pass sizes it from a stored file, and part of the store was stitched at the 13312x6656 the app hardcoded
+    until 2022-03, smaller than the pano Google holds (a pano's frame does not change, #217).
     Fetching the smaller grid then returns the top-left corner of the larger pano at the smaller pano's
     exact dimensions: no undersized tile, no black, nothing downstream can see it.
     """
