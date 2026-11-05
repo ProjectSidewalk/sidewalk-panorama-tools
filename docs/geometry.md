@@ -214,6 +214,41 @@ transcription of `UtilitiesPanomarker.js` at SidewalkWebpage tag `v7.19.10`, and
 crosses the seam and both hemispheres. `viewport_view` (RampNet's on-screen view of a label) is not here; it
 stays in RampNet.
 
+## Validation votes — `sidewalk_panorama_tools.labels`
+
+The arithmetic four consumer repos each re-derived when deciding which labels count as validated: human-only or
+all votes, majority or thresholds, and what a tie means. Every policy is a required argument, so a caller
+states its rule rather than inheriting one; the module makes no decision about which rule is right.
+
+```python
+from sidewalk_panorama_tools.labels import label_uid, vote_counts, majority, is_validated
+
+props = feature["properties"]                                # one /v3/api/rawLabels feature
+counts = vote_counts(props["validations"])                   # VoteCounts(agree, disagree, unsure), humans only
+verdict = majority(counts, tie="none")                       # Verdict.AGREE / DISAGREE / UNSURE / NONE
+keep = is_validated(counts, min_votes=2, min_agree_fraction=0.75)
+key = label_uid("seattle-wa", props["label_id"])             # "seattle-wa:12327"
+```
+
+* **`label_uid(city, label_id)`** is `"<city>:<label_id>"`. `label_id` is a per-city serial, so a label
+  reference without its city is incomplete, and a join keyed on `label_id` alone silently merges labels from
+  different cities. The uid and `pano_id` are the only safe cross-city keys.
+* **`vote_counts(validations, *, include_ai=False)`** tallies the API's `validations` array. Each element is
+  `{"validation": "Agree" | "Disagree" | "Unsure", "validator_type": "Human" | "AI", "user_id": ...}` (read from
+  a live Seattle response on 2026-11-05). The AI validator is excluded by default and is identified by
+  `validator_type` alone, never by an account. A value outside those raises, so a new validator type is never
+  silently counted as human.
+* **`majority(counts, *, tie)`** compares agree with disagree; unsure abstains. `tie` is required: `"agree"`,
+  `"disagree"`, `"unsure"` or `"none"`. No decisive vote at all is a tie too.
+* **`is_validated(counts, *, min_votes, min_agree_fraction)`** passes a label with at least `min_votes` decisive
+  votes (at least 1) whose agree share is at or above the fraction.
+
+**What the API's own fields mean**, measured on that response: `agree_count`, `disagree_count` and
+`unsure_count` **include the AI validator's votes** (they equal `vote_counts(..., include_ai=True)` on all 85
+labels), and `correct` is `majority(vote_counts(..., include_ai=True), tie="none")`: true, false, or null on a
+tie. A consumer that wants human votes only must tally the array; the counts columns cannot give it.
+`tests/test_labels.py` pins both on an anonymised sample of that response.
+
 ## Provenance and releases
 
 The view geometry is ported from RampNet `rampnet/crops.py` at commit
@@ -229,7 +264,8 @@ that they match), tag it, and say in the release what a consumer will see change
 
 * **1.1.0** (2026-11-05, #222 steps 4-6): adds `store` (the pano store's layout, moved here from
   `downloaders/common.py`, which re-exports it), `ps_math` (the front end's click math, moved here from
-  `reports/scripts/pov_replay.py`, with the new inverse `pov_from_pano_xy`), and `pillow` as a dependency.
+  `reports/scripts/pov_replay.py`, with the new inverse `pov_from_pano_xy`), `labels` (vote arithmetic with explicit policies), and `pillow` as a
+  dependency.
   Nothing in `geometry`, `pose`
   or `torch_geometry` changed, so a consumer re-pinning sees the same views byte for byte.
 * **1.0.0**: the gnomonic label view, `pose`, and the torch twin.

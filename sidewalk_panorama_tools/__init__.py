@@ -1,6 +1,6 @@
 """Project Sidewalk panorama geometry, installable (docs/geometry.md).
 
-Five modules:
+Six modules:
 
 * :mod:`sidewalk_panorama_tools.geometry` - a perspective (gnomonic) view of a label from its
   equirectangular panorama, with rig-tilt correction. :func:`~sidewalk_panorama_tools.geometry.label_view`
@@ -14,6 +14,9 @@ Five modules:
 * :mod:`sidewalk_panorama_tools.ps_math` - the Project Sidewalk front end's click and POV math
   (``calculatePovIfCentered``, ``calculatePanoXYFromPov`` and its inverse, ``get3dFov``) and the label
   distance blend, ported once (``reports/scripts/pov_replay.py`` re-exports it).
+* :mod:`sidewalk_panorama_tools.labels` - validation-vote arithmetic with every policy explicit:
+  ``label_uid`` (the ``city:label_id`` key), ``vote_counts`` (human-only by default), ``majority`` (a required
+  tie policy) and ``is_validated`` (required thresholds).
 * :mod:`sidewalk_panorama_tools.torch_geometry` - optional (the ``[torch]`` extra): the same sampling grid
   built with torch on any device, and the ``grid_sample`` normalization for a wrap-padded pano.
 

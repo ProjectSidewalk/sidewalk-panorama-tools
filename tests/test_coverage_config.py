@@ -41,6 +41,8 @@ PRODUCTION_MODULES = {
     'scrape_queue.py',
     'sidewalk_panorama_tools/__init__.py',
     'sidewalk_panorama_tools/geometry.py',
+    # Validation-vote arithmetic (#222 step 4).
+    'sidewalk_panorama_tools/labels.py',
     'sidewalk_panorama_tools/pose.py',
     # The front end's click/POV math (#222 step 6); reports/scripts/pov_replay.py re-exports it.
     'sidewalk_panorama_tools/ps_math.py',
