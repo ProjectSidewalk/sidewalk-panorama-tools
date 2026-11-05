@@ -21,8 +21,10 @@ Why the measurement is built this way, since the obvious route does not exist:
   those same five counts. So the image runs in scrape.log are paired with the image rows of log.csv from the
   END backwards, and every pair is checked field for field (`align_runs`). A pair that disagrees stops the
   pairing for that city rather than being trusted.
-* **There is no per-raise duration anywhere durable** - the point of #178's step 1, which has not landed.
-  The bound used here is the image phase's whole duration (`log.csv` field 12, whole minutes) divided by
+* **There is no per-raise duration in these extracts.** #178's step 1 landed on 2026-11-05 (the raise's ERROR
+  line now ends `(after S s)`), but every extract packed before that deploy carries none, the 2026-10-06 ones
+  included; the reader accepts lines with and without the suffix (`AFTER_RE`, `raise_seconds`). The bound
+  used here is the image phase's whole duration (`log.csv` field 12, whole minutes) divided by
   its raises, on runs where nothing was answered. It is an upper bound on the mean raise: the phase also
   spends time on the candidate loop's own sshfs round trips.
 * **`answered` is not in log.csv either.** Fields 9 and 10 are seeded from the ledger, so a run's own
@@ -74,6 +76,8 @@ GATE_SWEEP = (30.0, 60.0, 90.0, 120.0, 180.0)
 
 FINAL_RE = re.compile(r'IMAGEDOWNLOAD: Final result: Completed (\d+) of (\d+) \((\d+) success, (\d+) fallback '
                       r'success, (\d+) failed, (\d+) skipped\)')
+# #178 step 1's suffix on a raise line, written from 2026-11-05: the attempt's own monotonic duration.
+AFTER_RE = re.compile(r' \(after (\d+(?:\.\d+)?) s\)$')
 RAISE_RE = re.compile(r'IMAGEDOWNLOAD: Failed to download pano (\S+) (?:due to error |\((.*?)\): refused by Google)')
 NO_SUCCESS_RE = re.compile(r'IMAGEDOWNLOAD: WARNING - all (\d+) attempted panos raised and none was answered')
 TRIP_RE = re.compile(r'IMAGEDOWNLOAD: (\d+) consecutive permanent failures|IMAGEDOWNLOAD: Google refused \d+ '
@@ -296,13 +300,19 @@ def raise_kind(line):
     """A raise's error text with its pano id, addresses and numbers' variable parts folded away."""
     if 'refused by Google' in line:
         return 'refused by Google (push-back)'
-    text = line.split(' due to error ', 1)[-1]
+    text = AFTER_RE.sub('', line).split(' due to error ', 1)[-1]
     if text.startswith('cannot identify image file'):
         return 'cannot identify image file'
     m = re.match(r'cbk probe answered (\d+), not 200', text)
     if m:
         return 'cbk probe answered %s, not 200' % m.group(1)
     return re.sub(r'\d+', 'N', text)[:80]
+
+
+def raise_seconds(line):
+    """The attempt's duration from #178 step 1's `(after S s)` suffix, or None on a line written before it."""
+    m = AFTER_RE.search(line)
+    return float(m.group(1)) if m else None
 
 
 def frame_kind(match):

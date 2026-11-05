@@ -1677,6 +1677,12 @@ the fleet, beyond the analyzer:
 - `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
   tripwire](#the-width-tripwire); it is never mailed on a clean night, so this grep is the only place it
   surfaces. A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
+- Raised image attempts per city, and their mean duration, the measurement
+  [#178](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/178) sizes `images-no-success` from:
+  `grep -hE "Failed to download pano .*\(after [0-9.]+ s\)$" */scrape.log | sed -E 's/.*\(after ([0-9.]+) s\)$/\1/' | awk '{n++; t+=$1} END {print n, (n ? t/n : "n/a")}'`
+  for the fleet, or one city's `scrape.log` at a time. Each raise's ERROR line ends `(after S s)`, the attempt's
+  own duration, since 2026-11-05; older lines carry none and are left out of the mean, never read as 0. A frame
+  disagreement's line carries no suffix, because it is an answer, not a raise.
 - `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
   [only there](#hearing-about-a-bad-night).
 - `tail -1 ~/heartbeat.log` says `heartbeat published` with last night's date. A failed heartbeat

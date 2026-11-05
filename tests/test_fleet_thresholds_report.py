@@ -53,6 +53,19 @@ class TestTheReducer:
         assert len(runs[0]['raise_ids']) == 1
         assert runs[0]['frame'][0]['kind'] == 'frame'
 
+    def test_a_raise_line_with_178s_duration_suffix_reads_as_one_without_it(self):
+        """#178 step 1 appends `(after S s)` from 2026-11-05; the extracts before it carry none."""
+        old = raise_line('CAoSx', 'cbk probe answered 400, not 200')
+        new = old + ' (after 12.3 s)'
+        refused = ('ERROR:root:IMAGEDOWNLOAD: Failed to download pano Q (HTTP 429): refused by Google: tile (3, 1) '
+                   'answered HTTP 429 (after 0.4 s)')
+        assert ft.RAISE_RE.search(new).group(1) == 'CAoSx'
+        assert ft.raise_kind(new) == ft.raise_kind(old) == 'cbk probe answered 400, not 200'
+        assert ft.raise_kind(refused) == 'refused by Google (push-back)'
+        assert ft.raise_seconds(new) == 12.3 and ft.raise_seconds(refused) == 0.4
+        assert ft.raise_seconds(old) is None, 'a pre-#178 line has no duration, never 0'
+        assert len(ft.split_image_runs([new, old, final(0, 0, 2, 0)])[0]['raise_ids']) == 2
+
     def test_runs_pair_from_the_end_and_a_disagreeing_pair_stops_the_pairing(self):
         runs = ft.split_image_runs([final(1, 0, 0, 0), final(2, 0, 0, 0), final(3, 0, 0, 0)])
         rows = [csv_row('2026-10-01 19:00:00-07:00', 9, 0, 0, 0), csv_row('2026-10-02 19:00:00-07:00', 2, 0, 0, 0),
