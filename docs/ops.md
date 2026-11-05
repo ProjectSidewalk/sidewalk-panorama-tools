@@ -983,9 +983,11 @@ affected. In the city's store directory:
 
    `cp -p depth_log.csv depth_log.csv.new && LC_ALL=C sed '<N>d;<M>d' depth_log.csv > depth_log.csv.new && mv depth_log.csv.new depth_log.csv`
 
-   The `cp -p` is there so the replacement keeps the ledger's mode: it is group-writable (0664) because other
-   lab users' runs append to the same store, and a file `sed` created would take your umask instead. Writing a
-   new file and moving it into place also keeps [the archive rule](#the-store-is-an-archive-not-a-cache) —
+   The `cp -p` is there so the replacement keeps the ledger's mode bits, whatever they are on the store: the
+   phase creates the file group-writable (0664, `os.chmod` in `download_depth_maps`) so other lab users' runs
+   can append to it, and a file `sed` created on its own would take your umask instead. It cannot keep the
+   owner, so run step 3 as the account the nightly run writes the store with, or compare `ls -l` against the
+   step 1 copy afterwards. Writing a new file and moving it into place also keeps [the archive rule](#the-store-is-an-archive-not-a-cache) —
    nothing is edited in place, and the step 1 copy still stands — and avoids `sed -i`, whose syntax differs
    between GNU and BSD `sed`. Re-run step 2; it should print nothing.
 4. **What it costs:** a deleted `saved` row costs no request — the artifact is on disk and the next run
