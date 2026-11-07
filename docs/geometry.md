@@ -164,9 +164,8 @@ for pano_file in walk_store_panos("/mnt/panostore/seattle-wa"):
 
 * `shard`, `pano_path`, `depth_path`, `sidecar_path(pano_file, max_width)` build paths; pass `city=` with the
   store root, or leave it out with a city's own directory. The pano id must be a `str` of at least two
-  characters, or `ValueError`: an all-digit Mapillary id is text too, so read it as `str`, never as a number
-  (1.0.0 coerced with `str()`, so `None` sharded as `No`). `is_downscaled_sidecar(name)` says whether a file
-  is a display copy.
+  characters, or `ValueError`: an all-digit Mapillary id is text too, so read it as `str`, never as a number.
+  `is_downscaled_sidecar(name)` says whether a file is a display copy.
 * **`walk_store_panos(city_dir)` is the one definition of "this file is a panorama".** Only
   `<id[:2]>/<id>.jpg` in its own shard counts. A walker that forgets the display-copy rule does not fail, it
   invents pano ids like `<id>.w8192`, so never list `*.jpg` by hand.
@@ -253,7 +252,7 @@ key = label_uid("seattle-wa", props["label_id"])             # "seattle-wa:12327
 * **`is_validated(counts, *, min_votes, min_agree_fraction)`** passes a label with at least `min_votes` decisive
   votes (at least 1; any integer type, numpy's included) whose agree share `agree / decisive` is at or above the
   fraction, compared as that quotient so a share exactly on the threshold passes. The fraction is a number in
-  [0, 1] (any real type, numpy's included); a `str` (`"0.5"` too), a `bool` or `None` raises `ValueError`, as
+  [0, 1] (any real type, numpy's included); a `str` (`"0.5"` too), a `bool` (numpy's too) or `None` raises `ValueError`, as
   `min_votes` refuses `"2"` and `True`.
 
 **What the API's own fields mean**, measured on that response: `agree_count`, `disagree_count` and
@@ -279,10 +278,10 @@ that they match), tag it, and say in the release what a consumer will see change
 * **1.1.0** (2026-11-05, #222 steps 4-6): adds `store` (the pano store's layout, moved here from
   `downloaders/common.py`, which re-exports it), `ps_math` (the front end's click math, moved here from
   `reports/scripts/pov_replay.py`, with the new inverse `pov_from_pano_xy`), `labels` (vote arithmetic with explicit policies), and `pillow` as a
-  dependency. Refusals added before the tag (#231): `store.shard` and the path builders require a `str` id
-  (1.0.0's `shard(1234567890123456) == "12"` is now a `ValueError`); `read_pano` raises the file system's own
-  `OSError`; `labels.label_uid` refuses a non-finite id and a non-`str` city; `is_validated` refuses a
-  fraction that is not a number (`str` and `bool` included) with `ValueError`.
+  dependency. Its refusals (#231): `store.shard` and the path builders raise `ValueError` for a pano id that
+  is not a `str` of at least two characters; `read_pano` raises the file system's own `OSError`;
+  `labels.label_uid` refuses a non-finite id and a non-`str` city; `is_validated` refuses a fraction that is
+  not a number (`str`, `bool` and `numpy.bool_` included) with `ValueError`.
   Nothing in `geometry`, `pose`
   or `torch_geometry` changed, so a consumer re-pinning sees the same views byte for byte.
 * **1.0.0**: the gnomonic label view, `pose`, and the torch twin.

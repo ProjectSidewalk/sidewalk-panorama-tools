@@ -1251,8 +1251,7 @@ switch". Nothing here is done ahead of time: the switch waits until cbk fails.
 **What depends on cbk.** Every GSV tile request goes to `maps.google.com/cbk?output=tile`: the stitcher's
 fan-out, the two-tile zoom probe (`_probe_zoom`, the fallback when photometa cannot choose the zoom) and
 `frame_covers_pano`. All three start from `_CBK_BASE_URL` in `downloaders/gsv.py`, through three f-strings (in
-`_generate_tile_urls`, `_probe_zoom` and `frame_covers_pano`; lines 360, 694-695 and 1137 when this was
-written). Photometa (the zoom choice, and the whole depth phase) and `CAoS` user photospheres
+`_generate_tile_urls`, `_probe_zoom` and `frame_covers_pano`). Photometa (the zoom choice, and the whole depth phase) and `CAoS` user photospheres
 ([#223](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/223), one request to the photo host)
 do not use cbk, and keep working when it dies. `streetviewpixels-pa.googleapis.com/v1/tile`, the endpoint
 `streetlevel` uses, has served byte-identical tile bodies since `fover` was dropped

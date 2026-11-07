@@ -174,6 +174,14 @@ class TestIsValidated:
         with pytest.raises(ValueError, match=r'min_agree_fraction is in \[0, 1\]'):
             L.is_validated(VoteCounts(1, 0, 0), min_votes=1, min_agree_fraction=fraction)
 
+    def test_a_numpy_bool_is_refused_as_bool_is(self):
+        """#234 review: numpy.bool_ is not a bool subclass, so np.True_ passed as the fraction 1.0 and np.False_
+        as 0.0 - a pandas boolean scalar, exactly what the bool refusal is for."""
+        np = pytest.importorskip('numpy')
+        for fraction in (np.True_, np.False_):
+            with pytest.raises(ValueError, match='min_agree_fraction is a number'):
+                L.is_validated(VoteCounts(1, 0, 0), min_votes=1, min_agree_fraction=fraction)
+
     def test_any_real_number_type_is_a_fraction(self):
         import fractions
         np = pytest.importorskip('numpy')

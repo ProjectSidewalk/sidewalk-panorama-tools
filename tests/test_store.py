@@ -36,8 +36,9 @@ class TestPaths:
     def test_an_id_that_is_not_text_is_refused(self, pano_id):
         """#231: str() made None shard as 'No' (<root>/No/None.jpg) and a NaN as 'na'. An int is refused too,
         though it would have sharded right: an id a reader produced as a number is no longer the text on
-        the store, so the intakes read ids as str (tests/test_csv_intake.py). A contract change from 1.0.0's
-        shard(1234567890123456) == '12'."""
+        the store, so the intakes read ids as str (tests/test_csv_intake.py). This inverts #229's
+        test_a_numeric_id_is_sharded_as_text (shard(1234567890123456) == '12'); no tagged release had that
+        shard."""
         with pytest.raises(ValueError, match='is a str'):
             store.shard(pano_id)
         with pytest.raises(ValueError, match='is a str'):

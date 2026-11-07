@@ -75,6 +75,14 @@ def label_uid(city, label_id):
     return '%s:%d' % (city, number)
 
 
+def _is_numpy_bool(value):
+    """Whether `value` is numpy's boolean scalar, which is not a bool subclass (#234 review: np.True_ passed as the
+    fraction 1.0). Checked by type, without importing numpy: the class is `numpy.bool` under numpy 2 and
+    `numpy.bool_` under numpy 1."""
+    kind = type(value)
+    return kind.__module__ == 'numpy' and kind.__name__ in ('bool', 'bool_')
+
+
 class VoteCounts(NamedTuple):
     """Votes on one label, by value."""
     agree: int
@@ -149,7 +157,8 @@ def is_validated(counts: VoteCounts, *, min_votes: int, min_agree_fraction: floa
 
     Both are required. ``min_votes`` is an integer of at least 1, so a label nobody judged never passes;
     ``min_agree_fraction`` is a number in [0, 1] (any real type, numpy's included; a ``str`` or ``bool`` is
-    refused, as ``min_votes`` refuses ``'2'`` and ``True``). Either outside that raises ``ValueError``.
+    refused, numpy's bool included, as ``min_votes`` refuses ``'2'`` and ``True``). Either outside that raises
+    ``ValueError``.
     ``min_agree_fraction=0.5`` with ``min_votes=1`` passes a 1-1 tie, which :func:`majority` would leave to its
     tie policy: a threshold is not a majority, and that is the caller's call.
     """
@@ -164,7 +173,7 @@ def is_validated(counts: VoteCounts, *, min_votes: int, min_agree_fraction: floa
     # Numbers only (#231): float('0.5') and float(True) would succeed, and float(None) escaped as TypeError.
     # The try is around float() alone, never the arithmetic below, so it hides no bug of this function's.
     fraction = None
-    if not isinstance(min_agree_fraction, (str, bytes, bool)):
+    if not (isinstance(min_agree_fraction, (str, bytes, bool)) or _is_numpy_bool(min_agree_fraction)):
         try:
             fraction = float(min_agree_fraction)
         except (TypeError, ValueError):

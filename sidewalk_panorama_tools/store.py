@@ -45,9 +45,8 @@ MAX_PANO_PIXELS = 16384 * 8192
 def shard(pano_id):
     """The shard directory of a pano: its id's first two characters.
 
-    The id is a ``str`` of at least two characters, or ``ValueError`` (since 1.1.0; 1.0.0 coerced with
-    ``str()``, so ``None`` sharded as ``No`` and a NaN as ``na``). A Mapillary id is all digits but is still
-    text: read it as ``str``, never let a CSV or JSON reader turn it into a number.
+    The id is a ``str`` of at least two characters, or ``ValueError``. A Mapillary id is all digits but is
+    still text: read it as ``str``, never let a CSV or JSON reader turn it into a number.
 
     >>> shard('-0BIbaGbb6Ao2ctRBhyX9w'), shard('1234567890'), shard('0a1b2c3d-0000-4000-8000-00000000abcd')
     ('-0', '12', '0a')
@@ -234,8 +233,8 @@ def read_pano(path, expected_width=None, expected_height=None):
     thread-safe, and a server reading panos on several threads is exactly the consumer this is for.
 
     A file the file system will not read raises its own ``OSError``, errno and filename included
-    (``FileNotFoundError`` for a missing one; EACCES, EISDIR, EIO, a stale NFS handle; since 1.1.0, #231). A
-    file that reads but whose bytes are not a JPEG header this can parse raises ``OSError`` naming the path.
+    (``FileNotFoundError`` for a missing one; EACCES, EISDIR, EIO, a stale NFS handle). A file that reads but
+    whose bytes are not a JPEG header this can parse raises ``OSError`` naming the path.
     """
     if (expected_width is None) != (expected_height is None):
         raise ValueError('give both expected_width and expected_height, or neither')
