@@ -71,7 +71,7 @@ from downloaders.common import (atomic_output_path, jpeg_dimensions, walk_store_
 # without spending a request.
 AFFECTED_MIN_ZOOM = 5
 
-# `fover` was dropped from _CBK_BASE_URL on 2026-08-07 (#68, c704b3f). A stored file written at or after the
+# `fover` was dropped from CBK_BASE_URL on 2026-08-07 (#68, c704b3f). A stored file written at or after the
 # date the fix reached the scraper box was fetched without it and is already at full resolution. The default
 # is the merge date; --fixed-after exists because deployment is not merge, and only the operator knows when
 # the box actually picked the fix up. Erring late costs a wasted re-fetch; erring early would skip files that

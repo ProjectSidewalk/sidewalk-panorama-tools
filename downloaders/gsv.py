@@ -7,7 +7,7 @@
 # nightly's policy: the ledgers' verdicts, photometa, the block latch, the display copy and the atomic save.
 #
 # Do not add viewer parameters to the CBK URL without checking what they do to the tile bodies: `fover`, copied
-# from the Street View viewer, made CBK serve the polar rows of zoom 5 at half size (#73). See _CBK_BASE_URL in
+# from the Street View viewer, made CBK serve the polar rows of zoom 5 at half size (#73). See CBK_BASE_URL in
 # sidewalk_panorama_tools/gsv_tiles.py.
 
 import base64
@@ -66,7 +66,7 @@ from sidewalk_panorama_tools import gsv_tiles  # noqa: E402
 from sidewalk_panorama_tools.gsv_tiles import (  # noqa: E402,F401  (re-exports)
     _black_fraction,              # defined in sidewalk_panorama_tools/gsv_tiles.py
     _BLOCK_URL_MARKERS,           # defined in sidewalk_panorama_tools/gsv_tiles.py
-    _CBK_BASE_URL,                # defined in sidewalk_panorama_tools/gsv_tiles.py
+    CBK_BASE_URL,                 # defined in sidewalk_panorama_tools/gsv_tiles.py
     choose_zoom,                  # defined in sidewalk_panorama_tools/gsv_tiles.py
     _dims_at_zoom,                # defined in sidewalk_panorama_tools/gsv_tiles.py
     _download_tile,               # defined in sidewalk_panorama_tools/gsv_tiles.py
@@ -103,6 +103,7 @@ from sidewalk_panorama_tools.gsv_tiles import (  # noqa: E402,F401  (re-exports)
     TILE_SIZE,                    # defined in sidewalk_panorama_tools/gsv_tiles.py
     _TileAbandonedError,          # defined in sidewalk_panorama_tools/gsv_tiles.py
     TilePushbackError,            # defined in sidewalk_panorama_tools/gsv_tiles.py
+    tile_url,                     # defined in sidewalk_panorama_tools/gsv_tiles.py
     _TimeoutHTTPAdapter,          # defined in sidewalk_panorama_tools/gsv_tiles.py
     _undersized_tile_count,       # defined in sidewalk_panorama_tools/gsv_tiles.py
 )
@@ -111,14 +112,14 @@ gsv_tiles.configure(headers=config.headers_list, proxies=config.proxies, concurr
 
 # Every name re-exported above, once, for the identity checks.
 RE_EXPORTED_FROM_GSV_TILES = (
-    '_black_fraction', '_BLOCK_URL_MARKERS', '_CBK_BASE_URL', 'choose_zoom', '_dims_at_zoom', '_download_tile',
+    '_black_fraction', '_BLOCK_URL_MARKERS', 'CBK_BASE_URL', 'choose_zoom', '_dims_at_zoom', '_download_tile',
     '_download_tiles', 'fetch_pano_image', '_fetch_tile', 'frame_covers_pano', 'FrameDisagreementError',
     '_generate_tile_urls', '_get_response', '_is_exactly_black', '_normalize_proxies', '_pano_max_zoom',
     '_partition_tile_results', '_probe_zoom', 'pushback_reason', '_random_header', '_reject_mostly_black_stitch',
     '_request_session', '_stitch_cell_size', 'STITCH_MAX_BLACK_FRACTION', '_stitch_tiles', 'StitchedPano',
     'StitchedPanoMostlyBlackError', '_tile_error_is_final', '_TILE_FANOUT', '_tile_grid', 'TILE_MAX_TRIES',
     'TILE_PUSHBACK_STATUSES', '_TILE_RETRY_ERRORS', 'TILE_RETRY_MAX_SECONDS', 'TILE_RETRY_MAX_WAIT',
-    '_tile_retry_waits', 'TILE_SIZE', '_TileAbandonedError', 'TilePushbackError', '_TimeoutHTTPAdapter',
+    '_tile_retry_waits', 'TILE_SIZE', '_TileAbandonedError', 'TilePushbackError', 'tile_url', '_TimeoutHTTPAdapter',
     '_undersized_tile_count',
 )
 

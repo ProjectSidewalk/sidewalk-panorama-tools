@@ -123,8 +123,8 @@ class TestProbeZoomIsTodaysProbe:
         requested = stub_probe(monkeypatch, pick_zoom=pick)
 
         assert gsv._probe_zoom(PANO) == expected
-        assert requested == ['%s&zoom=3&x=0&y=0&panoid=%s' % (gsv._CBK_BASE_URL, PANO),
-                             '%s&zoom=5&x=0&y=0&panoid=%s' % (gsv._CBK_BASE_URL, PANO)]
+        assert requested == ['%s&zoom=3&x=0&y=0&panoid=%s' % (gsv.CBK_BASE_URL, PANO),
+                             '%s&zoom=5&x=0&y=0&panoid=%s' % (gsv.CBK_BASE_URL, PANO)]
 
 
 # --- resolve_frame -----------------------------------------------------------------------------------------

@@ -53,11 +53,11 @@ except ImportError as e:
 
 from . import store
 
-__all__ = ['CONCURRENCY', 'DEFAULT_HEADERS', 'FrameDisagreementError', 'HEADERS', 'PROXIES',
+__all__ = ['CBK_BASE_URL', 'CONCURRENCY', 'DEFAULT_HEADERS', 'FrameDisagreementError', 'HEADERS', 'PROXIES',
            'STITCH_MAX_BLACK_FRACTION', 'StitchedPano', 'StitchedPanoMostlyBlackError', 'TILE_MAX_TRIES',
            'TILE_PUSHBACK_STATUSES', 'TILE_RETRY_MAX_SECONDS', 'TILE_RETRY_MAX_WAIT', 'TILE_SIZE',
            'TilePushbackError', 'choose_zoom', 'configure', 'fetch_pano_image', 'frame_covers_pano',
-           'probe_zoom', 'pushback_reason']
+           'probe_zoom', 'pushback_reason', 'tile_url']
 
 
 # --- settings: read at call time; change them with configure() ------------------------------------------------
@@ -322,7 +322,22 @@ TILE_SIZE = 512
 # With fover gone, CBK's tile bodies are byte-identical to streetviewpixels-pa's, so there is nothing to
 # recover by switching endpoints (#74 is now a cleanup, not a resolution fix). Anything added here should be
 # checked the same way: tests/test_gsv_tile_contract.py pins the parameter and the band it used to produce.
-_CBK_BASE_URL = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&onerr=3&renderer=spherical&v=4'
+CBK_BASE_URL = 'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&onerr=3&renderer=spherical&v=4'
+
+
+def tile_url(pano_id, zoom, x, y):
+    """The cbk URL of tile (x, y) of `pano_id`'s grid at `zoom`: the one place a tile URL is built.
+
+    The tile fan-out, the zoom probe and the frame check all call it, so a parameter added to CBK_BASE_URL
+    reaches every request at once and is checked once (tests/test_gsv_tile_contract.py). The field order is
+    part of the contract - tests read a URL back by its &zoom=, &x= and &y= fields - and tests/test_gsv_tiles.py
+    pins the string byte for byte.
+
+    >>> tile_url('abc', 5, 1, 2)[len(CBK_BASE_URL):]
+    '&zoom=5&x=1&y=2&panoid=abc'
+    """
+    return f'{CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}'
+
 
 # Tile failures worth retrying. aiohttp.web.HTTPServerError used to head this tuple, but it is a SERVER-side
 # response class that client code never raises (#52 item 3) - importing aiohttp.web for it was pure cost. The
@@ -540,7 +555,7 @@ def _tile_grid(width, height, zoom):
 def _generate_tile_urls(pano_id, width, height, zoom):
     """The tile fan-out for one pano: a list of (x, y, url) covering exactly the grid `zoom` has."""
     tiles_x, tiles_y = _tile_grid(width, height, zoom)
-    return [(x, y, f'{_CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}')
+    return [(x, y, tile_url(pano_id, zoom, x, y))
             for y in range(tiles_y) for x in range(tiles_x)]
 
 
@@ -660,7 +675,7 @@ def _tile_body_size(data):
 def _stitch_cell_size(tile_results):
     """The pixel size each grid cell occupies in the stitch: the largest body this fan-out returned.
 
-    Defence in depth rather than a live requirement, since dropping `fover` from _CBK_BASE_URL removed the
+    Defence in depth rather than a live requirement, since dropping `fover` from CBK_BASE_URL removed the
     only known cause of undersized bodies. It stays because the failure it prevents is silent and expensive:
     with fover, CBK returned 256x256 bodies for the polar rows of every zoom-5 grid, and pasting one of those
     at the full grid pitch leaves three quarters of its cell black in a pano that is still saved as success.
@@ -814,8 +829,8 @@ def _probe_zoom(pano_id):
     # Session scoped to the zoom probes; the tile fan-out uses its own aiohttp session. This runs once per
     # pano, so leaving it unclosed would pile up connection pools until GC (#51).
     with _request_session() as session:
-        url_zoom_3 = f'{_CBK_BASE_URL}&zoom=3&x=0&y=0&panoid={pano_id}'
-        url_zoom_5 = f'{_CBK_BASE_URL}&zoom=5&x=0&y=0&panoid={pano_id}'
+        url_zoom_3 = tile_url(pano_id, 3, 0, 0)
+        url_zoom_5 = tile_url(pano_id, 5, 0, 0)
 
         req_zoom_3 = _get_response(url_zoom_3, session, stream=True)
         im_zoom_3 = Image.open(req_zoom_3)
@@ -903,7 +918,7 @@ def frame_covers_pano(pano_id, width, height, zoom):
     tiles_x, tiles_y = _tile_grid(width, height, zoom)
     with _request_session() as session:
         def tile_is_black(x, y):
-            url = f'{_CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}'
+            url = tile_url(pano_id, zoom, x, y)
             return _is_exactly_black(Image.open(_get_response(url, session, stream=True)))
 
         for x, y in ((tiles_x, tiles_y // 2), (0, tiles_y)):

@@ -13,8 +13,10 @@ import json
 import os
 import subprocess
 import sys
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 import config
 import conftest
@@ -236,3 +238,59 @@ class TestThePatchTargetCheck:
         output = result.stdout + result.stderr
         assert result.returncode != 0, output
         assert 'sidewalk_panorama_tools.gsv_tiles._get_response instead' in output, output
+
+
+class TestTheOneUrlBuilder:
+    """tile_url is the one place a cbk tile URL is built (#222 step 2), and it builds the string the three
+    f-strings it replaced built. tests/test_gsv_photometa_zoom.py pins the probe's two URLs as well, and the
+    stub helpers parse URLs back by their &zoom=, &x= and &y= fields, so the field order is part of the contract."""
+
+    PANO = '-0BIbaGbb6Ao2ctRBhyX9w'
+
+    def test_it_builds_todays_string_byte_for_byte(self):
+        assert gsv_tiles.tile_url(self.PANO, 5, 3, 7) == (
+            'https://maps.google.com/cbk?output=tile&cb_client=maps_sv&onerr=3&renderer=spherical&v=4'
+            '&zoom=5&x=3&y=7&panoid=-0BIbaGbb6Ao2ctRBhyX9w')
+
+    def test_the_fan_out_builds_with_it(self):
+        tiles_x, tiles_y = gsv_tiles._tile_grid(16384, 8192, 5)
+        expected = [(x, y, gsv_tiles.tile_url(self.PANO, 5, x, y)) for y in range(tiles_y) for x in range(tiles_x)]
+
+        assert gsv_tiles._generate_tile_urls(self.PANO, 16384, 8192, 5) == expected
+
+    def test_the_probe_and_the_frame_check_build_with_it(self, monkeypatch):
+        black = BytesIO()
+        Image.new('RGB', (16, 16), (0, 0, 0)).save(black, 'JPEG')
+        requested = []
+
+        def fake_get_response(url, session, stream=False):
+            requested.append(url)
+            return BytesIO(black.getvalue())
+
+        monkeypatch.setattr(gsv_tiles, '_get_response', fake_get_response)
+
+        assert gsv_tiles.probe_zoom(self.PANO) is None
+        assert requested == [gsv_tiles.tile_url(self.PANO, 3, 0, 0), gsv_tiles.tile_url(self.PANO, 5, 0, 0)]
+
+        del requested[:]
+        with pytest.raises(gsv_tiles.FrameDisagreementError):      # all black: the grid's last column too
+            gsv_tiles.frame_covers_pano(self.PANO, 16384, 8192, 5)
+        tiles_x, tiles_y = gsv_tiles._tile_grid(16384, 8192, 5)
+        built = {gsv_tiles.tile_url(self.PANO, 5, x, y) for x in range(tiles_x + 1) for y in range(tiles_y + 1)}
+        assert requested and set(requested) <= built
+
+    def test_nothing_else_spells_a_tile_url(self):
+        """CBK_BASE_URL is read only by tile_url, and no other string in the package or in downloaders/gsv.py
+        carries a tile query, so a second, drifting URL builder cannot be added without failing here."""
+        for path in (gsv_tiles.__file__, GSV_SOURCE):
+            with open(path, encoding='utf-8') as f:
+                tree = ast.parse(f.read())
+            builder = next((node for node in tree.body
+                            if isinstance(node, ast.FunctionDef) and node.name == 'tile_url'), None)
+            inside = set(map(id, ast.walk(builder))) if builder is not None else set()
+            outside = [node for node in ast.walk(tree) if id(node) not in inside]
+            reads = [node.lineno for node in outside if isinstance(node, ast.Name) and node.id == 'CBK_BASE_URL'
+                     and isinstance(node.ctx, ast.Load)]
+            queries = [node.lineno for node in outside if isinstance(node, ast.Constant)
+                       and isinstance(node.value, str) and '&zoom=' in node.value]
+            assert reads == [] and queries == [], (path, reads, queries)

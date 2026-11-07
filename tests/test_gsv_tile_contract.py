@@ -76,7 +76,7 @@ class TestFoverIsNotInTheRequest:
     parameters. Anyone re-adding it - or adding another viewer parameter without checking - trips this."""
 
     def test_the_base_url_does_not_send_fover(self):
-        assert 'fover' not in gsv._CBK_BASE_URL, (
+        assert 'fover' not in gsv.CBK_BASE_URL, (
             'fover makes CBK serve the polar rows of zoom 5 at 256x256 instead of 512x512, costing half the '
             'linear resolution over 62.5% of the frame (#73). It is not a harmless viewer parameter.')
 
@@ -87,14 +87,14 @@ class TestFoverIsNotInTheRequest:
     def test_the_probe_urls_do_not_send_fover_either(self):
         """download_single_pano builds its zoom probes off the same constant, so they inherit whatever it
         carries. Pinning the constant covers both, but only while they share it."""
-        assert 'fover' not in gsv._CBK_BASE_URL
-        assert gsv._CBK_BASE_URL.startswith('https://maps.google.com/cbk?')
+        assert 'fover' not in gsv.CBK_BASE_URL
+        assert gsv.CBK_BASE_URL.startswith('https://maps.google.com/cbk?')
 
     def test_onerr_is_still_sent(self):
         """`onerr=3` was checked at the same time and is innocent - it is what makes an out-of-range tile
         come back as a black JPEG rather than an error, which the zoom probe depends on. Don't drop it while
         cleaning up."""
-        assert 'onerr=3' in gsv._CBK_BASE_URL
+        assert 'onerr=3' in gsv.CBK_BASE_URL
 
 
 class TestTheFoverBandOnRealBytes:
@@ -414,7 +414,7 @@ def _live_get(session, url, tries=5, require_200=False):
 
 def _live_tile(session, pano, zoom, x, y, extra='', require_200=False):
     return _live_get(session, '%s%s&zoom=%d&x=%d&y=%d&panoid=%s'
-                     % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano), require_200=require_200)
+                     % (gsv.CBK_BASE_URL, extra, zoom, x, y, pano), require_200=require_200)
 
 
 @live_only
