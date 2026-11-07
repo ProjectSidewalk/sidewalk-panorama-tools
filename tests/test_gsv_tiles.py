@@ -294,3 +294,23 @@ class TestTheOneUrlBuilder:
             queries = [node.lineno for node in outside if isinstance(node, ast.Constant)
                        and isinstance(node.value, str) and '&zoom=' in node.value]
             assert reads == [] and queries == [], (path, reads, queries)
+
+
+class TestProductionCallersHaveOneLookupSite:
+    """refetch_panos and DownloadRunner read a moved name through gsv only where gsv is the module that looks it
+    up (the composed seams) or where no stub ever reaches (the exception classes, StitchedPano, pushback_reason).
+    Any other `gsv.<moved name>` read is a second lookup site that conftest.mis_targeted_patches forbids
+    patching, so a stub of the package's name would silently miss it (#235 review round 1)."""
+
+    ALLOWED = set(gsv.GSV_COMPOSED_SEAMS) | {'FrameDisagreementError', 'TilePushbackError', 'StitchedPano',
+                                             'pushback_reason'}
+
+    @pytest.mark.parametrize('module', ['refetch_panos.py', 'DownloadRunner.py'])
+    def test_every_gsv_read_of_a_moved_name_is_allowed(self, module):
+        with open(os.path.join(REPO_ROOT, module), encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+        reads = {(node.attr, node.lineno) for node in ast.walk(tree)
+                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == 'gsv'
+                 and node.attr in gsv.RE_EXPORTED_FROM_GSV_TILES}
+        assert reads, 'the walk found no gsv reads at all, so it is not looking where it thinks'
+        assert sorted(r for r in reads if r[0] not in self.ALLOWED) == []

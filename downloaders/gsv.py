@@ -58,10 +58,13 @@ from .common import DownloadResult, atomic_output_path, write_downscaled_sidecar
 #     gsv_tiles.TILE_SIZE - never through a binding taken here at import, which would go stale the moment
 #     configure() rebinds a setting (the photosphere and depth sessions would then run without the operator's
 #     proxy). The two exceptions are GSV_COMPOSED_SEAMS below.
-#   * The names below are re-exported for callers OUTSIDE this module - DownloadRunner, refetch_panos and the
-#     tests - each the package's own object. A test patches a name on the module that LOOKS IT UP: on
-#     gsv_tiles for everything the package reads, and on this module only for GSV_COMPOSED_SEAMS.
-#     tests/conftest.py checks both after every test (mis_targeted_patches).
+#   * The names below are re-exported for the tests and for isinstance - each the package's own object. A
+#     production caller outside this module reads through `gsv.` only GSV_COMPOSED_SEAMS, the exception
+#     classes, StitchedPano and pushback_reason (refetch_panos, DownloadRunner); any other moved name it
+#     reads from gsv_tiles (or black_fraction from common), so it has one lookup site a stub can reach -
+#     tests/test_gsv_tiles.py checks. A test patches a name on the module that LOOKS IT UP: on gsv_tiles for
+#     everything the package reads, and on this module only for GSV_COMPOSED_SEAMS. tests/conftest.py
+#     checks both after every test (mis_targeted_patches).
 from sidewalk_panorama_tools import gsv_tiles  # noqa: E402
 from sidewalk_panorama_tools.gsv_tiles import (  # noqa: E402,F401  (re-exports)
     _black_fraction,              # defined in sidewalk_panorama_tools/gsv_tiles.py

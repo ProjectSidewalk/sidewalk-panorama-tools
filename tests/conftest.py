@@ -178,7 +178,9 @@ def _no_network():
     both go through it), and `socket.socket.connect`/`connect_ex` refuse a non-loopback address (an IP
     literal skips DNS). AF_UNIX addresses are not (host, port) tuples and pass. On Windows the Proactor
     event loop connects through ConnectEx rather than socket.connect, so there the hostname check is the one
-    that holds for aiohttp; CI's Linux selector loop goes through connect.
+    that holds for aiohttp; CI's Linux selector loop goes through connect. The guard is aimed at the HTTP
+    stack - requests, urllib3 and aiohttp all resolve through getaddrinfo - and deliberately leaves
+    socket.gethostbyname, gethostbyname_ex and gethostbyaddr alone, which nothing in this repo calls.
 
     Set SIDEWALK_LIVE_TILE_TESTS to lift it, which is what the opt-in live checks need. It does NOT reach the
     subprocess children the runner tests spawn (a monkeypatch does not cross a process boundary); those run
