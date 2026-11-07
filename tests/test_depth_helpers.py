@@ -12,6 +12,7 @@ from requests.adapters import HTTPAdapter
 
 from conftest import encode_depth_payload, make_pano, posix_only
 from downloaders import gsv
+from sidewalk_panorama_tools import gsv_tiles
 
 
 def write_artifact(storage, pano_id, pano):
@@ -664,7 +665,7 @@ class TestGetResponseProxyContract:
     GSV_HTTPS_URL = 'https://maps.google.com/cbk?output=tile'
 
     def _capture(self, monkeypatch, config):
-        monkeypatch.setattr(gsv, '_proxies', gsv._normalize_proxies(config))
+        monkeypatch.setattr(gsv_tiles, 'PROXIES', gsv._normalize_proxies(config))
         captured = {}
 
         class CapturingSession:
@@ -718,7 +719,7 @@ class TestGetResponseProxyContract:
         assert captured['proxies'] == {'http': 'http://proxy.example:8080'}
         # requests setdefaults env proxies into this dict in place; the module global must be immune.
         captured['proxies']['no'] = 'example.org'
-        assert gsv._proxies == {'http': 'http://proxy.example:8080', 'https': None}
+        assert gsv_tiles.PROXIES == {'http': 'http://proxy.example:8080', 'https': None}
 
 
 class TestTimeoutHTTPAdapter:
@@ -752,7 +753,7 @@ class TestDepthSession:
         Worse than dead: only the leftovers config.py sets and streetlevel doesn't (Accept-Language,
         Upgrade-Insecure-Requests, DNT) would survive, contradicting streetlevel's Firefox User-Agent.
         """
-        monkeypatch.setattr(gsv, '_random_header', lambda: {
+        monkeypatch.setattr(gsv_tiles, '_random_header', lambda: {
             'User-Agent': 'TestAgent/1.0',
             'Host': 'maps.google.com',
             'Accept-Language': 'en-GB',

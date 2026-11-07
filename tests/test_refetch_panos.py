@@ -33,6 +33,7 @@ for _p in (REPO_ROOT, SCRIPTS):
 import downscale_panos  # noqa: E402
 import refetch_panos as rp  # noqa: E402
 from downloaders import common, gsv  # noqa: E402
+from sidewalk_panorama_tools import gsv_tiles
 from test_gsv_stitcher import BLACK_BODY, IMAGERY_BODY, canned_cbk, cbk_query  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
@@ -531,8 +532,8 @@ class TestRefetchKeepsItsPre74Decisions:
             return [(x, y, grey) for x, y, _url in requested]
 
         monkeypatch.setattr(gsv, '_fetch_image_levels', photometa)
-        monkeypatch.setattr(gsv, '_get_response', cbk)
-        monkeypatch.setattr(gsv, '_download_tiles', tiles)
+        monkeypatch.setattr(gsv_tiles, '_get_response', cbk)
+        monkeypatch.setattr(gsv_tiles, '_download_tiles', tiles)
         outcome = rp.refetch_pano(str(tmp_path), {'pano_id': PANO}, stored, rp.MAX_BLACK_FRACTION, False, [])
         return outcome, before, open(path, 'rb').read(), asked
 

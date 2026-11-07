@@ -41,6 +41,7 @@ import pytest
 from PIL import Image
 
 from downloaders import gsv
+from sidewalk_panorama_tools import gsv_tiles
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
@@ -510,7 +511,7 @@ def test_live_full_download_has_no_undersized_tiles(tmp_path, monkeypatch):
         seen['total'] = len(tile_results)
         return seen['undersized']
 
-    monkeypatch.setattr(gsv, '_undersized_tile_count', counting)
+    monkeypatch.setattr(gsv_tiles, '_undersized_tile_count', counting)
     label, pano_id, width, height = LIVE_PANOS[0]
     Image.MAX_IMAGE_PIXELS = None
 

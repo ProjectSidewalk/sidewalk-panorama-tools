@@ -20,6 +20,7 @@ from requests.adapters import BaseAdapter, HTTPAdapter
 from requests.structures import CaseInsensitiveDict
 
 from downloaders import gsv
+from sidewalk_panorama_tools import gsv_tiles
 from downloaders.common import DownloadResult
 from test_gsv_tile_contract import MIXED_BLOCK, fixture_bytes, fixture_image
 
@@ -264,7 +265,7 @@ def _slow_slots(monkeypatch):
             await asyncio.sleep(0.02)
             return await super().acquire()
 
-    monkeypatch.setattr(gsv.asyncio, 'Semaphore', _SlowSemaphore)
+    monkeypatch.setattr(gsv_tiles.asyncio, 'Semaphore', _SlowSemaphore)
 
 
 class _StatusSession:
@@ -348,7 +349,7 @@ class TestATileRefusalIsNotRetried:
         """A 404 is not push-back - it says nothing about this host - but ten more asks will not make the
         tile exist. Every retired pano measured answers 200 with a black body, not a 4xx, so nothing that
         used to succeed on a retry is lost."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
         session = _StatusSession(404)
 
         with pytest.raises(aiohttp.ClientResponseError) as excinfo:
@@ -362,7 +363,7 @@ class TestATileRefusalIsNotRetried:
         """Weather keeps its retries. What it loses is backoff's own log line per retry: 512 tiles x 9
         INFO 'Backing off' + 512 ERROR 'Giving up' was the flood, and capping the logger at WARNING would
         still have left the 512 ERROR lines - so the decorator logs nothing and the pano owns its one line."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
         session = _StatusSession(503)
 
         with caplog.at_level(logging.DEBUG, logger='backoff'):
@@ -376,7 +377,7 @@ class TestATileRefusalIsNotRetried:
         """The time budget is wired: with no seconds left, the first 503 is the last request. Without it, one
         bad tile could sleep ~4 minutes (expo to 256 s, uncapped) while the rest of the fan-out waits. (It is
         in the giveup predicate rather than backoff's max_time - see the queued-for-a-slot test.)"""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_SECONDS', 0)
         session = _StatusSession(503)
 
         with pytest.raises(aiohttp.ClientResponseError):
@@ -389,7 +390,7 @@ class TestATileRefusalIsNotRetried:
     def test_a_200_that_landed_on_an_interstitial_is_pushback(self, landing, monkeypatch):
         """The depth phase's _raise_if_blocked rule, carried over by analogy - NOT measured on CBK. A
         captcha page would also fail the Content-Type check, but as a retried ClientResponseError."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
         response = _FakeResponse(headers={'Content-Type': 'text/html'}, url=landing)
         session = _StatusSession(answer=lambda url, attempt: response)
 
@@ -417,7 +418,7 @@ class TestATileRefusalIsNotRetried:
         can see it, so a /sorry/ page served as 503 used to be RETRIED - 10 tries x (redirect + landing)
         per tile, ~10,240 requests for a pano whose block began mid-fan-out. The marker is the refusal,
         whatever status the page wears; a 429/403 landing was already push-back by its status."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)     # a regression fails fast, not after 2 min asleep
         error = aiohttp.ClientResponseError(SimpleNamespace(real_url=real_url), history, status=status,
                                             message='x')
         session = _StatusSession(answer=lambda url, attempt: error)
@@ -431,7 +432,7 @@ class TestATileRefusalIsNotRetried:
 
     def test_a_plain_503_with_no_marker_anywhere_is_still_weather(self, monkeypatch):
         """The control for the test above: the same error without a marker keeps its retries."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
         error = aiohttp.ClientResponseError(
             SimpleNamespace(real_url='https://tile.invalid/cbk'),
             (SimpleNamespace(url='https://tile.invalid/a', headers={'Location': 'https://tile.invalid/cbk'}),),
@@ -466,7 +467,7 @@ class TestATileRefusalIsNotRetried:
     def test_the_wait_cap_is_read_when_a_tile_starts_retrying(self, monkeypatch):
         """What _tile_retry_waits exists for: `backoff.expo(max_value=32)` frozen at import would ignore the
         patch, and every test that zeroes the cap would sleep real seconds instead (#172 tests review, G09)."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
         waits = gsv._tile_retry_waits()
         drawn = [next(waits) for _ in range(6)]
 
@@ -696,12 +697,12 @@ def stub_probe(monkeypatch, pick_zoom):
         inside = zoom == pick_zoom and ((x, y) == (0, 0) or (x < grid[0][0] and y < grid[0][1]))
         return BytesIO(jpeg_bytes(RED if inside else (0, 0, 0), (16, 16)))
 
-    monkeypatch.setattr(gsv, '_tile_grid', recording_tile_grid)
+    monkeypatch.setattr(gsv_tiles, '_tile_grid', recording_tile_grid)
 
     def photometa_unavailable(pano_id, session):
         raise gsv.DepthPayloadError('stubbed: this test drives the probe path')
 
-    monkeypatch.setattr(gsv, '_get_response', fake_get_response)
+    monkeypatch.setattr(gsv_tiles, '_get_response', fake_get_response)
     monkeypatch.setattr(gsv, '_fetch_image_levels', photometa_unavailable)
     return requested
 
@@ -732,7 +733,7 @@ def deny_probe(monkeypatch):
         # pytest.fail raises a BaseException, which no `except Exception` in the code under test can swallow.
         pytest.fail('the zoom probe must not be sent when photometa answered')
 
-    monkeypatch.setattr(gsv, '_get_response', no_probe)
+    monkeypatch.setattr(gsv_tiles, '_get_response', no_probe)
 
 
 def stub_tiles(monkeypatch, result_for_tile):
@@ -743,7 +744,7 @@ def stub_tiles(monkeypatch, result_for_tile):
         requested.extend(tiles)
         return [result_for_tile(tile) for tile in tiles]
 
-    monkeypatch.setattr(gsv, '_download_tiles', fake_download_tiles)
+    monkeypatch.setattr(gsv_tiles, '_download_tiles', fake_download_tiles)
     return requested
 
 
@@ -954,7 +955,7 @@ class TestDownloadSinglePano:
         def no_network(*args, **kwargs):
             raise AssertionError('an existing pano must not touch the network')
 
-        monkeypatch.setattr(gsv, '_get_response', no_network)
+        monkeypatch.setattr(gsv_tiles, '_get_response', no_network)
 
         assert gsv.download_single_pano(str(tmp_path), self.pano_info()) == DownloadResult.skipped
 
@@ -1008,7 +1009,7 @@ class TestResolveZoomAndDims:
         def no_network(*args, **kwargs):
             raise AssertionError('a pano with no dims must not touch the network')
 
-        monkeypatch.setattr(gsv, '_get_response', no_network)
+        monkeypatch.setattr(gsv_tiles, '_get_response', no_network)
 
         assert gsv.resolve_zoom_and_dims(self.pano_info(width=None, height=None)) is None
 
@@ -1157,7 +1158,7 @@ class TestFrameCoversPano:
             color = RED if (x, y) in imagery_at else (0, 0, 0)
             return BytesIO(jpeg_bytes(color, (16, 16)))
 
-        monkeypatch.setattr(gsv, '_get_response', fake_get_response)
+        monkeypatch.setattr(gsv_tiles, '_get_response', fake_get_response)
         return asked
 
     def test_a_grid_whose_edges_are_blank_covers_the_pano(self, monkeypatch):
@@ -1287,7 +1288,7 @@ class TestFrameCoversPano:
         is black-PADDED but not black, so it must read as imagery."""
         edge = fixture_bytes('z3_edge_bottom.jpg')
 
-        monkeypatch.setattr(gsv, '_get_response', lambda url, session, stream=False: BytesIO(edge))
+        monkeypatch.setattr(gsv_tiles, '_get_response', lambda url, session, stream=False: BytesIO(edge))
 
         assert gsv.frame_covers_pano('stitchPanoAAAAAAAAAAAA', 13312, 6656, 5) is False
 
@@ -1321,8 +1322,8 @@ class TestTheTileFanOutContract:
             async def __aexit__(self, *args):
                 return False
 
-        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', FakeConnector)
-        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
+        monkeypatch.setattr(gsv_tiles.aiohttp, 'TCPConnector', FakeConnector)
+        monkeypatch.setattr(gsv_tiles.aiohttp, 'ClientSession', FakeClientSession)
         return built
 
     @staticmethod
@@ -1339,15 +1340,15 @@ class TestTheTileFanOutContract:
                 raise outcome
             return (x, y, outcome)
 
-        monkeypatch.setattr(gsv, '_download_tile', fake_download_tile)
+        monkeypatch.setattr(gsv_tiles, '_download_tile', fake_download_tile)
 
     def tiles(self, count):
         return [(x, 0, 'https://example.invalid/tile?x=%d' % x) for x in range(count)]
 
     def test_the_connector_carries_the_configured_concurrency_cap(self, monkeypatch, fake_aiohttp):
-        """gsv binds thread_count by value at import (`from config import ...`), so the patch point is
-        gsv.thread_count - patching config.thread_count changes nothing here."""
-        monkeypatch.setattr(gsv, 'thread_count', 3)
+        """The fan-out reads gsv_tiles.CONCURRENCY at call time (configured from config.thread_count when gsv
+        is imported, #222 step 2), so that is the patch point - patching config.thread_count changes nothing."""
+        monkeypatch.setattr(gsv_tiles, 'CONCURRENCY', 3)
         self.stub_tile_fetch(monkeypatch, {0: b'a', 1: b'b'})
 
         asyncio.run(gsv._download_tiles(self.tiles(2)))
@@ -1397,7 +1398,7 @@ class TestARefusedTileAbandonsThePano:
 
     Driven through the REAL fan-out (_download_tiles, the backoff wrapper, _fetch_tile) with only aiohttp's
     session and connector replaced, because what is under test is how many requests leave the box: at
-    thread_count 8, a 512-tile pano whose every tile answers 429 must stop at the 8 already in flight.
+    CONCURRENCY 8, a 512-tile pano whose every tile answers 429 must stop at the 8 already in flight.
     """
 
     @pytest.fixture
@@ -1419,9 +1420,9 @@ class TestARefusedTileAbandonsThePano:
             async def __aexit__(self, *args):
                 return False
 
-        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', FakeConnector)
-        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
-        monkeypatch.setattr(gsv, 'thread_count', 8)
+        monkeypatch.setattr(gsv_tiles.aiohttp, 'TCPConnector', FakeConnector)
+        monkeypatch.setattr(gsv_tiles.aiohttp, 'ClientSession', FakeClientSession)
+        monkeypatch.setattr(gsv_tiles, 'CONCURRENCY', 8)
         return holder
 
     def test_a_429_abandons_the_rest_of_the_fan_out(self, fake_aiohttp):
@@ -1459,7 +1460,7 @@ class TestARefusedTileAbandonsThePano:
     def test_a_tile_that_needed_a_retry_is_one_info_line(self, monkeypatch, fake_aiohttp, caplog):
         """backoff no longer logs, so a pano that succeeded only after retries says so once - the earliest
         sign of trouble that is not yet a failure."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
         body = jpeg_bytes(RED)
 
         def answer(url, attempt):
@@ -1479,7 +1480,7 @@ class TestARefusedTileAbandonsThePano:
 
     def test_a_failed_pano_line_carries_the_retry_count(self, monkeypatch, fake_aiohttp, caplog):
         """An ordinary failure keeps its one ERROR line, now saying how much retrying it cost."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
         fake_aiohttp['session'] = _StatusSession(503)
 
         with caplog.at_level(logging.DEBUG):
@@ -1496,7 +1497,7 @@ class TestARefusedTileAbandonsThePano:
         503s once; before its retry, tile (5, 0) is refused, so the retry is abandoned - and an abandoned
         tile sorts FIRST in grid order. Reading only the first failed cell would book the pano as an
         ordinary failure with an ERROR line, and the breaker would never count it."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
         body = jpeg_bytes(RED)
 
         def answer(url, attempt):
@@ -1534,9 +1535,9 @@ class TestARefusedTileAbandonsThePano:
         Every acquisition waits a measurable 20 ms (_slow_slots), so no slot wait is ever exactly 0.0. Without
         it the first tile's first wait IS 0.0 on Windows, whose monotonic clock ticks every 15.6 ms, and an
         implementation counting only "while slot_wait == 0" passed there (#172 verification, MINOR 2)."""
-        monkeypatch.setattr(gsv, 'thread_count', 1)
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.5)
+        monkeypatch.setattr(gsv_tiles, 'CONCURRENCY', 1)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_SECONDS', 0.5)
         _slow_slots(monkeypatch)
         body = jpeg_bytes(RED)
 
@@ -1555,8 +1556,8 @@ class TestARefusedTileAbandonsThePano:
     def test_the_budget_still_stops_a_tile_that_keeps_failing(self, monkeypatch, fake_aiohttp):
         """The other half: time spent retrying, as opposed to queueing, is still bounded. Every answer takes
         30 ms against a 0.1 s budget, so the tile stops after a handful of tries, well short of TILE_MAX_TRIES."""
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.1)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_SECONDS', 0.1)
         session = fake_aiohttp['session'] = _StatusSession(503, delay=0.03)
 
         with pytest.raises(aiohttp.ClientResponseError):
@@ -1570,9 +1571,9 @@ class TestARefusedTileAbandonsThePano:
         and would give every queued, persistently failing tile TILE_MAX_TRIES tries in a 5xx storm. Here the
         last of 32 tiles queues ~0.9 s before its first request and then always 503s at 30 ms an answer
         against a 0.1 s budget, so only its own ~0.1 s of retrying may count."""
-        monkeypatch.setattr(gsv, 'thread_count', 1)
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_WAIT', 0)
-        monkeypatch.setattr(gsv, 'TILE_RETRY_MAX_SECONDS', 0.1)
+        monkeypatch.setattr(gsv_tiles, 'CONCURRENCY', 1)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_WAIT', 0)
+        monkeypatch.setattr(gsv_tiles, 'TILE_RETRY_MAX_SECONDS', 0.1)
         body = jpeg_bytes(RED)
 
         def answer(url, attempt):
@@ -1844,7 +1845,7 @@ def canned_cbk(monkeypatch, answer):
         s.mount('http://', adapter)
         return s
 
-    monkeypatch.setattr(gsv, '_request_session', session)
+    monkeypatch.setattr(gsv_tiles, '_request_session', session)
     return adapter
 
 
@@ -1934,7 +1935,7 @@ class TestAPermanentVerdictNeedsA200:
         def no_fan_out(tiles):
             raise AssertionError('a refused probe must not reach the tile fan-out')
 
-        monkeypatch.setattr(gsv, '_download_tiles', no_fan_out)
+        monkeypatch.setattr(gsv_tiles, '_download_tiles', no_fan_out)
 
         with pytest.raises(requests.HTTPError):
             gsv.download_single_pano(str(tmp_path), self.pano_info())

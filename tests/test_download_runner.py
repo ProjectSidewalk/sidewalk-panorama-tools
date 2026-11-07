@@ -30,6 +30,7 @@ import requests
 from PIL import Image
 
 import downloaders
+from sidewalk_panorama_tools import gsv_tiles
 import downloaders.common
 import DownloadRunner
 
@@ -2921,9 +2922,9 @@ class TestGoogleRefusingGsvImagesStopsThePhase(_PushbackHarness):
             async def __aexit__(self, *args):
                 return False
 
-        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', lambda limit=None: None)
-        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
-        monkeypatch.setattr(gsv, 'thread_count', 8)
+        monkeypatch.setattr(gsv_tiles.aiohttp, 'TCPConnector', lambda limit=None: None)
+        monkeypatch.setattr(gsv_tiles.aiohttp, 'ClientSession', FakeClientSession)
+        monkeypatch.setattr(gsv_tiles, 'CONCURRENCY', 8)
         monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
         calls = []
 

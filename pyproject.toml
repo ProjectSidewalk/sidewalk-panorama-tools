@@ -25,6 +25,9 @@ dependencies = ["numpy", "pillow"]
 [project.optional-dependencies]
 # sidewalk_panorama_tools.torch_geometry: the sampling grid on the GPU. Imported lazily; never required.
 torch = ["torch"]
+# sidewalk_panorama_tools.gsv_tiles: the GSV tile fetcher (#222 step 2). Its import raises without these.
+# requirements.txt's floors; tests/test_gsv_tiles.py holds the two equal.
+gsv = ["requests>=2.31", "urllib3>=2.0", "aiohttp>=3.7.4", "backoff>=1.10.0"]
 
 [project.urls]
 Source = "https://github.com/ProjectSidewalk/sidewalk-panorama-tools"

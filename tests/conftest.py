@@ -530,3 +530,75 @@ def encode_depth_payload(planes, indices, width, height):
     header = struct.pack('<BHHHB', 8, len(planes), width, height, 8)
     plane_bytes = b''.join(struct.pack('<ffff', *p['n'], p['d']) for p in planes)
     return base64.urlsafe_b64encode(header + bytes(indices) + plane_bytes).decode()
+
+
+# --- every patch of a moved name lands on the module that looks it up (#222 step 2) ----------------------------
+
+# Every name downloaders.gsv re-exports from the package, as imported (one object on both modules then), and the
+# two modules - recorded before any test runs, the modules too, because a test may hide one in sys.modules
+# (test_crop_tilt.py does, for gsv).
+_ORIGINALS = {}
+_TILE_MODULES = {}
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _record_the_re_exports():
+    """Record every re-exported object before any test can patch it, and that gsv's binding is the package's."""
+    from downloaders import gsv
+    from sidewalk_panorama_tools import gsv_tiles
+
+    _TILE_MODULES.update(gsv=gsv, gsv_tiles=gsv_tiles)
+    for name in gsv.RE_EXPORTED_FROM_GSV_TILES:
+        assert getattr(gsv, name) is getattr(gsv_tiles, name), 'downloaders.gsv.%s is not the package object' % name
+        _ORIGINALS[name] = getattr(gsv_tiles, name)
+    yield
+
+
+def mis_targeted_patches():
+    """Every moved name a test has patched on the wrong module, as one line each (empty: none).
+
+    A patch intercepts only the module that LOOKS THE NAME UP. Since #222 step 2 the tile fetcher is
+    sidewalk_panorama_tools.gsv_tiles and downloaders.gsv re-exports it, binding each name once at import. So
+    for every re-exported name one side may be patched and the other must still hold the object both held at
+    import:
+
+    * the package looks the name up itself, so a patch belongs on gsv_tiles, and gsv's binding must be
+      untouched - a test that rebinds it on gsv changed nothing the code reads; except
+    * gsv.GSV_COMPOSED_SEAMS, which gsv's own composition and refetch_panos look up on gsv and the package
+      never calls - so those are patched on gsv, and the package's object must be untouched.
+
+    A state check, run after every test's call phase and before teardown undoes the patches
+    (pytest_runtest_call below), so it sees every spelling - gsv, downloaders.gsv, self.gsv, DownloadRunner.gsv,
+    a name held in a variable, setattr, mock.patch.
+    """
+    if not _TILE_MODULES:
+        return []                       # the session fixture has not run: no test has either
+    gsv, gsv_tiles = _TILE_MODULES['gsv'], _TILE_MODULES['gsv_tiles']
+    problems = []
+    for name, original in _ORIGINALS.items():
+        if name in gsv.GSV_COMPOSED_SEAMS:
+            if getattr(gsv_tiles, name) is not original:
+                problems.append('gsv_tiles.%s was patched, but nothing in the package calls it: downloaders.gsv '
+                                'composes it by its own binding, so patch downloaders.gsv.%s' % (name, name))
+        elif getattr(gsv, name) is not original:
+            problems.append('downloaders.gsv.%s was patched, but the code reads it on the package: patch '
+                            'sidewalk_panorama_tools.gsv_tiles.%s instead' % (name, name))
+    return problems
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Fail a test that patched a moved name on the module that does not look it up (mis_targeted_patches)."""
+    outcome = yield
+    problems = mis_targeted_patches()
+    if not problems:
+        return
+    message = 'a patch missed the module that looks the name up (#222 step 2):\n  ' + '\n  '.join(problems)
+    if outcome.excinfo is not None:
+        item.add_report_section('call', 'patch targets', message)     # failing already; say why it may be
+        return
+    error = AssertionError(message)
+    if hasattr(outcome, 'force_exception'):
+        outcome.force_exception(error)
+    else:                                                               # pluggy < 1.1
+        raise error
