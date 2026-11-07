@@ -5,6 +5,7 @@ them; tests/test_downscaled_sidecar.py keeps exercising them through those names
 below are what make both suites test one definition.
 """
 
+import errno
 import os
 import shutil
 import warnings
@@ -30,8 +31,21 @@ class TestPaths:
     def test_the_shard_is_the_first_two_characters(self, pano_id, expected):
         assert store.shard(pano_id) == expected
 
-    def test_a_numeric_id_is_sharded_as_text(self):
-        assert store.shard(1234567890123456) == '12'
+    @pytest.mark.parametrize('pano_id', [None, 1234567890123456, 12345, float('nan'), b'ab'],
+                             ids=['none', 'int-mapillary', 'short-int', 'nan', 'bytes'])
+    def test_an_id_that_is_not_text_is_refused(self, pano_id):
+        """#231: str() made None shard as 'No' (<root>/No/None.jpg) and a NaN as 'na'. An int is refused too,
+        though it would have sharded right: an id a reader produced as a number is no longer the text on
+        the store, so the intakes read ids as str (tests/test_csv_intake.py). A contract change from 1.0.0's
+        shard(1234567890123456) == '12'."""
+        with pytest.raises(ValueError, match='is a str'):
+            store.shard(pano_id)
+        with pytest.raises(ValueError, match='is a str'):
+            store.pano_path('/s', pano_id, city='seattle-wa')
+
+    def test_a_numpy_string_is_a_string(self):
+        np = pytest.importorskip('numpy')
+        assert store.shard(np.str_(MAPILLARY_ID)) == '12'
 
     @pytest.mark.parametrize('pano_id', ['', 'x'])
     def test_an_id_too_short_to_shard_is_refused(self, pano_id):
@@ -151,12 +165,48 @@ class TestReadPano:
         assert not hasattr(store, 'warnings'), 'store must not use the warnings module at all'
 
     def test_a_missing_file_and_an_unreadable_header(self, tmp_path):
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(FileNotFoundError) as caught:
             store.read_pano(str(tmp_path / 'absent.jpg'))
+        assert caught.value.errno == errno.ENOENT and caught.value.filename == str(tmp_path / 'absent.jpg')
         bad = tmp_path / 'bad.jpg'
         bad.write_bytes(b'not a jpeg at all')
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, match='not a readable JPEG header'):
             store.read_pano(str(bad), 64, 32)
+        empty = tmp_path / 'empty.jpg'
+        empty.write_bytes(b'')
+        with pytest.raises(OSError, match='not a readable JPEG header') as caught:
+            store.read_pano(str(empty))
+        assert str(empty) in str(caught.value)
+
+    def test_a_path_the_file_system_refuses_raises_its_own_error(self, tmp_path):
+        """#231: jpeg_dimensions swallows every OSError, so read_pano used to answer a directory (or EACCES,
+        EIO, a stale NFS handle) with a generic OSError whose errno was None. The file system's error reaches
+        the caller now. Linux raises IsADirectoryError here, Windows PermissionError (errno 13)."""
+        with pytest.raises(OSError) as caught:
+            store.read_pano(str(tmp_path))
+        assert caught.value.errno is not None
+        assert store.jpeg_dimensions(str(tmp_path)) is None     # the sweep primitive still never raises
+
+    def test_a_read_error_after_a_good_open_raises_its_own_error(self, tmp_path, monkeypatch):
+        """The shape a second open() could not catch (#231 plan review): EIO, or a stale NFS handle, arrives on
+        read(), after the open succeeded."""
+        path = small_pano(str(tmp_path / 'p.jpg'))
+
+        class FailingRead:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n=-1):
+                raise OSError(errno.EIO, os.strerror(errno.EIO), path)
+
+        monkeypatch.setattr(store, 'open', lambda *args, **kwargs: FailingRead(), raising=False)
+        with pytest.raises(OSError) as caught:
+            store.read_pano(path, 64, 32)
+        assert caught.value.errno == errno.EIO
+        assert store.jpeg_dimensions(path) is None
 
     def test_the_counting_load_does_see_a_real_decode(self, tmp_path, monkeypatch):
         """Guards the guard above: the patched load is the one read_pano's decode goes through."""

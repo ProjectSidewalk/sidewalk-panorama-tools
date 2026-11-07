@@ -285,8 +285,10 @@ Three named steps, composed in `crop_window_fov_deg()`:
 Everything downstream — 3:2, the seam, the shift, the 1440 px storage cap — is v2's. Two consequences of the
 constants: **the 8° floor is unreachable** (the horizon window is 13.87°), and **the 90° cap binds from 38.91°**
 of depression rather than v2's 26.55°. `W` is the one fitted number, chosen to give v2's median fill on the
-same 658 gold aprons; the three distance constants are a transcribed copy of
-`reports/scripts/pov_replay.py`'s, pinned equal by `TestBlendDistanceMatchesTheStudyPort`.
+same 658 gold aprons; the three distance constants and the blend itself are
+`sidewalk_panorama_tools.ps_math`'s ([docs/geometry.md](geometry.md#the-front-ends-click-math--sidewalk_panorama_toolsps_math)), imported rather than copied since
+[#231](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/231), and `TestBlendDistanceIsPsMaths`
+asserts they are the package's own objects.
 
 Measured in [reports/2026-09-26-crop-sizing-v3.md](../reports/2026-09-26-crop-sizing-v3.md): at the same
 median crop, v3's fill is less dispersed and its window tracks the apron better in every city — but it
