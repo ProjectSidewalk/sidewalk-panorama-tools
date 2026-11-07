@@ -26,7 +26,6 @@ Usage::
 Pure stdlib except :func:`read_pano`, which needs Pillow (a dependency of the package since 1.1.0).
 """
 
-import errno
 import math
 import os
 import re
@@ -46,10 +45,14 @@ MAX_PANO_PIXELS = 16384 * 8192
 def shard(pano_id):
     """The shard directory of a pano: its id's first two characters.
 
+    The id is a ``str`` of at least two characters, or ``ValueError``. A Mapillary id is all digits but is
+    still text: read it as ``str``, never let a CSV or JSON reader turn it into a number.
+
     >>> shard('-0BIbaGbb6Ao2ctRBhyX9w'), shard('1234567890'), shard('0a1b2c3d-0000-4000-8000-00000000abcd')
     ('-0', '12', '0a')
     """
-    pano_id = str(pano_id)
+    if not isinstance(pano_id, str):
+        raise ValueError('a pano id is a str (read all-digit Mapillary ids as text), not %r' % (pano_id,))
     if len(pano_id) < 2:
         raise ValueError('a pano id needs at least two characters to shard: %r' % (pano_id,))
     return pano_id[:2]
@@ -132,38 +135,46 @@ def jpeg_dimensions(path):
     truncated file at pano 1300 of 1400 rather than dying on it.
 
     One hand-rolled marker scanner for the whole repo (reports/scripts/store_coverage.py, refetch_panos.py,
-    downscale_panos.py and the black-band sweep all reach it through downloaders.common).
+    downscale_panos.py and the black-band sweep all reach it through downloaders.common). :func:`read_pano`
+    calls the scanner underneath this, which lets the file system's ``OSError`` through (#231).
     """
     try:
-        with open(path, 'rb') as f:
-            if f.read(2) != b'\xff\xd8':
-                return None
-            while True:
-                byte = f.read(1)
-                while byte and byte != b'\xff':
-                    byte = f.read(1)
-                while byte == b'\xff':          # fill bytes: 0xFF may repeat before the marker
-                    byte = f.read(1)
-                if not byte:
-                    return None
-                marker = byte[0]
-                if marker in STANDALONE_JPEG_MARKERS:
-                    continue
-                header = f.read(2)
-                if len(header) < 2:
-                    return None
-                seglen = struct.unpack('>H', header)[0]
-                if marker in SOF_MARKERS:
-                    body = f.read(5)
-                    if len(body) < 5:
-                        return None
-                    height, width = struct.unpack('>HH', body[1:5])
-                    return width, height
-                if seglen < 2:
-                    return None
-                f.seek(seglen - 2, os.SEEK_CUR)
+        return _sof_dimensions(path)
     except OSError:
         return None
+
+
+def _sof_dimensions(path):
+    """The scanner behind :func:`jpeg_dimensions`: ``(width, height)``, or None when the bytes are not a JPEG
+    header this can read. An ``OSError`` from opening or reading the file (ENOENT, EACCES, EISDIR, EIO, a stale
+    NFS handle) propagates with its errno; :func:`jpeg_dimensions` is the wrapper that swallows it."""
+    with open(path, 'rb') as f:
+        if f.read(2) != b'\xff\xd8':
+            return None
+        while True:
+            byte = f.read(1)
+            while byte and byte != b'\xff':
+                byte = f.read(1)
+            while byte == b'\xff':          # fill bytes: 0xFF may repeat before the marker
+                byte = f.read(1)
+            if not byte:
+                return None
+            marker = byte[0]
+            if marker in STANDALONE_JPEG_MARKERS:
+                continue
+            header = f.read(2)
+            if len(header) < 2:
+                return None
+            seglen = struct.unpack('>H', header)[0]
+            if marker in SOF_MARKERS:
+                body = f.read(5)
+                if len(body) < 5:
+                    return None
+                height, width = struct.unpack('>HH', body[1:5])
+                return width, height
+            if seglen < 2:
+                return None
+            f.seek(seglen - 2, os.SEEK_CUR)
 
 
 def raise_decompression_bomb_ceiling():
@@ -221,17 +232,17 @@ def read_pano(path, expected_width=None, expected_height=None):
     per-call warnings filter: ``warnings.catch_warnings`` rewrites the process-wide filter list and is not
     thread-safe, and a server reading panos on several threads is exactly the consumer this is for.
 
-    A missing file raises ``FileNotFoundError``; a file whose JPEG header cannot be read raises ``OSError``.
+    A file the file system will not read raises its own ``OSError``, errno and filename included
+    (``FileNotFoundError`` for a missing one; EACCES, EISDIR, EIO, a stale NFS handle). A file that reads but
+    whose bytes are not a JPEG header this can parse raises ``OSError`` naming the path.
     """
     if (expected_width is None) != (expected_height is None):
         raise ValueError('give both expected_width and expected_height, or neither')
     expected = None
     if expected_width is not None:
         expected = (_frame_dimension(expected_width), _frame_dimension(expected_height))
-    stored = jpeg_dimensions(path)
+    stored = _sof_dimensions(path)
     if stored is None:
-        if not os.path.exists(path):
-            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
         raise OSError('%s: not a readable JPEG header' % (path,))
     if expected is not None and expected != stored:
         raise PanoDimsMismatch(path, expected, stored)
