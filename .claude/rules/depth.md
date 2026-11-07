@@ -1,6 +1,8 @@
 ---
 paths:
   - "downloaders/gsv.py"
+  - "sidewalk_panorama_tools/gsv_tiles.py"
+  - "tests/test_gsv_tiles.py"
   - "DownloadRunner.py"
   - "config.py"
   - "migrate_depth_artifacts.py"
@@ -15,7 +17,7 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
 
 ## Pacing and the block latch (`config.py`)
 
-`config.py` holds `thread_count` (image-phase tile fan-out, default 8), a rotating `headers_list` (randomly picked per request), `proxies` (set to the `http://`/`https://` sentinels to disable), and the three depth pacing settings.
+`config.py` holds `thread_count` (image-phase tile fan-out, default 8), a rotating `headers_list` (randomly picked per request), `proxies` (set to the `http://`/`https://` sentinels to disable), and the three depth pacing settings. The first three reach the code only through `gsv_tiles.configure()`, which `gsv.py` calls at import (#222 step 2): everything reads `gsv_tiles.CONCURRENCY`, `HEADERS` and `PROXIES` at call time - the depth and photosphere sessions too - and `gsv.py` keeps no binding of its own, so a test patches the package's attribute.
 
 **Depth pacing is adaptive, and `depth_min_request_interval` is a floor rather than a rate (#43).** A run opens at `depth_start_interval` (1.0 s), doubles on any push-back up to `depth_max_request_interval` (30 s), and decays ×0.8 back towards the floor only after 200 consecutive clean requests; the gap slept is drawn `uniform(interval, 2 × interval)`, so there is no cadence to fingerprint. Three things follow that are easy to get wrong:
 - **The floor bounds how aggressive this host can ever get** — nothing draws a shorter gap. The 0.25 s default is the pace the 2026-08-09 photometa census ran 1,360 requests at with zero push-back, i.e. the fastest rate we have live evidence for. It is deliberately *not* 0, and the old advice to leave it at 0 "because the backfill is a multi-month job" was wrong on both halves: a photometa request measures 0.077 s median from the production box.

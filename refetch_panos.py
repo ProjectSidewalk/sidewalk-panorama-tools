@@ -64,6 +64,7 @@ from downloaders import gsv
 from downloaders import common
 from downloaders.common import (atomic_output_path, jpeg_dimensions, walk_store_panos,
                                 write_downscaled_sidecar)
+from sidewalk_panorama_tools import gsv_tiles
 
 # The band was only ever a zoom-5 effect: a panorama whose own max zoom is 3 or 4 was served at full size at
 # every level (measured on a 2007 DC panorama in reports/2026-08-07-cbk-tile-resolution.md, finding 1). So a
@@ -71,7 +72,7 @@ from downloaders.common import (atomic_output_path, jpeg_dimensions, walk_store_
 # without spending a request.
 AFFECTED_MIN_ZOOM = 5
 
-# `fover` was dropped from _CBK_BASE_URL on 2026-08-07 (#68, c704b3f). A stored file written at or after the
+# `fover` was dropped from CBK_BASE_URL on 2026-08-07 (#68, c704b3f). A stored file written at or after the
 # date the fix reached the scraper box was fetched without it and is already at full resolution. The default
 # is the merge date; --fixed-after exists because deployment is not merge, and only the operator knows when
 # the box actually picked the fix up. Erring late costs a wasted re-fetch; erring early would skip files that
@@ -147,8 +148,8 @@ def band_pixel_rows(pano_height):
     if rows is None:
         return None
     first_full, last_full, _n_rows = rows
-    return ((last_full + 1) * gsv.TILE_SIZE, pano_height), (first_full * gsv.TILE_SIZE,
-                                                            (last_full + 1) * gsv.TILE_SIZE)
+    return ((last_full + 1) * gsv_tiles.TILE_SIZE, pano_height), (first_full * gsv_tiles.TILE_SIZE,
+                                                                  (last_full + 1) * gsv_tiles.TILE_SIZE)
 
 
 def _parse_fixed_after(value):
@@ -381,7 +382,7 @@ def decide_without_fetching(storage_path, record, fixed_after, allow_dims_change
     if stored_dims is None:
         return 'unreadable', None
 
-    if gsv._pano_max_zoom(stored_dims[0]) < AFFECTED_MIN_ZOOM:
+    if gsv_tiles._pano_max_zoom(stored_dims[0]) < AFFECTED_MIN_ZOOM:
         return 'not_affected', None
 
     if os.path.getmtime(path) >= fixed_after:
@@ -540,7 +541,7 @@ def refetch_pano(storage_path, record, fetch_dims, max_black, measure, measureme
         # Some request parameter is costing resolution again (#73's tripwire). Whatever came back is no
         # better than what is on disk, and swapping would spend a JPEG generation for nothing.
         return 'undersized'
-    black = gsv._black_fraction(stitched.image)
+    black = common.black_fraction(stitched.image)
     if black > max_black:
         logging.warning("REFETCH: pano %s: fresh stitch is %.1f%% black (limit %.1f%%); refusing to swap",
                         pano_id, 100 * black, 100 * max_black)

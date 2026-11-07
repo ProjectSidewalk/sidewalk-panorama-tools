@@ -32,6 +32,7 @@ import requests
 from PIL import Image, ImageFile
 
 from downloaders import common, gsv
+from sidewalk_panorama_tools import gsv_tiles
 from downloaders.common import DownloadResult, jpeg_dimensions
 from test_gsv_stitcher import deny_probe, stub_photometa, stub_tiles
 
@@ -202,7 +203,7 @@ class TestThePhotoHostContract:
 
         assert [r['url'] for r in host.requests] == ['https://lh3.ggpht.com/p/%s=s0' % AF1Q_PHOTO]
         assert host.exited == 1, 'the session is context-managed (#51)'
-        assert host.requests[0]['headers'] in gsv.headers_list
+        assert host.requests[0]['headers'] in gsv_tiles.HEADERS
         assert stored(tmp_path).read_bytes() == body, 'the host encode, verbatim - no PIL round trip'
         assert not (tmp_path / AF1Q_PANO[:2] / (AF1Q_PANO + '.jpg.part')).exists()
 
@@ -213,7 +214,7 @@ class TestThePhotoHostContract:
 
     def test_the_proxies_are_filtered_as_the_probe_filters_them(self, tmp_path, monkeypatch, cbk_untouched):
         """A normalized-away placeholder must reach requests as absent, not None (#51)."""
-        monkeypatch.setattr(gsv, '_proxies', {'http': None, 'https': 'http://proxy.example:3128'})
+        monkeypatch.setattr(gsv_tiles, 'PROXIES', {'http': None, 'https': 'http://proxy.example:3128'})
         host = stub_photo_host(monkeypatch, serve())
         gsv.download_single_pano(str(tmp_path), info())
         assert host.requests[0]['proxies'] == {'https': 'http://proxy.example:3128'}

@@ -125,6 +125,107 @@ def guard_the_tree(snapshot):
         'fetch_rawlabels.py and read by every study.')
 
 
+class NetworkBlockedError(BaseException):
+    """A test tried to reach a host other than this machine; the suite is network-free (#222 step 2, commit 0).
+
+    A BaseException, not an OSError: an OSError (or anything under Exception) is exactly what the code under
+    test catches as a transient network failure, so a test whose stub missed its seam could go on passing
+    while Google was asked for real. The per-test check below fails such a test even if something swallowed
+    this, so the BaseException is for a readable traceback, not the only line of defence.
+    """
+
+
+# The (call, target) of every refused attempt since the current test began; the per-test check empties it.
+_NETWORK_ATTEMPTS = []
+
+# Set to run the opt-in live checks (tests/test_gsv_tile_contract.py's `live_only`), which DO contact Google.
+LIVE_NETWORK_ENV = 'SIDEWALK_LIVE_TILE_TESTS'
+
+
+def _is_loopback_host(host):
+    """True for a host this guard lets through: none (a bind or a wildcard), localhost, or a loopback literal."""
+    import ipaddress
+
+    if host is None or host == '':
+        return True
+    if isinstance(host, bytes):
+        host = host.decode('ascii', errors='replace')
+    host = str(host).strip('[]')
+    if host.lower() == 'localhost' or host.lower().endswith('.localhost'):
+        return True
+    try:
+        return ipaddress.ip_address(host.split('%', 1)[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _refuse(call, target):
+    _NETWORK_ATTEMPTS.append((call, target))
+    raise NetworkBlockedError('the test suite is network-free: %s(%r) was refused. A stub missed the seam the '
+                              'code under test looks the name up on (patch the module that LOOKS UP the name), '
+                              'or set %s=1 for the opt-in live checks.' % (call, target, LIVE_NETWORK_ENV))
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _no_network():
+    """Refuse every DNS lookup and connection to anything but this machine, for the whole session.
+
+    The suite is network-free only because every test stubs the right seam, and five shared helpers in
+    tests/test_gsv_stitcher.py (stub_probe, deny_probe, stub_tiles, canned_cbk, stub_tile_fetch) carry about
+    two hundred call sites. One of them left patching a module that no longer looks the name up would send
+    real requests to maps.google.com - from CI and from a developer's desk - instead of failing (#222 step 2).
+    So `socket.getaddrinfo` refuses a hostname that is not loopback (requests and aiohttp's default resolver
+    both go through it), and `socket.socket.connect`/`connect_ex` refuse a non-loopback address (an IP
+    literal skips DNS). AF_UNIX addresses are not (host, port) tuples and pass. On Windows the Proactor
+    event loop connects through ConnectEx rather than socket.connect, so there the hostname check is the one
+    that holds for aiohttp; CI's Linux selector loop goes through connect. The guard is aimed at the HTTP
+    stack - requests, urllib3 and aiohttp all resolve through getaddrinfo - and deliberately leaves
+    socket.gethostbyname, gethostbyname_ex and gethostbyaddr alone, which nothing in this repo calls.
+
+    Set SIDEWALK_LIVE_TILE_TESTS to lift it, which is what the opt-in live checks need. It does NOT reach the
+    subprocess children the runner tests spawn (a monkeypatch does not cross a process boundary); those run
+    the real main() against stubbed or local inputs and have never needed the network.
+    """
+    if os.environ.get(LIVE_NETWORK_ENV):
+        yield
+        return
+    import socket
+
+    real_getaddrinfo = socket.getaddrinfo
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def getaddrinfo(host, *args, **kwargs):
+        if not _is_loopback_host(host):
+            _refuse('socket.getaddrinfo', host)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    def checked(call, real):
+        def connect(self, address):
+            if isinstance(address, tuple) and not _is_loopback_host(address[0]):
+                _refuse(call, address)
+            return real(self, address)
+        return connect
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(socket, 'getaddrinfo', getaddrinfo)
+    mp.setattr(socket.socket, 'connect', checked('socket.connect', real_connect))
+    mp.setattr(socket.socket, 'connect_ex', checked('socket.connect_ex', real_connect_ex))
+    try:
+        yield
+    finally:
+        mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _no_network_attempt_is_swallowed():
+    """Fail a test that tried the network, even when the code under test caught NetworkBlockedError."""
+    _NETWORK_ATTEMPTS.clear()
+    yield
+    attempts, _NETWORK_ATTEMPTS[:] = list(_NETWORK_ATTEMPTS), []
+    assert not attempts, 'this test tried to reach the network (refused by conftest._no_network): %r' % (attempts,)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_process_state():
     """Snapshot and restore the process-wide state a runner's main() mutates, around every test.
@@ -431,3 +532,75 @@ def encode_depth_payload(planes, indices, width, height):
     header = struct.pack('<BHHHB', 8, len(planes), width, height, 8)
     plane_bytes = b''.join(struct.pack('<ffff', *p['n'], p['d']) for p in planes)
     return base64.urlsafe_b64encode(header + bytes(indices) + plane_bytes).decode()
+
+
+# --- every patch of a moved name lands on the module that looks it up (#222 step 2) ----------------------------
+
+# Every name downloaders.gsv re-exports from the package, as imported (one object on both modules then), and the
+# two modules - recorded before any test runs, the modules too, because a test may hide one in sys.modules
+# (test_crop_tilt.py does, for gsv).
+_ORIGINALS = {}
+_TILE_MODULES = {}
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _record_the_re_exports():
+    """Record every re-exported object before any test can patch it, and that gsv's binding is the package's."""
+    from downloaders import gsv
+    from sidewalk_panorama_tools import gsv_tiles
+
+    _TILE_MODULES.update(gsv=gsv, gsv_tiles=gsv_tiles)
+    for name in gsv.RE_EXPORTED_FROM_GSV_TILES:
+        assert getattr(gsv, name) is getattr(gsv_tiles, name), 'downloaders.gsv.%s is not the package object' % name
+        _ORIGINALS[name] = getattr(gsv_tiles, name)
+    yield
+
+
+def mis_targeted_patches():
+    """Every moved name a test has patched on the wrong module, as one line each (empty: none).
+
+    A patch intercepts only the module that LOOKS THE NAME UP. Since #222 step 2 the tile fetcher is
+    sidewalk_panorama_tools.gsv_tiles and downloaders.gsv re-exports it, binding each name once at import. So
+    for every re-exported name one side may be patched and the other must still hold the object both held at
+    import:
+
+    * the package looks the name up itself, so a patch belongs on gsv_tiles, and gsv's binding must be
+      untouched - a test that rebinds it on gsv changed nothing the code reads; except
+    * gsv.GSV_COMPOSED_SEAMS, which gsv's own composition and refetch_panos look up on gsv and the package
+      never calls - so those are patched on gsv, and the package's object must be untouched.
+
+    A state check, run after every test's call phase and before teardown undoes the patches
+    (pytest_runtest_call below), so it sees every spelling - gsv, downloaders.gsv, self.gsv, DownloadRunner.gsv,
+    a name held in a variable, setattr, mock.patch.
+    """
+    if not _TILE_MODULES:
+        return []                       # the session fixture has not run: no test has either
+    gsv, gsv_tiles = _TILE_MODULES['gsv'], _TILE_MODULES['gsv_tiles']
+    problems = []
+    for name, original in _ORIGINALS.items():
+        if name in gsv.GSV_COMPOSED_SEAMS:
+            if getattr(gsv_tiles, name) is not original:
+                problems.append('gsv_tiles.%s was patched, but nothing in the package calls it: downloaders.gsv '
+                                'composes it by its own binding, so patch downloaders.gsv.%s' % (name, name))
+        elif getattr(gsv, name) is not original:
+            problems.append('downloaders.gsv.%s was patched, but the code reads it on the package: patch '
+                            'sidewalk_panorama_tools.gsv_tiles.%s instead' % (name, name))
+    return problems
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Fail a test that patched a moved name on the module that does not look it up (mis_targeted_patches)."""
+    outcome = yield
+    problems = mis_targeted_patches()
+    if not problems:
+        return
+    message = 'a patch missed the module that looks the name up (#222 step 2):\n  ' + '\n  '.join(problems)
+    if outcome.excinfo is not None:
+        item.add_report_section('call', 'patch targets', message)     # failing already; say why it may be
+        return
+    error = AssertionError(message)
+    if hasattr(outcome, 'force_exception'):
+        outcome.force_exception(error)
+    else:                                                               # pluggy < 1.1
+        raise error

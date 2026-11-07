@@ -37,6 +37,7 @@ import requests
 from PIL import Image
 
 from downloaders import gsv
+from sidewalk_panorama_tools import gsv_tiles
 from downloaders.common import DownloadResult, jpeg_dimensions
 from test_gsv_stitcher import (OBSERVED_PHOTOMETA, RED, deny_probe, jpeg_bytes, stub_photometa, stub_probe,
                                stub_tiles)
@@ -122,8 +123,8 @@ class TestProbeZoomIsTodaysProbe:
         requested = stub_probe(monkeypatch, pick_zoom=pick)
 
         assert gsv._probe_zoom(PANO) == expected
-        assert requested == ['%s&zoom=3&x=0&y=0&panoid=%s' % (gsv._CBK_BASE_URL, PANO),
-                             '%s&zoom=5&x=0&y=0&panoid=%s' % (gsv._CBK_BASE_URL, PANO)]
+        assert requested == ['%s&zoom=3&x=0&y=0&panoid=%s' % (gsv.CBK_BASE_URL, PANO),
+                             '%s&zoom=5&x=0&y=0&panoid=%s' % (gsv.CBK_BASE_URL, PANO)]
 
 
 # --- resolve_frame -----------------------------------------------------------------------------------------
@@ -601,7 +602,7 @@ class TestDownloadSinglePanoWithReportedLevels:
         The stitch itself is stubbed to a thumbnail (the verdict is fetch_pano_image's grid-vs-frame compare,
         which still runs for real); the full-size stitches of these rows are the parametrized test above."""
         red_tiles(monkeypatch)
-        monkeypatch.setattr(gsv, '_stitch_tiles', lambda ok, zoom_dims, final_dims: Image.new('RGB', (8, 4), RED))
+        monkeypatch.setattr(gsv_tiles, '_stitch_tiles', lambda ok, zoom_dims, final_dims: Image.new('RGB', (8, 4), RED))
         deny_probe(monkeypatch)
         outcomes = {}
         for pano_id, frame, sizes in (('nativeZoom3AAAAAAAAAAA', (3328, 1664), SERIES_3328),
@@ -755,7 +756,7 @@ def serve_pyramid(monkeypatch, sizes):
         inside = zoom < len(sizes) and x * gsv.TILE_SIZE < sizes[zoom][0] and y * gsv.TILE_SIZE < sizes[zoom][1]
         return io.BytesIO(grey if inside else black)
 
-    monkeypatch.setattr(gsv, '_get_response', fake_get_response)
+    monkeypatch.setattr(gsv_tiles, '_get_response', fake_get_response)
     return requested
 
 
@@ -1204,7 +1205,7 @@ class TestTheFallbackSeamsStillRaiseAndStillFallBack:
         def blip(url, session, stream=False):
             raise requests.ConnectionError('probe blip')
 
-        monkeypatch.setattr(gsv, '_get_response', blip)
+        monkeypatch.setattr(gsv_tiles, '_get_response', blip)
         with pytest.raises(requests.ConnectionError):
             gsv.resolve_frame(pano_info(1024, 512))
         with pytest.raises(requests.ConnectionError):

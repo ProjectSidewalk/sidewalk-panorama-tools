@@ -6,6 +6,8 @@ paths:
   - "tests/test_black_bands.py"
   - "downloaders/common.py"
   - "sidewalk_panorama_tools/store.py"
+  - "sidewalk_panorama_tools/gsv_tiles.py"
+  - "tests/test_gsv_tiles.py"
   - "tests/test_store.py"
   - "tests/test_refetch_panos.py"
   - "tests/test_downscaled_sidecar.py"

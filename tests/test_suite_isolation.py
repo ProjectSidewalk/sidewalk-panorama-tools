@@ -1,6 +1,6 @@
 """Pins the suite's own isolation from the machine it runs on (#165).
 
-Four guards live in tests/conftest.py (and the workflow) and none of them is exercised by any production
+Five guards live in tests/conftest.py (and the workflow) and none of them is exercised by any production
 test, so each is pinned here against the failure it exists for:
 
 * the session-end check that the run left the repo - including the gitignored study cache - unchanged;
@@ -8,7 +8,9 @@ test, so each is pinned here against the failure it exists for:
   host's real pacing lock or reads its real depth block latch;
 * PytestRemovedIn10Warning as an error, so the next removal fails the PR that adds it;
 * SIDEWALK_REQUIRE_STREETLEVEL, which CI sets so a broken streetlevel import fails the run instead of
-  quietly skipping every contract test in tests/test_streetlevel_api.py.
+  quietly skipping every contract test in tests/test_streetlevel_api.py;
+* the network guard, which refuses any lookup or connection to a host other than this machine unless
+  SIDEWALK_LIVE_TILE_TESTS is set, and fails a test that tried even when the attempt was caught (#222 step 2).
 """
 
 import os
@@ -405,3 +407,83 @@ class TestTheWorkflowRequiresIt:
     def test_the_job_has_a_timeout(self):
         """GitHub's default is six hours of a held runner for one hung test."""
         assert any(line.strip().startswith('timeout-minutes:') for line in self._text().splitlines())
+
+
+# --- nothing reaches the network -----------------------------------------------------------------------------
+
+class TestTheSuiteIsNetworkFree:
+    """conftest._no_network refuses every lookup and connection to anything but this machine (#222 step 2).
+
+    The suite was network-free only because every test stubbed the right seam; a stub left on a module that
+    no longer looks the name up would have asked maps.google.com for real. Each test here empties the attempt
+    record it provokes, so the per-test check (_no_network_attempt_is_swallowed) does not fail it; that check
+    is pinned on its own below, in a child pytest."""
+
+    @pytest.fixture(autouse=True)
+    def _forget_the_attempts_these_tests_make(self):
+        yield
+        conftest._NETWORK_ATTEMPTS.clear()
+
+    def test_a_hostname_lookup_is_refused(self):
+        import socket
+        if os.environ.get(conftest.LIVE_NETWORK_ENV):
+            pytest.skip('the live checks are enabled, which lifts the guard')
+        with pytest.raises(conftest.NetworkBlockedError, match='maps.google.com'):
+            socket.getaddrinfo('maps.google.com', 443)
+        assert conftest._NETWORK_ATTEMPTS == [('socket.getaddrinfo', 'maps.google.com')]
+
+    def test_a_connection_to_a_non_loopback_address_is_refused(self):
+        import socket
+        if os.environ.get(conftest.LIVE_NETWORK_ENV):
+            pytest.skip('the live checks are enabled, which lifts the guard')
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            with pytest.raises(conftest.NetworkBlockedError):
+                s.connect(('192.0.2.1', 80))            # TEST-NET-1: never routed, so never a real attempt
+            with pytest.raises(conftest.NetworkBlockedError):
+                s.connect_ex(('192.0.2.1', 80))
+
+    def test_it_is_not_an_oserror(self):
+        """The code under test catches OSError (and Exception) as a transient network failure."""
+        assert not issubclass(conftest.NetworkBlockedError, Exception)
+
+    @pytest.mark.parametrize('host', [None, '', 'localhost', '127.0.0.1', '127.8.9.10', '::1', '[::1]',
+                                      b'localhost'])
+    def test_loopback_passes(self, host):
+        assert conftest._is_loopback_host(host)
+
+    @pytest.mark.parametrize('host', ['maps.google.com', '10.0.0.1', '192.0.2.1', '::ffff:8.8.8.8',
+                                      'localhost.example.com'])
+    def test_anything_else_does_not(self, host):
+        assert not conftest._is_loopback_host(host)
+
+    def test_a_loopback_server_still_answers(self):
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.bind(('127.0.0.1', 0))
+            server.listen(1)
+            with socket.create_connection(server.getsockname(), timeout=5):
+                pass
+
+    def test_a_swallowed_attempt_still_fails_the_test(self, tmp_path):
+        """The BaseException is for the traceback; the per-test record is what makes a caught one fail."""
+        if os.environ.get(conftest.LIVE_NETWORK_ENV):
+            pytest.skip('the live checks are enabled, which lifts the guard')
+        target = tmp_path / 'test_swallows.py'
+        target.write_text(
+            'import socket\n'
+            'def test_swallows():\n'
+            '    try:\n'
+            '        socket.getaddrinfo("maps.google.com", 443)\n'
+            '    except BaseException:\n'
+            '        pass\n')
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+            p for p in (os.path.join(REPO_ROOT, 'tests'), os.environ.get('PYTHONPATH')) if p))
+        for name in ('COVERAGE_PROCESS_START', 'COVERAGE_FILE', 'SIDEWALK_COVERAGE_ROOT'):
+            env.pop(name, None)
+        result = subprocess.run(
+            [sys.executable, '-m', 'pytest', str(target), '-q', '-p', 'no:cacheprovider', '-p', 'conftest',
+             '--rootdir', str(tmp_path)],
+            cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120)
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, output
+        assert 'tried to reach the network' in output, output

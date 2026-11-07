@@ -19,6 +19,7 @@ import requests
 from PIL import Image
 
 import downloaders
+from sidewalk_panorama_tools import gsv_tiles
 from downloaders.common import DownloadResult, atomic_output_path
 
 from conftest import posix_only
@@ -770,7 +771,7 @@ class TestGsvAtomicSave:
         break this helper too.
         """
         tile = jpeg_bytes(120)
-        monkeypatch.setattr(downloaders.gsv, '_get_response', probe_serving(tile))
+        monkeypatch.setattr(gsv_tiles, '_get_response', probe_serving(tile))
         # Photometa is asked first since #74; making it unavailable routes this onto the probe above, and
         # keeps a real request (streetlevel is installed in CI) out of the suite.
         monkeypatch.setattr(downloaders.gsv, '_fetch_image_levels', photometa_unavailable)
@@ -781,7 +782,7 @@ class TestGsvAtomicSave:
         async def fake_download_tiles(tiles):
             return [(x, y, tile) for x, y, _url in tiles]
 
-        monkeypatch.setattr(downloaders.gsv, '_download_tiles', fake_download_tiles)
+        monkeypatch.setattr(gsv_tiles, '_download_tiles', fake_download_tiles)
 
     def test_a_healthy_pano_is_written(self, tmp_path, stitchable):
         assert downloaders.gsv.download_single_pano(str(tmp_path), GSV_PANO) == DownloadResult.success
@@ -946,13 +947,13 @@ class TestALostShardDirRaceDoesNotFailThePano:
 
     def test_gsv_still_downloads(self, monkeypatch, tmp_path):
         tile = jpeg_bytes(120)
-        monkeypatch.setattr(downloaders.gsv, '_get_response', probe_serving(tile))
+        monkeypatch.setattr(gsv_tiles, '_get_response', probe_serving(tile))
         monkeypatch.setattr(downloaders.gsv, '_fetch_image_levels', photometa_unavailable)
 
         async def fake_download_tiles(tiles):
             return [(x, y, tile) for x, y, _url in tiles]
 
-        monkeypatch.setattr(downloaders.gsv, '_download_tiles', fake_download_tiles)
+        monkeypatch.setattr(gsv_tiles, '_download_tiles', fake_download_tiles)
         self.deny_chmod_on_directories(monkeypatch)
 
         assert downloaders.gsv.download_single_pano(str(tmp_path), GSV_PANO) == DownloadResult.success

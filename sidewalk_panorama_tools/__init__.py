@@ -1,6 +1,6 @@
 """Project Sidewalk panorama geometry, installable (docs/geometry.md).
 
-Six modules:
+Seven modules:
 
 * :mod:`sidewalk_panorama_tools.geometry` - a perspective (gnomonic) view of a label from its
   equirectangular panorama, with rig-tilt correction. :func:`~sidewalk_panorama_tools.geometry.label_view`
@@ -17,6 +17,9 @@ Six modules:
 * :mod:`sidewalk_panorama_tools.labels` - validation-vote arithmetic with every policy explicit:
   ``label_uid`` (the ``city:label_id`` key), ``vote_counts`` (human-only by default), ``majority`` (a required
   tie policy) and ``is_validated`` (required thresholds).
+* :mod:`sidewalk_panorama_tools.gsv_tiles` - optional (the ``[gsv]`` extra): the GSV tile fetcher the nightly
+  scraper runs - the zoom probe, the frame check and the cbk fan-out and stitch, with Google's refusals
+  classified. Never imported here, so the base install needs no network stack.
 * :mod:`sidewalk_panorama_tools.torch_geometry` - optional (the ``[torch]`` extra): the same sampling grid
   built with torch on any device, and the ``grid_sample`` normalization for a wrap-padded pano.
 
@@ -29,4 +32,4 @@ Usage::
     crop = render_view(pano, view, tilt)
 """
 
-__version__ = '1.1.0'
+__version__ = '1.2.0'
