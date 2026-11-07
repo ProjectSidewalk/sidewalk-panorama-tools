@@ -841,18 +841,31 @@ decode to exactly that protobuf takes the cbk path as before, with one INFO line
 | the same, at a frame the app disagrees with | refused as a `frame disagreement`, the same `WARNING`/`ERROR` and the same `frame-disagreement` condition as a stitch's refusal; nothing written | none, retried |
 | the same, and the app has no width/height | the served size **is** the frame, as photometa's top level is for a stitch; one INFO line, `frame from the photo host: WxH`. Not counted in the image phase's "took their frame from photometa" line, since photometa was not asked | `1` |
 | a landing on Google's interstitial, at any status; or a 429, which the session's retry policy retries and gives up on | raises as push-back to the [image-phase breaker](ops.md#when-google-pushes-back-on-the-image-phase), as a probe's would | none, retried |
-| any other status (the older form's 400 included, and a 403) | raises `PhotosphereHostError`: transient, and deliberately **not** push-back. A 403 here is one photo's answer (private, removed), not the host's, and three in a row would otherwise trip the breaker and stand every city's depth phase down for six hours | none, retried |
+| **400 with a `text/html` body, for a photo id of the `CIHM…` or `CIAB…` form** | the host refuses the *form*, not the pano: the one permanent verdict that rests on the photo host (below). One INFO line, `refuses the CIHM form of photo id`; nothing written | **`0`** |
+| any other status (a 400 for the `AF1Qip…` form or with another content type, a 403, a 404, a 5xx) | raises `PhotosphereHostError`: transient, and deliberately **not** push-back. A 403 here is one photo's answer (private, removed), not the host's, and three in a row would otherwise trip the breaker and stand every city's depth phase down for six hours | none, retried |
 | 200 with a body that is not a complete JPEG (HTML, another Content-Type, cut short) | raises; nothing written | none, retried |
 
-**No permanent verdict rests on the photo host.** Photo ids come in two forms. The `AF1Qip…` form answered 200
-with dimensions equal to `/adminapi/panos`'s in 24 of 24 measured (21 on 2026-10-21, 3 on 2026-11-04). The
-older `CIHM…` form answered 400 from `lh3.ggpht.com`, `lh5.googleusercontent.com` and the `streetviewpixels-pa`
-tile endpoint in 9 of 9 (6 and 3 on the same dates): probably
-deleted, not confirmed. chicago-il's pano list held 913 `CAoS` ids on 2026-11-04 (105 labelled): 598 of the
-`CIHM` form, 285 `AF1Qip`, 30 of some other form. The `CIHM` ones still raise every night, now one photo-host
-request each where they used to cost one cbk probe request each, so the cost is unchanged; writing them off
-is a separate decision on more measurements. `refetch_panos.py` keeps its probe-only path, so a `CAoS` id
-there is still a transient 400.
+**One permanent verdict rests on the photo host, and it is keyed on the status, the form and the host's own error page together** (the body signature, as the Panoramax verdict asks for the catalog's). Photo
+ids come in three forms, read off their leading letters (`gsv.photosphere_form`). The `AF1Qip…` form is served:
+200 with dimensions equal to `/adminapi/panos`'s in 24 of 24 measured (21 on 2026-10-21, 3 on 2026-11-04), and
+every one of chicago-il's 285 answered 200 in the 2026-11-05 sweep. The older `CIHM…` form and the `CIAB…`
+form are refused **as forms**: all 598 CIHM and 30 CIAB ids in chicago-il's list answered 400 with the same
+1,555-byte error page, and one id of each form answered 400 at `lh3.googleusercontent.com/p/` and
+`lh5.googleusercontent.com/p/` too, where the AF1Qip control is served
+([the study](../reports/2026-11-05-photosphere-forms.md)). So a 400 for one of those forms is ledgered
+`downloaded=0`, like a pano cbk answers black tiles for, and asked once rather than every night: it is an
+exception to [#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)'s "a non-200 is
+never a verdict", carved out on that measurement and no wider. A 400 for the `AF1Qip` form has never been seen,
+so it is unmeasured and stays a raise. A new CIHM or CIAB id is still asked once, so if the host ever serves the
+form the new ids simply download, with no signal of their own; the ones already ledgered stay written off until
+someone notices and re-admits them. The verdict does not count toward the
+[consecutive-permanent-failure breaker](ops.md#when-the-image-phase-stops-trusting-a-source) either, nor reset
+it: that breaker guards against cbk answering black tiles across the board, and a photosphere's answer comes
+from the photo host, so a quiet night's 276 of them in a row (chicago-il) is normal, not a trip. What the verdict does *not* say is that the picture is gone: three Google hosts refuse the
+form, and whether a fourth serves it is an open question in the study. The same study found every `CAoS` row
+the fleet had ever ledgered to be a `0` from before 2026-09-17, 901 of them `AF1Qip`, which is what
+[`readmit_photosphere_writeoffs.py`](ops.md#re-admitting-the-photosphere-write-offs) is for.
+`refetch_panos.py` keeps its probe-only path, so a `CAoS` id there is still a transient 400.
 
 **Depth:** photometa answers "not found" (code 2) for a photosphere, 2 of 2 measured on 2026-11-04 (one of each
 form), so photospheres carry no GSV depth payload as far as photometa is concerned. The depth phase ledgers

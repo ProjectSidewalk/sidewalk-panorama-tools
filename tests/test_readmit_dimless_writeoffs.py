@@ -31,6 +31,7 @@ LEDGER = ('pano_id,downloaded\n'
           f'{DIMLESS_OK},1,2026-09-24 02:12:00.000000-07:00\n'
           f'{MAPILLARY},0,2026-09-24 02:13:00.000000-07:00\n'
           'torn,row,with,too,many,fields\n'
+          'nul\x00byte,0,2026-09-24 02:15:00.000000-07:00\n'
           f'{DIMLESS_B},0,2026-09-25 02:14:00.000000-07:00\n')
 
 

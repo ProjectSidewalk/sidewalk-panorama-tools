@@ -36,6 +36,7 @@ PRODUCTION_MODULES = {
     'migrate_depth_artifacts.py',
     'pano_pose.py',
     'readmit_dimless_writeoffs.py',
+    'readmit_photosphere_writeoffs.py',
     'refetch_panos.py',
     'scan_black_bands.py',
     'scrape_queue.py',
