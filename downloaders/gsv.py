@@ -543,9 +543,9 @@ def _stitch_tiles(tile_results, zoom_dims, final_dims):
     return image
 
 
-# Moved to downloaders/common.py with #164, so CropRunner can judge a cut window with the same primitive
-# without importing this module. The alias keeps refetch_panos and the stitcher/tile-contract tests on the
-# name they already use; it is the same function object, not a copy.
+# Defined in sidewalk_panorama_tools/store.py (#222 step 2; downloaders/common.py from #164), so CropRunner can
+# judge a cut window with the same primitive without importing this module. The alias keeps refetch_panos and
+# the stitcher/tile-contract tests on the name they already use; it is the same function object, not a copy.
 _black_fraction = common.black_fraction
 
 
