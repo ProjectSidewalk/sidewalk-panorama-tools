@@ -4206,6 +4206,11 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
                 raise SystemExit(143)
 
         monkeypatch.setattr(DownloadRunner, 'write_log_csv_row', stopped_after_appending)
+        # The records carry no frame, so each asks photometa (#184) and then the probe: answer both "gone" here,
+        # not from Google (#222 step 2: found by conftest._no_network).
+        from test_gsv_stitcher import stub_photometa, stub_probe
+        stub_probe(monkeypatch, pick_zoom=-1)
+        stub_photometa(monkeypatch, gone=True)
         records = [{'pano_id': 'gsvPano%04d' % i, 'source': 'gsv', 'has_labels': True} for i in range(5)]
         monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
         csv_path = tmp_path / 'panos.csv'

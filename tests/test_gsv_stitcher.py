@@ -1826,8 +1826,17 @@ class _CannedCbkAdapter(BaseAdapter):
 
 def canned_cbk(monkeypatch, answer):
     """Route gsv's probe session through a _CannedCbkAdapter; returns the adapter, whose `served` lists
-    every Response handed back, in order."""
+    every Response handed back, in order.
+
+    Photometa is made unavailable too, as stub_probe does, so a download goes to the probe this adapter
+    answers. Without it resolve_frame's photometa read went out through the depth session, which this adapter
+    does not serve, to the real www.google.com (#222 step 2: found by conftest._no_network)."""
     adapter = _CannedCbkAdapter(answer)
+
+    def photometa_unavailable(pano_id, session):
+        raise gsv.DepthPayloadError('stubbed: the canned cbk adapter answers the probe path')
+
+    monkeypatch.setattr(gsv, '_fetch_image_levels', photometa_unavailable)
 
     def session():
         s = requests.Session()

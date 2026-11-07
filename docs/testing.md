@@ -107,8 +107,17 @@ instead of skipping all ten contract tests behind a green check
 turns it on. CI also passes `--continue-on-collection-errors`, because that failure is a collection error and
 pytest's default on one is to run nothing else; the run still exits nonzero, with every other result kept.
 
-**The suite is also isolated from the machine it runs on, and held to the next pytest**, in three ways
-`tests/conftest.py` sets up and `tests/test_suite_isolation.py` pins (#165):
+**The suite is also isolated from the machine it runs on, and held to the next pytest**, in four ways
+`tests/conftest.py` sets up and `tests/test_suite_isolation.py` pins (#165, #222):
+
+- **Nothing reaches the network.** A session-wide guard refuses `socket.getaddrinfo` for any host that is not
+  loopback and `connect`/`connect_ex` to any non-loopback address, raising `NetworkBlockedError` - a
+  `BaseException`, so an `except Exception` in the code under test cannot read it as a transient failure - and
+  a per-test check fails a test that tried even when something caught it. It exists because the suite was
+  offline only by every test stubbing the right seam, and moving the tile fetcher into the package (#222 step 2)
+  changed which module the code looks two hundred stubbed names up on: one stub left on the old module would
+  have asked Google for real. `SIDEWALK_LIVE_TILE_TESTS` lifts it for the opt-in live checks. It does not reach
+  the spawned children, which have never needed the network.
 
 - A session-scoped check fails the run if it changed the repo — `git status`, plus the gitignored
   `reports/scripts/.cache/` stamped file by file, since git cannot see it and the fetcher never replaces a file

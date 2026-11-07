@@ -125,6 +125,105 @@ def guard_the_tree(snapshot):
         'fetch_rawlabels.py and read by every study.')
 
 
+class NetworkBlockedError(BaseException):
+    """A test tried to reach a host other than this machine; the suite is network-free (#222 step 2, commit 0).
+
+    A BaseException, not an OSError: an OSError (or anything under Exception) is exactly what the code under
+    test catches as a transient network failure, so a test whose stub missed its seam could go on passing
+    while Google was asked for real. The per-test check below fails such a test even if something swallowed
+    this, so the BaseException is for a readable traceback, not the only line of defence.
+    """
+
+
+# The (call, target) of every refused attempt since the current test began; the per-test check empties it.
+_NETWORK_ATTEMPTS = []
+
+# Set to run the opt-in live checks (tests/test_gsv_tile_contract.py's `live_only`), which DO contact Google.
+LIVE_NETWORK_ENV = 'SIDEWALK_LIVE_TILE_TESTS'
+
+
+def _is_loopback_host(host):
+    """True for a host this guard lets through: none (a bind or a wildcard), localhost, or a loopback literal."""
+    import ipaddress
+
+    if host is None or host == '':
+        return True
+    if isinstance(host, bytes):
+        host = host.decode('ascii', errors='replace')
+    host = str(host).strip('[]')
+    if host.lower() == 'localhost' or host.lower().endswith('.localhost'):
+        return True
+    try:
+        return ipaddress.ip_address(host.split('%', 1)[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _refuse(call, target):
+    _NETWORK_ATTEMPTS.append((call, target))
+    raise NetworkBlockedError('the test suite is network-free: %s(%r) was refused. A stub missed the seam the '
+                              'code under test looks the name up on (patch the module that LOOKS UP the name), '
+                              'or set %s=1 for the opt-in live checks.' % (call, target, LIVE_NETWORK_ENV))
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _no_network():
+    """Refuse every DNS lookup and connection to anything but this machine, for the whole session.
+
+    The suite is network-free only because every test stubs the right seam, and five shared helpers in
+    tests/test_gsv_stitcher.py (stub_probe, deny_probe, stub_tiles, canned_cbk, stub_tile_fetch) carry about
+    two hundred call sites. One of them left patching a module that no longer looks the name up would send
+    real requests to maps.google.com - from CI and from a developer's desk - instead of failing (#222 step 2).
+    So `socket.getaddrinfo` refuses a hostname that is not loopback (requests and aiohttp's default resolver
+    both go through it), and `socket.socket.connect`/`connect_ex` refuse a non-loopback address (an IP
+    literal skips DNS). AF_UNIX addresses are not (host, port) tuples and pass. On Windows the Proactor
+    event loop connects through ConnectEx rather than socket.connect, so there the hostname check is the one
+    that holds for aiohttp; CI's Linux selector loop goes through connect.
+
+    Set SIDEWALK_LIVE_TILE_TESTS to lift it, which is what the opt-in live checks need. It does NOT reach the
+    subprocess children the runner tests spawn (a monkeypatch does not cross a process boundary); those run
+    the real main() against stubbed or local inputs and have never needed the network.
+    """
+    if os.environ.get(LIVE_NETWORK_ENV):
+        yield
+        return
+    import socket
+
+    real_getaddrinfo = socket.getaddrinfo
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def getaddrinfo(host, *args, **kwargs):
+        if not _is_loopback_host(host):
+            _refuse('socket.getaddrinfo', host)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    def checked(call, real):
+        def connect(self, address):
+            if isinstance(address, tuple) and not _is_loopback_host(address[0]):
+                _refuse(call, address)
+            return real(self, address)
+        return connect
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(socket, 'getaddrinfo', getaddrinfo)
+    mp.setattr(socket.socket, 'connect', checked('socket.connect', real_connect))
+    mp.setattr(socket.socket, 'connect_ex', checked('socket.connect_ex', real_connect_ex))
+    try:
+        yield
+    finally:
+        mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _no_network_attempt_is_swallowed():
+    """Fail a test that tried the network, even when the code under test caught NetworkBlockedError."""
+    _NETWORK_ATTEMPTS.clear()
+    yield
+    attempts, _NETWORK_ATTEMPTS[:] = list(_NETWORK_ATTEMPTS), []
+    assert not attempts, 'this test tried to reach the network (refused by conftest._no_network): %r' % (attempts,)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_process_state():
     """Snapshot and restore the process-wide state a runner's main() mutates, around every test.
