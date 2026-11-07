@@ -473,8 +473,9 @@ class TestTheOneStoreWalker:
         # CropRunner.py is exempt, and named rather than pattern-excluded so a second use in it still
         # has to be read: _store_holds_crops walks the CROP store, whose shards hold <label_id>.jpg and
         # never a display copy, so walk_store_panos() is the wrong tool there and its sidecar hazard
-        # cannot arise.
-        assert offenders == ['CropRunner.py', 'downloaders/common.py'], (
+        # cannot arise. The predicate itself lives in sidewalk_panorama_tools/store.py since #222 step 5
+        # (common.py re-exports walk_store_panos from there), so that file is the one definer.
+        assert offenders == ['CropRunner.py', 'sidewalk_panorama_tools/store.py'], (
             'a second store walker: call downloaders.common.walk_store_panos() instead, or it will take a '
             '<id>.w8192.jpg sidecar for a panorama named <id>.w8192 -- silently. Offenders: %s' % offenders)
 

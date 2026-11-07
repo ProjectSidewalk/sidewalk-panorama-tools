@@ -18,6 +18,7 @@ import itertools
 import logging
 import logging.handlers
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -2946,6 +2947,86 @@ class TestGoogleRefusingGsvImagesStopsThePhase(_PushbackHarness):
     def test_the_blocked_stop_string_is_the_depth_phases(self):
         """scrape_queue reads 'blocked' as "do not re-run"; one spelling across both phases."""
         assert DownloadRunner.STOP_BLOCKED == self.gsv.DEPTH_STOP_BLOCKED
+
+
+class TestARaisesDurationIsOnItsScrapeLogLine(_PushbackHarness):
+    """#178 step 1: each raised attempt's ERROR line ends `(after S s)`, on the same monotonic clock as the
+    budget arm's raise_seconds, because scrape.log is the one durable per-raise record (the `--- N seconds
+    ---` line is a print). Only raises carry it: a frame disagreement is an answer and a skip logs nothing."""
+
+    AFTER = re.compile(r' \(after (\d+\.\d) s\)$')
+
+    def drive_on_a_clock(self, monkeypatch, panos, verdicts, seconds_per_attempt):
+        """drive() with time.monotonic advanced by `seconds_per_attempt[pano_id]` inside each attempt."""
+        clock = [1000.0]
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+        scripted = scripted_download_pano(verdicts)
+
+        def timed(storage_path, pano_info):
+            clock[0] += seconds_per_attempt.get(pano_info['pano_id'], 0.0)
+            return scripted(storage_path, pano_info)
+        calls, tripped, stop_reasons = [], set(), {'image_stop': None, 'depth_stop': None}
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', timed)
+        DownloadRunner.download_panorama_images(
+            str(self.storage), panos, tripped_sources=tripped, stop_reasons=stop_reasons,
+            block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+
+    def test_a_raise_and_a_refusal_carry_their_own_duration_and_nothing_else_does(self, monkeypatch, caplog):
+        panos = [{'pano_id': pid, 'source': 'gsv'} for pid in ('raised', 'refused', 'frame', 'skip', 'ok')]
+        verdicts = {'raised': RuntimeError('cbk probe answered 400, not 200'),
+                    'refused': self.P,
+                    'frame': self.gsv.FrameDisagreementError('frame disagreement'),
+                    'skip': downloaders.DownloadResult.skipped,
+                    'ok': downloaders.DownloadResult.success}
+        seconds = {'raised': 12.34, 'refused': 3.0, 'frame': 5.0, 'skip': 1.0, 'ok': 2.0}
+
+        with caplog.at_level(logging.DEBUG):
+            self.drive_on_a_clock(monkeypatch, panos, verdicts, seconds)
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        raised = [m for m in errors if 'pano raised due to error' in m]
+        refused = [m for m in errors if 'pano refused (' in m]
+        frame = [m for m in errors if 'pano frame due to error' in m]
+        assert len(raised) == len(refused) == len(frame) == 1
+        assert raised[0].endswith('due to error cbk probe answered 400, not 200 (after 12.3 s)')
+        assert self.AFTER.search(refused[0]).group(1) == '3.0'
+        assert '(HTTP 429): refused by Google: ' in refused[0], 'the ops grep keys on the text before the suffix'
+        assert self.AFTER.search(frame[0]) is None, 'a frame disagreement is an answer, not a raise'
+        assert not any('pano skip' in m or 'pano ok' in m for m in errors)
+        assert sum(1 for m in errors if self.AFTER.search(m)) == 2
+
+
+    def test_the_logged_duration_is_the_one_the_budget_arm_sums(self, monkeypatch, caplog):
+        """#229 review: the duration was read from the clock twice, once for the line and again for
+        raise_seconds, so the two disagreed by the logging call. A clock that moves 7 s on EVERY read makes a
+        second read visible: the condition's mean must equal the mean of the logged suffixes."""
+        clock = [1000.0]
+
+        def ticking():
+            clock[0] += 7.0
+            return clock[0]
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', ticking)
+        scripted = scripted_download_pano({'gsv-%d' % n: RuntimeError('boom') for n in range(10)})
+
+        def slow(storage_path, pano_info):
+            clock[0] += 100.0
+            return scripted(storage_path, pano_info)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', slow)
+        stop_reasons = {'image_stop': None, 'depth_stop': None}
+
+        with caplog.at_level(logging.ERROR):
+            DownloadRunner.download_panorama_images(
+                str(self.storage), self.gsv_panos(10), tripped_sources=set(), stop_reasons=stop_reasons,
+                block_latch_path=str(self.latch), pace_state_path=str(self.pace))
+
+        logged = [float(self.AFTER.search(r.getMessage()).group(1)) for r in caplog.records
+                  if self.AFTER.search(r.getMessage())]
+        assert len(logged) == 10 and logged[0] == 107.0
+        detail = [c['detail'] for c in stop_reasons['conditions']
+                  if c['code'] == DownloadRunner.CONDITION_IMAGES_NO_SUCCESS][0]
+        assert detail.endswith('%.0f s per raise' % (sum(logged) / len(logged)))
 
 
 class TestAFreshLatchPutsGsvImagesOnProbation(_PushbackHarness):

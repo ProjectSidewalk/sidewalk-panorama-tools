@@ -682,7 +682,7 @@ deployed has 18 fields. Field 20 was added by [#182](https://github.com/ProjectS
 | 17 | depth phase duration | |
 | 18 | total run duration | |
 | 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a row written before it was counted (the timestamp-only rows: a run that died in the pano-list fetch or between it and the phases, a `pano-schema-drift` stop, which fetched the list but ran neither phase, and a stop just before the count — see [Blank fields mark a crashed or stopped run](#blank-fields-mark-a-crashed-or-stopped-run)) and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
-| 20 | image attempts raised this run | unledgered, so retried next run — mostly transient, though some raise on every run (a [retired Mapillary image](#when-the-image-phase-stops-trusting-a-source)), which is why no rule reads the field yet. The per-run number field 9 cannot give (field 9 is prior + tonight, permanent + transient). A GSV push-back counts; a frame disagreement does not (it is Google answering), nor does a skip — the same count `images-no-success` reads. Store mode writes its unpulled count (absent, truncated, unplaced, unsafe id), since it ledgers no permanent verdict. Blank when the image phase did not finish, and on every row older than the field ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)). The [log analyzer](log-analyzer.md#what-the-analyzer-does-not-report-yet) parses it; no rule reads it yet |
+| 20 | image attempts raised this run | unledgered, so retried next run — mostly transient, though some raise on every run (a [retired Mapillary image](#when-the-image-phase-stops-trusting-a-source)), which is why the analyzer's rule waited for a 25-night fleet read before reading it. The per-run number field 9 cannot give (field 9 is prior + tonight, permanent + transient). A GSV push-back counts; a frame disagreement does not (it is Google answering), nor does a skip — the same count `images-no-success` reads. Store mode writes its unpulled count (absent, truncated, unplaced, unsafe id), since it ledgers no permanent verdict. Blank when the image phase did not finish, and on every row older than the field ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)). The [log analyzer](log-analyzer.md#a-steady-set-of-raisers-and-what-field-20-was-needed-for) reads it: a steady set of at least 3 on each of 7 nights (the most of a night's passes) is a WARNING |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -1712,6 +1712,14 @@ the fleet, beyond the analyzer:
 - `grep -ls "over the viewer ceiling" */scrape.log* */refetch.log*` prints nothing. A hit is [the width
   tripwire](#the-width-tripwire); it is never mailed on a clean night, so this grep is the only place it
   surfaces. A hit may be old — a line persists until rotation ages it out, so `grep -h` it to read the timestamps.
+- Raised image attempts per city, and their mean duration, the measurement
+  [#178](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/178) sizes `images-no-success` from:
+  `grep -hE "Failed to download pano .*\(after [0-9.]+ s\)$" */scrape.log | sed -E 's/.*\(after ([0-9.]+) s\)$/\1/' | awk '{n++; t+=$1} END {print n, (n ? t/n : "n/a")}'`
+  for the fleet, or one city's `scrape.log` at a time. Each raise's ERROR line ends `(after S s)`, the attempt's
+  own duration, from the deploy of [#229](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/229) on;
+  lines written before that deploy carry none and are left out of the mean, never read as 0. After it, a frame
+  disagreement's line is the one raise-shaped line with no suffix, because it is an answer, not a raise; before it,
+  no line has one, so a missing suffix there says nothing.
 - `tail -1 ~/cron_notify.log` carries last night's date. A failed publish is visible
   [only there](#hearing-about-a-bad-night).
 - `tail -1 ~/heartbeat.log` says `heartbeat published` with last night's date. A failed heartbeat

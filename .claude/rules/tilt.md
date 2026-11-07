@@ -2,7 +2,10 @@
 paths:
   - "CropRunner.py"
   - "pano_pose.py"
-  - "sidewalk_panorama_tools/*.py"
+  - "sidewalk_panorama_tools/geometry.py"
+  - "sidewalk_panorama_tools/pose.py"
+  - "sidewalk_panorama_tools/torch_geometry.py"
+  - "sidewalk_panorama_tools/__init__.py"
   - "tests/test_geometry.py"
   - "tests/test_torch_geometry.py"
   - "docs/geometry.md"

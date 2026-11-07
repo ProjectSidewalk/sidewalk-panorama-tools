@@ -21,8 +21,12 @@ Why the measurement is built this way, since the obvious route does not exist:
   those same five counts. So the image runs in scrape.log are paired with the image rows of log.csv from the
   END backwards, and every pair is checked field for field (`align_runs`). A pair that disagrees stops the
   pairing for that city rather than being trusted.
-* **There is no per-raise duration anywhere durable** - the point of #178's step 1, which has not landed.
-  The bound used here is the image phase's whole duration (`log.csv` field 12, whole minutes) divided by
+* **There is no per-raise duration in these extracts.** #178's step 1 (the raise's ERROR line ends
+  `(after S s)`) ships with the deploy of #229, and every extract packed before that deploy carries none, the
+  2026-10-06 ones included. The reader is ready for it: `raise_seconds` reads the suffix per line, `build_runs`
+  adds `mean_raise_seconds_logged` and `raises_without_seconds` to a run with any such line, and `budget_arm`
+  uses the logged mean when every raise carries one. On these extracts none does, so the bound
+  used here is the image phase's whole duration (`log.csv` field 12, whole minutes) divided by
   its raises, on runs where nothing was answered. It is an upper bound on the mean raise: the phase also
   spends time on the candidate loop's own sshfs round trips.
 * **`answered` is not in log.csv either.** Fields 9 and 10 are seeded from the ledger, so a run's own
@@ -48,12 +52,24 @@ from studyfmt import fmt, num  # noqa: E402
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(REPO_ROOT, 'reports', 'data')
 
+
+
+def extract_names(prefix):
+    """The committed extract names for one pull, keyed by role. A later pull of the same store logs (the
+    2026-11-05 field-20 read, field20_raisers.py) packs under its own date prefix through the same packer."""
+    return {'log_csv': prefix + 'fleet-log-csv.csv.gz', 'scrape_log': prefix + 'fleet-scrape-log.tsv.gz',
+            'queue_log': prefix + 'fleet-scrape-queue-log.txt.gz',
+            'dc_zero_rows': prefix + 'dc-ledger-downloaded-0.csv.gz', 'dc_census': prefix + 'dc-ledger-census.json'}
+
+
+# This report's pull (2026-10-06).
 PREFIX = '2026-10-06-'
-LOG_CSV_FILE = PREFIX + 'fleet-log-csv.csv.gz'
-SCRAPE_LOG_FILE = PREFIX + 'fleet-scrape-log.tsv.gz'
-QUEUE_LOG_FILE = PREFIX + 'fleet-scrape-queue-log.txt.gz'
-DC_ZERO_ROWS_FILE = PREFIX + 'dc-ledger-downloaded-0.csv.gz'
-DC_CENSUS_FILE = PREFIX + 'dc-ledger-census.json'
+_NAMES = extract_names(PREFIX)
+LOG_CSV_FILE = _NAMES['log_csv']
+SCRAPE_LOG_FILE = _NAMES['scrape_log']
+QUEUE_LOG_FILE = _NAMES['queue_log']
+DC_ZERO_ROWS_FILE = _NAMES['dc_zero_rows']
+DC_CENSUS_FILE = _NAMES['dc_census']
 RESULT_FILE = PREFIX + 'fleet-thresholds.json'
 
 # log.csv rows older than this are not packed: the scraper moved to the venv box on 2026-09-01, and its
@@ -74,6 +90,8 @@ GATE_SWEEP = (30.0, 60.0, 90.0, 120.0, 180.0)
 
 FINAL_RE = re.compile(r'IMAGEDOWNLOAD: Final result: Completed (\d+) of (\d+) \((\d+) success, (\d+) fallback '
                       r'success, (\d+) failed, (\d+) skipped\)')
+# #178 step 1's suffix on a raise line, written from the deploy of #229: the attempt's own monotonic duration.
+AFTER_RE = re.compile(r' \(after (\d+(?:\.\d+)?) s\)$')
 RAISE_RE = re.compile(r'IMAGEDOWNLOAD: Failed to download pano (\S+) (?:due to error |\((.*?)\): refused by Google)')
 NO_SUCCESS_RE = re.compile(r'IMAGEDOWNLOAD: WARNING - all (\d+) attempted panos raised and none was answered')
 TRIP_RE = re.compile(r'IMAGEDOWNLOAD: (\d+) consecutive permanent failures|IMAGEDOWNLOAD: Google refused \d+ '
@@ -110,17 +128,22 @@ def _gz_writer(path):
     return io.TextIOWrapper(gzip.GzipFile(path, mode='wb', mtime=0), encoding='utf-8', newline='\n')
 
 
-def pack(raw_dir, out_dir):
-    """Write the committed extracts from a directory laid out like the store root (<city>/log.csv, ...)."""
+def pack(raw_dir, out_dir, prefix=PREFIX, since=LOG_CSV_SINCE, dc_ledger=True):
+    """Write the committed extracts from a directory laid out like the store root (<city>/log.csv, ...).
+
+    `prefix` names the pull (extract_names), `since` drops older log.csv rows, and `dc_ledger=False` skips
+    washington-dc's ledger census, which only this report's #184 section reads. Every line is redacted.
+    """
+    files = extract_names(prefix)
     cities = sorted(d for d in os.listdir(raw_dir) if os.path.isfile(os.path.join(raw_dir, d, 'log.csv')))
-    with _gz_writer(os.path.join(out_dir, LOG_CSV_FILE)) as out:
+    with _gz_writer(os.path.join(out_dir, files['log_csv'])) as out:
         for city in cities:
             with open(os.path.join(raw_dir, city, 'log.csv'), encoding='utf-8', errors='replace') as f:
                 for line in f:
                     line = line.rstrip('\r\n')
-                    if DATE_RE.match(line) and line[:10] >= LOG_CSV_SINCE:
+                    if DATE_RE.match(line) and line[:10] >= since:
                         out.write('%s,%s\n' % (city, redact(line)))
-    with _gz_writer(os.path.join(out_dir, SCRAPE_LOG_FILE)) as out:
+    with _gz_writer(os.path.join(out_dir, files['scrape_log'])) as out:
         for city in cities:
             # Oldest rotation first, so the city's lines stay in the order they were written.
             names = sorted((n for n in os.listdir(os.path.join(raw_dir, city)) if n.startswith('scrape.log')),
@@ -129,18 +152,20 @@ def pack(raw_dir, out_dir):
                 with open(os.path.join(raw_dir, city, name), encoding='utf-8', errors='replace') as f:
                     for line in f:
                         out.write('%s\t%s\n' % (city, redact(line.rstrip('\r\n'))))
-    with _gz_writer(os.path.join(out_dir, QUEUE_LOG_FILE)) as out:
+    with _gz_writer(os.path.join(out_dir, files['queue_log'])) as out:
         with open(os.path.join(raw_dir, 'scrape_queue.log'), encoding='utf-8', errors='replace') as f:
             for line in f:
                 out.write(redact(line.rstrip('\r\n')) + '\n')
+    if not dc_ledger:
+        return cities
     with open(os.path.join(raw_dir, 'washington-dc', 'log.csv'), encoding='utf-8', errors='replace') as f:
-        dc_starts = [ln.split(',', 1)[0] for ln in f if DATE_RE.match(ln) and ln[:10] >= LOG_CSV_SINCE]
+        dc_starts = [ln.split(',', 1)[0] for ln in f if DATE_RE.match(ln) and ln[:10] >= since]
     census, zero_rows = dc_ledger_census(os.path.join(raw_dir, 'washington-dc', 'pano_id_log.csv'), dc_starts)
-    with _gz_writer(os.path.join(out_dir, DC_ZERO_ROWS_FILE)) as out:
+    with _gz_writer(os.path.join(out_dir, files['dc_zero_rows'])) as out:
         out.write('pano_id,downloaded,fetched_at\n')
         for r in zero_rows:
             out.write(','.join(r) + '\n')
-    with open(os.path.join(out_dir, DC_CENSUS_FILE), 'w', encoding='utf-8', newline='\n') as f:
+    with open(os.path.join(out_dir, files['dc_census']), 'w', encoding='utf-8', newline='\n') as f:
         json.dump(census, f, indent=1, sort_keys=True, allow_nan=False)
         f.write('\n')
     return cities
@@ -255,7 +280,7 @@ def split_image_runs(lines):
     runs, cur = [], None
 
     def fresh():
-        return {'raise_ids': [], 'raise_kinds': collections.Counter(), 'frame': [], 'edge_band': [],
+        return {'raise_ids': [], 'raise_kinds': collections.Counter(), 'raise_seconds': [], 'frame': [], 'edge_band': [],
                 'tripped': False,
                 'no_success_line': None, 'photometa': collections.Counter()}
 
@@ -271,6 +296,7 @@ def split_image_runs(lines):
             else:
                 cur['raise_ids'].append(m.group(1))
                 cur['raise_kinds'][raise_kind(line)] += 1
+                cur['raise_seconds'].append(raise_seconds(line))    # None on a line written before #178 step 1
             continue
         m = NO_SUCCESS_RE.search(line)
         if m:
@@ -296,13 +322,19 @@ def raise_kind(line):
     """A raise's error text with its pano id, addresses and numbers' variable parts folded away."""
     if 'refused by Google' in line:
         return 'refused by Google (push-back)'
-    text = line.split(' due to error ', 1)[-1]
+    text = AFTER_RE.sub('', line).split(' due to error ', 1)[-1]
     if text.startswith('cannot identify image file'):
         return 'cannot identify image file'
     m = re.match(r'cbk probe answered (\d+), not 200', text)
     if m:
         return 'cbk probe answered %s, not 200' % m.group(1)
     return re.sub(r'\d+', 'N', text)[:80]
+
+
+def raise_seconds(line):
+    """The attempt's duration from #178 step 1's `(after S s)` suffix, or None on a line written before it."""
+    m = AFTER_RE.search(line)
+    return float(m.group(1)) if m else None
 
 
 def frame_kind(match):
@@ -429,6 +461,7 @@ def build_runs(city, runs, rows):
         mean_ub = None
         if raised and minutes is not None:
             mean_ub = num((minutes + 0.5) * 60.0 / raised)
+        logged = [s for s in run['raise_seconds'] if s is not None]
         rec = {'city': city, 'ts': row['ts'], 'night': night_of(row['ts']),
                'era': 'post-deploy' if night_of(row['ts']) >= DEPLOY_NIGHT else 'pre-deploy',
                'raised': raised, 'raise_ids': sorted(set(run['raise_ids'])),
@@ -437,6 +470,12 @@ def build_runs(city, runs, rows):
                'failed': run['failed'], 'permanent': permanent, 'answered': answered,
                'image_minutes': minutes, 'stop': stop, 'mean_raise_seconds_upper_bound': mean_ub,
                'no_success_line': run['no_success_line'], 'photometa_lines': dict(run['photometa'])}
+        if logged:
+            # #178 step 1's per-raise duration, measured rather than bounded. Added only when a line carries
+            # it, so a record built from an extract older than that deploy (the 2026-10-06 one) is unchanged;
+            # lines without it are counted, never read as 0 s.
+            rec['mean_raise_seconds_logged'] = num(sum(logged) / len(logged))
+            rec['raises_without_seconds'] = raised - len(logged)
         out.append(rec)
         prev_idx, prev_rec = idx, rec
     return out, mismatch, len(runs), sum(1 for r in rows if image_row(r))
@@ -446,11 +485,19 @@ def count_arm(rec, floor):
     return rec['answered'] == 0 and rec['raised'] >= floor
 
 
+def run_mean_raise_seconds(rec):
+    """The mean raise a run's budget arm would read: the logged per-raise mean when EVERY raise carries #178
+    step 1's `(after S s)` (the runner's own figure), else the field-12 upper bound (or None)."""
+    if 'mean_raise_seconds_logged' in rec and rec['raises_without_seconds'] == 0:
+        return rec['mean_raise_seconds_logged']
+    return rec['mean_raise_seconds_upper_bound']
+
+
 def budget_arm(rec, gate):
-    """Whether the budget arm COULD fire: the mean raise is only bounded from above here."""
+    """Whether the budget arm COULD fire: measured when every raise logged its duration, else bounded above."""
+    mean = run_mean_raise_seconds(rec)
     return (rec['answered'] == 0 and rec['stop'] == 'max-runtime' and rec['raised'] >= 1
-            and rec['mean_raise_seconds_upper_bound'] is not None
-            and rec['mean_raise_seconds_upper_bound'] >= gate)
+            and mean is not None and mean >= gate)
 
 
 def sweep(records):
@@ -656,12 +703,16 @@ def main(argv=None):
     p = sub.add_parser('pack', help='raw store logs -> committed extracts')
     p.add_argument('raw_dir')
     p.add_argument('--out-dir', default=DATA_DIR)
+    p.add_argument('--prefix', default=PREFIX, help='date prefix naming the pull (default: the 2026-10-06 one)')
+    p.add_argument('--since', default=LOG_CSV_SINCE, help='oldest log.csv date packed (YYYY-MM-DD)')
+    p.add_argument('--no-dc-ledger', dest='dc_ledger', action='store_false',
+                   help="skip washington-dc's ledger census (only this report's #184 section reads it)")
     a = sub.add_parser('analyze', help='committed extracts -> tables (and --write the JSON)')
     a.add_argument('--data-dir', default=DATA_DIR)
     a.add_argument('--write', action='store_true')
     args = parser.parse_args(argv)
     if args.cmd == 'pack':
-        cities = pack(args.raw_dir, args.out_dir)
+        cities = pack(args.raw_dir, args.out_dir, prefix=args.prefix, since=args.since, dc_ledger=args.dc_ledger)
         print('packed %d cities into %s' % (len(cities), args.out_dir))
         return 0
     result = analyze(args.data_dir)

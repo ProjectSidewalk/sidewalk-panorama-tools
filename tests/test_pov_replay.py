@@ -100,3 +100,11 @@ class TestBlendDistance:
         deps = np.array([0.5, 2.0, 5.0, 11.24, 11.26, 20.0, 60.0])
         dists = pov_replay.predict_blend_distance(deps)
         assert np.all(np.diff(dists) < 0)
+
+
+def test_the_names_are_the_installable_packages_objects():
+    """The definitions moved to sidewalk_panorama_tools/ps_math.py (#222 step 6); this module re-exports them,
+    so every study and every test above exercises the one definition production and consumers pin."""
+    from sidewalk_panorama_tools import ps_math
+    for name in ps_math.__all__:
+        assert getattr(pov_replay, name) is getattr(ps_math, name), name

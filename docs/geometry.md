@@ -2,7 +2,9 @@
 
 One shared implementation of "render a perspective (gnomonic) view of a Project Sidewalk label from its
 equirectangular panorama, with rig-tilt correction", installable with pip so other projects pin it instead of
-copying it. It is numpy-only and has no I/O. Two projects use it:
+copying it. The geometry is numpy-only and has no I/O; since 1.1.0 the package also carries
+[the pano store's layout](#the-pano-store--sidewalk_panorama_toolsstore), the one module that touches files. Two
+projects use the geometry:
 
 * **sidewalk-validator-ai**, the training pipeline, which cuts its training views with it.
 * **sidewalk-ai-api**, the production API, which renders the same view of a label at inference time.
@@ -17,7 +19,8 @@ pip install "sidewalk-panorama-tools @ git+https://github.com/ProjectSidewalk/si
 ```
 
 Pin a tag, never a branch. The distribution installs two things: the `sidewalk_panorama_tools` package and
-`pano_pose`, a top-level module. Its only dependency is `numpy`, and it needs Python 3.9 or newer. None of the
+`pano_pose`, a top-level module. It depends on `numpy` and, since 1.1.0, `pillow` (`store.read_pano` decodes a
+stored pano; the geometry modules never import it), and it needs Python 3.9 or newer. None of the
 runners (`DownloadRunner.py`, `CropRunner.py`, ...) is installed; they still run from a checkout.
 
 ## Usage
@@ -133,6 +136,124 @@ corrects the tilt by rotating every ray rather than shifting a window, so at the
 of a tilted `label_view` is the same rig pixel that `--tilt-correction` centres on. Both rest on the same `pano_pose`
 definitions, so the sign and the frames cannot diverge.
 
+## The pano store — `sidewalk_panorama_tools.store`
+
+The layout every consumer of the panorama store reads, defined once. sidewalk-ai-api, RampNet and the
+auto-labeler scripts each hardcoded it (#222); they pin this module instead. One directory per city, and inside
+it one shard per pano, named for the id's first two characters whatever the source (base64url GSV ids,
+all-digit Mapillary ids, UUID Panoramax ids):
+
+```
+<store>/<city>/<id[:2]>/<id>.jpg          the panorama, as stitched (rig frame)
+<store>/<city>/<id[:2]>/<id>.depth.npz    its GSV depth artifact (docs/depth.md)
+<store>/<city>/<id[:2]>/<id>.w8192.jpg    a display copy (#115): not a panorama, never cut from
+```
+
+```python
+from sidewalk_panorama_tools.store import (pano_path, depth_path, walk_store_panos, jpeg_dimensions,
+                                           read_pano, PanoDimsMismatch)
+
+path = pano_path("/mnt/panostore", pano_id, city="seattle-wa")
+try:
+    pano = read_pano(path, expected_width=label["pano_width"], expected_height=label["pano_height"])
+except PanoDimsMismatch as e:        # e.expected, e.stored: (width, height)
+    ...                              # skip the label: its pano_x/pano_y are in another frame
+for pano_file in walk_store_panos("/mnt/panostore/seattle-wa"):
+    width, height = jpeg_dimensions(pano_file)      # header only; None for an unreadable file
+```
+
+* `shard`, `pano_path`, `depth_path`, `sidecar_path(pano_file, max_width)` build paths; pass `city=` with the
+  store root, or leave it out with a city's own directory. `is_downscaled_sidecar(name)` says whether a file
+  is a display copy.
+* **`walk_store_panos(city_dir)` is the one definition of "this file is a panorama".** Only
+  `<id[:2]>/<id>.jpg` in its own shard counts. A walker that forgets the display-copy rule does not fail, it
+  invents pano ids like `<id>.w8192`, so never list `*.jpg` by hand.
+* `jpeg_dimensions(path)` reads `(width, height)` from the JPEG header without decoding: a 16384×8192 pano
+  costs a few reads instead of 384 MB.
+* **`read_pano(path, expected_width=None, expected_height=None)`** checks the header against the label's
+  `pano_width`/`pano_height` and raises `PanoDimsMismatch` **before decoding** when they differ, then
+  returns the loaded `PIL.Image`. It is the cropper's dims preflight (`docs/cropper.md`): a stored file whose
+  frame is not the pano's, most often one stitched at the 13312×6656 the app hardcoded until 2022-03, would put
+  every label in the wrong place. The check is `jpeg_dimensions`, so a refusal never touches Pillow, and the
+  expected values are read as CropRunner reads them (`int(float(x))`, so `"64.0"` is 64; a value that is not a
+  positive number raises `ValueError`, never `PanoDimsMismatch`). A header over `MAX_PANO_PIXELS`
+  (16384 × 8192) is refused. **Call `raise_decompression_bomb_ceiling()` once at startup** if you read 134 MP
+  panos: otherwise Pillow warns on each. `read_pano` installs no per-call warnings filter, because
+  `warnings.catch_warnings` rewrites process-wide state and is not thread-safe in a server.
+
+`CropRunner.py` makes the same comparison but does not call `read_pano`: it opens a pano once for all its
+labels, checks each label's dims against the one header, and decodes lazily only when a crop is about to be
+written, which a one-shot read cannot express. `downloaders/common.py` re-exports the walker, the sidecar
+predicate, the header reader and the ceiling from this module, so the scraper and the consumers share them.
+
+## The front end's click math — `sidewalk_panorama_tools.ps_math`
+
+The projection the Project Sidewalk front end runs when it stores a label's `pano_x`/`pano_y`, ported once.
+sidewalk-auto-labeler (`ps_placement.py`) and RampNet (`rampnet/crops.py`) each carried a port; they pin this.
+It is numpy, vectorised, degrees in and out, and has no I/O. `reports/scripts/pov_replay.py`, where it was
+written for the desk studies, now re-exports it.
+
+| Function | What it is |
+|---|---|
+| `get_3d_fov(zoom)` | `get3dFov`: the viewer's field of view at a zoom (89.75° at 1, 53° at 2, 27.68° at 3) |
+| `pov_if_centered(canvas_x, canvas_y, heading, pitch, zoom, canvas_width=720, canvas_height=480)` | `calculatePovIfCentered`: the POV a click would have at the canvas centre |
+| `exact_depression_deg(...)` | the same click's depression below the horizon, `-pov_pitch` |
+| `pano_xy_from_pov(pov_heading, pov_pitch, camera_heading, pano_width, pano_height)` | `calculatePanoXYFromPov` with evolution 179's round-then-wrap: integer pano pixels |
+| `pov_from_pano_xy(pano_x, pano_y, camera_heading, pano_width, pano_height)` | its inverse, continuous. The forward map rounds, so pixel → POV → pixel is exact and POV → pixel → POV is back within one pixel (360 / `pano_width` degrees) |
+| `depression_from_pano_y(pano_y, pano_height)` | the depression a stored row implies |
+| `predict_blend_distance(depression_deg)` | label-latlng-estimation #3's distance: a cotangent on the camera height above `BLEND_DEG` (11.25°) of depression, a linear tail below it, capped at `DIST_CAP_M` (50 m) |
+
+The frames, the same in every function:
+
+* `pov_heading` is degrees **clockwise from north**, in (−180°, 180°]; `pov_pitch` is degrees, **positive up**.
+* The pano raster is **heading-centred**: its centre column looks along `camera_heading` (the photographer's
+  heading), so column zero is at bearing `camera_heading − 180`, and the horizon is row `pano_height / 2`.
+* **Depression is positive down**: `depression = −pov_pitch`.
+* There is no rig pitch or roll: the front end ignores the pose. That is #54, and what `geometry.label_view`'s
+  tilt corrects.
+
+`tests/test_ps_math.py` pins `pov_if_centered` and the unrounded `calculatePanoXYFromPov` against a line-by-line
+transcription of `UtilitiesPanomarker.js` at SidewalkWebpage tag `v7.19.10`, and the round trips on a grid that
+crosses the seam and both hemispheres. `viewport_view` (RampNet's on-screen view of a label) is not here; it
+stays in RampNet.
+
+## Validation votes — `sidewalk_panorama_tools.labels`
+
+The arithmetic four consumer repos each re-derived when deciding which labels count as validated: human-only or
+all votes, majority or thresholds, and what a tie means. Every policy is a required argument, so a caller
+states its rule rather than inheriting one; the module makes no decision about which rule is right.
+
+```python
+from sidewalk_panorama_tools.labels import label_uid, vote_counts, majority, is_validated
+
+props = feature["properties"]                                # one /v3/api/rawLabels feature
+counts = vote_counts(props["validations"])                   # VoteCounts(agree, disagree, unsure), humans only
+verdict = majority(counts, tie="none")                       # Verdict.AGREE / DISAGREE / UNSURE / NONE
+keep = is_validated(counts, min_votes=2, min_agree_fraction=0.75)
+key = label_uid("seattle-wa", props["label_id"])             # "seattle-wa:12327"
+```
+
+* **`label_uid(city, label_id)`** is `"<city>:<label_id>"`. `label_id` is a per-city serial, so a label
+  reference without its city is incomplete, and a join keyed on `label_id` alone silently merges labels from
+  different cities. The uid and `pano_id` are the only safe cross-city keys. A `label_id` below 1 (a fill
+  value: every city's serial starts at 1) is refused.
+* **`vote_counts(validations, *, include_ai=False)`** tallies the API's `validations` array. Each element is
+  `{"validation": "Agree" | "Disagree" | "Unsure", "validator_type": "Human" | "AI", "user_id": ...}` (read from
+  a live Seattle response on 2026-11-05). The AI validator is excluded by default and is identified by
+  `validator_type` alone, never by an account. A value outside those raises, so a new validator type is never
+  silently counted as human.
+* **`majority(counts, *, tie)`** compares agree with disagree; unsure abstains. `tie` is required: `"agree"`,
+  `"disagree"`, `"unsure"` or `"none"`. No decisive vote at all is a tie too.
+* **`is_validated(counts, *, min_votes, min_agree_fraction)`** passes a label with at least `min_votes` decisive
+  votes (at least 1; any integer type, numpy's included) whose agree share `agree / decisive` is at or above the
+  fraction, compared as that quotient so a share exactly on the threshold passes.
+
+**What the API's own fields mean**, measured on that response: `agree_count`, `disagree_count` and
+`unsure_count` **include the AI validator's votes** (they equal `vote_counts(..., include_ai=True)` on all 85
+labels), and `correct` is `majority(vote_counts(..., include_ai=True), tie="none")`: true, false, or null on a
+tie. A consumer that wants human votes only must tally the array; the counts columns cannot give it.
+`tests/test_labels.py` pins both on an anonymised sample of that response.
+
 ## Provenance and releases
 
 The view geometry is ported from RampNet `rampnet/crops.py` at commit
@@ -143,3 +264,13 @@ uploaded to makelab2 by itself; `sidewalk_panorama_tools.pose` re-exports it.
 
 A geometry change is a release. Bump `version` in `pyproject.toml` and `__version__` together (a test checks
 that they match), tag it, and say in the release what a consumer will see change when it re-pins.
+
+**Releases.**
+
+* **1.1.0** (2026-11-05, #222 steps 4-6): adds `store` (the pano store's layout, moved here from
+  `downloaders/common.py`, which re-exports it), `ps_math` (the front end's click math, moved here from
+  `reports/scripts/pov_replay.py`, with the new inverse `pov_from_pano_xy`), `labels` (vote arithmetic with explicit policies), and `pillow` as a
+  dependency.
+  Nothing in `geometry`, `pose`
+  or `torch_geometry` changed, so a consumer re-pinning sees the same views byte for byte.
+* **1.0.0**: the gnomonic label view, `pose`, and the torch twin.

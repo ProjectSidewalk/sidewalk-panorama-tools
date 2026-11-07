@@ -1,0 +1,274 @@
+{
+ "_provenance": "GET https://sidewalk-sea.cs.washington.edu/v3/api/rawLabels?bbox=-122.3140,47.6560,-122.3120,47.6575 on 2026-11-05 (read-only, once). 14 of the 85 features, chosen to cover every vote shape seen; each keeps only label_id, label_type, correct, the three counts and its validations array. Anonymised: every user_id (the labeller and each validator) is dropped, and the AI validator is identified by validator_type alone. label_id is a seattle-wa serial; the uid is seattle-wa:<label_id>.",
+ "features": [
+  {
+   "agree_count": 3,
+   "city": "seattle-wa",
+   "correct": true,
+   "disagree_count": 0,
+   "label_id": 12327,
+   "label_type": "CurbRamp",
+   "unsure_count": 0,
+   "validations": [
+    {
+     "validation": "Agree",
+     "validator_type": "AI"
+    },
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    }
+   ]
+  },
+  {
+   "agree_count": 1,
+   "city": "seattle-wa",
+   "correct": true,
+   "disagree_count": 0,
+   "label_id": 12341,
+   "label_type": "CurbRamp",
+   "unsure_count": 1,
+   "validations": [
+    {
+     "validation": "Unsure",
+     "validator_type": "AI"
+    },
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    }
+   ]
+  },
+  {
+   "agree_count": 1,
+   "city": "seattle-wa",
+   "correct": true,
+   "disagree_count": 0,
+   "label_id": 74575,
+   "label_type": "CurbRamp",
+   "unsure_count": 0,
+   "validations": [
+    {
+     "validation": "Agree",
+     "validator_type": "AI"
+    }
+   ]
+  },
+  {
+   "agree_count": 0,
+   "city": "seattle-wa",
+   "correct": false,
+   "disagree_count": 1,
+   "label_id": 146713,
+   "label_type": "CurbRamp",
+   "unsure_count": 0,
+   "validations": [
+    {
+     "validation": "Disagree",
+     "validator_type": "AI"
+    }
+   ]
+  },
+  {
+   "agree_count": 0,
+   "city": "seattle-wa",
+   "correct": false,
+   "disagree_count": 1,
+   "label_id": 146714,
+   "label_type": "NoCurbRamp",
+   "unsure_count": 1,
+   "validations": [
+    {
+     "validation": "Unsure",
+     "validator_type": "AI"
+    },
+    {
+     "validation": "Disagree",
+     "validator_type": "Human"
+    }
+   ]
+  },
+  {
+   "agree_count": 0,
+   "city": "seattle-wa",
+   "correct": null,
+   "disagree_count": 0,
+   "label_id": 146721,
+   "label_type": "CurbRamp",
+   "unsure_count": 1,
+   "validations": [
+    {
+     "validation": "Unsure",
+     "validator_type": "AI"
+    }
+   ]
+  },
+  {
+   "agree_count": 1,
+   "city": "seattle-wa",
+   "correct": null,
+   "disagree_count": 1,
+   "label_id": 146722,
+   "label_type": "CurbRamp",
+   "unsure_count": 0,
+   "validations": [
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Disagree",
+     "validator_type": "AI"
+    }
+   ]
+  },
+  {
+   "agree_count": 0,
+   "city": "seattle-wa",
+   "correct": null,
+   "disagree_count": 0,
+   "label_id": 156025,
+   "label_type": "NoSidewalk",
+   "unsure_count": 0,
+   "validations": []
+  },
+  {
+   "agree_count": 3,
+   "city": "seattle-wa",
+   "correct": true,
+   "disagree_count": 1,
+   "label_id": 156027,
+   "label_type": "CurbRamp",
+   "unsure_count": 0,
+   "validations": [
+    {
+     "validation": "Agree",
+     "validator_type": "AI"
+    },
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Disagree",
+     "validator_type": "Human"
+    }
+   ]
+  },
+  {
+   "agree_count": 2,
+   "city": "seattle-wa",
+   "correct": true,
+   "disagree_count": 0,
+   "label_id": 156029,
+   "label_type": "CurbRamp",
+   "unsure_count": 1,
+   "validations": [
+    {
+     "validation": "Unsure",
+     "validator_type": "AI"
+    },
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    }
+   ]
+  },
+  {
+   "agree_count": 0,
+   "city": "seattle-wa",
+   "correct": false,
+   "disagree_count": 2,
+   "label_id": 168867,
+   "label_type": "CurbRamp",
+   "unsure_count": 0,
+   "validations": [
+    {
+     "validation": "Disagree",
+     "validator_type": "AI"
+    },
+    {
+     "validation": "Disagree",
+     "validator_type": "Human"
+    }
+   ]
+  },
+  {
+   "agree_count": 1,
+   "city": "seattle-wa",
+   "correct": null,
+   "disagree_count": 1,
+   "label_id": 168868,
+   "label_type": "CurbRamp",
+   "unsure_count": 0,
+   "validations": [
+    {
+     "validation": "Disagree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Agree",
+     "validator_type": "AI"
+    }
+   ]
+  },
+  {
+   "agree_count": 0,
+   "city": "seattle-wa",
+   "correct": null,
+   "disagree_count": 0,
+   "label_id": 168877,
+   "label_type": "SurfaceProblem",
+   "unsure_count": 2,
+   "validations": [
+    {
+     "validation": "Unsure",
+     "validator_type": "AI"
+    },
+    {
+     "validation": "Unsure",
+     "validator_type": "Human"
+    }
+   ]
+  },
+  {
+   "agree_count": 1,
+   "city": "seattle-wa",
+   "correct": false,
+   "disagree_count": 3,
+   "label_id": 168889,
+   "label_type": "CurbRamp",
+   "unsure_count": 0,
+   "validations": [
+    {
+     "validation": "Agree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Disagree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Disagree",
+     "validator_type": "Human"
+    },
+    {
+     "validation": "Disagree",
+     "validator_type": "AI"
+    }
+   ]
+  }
+ ]
+}

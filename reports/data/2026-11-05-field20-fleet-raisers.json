@@ -1,0 +1,1582 @@
+{
+ "attribution": {
+  "bayonne-fr": [
+   {
+    "distinct_panos": 15,
+    "kind": "Panoramax hd asset for picture <uuid> redirected (N); not following a redirect o",
+    "lines": 135,
+    "prefix": "other"
+   }
+  ],
+  "burnaby": [
+   {
+    "distinct_panos": 10,
+    "kind": "cbk probe answered 400, not 200",
+    "lines": 140,
+    "prefix": "CAoS"
+   }
+  ],
+  "chicago-il": [
+   {
+    "distinct_panos": 276,
+    "kind": "cbk probe answered 400, not 200",
+    "lines": 5690,
+    "prefix": "CAoS"
+   },
+   {
+    "distinct_panos": 5,
+    "kind": "cannot identify image file",
+    "lines": 27,
+    "prefix": "CAoS"
+   }
+  ],
+  "houston-tx": [
+   {
+    "distinct_panos": 1,
+    "kind": "cbk probe answered 400, not 200",
+    "lines": 11,
+    "prefix": "CAoS"
+   }
+  ],
+  "sao-paulo-brazil": [
+   {
+    "distinct_panos": 1,
+    "kind": "cbk probe answered 400, not 200",
+    "lines": 7,
+    "prefix": "CAoS"
+   }
+  ],
+  "seattle-wa": [
+   {
+    "distinct_panos": 1,
+    "kind": "cbk probe answered 400, not 200",
+    "lines": 30,
+    "prefix": "CAoS"
+   }
+  ],
+  "st-louis-mo": [
+   {
+    "distinct_panos": 16,
+    "kind": "cbk probe answered 400, not 200",
+    "lines": 628,
+    "prefix": "CAoS"
+   },
+   {
+    "distinct_panos": 16,
+    "kind": "cannot identify image file",
+    "lines": 188,
+    "prefix": "CAoS"
+   }
+  ],
+  "taipei": [
+   {
+    "distinct_panos": 4,
+    "kind": "cbk probe answered 400, not 200",
+    "lines": 88,
+    "prefix": "CAoS"
+   }
+  ]
+ },
+ "cities": {
+  "amsterdam": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "auckland": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "bayonne-fr": {
+   "first_night": "2026-10-11",
+   "first_nonzero": "2026-10-11",
+   "images_no_success_nights": 5,
+   "last_nonzero": "2026-10-15",
+   "longest_nonzero_streak": 5,
+   "max": 15,
+   "nights_known": 25,
+   "nights_nonzero": 5,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "blackhawk-hills-il": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "burnaby": {
+   "first_night": "2026-10-11",
+   "first_nonzero": "2026-10-23",
+   "images_no_success_nights": 10,
+   "last_nonzero": "2026-11-04",
+   "longest_nonzero_streak": 13,
+   "max": 10,
+   "nights_known": 25,
+   "nights_nonzero": 13,
+   "nonzero_nights_with_downloads": 3,
+   "rule_fires_last_night": true,
+   "rule_fires_nights": 7,
+   "steady_max": 10,
+   "steady_min": 10,
+   "steady_nights_known": 10
+  },
+  "cdmx": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "chandigarh-india": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "chicago-il": {
+   "first_night": "2026-10-11",
+   "first_nonzero": "2026-10-11",
+   "images_no_success_nights": 1,
+   "last_nonzero": "2026-11-04",
+   "longest_nonzero_streak": 25,
+   "max": 276,
+   "nights_known": 25,
+   "nights_nonzero": 25,
+   "nonzero_nights_with_downloads": 23,
+   "rule_fires_last_night": true,
+   "rule_fires_nights": 19,
+   "steady_max": 276,
+   "steady_min": 176,
+   "steady_nights_known": 10
+  },
+  "cliffside-park-nj": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "clifton-nj": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "columbia-sc": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 24,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "columbus-oh": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "cuenca": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "danville-il": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "detroit-mi": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 24,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 9
+  },
+  "fort-wayne-in": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "gainesville-fl": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "hackensack-nj": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "houston-tx": {
+   "first_night": "2026-10-11",
+   "first_nonzero": "2026-10-28",
+   "images_no_success_nights": 0,
+   "last_nonzero": "2026-11-04",
+   "longest_nonzero_streak": 8,
+   "max": 1,
+   "nights_known": 25,
+   "nights_nonzero": 8,
+   "nonzero_nights_with_downloads": 6,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 1,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "juneau-ak": {
+   "first_night": "2026-10-30",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 6,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 6
+  },
+  "kaohsiung-tw": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 24,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "keelung-tw": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "knox-oh": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "la-ca": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "la-piedad": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "la-piedad-old": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "laurens-ia": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "madison-wi": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "maywood-nj": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "mendota-il": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "new-taipei-tw": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "newberg-or": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "newport-ky": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "niagara-falls-ny": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "oradell-nj": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "paterson-nj": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "pittsburgh-pa": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "rancagua-chile": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "richmond-va": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 24,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 9
+  },
+  "santiago-chile": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "sao-paulo-brazil": {
+   "first_night": "2026-10-11",
+   "first_nonzero": "2026-10-30",
+   "images_no_success_nights": 0,
+   "last_nonzero": "2026-11-04",
+   "longest_nonzero_streak": 6,
+   "max": 1,
+   "nights_known": 25,
+   "nights_nonzero": 6,
+   "nonzero_nights_with_downloads": 5,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 1,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "seattle-wa": {
+   "first_night": "2026-10-11",
+   "first_nonzero": "2026-10-11",
+   "images_no_success_nights": 0,
+   "last_nonzero": "2026-11-04",
+   "longest_nonzero_streak": 25,
+   "max": 1,
+   "nights_known": 25,
+   "nights_nonzero": 25,
+   "nonzero_nights_with_downloads": 10,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 1,
+   "steady_min": 1,
+   "steady_nights_known": 10
+  },
+  "spgg": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "st-louis-mo": {
+   "first_night": "2026-10-11",
+   "first_nonzero": "2026-10-11",
+   "images_no_success_nights": 1,
+   "last_nonzero": "2026-11-04",
+   "longest_nonzero_streak": 25,
+   "max": 16,
+   "nights_known": 25,
+   "nights_nonzero": 25,
+   "nonzero_nights_with_downloads": 24,
+   "rule_fires_last_night": true,
+   "rule_fires_nights": 19,
+   "steady_max": 16,
+   "steady_min": 16,
+   "steady_nights_known": 10
+  },
+  "taichung-tw": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "tainan-tw": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "taipei": {
+   "first_night": "2026-10-11",
+   "first_nonzero": "2026-10-14",
+   "images_no_success_nights": 0,
+   "last_nonzero": "2026-11-04",
+   "longest_nonzero_streak": 22,
+   "max": 4,
+   "nights_known": 25,
+   "nights_nonzero": 22,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": true,
+   "rule_fires_nights": 16,
+   "steady_max": 4,
+   "steady_min": 4,
+   "steady_nights_known": 10
+  },
+  "teaneck-nj": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "tucson-az": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "validation-study": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "vancouver-wa": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 24,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "virden-il": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "walla-walla-wa": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "waltham-ma": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "washington-dc": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "west-chester-pa": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  },
+  "zurich": {
+   "first_night": "2026-10-11",
+   "first_nonzero": null,
+   "images_no_success_nights": 0,
+   "last_nonzero": null,
+   "longest_nonzero_streak": 0,
+   "max": 0,
+   "nights_known": 25,
+   "nights_nonzero": 0,
+   "nonzero_nights_with_downloads": 0,
+   "rule_fires_last_night": false,
+   "rule_fires_nights": 0,
+   "steady_max": 0,
+   "steady_min": 0,
+   "steady_nights_known": 10
+  }
+ },
+ "raisers": [
+  "chicago-il",
+  "st-louis-mo",
+  "bayonne-fr",
+  "burnaby",
+  "taipei",
+  "houston-tx",
+  "sao-paulo-brazil",
+  "seattle-wa"
+ ],
+ "rule": {
+  "min_raised": 3,
+  "nights": 7
+ },
+ "source": {
+  "cities": 57,
+  "cities_with_field20": 57,
+  "first_night": "2026-10-11",
+  "last_night": "2026-11-04",
+  "log_csv": "2026-11-05-fleet-log-csv.csv.gz",
+  "nights": 25,
+  "nights_split_across_utc_dates": 1,
+  "queue_log": "2026-11-05-fleet-scrape-queue-log.txt.gz",
+  "scrape_log": "2026-11-05-fleet-scrape-log.tsv.gz"
+ },
+ "sweep": {
+  "10|10": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "10|14": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "10|3": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "10|5": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "10|7": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "16|10": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "16|14": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "16|3": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "16|5": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "16|7": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "17|10": {
+   "cities_ever": [
+    "chicago-il"
+   ],
+   "cities_last_night": [
+    "chicago-il"
+   ]
+  },
+  "17|14": {
+   "cities_ever": [
+    "chicago-il"
+   ],
+   "cities_last_night": [
+    "chicago-il"
+   ]
+  },
+  "17|3": {
+   "cities_ever": [
+    "chicago-il"
+   ],
+   "cities_last_night": [
+    "chicago-il"
+   ]
+  },
+  "17|5": {
+   "cities_ever": [
+    "chicago-il"
+   ],
+   "cities_last_night": [
+    "chicago-il"
+   ]
+  },
+  "17|7": {
+   "cities_ever": [
+    "chicago-il"
+   ],
+   "cities_last_night": [
+    "chicago-il"
+   ]
+  },
+  "1|10": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "1|14": {
+   "cities_ever": [
+    "chicago-il",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "1|3": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "houston-tx",
+    "sao-paulo-brazil",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "houston-tx",
+    "sao-paulo-brazil",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "1|5": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "houston-tx",
+    "sao-paulo-brazil",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "houston-tx",
+    "sao-paulo-brazil",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "1|7": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "houston-tx",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "houston-tx",
+    "seattle-wa",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "2|10": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "2|14": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "2|3": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "2|5": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "2|7": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "3|10": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "3|14": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "3|3": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "3|5": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "3|7": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "4|10": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "4|14": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "4|3": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "4|5": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "4|7": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo",
+    "taipei"
+   ]
+  },
+  "5|10": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "5|14": {
+   "cities_ever": [
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "5|3": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "5|5": {
+   "cities_ever": [
+    "bayonne-fr",
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  },
+  "5|7": {
+   "cities_ever": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ],
+   "cities_last_night": [
+    "burnaby",
+    "chicago-il",
+    "st-louis-mo"
+   ]
+  }
+ },
+ "zero_every_night": [
+  "amsterdam",
+  "auckland",
+  "blackhawk-hills-il",
+  "cdmx",
+  "chandigarh-india",
+  "cliffside-park-nj",
+  "clifton-nj",
+  "columbia-sc",
+  "columbus-oh",
+  "cuenca",
+  "danville-il",
+  "detroit-mi",
+  "fort-wayne-in",
+  "gainesville-fl",
+  "hackensack-nj",
+  "juneau-ak",
+  "kaohsiung-tw",
+  "keelung-tw",
+  "knox-oh",
+  "la-ca",
+  "la-piedad",
+  "la-piedad-old",
+  "laurens-ia",
+  "madison-wi",
+  "maywood-nj",
+  "mendota-il",
+  "new-taipei-tw",
+  "newberg-or",
+  "newport-ky",
+  "niagara-falls-ny",
+  "oradell-nj",
+  "paterson-nj",
+  "pittsburgh-pa",
+  "rancagua-chile",
+  "richmond-va",
+  "santiago-chile",
+  "spgg",
+  "taichung-tw",
+  "tainan-tw",
+  "teaneck-nj",
+  "tucson-az",
+  "validation-study",
+  "vancouver-wa",
+  "virden-il",
+  "walla-walla-wa",
+  "waltham-ma",
+  "washington-dc",
+  "west-chester-pa",
+  "zurich"
+ ]
+}
