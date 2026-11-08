@@ -43,6 +43,19 @@ class TestLabelUid:
         with pytest.raises(ValueError):
             L.label_uid(city, label_id)
 
+    @pytest.mark.parametrize('label_id', [float('inf'), float('-inf'), float('nan')])
+    def test_a_non_finite_id_is_the_modules_value_error(self, label_id):
+        """#231: int(inf) raises OverflowError, which the documented ValueError did not cover; nan was already
+        a ValueError from int() and is pinned beside it."""
+        with pytest.raises(ValueError, match='a label_id is an integer'):
+            L.label_uid('seattle-wa', label_id)
+
+    @pytest.mark.parametrize('city', [None, 12, b'seattle-wa'])
+    def test_a_city_that_is_not_text_is_refused(self, city):
+        """#231: str(city) turned None into the uid "None:1", the same defect store.shard had."""
+        with pytest.raises(ValueError, match='a city id is a non-empty str'):
+            L.label_uid(city, 1)
+
 
 class TestVoteCounts:
 
@@ -147,6 +160,34 @@ class TestIsValidated:
     def test_a_bad_policy_is_refused(self, kwargs):
         with pytest.raises(ValueError):
             L.is_validated(VoteCounts(1, 0, 0), **kwargs)
+
+    @pytest.mark.parametrize('fraction', [None, '0.5x', '0.5', True, False, [0.5]],
+                             ids=['none', 'junk-str', 'numeric-str', 'true', 'false', 'list'])
+    def test_a_fraction_that_is_not_a_number_is_refused(self, fraction):
+        """#231: None escaped as Python's TypeError, '0.5x' with Python's own message, and '0.5' and True were
+        accepted. Numbers only, as min_votes refuses '2' and True."""
+        with pytest.raises(ValueError, match='min_agree_fraction is a number'):
+            L.is_validated(VoteCounts(1, 0, 0), min_votes=1, min_agree_fraction=fraction)
+
+    @pytest.mark.parametrize('fraction', [float('nan'), float('inf'), -0.01, 1.01])
+    def test_a_fraction_outside_the_unit_interval_is_refused(self, fraction):
+        with pytest.raises(ValueError, match=r'min_agree_fraction is in \[0, 1\]'):
+            L.is_validated(VoteCounts(1, 0, 0), min_votes=1, min_agree_fraction=fraction)
+
+    def test_a_numpy_bool_is_refused_as_bool_is(self):
+        """#234 review: numpy.bool_ is not a bool subclass, so np.True_ passed as the fraction 1.0 and np.False_
+        as 0.0 - a pandas boolean scalar, exactly what the bool refusal is for."""
+        np = pytest.importorskip('numpy')
+        for fraction in (np.True_, np.False_):
+            with pytest.raises(ValueError, match='min_agree_fraction is a number'):
+                L.is_validated(VoteCounts(1, 0, 0), min_votes=1, min_agree_fraction=fraction)
+
+    def test_any_real_number_type_is_a_fraction(self):
+        import fractions
+        np = pytest.importorskip('numpy')
+        for fraction in (np.float32(0.5), np.float64(0.5), fractions.Fraction(1, 2)):
+            assert L.is_validated(VoteCounts(1, 1, 0), min_votes=1, min_agree_fraction=fraction)
+        assert not L.is_validated(VoteCounts(1, 1, 0), min_votes=1, min_agree_fraction=1)
 
     def test_both_policies_are_required(self):
         with pytest.raises(TypeError):

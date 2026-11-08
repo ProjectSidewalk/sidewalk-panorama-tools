@@ -166,8 +166,9 @@ for pano_file in walk_store_panos("/mnt/panostore/seattle-wa"):
 ```
 
 * `shard`, `pano_path`, `depth_path`, `sidecar_path(pano_file, max_width)` build paths; pass `city=` with the
-  store root, or leave it out with a city's own directory. `is_downscaled_sidecar(name)` says whether a file
-  is a display copy.
+  store root, or leave it out with a city's own directory. The pano id must be a `str` of at least two
+  characters, or `ValueError`: an all-digit Mapillary id is text too, so read it as `str`, never as a number.
+  `is_downscaled_sidecar(name)` says whether a file is a display copy.
 * **`walk_store_panos(city_dir)` is the one definition of "this file is a panorama".** Only
   `<id[:2]>/<id>.jpg` in its own shard counts. A walker that forgets the display-copy rule does not fail, it
   invents pano ids like `<id>.w8192`, so never list `*.jpg` by hand.
@@ -182,7 +183,10 @@ for pano_file in walk_store_panos("/mnt/panostore/seattle-wa"):
   positive number raises `ValueError`, never `PanoDimsMismatch`). A header over `MAX_PANO_PIXELS`
   (16384 × 8192) is refused. **Call `raise_decompression_bomb_ceiling()` once at startup** if you read 134 MP
   panos: otherwise Pillow warns on each. `read_pano` installs no per-call warnings filter, because
-  `warnings.catch_warnings` rewrites process-wide state and is not thread-safe in a server.
+  `warnings.catch_warnings` rewrites process-wide state and is not thread-safe in a server. A file the file
+  system will not read raises the file system's own `OSError`, errno included (`FileNotFoundError`,
+  `PermissionError`, EIO, a stale NFS handle); a file that reads but is not a JPEG header raises `OSError`
+  naming the path. `jpeg_dimensions` keeps returning `None` for both, because its callers are sweeps.
 
 `CropRunner.py` makes the same comparison but does not call `read_pano`: it opens a pano once for all its
 labels, checks each label's dims against the one header, and decodes lazily only when a crop is about to be
@@ -239,7 +243,8 @@ key = label_uid("seattle-wa", props["label_id"])             # "seattle-wa:12327
 * **`label_uid(city, label_id)`** is `"<city>:<label_id>"`. `label_id` is a per-city serial, so a label
   reference without its city is incomplete, and a join keyed on `label_id` alone silently merges labels from
   different cities. The uid and `pano_id` are the only safe cross-city keys. A `label_id` below 1 (a fill
-  value: every city's serial starts at 1) is refused.
+  value: every city's serial starts at 1), one that is not an integer, and a non-finite float are refused
+  with `ValueError`, and so is a `city` that is not a non-empty `str` without a colon.
 * **`vote_counts(validations, *, include_ai=False)`** tallies the API's `validations` array. Each element is
   `{"validation": "Agree" | "Disagree" | "Unsure", "validator_type": "Human" | "AI", "user_id": ...}` (read from
   a live Seattle response on 2026-11-05). The AI validator is excluded by default and is identified by
@@ -249,13 +254,16 @@ key = label_uid("seattle-wa", props["label_id"])             # "seattle-wa:12327
   `"disagree"`, `"unsure"` or `"none"`. No decisive vote at all is a tie too.
 * **`is_validated(counts, *, min_votes, min_agree_fraction)`** passes a label with at least `min_votes` decisive
   votes (at least 1; any integer type, numpy's included) whose agree share `agree / decisive` is at or above the
-  fraction, compared as that quotient so a share exactly on the threshold passes.
+  fraction, compared as that quotient so a share exactly on the threshold passes. The fraction is a number in
+  [0, 1] (any real type, numpy's included); a `str` (`"0.5"` too), a `bool` (numpy's too) or `None` raises `ValueError`, as
+  `min_votes` refuses `"2"` and `True`.
 
 **What the API's own fields mean**, measured on that response: `agree_count`, `disagree_count` and
-`unsure_count` **include the AI validator's votes** (they equal `vote_counts(..., include_ai=True)` on all 85
-labels), and `correct` is `majority(vote_counts(..., include_ai=True), tie="none")`: true, false, or null on a
-tie. A consumer that wants human votes only must tally the array; the counts columns cannot give it.
-`tests/test_labels.py` pins both on an anonymised sample of that response.
+`unsure_count` **include the AI validator's votes** (they equal `vote_counts(..., include_ai=True)`, measured
+on all 85 labels of that response), and `correct` is `majority(vote_counts(..., include_ai=True), tie="none")`:
+true, false, or null on a tie. A consumer that wants human votes only must tally the array; the counts columns
+cannot give it. `tests/test_labels.py` pins both on the anonymised 14 of those 85 that the committed fixture
+keeps; the full response is not in the repo, so the 85-label measurement is a record, not a test.
 
 ## Fetching a GSV panorama — `sidewalk_panorama_tools.gsv_tiles`
 
@@ -349,7 +357,10 @@ that they match), tag it, and say in the release what a consumer will see change
 * **1.1.0** (2026-11-05, #222 steps 4-6): adds `store` (the pano store's layout, moved here from
   `downloaders/common.py`, which re-exports it), `ps_math` (the front end's click math, moved here from
   `reports/scripts/pov_replay.py`, with the new inverse `pov_from_pano_xy`), `labels` (vote arithmetic with explicit policies), and `pillow` as a
-  dependency.
+  dependency. Its refusals (#231): `store.shard` and the path builders raise `ValueError` for a pano id that
+  is not a `str` of at least two characters; `read_pano` raises the file system's own `OSError`;
+  `labels.label_uid` refuses a non-finite id and a non-`str` city; `is_validated` refuses a fraction that is
+  not a number (`str`, `bool` and `numpy.bool_` included) with `ValueError`.
   Nothing in `geometry`, `pose`
   or `torch_geometry` changed, so a consumer re-pinning sees the same views byte for byte.
 * **1.0.0**: the gnomonic label view, `pose`, and the torch twin.

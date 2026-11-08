@@ -3024,7 +3024,9 @@ class TestARaisesDurationIsOnItsScrapeLogLine(_PushbackHarness):
 
         logged = [float(self.AFTER.search(r.getMessage()).group(1)) for r in caplog.records
                   if self.AFTER.search(r.getMessage())]
-        assert len(logged) == 10 and logged[0] == 107.0
+        # The property, not the number of clock reads (#231): every logged duration covers at least the stub's
+        # own 100 s, and the mean check below is what would catch a second read.
+        assert len(logged) == 10 and all(value >= 100.0 for value in logged)
         detail = [c['detail'] for c in stop_reasons['conditions']
                   if c['code'] == DownloadRunner.CONDITION_IMAGES_NO_SUCCESS][0]
         assert detail.endswith('%.0f s per raise' % (sum(logged) / len(logged)))

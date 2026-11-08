@@ -1141,7 +1141,9 @@ and the exit code are where this lives.
 there rather than evidence — about every 1,700 panos at 8.4%, and far more often in a first-night backfill
 or a re-admitted backlog, where the retired share is that backlog's own (unmeasured; it could be much higher
 than the fleet's ~52% for labelled panos). What the entry guards is the cbk endpoint answering black 200s
-across the board, which would otherwise write off the city's whole unattempted GSV backlog in one night. A
+across the board, which would otherwise write off the city's whole unattempted GSV backlog in one night (the
+other shapes of a dead cbk, and the switch to another endpoint:
+[If the cbk tile endpoint dies](#if-the-cbk-tile-endpoint-dies-moving-to-streetviewpixels-pa)). A
 GSV trip prints the same two lines with `source gsv`, and its summary points here instead of at credentials
 (cbk tiles have none). It costs **49 false rows per city per night**, not two — and the bound is per city
 and per night, not cumulative: a fleet-wide outage costs 49 in every GSV city that runs, and the same again
@@ -1238,6 +1240,66 @@ the classification rests on how the depth endpoint behaves, not on data from thi
 keeps turning up as `(HTTP 403)` night after night, rather than many ids in one burst, 403 is a per-pano
 answer, not a refusal, and should leave `TILE_PUSHBACK_STATUSES`: under a fresh latch one such pano near the
 head of the shuffled list would trip probation and rewrite the latch every night.
+
+## If the cbk tile endpoint dies: moving to streetviewpixels-pa
+
+This section replaces [#205](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/205), the
+deferred endpoint switch; its history and the original checklist are in
+[#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181), under "Part 2: the endpoint
+switch". Nothing here is done ahead of time: the switch waits until cbk fails.
+
+**What depends on cbk.** Every GSV tile request goes to `maps.google.com/cbk?output=tile`: the stitcher's
+fan-out, the two-tile zoom probe (`_probe_zoom`, the fallback when photometa cannot choose the zoom) and
+`frame_covers_pano`. All three build their URLs with `tile_url` in `sidewalk_panorama_tools/gsv_tiles.py`, the one
+builder, from `CBK_BASE_URL` ([#222](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/222) step 2). Photometa (the zoom choice, and the whole depth phase) and `CAoS` user photospheres
+([#223](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/223), one request to the photo host)
+do not use cbk, and keep working when it dies. `streetviewpixels-pa.googleapis.com/v1/tile`, the endpoint
+`streetlevel` uses, has served byte-identical tile bodies since `fover` was dropped
+([#73](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/73)), so switching would change no
+stored data. It is deferred because every safety check in the image phase was measured against cbk.
+
+**What a dead cbk looks like.** Three shapes, each raising a different alarm, and none of them names cbk:
+
+- **5xx, 404 or 400 everywhere.** Each is a raise, so
+  [`images-no-success`](downloader.md#a-city-can-finish-ok-and-still-fail-the-night) fires, but only in a city
+  where no attempt was answered. A city whose Mapillary, Panoramax or photosphere attempts were answered stays
+  silent; there, the tell is GSV's `Failed to download pano` lines in `scrape.log` with no GSV pano landing.
+- **403, 429 or an interstitial everywhere.** That is [push-back](#when-google-pushes-back-on-the-image-phase):
+  the breaker trips, writes the block latch, and the depth phase stands down for 6 hours. From the logs it
+  cannot be told from a rate limit on this host; it points at cbk when it happens in every GSV city, night
+  after night, and the host's IP shows no rate limit or captcha.
+- **Black 200s everywhere.** The silent one: cbk answers an out-of-range tile with a black 200, so a dead
+  endpoint serving black looks exactly like a retired pano. The
+  [#113 GSV breaker](#when-the-image-phase-stops-trusting-a-source) trips at 50
+  ([#166](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/166)) and leaves 49 false
+  `downloaded=0` rows per city per night. A trip in many GSV cities on the same night is the signal; that
+  section has the recipe for deleting those rows.
+
+**Before switching** ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)'s checklist, condensed):
+
+1. **Pin the new endpoint from real bytes first.** cbk's out-of-range answer, a 200 with an all-black JPEG, is
+   pinned in `tests/test_gsv_tile_contract.py` (committed real bytes plus an opt-in live check), and
+   `frame_covers_pano`, `_probe_zoom`, `_reject_mostly_black_stitch` and the failed-tile handling all rely on
+   it. Probe what `streetviewpixels-pa` answers for an out-of-range and a blank tile (the same, a 404, or
+   something else), pin it the same way before any code moves, and re-validate `_probe_zoom`'s blank-tile check
+   against it.
+2. **Push-back.** `TilePushbackError`, `pushback_reason` and `_BLOCK_URL_MARKERS` were measured against cbk and
+   Google's interstitial ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)).
+   Re-check what a 429, a 403 and an interstitial look like on the new host.
+3. **Headers, `cb_client` and proxies.** The fan-out rotates the headers and honours the proxies that
+   `gsv_tiles.configure()` takes from `config.headers_list` and `config.proxies`; both must carry over, and
+   `cb_client` takes the new endpoint's value.
+4. **Cost.** Tiles per pano do not change and the bodies are byte-identical, so bytes per pano should not
+   either. Confirm on a sample before switching the fleet.
+5. **One URL builder.** The new query shape differs (`cb_client=maps_sv.tactile&panoid=...&x=...&y=...&zoom=...`).
+   `tile_url` is the one builder, so the switch changes `CBK_BASE_URL` and that function's query shape in one
+   place, and the endpoint cannot differ between the probe, the frame check and the fan-out:
+   `tests/test_gsv_tiles.py` asserts that all three build with it and that no second builder exists. Keep it so.
+
+**Done when:** `streetviewpixels-pa`'s out-of-range, blank and push-back answers are pinned from real bytes;
+every tile URL (probe, frame check, fan-out) still comes from `tile_url`, and `tests/test_gsv_tiles.py` still asserts it; a sample of panos
+stitched on both endpoints compares byte-identical, or every difference is explained; and
+`docs/downloader.md`, this page and `CLAUDE.md` describe the endpoint as it is.
 
 ## What healthy looks like
 

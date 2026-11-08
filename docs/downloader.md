@@ -694,7 +694,8 @@ the failure-only alarm delivers it once; a latch file then keeps later runs to a
 [Operations](ops.md#the-width-tripwire).
 
 **Google Street View (`gsv`)** — no configuration needed. Stitches 512×512 tiles from Google's undocumented
-`cbk?output=tile` endpoint into one equirectangular JPEG. To choose the zoom it asks Google's photometa
+`cbk?output=tile` endpoint into one equirectangular JPEG (if cbk stops answering, [Operations](ops.md#if-the-cbk-tile-endpoint-dies-moving-to-streetviewpixels-pa)
+has what that looks like and the checklist for moving to `streetviewpixels-pa`). To choose the zoom it asks Google's photometa
 endpoint — the one the depth phase already uses, without the depth payload, a 16 KB answer — which zoom
 levels this pano is served at, and picks the highest level that is exactly the tile grid the app's
 `width`/`height` implies ([#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74)).
