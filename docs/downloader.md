@@ -703,6 +703,13 @@ If no level is (or its tiles are not 512 px), the pano is **refused** rather tha
 would save the top-left corner of a larger pano at the app's exact dimensions, with nothing in the file to
 show it.
 
+The tile mechanics - the fan-out, the two-tile probe, the frame check, the stitch and the classification
+of Google's refusals - are the installable module `sidewalk_panorama_tools.gsv_tiles`
+([#222](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/222) step 2), which a project
+outside this repo can pin and compose itself
+([Fetching a GSV panorama](geometry.md#fetching-a-gsv-panorama--sidewalk_panorama_toolsgsv_tiles)). What
+follows about verdicts, refusals and the latch is this scraper's policy around it.
+
 If photometa is unavailable, or says the pano is gone, the older two-tile probe picks the zoom instead (a
 fully black tile at both zoom 5 and zoom 3, **on a 200**, means there is no imagery — still the only evidence
 a permanent "no imagery" verdict rests on; see below). The probe cannot tell a frame from a crop, so on that path three more tiles
@@ -1063,7 +1070,7 @@ carrying it beside the crops is [#111](https://github.com/ProjectSidewalk/sidewa
 
 | Setting | Meaning |
 |---|---|
-| `thread_count` | Tile fan-out for the image phase (default 8). This is I/O-bound async work, so higher is faster up to your network's limit — test on your own connection. |
+| `thread_count` | Tile fan-out for the image phase (default 8; handed to `sidewalk_panorama_tools.gsv_tiles` as `CONCURRENCY`). This is I/O-bound async work, so higher is faster up to your network's limit — test on your own connection. |
 | `headers_list` | Real request headers, one picked at random per request. Add to it, edit it, or leave it. |
 | `proxies` | Set to the `http://`/`https://` sentinel values to disable; otherwise fill in proxy details. |
 | `depth_min_request_interval` | The **floor** on the gap between depth metadata requests (default `0.25` s) — the one setting that decides how aggressive this host can ever get, since nothing draws a shorter gap. A run opens at `depth_start_interval` (`1.0` s), or wherever the last run on the host earned its way down to, and decays towards the floor only on sustained clean requests; `depth_max_request_interval` (`30` s) caps the back-off. `0` disables the throttle but not the reaction to push-back. See [Depth maps](depth.md#being-a-good-citizen-of-googles-servers). |

@@ -30,6 +30,7 @@ import pytest
 from PIL import Image
 
 import downloaders
+from sidewalk_panorama_tools import gsv_tiles
 from downloaders import common, gsv
 from downloaders.common import DownloadResult
 from test_gsv_stitcher import stub_probe
@@ -237,7 +238,7 @@ class TestGsvWiring:
         def network_down(*args, **kwargs):
             raise ConnectionError('network down')
 
-        monkeypatch.setattr(gsv, '_get_response', network_down)
+        monkeypatch.setattr(gsv_tiles, '_get_response', network_down)
 
         with caplog.at_level(logging.WARNING), pytest.raises(ConnectionError):
             gsv.resolve_zoom_and_dims({'pano_id': self.PANO_ID, 'width': WIDE, 'height': 8192})
@@ -273,7 +274,7 @@ class TestGsvWiring:
             raise AssertionError('photometa answered, so the probe must not run')
 
         monkeypatch.setattr(gsv, '_fetch_image_levels', fake_fetch_image_levels)
-        monkeypatch.setattr(gsv, '_get_response', no_probe)
+        monkeypatch.setattr(gsv_tiles, '_get_response', no_probe)
 
         with caplog.at_level(logging.WARNING):
             frame = gsv.resolve_frame({'pano_id': self.PANO_ID, 'width': WIDE, 'height': 8192})

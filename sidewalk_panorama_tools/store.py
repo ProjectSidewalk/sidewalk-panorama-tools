@@ -10,8 +10,9 @@ auto-labeler scripts), one directory per city::
 
 The shard is the id's first two characters, whatever the source: base64url GSV ids, all-digit Mapillary ids
 and UUID Panoramax ids alike. This module is the one definition; ``downloaders/common.py`` re-exports
-``walk_store_panos``, ``is_downscaled_sidecar``, ``jpeg_dimensions`` and the decompression-bomb ceiling from
-here, so the production tree and every consumer that pins this package read the store the same way.
+``walk_store_panos``, ``is_downscaled_sidecar``, ``jpeg_dimensions``, ``black_fraction`` and the
+decompression-bomb ceiling from here, so the production tree and every consumer that pins this package read
+the store the same way.
 
 Usage::
 
@@ -31,9 +32,9 @@ import os
 import re
 import struct
 
-__all__ = ['MAX_PANO_PIXELS', 'PanoDimsMismatch', 'depth_path', 'is_downscaled_sidecar', 'jpeg_dimensions',
-           'pano_path', 'raise_decompression_bomb_ceiling', 'read_pano', 'shard', 'sidecar_path',
-           'walk_store_panos']
+__all__ = ['MAX_PANO_PIXELS', 'PanoDimsMismatch', 'black_fraction', 'depth_path', 'is_downscaled_sidecar',
+           'jpeg_dimensions', 'pano_path', 'raise_decompression_bomb_ceiling', 'read_pano', 'shard',
+           'sidecar_path', 'walk_store_panos']
 
 # The largest panoramas our own downloader writes are 16384 x 8192 = 134 MP, over Pillow's 89 MP
 # DecompressionBombWarning default. A named ceiling rather than None: the store is trusted, but "no limit at
@@ -259,6 +260,26 @@ def read_pano(path, expected_width=None, expected_height=None):
         image.close()
         raise
     return image
+
+
+def black_fraction(image):
+    """Exact fraction of black pixels in the frame, via the luma histogram.
+
+    Counted over every pixel rather than a downsampled probe, and by histogram rather than a numpy array so
+    it stays a C-level pass with no numpy RGB copy of the frame. It still makes one single-band L copy, which
+    for a whole 16384x8192 frame is 134 MB; on a cut window it is a few MB. Both alternatives to an exact count
+    are wrong in a way that matters here: an averaging downscale blends a black region into its neighbours
+    and reports "slightly dark" for a frame that is three-quarters missing, while a NEAREST probe aliases on
+    exactly the sort of regular black/imagery pattern a tiling bug produces.
+
+    One primitive, three callers: gsv's stitch guard (as gsv._black_fraction), refetch_panos' too_black
+    gate, and CropRunner's black_content check on a cut window (#164). It is defined here, in the package
+    but apart from the tile fetcher, so a consumer judging a crop or a stitch shares the scraper's definition
+    of black with no network dependency at all (#222 step 2); downloaders/common.py re-exports it, and its
+    edge-band detector (#179) reads it there. Needs nothing but the image's own methods, so no Pillow import.
+    """
+    luma = image.convert('L')
+    return luma.histogram()[0] / float(luma.width * luma.height)
 
 
 def _frame_dimension(value):

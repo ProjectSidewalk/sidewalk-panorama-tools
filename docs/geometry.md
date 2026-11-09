@@ -3,8 +3,9 @@
 One shared implementation of "render a perspective (gnomonic) view of a Project Sidewalk label from its
 equirectangular panorama, with rig-tilt correction", installable with pip so other projects pin it instead of
 copying it. The geometry is numpy-only and has no I/O; since 1.1.0 the package also carries
-[the pano store's layout](#the-pano-store--sidewalk_panorama_toolsstore), the one module that touches files. Two
-projects use the geometry:
+[the pano store's layout](#the-pano-store--sidewalk_panorama_toolsstore), the one module that touches files, and
+since 1.2.0 [the GSV tile fetcher](#fetching-a-gsv-panorama--sidewalk_panorama_toolsgsv_tiles), the one that
+touches the network (behind the `[gsv]` extra). Two projects use the geometry:
 
 * **sidewalk-validator-ai**, the training pipeline, which cuts its training views with it.
 * **sidewalk-ai-api**, the production API, which renders the same view of a label at inference time.
@@ -21,7 +22,9 @@ pip install "sidewalk-panorama-tools @ git+https://github.com/ProjectSidewalk/si
 Pin a tag, never a branch. The distribution installs two things: the `sidewalk_panorama_tools` package and
 `pano_pose`, a top-level module. It depends on `numpy` and, since 1.1.0, `pillow` (`store.read_pano` decodes a
 stored pano; the geometry modules never import it), and it needs Python 3.9 or newer. None of the
-runners (`DownloadRunner.py`, `CropRunner.py`, ...) is installed; they still run from a checkout.
+runners (`DownloadRunner.py`, `CropRunner.py`, ...) is installed; they still run from a checkout. The tile
+fetcher needs the `[gsv]` extra ([below](#fetching-a-gsv-panorama--sidewalk_panorama_toolsgsv_tiles)), as the GPU
+grid needs `[torch]`; every other module works on the base install.
 
 ## Usage
 
@@ -262,6 +265,77 @@ true, false, or null on a tie. A consumer that wants human votes only must tally
 cannot give it. `tests/test_labels.py` pins both on the anonymised 14 of those 85 that the committed fixture
 keeps; the full response is not in the repo, so the 85-label measurement is a record, not a test.
 
+## Fetching a GSV panorama — `sidewalk_panorama_tools.gsv_tiles`
+
+The tile fetcher the nightly scraper runs, defined once (#222 step 2): the fan-out over Google's undocumented
+`cbk?output=tile` endpoint, the two-tile zoom probe, the frame check, the stitch, and the classification of
+Google's refusals. sidewalk-validator-ai, sidewalk-ai-api and RampNet each carry a copy; this module is the one to pin
+instead. It needs the `[gsv]` extra (`requests`, `urllib3`, `aiohttp`, `backoff`), and importing it without the
+extra raises an `ImportError` that names it:
+
+```bash
+pip install "sidewalk-panorama-tools[gsv] @ git+https://github.com/ProjectSidewalk/sidewalk-panorama-tools@<tag>"
+```
+
+```python
+from sidewalk_panorama_tools import gsv_tiles
+
+zoom = gsv_tiles.probe_zoom(pano_id)                  # 5, 3, or None
+if zoom is None:
+    ...                                               # no imagery at either zoom: the pano is gone
+elif not gsv_tiles.frame_covers_pano(pano_id, width, height, zoom):
+    ...                                               # Google serves it LARGER than (width, height): refuse
+else:
+    stitched = gsv_tiles.fetch_pano_image(pano_id, width, height, zoom)
+    image = stitched.image                            # a PIL image at exactly (width, height)
+```
+
+The composition, and what each answer means:
+
+1. **`probe_zoom(pano_id)`** asks for tile (0, 0) at zoom 3 and zoom 5 (two requests). `None` means both came
+   back exactly black on a 200, which is how cbk answers a retired pano: the pano is gone. Any status but 200
+   raises `requests.HTTPError` instead, so a 403 with a black body is never read as "gone".
+2. **`frame_covers_pano(pano_id, width, height, zoom)`** asks three tiles at the edges of the grid that
+   `(width, height)` implies. `False` means a tile past the grid has imagery: Google serves the pano larger, and
+   fetching would return its top-left corner at your exact dimensions, with nothing to show it. It raises
+   `FrameDisagreementError` when the grid's own last column is black: Google serves it smaller, and the stitch
+   would be a third black. **Ask it only after the probe found imagery**: cbk answers a retired pano with black
+   tiles everywhere, which this check reads as "smaller".
+3. **`fetch_pano_image(pano_id, width, height, zoom)`** fans out every tile of the grid (`CONCURRENCY` in
+   flight), stitches them, and returns `StitchedPano(image, undersized_tiles, upscaled)`. `upscaled` is true when
+   only a lower zoom covered the frame and the image was LANCZOS-upscaled to `(width, height)`; it holds less
+   imagery than its size says. A failed tile, or a stitch more than half exactly black, raises: transient, try
+   another day.
+
+`width` and `height` are yours to supply - the pano's frame as the Project Sidewalk app records it. The probe
+cannot tell a 16384-wide pano from a 13312-wide one, and this module does not ask photometa (the scraper's
+`downloaders/gsv.py` does, through `streetlevel`, which stays out of the package). `choose_zoom(sizes, width,
+height)` picks the zoom from photometa's level sizes if you have them.
+
+**Push-back.** A tile that answers 429 or 403, or lands on Google's interstitial at any status, raises
+`TilePushbackError`, which the tile retry policy never retries, and the pano's remaining tiles are abandoned at
+the first one. `pushback_reason(exc)` reads every shape of refusal (`'HTTP 429'`, `'HTTP 403'`,
+`'interstitial'`) and returns `None` for anything that is merely weather: a timeout, a reset, a 5xx storm. A
+non-`None` answer means Google is refusing this host. Stop for the night. Retrying a refusal is how a soft rate
+limit is turned into a block, and before the scraper learned that, one refused 16384-wide pano cost 5,120
+requests.
+
+**What it does not do.** It never writes a file, keeps no ledger, has no breaker and no block latch, and makes
+no display copy: those are the nightly scraper's policy, in `downloaders/gsv.py`, which composes these same
+functions with them. **Never write what you fetch over a stored pano.** The store is an archive, not a cache
+(`docs/ops.md`): about half of the labelled panos are already retired at Google and about a quarter of the rest
+come back re-rendered, so the stored file is usually the only copy of that picture.
+
+**One URL builder.** `tile_url(pano_id, zoom, x, y)` builds every tile request from `CBK_BASE_URL`, so a
+parameter added there reaches the fan-out, the probe and the frame check at once. Do not add viewer parameters
+without measuring them: `fover`, copied from the Street View viewer, halved the polar rows of zoom 5 (#73).
+
+**Settings.** `HEADERS` (one picked at random per request), `PROXIES` and `CONCURRENCY` (8) are read at call
+time. Change them with `configure(headers=..., proxies=..., concurrency=...)`; the scraper configures them from
+its `config.py` at import, whose `headers_list` the package default `DEFAULT_HEADERS` copies (a test holds the
+two equal). Logging goes to the root logger, with the scraper's `IMAGEDOWNLOAD:` prefix. `sidewalk_panorama_tools`
+itself never imports this module, so the base install stays free of the network stack.
+
 ## Provenance and releases
 
 The view geometry is ported from RampNet `rampnet/crops.py` at commit
@@ -275,6 +349,11 @@ that they match), tag it, and say in the release what a consumer will see change
 
 **Releases.**
 
+* **1.2.0** (2026-11-06, #222 step 2): adds `gsv_tiles`, the GSV tile fetcher the nightly scraper runs
+  (moved from `downloaders/gsv.py`, which re-exports it), behind the new `[gsv]` extra (`requests`, `urllib3`,
+  `aiohttp`, `backoff`), and `store.black_fraction` (moved from `downloaders/common.py`, which re-exports it).
+  The base install's dependencies are unchanged, and nothing in `geometry`, `pose`, `torch_geometry`,
+  `ps_math` or `labels` changed, so a consumer re-pinning sees the same views byte for byte.
 * **1.1.0** (2026-11-05, #222 steps 4-6): adds `store` (the pano store's layout, moved here from
   `downloaders/common.py`, which re-exports it), `ps_math` (the front end's click math, moved here from
   `reports/scripts/pov_replay.py`, with the new inverse `pov_from_pano_xy`), `labels` (vote arithmetic with explicit policies), and `pillow` as a

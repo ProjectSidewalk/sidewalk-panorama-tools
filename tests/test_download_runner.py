@@ -30,6 +30,7 @@ import requests
 from PIL import Image
 
 import downloaders
+from sidewalk_panorama_tools import gsv_tiles
 import downloaders.common
 import DownloadRunner
 
@@ -2921,9 +2922,9 @@ class TestGoogleRefusingGsvImagesStopsThePhase(_PushbackHarness):
             async def __aexit__(self, *args):
                 return False
 
-        monkeypatch.setattr(gsv.aiohttp, 'TCPConnector', lambda limit=None: None)
-        monkeypatch.setattr(gsv.aiohttp, 'ClientSession', FakeClientSession)
-        monkeypatch.setattr(gsv, 'thread_count', 8)
+        monkeypatch.setattr(gsv_tiles.aiohttp, 'TCPConnector', lambda limit=None: None)
+        monkeypatch.setattr(gsv_tiles.aiohttp, 'ClientSession', FakeClientSession)
+        monkeypatch.setattr(gsv_tiles, 'CONCURRENCY', 8)
         monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
         calls = []
 
@@ -4208,6 +4209,11 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
                 raise SystemExit(143)
 
         monkeypatch.setattr(DownloadRunner, 'write_log_csv_row', stopped_after_appending)
+        # The records carry no frame, so each asks photometa (#184) and then the probe: answer both "gone" here,
+        # not from Google (#222 step 2: found by conftest._no_network).
+        from test_gsv_stitcher import stub_photometa, stub_probe
+        stub_probe(monkeypatch, pick_zoom=-1)
+        stub_photometa(monkeypatch, gone=True)
         records = [{'pano_id': 'gsvPano%04d' % i, 'source': 'gsv', 'has_labels': True} for i in range(5)]
         monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
         csv_path = tmp_path / 'panos.csv'

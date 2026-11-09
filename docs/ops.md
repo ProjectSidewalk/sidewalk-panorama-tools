@@ -1250,8 +1250,8 @@ switch". Nothing here is done ahead of time: the switch waits until cbk fails.
 
 **What depends on cbk.** Every GSV tile request goes to `maps.google.com/cbk?output=tile`: the stitcher's
 fan-out, the two-tile zoom probe (`_probe_zoom`, the fallback when photometa cannot choose the zoom) and
-`frame_covers_pano`. All three start from `_CBK_BASE_URL` in `downloaders/gsv.py`, through three f-strings (in
-`_generate_tile_urls`, `_probe_zoom` and `frame_covers_pano`). Photometa (the zoom choice, and the whole depth phase) and `CAoS` user photospheres
+`frame_covers_pano`. All three build their URLs with `tile_url` in `sidewalk_panorama_tools/gsv_tiles.py`, the one
+builder, from `CBK_BASE_URL` ([#222](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/222) step 2). Photometa (the zoom choice, and the whole depth phase) and `CAoS` user photospheres
 ([#223](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/223), one request to the photo host)
 do not use cbk, and keep working when it dies. `streetviewpixels-pa.googleapis.com/v1/tile`, the endpoint
 `streetlevel` uses, has served byte-identical tile bodies since `fover` was dropped
@@ -1286,18 +1286,18 @@ stored data. It is deferred because every safety check in the image phase was me
 2. **Push-back.** `TilePushbackError`, `pushback_reason` and `_BLOCK_URL_MARKERS` were measured against cbk and
    Google's interstitial ([#162](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/162)).
    Re-check what a 429, a 403 and an interstitial look like on the new host.
-3. **Headers, `cb_client` and proxies.** The fan-out rotates `config.headers_list` and honours `config.proxies`;
-   both must carry over, and `cb_client` takes the new endpoint's value.
+3. **Headers, `cb_client` and proxies.** The fan-out rotates the headers and honours the proxies that
+   `gsv_tiles.configure()` takes from `config.headers_list` and `config.proxies`; both must carry over, and
+   `cb_client` takes the new endpoint's value.
 4. **Cost.** Tiles per pano do not change and the bodies are byte-identical, so bytes per pano should not
    either. Confirm on a sample before switching the fleet.
-5. **One URL builder.** The new query shape differs (`cb_client=maps_sv.tactile&panoid=...&x=...&y=...&zoom=...`),
-   so the three f-strings must become one builder, or the endpoint can differ between the probe, the frame
-   check and the fan-out. Until that exists, `_CBK_BASE_URL` is the one base;
-   [#222](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/222) step 2 is making the tile URL
-   one function in the package.
+5. **One URL builder.** The new query shape differs (`cb_client=maps_sv.tactile&panoid=...&x=...&y=...&zoom=...`).
+   `tile_url` is the one builder, so the switch changes `CBK_BASE_URL` and that function's query shape in one
+   place, and the endpoint cannot differ between the probe, the frame check and the fan-out:
+   `tests/test_gsv_tiles.py` asserts that all three build with it and that no second builder exists. Keep it so.
 
 **Done when:** `streetviewpixels-pa`'s out-of-range, blank and push-back answers are pinned from real bytes;
-every tile URL (probe, frame check, fan-out) comes from one base, and a test asserts it; a sample of panos
+every tile URL (probe, frame check, fan-out) still comes from `tile_url`, and `tests/test_gsv_tiles.py` still asserts it; a sample of panos
 stitched on both endpoints compares byte-identical, or every difference is explained; and
 `docs/downloader.md`, this page and `CLAUDE.md` describe the endpoint as it is.
 

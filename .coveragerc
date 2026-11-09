@@ -83,7 +83,6 @@ exclude_also =
 #   - gsv.py's `except ImportError` fallback for depth_min_request_interval. Real deployment behaviour (the
 #     scraper box carries local edits to config.py), but gsv uses relative imports, so it cannot be
 #     re-executed against a stub config the way analyze.py can.
-#   - gsv.py's `_get_response(stream=False)` arm: a dead affordance whose fix is deletion, not a test.
 #   - gsv.py's photometa early return for a message carrying no depth planes.
 #   - DownloadRunner's fallback_success counter arm: no code path in the suite produces that verdict.
 #   - refetch_panos.py's measurements flush on the ledger-close path, and its --min-pano-interval sleep

@@ -79,9 +79,15 @@ class TestPaths:
 class TestOneDefinition:
 
     @pytest.mark.parametrize('name', ['walk_store_panos', 'is_downscaled_sidecar', 'jpeg_dimensions',
-                                      'raise_decompression_bomb_ceiling', 'MAX_PANO_PIXELS'])
+                                      'raise_decompression_bomb_ceiling', 'MAX_PANO_PIXELS', 'black_fraction'])
     def test_common_re_exports_the_package_object(self, name):
         assert getattr(common, name) is getattr(store, name)
+
+    def test_the_stitch_guard_judges_with_the_package_object(self):
+        """gsv's stitch guard and refetch_panos' too_black gate read black_fraction as gsv._black_fraction."""
+        from downloaders import gsv
+
+        assert gsv._black_fraction is store.black_fraction
 
 
 class TestTheWalker:
