@@ -2513,7 +2513,8 @@ def pano_y_at(depression_deg, pano_height):
 
 @pytest.fixture
 def pov_replay():
-    """The study port the production copy of the lle #3 calibration must agree with."""
+    """The study port (reports/scripts/pov_replay.py), which re-exports sidewalk_panorama_tools.ps_math: the
+    depression primitive is compared with it here; the blend is ps_math's own (#231)."""
     scripts = os.path.join(REPO_ROOT, 'reports', 'scripts')
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
@@ -2552,19 +2553,34 @@ class TestLabelDepression:
 BLEND_GRID = [-10.0, 0.0, 0.5, 2.0, 5.0, 11.24, 11.25, 11.26, 20.0, 45.0, 60.0, 89.0]
 
 
-class TestBlendDistanceMatchesTheStudyPort:
-    """CropRunner carries a COPY of the lle #3 calibration (production must not import reports/scripts),
-    so the copy is pinned equal to the study port on a grid that straddles the blend point."""
+class TestBlendDistanceIsPsMaths:
+    """Since #231 CropRunner's lle #3 calibration is sidewalk_panorama_tools.ps_math's, not a copy of it: the
+    three constants are the package's own objects and blend_distance_m delegates the arithmetic, so the
+    grid below asserts exact equality where it used to allow rel=1e-12 between two implementations."""
 
-    def test_the_constants_are_the_study_ports(self, crop_runner, pov_replay):
-        assert crop_runner.V3_CAMERA_HEIGHT_M == pov_replay.BLEND_CAMERA_HEIGHT_M
-        assert crop_runner.V3_BLEND_DEG == pov_replay.BLEND_DEG
-        assert crop_runner.V3_DIST_CAP_M == pov_replay.DIST_CAP_M
+    def test_the_constants_are_ps_maths_own(self, crop_runner):
+        from sidewalk_panorama_tools import ps_math
+        assert crop_runner.V3_CAMERA_HEIGHT_M is ps_math.BLEND_CAMERA_HEIGHT_M
+        assert crop_runner.V3_BLEND_DEG is ps_math.BLEND_DEG
+        assert crop_runner.V3_DIST_CAP_M is ps_math.DIST_CAP_M
 
     @pytest.mark.parametrize('dep', BLEND_GRID)
-    def test_equal_on_the_grid(self, crop_runner, pov_replay, dep):
-        assert crop_runner.blend_distance_m(dep) == pytest.approx(
-            float(pov_replay.predict_blend_distance(dep)), rel=1e-12)
+    def test_equal_on_the_grid(self, crop_runner, dep):
+        from sidewalk_panorama_tools import ps_math
+        assert crop_runner.blend_distance_m(dep) == float(ps_math.predict_blend_distance(dep))
+
+    @pytest.mark.parametrize('dep', [0.0, 5.0, 45.0, 100.0])
+    def test_it_returns_a_python_float(self, crop_runner, dep):
+        """ps_math returns np.float64, whose repr under numpy 2 is np.float64(...): the docstring's example
+        and crop_rule-adjacent callers see a plain float, as they did before the delegation."""
+        assert type(crop_runner.blend_distance_m(dep)) is float
+
+    @pytest.mark.parametrize('dep', [float('inf'), float('-inf'), float('nan')])
+    def test_a_non_finite_depression_is_refused(self, crop_runner, dep):
+        """The scalar code raised ValueError (math domain) on inf; numpy would return nan with a warning, or
+        the horizon distance for -inf. A depression that is not a number is a caller's bug: say so."""
+        with pytest.raises(ValueError, match='depression is a finite number'):
+            crop_runner.blend_distance_m(dep)
 
     def test_the_horizon_is_bounded_and_the_45_degree_ray_lands_at_camera_height(self, crop_runner):
         assert crop_runner.blend_distance_m(0.0) == pytest.approx(23.848261259830384, rel=1e-12)
@@ -2581,10 +2597,9 @@ class TestBlendDistanceMatchesTheStudyPort:
         assert crop_runner.blend_distance_m(0.0, camera_height_m=10.0) == crop_runner.V3_DIST_CAP_M
         assert crop_runner.blend_distance_m(2.0, camera_height_m=10.0, cap_m=30.0) == 30.0
 
-    def test_the_floor_is_zero_past_the_nadir(self, crop_runner, pov_replay):
+    def test_the_floor_is_zero_past_the_nadir(self, crop_runner):
         """The cotangent turns negative past 90 deg; the lower clip is what keeps a distance a distance."""
         assert crop_runner.blend_distance_m(100.0) == 0.0
-        assert float(pov_replay.predict_blend_distance(100.0)) == 0.0
 
 
 def v3_fov(crop_runner, distance_m, width_m=None):
