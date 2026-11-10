@@ -1467,10 +1467,27 @@ class PhotosphereHostError(Exception):
 class PhotosphereBodyError(Exception):
     """The photo host answered 200 with a body that is not a complete JPEG (#223).
 
-    An HTML page, a wrong Content-Type, a body without SOI first or EOI last, or one PIL cannot decode.
+    An HTML page, a wrong Content-Type, a body without SOI first or without an EOI closing the main image
+    (common.jpeg_is_complete: last, or followed by at most a 64 KB trailer), or one PIL cannot decode.
     TRANSIENT under the #41 ledger like every raise out of download_pano: nothing is written, so no resume
     marker either. Deliberately not a FrameDisagreementError - DownloadRunner counts that type by isinstance
     (#207), and a bad body is not an answer about the frame."""
+
+
+def is_photo_host_answer(error):
+    """Whether `error`, raised out of a photosphere download, is the photo host answering about THIS photo -
+    a 4xx (PhotosphereHostError) or a 200 with an unusable body (PhotosphereBodyError) - rather than a sign
+    that the network, the host or this code is failing.
+
+    Still a transient (unledgered, retried, counted in log.csv field 20): a 404 here is not a verdict, because
+    the host 404s photos it serves on other requests (reports/2026-11-09-photosphere-404s-and-trailers.md). But
+    `images-no-success` asks whether the run could download anything at all, and a perennially 404ing photo
+    says nothing about that: seattle-wa's 13 failed the whole night for it from 2026-11-07. A 5xx, a RetryError
+    (429 or a 5xx storm), an interstitial HTTPError, a timeout or a connection error is not this - those can be
+    an outage, and stay raises."""
+    if isinstance(error, PhotosphereBodyError):
+        return True
+    return isinstance(error, PhotosphereHostError) and 400 <= error.status_code < 500
 
 
 def is_photosphere_id(pano_id):
@@ -1535,8 +1552,8 @@ def _download_photosphere(pano_info, photo_id, out_image_name):
     """Fetch a photosphere (#223) from the photo host in one request and save it, or raise.
 
     The contract, each line a measurement in #223 or the house rule:
-      * 200, Content-Type image/jpeg, a complete JPEG (SOI first, EOI last, a SOF PIL reads, a full decode)
-        whose dimensions equal the app's width/height: the response BYTES are written verbatim through
+      * 200, Content-Type image/jpeg, a complete JPEG (SOI first, an EOI closing the main image, a SOF PIL
+        reads, a full decode) whose dimensions equal the app's width/height: the response BYTES are written verbatim through
         atomic_output_path - the host's own encode, strictly better than a PIL re-encode of it - then the
         #179 edge-band flag and the display copy run as on the tile path. DownloadResult.success.
       * The same with dimensions the app disagrees with: FrameDisagreementError, the tile path's loud
@@ -1583,16 +1600,21 @@ def _download_photosphere(pano_info, photo_id, out_image_name):
             raise PhotosphereHostError('photo host answered %s, not 200, for photosphere %s (%s form): %s'
                                        % (response.status_code, pano_id, form, url), response.status_code)
         content_type = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+        content_length = response.headers.get('Content-Length')     # for the refusal's message only
         body = response.content
     if content_type != 'image/jpeg':
         raise PhotosphereBodyError('pano %s: the photo host answered 200 with Content-Type %r, not image/jpeg: %s'
                                    % (pano_id, content_type, url))
-    # EOI LAST, not merely present: the body is saved verbatim, so it must be the whole image. (Store mode's
-    # is_complete_jpeg tolerates a trailer after the EOI for camera originals; nothing measured here has one,
-    # and a refusal is only a retry.)
-    if body[:2] != b'\xff\xd8' or body[-2:] != b'\xff\xd9':
-        raise PhotosphereBodyError('pano %s: the photo host answered 200 with %d bytes that are not a complete '
-                                   'JPEG (no SOI first or no EOI last): %s' % (pano_id, len(body), url))
+    # The body is saved verbatim, so it must be the whole image: SOI first, and an EOI that closes the main
+    # image - last, or followed by a bounded trailer. Store mode's rule, shared (common.jpeg_is_complete): a
+    # camera original carries one, and 7 of 7 photospheres refused under the old EOI-last check were complete
+    # (Content-Length matched, PIL decoded them) with a 111-byte Samsung `Image_UTC_Data` trailer or zero
+    # padding (reports/2026-11-09-photosphere-404s-and-trailers.md). The trailer is kept: verbatim is verbatim.
+    if body[:2] != b'\xff\xd8' or not common.jpeg_is_complete(BytesIO(body), len(body)):
+        raise PhotosphereBodyError('pano %s: the photo host answered 200 with %d bytes (Content-Length %s) that '
+                                   'are not a complete JPEG (SOI first: %s; last EOI at offset %d): %s'
+                                   % (pano_id, len(body), content_length, body[:2] == b'\xff\xd8',
+                                      body.rfind(b'\xff\xd9'), url))
     try:
         image = Image.open(BytesIO(body))
     except (OSError, SyntaxError) as e:

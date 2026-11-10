@@ -14,7 +14,8 @@ equirectangular original for the photo id inside. What these tests hold:
   HTTPError _get_response would (push-back to the #162 breaker), a retried-out 429 is the RetryError that breaker
   already reads; a 400 for the CIHM or CIAB form is the ONE permanent verdict that rests on the photo host
   (DownloadResult.failure, 628 of 628 measured in reports/2026-11-05-photosphere-forms.md) and any other non-200
-  (an AF1Qip 400, a 403) is PhotosphereHostError, never push-back; a 200 that is not a complete JPEG raises.
+  (an AF1Qip 400, a 403) is PhotosphereHostError, never push-back; a 200 that is not a complete JPEG raises,
+  while one followed by a measured camera trailer (store mode's 64 KB rule) is saved, trailer and all.
 * **The composition through DownloadRunner's image loop** into pano_id_log.csv and the run summary.
 
 Network-free: the photo host is stubbed at gsv._photosphere_session, photometa at gsv._fetch_image_levels,
@@ -388,6 +389,60 @@ class TestThePhotoHostContract:
             'a bad body is not an answer about the frame, and #207 counts that type by isinstance'
         assert gsv.pushback_reason(raised.value) is None
         assert list(tmp_path.rglob('*.jpg*')) == []
+
+    # The two trailer shapes measured 2026-11-09 on photospheres the EOI-last check refused every night
+    # (reports/2026-11-09-photosphere-404s-and-trailers.md): Samsung's 111-byte `Image_UTC_Data` record, and
+    # zero padding (130 and 3,257 bytes). The Samsung record's first 32 bytes are as served; its other 79 are
+    # stand-in zeros here (only its length and the absence of FF D9 matter to the rule).
+    SAMSUNG_TRAILER = b'\x00\x00\x01\n\x0e\x00\x00\x00Image_UTC_Data1552162688' + b'\x00' * 79
+
+    @pytest.mark.parametrize('trailer', [SAMSUNG_TRAILER, b'\x00' * 130, b'\x00' * 3257],
+                             ids=['samsung-111', 'zero-130', 'zero-3257'])
+    def test_a_complete_jpeg_with_a_measured_trailer_is_saved_trailer_and_all(self, tmp_path, monkeypatch,
+                                                                             trailer, cbk_untouched):
+        body = photosphere_jpeg() + trailer
+        assert len(self.SAMSUNG_TRAILER) == 111
+        stub_photo_host(monkeypatch, serve(body))
+
+        assert gsv.download_single_pano(str(tmp_path), info()) == DownloadResult.success
+        assert stored(tmp_path).read_bytes() == body, 'verbatim means the trailer too - never trimmed'
+
+    def test_a_trailer_longer_than_the_window_is_still_refused(self, tmp_path, monkeypatch, cbk_untouched):
+        """The window bounds how much trailing data is believed, as in store mode: one byte past it refuses."""
+        stub_photo_host(monkeypatch, serve(photosphere_jpeg() + b'\x00' * (common.TRAILING_BYTES_WINDOW - 1)))
+
+        with pytest.raises(gsv.PhotosphereBodyError, match='not a complete JPEG'):
+            gsv.download_single_pano(str(tmp_path), info())
+        assert list(tmp_path.rglob('*.jpg*')) == []
+
+    def test_a_cut_body_with_bytes_after_it_is_still_refused(self, tmp_path, monkeypatch, cbk_untouched):
+        """What the old EOI-last check also caught, and the trailer rule must not wave through: a body cut mid-
+        scan carries no FF D9 after its scan start, whatever follows it."""
+        stub_photo_host(monkeypatch, serve(photosphere_jpeg()[:-200] + self.SAMSUNG_TRAILER))
+
+        with pytest.raises(gsv.PhotosphereBodyError) as raised:
+            gsv.download_single_pano(str(tmp_path), info())
+        assert 'Content-Length' in str(raised.value) and 'last EOI at offset' in str(raised.value)
+        assert list(tmp_path.rglob('*.jpg*')) == []
+
+    @pytest.mark.parametrize('error, answer', [
+        (gsv.PhotosphereHostError('x', 404), True),
+        (gsv.PhotosphereHostError('x', 403), True),
+        (gsv.PhotosphereHostError('x', 400), True),
+        (gsv.PhotosphereHostError('x', 500), False),
+        (gsv.PhotosphereHostError('x', 503), False),
+        (gsv.PhotosphereBodyError('x'), True),
+        (requests.exceptions.RetryError('too many 429 error responses'), False),
+        (requests.HTTPError('interstitial'), False),
+        (requests.exceptions.ConnectionError('reset'), False),
+        (requests.exceptions.ReadTimeout('slow'), False),
+        (gsv.FrameDisagreementError('frame disagreement'), False),
+    ], ids=['404', '403', '400', '500', '503', 'body', 'retry-error', 'interstitial', 'connection', 'timeout',
+            'frame'])
+    def test_what_images_no_success_sets_aside_as_the_photo_host_answering(self, error, answer):
+        """A 4xx or an unusable 200 is the host answering about one photo; anything that can be an outage of
+        the host, the network or this code is not (reports/2026-11-09-photosphere-404s-and-trailers.md)."""
+        assert gsv.is_photo_host_answer(error) is answer
 
     def test_a_body_that_does_not_decode_is_not_stored(self, tmp_path, monkeypatch, cbk_untouched):
         """PIL decodes a mid-scan cut that still ends in EOI without complaint, so the decode failure is
