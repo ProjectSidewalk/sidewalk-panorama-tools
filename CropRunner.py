@@ -37,6 +37,8 @@ import pano_pose
 # Not a new dependency: downloaders/__init__.py imports gsv, so the line below loads it already.
 from downloaders.gsv import DEPTH_ARTIFACT_SUFFIX
 from downloaders.common import atomic_output_path, black_fraction, raise_decompression_bomb_ceiling  # noqa: F401
+# Not a new dependency either: downloaders/common.py imports the package for the store primitives.
+from sidewalk_panorama_tools import ps_math
 
 # raise_decompression_bomb_ceiling is imported, not defined here, and re-exported under this module's name so
 # `CropRunner.raise_decompression_bomb_ceiling()` keeps working for reports/scripts/annotation_tiles.py and
@@ -162,12 +164,14 @@ CROP_MAX_STORED_WIDTH = 1440
 # See reports/2026-09-26-crop-sizing-v3.md. The clamps, the 3:2 shape and the storage cap are v2's.
 #
 # The lle #3 Stage 4 calibration (label-latlng-estimation data/modern-truth-summary.json ->
-# final_coefficients), transcribed. reports/scripts/pov_replay.py carries the same three numbers and
-# tests/test_crop_runner.py::TestBlendDistanceMatchesTheStudyPort pins the two equal on a grid.
-# Production code must not import reports/scripts, which is why this is a copy and not an import.
-V3_CAMERA_HEIGHT_M = 2.341219672825709
-V3_BLEND_DEG = 11.25
-V3_DIST_CAP_M = 50.0
+# final_coefficients), defined once in sidewalk_panorama_tools.ps_math (#222 step 6) and aliased here (#231).
+# This used to be a transcribed copy, because the definition lived in reports/scripts/pov_replay.py and
+# production code must not import reports/scripts; the package is production code, so the copy went. The
+# V3_ names stay because crop_rule.json records them under these keys and tests patch them by name;
+# tests/test_crop_runner.py::TestBlendDistanceIsPsMaths asserts they are ps_math's own objects.
+V3_CAMERA_HEIGHT_M = ps_math.BLEND_CAMERA_HEIGHT_M
+V3_BLEND_DEG = ps_math.BLEND_DEG
+V3_DIST_CAP_M = ps_math.DIST_CAP_M
 
 # Frontal width of world, in metres, the window spans at the label's distance. The one fitted v3
 # constant: the value whose pooled median fill on the 658 gold aprons equals rule v2's, so the two
@@ -188,7 +192,7 @@ V3_CONTEXT_WIDTH_M = 5.8
 # A depth cell counts only if it is on a plane: depth > 0 and plane index > 0. -1 is finite and means "no
 # plane" (sky, or anything Google did not model), so a plain finiteness test would count it (#180 point 1).
 V3_DEPTH_MIN_VALID_CELLS = 5
-# The distance's lower limit; the upper one is V3_DIST_CAP_M, the cap the blend constants were copied with.
+# The distance's lower limit; the upper one is V3_DIST_CAP_M, the blend's own cap.
 V3_DEPTH_MIN_M = 0.5
 # |n_z| / |n| of the plane under the label below this is a facade, not ground: fall back. The same 0.7 as
 # gsv.ground_plane_from_artifact's min_vertical.
@@ -951,25 +955,22 @@ def blend_distance_m(depression_deg, camera_height_m=None, blend_deg=V3_BLEND_DE
     label above the horizon gets the horizon's distance. Clipped to [0, cap_m]; with the shipped
     calibration the 50 m cap never binds, since the blend tops out at the horizon's 23.85 m.
 
-    A scalar port of reports/scripts/pov_replay.predict_blend_distance, pinned equal to it by a test. The
-    tail's slope is written with math.radians(1.0) - d(cot)/d(degree) - rather than a literal, because
-    the equirectangular constants are allowed in this module only inside the four unit primitives.
+    The arithmetic is sidewalk_panorama_tools.ps_math.predict_blend_distance's (#231; it was a scalar port
+    of it until then), and this is the scalar wrapper the crop loop calls: a plain float back, and a
+    depression that is not a finite number refused with ValueError rather than answered with numpy's nan.
 
     `camera_height_m=None` means V3_CAMERA_HEIGHT_M, read at call time rather than bound at definition,
-    so a test that patches the module constant reaches this function.
+    so a test that patches the module constant reaches this function. `blend_deg` and `cap_m` are bound
+    at definition; the depth path's range check reads V3_DIST_CAP_M itself, at call time.
 
     >>> round(blend_distance_m(45.0), 3)
     2.341
     """
+    if not math.isfinite(depression_deg):
+        raise ValueError('a depression is a finite number of degrees, not %r' % (depression_deg,))
     camera_height_m = V3_CAMERA_HEIGHT_M if camera_height_m is None else camera_height_m
-    a_rad = math.radians(blend_deg)
-    if depression_deg >= blend_deg:
-        distance = camera_height_m / math.tan(math.radians(depression_deg))
-    else:
-        value_at_blend = camera_height_m / math.tan(a_rad)
-        slope = -camera_height_m * math.radians(1.0) / math.sin(a_rad) ** 2
-        distance = value_at_blend + slope * (max(depression_deg, 0.0) - blend_deg)
-    return min(max(distance, 0.0), cap_m)
+    return float(ps_math.predict_blend_distance(depression_deg, camera_height_m=camera_height_m,
+                                                blend_deg=blend_deg, cap_m=cap_m))
 
 
 def geometric_window_fov_deg(distance_m, context_width_m=None):

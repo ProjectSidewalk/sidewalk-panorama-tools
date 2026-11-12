@@ -41,6 +41,7 @@ import pytest
 from PIL import Image
 
 from downloaders import gsv
+from sidewalk_panorama_tools import gsv_tiles
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
@@ -75,7 +76,7 @@ class TestFoverIsNotInTheRequest:
     parameters. Anyone re-adding it - or adding another viewer parameter without checking - trips this."""
 
     def test_the_base_url_does_not_send_fover(self):
-        assert 'fover' not in gsv._CBK_BASE_URL, (
+        assert 'fover' not in gsv.CBK_BASE_URL, (
             'fover makes CBK serve the polar rows of zoom 5 at 256x256 instead of 512x512, costing half the '
             'linear resolution over 62.5% of the frame (#73). It is not a harmless viewer parameter.')
 
@@ -86,14 +87,14 @@ class TestFoverIsNotInTheRequest:
     def test_the_probe_urls_do_not_send_fover_either(self):
         """download_single_pano builds its zoom probes off the same constant, so they inherit whatever it
         carries. Pinning the constant covers both, but only while they share it."""
-        assert 'fover' not in gsv._CBK_BASE_URL
-        assert gsv._CBK_BASE_URL.startswith('https://maps.google.com/cbk?')
+        assert 'fover' not in gsv.CBK_BASE_URL
+        assert gsv.CBK_BASE_URL.startswith('https://maps.google.com/cbk?')
 
     def test_onerr_is_still_sent(self):
         """`onerr=3` was checked at the same time and is innocent - it is what makes an out-of-range tile
         come back as a black JPEG rather than an error, which the zoom probe depends on. Don't drop it while
         cleaning up."""
-        assert 'onerr=3' in gsv._CBK_BASE_URL
+        assert 'onerr=3' in gsv.CBK_BASE_URL
 
 
 class TestTheFoverBandOnRealBytes:
@@ -413,7 +414,7 @@ def _live_get(session, url, tries=5, require_200=False):
 
 def _live_tile(session, pano, zoom, x, y, extra='', require_200=False):
     return _live_get(session, '%s%s&zoom=%d&x=%d&y=%d&panoid=%s'
-                     % (gsv._CBK_BASE_URL, extra, zoom, x, y, pano), require_200=require_200)
+                     % (gsv.CBK_BASE_URL, extra, zoom, x, y, pano), require_200=require_200)
 
 
 @live_only
@@ -510,7 +511,7 @@ def test_live_full_download_has_no_undersized_tiles(tmp_path, monkeypatch):
         seen['total'] = len(tile_results)
         return seen['undersized']
 
-    monkeypatch.setattr(gsv, '_undersized_tile_count', counting)
+    monkeypatch.setattr(gsv_tiles, '_undersized_tile_count', counting)
     label, pano_id, width, height = LIVE_PANOS[0]
     Image.MAX_IMAGE_PIXELS = None
 

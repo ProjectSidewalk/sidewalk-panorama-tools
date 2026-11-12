@@ -75,12 +75,35 @@ jobs:
         run: |
           pip wheel --no-deps -w "$RUNNER_TEMP/dist" .
           python -m venv "$RUNNER_TEMP/wheelcheck"
-          "$RUNNER_TEMP/wheelcheck/bin/pip" install -c constraints.txt "$RUNNER_TEMP"/dist/sidewalk_panorama_tools-*.whl
+          # Resolved first: unquoted, `*.whl[gsv]` below would be a glob character class (#222 step 2).
+          WHL=$(ls "$RUNNER_TEMP"/dist/sidewalk_panorama_tools-*.whl)
+          CONSTRAINTS="$PWD/constraints.txt"
+          "$RUNNER_TEMP/wheelcheck/bin/pip" install -c "$CONSTRAINTS" "$WHL"
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheelcheck/bin/python" -c "
           import pano_pose, sidewalk_panorama_tools, sidewalk_panorama_tools.geometry as g, sidewalk_panorama_tools.torch_geometry as tg
-          for m in (pano_pose, sidewalk_panorama_tools, g, tg):
+          import sidewalk_panorama_tools.store as store, sidewalk_panorama_tools.ps_math as pm, sidewalk_panorama_tools.labels as lb
+          import PIL.Image  # pillow is a package dependency since 1.1.0 (store.read_pano); a wheel without it fails here
+          for m in (pano_pose, sidewalk_panorama_tools, g, tg, store, pm, lb):
               assert 'site-packages' in m.__file__, m.__file__
           view, tilt = g.label_view(0.5, 0.6, size=8, camera_pitch=3.0)
-          print(sidewalk_panorama_tools.__version__, view, tilt is not None)
+          assert store.shard('abcdef') == 'ab' and float(pm.get_3d_fov(1)) == 89.75
+          assert lb.label_uid('seattle-wa', 1) == 'seattle-wa:1'
+          print(sidewalk_panorama_tools.__version__, view, tilt is not None, PIL.__version__)
+          "
+          # The tile fetcher (#222 step 2): without the [gsv] extra its import names the extra; with it, it works.
+          "$RUNNER_TEMP/wheelcheck/bin/python" -c "
+          try:
+              import sidewalk_panorama_tools.gsv_tiles
+          except ImportError as e:
+              assert '[gsv] extra' in str(e), e
+          else:
+              raise SystemExit('sidewalk_panorama_tools.gsv_tiles imported without the [gsv] extra installed')
+          "
+          "$RUNNER_TEMP/wheelcheck/bin/pip" install -c "$CONSTRAINTS" "${WHL}[gsv]"
+          "$RUNNER_TEMP/wheelcheck/bin/python" -c "
+          import sidewalk_panorama_tools.gsv_tiles as t
+          assert 'site-packages' in t.__file__, t.__file__
+          assert t._tile_grid(16384, 8192, 5) == (32, 16) and t._pano_max_zoom(13312) == 5
+          print(t.CONCURRENCY, len(t.HEADERS))
           "

@@ -536,7 +536,7 @@ class TestRule3AsksWhetherThereWasWork:
         """docs/log-analyzer.md, "What the analyzer does not report yet": 30 nights of 200 panos failing
         transiently, no downloads, a flat corpus. The ungated rule fired here; the gate cannot tell this city
         from a mature one with nothing new (field 5 flat, every eligible pano attempted), so rule 3 stays
-        silent. Field 20 (#182) carries the count, but no rule reads it yet: TestField20IsReadButNotYetJudged."""
+        silent. Field 20 (#182) carries the count, and rule 11 reads it: TestRule11ReportsASteadySetOfRaisers."""
         # 50 ledgered permanent verdicts every night, plus 200 transient failures every night of the tail.
         rows = zero_progress_rows(new_panos=0, quiet_tail=analyze.ZERO_PROGRESS_DAYS, image_fail=(50, 250),
                                   image_raised=(0, 200))
@@ -544,11 +544,40 @@ class TestRule3AsksWhetherThereWasWork:
         assert self.rule_3(tmp_path, rows) == []
 
 
-class TestField20IsReadButNotYetJudged:
-    """Field 20 (#182) is parsed so the rows carrying it can be measured, but no rule reads it yet. The rule that
-    will (#182, pending) needs a floor, and the number that floor depends on - how many panos raise every night
-    and never stop, such as a Mapillary city's retired images - is what field 20 itself will measure. Until then
-    the steady transient set is still unreported, and these tests say so rather than leave it implied."""
+def night_rows(values_by_age, **overrides):
+    """One row per (age, field 20) pair, each night's rows at 02:00, 03:00, ... UTC on the date `age` days before
+    today, so passes of one night share a date on rule 1's clock. `values_by_age` maps age -> a tuple of field 20
+    values, one per pass; '' is a blank field 20, and the string 'pre' a 19-field row (written before #182)."""
+    today = datetime.now(timezone.utc).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+    rows = []
+    for age in sorted(values_by_age, reverse=True):
+        for k, value in enumerate(values_by_age[age]):
+            stamp = today - timedelta(days=age) + timedelta(hours=2 + k)
+            if value == 'pre':
+                rows.append(pre_field_20_row(stamp, **overrides))
+            else:
+                rows.append(make_row(stamp, image_raised=value, **overrides))
+    return rows
+
+
+class TestRule11ReportsASteadySetOfRaisers:
+    """Rule 11 (#182): field 20, taken as the MAX over a night's rows, at least STEADY_RAISE_MIN_RAISED on each of
+    the last STEADY_RAISE_NIGHTS calendar nights. A night with no value is unknown and breaks the streak. Sized
+    from reports/2026-11-05-field20-fleet-raisers.md."""
+
+    @staticmethod
+    def rule_11(tmp_path, rows):
+        found = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3)
+        return [i for i in found if i['msg'].startswith('Steady raisers')]
+
+    @staticmethod
+    def nights(value, count=None, newest_first=()):
+        """`count` nights (default the window) of `(value,)`, the newest overridden by `newest_first`."""
+        count = analyze.STEADY_RAISE_NIGHTS if count is None else count
+        values = {age: (value,) for age in range(count)}
+        for age, passes in enumerate(newest_first):
+            values[age] = passes
+        return values
 
     def measured(self):
         """The #169 D13 measurement, with field 20 written: 30 nights of 200 transient failures, no download, a
@@ -561,12 +590,94 @@ class TestField20IsReadButNotYetJudged:
         assert df['image_raised'].tail(30).tolist() == [200] * 30
         assert df['image_raised'].head(len(df) - 30).eq(0).all()
 
-    @pytest.mark.parametrize('image_raised', [(0, 200), None], ids=['with-field-20', 'before-field-20'])
-    def test_the_measured_case_is_still_unreported(self, tmp_path, image_raised):
-        """The D13 pin. When the rule lands, the with-field-20 case is the one that should change."""
-        rows = zero_progress_rows(new_panos=0, quiet_tail=30, image_fail=(50, 250), image_raised=image_raised)
+    def test_the_measured_case_is_now_reported(self, tmp_path):
+        """The D13 pin, flipped: the steady transient set rule 3 cannot see is rule 11's, and the only finding."""
+        found = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', self.measured()), stale_days=3)
+
+        assert [i['level'] for i in found] == ['WARNING'], found
+        msg = found[0]['msg']
+        assert msg.startswith('Steady raisers: 200 image attempts raised on each of the last 7 nights')
+        assert 'retried every run' in msg and 'scrape.log' in msg and '`images-no-success`' in msg
+
+    def test_the_same_rows_written_before_field_20_are_silent(self, tmp_path):
+        """19-field rows carry no raised count: unknown, never 0, and never evidence."""
+        rows = [','.join(row.split(',')[:19]) for row in self.measured()]
 
         assert analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', rows), stale_days=3) == []
+
+    def test_a_mature_city_with_no_raises_is_silent(self, tmp_path):
+        assert self.rule_11(tmp_path, night_rows(self.nights(0, count=30))) == []
+
+    def test_a_city_that_downloads_every_night_while_raising_fires(self, tmp_path):
+        """chicago-il's shape: hundreds downloaded every night beside the same 276 failing. No download gate."""
+        rows = night_rows(self.nights(276), image_success=300)
+
+        found = self.rule_11(tmp_path, rows)
+
+        assert [i['level'] for i in found] == ['WARNING']
+        assert '276 image attempts' in found[0]['msg']
+
+    def test_the_floor_is_three(self, tmp_path):
+        assert analyze.STEADY_RAISE_MIN_RAISED == 3 and analyze.STEADY_RAISE_NIGHTS == 7
+        assert self.rule_11(tmp_path, night_rows(self.nights(3)))
+        assert self.rule_11(tmp_path, night_rows(self.nights(2, count=30))) == []
+
+    def test_six_nights_at_the_floor_and_a_zero_do_not_fire(self, tmp_path):
+        assert self.rule_11(tmp_path, night_rows(self.nights(3, newest_first=[(0,)]))) == []
+
+    def test_six_nights_at_the_floor_after_an_old_zero_do_not_fire(self, tmp_path):
+        values = self.nights(3, count=analyze.STEADY_RAISE_NIGHTS - 1)
+        values[analyze.STEADY_RAISE_NIGHTS - 1] = (0,)
+
+        assert self.rule_11(tmp_path, night_rows(values)) == []
+
+    def test_the_count_is_the_min_and_max_over_the_window(self, tmp_path):
+        values = self.nights(10, newest_first=[(16,), (4,)])
+
+        found = self.rule_11(tmp_path, night_rows(values))
+
+        assert 'Steady raisers: 4 to 16 image attempts' in found[0]['msg']
+
+    @pytest.mark.parametrize('passes', [(200, 3), (3, 200), (200, ''), ('', 200)],
+                             ids=['200-then-3', '3-then-200', '200-then-blank', 'blank-then-200'])
+    def test_unequal_passes_read_as_the_nights_max(self, tmp_path, passes):
+        """Extra passes re-attempt the same set; a pass that stopped early saw part of it, a crashed one none."""
+        found = self.rule_11(tmp_path, night_rows(self.nights(200, newest_first=[passes])))
+
+        assert found and 'Steady raisers: 200 image attempts' in found[0]['msg']
+
+    def test_a_night_of_only_blanks_breaks_the_streak(self, tmp_path):
+        assert self.rule_11(tmp_path, night_rows(self.nights(200, count=30, newest_first=[(200,), ('', '')]))) == []
+
+    def test_a_night_written_before_field_20_breaks_the_streak(self, tmp_path):
+        values = self.nights(200, count=30)
+        values[3] = ('pre',)
+
+        assert self.rule_11(tmp_path, night_rows(values)) == []
+
+    def test_a_night_with_no_row_at_all_breaks_the_streak(self, tmp_path):
+        values = self.nights(200, count=30)
+        del values[3]
+
+        assert self.rule_11(tmp_path, night_rows(values)) == []
+
+    def test_a_stale_log_is_silent_so_a_stopped_city_is_not_reported_as_current(self, tmp_path):
+        """#229 review: the window ends at the log's newest night. A city that stopped running (the newest row
+        older than --stale-days) gets rule 1's CRITICAL, not a "last 7 nights" WARNING every morning."""
+        values = {age + 5: (200,) for age in range(analyze.STEADY_RAISE_NIGHTS)}
+        found = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', night_rows(values)), stale_days=3)
+
+        assert [i['level'] for i in found] == ['CRITICAL'], found
+        assert not [i for i in found if i['msg'].startswith('Steady raisers')]
+
+    def test_a_log_exactly_at_the_staleness_limit_still_fires(self, tmp_path):
+        values = {age + 3: (200,) for age in range(analyze.STEADY_RAISE_NIGHTS)}
+        found = analyze.analyze_city('somewhere', write_log(tmp_path / 'log.csv', night_rows(values)), stale_days=3)
+
+        assert [i['msg'][:15] for i in found] == ['Steady raisers:'], found
+
+    def test_too_short_a_log_is_silent(self, tmp_path):
+        assert self.rule_11(tmp_path, night_rows(self.nights(200, count=analyze.STEADY_RAISE_NIGHTS - 1))) == []
 
 
 class TestAnAbnormallyLongRunIsFlagged:

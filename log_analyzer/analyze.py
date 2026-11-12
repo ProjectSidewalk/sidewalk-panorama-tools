@@ -86,9 +86,9 @@ LOG_COLUMNS = [
     "depth_eligible",
     # This run's image attempts that RAISED (#182) - unledgered, so retried next run; mostly transient, though some
     # (a retired Mapillary image) raise on every run - the per-run figure image_fail (cumulative, permanent +
-    # transient) cannot give. Parsed, but no rule reads it yet: the rule
-    # that will is to be sized from this field's own measurements (docs/log-analyzer.md). Blank on every row
-    # written before it existed, and on a run whose image phase did not finish.
+    # transient) cannot give. Rule 11 reads it (steady_raisers), sized from this field's own 25-night fleet read
+    # (docs/log-analyzer.md). Blank on every row written before it existed, and on a run whose image phase did
+    # not finish.
     "image_raised",
 ]
 
@@ -146,6 +146,14 @@ MALFORMED_RECENT_DAYS    = 7    # a torn row newer than this (or undatable) warn
 ZERO_PROGRESS_MIN_NEW_WORK = 3  # new image-eligible panos (field 5 growth) or unattempted ones (5 - 11) rule 3
                                 # needs. 7.9-8.4% of a GSV ledger is a permanent verdict (2026-09-06), so k new
                                 # panos all retired - no success, no regression - is ~0.084^k: 8% at 1, 0.06% at 3.
+STEADY_RAISE_MIN_RAISED  = 3    # field 20 (#182) on every night of the window before rule 11 warns. Sized from the
+                                # 25-night fleet read (reports/2026-11-05-field20-fleet-raisers.md): above the
+                                # one-pano sets (seattle-wa, houston-tx, sao-paulo-brazil: one photosphere each)
+                                # and below every multi-pano set seen (4, 10, 15, 16, 276). All of them were real,
+                                # fixable faults (#223's photospheres, #220's Panoramax redirect).
+STEADY_RAISE_NIGHTS      = 7    # consecutive calendar nights, each known and at least the floor - #182's "steady".
+                                # The trade: bayonne-fr's 5-night set (15 a night) would not have reached it, but
+                                # `images-no-success` failed the night the first time. One unknown night resets it.
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +608,35 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
                 ),
             })
 
+    # --- 11. A steady set of image attempts that raise every night (#182) ---
+    # Field 20 is this run's raised image attempts: unledgered, so the same panos are retried, and raise again,
+    # every night. Rule 3 cannot see such a set (its gate cannot tell it from a mature city with nothing new),
+    # and the runner's `images-no-success` condition sees it only on a night when NOTHING was answered - so a
+    # city that still downloads while the same panos fail beside it (chicago-il, 276 a night for 25 nights in
+    # the 2026-11-05 fleet read, downloading on 23 of them) was invisible to every check. A night is a date on
+    # rule 1's clock and its value is the MAX of its rows, never the sum: the queue's extra passes re-attempt the
+    # same set, and a pass that stopped on its budget saw only part of it. A blank field 20 (the image phase did
+    # not finish, or a row older than the field) is no evidence: a night with no value is unknown, never 0, and
+    # it breaks the streak. Deliberately NO "nothing downloaded" gate: chicago downloaded while raising.
+    # WARNING, not CRITICAL: the work is retried, not lost - rule 7's tier (see rule 10).
+    # Silent once the log is stale (rule 1's own test): the window ends at the log's newest night, so a city
+    # that stopped running would otherwise report "the last 7 nights" every morning beside rule 1's CRITICAL,
+    # worded as current, for as long as it stays stopped (#229 review).
+    steady = steady_raisers(df) if days_old <= stale_days else None
+    if steady:
+        low, high = steady
+        count = f"{low:,}" if low == high else f"{low:,} to {high:,}"
+        issues.append({
+            "level": "WARNING",
+            "msg": (
+                f"Steady raisers: {count} image attempts raised on each of the last {STEADY_RAISE_NIGHTS} nights "
+                f"(log.csv field 20, the most of a night's passes) - unledgered, so retried every run and never "
+                f"downloaded. The IMAGEDOWNLOAD `Failed to download pano` ERROR lines in this city's scrape.log "
+                f"name the panos and the error. `images-no-success` covers a night when nothing is answered; "
+                f"this is a city that still downloads, or raises fewer than that condition's floor."
+            ),
+        })
+
     # --- 8. The corpus column contradicts the ledger ---
     # depth_eligible is len(gsv_panos), so an empty or source-less pano-list answer writes a plausible 0 and
     # erases the city's whole depth report. corpus_size refuses such a value; this is where that refusal is
@@ -649,6 +686,26 @@ def analyze_city(city_id: str, log_path: Path, stale_days: int) -> list[dict]:
             })
 
     return issues
+
+
+def steady_raisers(df: pd.DataFrame):
+    """(min, max) of field 20 over the last STEADY_RAISE_NIGHTS calendar nights when every one of them is known
+    and at least STEADY_RAISE_MIN_RAISED, else None (rule 11, #182).
+
+    Nights are calendar dates on rule 1's clock ending at the newest date in the log, so a night with no row is
+    as unknown as one whose rows all left field 20 blank. A night's value is the max over its rows, which
+    ignores a blank row beside a written one: passes of (200, blank) read 200, and (200, 3) read 200 too.
+
+    Example: seven nights of 3 raised returns (3, 3); six nights of 3 and a newest night of 0 returns None, and
+    so does a window with one night missing or blank.
+    """
+    per_night = df.groupby("date")["image_raised"].max()      # max skips NaN; an all-NaN night stays NaN
+    newest = df["date"].max()
+    window = pd.date_range(end=newest, periods=STEADY_RAISE_NIGHTS, freq="D")
+    values = per_night.reindex(window)
+    if values.isna().any() or (values < STEADY_RAISE_MIN_RAISED).any():
+        return None
+    return int(values.min()), int(values.max())
 
 
 def last_value(df: pd.DataFrame, column: str):
