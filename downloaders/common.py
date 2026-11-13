@@ -138,6 +138,88 @@ from sidewalk_panorama_tools.store import (  # noqa: E402,F401  (re-exports)
 )
 
 
+#: How far before the end of a JPEG its end-of-image marker may sit: see jpeg_is_complete (#155 review item 23).
+TRAILING_BYTES_WINDOW = 64 * 1024
+
+
+def _first_scan_offset(f):
+    """Offset of the first byte of the main image's entropy-coded data - just past its first SOS header - by
+    walking the marker segments from SOI, or None if the header ends (or breaks) before a scan begins.
+
+    Walking by segment LENGTH is the point: an EXIF thumbnail is a whole JPEG, EOI included, inside an APP1
+    segment, and the walk steps over it without reading it.
+    """
+    f.seek(0)
+    if f.read(2) != b'\xff\xd8':
+        return None
+    while True:
+        byte = f.read(1)
+        if byte != b'\xff':
+            return None                     # between segments there must be a marker
+        while byte == b'\xff':              # fill bytes
+            byte = f.read(1)
+        if not byte:
+            return None
+        marker = byte[0]
+        if marker == 0xD9:
+            return None                     # EOI before any scan
+        if marker in STANDALONE_JPEG_MARKERS:
+            continue
+        header = f.read(2)
+        if len(header) < 2:
+            return None
+        seglen = int.from_bytes(header, 'big')
+        if seglen < 2:
+            return None
+        start = f.tell()
+        f.seek(seglen - 2, os.SEEK_CUR)
+        if marker == 0xDA:                  # SOS
+            return start + seglen - 2
+
+
+def jpeg_is_complete(f, size):
+    """Whether the JPEG in the seekable binary file `f` (`size` bytes long) ends with an end-of-image
+    marker (FF D9) that closes its main image. Header validity is the caller's check.
+
+    Shared by store mode's is_complete_jpeg (a file on disk) and the photosphere download (a response
+    body in a BytesIO), so the two cannot drift apart.
+
+    The rule (#155 review item 23). Either the file ENDS with FF D9 - every JPEG this repo writes, so every
+    GSV pano - or an FF D9 lies in its last TRAILING_BYTES_WINDOW (64 KB) bytes AND after the start of the
+    main image's first scan (_first_scan_offset). The second arm exists because Mapillary and Panoramax
+    originals and GSV user photospheres are stored verbatim, and a camera JPEG can carry bytes after its EOI
+    (a vendor trailer, padding); under the strict rule such a file was refused, deleted and re-pulled every
+    night, for ever.
+    Photospheres measured 2026-11-09: a 111-byte Samsung `Image_UTC_Data` trailer, or 130 / 3,257 bytes of
+    zero padding (reports/2026-11-09-photosphere-404s-and-trailers.md).
+
+    Why the second arm is still safe against a transfer cut short:
+      * Inside entropy-coded data an FF byte is always followed by 00 (stuffing) or an RSTn marker, never by
+        D9. So a file cut mid-scan contains no FF D9 after its scan start - there is nothing to find.
+      * An FF D9 BEFORE the scan start can exist: an EXIF thumbnail is a complete JPEG inside APP1, and on a
+        small file it sits well inside the last 64 KB. The scan-start bound is exactly what refuses it; the
+        segment walk steps over the thumbnail by length rather than reading it.
+      * The window bounds how much trailing data is believed; beyond it the file is refused as before.
+    Residual, accepted: a progressive JPEG's between-scan segments (DHT, COM) could in principle hold the
+    bytes FF D9 in their payload; a truncation within 64 KB after one would pass. No standard Huffman
+    symbol is 0xFF, and the scraper's own GSV files take the first arm, so this is theoretical. An MPO
+    (primary image, then a second JPEG) passes on the primary's EOI - which is complete - whatever state
+    the second image is in.
+    """
+    if size < 4:
+        return False
+    f.seek(size - 2)
+    if f.read(2) == b'\xff\xd9':
+        return True
+    scan_start = _first_scan_offset(f)
+    if scan_start is None:
+        return False
+    window_start = max(scan_start, size - TRAILING_BYTES_WINDOW)
+    f.seek(window_start)
+    return b'\xff\xd9' in f.read(size - window_start)
+
+
+
 # --- Edge black bands (#179) ----------------------------------------------------------------------------------
 #
 # black_fraction answers "how much of this is black"; a band detector answers "is there a black band along the

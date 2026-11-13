@@ -1,0 +1,53 @@
+{
+  "rounds": [
+    "r1",
+    "r2",
+    "r3"
+  ],
+  "round_times": {
+    "r1": "2026-11-09T13:19:19+00:00",
+    "r2": "2026-11-09T19:13:10+00:00",
+    "r3": "2026-11-10T01:17:09+00:00"
+  },
+  "ids_measured": 20,
+  "ids_by_city": {
+    "chicago-il": 1,
+    "seattle-wa": 14,
+    "zurich": 5
+  },
+  "responses": 60,
+  "status_patterns": {
+    "200 / 200 / 200": 6,
+    "200 / 200 / 404": 1,
+    "404 / 404 / 404": 13
+  },
+  "not_found_responses": 40,
+  "not_found_shapes": {
+    "image/png 897": 36,
+    "text/html 1610": 4
+  },
+  "ids_404_every_round": 13,
+  "ids_404_both_shapes": 3,
+  "ids_served_then_404": 1,
+  "ok_responses": 20,
+  "ok_length_matches_content_length": 20,
+  "ok_decode": 20,
+  "ok_ends_with_eoi": 0,
+  "ok_within_trailer_window": 20,
+  "trailer_ids": 7,
+  "trailer_ids_stable": 7,
+  "trailer_ids_samsung": 5,
+  "trailer_sizes": {
+    "111": 5,
+    "130": 1,
+    "3257": 1
+  },
+  "history_af1qip_ids": 77,
+  "history_af1qip_404_twice_then_served": 5,
+  "history_af1qip_unledgered": 20,
+  "history_af1qip_unledgered_by_failures": {
+    "status-404": 13,
+    "status-404 + truncated-200": 3,
+    "truncated-200": 4
+  }
+}

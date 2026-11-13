@@ -3482,6 +3482,45 @@ class TestAnImagePhaseWithNoSuccessFailsTheNight:
 
         assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
 
+    # The photo host answering about one photosphere (gsv.is_photo_host_answer): seattle-wa's 13 AF1Qip ids
+    # 404 every night and were its only work, so from 2026-11-07 they failed the whole night through this
+    # condition (reports/2026-11-09-photosphere-404s-and-trailers.md). They are set aside like skips - NOT
+    # counted as answers, or a perennial 404 would mask an outage of the city's other panos.
+    @staticmethod
+    def photo_host(n, status=404):
+        return {'photoPano%03d' % i: downloaders.gsv.PhotosphereHostError('photo host answered %d' % status, status)
+                for i in range(n)}
+
+    @pytest.mark.parametrize('status', [400, 403, 404])
+    def test_photo_host_4xx_answers_alone_are_not_a_condition(self, monkeypatch, tmp_path, status):
+        storage, _ = call_main_scripted(monkeypatch, tmp_path, self.photo_host(5, status))
+
+        assert summary_codes(tmp_path) == []
+        assert last_log_fields(storage)[DownloadRunner.IMAGE_RAISED_FIELD - 1] == '5', \
+            'still unledgered and retried, so field 20 counts them'
+
+    def test_bad_photo_host_bodies_alone_are_not_a_condition(self, monkeypatch, tmp_path):
+        verdicts = {'bodyPano%03d' % i: downloaders.gsv.PhotosphereBodyError('not a complete JPEG')
+                    for i in range(5)}
+        call_main_scripted(monkeypatch, tmp_path, verdicts)
+
+        assert summary_codes(tmp_path) == []
+
+    def test_a_photo_host_5xx_is_still_a_raise(self, monkeypatch, tmp_path):
+        """A 5xx can be the host's outage, which is what this condition is for."""
+        call_main_scripted(monkeypatch, tmp_path, self.photo_host(3, 503))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_IMAGES_NO_SUCCESS]
+
+    def test_photo_host_answers_do_not_mask_the_other_raises(self, monkeypatch, tmp_path, capsys):
+        """The mutant this kills: counting them as ANSWERS, which would silence a real outage on any night a
+        perennially 404ing photosphere is attempted alongside."""
+        call_main_scripted(monkeypatch, tmp_path, {**self.photo_host(5), **self.verdicts(raised=3)})
+
+        assert summary_conditions(tmp_path)[DownloadRunner.CONDITION_IMAGES_NO_SUCCESS] == \
+            '3 attempts raised, 0 answered, 0 s per raise (5 photo-host answer(s) set aside)'
+        assert 'all 3 attempted panos raised and none was answered (5 photo-host' in capsys.readouterr().out
+
     def test_it_goes_to_scrape_log_as_well_as_stdout(self, monkeypatch, tmp_path, caplog):
         """Two channels (CLAUDE.md): stdout is what cron mails tonight, scrape.log is what is still there
         next week - and the per-pano ERRORs it points at are only in the second."""
@@ -3991,7 +4030,8 @@ class TestField20IsTonightsRaisedAttempts:
 
     def test_a_frame_disagreement_is_not_a_raise(self, monkeypatch, tmp_path):
         """Unledgered and counted in field 9 like a raise, but it is Google ANSWERING (#74) - the same split
-        `images-no-success` makes, so the two counts never disagree about what a raise is."""
+        `images-no-success` makes. The two counts differ in one place only: a photo-host answer about one
+        photosphere is a raise here and set aside there (gsv.is_photo_host_answer)."""
         verdicts = {'framePano%03d' % i: downloaders.gsv.FrameDisagreementError('frame disagreement')
                     for i in range(2)}
 

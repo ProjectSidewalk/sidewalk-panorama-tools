@@ -728,6 +728,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # For `images-no-success` (#161): attempts the source answered with a verdict, and attempts that raised.
     # A skip is neither - it never contacted the source.
     answered, raised = 0, 0
+    # Of `raised`: photo-host answers about one photosphere (gsv.is_photo_host_answer), which log.csv field 20
+    # counts and `images-no-success` sets aside - it is neither a raise nor an answer there, like a skip.
+    photo_host_answers = 0
     # Panos refused for a frame disagreement (#185), and the first one's text for the condition's detail.
     frame_refusals, first_frame_refusal = 0, None
     raise_seconds = 0.0     # monotonic seconds spent in attempts that raised, for the budget arm's duration gate
@@ -788,6 +791,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 downloaded = None
                 result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
                 frame_refused = isinstance(e, gsv.FrameDisagreementError)
+                photo_host_answer = gsv.is_photo_host_answer(e)
                 if frame_refused:
                     # The one counting path for every arm that refuses a frame (#185): photometa's, the
                     # probe's, and any later check that raises the same exception.
@@ -814,7 +818,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                     logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s (after %.1f s)",
                                   pano_id, str(e), attempt_seconds)
             else:
-                frame_refused = False
+                frame_refused = photo_host_answer = False
 
             # A push-back (#162) counts as RAISED: it is Google refusing this host, not an answer about any
             # pano, so a night of refusals and network errors with nothing answered is still no success. The
@@ -825,7 +829,14 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             # through `tripped` either way.
             if result_code is None and not frame_refused:
                 raised += 1
-                raise_seconds += attempt_seconds
+                if photo_host_answer:
+                    # Field 20 counts it (unledgered, retried), `images-no-success` does not, in EITHER tally:
+                    # a photo the host 404s says nothing about whether this run could download (seattle-wa's
+                    # 13 failed every night from 2026-11-07), and counting it as an answer would let a
+                    # perennial 404 mask a real outage of the city's other panos. gsv.is_photo_host_answer.
+                    photo_host_answers += 1
+                else:
+                    raise_seconds += attempt_seconds
             elif result_code != DownloadResult.skipped:
                 # A frame disagreement (#74) is unledgered like a raise, but it is Google ANSWERING - the pano
                 # has its own WARNING and an app-side remedy - so for `images-no-success` it is an answer: ten
@@ -996,11 +1007,13 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         logging.info("%s", summary)
         print(summary)
 
-    mean_raise_seconds = raise_seconds / raised if raised else 0.0
-    budget_spent_on_raises = (raised >= 1 and mean_raise_seconds >= IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS
+    # The condition's own raise count: field 20's `raised` less the photo-host answers it sets aside.
+    alarm_raised = raised - photo_host_answers
+    mean_raise_seconds = raise_seconds / alarm_raised if alarm_raised else 0.0
+    budget_spent_on_raises = (alarm_raised >= 1 and mean_raise_seconds >= IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS
                               and stop_reasons is not None
                               and stop_reasons.get('image_stop') == STOP_MAX_RUNTIME)
-    if answered == 0 and (raised >= IMAGE_NO_SUCCESS_MIN_RAISED or budget_spent_on_raises):
+    if answered == 0 and (alarm_raised >= IMAGE_NO_SUCCESS_MIN_RAISED or budget_spent_on_raises):
         # Every attempt raised and none was answered: the network, the store or a bug, not the panos. A
         # transient is never ledgered, so without this the only trace is one ERROR per pano in scrape.log and
         # a log.csv row that looks like a quiet night's retries (#161).
@@ -1011,12 +1024,15 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         # phase whose whole budget went on raises is the same fact the minimum stands in for - but only when
         # the raises took the blackhole's minutes each, IMAGE_NO_SUCCESS_MIN_MEAN_RAISE_SECONDS: a mature city's
         # few slow perennial raisers can fill the share too, and one slow raise is not an outage (#174 review).
-        message = ("IMAGEDOWNLOAD: WARNING - all %d attempted panos raised and none was answered; nothing was "
-                   "ledgered, so they retry next run. Look at the errors in scrape.log." % (raised,))
+        # The wording up to "none was answered" is a parse target (reports/scripts/fleet_thresholds.py).
+        set_aside = (' (%d photo-host answer(s) set aside)' % photo_host_answers) if photo_host_answers else ''
+        message = ("IMAGEDOWNLOAD: WARNING - all %d attempted panos raised and none was answered%s; nothing was "
+                   "ledgered, so they retry next run. Look at the errors in scrape.log." % (alarm_raised, set_aside))
         logging.error("%s", message)
         print(message)
         note_condition(stop_reasons, CONDITION_IMAGES_NO_SUCCESS,
-                       '%d attempts raised, 0 answered, %.0f s per raise' % (raised, mean_raise_seconds))
+                       '%d attempts raised, 0 answered, %.0f s per raise%s'
+                       % (alarm_raised, mean_raise_seconds, set_aside))
 
     flagged_edge_bands = gsv._edge_band_run.saved - edge_bands_before
     if flagged_edge_bands:
