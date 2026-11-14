@@ -259,18 +259,24 @@ def stored_jpeg_verdict(path):
             return STORED_JPEG_COMPLETE
     except OSError:
         return STORED_JPEG_INCOMPLETE
-    try:
-        with Image.open(path) as image:
-            if image.format != 'JPEG':
-                return STORED_JPEG_INCOMPLETE   # a PNG, GIF, WebP... named .jpg decodes, and is not a JPEG
-            image.load()
-    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
-        return STORED_JPEG_INCOMPLETE
     # A decode alone is not proof (#242 review): libjpeg reads a zero-filled tail as scan data, so a baseline file
     # cut short and padded with zeros - what a preallocating copy that dies leaves - decodes without an error.
     # A whole file still has an end-of-image marker somewhere after its first scan, beyond the 64 KB window the
-    # cheap check looks in; a cut one cannot (byte stuffing keeps FF D9 out of scan data).
-    if not _eoi_after_first_scan(path):
+    # cheap check looks in; a cut one cannot (byte stuffing keeps FF D9 out of scan data). Checked BEFORE the
+    # decode, so a plain cut is refused on one read rather than a full raster, every run it is reported.
+    try:
+        if not _eoi_after_first_scan(path):
+            return STORED_JPEG_INCOMPLETE
+    except OSError:
+        return STORED_JPEG_INCOMPLETE
+    try:
+        with Image.open(path) as image:
+            # A PNG, GIF, WebP... named .jpg decodes and is not a JPEG. MPO is Pillow's name for a multi-picture
+            # JPEG (a camera's primary image plus a second), which is a JPEG for every purpose here.
+            if image.format not in ('JPEG', 'MPO'):
+                return STORED_JPEG_INCOMPLETE
+            image.load()
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
         return STORED_JPEG_INCOMPLETE
     return STORED_JPEG_DECODED
 

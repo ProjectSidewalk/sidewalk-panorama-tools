@@ -108,6 +108,20 @@ class TestTheVerdict:
         assert common.stored_jpeg_verdict(str(put(tmp_path, 'aaX', buf.getvalue()))) == \
             common.STORED_JPEG_INCOMPLETE
 
+    @pytest.mark.parametrize('chunk_size', [1, 2, 3, 7, 4096])
+    def test_the_eoi_scan_finds_a_marker_straddling_a_chunk_edge(self, tmp_path, chunk_size):
+        """`previous[-1:] + chunk` is what finds an FF D9 split across two reads; at chunk size 1 every marker is."""
+        whole = put(tmp_path, 'aaX', BIG_TRAILER)
+        assert common._eoi_after_first_scan(str(whole), chunk_size=chunk_size)
+        cut = put(tmp_path, 'aaY', ZERO_FILLED)
+        assert not common._eoi_after_first_scan(str(cut), chunk_size=chunk_size)
+
+    def test_a_cut_file_is_refused_without_a_full_decode(self, tmp_path, monkeypatch):
+        """The EOI scan runs first, so a file reported every run costs one read, not a raster."""
+        path = put(tmp_path, 'aaX', CUT)
+        monkeypatch.setattr(common.Image, 'open', lambda *a, **k: pytest.fail('decoded a file with no EOI'))
+        assert common.stored_jpeg_verdict(str(path)) == common.STORED_JPEG_INCOMPLETE
+
     def test_a_missing_file_is_incomplete_not_a_crash(self, tmp_path):
         assert common.stored_jpeg_verdict(str(tmp_path / 'nope.jpg')) == common.STORED_JPEG_INCOMPLETE
 
@@ -142,6 +156,12 @@ class TestReadOnlyByDefault:
         report = tmp_path / 'report.csv'
         run([str(store), '--report', str(report)], tmp_path)
         assert report.read_text().splitlines() == ['pano_id,verdict,bytes', 'bbCUT,incomplete,%d' % len(CUT)]
+
+    def test_a_report_and_a_ledger_on_one_path_is_refused(self, store, tmp_path):
+        same = tmp_path / 'one.csv'
+        assert run([str(store), '--report', str(same), '--ledger', str(same)], tmp_path) == \
+            verify_store.EXIT_REFUSED
+        assert not same.exists()
 
     def test_a_report_naming_a_file_it_did_not_write_is_refused_untouched(self, store, tmp_path):
         before = (store / 'pano_id_log.csv').read_bytes()
@@ -286,13 +306,27 @@ class TestTheMoveAndItsEdges:
             with open(dst, 'wb') as f:
                 f.write(bytes(data))
             shutil.copystat(src, dst)
-        monkeypatch.setattr(verify_store.shutil, 'copy2', corrupting_copy)
+        monkeypatch.setattr(verify_store.shutil, 'copyfile', corrupting_copy)
 
         with pytest.raises(OSError, match='did not match'):
             verify_store._move_verified(str(source), str(tmp_path / 'dst' / 'bbCUT.jpg'))
 
         assert source.read_bytes() == CUT
         assert os.listdir(tmp_path / 'dst') == [], 'no .part left behind'
+
+    def test_a_read_only_file_can_be_quarantined(self, tmp_path):
+        import stat as _stat
+        source = put(tmp_path / 'src', 'bbCUT', CUT)
+        os.chmod(source, _stat.S_IREAD)
+        destination = tmp_path / 'dst' / 'bb' / 'bbCUT.jpg'
+        try:
+            verify_store._move_verified(str(source), str(destination))
+        finally:
+            for p in (source, destination):
+                if p.exists():
+                    os.chmod(p, _stat.S_IREAD | _stat.S_IWRITE)
+        assert destination.read_bytes() == CUT and not source.exists()
+        assert not os.path.exists(str(destination) + '.part')
 
     def test_a_failed_copy_leaves_no_part(self, tmp_path, monkeypatch):
         source = put(tmp_path / 'src', 'bbCUT', CUT)
@@ -301,7 +335,7 @@ class TestTheMoveAndItsEdges:
             with open(dst, 'wb') as f:
                 f.write(b'half')
             raise OSError('disk full')
-        monkeypatch.setattr(verify_store.shutil, 'copy2', failing_copy)
+        monkeypatch.setattr(verify_store.shutil, 'copyfile', failing_copy)
 
         with pytest.raises(OSError, match='disk full'):
             verify_store._move_verified(str(source), str(tmp_path / 'dst' / 'bbCUT.jpg'))

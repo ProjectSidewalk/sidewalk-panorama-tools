@@ -50,6 +50,7 @@ import csv
 import filecmp
 import os
 import shutil
+import stat
 import sys
 import time
 
@@ -184,13 +185,15 @@ def _inside(path, root):
 
 
 def _fsync(path):
-    # A writable handle: Windows' fsync (_commit) refuses a read-only descriptor with EBADF.
+    # A writable handle: Windows' fsync (_commit) refuses a read-only descriptor with EBADF. The .part is written
+    # by copyfile, so it is writable here whatever the source's mode; its mode is copied only afterwards.
     with open(path, 'r+b') as f:
         os.fsync(f.fileno())
 
 
 def _discard(path):
     try:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)    # Windows will not remove a read-only file
         os.remove(path)
     except OSError:
         pass
@@ -199,17 +202,20 @@ def _discard(path):
 def _move_verified(source, destination):
     """Copy, flush to disk, compare byte for byte, then delete the source. Never overwrites `destination`.
 
-    The fsync comes before the compare, so the compare is not only against the page cache and the source is
-    deleted only once the copy is on disk. Every failure before the delete leaves no `.part` behind and the
-    source in place. A failed delete of the source leaves both copies and says so.
+    The fsync is so the source is deleted only once the copy is on disk; the compare may still read the copy
+    from the page cache, so it proves the bytes written, not the medium. The mode and times are copied after
+    the flush (copyfile, then copystat), so a read-only source can still be quarantined. Every failure before
+    the delete leaves no `.part` behind and the source in place. A failed delete of the source leaves both
+    copies and says so.
     """
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     part = destination + '.part'
     try:
-        shutil.copy2(source, part)
+        shutil.copyfile(source, part)
         _fsync(part)
         if not filecmp.cmp(source, part, shallow=False):
             raise OSError('copy of %s did not match; source left in place' % source)
+        shutil.copystat(source, part)
         if os.path.exists(destination):
             raise FileExistsError(destination)
         os.replace(part, destination)
@@ -217,6 +223,10 @@ def _move_verified(source, destination):
         _discard(part)
         raise
     try:
+        if os.name == 'nt':
+            # Windows refuses to delete a read-only file even from a writable directory; POSIX does not care,
+            # so the mode is left alone there. The bytes are already verified at the destination.
+            os.chmod(source, stat.S_IREAD | stat.S_IWRITE)
         os.remove(source)
     except OSError as e:
         raise OSError('copied to %s but %s could not be deleted (%s); delete it by hand' % (destination, source, e))
@@ -305,6 +315,9 @@ def main(argv=None):
         return EXIT_REFUSED
     common.raise_decompression_bomb_ceiling()   # a large pano must not fail the decode for its size
 
+    if args.report and args.ledger and os.path.abspath(args.report) == os.path.abspath(args.ledger):
+        print('REFUSED: --report and --ledger name the same file; the report would replace the resume ledger')
+        return EXIT_REFUSED
     try:
         if args.report:
             check_report_path(args.report)
